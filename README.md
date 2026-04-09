@@ -36,8 +36,8 @@ The `marrow_orient` tool now accepts `autoWarn: true` and warns you BEFORE you s
 
 **Response includes warnings:**
 ```
-⚠️ HIGH: This task type failed 4x with method='internal'.
-         Try method='apply-patch-first' (89% success rate)
+⚠️ HIGH: This task type failed 4x with approach='retry-without-fix'.
+         Try approach='apply-patch-first' (89% success rate)
 ```
 
 ### Loop Detection on Think
@@ -56,8 +56,8 @@ The `marrow_think` tool now accepts `checkLoop: true` and detects if you're abou
 **Response includes loop warnings:**
 ```
 🚨 LOOP DETECTED: You're retrying a failed approach.
-   Previous failure: 'internal' method not supported.
-   Suggested: Use method='apply-patch-first' instead.
+   Previous failure: 'retry-without-fix' approach not supported.
+   Suggested: Use 'apply-patch-first' approach instead.
 ```
 
 ### Rate Limiting
