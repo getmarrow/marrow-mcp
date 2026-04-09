@@ -128,3 +128,9 @@ export interface OrientResult {
   loopState?: { isOpen: boolean; lastCommit: string | null };
   shouldPause: boolean;
 }
+
+export interface WorkflowResult {
+  success: boolean;
+  data?: Record<string, unknown>;
+  error?: string;
+}

@@ -134,4 +134,9 @@ export interface OrientResult {
     };
     shouldPause: boolean;
 }
+export interface WorkflowResult {
+    success: boolean;
+    data?: Record<string, unknown>;
+    error?: string;
+}
 //# sourceMappingURL=types.d.ts.map

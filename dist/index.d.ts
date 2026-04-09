@@ -1,7 +1,7 @@
 /**
  * @getmarrow/mcp — API Functions
  */
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult } from './types';
 /**
  * Log intent and get collective intelligence before acting.
  */
@@ -48,4 +48,26 @@ export declare function marrowAsk(apiKey: string, baseUrl: string, params: {
  * Get API health status.
  */
 export declare function marrowStatus(apiKey: string, baseUrl: string, sessionId?: string): Promise<StatusResult>;
+export declare function marrowWorkflow(apiKey: string, baseUrl: string, params: {
+    action: 'register' | 'list' | 'get' | 'update' | 'start' | 'advance' | 'instances';
+    workflowId?: string;
+    instanceId?: string;
+    name?: string;
+    description?: string;
+    steps?: Array<{
+        step: number;
+        agent_role?: string;
+        action_type?: string;
+        description: string;
+    }>;
+    tags?: string[];
+    agentId?: string;
+    context?: Record<string, unknown>;
+    inputs?: Record<string, unknown>;
+    stepCompleted?: number;
+    outcome?: string;
+    nextAgentId?: string;
+    contextUpdate?: Record<string, unknown>;
+    status?: string;
+}, sessionId?: string): Promise<WorkflowResult>;
 //# sourceMappingURL=index.d.ts.map

@@ -12,6 +12,7 @@ import {
   marrowStatus,
   marrowAgentPatterns,
   marrowAsk,
+  marrowWorkflow,
 } from './index';
 import type { ThinkResult, OrientResult, MarrowMemory } from './types';
 
@@ -666,6 +667,51 @@ const TOOLS = [
       required: ['query'],
     },
   },
+  {
+    name: 'marrow_workflow',
+    description:
+      'Interact with Marrow Workflow Registry. Register, start, and advance multi-step workflows. ' +
+      'Actions: register (create workflow template), list (show all), get (details), start (begin instance), ' +
+      'advance (complete a step), instances (list runs).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['register', 'list', 'get', 'update', 'start', 'advance', 'instances'],
+          description: 'Workflow action to perform',
+        },
+        workflowId: { type: 'string', description: 'Workflow ID (required for get/start/advance/instances)' },
+        instanceId: { type: 'string', description: 'Instance ID (required for advance)' },
+        name: { type: 'string', description: 'Workflow name (for register)' },
+        description: { type: 'string', description: 'Workflow description (for register/update)' },
+        steps: {
+          type: 'array',
+          description: 'Step definitions (for register)',
+          items: {
+            type: 'object',
+            properties: {
+              step: { type: 'number', description: 'Step order (1, 2, 3...)' },
+              agent_role: { type: 'string', description: 'Expected agent role (e.g., "builder", "auditor")' },
+              action_type: { type: 'string', description: 'Action type (e.g., "build", "audit", "patch")' },
+              description: { type: 'string', description: 'Step description' },
+            },
+            required: ['step', 'description'],
+          },
+        },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Tags (for register)' },
+        agentId: { type: 'string', description: 'Agent ID starting the workflow (for start)' },
+        context: { type: 'object', description: 'Workflow context (for start)' },
+        inputs: { type: 'object', description: 'Workflow inputs (for start)' },
+        stepCompleted: { type: 'number', description: 'Step number completed (for advance)' },
+        outcome: { type: 'string', description: 'Step outcome (for advance)' },
+        nextAgentId: { type: 'string', description: 'Next agent for the following step (for advance)' },
+        contextUpdate: { type: 'object', description: 'Context changes (for advance)' },
+        status: { type: 'string', enum: ['running', 'completed', 'failed', 'cancelled', 'active', 'archived'], description: 'Filter by status (for list/instances)' },
+      },
+      required: ['action'],
+    },
+  },
 ];
 
 // Request handler
@@ -1173,6 +1219,35 @@ This is not optional overhead — it's how you stop repeating the same failures.
             source: args.source as string,
             status: args.status as string,
             shared: args.shared as boolean,
+          },
+          SESSION_ID
+        );
+        success(id, {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        });
+        return;
+      }
+
+      if (toolName === 'marrow_workflow') {
+        const result = await marrowWorkflow(
+          API_KEY,
+          BASE_URL,
+          {
+            action: args.action as any,
+            workflowId: args.workflowId as string,
+            instanceId: args.instanceId as string,
+            name: args.name as string,
+            description: args.description as string,
+            steps: args.steps as any,
+            tags: args.tags as string[],
+            agentId: args.agentId as string,
+            context: args.context as Record<string, unknown>,
+            inputs: args.inputs as Record<string, unknown>,
+            stepCompleted: args.stepCompleted as number,
+            outcome: args.outcome as string,
+            nextAgentId: args.nextAgentId as string,
+            contextUpdate: args.contextUpdate as Record<string, unknown>,
+            status: args.status as string,
           },
           SESSION_ID
         );

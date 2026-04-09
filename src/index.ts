@@ -9,6 +9,7 @@ import type {
   AgentPatternsResult,
   OrientResult,
   MarrowAskResult,
+  WorkflowResult,
 } from './types';
 
 function buildHeaders(
@@ -244,4 +245,126 @@ export async function marrowStatus(
   }
 
   return json.data;
+}
+
+// ─── Workflow Registry API ───────────────────────────────────────
+
+export async function marrowWorkflow(
+  apiKey: string,
+  baseUrl: string,
+  params: {
+    action: 'register' | 'list' | 'get' | 'update' | 'start' | 'advance' | 'instances';
+    workflowId?: string;
+    instanceId?: string;
+    name?: string;
+    description?: string;
+    steps?: Array<{ step: number; agent_role?: string; action_type?: string; description: string }>;
+    tags?: string[];
+    agentId?: string;
+    context?: Record<string, unknown>;
+    inputs?: Record<string, unknown>;
+    stepCompleted?: number;
+    outcome?: string;
+    nextAgentId?: string;
+    contextUpdate?: Record<string, unknown>;
+    status?: string;
+  },
+  sessionId?: string
+): Promise<WorkflowResult> {
+  const headers = buildHeaders(apiKey, sessionId, 'application/json');
+
+  switch (params.action) {
+    case 'register': {
+      const res = await fetch(`${baseUrl}/v1/workflows/register`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          name: params.name,
+          description: params.description,
+          steps: params.steps,
+          tags: params.tags,
+        }),
+      });
+      const json = await res.json();
+      if (json.error) return { success: false, error: json.error };
+      return { success: true, data: json.data };
+    }
+    case 'list': {
+      const qs = new URLSearchParams();
+      if (params.status) qs.set('status', params.status);
+      if (params.tags && params.tags.length > 0) qs.set('tags', params.tags.join(','));
+      const res = await fetch(`${baseUrl}/v1/workflows?${qs.toString()}`, { headers });
+      const json = await res.json();
+      if (json.error) return { success: false, error: json.error };
+      return { success: true, data: json.data };
+    }
+    case 'get': {
+      if (!params.workflowId) return { success: false, error: 'workflowId required' };
+      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}`, { headers });
+      const json = await res.json();
+      if (json.error) return { success: false, error: json.error };
+      return { success: true, data: json.data };
+    }
+    case 'update': {
+      if (!params.workflowId) return { success: false, error: 'workflowId required' };
+      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          name: params.name,
+          description: params.description,
+          tags: params.tags,
+          status: params.status,
+        }),
+      });
+      const json = await res.json();
+      if (json.error) return { success: false, error: json.error };
+      return { success: true, data: json.data };
+    }
+    case 'start': {
+      if (!params.workflowId) return { success: false, error: 'workflowId required' };
+      if (!params.agentId) return { success: false, error: 'agentId required' };
+      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}/start`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          agent_id: params.agentId,
+          context: params.context,
+          inputs: params.inputs,
+        }),
+      });
+      const json = await res.json();
+      if (json.error) return { success: false, error: json.error };
+      return { success: true, data: json.data };
+    }
+    case 'advance': {
+      if (!params.instanceId) return { success: false, error: 'instanceId required' };
+      if (params.stepCompleted === undefined) return { success: false, error: 'stepCompleted required' };
+      if (params.outcome === undefined) return { success: false, error: 'outcome required' };
+      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}/instances/${params.instanceId}/step`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          step_completed: params.stepCompleted,
+          outcome: params.outcome,
+          next_agent_id: params.nextAgentId,
+          context_update: params.contextUpdate,
+        }),
+      });
+      const json = await res.json();
+      if (json.error) return { success: false, error: json.error };
+      return { success: true, data: json.data };
+    }
+    case 'instances': {
+      if (!params.workflowId) return { success: false, error: 'workflowId required' };
+      const qs = new URLSearchParams();
+      if (params.status) qs.set('status', params.status);
+      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}/instances?${qs.toString()}`, { headers });
+      const json = await res.json();
+      if (json.error) return { success: false, error: json.error };
+      return { success: true, data: json.data };
+    }
+    default:
+      return { success: false, error: `Unknown action: ${params.action}` };
+  }
 }
