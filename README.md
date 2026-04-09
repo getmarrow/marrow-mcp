@@ -17,7 +17,62 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 ---
 
-## What's New in v2.9.2
+## What's New in v3.0.0
+
+**Active Intelligence — Marrow Now Intervenes Before Mistakes**
+
+### Auto-Warn on Orient
+The `marrow_orient` tool now accepts `autoWarn: true` and warns you BEFORE you start a task that recently failed:
+
+```json
+{
+  "name": "marrow_orient",
+  "arguments": {
+    "autoWarn": true,
+    "task": "Fix authentication error"
+  }
+}
+```
+
+**Response includes warnings:**
+```
+⚠️ HIGH: This task type failed 4x with method='internal'.
+         Try method='apply-patch-first' (89% success rate)
+```
+
+### Loop Detection on Think
+The `marrow_think` tool now accepts `checkLoop: true` and detects if you're about to retry a failed approach:
+
+```json
+{
+  "name": "marrow_think",
+  "arguments": {
+    "action": "Retry auth with method='internal'",
+    "checkLoop": true
+  }
+}
+```
+
+**Response includes loop warnings:**
+```
+🚨 LOOP DETECTED: You're retrying a failed approach.
+   Previous failure: 'internal' method not supported.
+   Suggested: Use method='apply-patch-first' instead.
+```
+
+### Rate Limiting
+- `marrow_orient`: 30 requests/minute per account
+- `marrow_think`: 60 requests/minute per account
+- Automatic 429 responses when limit exceeded
+
+### Enhanced PII Protection
+- Automatic stripping of emails, phone numbers, API keys from all responses
+- Applied to `recentLessons`, `warnings`, and `outcome` fields
+- Deep object stripping for complex data structures
+
+---
+
+## What's New in v2.9.4
 
 **Backend API Enhancements** — New MCP tools for memory lifecycle management:
 
