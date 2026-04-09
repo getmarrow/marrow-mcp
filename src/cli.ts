@@ -18,6 +18,8 @@ import type { ThinkResult, OrientResult, MarrowMemory } from './types';
 const API_KEY = process.env.MARROW_API_KEY || '';
 const BASE_URL = process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai';
 const SESSION_ID = process.env.MARROW_SESSION_ID || undefined;
+const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL === 'true';
+const AGENT_ID = process.env.MARROW_AGENT_ID || `${require('os').hostname()}-${Date.now().toString(36)}`;
 
 if (!API_KEY) {
   process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
@@ -27,6 +29,8 @@ if (!API_KEY) {
 // Auto-orient on startup — cache warnings, inject into EVERY marrow_think response
 let cachedOrientWarnings: Array<{ type: string; failureRate: number; message: string }> = [];
 let thinkCallCount = 0;
+let orientCallCount = 0; // Track if this is first-time orient (for autoEnroll)
+let initialized = false; // Track if initialize() has been called
 
 // Pending decision map for marrow_auto (action hash → decision_id)
 interface PendingDecision {
@@ -93,8 +97,8 @@ async function autoCommitOnClose(): Promise<void> {
         BASE_URL,
         {
           decision_id: lastDecisionId,
-          success: true,
-          outcome: 'Session ended',
+          success: false,
+          outcome: 'Session ended without explicit commit',
         },
         SESSION_ID
       );
@@ -673,31 +677,55 @@ async function handleRequest(req: {
   const { id, method, params } = req;
   try {
     if (method === 'initialize') {
+      initialized = true;
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
         serverInfo: { name: 'marrow', version: '2.8.0' },
       });
+
+      // Auto-enroll: emit enrollment notification on connection
+      if (AUTO_ENROLL) {
+        send({
+          jsonrpc: '2.0',
+          method: 'notifications/message',
+          params: {
+            level: 'info',
+            logger: 'marrow',
+            data: {
+              type: 'auto_enroll',
+              message: 'Marrow auto-enroll active. Call marrow_orient FIRST, then marrow_think before acting, marrow_commit after. Or use marrow_auto / marrow_run for one-call logging.',
+              agentId: AGENT_ID || 'auto',
+            },
+          },
+        });
+      }
       return;
     }
 
     if (method === 'prompts/list') {
-      success(id, {
-        prompts: [
-          {
-            name: 'marrow-always-on',
-            description:
-              'Always-on Marrow memory loop. Instructs the agent to orient at session start, log intent before meaningful actions, and commit outcomes after completion. Install once — works automatically.',
-            arguments: [],
-          },
-        ],
-      });
+      // Auto-enroll: only expose marrow-always-on prompt when MARROW_AUTO_ENROLL is set
+      if (AUTO_ENROLL) {
+        success(id, {
+          prompts: [
+            {
+              name: 'marrow-always-on',
+              description:
+                'Always-on Marrow memory loop. Instructs the agent to orient at session start, log intent before meaningful actions, and commit outcomes after completion. Install once — works automatically.',
+              arguments: [],
+            },
+          ],
+        });
+      } else {
+        success(id, { prompts: [] });
+      }
       return;
     }
 
     if (method === 'prompts/get') {
       const promptName = params?.name;
-      if (promptName !== 'marrow-always-on') {
+      // Auto-enroll gate: only serve marrow-always-on when enabled
+      if (promptName !== 'marrow-always-on' || !AUTO_ENROLL) {
         error(id, -32602, 'Unknown prompt');
         return;
       }
@@ -766,15 +794,38 @@ This is not optional overhead — it's how you stop repeating the same failures.
       const args = (params?.arguments || {}) as Record<string, unknown>;
 
       if (toolName === 'marrow_orient') {
+        orientCallCount++;
         const result = await marrowOrient(
           API_KEY,
           BASE_URL,
           { taskType: args.taskType as string, autoWarn: (args.autoWarn as boolean) ?? true },
           SESSION_ID
         );
-        success(id, {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        });
+
+        // Auto-enroll: on first orient call, prepend enrollment instructions
+        if (AUTO_ENROLL && orientCallCount === 1) {
+          const enrollmentText = `\n\n📋 **Marrow Auto-Enroll Active**\n\n` +
+            `You have Marrow — a collective memory that tells you what went wrong last time before you do it again.\n\n` +
+            `## How it works (2 tools max):\n\n` +
+            `1. **Session start:** Call marrow_orient FIRST. You just did — it surfaces failure warnings.\n` +
+            `2. **Before any action:** Call marrow_think({ action: "..." }) — returns pattern insights + recommendedNext.\n` +
+            `3. **After acting:** Call marrow_commit({ decision_id, success, outcome }) — or pass previous_outcome to auto-commit.\n\n` +
+            `## Quick mode (one tool):\n` +
+            `- marrow_run({ description, success, outcome }) — handles orient → think → commit in one call.\n` +
+            `- marrow_auto({ action, outcome?, success? }) — fire-and-forget background logging.\n\n` +
+            `## Why you must not skip this:\n` +
+            `Every decision you log compounds. Failure rates drop. The next session starts smarter.\n` +
+            `Marrow tells you what went wrong last time — but only if you logged it.\n`;
+
+          const orientText = JSON.stringify(result, null, 2);
+          success(id, {
+            content: [{ type: 'text', text: enrollmentText + orientText }],
+          });
+        } else {
+          success(id, {
+            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          });
+        }
         return;
       }
 
@@ -929,8 +980,10 @@ This is not optional overhead — it's how you stop repeating the same failures.
                 SESSION_ID
               );
             }
-          } catch {
-            // Silently fail - auto is best-effort
+          } catch (err) {
+            // Log to stderr so agent can see it in logs
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[marrow] marrow_auto failed: ${msg}\n`);
           }
         })();
 

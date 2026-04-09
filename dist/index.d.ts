@@ -12,6 +12,7 @@ export declare function marrowThink(apiKey: string, baseUrl: string, params: {
     previous_decision_id?: string;
     previous_success?: boolean;
     previous_outcome?: string;
+    checkLoop?: boolean;
 }, sessionId?: string): Promise<ThinkResult>;
 /**
  * Explicitly commit the result of an action to Marrow.
@@ -31,9 +32,11 @@ export declare function marrowAgentPatterns(apiKey: string, baseUrl: string, par
 }, sessionId?: string): Promise<AgentPatternsResult>;
 /**
  * Get failure warnings from history before acting.
+ * When autoWarn=true, hits the enhanced orient endpoint for active warnings.
  */
 export declare function marrowOrient(apiKey: string, baseUrl: string, params?: {
     taskType?: string;
+    autoWarn?: boolean;
 }, sessionId?: string): Promise<OrientResult>;
 /**
  * Query the collective hive for failure patterns and recommendations.

@@ -35,6 +35,9 @@ async function marrowThink(apiKey, baseUrl, params, sessionId) {
     if (params.context) {
         body.context = params.context;
     }
+    if (params.checkLoop) {
+        body.checkLoop = true;
+    }
     if (params.previous_decision_id) {
         body.previous_decision_id = params.previous_decision_id;
         body.previous_success = params.previous_success ?? true;
@@ -90,8 +93,36 @@ async function marrowAgentPatterns(apiKey, baseUrl, params, sessionId) {
 }
 /**
  * Get failure warnings from history before acting.
+ * When autoWarn=true, hits the enhanced orient endpoint for active warnings.
  */
 async function marrowOrient(apiKey, baseUrl, params, sessionId) {
+    // If autoWarn, hit the new POST endpoint
+    if (params?.autoWarn) {
+        const res = await fetch(`${baseUrl}/v1/agent/orient`, {
+            method: 'POST',
+            headers: buildHeaders(apiKey, sessionId, 'application/json'),
+            body: JSON.stringify({
+                task: params.taskType,
+                autoWarn: true,
+            }),
+        });
+        const json = await res.json();
+        if (json.error)
+            throw new Error(json.error);
+        const warnings = (json.data?.warnings || []).map((w) => ({
+            type: String(w.pattern || ''),
+            failureRate: 0, // computed server-side from failure count
+            message: String(w.message || ''),
+            severity: w.severity,
+        }));
+        return {
+            warnings,
+            serverWarnings: json.data?.warnings || [],
+            loopState: json.data?.loopState || { isOpen: false, lastCommit: null },
+            shouldPause: warnings.some((w) => w.severity === 'HIGH'),
+        };
+    }
+    // Legacy: compute from agent patterns
     const patterns = await marrowAgentPatterns(apiKey, baseUrl, params?.taskType ? { type: params.taskType } : undefined, sessionId);
     const warnings = patterns.failure_patterns
         .filter((p) => p.failure_rate > 0.15)
