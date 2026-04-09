@@ -72,54 +72,6 @@ The `marrow_think` tool now accepts `checkLoop: true` and detects if you're abou
 
 ---
 
-## What's New in v2.9.4
-
-**Backend API Enhancements** — New MCP tools for memory lifecycle management:
-
-### Cross-Agent Memory Sharing
-Share memories across agents in your account:
-- `marrow_share_memory` — Share a memory with specific agents
-- Memories shared with your agents automatically appear in `marrow_list_memories`
-
-### Memory Export/Import
-Backup and restore memories:
-- `marrow_export_memories` — Export to JSON or CSV format
-- `marrow_import_memories` — Import with merge (dedup) or replace mode
-
-### Advanced FTS Filters
-Precision search in `marrow_retrieve_memories`:
-- `from` / `to` — Date range filters
-- `tags` — Filter by tags (AND logic)
-- `source` — Filter by source (e.g., `session_bootstrap`, `think`)
-- `status` — Filter by status (`active`, `outdated`, `deleted`)
-
-### New MCP Tools
-- `marrow_list_memories` — List memories with pagination
-- `marrow_get_memory` — Get single memory by ID
-- `marrow_update_memory` — Update memory text, tags, or metadata
-- `marrow_mark_outdated` — Mark memory as outdated
-- `marrow_supersede_memory` — Atomically replace memory with new version
-- `marrow_delete_memory` — Soft delete memory
-- `marrow_export_memories` — Export to JSON or CSV
-- `marrow_import_memories` — Import memories
-- `marrow_share_memory` — Share with agents
-- `marrow_retrieve_memories` — FTS search with filters
-
-### Security Hardening
-- Account isolation enforced (no cross-account leakage)
-- Agent ID validation on all tools
-- Audit logging for export/import operations
-- Rate limiting on export (5/hour)
-- SHA-256 dedup on import
-
-### Privacy & PII Protection
-- **Automatic PII stripping** — Sensitive data (emails, phone numbers, API keys, tokens) is detected and stripped before storage
-- **Export verification** — Export your data anytime to verify what's stored and confirm PII is stripped
-- **Data ownership** — You own all your data; export and delete anytime
-- **All features free** — No paywalls on security or privacy features
-
----
-
 ## The Problem
 
 Most agents still operate with shallow memory.
