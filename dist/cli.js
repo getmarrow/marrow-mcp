@@ -1033,6 +1033,12 @@ This is not optional overhead — it's how you stop repeating the same failures.
 }
 // MCP stdio loop — raw stdin, no readline (readline writes prompts to stdout which breaks MCP)
 let buffer = '';
+let pendingRequests = 0;
+function checkExit() {
+    if (pendingRequests === 0) {
+        autoCommitOnClose().then(() => process.exit(0));
+    }
+}
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
     buffer += chunk;
@@ -1042,23 +1048,39 @@ process.stdin.on('data', (chunk) => {
         const trimmed = line.trim();
         if (!trimmed)
             continue;
-        handleRequest(JSON.parse(trimmed)).catch((err) => {
+        pendingRequests++;
+        handleRequest(JSON.parse(trimmed))
+            .catch((err) => {
             process.stderr.write(`[marrow] Handler error: ${err}\n`);
+        })
+            .finally(() => {
+            pendingRequests--;
+            checkExit();
         });
     }
 });
-process.stdin.on('end', async () => {
+process.stdin.on('end', () => {
     // Process any remaining buffered line
     if (buffer.trim()) {
         try {
-            await handleRequest(JSON.parse(buffer.trim()));
+            pendingRequests++;
+            handleRequest(JSON.parse(buffer.trim()))
+                .catch((err) => {
+                process.stderr.write(`[marrow] Parse error on remaining: ${err}\n`);
+            })
+                .finally(() => {
+                pendingRequests--;
+                checkExit();
+            });
         }
         catch (err) {
             process.stderr.write(`[marrow] Parse error on remaining: ${err}\n`);
+            checkExit();
         }
     }
-    await autoCommitOnClose();
-    process.exit(0);
+    else {
+        checkExit();
+    }
 });
 process.stdin.on('error', (err) => {
     process.stderr.write(`[marrow] stdin error: ${err}\n`);

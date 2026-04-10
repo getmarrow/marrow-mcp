@@ -120,7 +120,11 @@ That gives agents an actual memory discipline:
 Run it directly with `npx`:
 
 ```bash
-npx @getmarrow/mcp
+# Option 1: Pass API key via CLI flag
+npx @getmarrow/mcp --key mrw_your_api_key
+
+# Option 2: Use environment variable
+MARROW_API_KEY=mrw_your_api_key npx @getmarrow/mcp
 ```
 
 Or register it in your MCP client config.
@@ -206,10 +210,7 @@ Check Marrow platform health and status.
   "mcpServers": {
     "marrow": {
       "command": "npx",
-      "args": ["@getmarrow/mcp"],
-      "env": {
-        "MARROW_API_KEY": "mrw_your_api_key"
-      }
+      "args": ["@getmarrow/mcp", "--key", "mrw_your_api_key"]
     }
   }
 }
@@ -221,7 +222,7 @@ Check Marrow platform health and status.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MARROW_API_KEY` | Yes | Your API key from getmarrow.ai |
+| `MARROW_API_KEY` | No* | Your API key from getmarrow.ai (or use `--key` flag) |
 | `MARROW_BASE_URL` | No | Custom API URL (default: `https://api.getmarrow.ai`) |
 | `MARROW_SESSION_ID` | No | Session identifier for multi-agent setups |
 

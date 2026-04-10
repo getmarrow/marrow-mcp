@@ -235,7 +235,7 @@ export async function marrowStatus(
   baseUrl: string,
   sessionId?: string
 ): Promise<StatusResult> {
-  const res = await fetch(`${baseUrl}/v1/health`, {
+  const res = await fetch(`${baseUrl}/health`, {
     headers: buildHeaders(apiKey, sessionId),
   });
 

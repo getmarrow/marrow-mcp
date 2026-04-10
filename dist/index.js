@@ -156,7 +156,7 @@ async function marrowAsk(apiKey, baseUrl, params, sessionId) {
  * Get API health status.
  */
 async function marrowStatus(apiKey, baseUrl, sessionId) {
-    const res = await fetch(`${baseUrl}/v1/health`, {
+    const res = await fetch(`${baseUrl}/health`, {
         headers: buildHeaders(apiKey, sessionId),
     });
     const json = await res.json();
