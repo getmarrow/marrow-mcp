@@ -3,50 +3,36 @@
 /**
  * Marrow MCP stdio server — collective memory for Claude and MCP agents.
  * Exposes: marrow_orient (call first!), marrow_think, marrow_commit, marrow_status
+ *
+ * Usage:
+ *   npx @getmarrow/mcp                          (reads MARROW_API_KEY from env)
+ *   npx @getmarrow/mcp --key mrw_abc123          (pass key via CLI flag)
+ *   MARROW_API_KEY=mrw_abc123 npx @getmarrow/mcp
  */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const readline = __importStar(require("readline"));
 const index_1 = require("./index");
-const API_KEY = process.env.MARROW_API_KEY || '';
+// Parse CLI args for --key flag
+function parseArgs() {
+    const args = process.argv.slice(2);
+    const result = {};
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--key' && i + 1 < args.length) {
+            result.apiKey = args[i + 1];
+            i++;
+        }
+    }
+    return result;
+}
+const cliArgs = parseArgs();
+const API_KEY = cliArgs.apiKey || process.env.MARROW_API_KEY || '';
 const BASE_URL = process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai';
 const SESSION_ID = process.env.MARROW_SESSION_ID || undefined;
 const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL === 'true';
 const AGENT_ID = process.env.MARROW_AGENT_ID || `${require('os').hostname()}-${Date.now().toString(36)}`;
 if (!API_KEY) {
     process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
+    process.stderr.write('Usage: MARROW_API_KEY=mrw_yourkey npx @getmarrow/mcp\n');
+    process.stderr.write('   or: npx @getmarrow/mcp --key mrw_yourkey\n');
     process.exit(1);
 }
 // Auto-orient on startup — cache warnings, inject into EVERY marrow_think response
@@ -118,9 +104,6 @@ process.on('SIGTERM', async () => {
     forceExit.unref();
     await autoCommitOnClose();
     process.exit(0);
-});
-process.stdin.on('end', async () => {
-    await autoCommitOnClose();
 });
 function send(response) {
     process.stdout.write(JSON.stringify(response) + '\n');
@@ -1048,18 +1031,37 @@ This is not optional overhead — it's how you stop repeating the same failures.
         error(id, -32000, message);
     }
 }
-// MCP stdio loop
-const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
+// MCP stdio loop — raw stdin, no readline (readline writes prompts to stdout which breaks MCP)
+let buffer = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+    buffer += chunk;
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || ''; // keep incomplete line in buffer
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed)
+            continue;
+        handleRequest(JSON.parse(trimmed)).catch((err) => {
+            process.stderr.write(`[marrow] Handler error: ${err}\n`);
+        });
+    }
 });
-rl.on('line', async (line) => {
-    try {
-        const msg = JSON.parse(line);
-        await handleRequest(msg);
+process.stdin.on('end', async () => {
+    // Process any remaining buffered line
+    if (buffer.trim()) {
+        try {
+            await handleRequest(JSON.parse(buffer.trim()));
+        }
+        catch (err) {
+            process.stderr.write(`[marrow] Parse error on remaining: ${err}\n`);
+        }
     }
-    catch (err) {
-        process.stderr.write(`[marrow] Parse error: ${err}\n`);
-    }
+    await autoCommitOnClose();
+    process.exit(0);
+});
+process.stdin.on('error', (err) => {
+    process.stderr.write(`[marrow] stdin error: ${err}\n`);
+    process.exit(1);
 });
 //# sourceMappingURL=cli.js.map

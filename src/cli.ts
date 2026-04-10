@@ -2,9 +2,13 @@
 /**
  * Marrow MCP stdio server — collective memory for Claude and MCP agents.
  * Exposes: marrow_orient (call first!), marrow_think, marrow_commit, marrow_status
+ *
+ * Usage:
+ *   npx @getmarrow/mcp                          (reads MARROW_API_KEY from env)
+ *   npx @getmarrow/mcp --key mrw_abc123          (pass key via CLI flag)
+ *   MARROW_API_KEY=mrw_abc123 npx @getmarrow/mcp
  */
 
-import * as readline from 'readline';
 import {
   marrowThink,
   marrowCommit,
@@ -16,7 +20,21 @@ import {
 } from './index';
 import type { ThinkResult, OrientResult, MarrowMemory } from './types';
 
-const API_KEY = process.env.MARROW_API_KEY || '';
+// Parse CLI args for --key flag
+function parseArgs(): { apiKey?: string } {
+  const args = process.argv.slice(2);
+  const result: { apiKey?: string } = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--key' && i + 1 < args.length) {
+      result.apiKey = args[i + 1];
+      i++;
+    }
+  }
+  return result;
+}
+
+const cliArgs = parseArgs();
+const API_KEY = cliArgs.apiKey || process.env.MARROW_API_KEY || '';
 const BASE_URL = process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai';
 const SESSION_ID = process.env.MARROW_SESSION_ID || undefined;
 const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL === 'true';
@@ -24,6 +42,8 @@ const AGENT_ID = process.env.MARROW_AGENT_ID || `${require('os').hostname()}-${D
 
 if (!API_KEY) {
   process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
+  process.stderr.write('Usage: MARROW_API_KEY=mrw_yourkey npx @getmarrow/mcp\n');
+  process.stderr.write('   or: npx @getmarrow/mcp --key mrw_yourkey\n');
   process.exit(1);
 }
 
@@ -115,10 +135,6 @@ process.on('SIGTERM', async () => {
   forceExit.unref();
   await autoCommitOnClose();
   process.exit(0);
-});
-
-process.stdin.on('end', async () => {
-  await autoCommitOnClose();
 });
 
 function send(response: unknown): void {
@@ -1268,17 +1284,37 @@ This is not optional overhead — it's how you stop repeating the same failures.
   }
 }
 
-// MCP stdio loop
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
+// MCP stdio loop — raw stdin, no readline (readline writes prompts to stdout which breaks MCP)
+let buffer = '';
+
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk: string) => {
+  buffer += chunk;
+  const lines = buffer.split('\n');
+  buffer = lines.pop() || ''; // keep incomplete line in buffer
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    handleRequest(JSON.parse(trimmed)).catch((err) => {
+      process.stderr.write(`[marrow] Handler error: ${err}\n`);
+    });
+  }
 });
 
-rl.on('line', async (line) => {
-  try {
-    const msg = JSON.parse(line);
-    await handleRequest(msg);
-  } catch (err) {
-    process.stderr.write(`[marrow] Parse error: ${err}\n`);
+process.stdin.on('end', async () => {
+  // Process any remaining buffered line
+  if (buffer.trim()) {
+    try {
+      await handleRequest(JSON.parse(buffer.trim()));
+    } catch (err) {
+      process.stderr.write(`[marrow] Parse error on remaining: ${err}\n`);
+    }
   }
+  await autoCommitOnClose();
+  process.exit(0);
+});
+
+process.stdin.on('error', (err) => {
+  process.stderr.write(`[marrow] stdin error: ${err}\n`);
+  process.exit(1);
 });
