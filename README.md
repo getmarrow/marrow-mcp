@@ -42,6 +42,55 @@ This release includes 13 security patches:
 - **Error handling** — all silent catch blocks replaced with proper error logging
 - **HTTP status checking** — API errors now return clear messages instead of cryptic JSON parse failures
 
+### Auto-Warn on Orient
+The `marrow_orient` tool now accepts `autoWarn: true` and warns you BEFORE you start a task that recently failed:
+
+```json
+{
+  "name": "marrow_orient",
+  "arguments": {
+    "autoWarn": true,
+    "task": "Fix authentication error"
+  }
+}
+```
+
+**Response includes warnings:**
+```
+⚠️ HIGH: This task type failed 4x with approach='retry-without-fix'.
+         Try approach='apply-patch-first' (89% success rate)
+```
+
+### Loop Detection on Think
+The `marrow_think` tool now accepts `checkLoop: true` and detects if you're about to retry a failed approach:
+
+```json
+{
+  "name": "marrow_think",
+  "arguments": {
+    "action": "Retry auth with method='internal'",
+    "checkLoop": true
+  }
+}
+```
+
+**Response includes loop warnings:**
+```
+🚨 LOOP DETECTED: You're retrying a failed approach.
+   Previous failure: 'retry-without-fix' approach not supported.
+   Suggested: Use 'apply-patch-first' approach instead.
+```
+
+### Rate Limiting
+- `marrow_orient`: 30 requests/minute per account
+- `marrow_think`: 60 requests/minute per account
+- Automatic 429 responses when limit exceeded
+
+### Enhanced PII Protection
+- Automatic stripping of emails, phone numbers, API keys from all responses
+- Applied to `recentLessons`, `warnings`, and `outcome` fields
+- Deep object stripping for complex data structures
+
 ---
 
 ## The Problem

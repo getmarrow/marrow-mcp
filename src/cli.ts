@@ -794,7 +794,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.0.11' },
+        serverInfo: { name: 'marrow', version: '3.0.12' },
       });
 
       // Auto-enroll: emit enrollment notification on connection
