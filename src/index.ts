@@ -12,6 +12,56 @@ import type {
   WorkflowResult,
 } from './types';
 
+/**
+ * Validate a path parameter to prevent path traversal attacks.
+ * Only allows alphanumeric, hyphens, underscores, and dots.
+ */
+export function validatePathParam(value: string, paramName: string): string {
+  if (!value || typeof value !== 'string') {
+    throw new Error(`${paramName} is required`);
+  }
+  if (!/^[a-zA-Z0-9_.\-]+$/.test(value)) {
+    throw new Error(`${paramName} contains invalid characters`);
+  }
+  if (value.length > 256) {
+    throw new Error(`${paramName} exceeds maximum length`);
+  }
+  return value;
+}
+
+/**
+ * Validate and sanitize a base URL. Requires HTTPS.
+ */
+export function validateBaseUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') {
+      throw new Error('MARROW_BASE_URL must use HTTPS');
+    }
+    return rawUrl.replace(/\/+$/, '');
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('HTTPS')) throw err;
+    throw new Error(`MARROW_BASE_URL is not a valid URL: ${rawUrl}`);
+  }
+}
+
+/**
+ * Check HTTP response status and parse JSON safely.
+ * Throws a descriptive error for non-OK responses.
+ */
+async function safeJsonResponse(res: Response): Promise<any> {
+  if (!res.ok) {
+    let detail = '';
+    try { detail = await res.text(); } catch { /* ignore */ }
+    throw new Error(`API error ${res.status}: ${detail.slice(0, 200)}`);
+  }
+  const json = await res.json();
+  if (json.error) {
+    throw new Error(json.error);
+  }
+  return json;
+}
+
 function buildHeaders(
   apiKey: string,
   sessionId?: string,
@@ -74,11 +124,7 @@ export async function marrowThink(
     body: JSON.stringify(body),
   });
 
-  const json: any = await res.json();
-  if (json.error) {
-    throw new Error(json.error);
-  }
-
+  const json = await safeJsonResponse(res);
   return json.data;
 }
 
@@ -102,11 +148,7 @@ export async function marrowCommit(
     body: JSON.stringify(params),
   });
 
-  const json: any = await res.json();
-  if (json.error) {
-    throw new Error(json.error);
-  }
-
+  const json = await safeJsonResponse(res);
   return json.data;
 }
 
@@ -135,11 +177,7 @@ export async function marrowAgentPatterns(
     headers: buildHeaders(apiKey, sessionId),
   });
 
-  const json: any = await res.json();
-  if (json.error) {
-    throw new Error(json.error);
-  }
-
+  const json = await safeJsonResponse(res);
   return json.data;
 }
 
@@ -164,8 +202,7 @@ export async function marrowOrient(
       }),
     });
 
-    const json: any = await res.json();
-    if (json.error) throw new Error(json.error);
+    const json = await safeJsonResponse(res);
 
     const warnings = (json.data?.warnings || []).map((w: Record<string, unknown>) => ({
       type: String(w.pattern || ''),
@@ -219,11 +256,7 @@ export async function marrowAsk(
     body: JSON.stringify({ query: params.query }),
   });
 
-  const json: any = await res.json();
-  if (json.error) {
-    throw new Error(json.error);
-  }
-
+  const json = await safeJsonResponse(res);
   return json.data;
 }
 
@@ -239,11 +272,7 @@ export async function marrowStatus(
     headers: buildHeaders(apiKey, sessionId),
   });
 
-  const json: any = await res.json();
-  if (json.error) {
-    throw new Error(json.error);
-  }
-
+  const json = await safeJsonResponse(res);
   return json.data;
 }
 
@@ -285,7 +314,7 @@ export async function marrowWorkflow(
           tags: params.tags,
         }),
       });
-      const json = await res.json();
+      const json: any = await res.json();
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
     }
@@ -294,20 +323,22 @@ export async function marrowWorkflow(
       if (params.status) qs.set('status', params.status);
       if (params.tags && params.tags.length > 0) qs.set('tags', params.tags.join(','));
       const res = await fetch(`${baseUrl}/v1/workflows?${qs.toString()}`, { headers });
-      const json = await res.json();
+      const json: any = await res.json();
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
     }
     case 'get': {
       if (!params.workflowId) return { success: false, error: 'workflowId required' };
-      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}`, { headers });
-      const json = await res.json();
+      const safeId = validatePathParam(params.workflowId, 'workflowId');
+      const res = await fetch(`${baseUrl}/v1/workflows/${safeId}`, { headers });
+      const json: any = await res.json();
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
     }
     case 'update': {
       if (!params.workflowId) return { success: false, error: 'workflowId required' };
-      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}`, {
+      const safeId = validatePathParam(params.workflowId, 'workflowId');
+      const res = await fetch(`${baseUrl}/v1/workflows/${safeId}`, {
         method: 'PUT',
         headers,
         body: JSON.stringify({
@@ -317,14 +348,15 @@ export async function marrowWorkflow(
           status: params.status,
         }),
       });
-      const json = await res.json();
+      const json: any = await res.json();
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
     }
     case 'start': {
       if (!params.workflowId) return { success: false, error: 'workflowId required' };
       if (!params.agentId) return { success: false, error: 'agentId required' };
-      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}/start`, {
+      const safeId = validatePathParam(params.workflowId, 'workflowId');
+      const res = await fetch(`${baseUrl}/v1/workflows/${safeId}/start`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -333,15 +365,18 @@ export async function marrowWorkflow(
           inputs: params.inputs,
         }),
       });
-      const json = await res.json();
+      const json: any = await res.json();
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
     }
     case 'advance': {
+      if (!params.workflowId) return { success: false, error: 'workflowId required' };
       if (!params.instanceId) return { success: false, error: 'instanceId required' };
       if (params.stepCompleted === undefined) return { success: false, error: 'stepCompleted required' };
       if (params.outcome === undefined) return { success: false, error: 'outcome required' };
-      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}/instances/${params.instanceId}/step`, {
+      const safeWorkflowId = validatePathParam(params.workflowId, 'workflowId');
+      const safeInstanceId = validatePathParam(params.instanceId, 'instanceId');
+      const res = await fetch(`${baseUrl}/v1/workflows/${safeWorkflowId}/instances/${safeInstanceId}/step`, {
         method: 'PUT',
         headers,
         body: JSON.stringify({
@@ -351,16 +386,17 @@ export async function marrowWorkflow(
           context_update: params.contextUpdate,
         }),
       });
-      const json = await res.json();
+      const json: any = await res.json();
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
     }
     case 'instances': {
       if (!params.workflowId) return { success: false, error: 'workflowId required' };
+      const safeId = validatePathParam(params.workflowId, 'workflowId');
       const qs = new URLSearchParams();
       if (params.status) qs.set('status', params.status);
-      const res = await fetch(`${baseUrl}/v1/workflows/${params.workflowId}/instances?${qs.toString()}`, { headers });
-      const json = await res.json();
+      const res = await fetch(`${baseUrl}/v1/workflows/${safeId}/instances?${qs.toString()}`, { headers });
+      const json: any = await res.json();
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
     }

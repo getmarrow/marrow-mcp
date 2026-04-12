@@ -17,6 +17,33 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 ---
 
+## What's New in v3.0.9
+
+### Claude Code Compatibility
+Marrow MCP now works natively with Claude Code. Previous versions had a server lifecycle bug that caused the MCP server to exit before Claude Code could complete the handshake. This is fixed — the server stays alive as a long-running process and handles the full MCP protocol correctly.
+
+### One-Command Agent Setup
+New `setup` command that injects Marrow instructions directly into your project's `CLAUDE.md`:
+
+```bash
+npx @getmarrow/mcp setup
+```
+
+After setup, your agent uses Marrow automatically every session — no human prompting required. The instructions tell the agent to orient at session start, log intent before meaningful actions, and commit outcomes when done.
+
+### Auto-Enroll by Default
+The `marrow-always-on` prompt is now served to all MCP clients automatically. Previously this required setting `MARROW_AUTO_ENROLL=true`. Now it's on by default — set `MARROW_AUTO_ENROLL=false` to opt out.
+
+### Security Hardening
+This release includes 13 security patches:
+- **Input validation** — all URL path parameters are now sanitized to prevent path traversal
+- **SSRF protection** — `MARROW_BASE_URL` is validated and must use HTTPS
+- **Crash protection** — malformed JSON on stdin no longer kills the server
+- **Error handling** — all silent catch blocks replaced with proper error logging
+- **HTTP status checking** — API errors now return clear messages instead of cryptic JSON parse failures
+
+---
+
 ## What's New in v3.0.0
 
 **Active Intelligence — Marrow Now Intervenes Before Mistakes**
@@ -113,9 +140,25 @@ That gives agents an actual memory discipline:
 - **check** → inspect whether the loop is still open or missing something
 - **commit** → log the outcome and close the loop
 
+The value compounds with use. Each decision your agent logs makes the hive smarter — failure rates drop, patterns emerge, and the next session starts with real intelligence instead of a blank slate. Teams running multiple agents see this compound fastest, but even a single agent builds meaningful history within a few sessions.
+
 ---
 
 ## Install
+
+### Quick Start (Claude Code)
+
+```bash
+# 1. Add the MCP server
+claude mcp add marrow -e MARROW_API_KEY=mrw_your_api_key -- npx @getmarrow/mcp
+
+# 2. Set up auto-enrollment (agent uses Marrow automatically)
+npx @getmarrow/mcp setup
+```
+
+That's it. Your agent will use Marrow automatically in every session.
+
+### Manual Setup
 
 Run it directly with `npx`:
 
@@ -203,6 +246,12 @@ Check Marrow platform health and status.
 
 ---
 
+## Claude Code Config
+
+```bash
+claude mcp add marrow -e MARROW_API_KEY=mrw_your_api_key -- npx @getmarrow/mcp
+```
+
 ## Claude Desktop Config
 
 ```json
@@ -222,17 +271,18 @@ Check Marrow platform health and status.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MARROW_API_KEY` | No* | Your API key from getmarrow.ai (or use `--key` flag) |
-| `MARROW_BASE_URL` | No | Custom API URL (default: `https://api.getmarrow.ai`) |
+| `MARROW_API_KEY` | Yes | Your API key from getmarrow.ai (or use `--key` flag) |
+| `MARROW_BASE_URL` | No | Custom API URL (default: `https://api.getmarrow.ai`). Must use HTTPS. |
 | `MARROW_SESSION_ID` | No | Session identifier for multi-agent setups |
+| `MARROW_AUTO_ENROLL` | No | Auto-enrollment prompt (default: `true`). Set to `false` to disable. |
 
 ---
 
 ## The Always-On Prompt
 
-Marrow includes a built-in prompt called `marrow-always-on` that instructs agents to use Marrow automatically. Install it once and it works for every session.
+Marrow includes a built-in prompt called `marrow-always-on` that instructs agents to use Marrow automatically. It's served by default — no configuration needed.
 
-**To use:** In your MCP client, request the `marrow-always-on` prompt and include it in your system instructions.
+**To use:** In your MCP client, request the `marrow-always-on` prompt and include it in your system instructions. For Claude Code, run `npx @getmarrow/mcp setup` instead — it handles this automatically.
 
 ---
 

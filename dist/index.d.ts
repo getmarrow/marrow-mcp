@@ -3,6 +3,15 @@
  */
 import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult } from './types';
 /**
+ * Validate a path parameter to prevent path traversal attacks.
+ * Only allows alphanumeric, hyphens, underscores, and dots.
+ */
+export declare function validatePathParam(value: string, paramName: string): string;
+/**
+ * Validate and sanitize a base URL. Requires HTTPS.
+ */
+export declare function validateBaseUrl(rawUrl: string): string;
+/**
  * Log intent and get collective intelligence before acting.
  */
 export declare function marrowThink(apiKey: string, baseUrl: string, params: {

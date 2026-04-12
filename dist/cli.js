@@ -11,7 +11,7 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const index_1 = require("./index");
-// Parse CLI args for --key flag
+// Parse CLI args
 function parseArgs() {
     const args = process.argv.slice(2);
     const result = {};
@@ -20,14 +20,85 @@ function parseArgs() {
             result.apiKey = args[i + 1];
             i++;
         }
+        if (args[i] === 'setup' || args[i] === '--setup') {
+            result.setup = true;
+        }
     }
     return result;
 }
+// ─── Setup command: inject Marrow instructions into CLAUDE.md ───
+function runSetup() {
+    const fs = require('fs');
+    const path = require('path');
+    const MARROW_BLOCK_START = '<!-- marrow:start -->';
+    const MARROW_BLOCK_END = '<!-- marrow:end -->';
+    const marrowInstructions = `${MARROW_BLOCK_START}
+## Marrow — Decision Memory (auto-injected by @getmarrow/mcp setup)
+
+You have Marrow MCP connected. Use it on EVERY session automatically:
+
+1. **Session start:** Call \`marrow_orient\` FIRST before any work. It warns you about past failures.
+2. **Before meaningful actions:** Call \`marrow_auto({ action: "what you're about to do" })\` — deploys, file changes, config changes, publishes.
+3. **After actions:** Call \`marrow_auto({ action: "what you did", outcome: "what happened", success: true/false })\`.
+4. **To query history:** Call \`marrow_ask("plain english question")\` — ask what failed, what worked, what to avoid.
+
+Do NOT skip logging. Every decision you log compounds — failure rates drop, patterns emerge, the next session starts smarter. This is not optional overhead.
+
+For one-shot logging: \`marrow_auto({ action: "did X", outcome: "result Y", success: true })\` — one call, done.
+${MARROW_BLOCK_END}`;
+    // Find CLAUDE.md — check current dir, then walk up
+    let dir = process.cwd();
+    let claudeMdPath = null;
+    for (let i = 0; i < 5; i++) {
+        const candidate = path.join(dir, 'CLAUDE.md');
+        if (fs.existsSync(candidate)) {
+            claudeMdPath = candidate;
+            break;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir)
+            break;
+        dir = parent;
+    }
+    if (!claudeMdPath) {
+        claudeMdPath = path.join(process.cwd(), 'CLAUDE.md');
+        process.stdout.write(`Creating ${claudeMdPath}\n`);
+    }
+    let content = '';
+    if (fs.existsSync(claudeMdPath)) {
+        content = fs.readFileSync(claudeMdPath, 'utf8');
+        // Check if already present
+        if (content.includes(MARROW_BLOCK_START)) {
+            // Replace existing block
+            const startIdx = content.indexOf(MARROW_BLOCK_START);
+            const endIdx = content.indexOf(MARROW_BLOCK_END);
+            if (endIdx > startIdx) {
+                content = content.slice(0, startIdx) + marrowInstructions + content.slice(endIdx + MARROW_BLOCK_END.length);
+                fs.writeFileSync(claudeMdPath, content);
+                process.stdout.write(`Updated Marrow instructions in ${claudeMdPath}\n`);
+                process.exit(0);
+                return;
+            }
+        }
+    }
+    // Append
+    const separator = content.length > 0 && !content.endsWith('\n') ? '\n\n' : content.length > 0 ? '\n' : '';
+    fs.writeFileSync(claudeMdPath, content + separator + marrowInstructions + '\n');
+    process.stdout.write(`Added Marrow instructions to ${claudeMdPath}\n`);
+    process.stdout.write(`Your agent will now use Marrow automatically in every session.\n`);
+    process.exit(0);
+}
 const cliArgs = parseArgs();
+// Handle setup command before anything else
+if (cliArgs.setup) {
+    runSetup();
+}
 const API_KEY = cliArgs.apiKey || process.env.MARROW_API_KEY || '';
-const BASE_URL = process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai';
+// [SECURITY #3] Validate BASE_URL — require HTTPS to prevent SSRF / credential leakage
+const rawBaseUrl = process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai';
+const BASE_URL = (0, index_1.validateBaseUrl)(rawBaseUrl);
 const SESSION_ID = process.env.MARROW_SESSION_ID || undefined;
-const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL === 'true';
+const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
 const AGENT_ID = process.env.MARROW_AGENT_ID || `${require('os').hostname()}-${Date.now().toString(36)}`;
 if (!API_KEY) {
     process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
@@ -35,16 +106,19 @@ if (!API_KEY) {
     process.stderr.write('   or: npx @getmarrow/mcp --key mrw_yourkey\n');
     process.exit(1);
 }
+// [SECURITY #12] Warn if API key is visible in process args
+if (cliArgs.apiKey) {
+    process.stderr.write('[marrow] Warning: --key flag exposes API key in process list. Use MARROW_API_KEY env var for production.\n');
+}
 // Auto-orient on startup — cache warnings, inject into EVERY marrow_think response
 let cachedOrientWarnings = [];
 let thinkCallCount = 0;
-let orientCallCount = 0; // Track if this is first-time orient (for autoEnroll)
-let initialized = false; // Track if initialize() has been called
+let orientCallCount = 0;
+let initialized = false;
 const pendingDecisions = new Map();
 const PENDING_TTL_MS = 30 * 60 * 1000; // 30 min TTL
 function actionHash(action) {
     const normalized = action.toLowerCase().trim().replace(/\s+/g, ' ');
-    // djb2 hash to prevent decision_id mismatches from normalization-only collisions
     let h = 5381;
     for (let i = 0; i < normalized.length; i++) {
         h = ((h << 5) + h) ^ normalized.charCodeAt(i);
@@ -52,6 +126,7 @@ function actionHash(action) {
     }
     return h.toString(36) + '_' + normalized.slice(0, 32);
 }
+// [FIX #11] Actually call cleanupPending to prevent unbounded map growth
 function cleanupPending() {
     const now = Date.now();
     for (const [key, val] of pendingDecisions) {
@@ -64,13 +139,15 @@ function formatWarningActionably(w) {
     const pct = Math.round(w.failureRate * 100);
     return `⚠️ ${w.type} has ${pct}% failure rate — check what went wrong last time before proceeding`;
 }
+// [FIX #4] Log orient refresh failures instead of silently ignoring
 async function refreshOrientWarnings() {
     try {
         const r = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID);
         cachedOrientWarnings = r.warnings;
     }
-    catch {
-        // ignore
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[marrow] Warning: failed to refresh orient warnings: ${msg}\n`);
     }
 }
 // Initial orient
@@ -82,29 +159,31 @@ refreshOrientWarnings().then(() => {
 // Auto-commit tracking for session close
 let lastDecisionId = null;
 let lastCommitted = false;
+// [FIX #5] Log auto-commit failures instead of silently ignoring; remove broken AbortController
 async function autoCommitOnClose() {
     if (lastDecisionId && !lastCommitted) {
         try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 3000);
             await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
                 decision_id: lastDecisionId,
                 success: false,
                 outcome: 'Session ended without explicit commit',
             }, SESSION_ID);
-            clearTimeout(timeout);
         }
-        catch {
-            // ignore
+        catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[marrow] Warning: auto-commit on close failed: ${msg}\n`);
         }
     }
 }
-process.on('SIGTERM', async () => {
+// [FIX #10] Handle both SIGTERM and SIGINT for clean shutdown
+async function gracefulShutdown() {
     const forceExit = setTimeout(() => process.exit(0), 5000);
     forceExit.unref();
     await autoCommitOnClose();
     process.exit(0);
-});
+}
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 function send(response) {
     process.stdout.write(JSON.stringify(response) + '\n');
 }
@@ -114,7 +193,31 @@ function success(id, result) {
 function error(id, code, message) {
     send({ jsonrpc: '2.0', id, error: { code, message } });
 }
-// Memory API functions
+// [FIX #9] Runtime validation helper for required string params
+function requireString(args, name) {
+    const val = args[name];
+    if (typeof val !== 'string' || !val.trim()) {
+        throw new Error(`"${name}" is required and must be a non-empty string`);
+    }
+    return val;
+}
+// [FIX #6 & #7] Safe JSON response helper for memory API functions
+async function safeMemoryResponse(res) {
+    if (!res.ok) {
+        let detail = '';
+        try {
+            detail = await res.text();
+        }
+        catch { /* ignore */ }
+        throw new Error(`API error ${res.status}: ${detail.slice(0, 200)}`);
+    }
+    const json = await res.json();
+    if (json.error) {
+        throw new Error(json.error);
+    }
+    return json;
+}
+// Memory API functions — all patched with safeMemoryResponse and validatePathParam
 async function marrowListMemories(apiKey, baseUrl, params, sessionId) {
     const qs = new URLSearchParams();
     if (params?.status)
@@ -131,21 +234,23 @@ async function marrowListMemories(apiKey, baseUrl, params, sessionId) {
             ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
         },
     });
-    const json = await res.json();
+    const json = await safeMemoryResponse(res);
     return json.data?.memories || [];
 }
 async function marrowGetMemory(apiKey, baseUrl, id, sessionId) {
-    const res = await fetch(`${baseUrl}/v1/memories/${id}`, {
+    const safeId = (0, index_1.validatePathParam)(id, 'id');
+    const res = await fetch(`${baseUrl}/v1/memories/${safeId}`, {
         headers: {
             Authorization: `Bearer ${apiKey}`,
             ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
         },
     });
-    const json = await res.json();
+    const json = await safeMemoryResponse(res);
     return json.data?.memory || null;
 }
 async function marrowUpdateMemory(apiKey, baseUrl, id, patch, sessionId) {
-    const res = await fetch(`${baseUrl}/v1/memories/${id}`, {
+    const safeId = (0, index_1.validatePathParam)(id, 'id');
+    const res = await fetch(`${baseUrl}/v1/memories/${safeId}`, {
         method: 'PATCH',
         headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -154,11 +259,12 @@ async function marrowUpdateMemory(apiKey, baseUrl, id, patch, sessionId) {
         },
         body: JSON.stringify(patch),
     });
-    const json = await res.json();
-    return json.data.memory;
+    const json = await safeMemoryResponse(res);
+    return json.data?.memory;
 }
 async function marrowDeleteMemory(apiKey, baseUrl, id, meta, sessionId) {
-    const res = await fetch(`${baseUrl}/v1/memories/${id}`, {
+    const safeId = (0, index_1.validatePathParam)(id, 'id');
+    const res = await fetch(`${baseUrl}/v1/memories/${safeId}`, {
         method: 'DELETE',
         headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -167,11 +273,12 @@ async function marrowDeleteMemory(apiKey, baseUrl, id, meta, sessionId) {
         },
         body: JSON.stringify(meta || {}),
     });
-    const json = await res.json();
-    return json.data.memory;
+    const json = await safeMemoryResponse(res);
+    return json.data?.memory;
 }
 async function marrowMarkOutdated(apiKey, baseUrl, id, meta, sessionId) {
-    const res = await fetch(`${baseUrl}/v1/memories/${id}/outdated`, {
+    const safeId = (0, index_1.validatePathParam)(id, 'id');
+    const res = await fetch(`${baseUrl}/v1/memories/${safeId}/outdated`, {
         method: 'POST',
         headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -180,11 +287,12 @@ async function marrowMarkOutdated(apiKey, baseUrl, id, meta, sessionId) {
         },
         body: JSON.stringify(meta || {}),
     });
-    const json = await res.json();
-    return json.data.memory;
+    const json = await safeMemoryResponse(res);
+    return json.data?.memory;
 }
 async function marrowSupersedeMemory(apiKey, baseUrl, id, replacement, sessionId) {
-    const res = await fetch(`${baseUrl}/v1/memories/${id}/supersede`, {
+    const safeId = (0, index_1.validatePathParam)(id, 'id');
+    const res = await fetch(`${baseUrl}/v1/memories/${safeId}/supersede`, {
         method: 'POST',
         headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -193,11 +301,12 @@ async function marrowSupersedeMemory(apiKey, baseUrl, id, replacement, sessionId
         },
         body: JSON.stringify(replacement),
     });
-    const json = await res.json();
+    const json = await safeMemoryResponse(res);
     return json.data;
 }
 async function marrowShareMemory(apiKey, baseUrl, id, agentIds, actor, sessionId) {
-    const res = await fetch(`${baseUrl}/v1/memories/${id}/share`, {
+    const safeId = (0, index_1.validatePathParam)(id, 'id');
+    const res = await fetch(`${baseUrl}/v1/memories/${safeId}/share`, {
         method: 'POST',
         headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -206,8 +315,8 @@ async function marrowShareMemory(apiKey, baseUrl, id, agentIds, actor, sessionId
         },
         body: JSON.stringify({ agent_ids: agentIds, actor }),
     });
-    const json = await res.json();
-    return json.data.memory;
+    const json = await safeMemoryResponse(res);
+    return json.data?.memory;
 }
 async function marrowExportMemories(apiKey, baseUrl, params, sessionId) {
     const qs = new URLSearchParams();
@@ -223,7 +332,7 @@ async function marrowExportMemories(apiKey, baseUrl, params, sessionId) {
             ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
         },
     });
-    const json = await res.json();
+    const json = await safeMemoryResponse(res);
     return json.data;
 }
 async function marrowImportMemories(apiKey, baseUrl, memories, mode, sessionId) {
@@ -236,7 +345,7 @@ async function marrowImportMemories(apiKey, baseUrl, memories, mode, sessionId) 
         },
         body: JSON.stringify({ memories, mode }),
     });
-    const json = await res.json();
+    const json = await safeMemoryResponse(res);
     return json.data;
 }
 async function marrowRetrieveMemories(apiKey, baseUrl, query, params, sessionId) {
@@ -262,10 +371,10 @@ async function marrowRetrieveMemories(apiKey, baseUrl, query, params, sessionId)
             ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
         },
     });
-    const json = await res.json();
+    const json = await safeMemoryResponse(res);
     return json.data;
 }
-// Tool definitions
+// Tool definitions (unchanged)
 const TOOLS = [
     {
         name: 'marrow_orient',
@@ -298,35 +407,17 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                action: {
-                    type: 'string',
-                    description: 'What the agent is about to do',
-                },
+                action: { type: 'string', description: 'What the agent is about to do' },
                 type: {
                     type: 'string',
                     enum: ['implementation', 'security', 'architecture', 'process', 'general'],
                     description: 'Type of action (default: general)',
                 },
-                context: {
-                    type: 'object',
-                    description: 'Optional metadata about the current situation',
-                },
-                previous_decision_id: {
-                    type: 'string',
-                    description: 'decision_id from previous think() call — auto-commits that session',
-                },
-                previous_success: {
-                    type: 'boolean',
-                    description: 'Did the previous action succeed?',
-                },
-                previous_outcome: {
-                    type: 'string',
-                    description: 'What happened in the previous action (required if previous_decision_id provided)',
-                },
-                checkLoop: {
-                    type: 'boolean',
-                    description: 'Enable loop detection: warns if you are about to retry a failed approach. Recommended: true.',
-                },
+                context: { type: 'object', description: 'Optional metadata about the current situation' },
+                previous_decision_id: { type: 'string', description: 'decision_id from previous think() call — auto-commits that session' },
+                previous_success: { type: 'boolean', description: 'Did the previous action succeed?' },
+                previous_outcome: { type: 'string', description: 'What happened in the previous action (required if previous_decision_id provided)' },
+                checkLoop: { type: 'boolean', description: 'Enable loop detection: warns if you are about to retry a failed approach. Recommended: true.' },
             },
             required: ['action'],
         },
@@ -339,22 +430,10 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                decision_id: {
-                    type: 'string',
-                    description: 'decision_id from the marrow_think call',
-                },
-                success: {
-                    type: 'boolean',
-                    description: 'Did the action succeed?',
-                },
-                outcome: {
-                    type: 'string',
-                    description: 'What happened — be specific, this trains the hive',
-                },
-                caused_by: {
-                    type: 'string',
-                    description: 'Optional: what caused this action',
-                },
+                decision_id: { type: 'string', description: 'decision_id from the marrow_think call' },
+                success: { type: 'boolean', description: 'Did the action succeed?' },
+                outcome: { type: 'string', description: 'What happened — be specific, this trains the hive' },
+                caused_by: { type: 'string', description: 'Optional: what caused this action' },
             },
             required: ['decision_id', 'success', 'outcome'],
         },
@@ -366,18 +445,9 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                description: {
-                    type: 'string',
-                    description: 'What the agent did',
-                },
-                success: {
-                    type: 'boolean',
-                    description: 'Whether it succeeded',
-                },
-                outcome: {
-                    type: 'string',
-                    description: 'One-line summary of what happened',
-                },
+                description: { type: 'string', description: 'What the agent did' },
+                success: { type: 'boolean', description: 'Whether it succeeded' },
+                outcome: { type: 'string', description: 'One-line summary of what happened' },
                 type: {
                     type: 'string',
                     enum: ['implementation', 'security', 'architecture', 'process', 'general'],
@@ -396,18 +466,9 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                action: {
-                    type: 'string',
-                    description: 'What you are about to do or just did',
-                },
-                outcome: {
-                    type: 'string',
-                    description: 'What happened (if already done). Omit to log intent only.',
-                },
-                success: {
-                    type: 'boolean',
-                    description: 'Did it succeed (default: true)',
-                },
+                action: { type: 'string', description: 'What you are about to do or just did' },
+                outcome: { type: 'string', description: 'What happened (if already done). Omit to log intent only.' },
+                success: { type: 'boolean', description: 'Did it succeed (default: true)' },
                 type: {
                     type: 'string',
                     enum: ['implementation', 'security', 'architecture', 'process', 'general'],
@@ -425,10 +486,7 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                query: {
-                    type: 'string',
-                    description: 'Plain English question about your decision history',
-                },
+                query: { type: 'string', description: 'Plain English question about your decision history' },
             },
             required: ['query'],
         },
@@ -436,11 +494,7 @@ const TOOLS = [
     {
         name: 'marrow_status',
         description: 'Check Marrow platform health and status.',
-        inputSchema: {
-            type: 'object',
-            properties: {},
-            required: [],
-        },
+        inputSchema: { type: 'object', properties: {}, required: [] },
     },
     {
         name: 'marrow_list_memories',
@@ -459,13 +513,7 @@ const TOOLS = [
     {
         name: 'marrow_get_memory',
         description: 'Get a single memory by ID.',
-        inputSchema: {
-            type: 'object',
-            properties: {
-                id: { type: 'string', description: 'Memory ID' },
-            },
-            required: ['id'],
-        },
+        inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Memory ID' } }, required: ['id'] },
     },
     {
         name: 'marrow_update_memory',
@@ -589,29 +637,12 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                action: {
-                    type: 'string',
-                    enum: ['register', 'list', 'get', 'update', 'start', 'advance', 'instances'],
-                    description: 'Workflow action to perform',
-                },
+                action: { type: 'string', enum: ['register', 'list', 'get', 'update', 'start', 'advance', 'instances'], description: 'Workflow action to perform' },
                 workflowId: { type: 'string', description: 'Workflow ID (required for get/start/advance/instances)' },
                 instanceId: { type: 'string', description: 'Instance ID (required for advance)' },
                 name: { type: 'string', description: 'Workflow name (for register)' },
                 description: { type: 'string', description: 'Workflow description (for register/update)' },
-                steps: {
-                    type: 'array',
-                    description: 'Step definitions (for register)',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            step: { type: 'number', description: 'Step order (1, 2, 3...)' },
-                            agent_role: { type: 'string', description: 'Expected agent role (e.g., "builder", "auditor")' },
-                            action_type: { type: 'string', description: 'Action type (e.g., "build", "audit", "patch")' },
-                            description: { type: 'string', description: 'Step description' },
-                        },
-                        required: ['step', 'description'],
-                    },
-                },
+                steps: { type: 'array', description: 'Step definitions (for register)', items: { type: 'object', properties: { step: { type: 'number', description: 'Step order (1, 2, 3...)' }, agent_role: { type: 'string', description: 'Expected agent role (e.g., "builder", "auditor")' }, action_type: { type: 'string', description: 'Action type (e.g., "build", "audit", "patch")' }, description: { type: 'string', description: 'Step description' } }, required: ['step', 'description'] } },
                 tags: { type: 'array', items: { type: 'string' }, description: 'Tags (for register)' },
                 agentId: { type: 'string', description: 'Agent ID starting the workflow (for start)' },
                 context: { type: 'object', description: 'Workflow context (for start)' },
@@ -629,13 +660,18 @@ const TOOLS = [
 // Request handler
 async function handleRequest(req) {
     const { id, method, params } = req;
+    // [FIX #15] Enforce initialize-first per MCP spec
+    if (!initialized && method !== 'initialize') {
+        error(id, -32002, 'Server not initialized. Send initialize first.');
+        return;
+    }
     try {
         if (method === 'initialize') {
             initialized = true;
             success(id, {
                 protocolVersion: '2024-11-05',
                 capabilities: { tools: {}, prompts: {} },
-                serverInfo: { name: 'marrow', version: '2.8.0' },
+                serverInfo: { name: 'marrow', version: '3.0.10' },
             });
             // Auto-enroll: emit enrollment notification on connection
             if (AUTO_ENROLL) {
@@ -656,7 +692,6 @@ async function handleRequest(req) {
             return;
         }
         if (method === 'prompts/list') {
-            // Auto-enroll: only expose marrow-always-on prompt when MARROW_AUTO_ENROLL is set
             if (AUTO_ENROLL) {
                 success(id, {
                     prompts: [
@@ -675,7 +710,6 @@ async function handleRequest(req) {
         }
         if (method === 'prompts/get') {
             const promptName = params?.name;
-            // Auto-enroll gate: only serve marrow-always-on when enabled
             if (promptName !== 'marrow-always-on' || !AUTO_ENROLL) {
                 error(id, -32602, 'Unknown prompt');
                 return;
@@ -743,8 +777,21 @@ This is not optional overhead — it's how you stop repeating the same failures.
             const args = (params?.arguments || {});
             if (toolName === 'marrow_orient') {
                 orientCallCount++;
-                const result = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType: args.taskType, autoWarn: args.autoWarn ?? true }, SESSION_ID);
-                // Auto-enroll: on first orient call, prepend enrollment instructions
+                let result;
+                const wantAutoWarn = args.autoWarn ?? true;
+                try {
+                    result = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType: args.taskType, autoWarn: wantAutoWarn }, SESSION_ID);
+                }
+                catch (e) {
+                    // autoWarn endpoint may not be deployed yet — fall back to legacy orient
+                    if (wantAutoWarn) {
+                        process.stderr.write(`[marrow] autoWarn orient not available, falling back to legacy\n`);
+                        result = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType: args.taskType, autoWarn: false }, SESSION_ID);
+                    }
+                    else {
+                        throw e;
+                    }
+                }
                 if (AUTO_ENROLL && orientCallCount === 1) {
                     const enrollmentText = `\n\n📋 **Marrow Auto-Enroll Active**\n\n` +
                         `You have Marrow — a collective memory that tells you what went wrong last time before you do it again.\n\n` +
@@ -771,8 +818,10 @@ This is not optional overhead — it's how you stop repeating the same failures.
                 return;
             }
             if (toolName === 'marrow_think') {
+                // [FIX #9] Validate required param
+                const action = requireString(args, 'action');
                 const result = await (0, index_1.marrowThink)(API_KEY, BASE_URL, {
-                    action: args.action,
+                    action,
                     type: args.type,
                     context: args.context,
                     previous_decision_id: args.previous_decision_id,
@@ -799,7 +848,6 @@ This is not optional overhead — it's how you stop repeating the same failures.
                         ...existingInsights,
                     ];
                 }
-                // Track for auto-commit
                 lastDecisionId = result.decision_id;
                 lastCommitted = false;
                 success(id, {
@@ -808,10 +856,16 @@ This is not optional overhead — it's how you stop repeating the same failures.
                 return;
             }
             if (toolName === 'marrow_commit') {
+                // [FIX #9] Validate required params
+                const decision_id = requireString(args, 'decision_id');
+                const outcome = requireString(args, 'outcome');
+                if (typeof args.success !== 'boolean') {
+                    throw new Error('"success" is required and must be a boolean');
+                }
                 const result = await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
-                    decision_id: args.decision_id,
+                    decision_id,
                     success: args.success,
-                    outcome: args.outcome,
+                    outcome,
                     caused_by: args.caused_by,
                 }, SESSION_ID);
                 lastCommitted = true;
@@ -822,61 +876,83 @@ This is not optional overhead — it's how you stop repeating the same failures.
                 return;
             }
             if (toolName === 'marrow_run') {
-                // marrow_run = orient + think + commit in one call
-                await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID);
-                const thinkResult = await (0, index_1.marrowThink)(API_KEY, BASE_URL, {
-                    action: args.description,
+                // [FIX #9] Validate required params
+                const description = requireString(args, 'description');
+                const outcome = requireString(args, 'outcome');
+                // [FIX #16] Handle partial failures — return think result even if commit fails
+                let thinkResult = null;
+                try {
+                    await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID);
+                }
+                catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    process.stderr.write(`[marrow] marrow_run orient failed (continuing): ${msg}\n`);
+                }
+                thinkResult = await (0, index_1.marrowThink)(API_KEY, BASE_URL, {
+                    action: description,
                     type: args.type || 'general',
                 }, SESSION_ID);
-                const commitResult = await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
-                    decision_id: thinkResult.decision_id,
-                    success: args.success ?? true,
-                    outcome: args.outcome,
-                }, SESSION_ID);
+                let commitResult = null;
+                try {
+                    commitResult = await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
+                        decision_id: thinkResult.decision_id,
+                        success: args.success ?? true,
+                        outcome,
+                    }, SESSION_ID);
+                }
+                catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    process.stderr.write(`[marrow] marrow_run commit failed: ${msg}\n`);
+                    success(id, {
+                        content: [{
+                                type: 'text',
+                                text: JSON.stringify({
+                                    think: thinkResult,
+                                    commit: null,
+                                    commit_error: msg,
+                                    decision_id: thinkResult.decision_id,
+                                }, null, 2),
+                            }],
+                    });
+                    return;
+                }
                 success(id, {
-                    content: [
-                        {
+                    content: [{
                             type: 'text',
                             text: JSON.stringify({ think: thinkResult, commit: commitResult }, null, 2),
-                        },
-                    ],
+                        }],
                 });
                 return;
             }
             if (toolName === 'marrow_auto') {
-                // marrow_auto = fire-and-forget background logging
-                // Return immediately with cached orient warnings, API calls happen in background
-                const action = args.action;
+                // [FIX #9] Validate required param
+                const action = requireString(args, 'action');
                 const outcome = args.outcome;
                 const outcomeSuccess = args.success ?? true;
                 const type = args.type || 'general';
-                // Return cached warnings immediately
+                // [FIX #11] Cleanup pending decisions on each auto call
+                cleanupPending();
+                // [FIX #8] Include pending flag so agent knows logging is deferred
                 const response = {
                     action,
                     outcome: outcome || 'pending',
                     warnings: cachedOrientWarnings.map(formatWarningActionably),
+                    logging: 'deferred',
                 };
                 // Fire-and-forget the actual API calls
                 (async () => {
                     try {
                         if (!outcome) {
-                            // Intent only
                             await (0, index_1.marrowThink)(API_KEY, BASE_URL, { action, type }, SESSION_ID);
                         }
                         else {
-                            // Full loop
                             const thinkResult = await (0, index_1.marrowThink)(API_KEY, BASE_URL, { action, type }, SESSION_ID);
-                            await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
-                                decision_id: thinkResult.decision_id,
-                                success: outcomeSuccess,
-                                outcome,
-                            }, SESSION_ID);
+                            await (0, index_1.marrowCommit)(API_KEY, BASE_URL, { decision_id: thinkResult.decision_id, success: outcomeSuccess, outcome }, SESSION_ID);
                         }
                     }
                     catch (err) {
-                        // Log to stderr so agent can see it in logs
                         const msg = err instanceof Error ? err.message : String(err);
-                        process.stderr.write(`[marrow] marrow_auto failed: ${msg}\n`);
+                        process.stderr.write(`[marrow] marrow_auto background logging failed: ${msg}\n`);
                     }
                 })();
                 success(id, {
@@ -885,7 +961,8 @@ This is not optional overhead — it's how you stop repeating the same failures.
                 return;
             }
             if (toolName === 'marrow_ask') {
-                const result = await (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query: args.query }, SESSION_ID);
+                const query = requireString(args, 'query');
+                const result = await (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query }, SESSION_ID);
                 success(id, {
                     content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
                 });
@@ -898,104 +975,63 @@ This is not optional overhead — it's how you stop repeating the same failures.
                 });
                 return;
             }
-            // Memory control tools
+            // Memory control tools — all use requireString for id validation
             if (toolName === 'marrow_list_memories') {
-                const result = await marrowListMemories(API_KEY, BASE_URL, {
-                    status: args.status,
-                    query: args.query,
-                    limit: args.limit,
-                    agentId: args.agentId,
-                }, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                const result = await marrowListMemories(API_KEY, BASE_URL, { status: args.status, query: args.query, limit: args.limit, agentId: args.agentId }, SESSION_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_get_memory') {
-                const result = await marrowGetMemory(API_KEY, BASE_URL, args.id, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                const memId = requireString(args, 'id');
+                const result = await marrowGetMemory(API_KEY, BASE_URL, memId, SESSION_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_update_memory') {
-                const result = await marrowUpdateMemory(API_KEY, BASE_URL, args.id, {
-                    text: args.text,
-                    source: args.source,
-                    tags: args.tags,
-                    actor: args.actor,
-                    note: args.note,
-                }, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                const memId = requireString(args, 'id');
+                const result = await marrowUpdateMemory(API_KEY, BASE_URL, memId, { text: args.text, source: args.source, tags: args.tags, actor: args.actor, note: args.note }, SESSION_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_delete_memory') {
-                const result = await marrowDeleteMemory(API_KEY, BASE_URL, args.id, { actor: args.actor, note: args.note }, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                const memId = requireString(args, 'id');
+                const result = await marrowDeleteMemory(API_KEY, BASE_URL, memId, { actor: args.actor, note: args.note }, SESSION_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_mark_outdated') {
-                const result = await marrowMarkOutdated(API_KEY, BASE_URL, args.id, { actor: args.actor, note: args.note }, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                const memId = requireString(args, 'id');
+                const result = await marrowMarkOutdated(API_KEY, BASE_URL, memId, { actor: args.actor, note: args.note }, SESSION_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_supersede_memory') {
-                const result = await marrowSupersedeMemory(API_KEY, BASE_URL, args.id, {
-                    text: args.text,
-                    source: args.source,
-                    tags: args.tags,
-                    actor: args.actor,
-                    note: args.note,
-                }, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                const memId = requireString(args, 'id');
+                const newText = requireString(args, 'text');
+                const result = await marrowSupersedeMemory(API_KEY, BASE_URL, memId, { text: newText, source: args.source, tags: args.tags, actor: args.actor, note: args.note }, SESSION_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_share_memory') {
-                const result = await marrowShareMemory(API_KEY, BASE_URL, args.id, args.agentIds || [], args.actor, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                const memId = requireString(args, 'id');
+                const result = await marrowShareMemory(API_KEY, BASE_URL, memId, args.agentIds || [], args.actor, SESSION_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_export_memories') {
-                const result = await marrowExportMemories(API_KEY, BASE_URL, {
-                    format: args.format,
-                    status: args.status,
-                    tags: args.tags,
-                }, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                const result = await marrowExportMemories(API_KEY, BASE_URL, { format: args.format, status: args.status, tags: args.tags }, SESSION_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_import_memories') {
                 const result = await marrowImportMemories(API_KEY, BASE_URL, args.memories || [], args.mode || 'merge', SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_retrieve_memories') {
-                const result = await marrowRetrieveMemories(API_KEY, BASE_URL, args.query, {
-                    limit: args.limit,
-                    from: args.from,
-                    to: args.to,
-                    tags: args.tags,
-                    source: args.source,
-                    status: args.status,
-                    shared: args.shared,
-                }, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                const query = requireString(args, 'query');
+                const result = await marrowRetrieveMemories(API_KEY, BASE_URL, query, { limit: args.limit, from: args.from, to: args.to, tags: args.tags, source: args.source, status: args.status, shared: args.shared }, SESSION_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_workflow') {
@@ -1016,9 +1052,7 @@ This is not optional overhead — it's how you stop repeating the same failures.
                     contextUpdate: args.contextUpdate,
                     status: args.status,
                 }, SESSION_ID);
-                success(id, {
-                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                });
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             error(id, -32601, `Method not found: ${toolName}`);
@@ -1034,8 +1068,9 @@ This is not optional overhead — it's how you stop repeating the same failures.
 // MCP stdio loop — raw stdin, no readline (readline writes prompts to stdout which breaks MCP)
 let buffer = '';
 let pendingRequests = 0;
+let stdinEnded = false;
 function checkExit() {
-    if (pendingRequests === 0) {
+    if (stdinEnded && pendingRequests === 0) {
         autoCommitOnClose().then(() => process.exit(0));
     }
 }
@@ -1048,8 +1083,21 @@ process.stdin.on('data', (chunk) => {
         const trimmed = line.trim();
         if (!trimmed)
             continue;
+        // [FIX #1] Wrap JSON.parse in try-catch to prevent crash on malformed input
+        let msg;
+        try {
+            msg = JSON.parse(trimmed);
+        }
+        catch (parseErr) {
+            process.stderr.write(`[marrow] JSON parse error: ${parseErr}\n`);
+            send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
+            continue;
+        }
+        // MCP notifications (no id) must be silently ignored per spec
+        if (msg.id === undefined || msg.id === null)
+            continue;
         pendingRequests++;
-        handleRequest(JSON.parse(trimmed))
+        handleRequest(msg)
             .catch((err) => {
             process.stderr.write(`[marrow] Handler error: ${err}\n`);
         })
@@ -1060,23 +1108,30 @@ process.stdin.on('data', (chunk) => {
     }
 });
 process.stdin.on('end', () => {
-    // Process any remaining buffered line
+    stdinEnded = true;
     if (buffer.trim()) {
+        let msg;
         try {
-            pendingRequests++;
-            handleRequest(JSON.parse(buffer.trim()))
-                .catch((err) => {
-                process.stderr.write(`[marrow] Parse error on remaining: ${err}\n`);
-            })
-                .finally(() => {
-                pendingRequests--;
-                checkExit();
-            });
+            msg = JSON.parse(buffer.trim());
         }
         catch (err) {
-            process.stderr.write(`[marrow] Parse error on remaining: ${err}\n`);
+            process.stderr.write(`[marrow] JSON parse error on remaining buffer: ${err}\n`);
             checkExit();
+            return;
         }
+        if (msg.id === undefined || msg.id === null) {
+            checkExit();
+            return;
+        }
+        pendingRequests++;
+        handleRequest(msg)
+            .catch((err) => {
+            process.stderr.write(`[marrow] Handler error on remaining: ${err}\n`);
+        })
+            .finally(() => {
+            pendingRequests--;
+            checkExit();
+        });
     }
     else {
         checkExit();
