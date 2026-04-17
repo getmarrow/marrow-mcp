@@ -17,30 +17,50 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 ---
 
-## What's New in v3.0.9
+## What's New in v3.1.0
 
-### Claude Code Compatibility
-Marrow MCP now works natively with Claude Code. Previous versions had a server lifecycle bug that caused the MCP server to exit before Claude Code could complete the handshake. This is fixed — the server stays alive as a long-running process and handles the full MCP protocol correctly.
+**Operator visibility + auto-intelligence tools.**
 
-### One-Command Agent Setup
-New `setup` command that injects Marrow instructions directly into your project's `CLAUDE.md`:
+### Four New Tools
+
+- **`marrow_dashboard`** — operator dashboard in one call. Account health, top failures, workflow status, recent activity, Marrow's saves metric.
+- **`marrow_digest`** — periodic summary with success rate trend vs previous period. Optional `period` parameter (default `7d`).
+- **`marrow_session_end`** — explicitly end a session and optionally auto-commit any open decision. Prevents orphaned decisions.
+- **`marrow_accept_detected`** — convert a detected recurring pattern into an enforced workflow. Pattern ID comes from `orient()` response's `suggested_workflows`.
+
+### Enhanced `marrow_think` Response
+`marrow_think` now surfaces three additional fields when the backend provides them:
+- `onboarding_hint` — contextual tip for new accounts
+- `intelligence.collective` — anonymized insights aggregated across all Marrow accounts (k-anonymity ≥5 accounts per insight)
+- `intelligence.team_context` — recent decisions from other sessions in the same account, so multi-agent teams stay aware of each other's work
+
+Your agent should check for and use these fields — they represent collective intelligence and team-level context that wasn't available in prior versions.
+
+---
+
+## Claude Code Compatibility
+
+Marrow MCP works natively with Claude Code. The server runs as a long-running process and handles the full MCP protocol correctly.
+
+## One-Command Agent Setup
+
+Inject Marrow instructions directly into your project's `CLAUDE.md`:
 
 ```bash
 npx @getmarrow/mcp setup
 ```
 
-After setup, your agent uses Marrow automatically every session — no human prompting required. The instructions tell the agent to orient at session start, log intent before meaningful actions, and commit outcomes when done.
+After setup, your agent uses Marrow automatically every session — no human prompting required.
 
-### Auto-Enroll by Default
-The `marrow-always-on` prompt is now served to all MCP clients automatically. Previously this required setting `MARROW_AUTO_ENROLL=true`. Now it's on by default — set `MARROW_AUTO_ENROLL=false` to opt out.
+## Auto-Enroll by Default
+The `marrow-always-on` prompt is served to all MCP clients automatically. Set `MARROW_AUTO_ENROLL=false` to opt out.
 
-### Security Hardening
-This release includes 13 security patches:
-- **Input validation** — all URL path parameters are now sanitized to prevent path traversal
-- **SSRF protection** — `MARROW_BASE_URL` is validated and must use HTTPS
+## Security Hardening
+- **Input validation** — all URL path parameters are sanitized to prevent path traversal
+- **SSRF protection** — `MARROW_BASE_URL` must use HTTPS
 - **Crash protection** — malformed JSON on stdin no longer kills the server
-- **Error handling** — all silent catch blocks replaced with proper error logging
-- **HTTP status checking** — API errors now return clear messages instead of cryptic JSON parse failures
+- **Error handling** — proper error logging throughout
+- **HTTP status checking** — API errors return clear messages
 
 ### Auto-Warn on Orient
 The `marrow_orient` tool now accepts `autoWarn: true` and warns you BEFORE you start a task that recently failed:
