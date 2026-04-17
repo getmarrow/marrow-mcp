@@ -65,7 +65,8 @@ async function safeJsonResponse(res: Response): Promise<any> {
 function buildHeaders(
   apiKey: string,
   sessionId?: string,
-  contentType?: string
+  contentType?: string,
+  agentId?: string
 ): Record<string, string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
@@ -77,6 +78,12 @@ function buildHeaders(
     const safe = sessionId.replace(/[^\x20-\x7E]/g, '').slice(0, 256);
     if (safe) {
       headers['X-Marrow-Session-Id'] = safe;
+    }
+  }
+  if (agentId) {
+    const safe = agentId.replace(/[^\x20-\x7E]/g, '').slice(0, 256);
+    if (safe) {
+      headers['X-Marrow-Agent-Id'] = safe;
     }
   }
   return headers;
@@ -97,7 +104,8 @@ export async function marrowThink(
     previous_outcome?: string;
     checkLoop?: boolean;
   },
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<ThinkResult> {
   const body: Record<string, unknown> = {
     action: params.action,
@@ -120,7 +128,7 @@ export async function marrowThink(
 
   const res = await fetch(`${baseUrl}/v1/agent/think`, {
     method: 'POST',
-    headers: buildHeaders(apiKey, sessionId, 'application/json'),
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(body),
   });
 
@@ -140,11 +148,12 @@ export async function marrowCommit(
     outcome: string;
     caused_by?: string;
   },
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<CommitResult> {
   const res = await fetch(`${baseUrl}/v1/agent/commit`, {
     method: 'POST',
-    headers: buildHeaders(apiKey, sessionId, 'application/json'),
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(params),
   });
 
@@ -159,7 +168,8 @@ export async function marrowAgentPatterns(
   apiKey: string,
   baseUrl: string,
   params?: { type?: string; limit?: number },
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<AgentPatternsResult> {
   const qs = new URLSearchParams();
   if (params?.type) {
@@ -174,7 +184,7 @@ export async function marrowAgentPatterns(
     (qs.toString() ? '?' + qs.toString() : '');
 
   const res = await fetch(url, {
-    headers: buildHeaders(apiKey, sessionId),
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
   });
 
   const json = await safeJsonResponse(res);
@@ -189,13 +199,14 @@ export async function marrowOrient(
   apiKey: string,
   baseUrl: string,
   params?: { taskType?: string; autoWarn?: boolean },
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<OrientResult> {
   // If autoWarn, hit the new POST endpoint
   if (params?.autoWarn) {
     const res = await fetch(`${baseUrl}/v1/agent/orient`, {
       method: 'POST',
-      headers: buildHeaders(apiKey, sessionId, 'application/json'),
+      headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
       body: JSON.stringify({
         task: params.taskType,
         autoWarn: true,
@@ -224,7 +235,8 @@ export async function marrowOrient(
     apiKey,
     baseUrl,
     params?.taskType ? { type: params.taskType } : undefined,
-    sessionId
+    sessionId,
+    agentId
   );
 
   const warnings = patterns.failure_patterns
@@ -248,11 +260,12 @@ export async function marrowAsk(
   apiKey: string,
   baseUrl: string,
   params: { query: string },
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<MarrowAskResult> {
   const res = await fetch(`${baseUrl}/v1/agent/ask`, {
     method: 'POST',
-    headers: buildHeaders(apiKey, sessionId, 'application/json'),
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify({ query: params.query }),
   });
 
@@ -266,10 +279,11 @@ export async function marrowAsk(
 export async function marrowStatus(
   apiKey: string,
   baseUrl: string,
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<StatusResult> {
   const res = await fetch(`${baseUrl}/health`, {
-    headers: buildHeaders(apiKey, sessionId),
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
   });
 
   const json = await safeJsonResponse(res);
@@ -298,9 +312,10 @@ export async function marrowWorkflow(
     contextUpdate?: Record<string, unknown>;
     status?: string;
   },
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<WorkflowResult> {
-  const headers = buildHeaders(apiKey, sessionId, 'application/json');
+  const headers = buildHeaders(apiKey, sessionId, 'application/json', agentId);
 
   switch (params.action) {
     case 'register': {
@@ -413,10 +428,11 @@ export async function marrowWorkflow(
 export async function marrowDashboard(
   apiKey: string,
   baseUrl: string,
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<unknown> {
   const res = await fetch(`${baseUrl}/v1/dashboard`, {
-    headers: buildHeaders(apiKey, sessionId),
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
   });
   const json = await safeJsonResponse(res);
   return json.data;
@@ -429,11 +445,12 @@ export async function marrowDigest(
   apiKey: string,
   baseUrl: string,
   period: string = '7d',
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<unknown> {
   const days = parseInt(period) || 7;
   const res = await fetch(`${baseUrl}/v1/digest?period=${days}`, {
-    headers: buildHeaders(apiKey, sessionId),
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
   });
   const json = await safeJsonResponse(res);
   return json.data;
@@ -446,11 +463,12 @@ export async function marrowSessionEnd(
   apiKey: string,
   baseUrl: string,
   autoCommitOpen: boolean = false,
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<unknown> {
   const res = await fetch(`${baseUrl}/v1/agent/session/end`, {
     method: 'POST',
-    headers: buildHeaders(apiKey, sessionId, 'application/json'),
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify({ auto_commit_open: autoCommitOpen }),
   });
   const json = await safeJsonResponse(res);
@@ -464,12 +482,13 @@ export async function marrowAcceptDetected(
   apiKey: string,
   baseUrl: string,
   detectedId: string,
-  sessionId?: string
+  sessionId?: string,
+  agentId?: string
 ): Promise<unknown> {
   const safeId = validatePathParam(detectedId, 'detectedId');
   const res = await fetch(`${baseUrl}/v1/workflows/accept-detected`, {
     method: 'POST',
-    headers: buildHeaders(apiKey, sessionId, 'application/json'),
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify({ detected_id: safeId }),
   });
   const json = await safeJsonResponse(res);

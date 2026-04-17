@@ -22,7 +22,7 @@ export declare function marrowThink(apiKey: string, baseUrl: string, params: {
     previous_success?: boolean;
     previous_outcome?: string;
     checkLoop?: boolean;
-}, sessionId?: string): Promise<ThinkResult>;
+}, sessionId?: string, agentId?: string): Promise<ThinkResult>;
 /**
  * Explicitly commit the result of an action to Marrow.
  */
@@ -31,14 +31,14 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     success: boolean;
     outcome: string;
     caused_by?: string;
-}, sessionId?: string): Promise<CommitResult>;
+}, sessionId?: string, agentId?: string): Promise<CommitResult>;
 /**
  * Get agent patterns and failure history.
  */
 export declare function marrowAgentPatterns(apiKey: string, baseUrl: string, params?: {
     type?: string;
     limit?: number;
-}, sessionId?: string): Promise<AgentPatternsResult>;
+}, sessionId?: string, agentId?: string): Promise<AgentPatternsResult>;
 /**
  * Get failure warnings from history before acting.
  * When autoWarn=true, hits the enhanced orient endpoint for active warnings.
@@ -46,17 +46,17 @@ export declare function marrowAgentPatterns(apiKey: string, baseUrl: string, par
 export declare function marrowOrient(apiKey: string, baseUrl: string, params?: {
     taskType?: string;
     autoWarn?: boolean;
-}, sessionId?: string): Promise<OrientResult>;
+}, sessionId?: string, agentId?: string): Promise<OrientResult>;
 /**
  * Query the collective hive for failure patterns and recommendations.
  */
 export declare function marrowAsk(apiKey: string, baseUrl: string, params: {
     query: string;
-}, sessionId?: string): Promise<MarrowAskResult>;
+}, sessionId?: string, agentId?: string): Promise<MarrowAskResult>;
 /**
  * Get API health status.
  */
-export declare function marrowStatus(apiKey: string, baseUrl: string, sessionId?: string): Promise<StatusResult>;
+export declare function marrowStatus(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<StatusResult>;
 export declare function marrowWorkflow(apiKey: string, baseUrl: string, params: {
     action: 'register' | 'list' | 'get' | 'update' | 'start' | 'advance' | 'instances';
     workflowId?: string;
@@ -78,21 +78,21 @@ export declare function marrowWorkflow(apiKey: string, baseUrl: string, params: 
     nextAgentId?: string;
     contextUpdate?: Record<string, unknown>;
     status?: string;
-}, sessionId?: string): Promise<WorkflowResult>;
+}, sessionId?: string, agentId?: string): Promise<WorkflowResult>;
 /**
  * Get operator dashboard — account health, top failures, workflow status, saves.
  */
-export declare function marrowDashboard(apiKey: string, baseUrl: string, sessionId?: string): Promise<unknown>;
+export declare function marrowDashboard(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<unknown>;
 /**
  * Get periodic summary of agent activity and Marrow impact.
  */
-export declare function marrowDigest(apiKey: string, baseUrl: string, period?: string, sessionId?: string): Promise<unknown>;
+export declare function marrowDigest(apiKey: string, baseUrl: string, period?: string, sessionId?: string, agentId?: string): Promise<unknown>;
 /**
  * Explicitly end the current session.
  */
-export declare function marrowSessionEnd(apiKey: string, baseUrl: string, autoCommitOpen?: boolean, sessionId?: string): Promise<unknown>;
+export declare function marrowSessionEnd(apiKey: string, baseUrl: string, autoCommitOpen?: boolean, sessionId?: string, agentId?: string): Promise<unknown>;
 /**
  * Convert a detected decision pattern into an enforced workflow.
  */
-export declare function marrowAcceptDetected(apiKey: string, baseUrl: string, detectedId: string, sessionId?: string): Promise<unknown>;
+export declare function marrowAcceptDetected(apiKey: string, baseUrl: string, detectedId: string, sessionId?: string, agentId?: string): Promise<unknown>;
 //# sourceMappingURL=index.d.ts.map

@@ -98,6 +98,7 @@ const API_KEY = cliArgs.apiKey || process.env.MARROW_API_KEY || '';
 const rawBaseUrl = process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai';
 const BASE_URL = (0, index_1.validateBaseUrl)(rawBaseUrl);
 const SESSION_ID = process.env.MARROW_SESSION_ID || undefined;
+const FLEET_AGENT_ID = process.env.MARROW_FLEET_AGENT_ID || undefined; // V5: agent UUID for X-Marrow-Agent-Id header
 const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
 const AGENT_ID = process.env.MARROW_AGENT_ID || `${require('os').hostname()}-${Date.now().toString(36)}`;
 if (!API_KEY) {
@@ -142,7 +143,7 @@ function formatWarningActionably(w) {
 // [FIX #4] Log orient refresh failures instead of silently ignoring
 async function refreshOrientWarnings() {
     try {
-        const r = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID);
+        const r = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID, FLEET_AGENT_ID);
         cachedOrientWarnings = r.warnings;
     }
     catch (err) {
@@ -714,7 +715,7 @@ async function handleRequest(req) {
             success(id, {
                 protocolVersion: '2024-11-05',
                 capabilities: { tools: {}, prompts: {} },
-                serverInfo: { name: 'marrow', version: '3.1.1' },
+                serverInfo: { name: 'marrow', version: '3.1.2' },
             });
             // Auto-enroll: emit enrollment notification on connection
             if (AUTO_ENROLL) {
@@ -925,7 +926,7 @@ This is not optional overhead — it's how you stop repeating the same failures.
                 // [FIX #16] Handle partial failures — return think result even if commit fails
                 let thinkResult = null;
                 try {
-                    await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID);
+                    await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID, FLEET_AGENT_ID);
                 }
                 catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
@@ -986,10 +987,10 @@ This is not optional overhead — it's how you stop repeating the same failures.
                 (async () => {
                     try {
                         if (!outcome) {
-                            await (0, index_1.marrowThink)(API_KEY, BASE_URL, { action, type }, SESSION_ID);
+                            await (0, index_1.marrowThink)(API_KEY, BASE_URL, { action, type }, SESSION_ID, FLEET_AGENT_ID);
                         }
                         else {
-                            const thinkResult = await (0, index_1.marrowThink)(API_KEY, BASE_URL, { action, type }, SESSION_ID);
+                            const thinkResult = await (0, index_1.marrowThink)(API_KEY, BASE_URL, { action, type }, SESSION_ID, FLEET_AGENT_ID);
                             await (0, index_1.marrowCommit)(API_KEY, BASE_URL, { decision_id: thinkResult.decision_id, success: outcomeSuccess, outcome }, SESSION_ID);
                         }
                     }
@@ -1005,14 +1006,14 @@ This is not optional overhead — it's how you stop repeating the same failures.
             }
             if (toolName === 'marrow_ask') {
                 const query = requireString(args, 'query');
-                const result = await (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query }, SESSION_ID);
+                const result = await (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query }, SESSION_ID, FLEET_AGENT_ID);
                 success(id, {
                     content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
                 });
                 return;
             }
             if (toolName === 'marrow_status') {
-                const result = await (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID);
+                const result = await (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
                 success(id, {
                     content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
                 });
@@ -1094,22 +1095,22 @@ This is not optional overhead — it's how you stop repeating the same failures.
                     nextAgentId: args.nextAgentId,
                     contextUpdate: args.contextUpdate,
                     status: args.status,
-                }, SESSION_ID);
+                }, SESSION_ID, FLEET_AGENT_ID);
                 success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_dashboard') {
-                const result = await (0, index_1.marrowDashboard)(API_KEY, BASE_URL, SESSION_ID);
+                const result = await (0, index_1.marrowDashboard)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
                 success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_digest') {
-                const result = await (0, index_1.marrowDigest)(API_KEY, BASE_URL, args.period || '7d', SESSION_ID);
+                const result = await (0, index_1.marrowDigest)(API_KEY, BASE_URL, args.period || '7d', SESSION_ID, FLEET_AGENT_ID);
                 success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
             if (toolName === 'marrow_session_end') {
-                const result = await (0, index_1.marrowSessionEnd)(API_KEY, BASE_URL, Boolean(args.autoCommitOpen), SESSION_ID);
+                const result = await (0, index_1.marrowSessionEnd)(API_KEY, BASE_URL, Boolean(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);
                 success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }
@@ -1119,7 +1120,7 @@ This is not optional overhead — it's how you stop repeating the same failures.
                     error(id, -32602, 'detectedId is required');
                     return;
                 }
-                const result = await (0, index_1.marrowAcceptDetected)(API_KEY, BASE_URL, detectedId, SESSION_ID);
+                const result = await (0, index_1.marrowAcceptDetected)(API_KEY, BASE_URL, detectedId, SESSION_ID, FLEET_AGENT_ID);
                 success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }

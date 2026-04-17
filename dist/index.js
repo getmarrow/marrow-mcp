@@ -68,7 +68,7 @@ async function safeJsonResponse(res) {
     }
     return json;
 }
-function buildHeaders(apiKey, sessionId, contentType) {
+function buildHeaders(apiKey, sessionId, contentType, agentId) {
     const headers = {
         Authorization: `Bearer ${apiKey}`,
     };
@@ -81,12 +81,18 @@ function buildHeaders(apiKey, sessionId, contentType) {
             headers['X-Marrow-Session-Id'] = safe;
         }
     }
+    if (agentId) {
+        const safe = agentId.replace(/[^\x20-\x7E]/g, '').slice(0, 256);
+        if (safe) {
+            headers['X-Marrow-Agent-Id'] = safe;
+        }
+    }
     return headers;
 }
 /**
  * Log intent and get collective intelligence before acting.
  */
-async function marrowThink(apiKey, baseUrl, params, sessionId) {
+async function marrowThink(apiKey, baseUrl, params, sessionId, agentId) {
     const body = {
         action: params.action,
         type: params.type || 'general',
@@ -104,7 +110,7 @@ async function marrowThink(apiKey, baseUrl, params, sessionId) {
     }
     const res = await fetch(`${baseUrl}/v1/agent/think`, {
         method: 'POST',
-        headers: buildHeaders(apiKey, sessionId, 'application/json'),
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
     });
     const json = await safeJsonResponse(res);
@@ -113,10 +119,10 @@ async function marrowThink(apiKey, baseUrl, params, sessionId) {
 /**
  * Explicitly commit the result of an action to Marrow.
  */
-async function marrowCommit(apiKey, baseUrl, params, sessionId) {
+async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
     const res = await fetch(`${baseUrl}/v1/agent/commit`, {
         method: 'POST',
-        headers: buildHeaders(apiKey, sessionId, 'application/json'),
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(params),
     });
     const json = await safeJsonResponse(res);
@@ -125,7 +131,7 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId) {
 /**
  * Get agent patterns and failure history.
  */
-async function marrowAgentPatterns(apiKey, baseUrl, params, sessionId) {
+async function marrowAgentPatterns(apiKey, baseUrl, params, sessionId, agentId) {
     const qs = new URLSearchParams();
     if (params?.type) {
         qs.set('type', params.type);
@@ -136,7 +142,7 @@ async function marrowAgentPatterns(apiKey, baseUrl, params, sessionId) {
     const url = `${baseUrl}/v1/agent/patterns` +
         (qs.toString() ? '?' + qs.toString() : '');
     const res = await fetch(url, {
-        headers: buildHeaders(apiKey, sessionId),
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
     const json = await safeJsonResponse(res);
     return json.data;
@@ -145,12 +151,12 @@ async function marrowAgentPatterns(apiKey, baseUrl, params, sessionId) {
  * Get failure warnings from history before acting.
  * When autoWarn=true, hits the enhanced orient endpoint for active warnings.
  */
-async function marrowOrient(apiKey, baseUrl, params, sessionId) {
+async function marrowOrient(apiKey, baseUrl, params, sessionId, agentId) {
     // If autoWarn, hit the new POST endpoint
     if (params?.autoWarn) {
         const res = await fetch(`${baseUrl}/v1/agent/orient`, {
             method: 'POST',
-            headers: buildHeaders(apiKey, sessionId, 'application/json'),
+            headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
             body: JSON.stringify({
                 task: params.taskType,
                 autoWarn: true,
@@ -171,7 +177,7 @@ async function marrowOrient(apiKey, baseUrl, params, sessionId) {
         };
     }
     // Legacy: compute from agent patterns
-    const patterns = await marrowAgentPatterns(apiKey, baseUrl, params?.taskType ? { type: params.taskType } : undefined, sessionId);
+    const patterns = await marrowAgentPatterns(apiKey, baseUrl, params?.taskType ? { type: params.taskType } : undefined, sessionId, agentId);
     const warnings = patterns.failure_patterns
         .filter((p) => p.failure_rate > 0.15)
         .map((p) => ({
@@ -187,10 +193,10 @@ async function marrowOrient(apiKey, baseUrl, params, sessionId) {
 /**
  * Query the collective hive for failure patterns and recommendations.
  */
-async function marrowAsk(apiKey, baseUrl, params, sessionId) {
+async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId) {
     const res = await fetch(`${baseUrl}/v1/agent/ask`, {
         method: 'POST',
-        headers: buildHeaders(apiKey, sessionId, 'application/json'),
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({ query: params.query }),
     });
     const json = await safeJsonResponse(res);
@@ -199,16 +205,16 @@ async function marrowAsk(apiKey, baseUrl, params, sessionId) {
 /**
  * Get API health status.
  */
-async function marrowStatus(apiKey, baseUrl, sessionId) {
+async function marrowStatus(apiKey, baseUrl, sessionId, agentId) {
     const res = await fetch(`${baseUrl}/health`, {
-        headers: buildHeaders(apiKey, sessionId),
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
     const json = await safeJsonResponse(res);
     return json.data;
 }
 // ─── Workflow Registry API ───────────────────────────────────────
-async function marrowWorkflow(apiKey, baseUrl, params, sessionId) {
-    const headers = buildHeaders(apiKey, sessionId, 'application/json');
+async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
+    const headers = buildHeaders(apiKey, sessionId, 'application/json', agentId);
     switch (params.action) {
         case 'register': {
             const res = await fetch(`${baseUrl}/v1/workflows/register`, {
@@ -334,9 +340,9 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId) {
 /**
  * Get operator dashboard — account health, top failures, workflow status, saves.
  */
-async function marrowDashboard(apiKey, baseUrl, sessionId) {
+async function marrowDashboard(apiKey, baseUrl, sessionId, agentId) {
     const res = await fetch(`${baseUrl}/v1/dashboard`, {
-        headers: buildHeaders(apiKey, sessionId),
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
     const json = await safeJsonResponse(res);
     return json.data;
@@ -344,10 +350,10 @@ async function marrowDashboard(apiKey, baseUrl, sessionId) {
 /**
  * Get periodic summary of agent activity and Marrow impact.
  */
-async function marrowDigest(apiKey, baseUrl, period = '7d', sessionId) {
+async function marrowDigest(apiKey, baseUrl, period = '7d', sessionId, agentId) {
     const days = parseInt(period) || 7;
     const res = await fetch(`${baseUrl}/v1/digest?period=${days}`, {
-        headers: buildHeaders(apiKey, sessionId),
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
     const json = await safeJsonResponse(res);
     return json.data;
@@ -355,10 +361,10 @@ async function marrowDigest(apiKey, baseUrl, period = '7d', sessionId) {
 /**
  * Explicitly end the current session.
  */
-async function marrowSessionEnd(apiKey, baseUrl, autoCommitOpen = false, sessionId) {
+async function marrowSessionEnd(apiKey, baseUrl, autoCommitOpen = false, sessionId, agentId) {
     const res = await fetch(`${baseUrl}/v1/agent/session/end`, {
         method: 'POST',
-        headers: buildHeaders(apiKey, sessionId, 'application/json'),
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({ auto_commit_open: autoCommitOpen }),
     });
     const json = await safeJsonResponse(res);
@@ -367,11 +373,11 @@ async function marrowSessionEnd(apiKey, baseUrl, autoCommitOpen = false, session
 /**
  * Convert a detected decision pattern into an enforced workflow.
  */
-async function marrowAcceptDetected(apiKey, baseUrl, detectedId, sessionId) {
+async function marrowAcceptDetected(apiKey, baseUrl, detectedId, sessionId, agentId) {
     const safeId = validatePathParam(detectedId, 'detectedId');
     const res = await fetch(`${baseUrl}/v1/workflows/accept-detected`, {
         method: 'POST',
-        headers: buildHeaders(apiKey, sessionId, 'application/json'),
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({ detected_id: safeId }),
     });
     const json = await safeJsonResponse(res);
