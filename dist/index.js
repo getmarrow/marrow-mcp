@@ -12,6 +12,10 @@ exports.marrowOrient = marrowOrient;
 exports.marrowAsk = marrowAsk;
 exports.marrowStatus = marrowStatus;
 exports.marrowWorkflow = marrowWorkflow;
+exports.marrowDashboard = marrowDashboard;
+exports.marrowDigest = marrowDigest;
+exports.marrowSessionEnd = marrowSessionEnd;
+exports.marrowAcceptDetected = marrowAcceptDetected;
 /**
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots.
@@ -325,5 +329,52 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId) {
         default:
             return { success: false, error: `Unknown action: ${params.action}` };
     }
+}
+// ============= V4 Backend Parity (MCP v3.1) =============
+/**
+ * Get operator dashboard — account health, top failures, workflow status, saves.
+ */
+async function marrowDashboard(apiKey, baseUrl, sessionId) {
+    const res = await fetch(`${baseUrl}/v1/dashboard`, {
+        headers: buildHeaders(apiKey, sessionId),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+/**
+ * Get periodic summary of agent activity and Marrow impact.
+ */
+async function marrowDigest(apiKey, baseUrl, period = '7d', sessionId) {
+    const days = parseInt(period) || 7;
+    const res = await fetch(`${baseUrl}/v1/digest?period=${days}`, {
+        headers: buildHeaders(apiKey, sessionId),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+/**
+ * Explicitly end the current session.
+ */
+async function marrowSessionEnd(apiKey, baseUrl, autoCommitOpen = false, sessionId) {
+    const res = await fetch(`${baseUrl}/v1/agent/session/end`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json'),
+        body: JSON.stringify({ auto_commit_open: autoCommitOpen }),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+/**
+ * Convert a detected decision pattern into an enforced workflow.
+ */
+async function marrowAcceptDetected(apiKey, baseUrl, detectedId, sessionId) {
+    const safeId = validatePathParam(detectedId, 'detectedId');
+    const res = await fetch(`${baseUrl}/v1/workflows/accept-detected`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json'),
+        body: JSON.stringify({ detected_id: safeId }),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
 }
 //# sourceMappingURL=index.js.map

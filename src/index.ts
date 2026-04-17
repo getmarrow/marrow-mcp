@@ -404,3 +404,74 @@ export async function marrowWorkflow(
       return { success: false, error: `Unknown action: ${params.action}` };
   }
 }
+
+// ============= V4 Backend Parity (MCP v3.1) =============
+
+/**
+ * Get operator dashboard — account health, top failures, workflow status, saves.
+ */
+export async function marrowDashboard(
+  apiKey: string,
+  baseUrl: string,
+  sessionId?: string
+): Promise<unknown> {
+  const res = await fetch(`${baseUrl}/v1/dashboard`, {
+    headers: buildHeaders(apiKey, sessionId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+/**
+ * Get periodic summary of agent activity and Marrow impact.
+ */
+export async function marrowDigest(
+  apiKey: string,
+  baseUrl: string,
+  period: string = '7d',
+  sessionId?: string
+): Promise<unknown> {
+  const days = parseInt(period) || 7;
+  const res = await fetch(`${baseUrl}/v1/digest?period=${days}`, {
+    headers: buildHeaders(apiKey, sessionId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+/**
+ * Explicitly end the current session.
+ */
+export async function marrowSessionEnd(
+  apiKey: string,
+  baseUrl: string,
+  autoCommitOpen: boolean = false,
+  sessionId?: string
+): Promise<unknown> {
+  const res = await fetch(`${baseUrl}/v1/agent/session/end`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json'),
+    body: JSON.stringify({ auto_commit_open: autoCommitOpen }),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+/**
+ * Convert a detected decision pattern into an enforced workflow.
+ */
+export async function marrowAcceptDetected(
+  apiKey: string,
+  baseUrl: string,
+  detectedId: string,
+  sessionId?: string
+): Promise<unknown> {
+  const safeId = validatePathParam(detectedId, 'detectedId');
+  const res = await fetch(`${baseUrl}/v1/workflows/accept-detected`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json'),
+    body: JSON.stringify({ detected_id: safeId }),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}

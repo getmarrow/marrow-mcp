@@ -79,4 +79,20 @@ export declare function marrowWorkflow(apiKey: string, baseUrl: string, params: 
     contextUpdate?: Record<string, unknown>;
     status?: string;
 }, sessionId?: string): Promise<WorkflowResult>;
+/**
+ * Get operator dashboard — account health, top failures, workflow status, saves.
+ */
+export declare function marrowDashboard(apiKey: string, baseUrl: string, sessionId?: string): Promise<unknown>;
+/**
+ * Get periodic summary of agent activity and Marrow impact.
+ */
+export declare function marrowDigest(apiKey: string, baseUrl: string, period?: string, sessionId?: string): Promise<unknown>;
+/**
+ * Explicitly end the current session.
+ */
+export declare function marrowSessionEnd(apiKey: string, baseUrl: string, autoCommitOpen?: boolean, sessionId?: string): Promise<unknown>;
+/**
+ * Convert a detected decision pattern into an enforced workflow.
+ */
+export declare function marrowAcceptDetected(apiKey: string, baseUrl: string, detectedId: string, sessionId?: string): Promise<unknown>;
 //# sourceMappingURL=index.d.ts.map

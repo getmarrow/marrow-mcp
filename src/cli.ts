@@ -17,6 +17,10 @@ import {
   marrowAgentPatterns,
   marrowAsk,
   marrowWorkflow,
+  marrowDashboard,
+  marrowDigest,
+  marrowSessionEnd,
+  marrowAcceptDetected,
   validatePathParam,
   validateBaseUrl,
 } from './index';
@@ -514,7 +518,8 @@ const TOOLS = [
       'Log intent and get collective intelligence before acting. ' +
       'Call this before every meaningful action. ' +
       'Returns pattern insights, similar past decisions, failure detection, and a recommendedNext field — follow it. ' +
-      'Pass previous_outcome to auto-commit the last decision and open a new one.',
+      'Pass previous_outcome to auto-commit the last decision and open a new one. ' +
+      'Response MAY include: onboarding_hint (new accounts), intelligence.collective (cross-account patterns), intelligence.team_context (recent decisions from other sessions).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -772,6 +777,52 @@ const TOOLS = [
       required: ['action'],
     },
   },
+  {
+    name: 'marrow_dashboard',
+    description:
+      'Get operator dashboard — account health, top failures, workflow status, recent activity, Marrow\'s saves metric. ' +
+      'One call returns everything an operator needs to see.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'marrow_digest',
+    description:
+      'Get periodic summary of agent activity and Marrow impact (default 7-day period). ' +
+      'Shows decision counts, success rate trend vs previous period, saves, top improvements and risks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        period: { type: 'string', description: 'Time period: 7d (default), 14d, or 30d' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'marrow_session_end',
+    description:
+      'Explicitly end the current session. Optionally auto-commits any open decision. ' +
+      'Prevents orphaned decisions when an agent finishes a task.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        autoCommitOpen: { type: 'boolean', description: 'Whether to auto-commit any open decision (default: false)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'marrow_accept_detected',
+    description:
+      'Convert a detected decision pattern into an enforced workflow. ' +
+      'The pattern ID comes from suggested_workflows in the orient() response.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        detectedId: { type: 'string', description: 'ID of the detected pattern to accept' },
+      },
+      required: ['detectedId'],
+    },
+  },
 ];
 
 // Request handler
@@ -794,7 +845,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.0.12' },
+        serverInfo: { name: 'marrow', version: '3.1.0' },
       });
 
       // Auto-enroll: emit enrollment notification on connection
@@ -1259,6 +1310,32 @@ This is not optional overhead — it's how you stop repeating the same failures.
           contextUpdate: args.contextUpdate as Record<string, unknown>,
           status: args.status as string,
         }, SESSION_ID);
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_dashboard') {
+        const result = await marrowDashboard(API_KEY, BASE_URL, SESSION_ID);
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_digest') {
+        const result = await marrowDigest(API_KEY, BASE_URL, (args.period as string) || '7d', SESSION_ID);
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_session_end') {
+        const result = await marrowSessionEnd(API_KEY, BASE_URL, Boolean(args.autoCommitOpen), SESSION_ID);
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_accept_detected') {
+        const detectedId = args.detectedId as string;
+        if (!detectedId) { error(id, -32602, 'detectedId is required'); return; }
+        const result = await marrowAcceptDetected(API_KEY, BASE_URL, detectedId, SESSION_ID);
         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
         return;
       }
