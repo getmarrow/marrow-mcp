@@ -16,6 +16,8 @@ exports.marrowDashboard = marrowDashboard;
 exports.marrowDigest = marrowDigest;
 exports.marrowSessionEnd = marrowSessionEnd;
 exports.marrowAcceptDetected = marrowAcceptDetected;
+exports.marrowListTemplates = marrowListTemplates;
+exports.marrowInstallTemplate = marrowInstallTemplate;
 /**
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots.
@@ -379,6 +381,37 @@ async function marrowAcceptDetected(apiKey, baseUrl, detectedId, sessionId, agen
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({ detected_id: safeId }),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+// ============= Template Marketplace (MCP v3.1.3) =============
+/**
+ * List workflow templates with optional filters.
+ */
+async function marrowListTemplates(apiKey, baseUrl, params, sessionId, agentId) {
+    const qs = new URLSearchParams();
+    if (params?.industry)
+        qs.set('industry', params.industry);
+    if (params?.category)
+        qs.set('category', params.category);
+    if (params?.limit)
+        qs.set('limit', String(params.limit));
+    const query = qs.toString();
+    const res = await fetch(`${baseUrl}/v1/templates${query ? '?' + query : ''}`, {
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+/**
+ * Install a workflow template as an active workflow.
+ */
+async function marrowInstallTemplate(apiKey, baseUrl, slug, sessionId, agentId) {
+    const safeSlug = validatePathParam(slug, 'slug');
+    const res = await fetch(`${baseUrl}/v1/templates/${safeSlug}/install`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     });
     const json = await safeJsonResponse(res);
     return json.data;

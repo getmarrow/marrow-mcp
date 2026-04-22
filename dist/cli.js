@@ -700,6 +700,32 @@ const TOOLS = [
             required: ['detectedId'],
         },
     },
+    {
+        name: 'marrow_list_templates',
+        description: 'Browse pre-built workflow templates. Filter by industry (insurance, healthcare, ecommerce, legal, saas, fintech, media, enterprise) or category. ' +
+            'Use to discover available workflows before installing.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                industry: { type: 'string', description: 'Filter by industry (e.g., insurance, healthcare, saas)' },
+                category: { type: 'string', description: 'Filter by category (e.g., claims, engineering, support)' },
+                limit: { type: 'number', description: 'Max results (default: 20)' },
+            },
+            required: [],
+        },
+    },
+    {
+        name: 'marrow_install_template',
+        description: 'Install a workflow template into your fleet as an active workflow. ' +
+            'Use after marrow_list_templates to pick one.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                slug: { type: 'string', description: 'Template slug to install (e.g., code-review-deploy, claims-triage)' },
+            },
+            required: ['slug'],
+        },
+    },
 ];
 // Request handler
 async function handleRequest(req) {
@@ -715,7 +741,7 @@ async function handleRequest(req) {
             success(id, {
                 protocolVersion: '2024-11-05',
                 capabilities: { tools: {}, prompts: {} },
-                serverInfo: { name: 'marrow', version: '3.1.2' },
+                serverInfo: { name: 'marrow', version: '3.1.3' },
             });
             // Auto-enroll: emit enrollment notification on connection
             if (AUTO_ENROLL) {
@@ -1121,6 +1147,25 @@ This is not optional overhead — it's how you stop repeating the same failures.
                     return;
                 }
                 const result = await (0, index_1.marrowAcceptDetected)(API_KEY, BASE_URL, detectedId, SESSION_ID, FLEET_AGENT_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                return;
+            }
+            if (toolName === 'marrow_list_templates') {
+                const result = await (0, index_1.marrowListTemplates)(API_KEY, BASE_URL, {
+                    industry: args.industry,
+                    category: args.category,
+                    limit: args.limit,
+                }, SESSION_ID, FLEET_AGENT_ID);
+                success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                return;
+            }
+            if (toolName === 'marrow_install_template') {
+                const slug = args.slug;
+                if (!slug) {
+                    error(id, -32602, 'slug is required');
+                    return;
+                }
+                const result = await (0, index_1.marrowInstallTemplate)(API_KEY, BASE_URL, slug, SESSION_ID, FLEET_AGENT_ID);
                 success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                 return;
             }

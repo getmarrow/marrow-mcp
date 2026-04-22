@@ -95,4 +95,16 @@ export declare function marrowSessionEnd(apiKey: string, baseUrl: string, autoCo
  * Convert a detected decision pattern into an enforced workflow.
  */
 export declare function marrowAcceptDetected(apiKey: string, baseUrl: string, detectedId: string, sessionId?: string, agentId?: string): Promise<unknown>;
+/**
+ * List workflow templates with optional filters.
+ */
+export declare function marrowListTemplates(apiKey: string, baseUrl: string, params?: {
+    industry?: string;
+    category?: string;
+    limit?: number;
+}, sessionId?: string, agentId?: string): Promise<unknown>;
+/**
+ * Install a workflow template as an active workflow.
+ */
+export declare function marrowInstallTemplate(apiKey: string, baseUrl: string, slug: string, sessionId?: string, agentId?: string): Promise<unknown>;
 //# sourceMappingURL=index.d.ts.map

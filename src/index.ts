@@ -494,3 +494,46 @@ export async function marrowAcceptDetected(
   const json = await safeJsonResponse(res);
   return json.data;
 }
+
+// ============= Template Marketplace (MCP v3.1.3) =============
+
+/**
+ * List workflow templates with optional filters.
+ */
+export async function marrowListTemplates(
+  apiKey: string,
+  baseUrl: string,
+  params?: { industry?: string; category?: string; limit?: number },
+  sessionId?: string,
+  agentId?: string
+): Promise<unknown> {
+  const qs = new URLSearchParams();
+  if (params?.industry) qs.set('industry', params.industry);
+  if (params?.category) qs.set('category', params.category);
+  if (params?.limit) qs.set('limit', String(params.limit));
+  const query = qs.toString();
+  const res = await fetch(`${baseUrl}/v1/templates${query ? '?' + query : ''}`, {
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+/**
+ * Install a workflow template as an active workflow.
+ */
+export async function marrowInstallTemplate(
+  apiKey: string,
+  baseUrl: string,
+  slug: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<unknown> {
+  const safeSlug = validatePathParam(slug, 'slug');
+  const res = await fetch(`${baseUrl}/v1/templates/${safeSlug}/install`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
