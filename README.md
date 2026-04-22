@@ -17,7 +17,7 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 ---
 
-## What's New in v3.1.0
+## What's New in v3.1.4
 
 **Operator visibility + auto-intelligence tools.**
 
@@ -35,6 +35,24 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 - `intelligence.team_context` — recent decisions from other sessions in the same account, so multi-agent teams stay aware of each other's work
 
 Your agent should check for and use these fields — they represent collective intelligence and team-level context that wasn't available in prior versions.
+
+### Since v3.1.0 (cumulative through v3.1.4)
+
+**v3.1.1** — Published fixes
+
+**v3.1.2** — Agent identity: new `MARROW_FLEET_AGENT_ID` env var adds X-Marrow-Agent-Id header to all requests so decisions tag your specific agent for fleet dashboards.
+
+**v3.1.3** — Template marketplace tools: `marrow_list_templates` (filter by industry/category) and `marrow_install_template` (install workflow by slug). 24 pre-built templates across insurance, healthcare, ecommerce, legal, saas, fintech, media, enterprise.
+
+**v3.1.4** — README / docs sync (this release).
+
+Example usage in an agent:
+```
+marrow_list_templates({ industry: 'insurance' })
+  → [claims-triage, fraud-review, underwriting-decision, complaint-escalation]
+marrow_install_template({ slug: 'claims-triage' })
+  → workflow installed in your fleet
+```
 
 ---
 
