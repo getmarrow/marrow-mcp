@@ -25,6 +25,8 @@ Running `npx @getmarrow/mcp setup` now also installs a PostToolUse hook into you
 
 Disable via: `MARROW_AUTO_HOOK=false`
 
+For troubleshooting hook behavior, set `MARROW_HOOK_DEBUG=true` to re-enable one-line stderr diagnostics.
+
 **Operator visibility + auto-intelligence tools.**
 
 ### Four New Tools
@@ -315,6 +317,7 @@ claude mcp add marrow -e MARROW_API_KEY=mrw_your_api_key -- npx @getmarrow/mcp
 | `MARROW_FLEET_AGENT_ID` | No | Agent identifier sent as `X-Marrow-Agent-Id` for fleet attribution |
 | `MARROW_AUTO_ENROLL` | No | Auto-enrollment prompt (default: `true`). Set to `false` to disable. |
 | `MARROW_AUTO_HOOK` | No | PostToolUse auto-logging kill switch. Set to `false` to disable the hook without editing settings. |
+| `MARROW_HOOK_DEBUG` | No | When set to `true`, the hook emits one-line stderr diagnostics for invalid JSON, missing API key, and runtime failures. |
 
 ---
 

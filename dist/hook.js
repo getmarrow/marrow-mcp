@@ -16,6 +16,11 @@ const SKIP_TOOLS = new Set([
 ]);
 exports.AUTO_HOOK_COMMAND = 'npx -y @getmarrow/mcp hook';
 exports.AUTO_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*';
+const HOOK_DEBUG = process.env.MARROW_HOOK_DEBUG === 'true';
+function debug(msg) {
+    if (HOOK_DEBUG)
+        process.stderr.write(msg + '\n');
+}
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -247,7 +252,7 @@ async function runHookCommand() {
             event = JSON.parse(raw);
         }
         catch {
-            process.stderr.write('[marrow-hook] skipped invalid JSON\n');
+            debug('[marrow-hook] skipped invalid JSON');
             process.exit(0);
             return;
         }
@@ -258,7 +263,7 @@ async function runHookCommand() {
         }
         const apiKey = process.env.MARROW_API_KEY || '';
         if (!apiKey) {
-            process.stderr.write('[marrow-hook] skipped missing MARROW_API_KEY\n');
+            debug('[marrow-hook] skipped missing MARROW_API_KEY');
             process.exit(0);
             return;
         }
@@ -270,7 +275,7 @@ async function runHookCommand() {
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[marrow-hook] ${message}\n`);
+        debug(`[marrow-hook] ${message}`);
     }
     process.exit(0);
 }
