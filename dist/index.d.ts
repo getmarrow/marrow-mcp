@@ -33,6 +33,19 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     caused_by?: string;
 }, sessionId?: string, agentId?: string): Promise<CommitResult>;
 /**
+ * Fire-and-forget style logging helper for tool hooks and simple integrations.
+ * Logs intent, and when outcome is supplied, immediately commits it.
+ */
+export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
+    action: string;
+    outcome?: string;
+    success?: boolean;
+    type?: string;
+}, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<{
+    decision_id: string;
+    committed: boolean;
+}>;
+/**
  * Get agent patterns and failure history.
  */
 export declare function marrowAgentPatterns(apiKey: string, baseUrl: string, params?: {

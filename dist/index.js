@@ -7,6 +7,7 @@ exports.validatePathParam = validatePathParam;
 exports.validateBaseUrl = validateBaseUrl;
 exports.marrowThink = marrowThink;
 exports.marrowCommit = marrowCommit;
+exports.marrowAuto = marrowAuto;
 exports.marrowAgentPatterns = marrowAgentPatterns;
 exports.marrowOrient = marrowOrient;
 exports.marrowAsk = marrowAsk;
@@ -129,6 +130,71 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
     });
     const json = await safeJsonResponse(res);
     return json.data;
+}
+function createTimeoutSignal(timeoutMs, startedAt) {
+    if (!timeoutMs || timeoutMs <= 0) {
+        return { signal: undefined, cancel: () => undefined };
+    }
+    const elapsed = startedAt ? Date.now() - startedAt : 0;
+    const remaining = Math.max(1, timeoutMs - elapsed);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), remaining);
+    if (typeof timer.unref === 'function') {
+        timer.unref();
+    }
+    return {
+        signal: controller.signal,
+        cancel: () => clearTimeout(timer),
+    };
+}
+/**
+ * Fire-and-forget style logging helper for tool hooks and simple integrations.
+ * Logs intent, and when outcome is supplied, immediately commits it.
+ */
+async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs) {
+    const startedAt = Date.now();
+    const thinkTimeout = createTimeoutSignal(timeoutMs, startedAt);
+    let thinkJson;
+    try {
+        const thinkRes = await fetch(`${baseUrl}/v1/agent/think`, {
+            method: 'POST',
+            headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+            body: JSON.stringify({
+                action: params.action,
+                type: params.type || 'general',
+            }),
+            signal: thinkTimeout.signal,
+        });
+        thinkJson = await safeJsonResponse(thinkRes);
+    }
+    finally {
+        thinkTimeout.cancel();
+    }
+    const decisionId = thinkJson.data?.decision_id;
+    if (!decisionId || typeof decisionId !== 'string') {
+        throw new Error('marrowAuto did not receive a decision_id');
+    }
+    if (params.outcome === undefined) {
+        return { decision_id: decisionId, committed: false };
+    }
+    const commitTimeout = createTimeoutSignal(timeoutMs, startedAt);
+    try {
+        const commitRes = await fetch(`${baseUrl}/v1/agent/commit`, {
+            method: 'POST',
+            headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+            body: JSON.stringify({
+                decision_id: decisionId,
+                success: params.success ?? true,
+                outcome: params.outcome,
+            }),
+            signal: commitTimeout.signal,
+        });
+        await safeJsonResponse(commitRes);
+    }
+    finally {
+        commitTimeout.cancel();
+    }
+    return { decision_id: decisionId, committed: true };
 }
 /**
  * Get agent patterns and failure history.

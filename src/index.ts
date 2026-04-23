@@ -161,6 +161,93 @@ export async function marrowCommit(
   return json.data;
 }
 
+function createTimeoutSignal(timeoutMs?: number, startedAt?: number): {
+  signal?: AbortSignal;
+  cancel: () => void;
+} {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return { signal: undefined, cancel: () => undefined };
+  }
+
+  const elapsed = startedAt ? Date.now() - startedAt : 0;
+  const remaining = Math.max(1, timeoutMs - elapsed);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), remaining);
+  if (typeof timer.unref === 'function') {
+    timer.unref();
+  }
+
+  return {
+    signal: controller.signal,
+    cancel: () => clearTimeout(timer),
+  };
+}
+
+/**
+ * Fire-and-forget style logging helper for tool hooks and simple integrations.
+ * Logs intent, and when outcome is supplied, immediately commits it.
+ */
+export async function marrowAuto(
+  apiKey: string,
+  baseUrl: string,
+  params: {
+    action: string;
+    outcome?: string;
+    success?: boolean;
+    type?: string;
+  },
+  sessionId?: string,
+  agentId?: string,
+  timeoutMs?: number
+): Promise<{ decision_id: string; committed: boolean }> {
+  const startedAt = Date.now();
+
+  const thinkTimeout = createTimeoutSignal(timeoutMs, startedAt);
+  let thinkJson: any;
+  try {
+    const thinkRes = await fetch(`${baseUrl}/v1/agent/think`, {
+      method: 'POST',
+      headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+      body: JSON.stringify({
+        action: params.action,
+        type: params.type || 'general',
+      }),
+      signal: thinkTimeout.signal,
+    });
+    thinkJson = await safeJsonResponse(thinkRes);
+  } finally {
+    thinkTimeout.cancel();
+  }
+
+  const decisionId = thinkJson.data?.decision_id;
+  if (!decisionId || typeof decisionId !== 'string') {
+    throw new Error('marrowAuto did not receive a decision_id');
+  }
+
+  if (params.outcome === undefined) {
+    return { decision_id: decisionId, committed: false };
+  }
+
+  const commitTimeout = createTimeoutSignal(timeoutMs, startedAt);
+  try {
+    const commitRes = await fetch(`${baseUrl}/v1/agent/commit`, {
+      method: 'POST',
+      headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+      body: JSON.stringify({
+        decision_id: decisionId,
+        success: params.success ?? true,
+        outcome: params.outcome,
+      }),
+      signal: commitTimeout.signal,
+    });
+    await safeJsonResponse(commitRes);
+  } finally {
+    commitTimeout.cancel();
+  }
+
+  return { decision_id: decisionId, committed: true };
+}
+
 /**
  * Get agent patterns and failure history.
  */

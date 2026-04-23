@@ -17,7 +17,13 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 ---
 
-## What's New in v3.1.4
+## What's New in v3.2.0
+
+### Passive Mode (v3.2.0)
+
+Running `npx @getmarrow/mcp setup` now also installs a PostToolUse hook into your `.claude/settings.json`. After setup, every tool call your agent makes (Bash commands, file edits, MCP calls) is auto-logged to Marrow in the background — no agent discipline required. Marrow gets the decision trail whether the agent remembered to call `marrow_think` or not.
+
+Disable via: `MARROW_AUTO_HOOK=false`
 
 **Operator visibility + auto-intelligence tools.**
 
@@ -68,7 +74,7 @@ Inject Marrow instructions directly into your project's `CLAUDE.md`:
 npx @getmarrow/mcp setup
 ```
 
-After setup, your agent uses Marrow automatically every session — no human prompting required.
+After setup, your agent uses Marrow automatically every session, and Claude Code PostToolUse hooks auto-log tool calls in the background — no human prompting required.
 
 ## Auto-Enroll by Default
 The `marrow-always-on` prompt is served to all MCP clients automatically. Set `MARROW_AUTO_ENROLL=false` to opt out.
@@ -306,7 +312,9 @@ claude mcp add marrow -e MARROW_API_KEY=mrw_your_api_key -- npx @getmarrow/mcp
 | `MARROW_API_KEY` | Yes | Your API key from getmarrow.ai (or use `--key` flag) |
 | `MARROW_BASE_URL` | No | Custom API URL (default: `https://api.getmarrow.ai`). Must use HTTPS. |
 | `MARROW_SESSION_ID` | No | Session identifier for multi-agent setups |
+| `MARROW_FLEET_AGENT_ID` | No | Agent identifier sent as `X-Marrow-Agent-Id` for fleet attribution |
 | `MARROW_AUTO_ENROLL` | No | Auto-enrollment prompt (default: `true`). Set to `false` to disable. |
+| `MARROW_AUTO_HOOK` | No | PostToolUse auto-logging kill switch. Set to `false` to disable the hook without editing settings. |
 
 ---
 

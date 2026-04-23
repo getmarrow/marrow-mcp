@@ -26,12 +26,13 @@ import {
   validatePathParam,
   validateBaseUrl,
 } from './index';
+import { installPostToolUseHook, runHookCommand } from './hook';
 import type { ThinkResult, OrientResult, MarrowMemory } from './types';
 
 // Parse CLI args
-function parseArgs(): { apiKey?: string; setup?: boolean } {
+function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean } {
   const args = process.argv.slice(2);
-  const result: { apiKey?: string; setup?: boolean } = {};
+  const result: { apiKey?: string; setup?: boolean; hook?: boolean } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
@@ -40,14 +41,17 @@ function parseArgs(): { apiKey?: string; setup?: boolean } {
     if (args[i] === 'setup' || args[i] === '--setup') {
       result.setup = true;
     }
+    if (args[i] === 'hook' || args[i] === '--hook') {
+      result.hook = true;
+    }
   }
   return result;
 }
 
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
 function runSetup(): void {
-  const fs = require('fs');
-  const path = require('path');
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
 
   const MARROW_BLOCK_START = '<!-- marrow:start -->';
   const MARROW_BLOCK_END = '<!-- marrow:end -->';
@@ -67,7 +71,6 @@ Do NOT skip logging. Every decision you log compounds — failure rates drop, pa
 For one-shot logging: \`marrow_auto({ action: "did X", outcome: "result Y", success: true })\` — one call, done.
 ${MARROW_BLOCK_END}`;
 
-  // Find CLAUDE.md — check current dir, then walk up
   let dir = process.cwd();
   let claudeMdPath: string | null = null;
 
@@ -91,36 +94,42 @@ ${MARROW_BLOCK_END}`;
   if (fs.existsSync(claudeMdPath)) {
     content = fs.readFileSync(claudeMdPath, 'utf8');
 
-    // Check if already present
     if (content.includes(MARROW_BLOCK_START)) {
-      // Replace existing block
       const startIdx = content.indexOf(MARROW_BLOCK_START);
       const endIdx = content.indexOf(MARROW_BLOCK_END);
       if (endIdx > startIdx) {
         content = content.slice(0, startIdx) + marrowInstructions + content.slice(endIdx + MARROW_BLOCK_END.length);
         fs.writeFileSync(claudeMdPath, content);
         process.stdout.write(`Updated Marrow instructions in ${claudeMdPath}\n`);
-        process.exit(0);
-        return;
       }
+    } else {
+      const separator = content.length > 0 && !content.endsWith('\n') ? '\n\n' : content.length > 0 ? '\n' : '';
+      fs.writeFileSync(claudeMdPath, content + separator + marrowInstructions + '\n');
+      process.stdout.write(`Added Marrow instructions to ${claudeMdPath}\n`);
     }
+  } else {
+    fs.writeFileSync(claudeMdPath, marrowInstructions + '\n');
+    process.stdout.write(`Added Marrow instructions to ${claudeMdPath}\n`);
   }
 
-  // Append
-  const separator = content.length > 0 && !content.endsWith('\n') ? '\n\n' : content.length > 0 ? '\n' : '';
-  fs.writeFileSync(claudeMdPath, content + separator + marrowInstructions + '\n');
-  process.stdout.write(`Added Marrow instructions to ${claudeMdPath}\n`);
-  process.stdout.write(`Your agent will now use Marrow automatically in every session.\n`);
+  const hookInstall = installPostToolUseHook(process.cwd());
+  if (hookInstall.installed) {
+    process.stdout.write('Installed PostToolUse hook — your agent\'s tool calls now auto-log to Marrow. Set MARROW_AUTO_HOOK=false to disable.\n');
+  } else {
+    process.stdout.write('PostToolUse hook already installed — your agent\'s tool calls already auto-log to Marrow. Set MARROW_AUTO_HOOK=false to disable.\n');
+  }
+  process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
+  process.stdout.write('Your agent will now use Marrow automatically in every session.\n');
   process.exit(0);
 }
 
 const cliArgs = parseArgs();
 
-// Handle setup command before anything else
-if (cliArgs.setup) {
+if (cliArgs.hook) {
+  void runHookCommand();
+} else if (cliArgs.setup) {
   runSetup();
-}
-
+} else {
 const API_KEY = cliArgs.apiKey || process.env.MARROW_API_KEY || '';
 
 // [SECURITY #3] Validate BASE_URL — require HTTPS to prevent SSRF / credential leakage
@@ -876,7 +885,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.1.4' },
+        serverInfo: { name: 'marrow', version: '3.2.0' },
       });
 
       // Auto-enroll: emit enrollment notification on connection
@@ -1477,3 +1486,4 @@ process.stdin.on('error', (err) => {
   process.stderr.write(`[marrow] stdin error: ${err}\n`);
   process.exit(1);
 });
+}
