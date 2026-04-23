@@ -10,6 +10,8 @@ import type {
   OrientResult,
   MarrowAskResult,
   WorkflowResult,
+  MarrowDashboardResult,
+  MarrowDigestResult,
 } from './types';
 
 /**
@@ -517,7 +519,7 @@ export async function marrowDashboard(
   baseUrl: string,
   sessionId?: string,
   agentId?: string
-): Promise<unknown> {
+): Promise<MarrowDashboardResult> {
   const res = await fetch(`${baseUrl}/v1/dashboard`, {
     headers: buildHeaders(apiKey, sessionId, undefined, agentId),
   });
@@ -534,7 +536,7 @@ export async function marrowDigest(
   period: string = '7d',
   sessionId?: string,
   agentId?: string
-): Promise<unknown> {
+): Promise<MarrowDigestResult> {
   const days = parseInt(period) || 7;
   const res = await fetch(`${baseUrl}/v1/digest?period=${days}`, {
     headers: buildHeaders(apiKey, sessionId, undefined, agentId),

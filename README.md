@@ -17,32 +17,19 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 ---
 
-## What's New in v3.2.0
+## What's New in v3.3.0
 
-### Passive Mode (v3.2.0)
+### Velocity Metrics
 
-Running `npx @getmarrow/mcp setup` now also installs a PostToolUse hook into your `.claude/settings.json`. After setup, every tool call your agent makes (Bash commands, file edits, MCP calls) is auto-logged to Marrow in the background — no agent discipline required. Marrow gets the decision trail whether the agent remembered to call `marrow_think` or not.
+`marrow_dashboard` and `marrow_digest` now include three measured velocity metrics:
 
-Disable via: `MARROW_AUTO_HOOK=false`
+- `attempts_per_success` — avg decisions before an agent lands a success
+- `time_to_success_seconds` — median seconds from `marrow_think` to successful `marrow_commit`
+- `drift_rate` — % of decisions that didn't link to a known pattern
 
-For troubleshooting hook behavior, set `MARROW_HOOK_DEBUG=true` to re-enable one-line stderr diagnostics.
+Each reports `{current, previous, delta_pct, direction}` so operators see whether agents are trending toward or away from improvement.
 
-**Operator visibility + auto-intelligence tools.**
-
-### Four New Tools
-
-- **`marrow_dashboard`** — operator dashboard in one call. Account health, top failures, workflow status, recent activity, Marrow's saves metric.
-- **`marrow_digest`** — periodic summary with success rate trend vs previous period. Optional `period` parameter (default `7d`).
-- **`marrow_session_end`** — explicitly end a session and optionally auto-commit any open decision. Prevents orphaned decisions.
-- **`marrow_accept_detected`** — convert a detected recurring pattern into an enforced workflow. Pattern ID comes from `orient()` response's `suggested_workflows`.
-
-### Enhanced `marrow_think` Response
-`marrow_think` now surfaces three additional fields when the backend provides them:
-- `onboarding_hint` — contextual tip for new accounts
-- `intelligence.collective` — anonymized insights aggregated across all Marrow accounts (k-anonymity ≥5 accounts per insight)
-- `intelligence.team_context` — recent decisions from other sessions in the same account, so multi-agent teams stay aware of each other's work
-
-Your agent should check for and use these fields — they represent collective intelligence and team-level context that wasn't available in prior versions.
+All metrics are computed from real decision data — no estimates, no heuristics. Token-usage savings are on the enterprise roadmap.
 
 ---
 
