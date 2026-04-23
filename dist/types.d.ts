@@ -139,4 +139,84 @@ export interface WorkflowResult {
     data?: Record<string, unknown>;
     error?: string;
 }
+export interface VelocityMetric {
+    current: number;
+    previous: number;
+    delta_pct: number;
+    direction: 'improving' | 'declining' | 'stable';
+}
+export interface Velocity {
+    attempts_per_success: VelocityMetric;
+    time_to_success_seconds: VelocityMetric;
+    drift_rate: VelocityMetric;
+}
+export interface MarrowDashboardResult {
+    account: {
+        agent_count: number;
+        total_decisions: number;
+        active_since: string;
+    };
+    health: {
+        overall_score: number;
+        label: string;
+        success_rate_7d: number;
+        success_rate_30d: number;
+        trend: string;
+        trend_delta: number;
+    };
+    top_failures: Array<{
+        decision_type: string;
+        failure_rate: number;
+        count: number;
+        last_seen: string;
+        top_reason: string | null;
+    }>;
+    workflow_status: {
+        active: number;
+        completed_this_week: number;
+        stalled: number;
+        stalled_workflows: Array<{
+            instance_id: string;
+            workflow_name: string;
+            stalled_at_step: number;
+            stalled_since: string;
+            waiting_for: string;
+        }>;
+    };
+    impact: {
+        saves_this_week: number;
+        saves_total: number;
+        failures_prevented_details: Array<unknown>;
+    };
+    velocity: Velocity;
+    recent_decisions: {
+        today: number;
+        this_week: number;
+        by_type: Record<string, number>;
+    };
+}
+export interface MarrowDigestResult {
+    period: string;
+    summary: string;
+    decisions: {
+        total: number;
+        successful: number;
+        failed: number;
+    };
+    success_rate: {
+        current: number;
+        previous_period: number;
+        change: number;
+        direction: string;
+    };
+    saves: {
+        count: number;
+        details: unknown[];
+    };
+    velocity: Velocity;
+    top_improvements: string[];
+    top_risks: string[];
+    workflows_completed: number;
+    workflows_stalled: number;
+}
 //# sourceMappingURL=types.d.ts.map

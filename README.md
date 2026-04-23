@@ -33,6 +33,43 @@ All metrics are computed from real decision data — no estimates, no heuristics
 
 ---
 
+## Passive Mode
+
+Running `npx @getmarrow/mcp setup` installs a PostToolUse hook into `.claude/settings.json`. After setup, every tool call your agent makes (Bash, file edits, MCP calls) is auto-logged to Marrow in the background — no agent discipline required.
+
+Disable via: `MARROW_AUTO_HOOK=false`
+
+For troubleshooting hook behavior, set `MARROW_HOOK_DEBUG=true` to re-enable one-line stderr diagnostics.
+
+**Operator visibility + auto-intelligence tools.**
+
+## Operator Tools
+
+### marrow_dashboard
+
+Operator dashboard in one call. Account health, top failures, workflow status, recent activity, Marrow's saves metric. Now includes velocity metrics (see v3.3.0 section above).
+
+### marrow_digest
+
+Periodic summary with success rate trend vs previous period. Optional `period` parameter (default `7d`). Now includes velocity summary (see v3.3.0 section above).
+
+### marrow_session_end
+
+Explicitly end a session and optionally auto-commit any open decision. Prevents orphaned decisions.
+
+### marrow_accept_detected
+
+Convert a detected recurring pattern into an enforced workflow. Pattern ID comes from `orient()` response's `suggested_workflows`.
+
+## Intelligence Fields in marrow_think Response
+
+`marrow_think` surfaces three additional fields when the backend provides them:
+- `onboarding_hint` — contextual tip for new accounts
+- `intelligence.collective` — anonymized insights aggregated across all Marrow accounts (k-anonymity ≥5 accounts per insight)
+- `intelligence.team_context` — recent decisions from other sessions in the same account, so multi-agent teams stay aware of each other's work
+
+---
+
 ## Available Templates
 
 24 pre-built workflow templates across 8 industries. Browse via `marrow_list_templates` and install with `marrow_install_template`.

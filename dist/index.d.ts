@@ -1,7 +1,7 @@
 /**
  * @getmarrow/mcp — API Functions
  */
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDigestResult } from './types';
 /**
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots.
@@ -95,11 +95,11 @@ export declare function marrowWorkflow(apiKey: string, baseUrl: string, params: 
 /**
  * Get operator dashboard — account health, top failures, workflow status, saves.
  */
-export declare function marrowDashboard(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowDashboard(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<MarrowDashboardResult>;
 /**
  * Get periodic summary of agent activity and Marrow impact.
  */
-export declare function marrowDigest(apiKey: string, baseUrl: string, period?: string, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowDigest(apiKey: string, baseUrl: string, period?: string, sessionId?: string, agentId?: string): Promise<MarrowDigestResult>;
 /**
  * Explicitly end the current session.
  */
