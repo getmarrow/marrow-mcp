@@ -46,6 +46,26 @@ Your agent should check for and use these fields — they represent collective i
 
 ---
 
+## Available Templates
+
+24 pre-built workflow templates across 8 industries. Browse via `marrow_list_templates` and install with `marrow_install_template`.
+
+- **Insurance (4):** `claims-triage`, `fraud-review`, `underwriting-decision`, `complaint-escalation`
+- **Healthcare (4):** `patient-triage`, `clinical-documentation`, `prior-authorization`, `coding-audit`
+- **E-commerce (3):** `order-fulfillment`, `refund-approval`, `return-processing`
+- **Legal (3):** `contract-review`, `case-triage`, `document-discovery`
+- **SaaS (6):** `code-review-deploy`, `incident-response`, `feature-rollout`, `ticket-triage`, `escalation-flow`, `lead-qualify`
+- **Fintech (2):** `etl-pipeline`, `approval-flow`
+- **Media (1):** `content-publish`
+- **Enterprise (1):** `change-management`
+
+Full catalog with descriptions: [getmarrow.ai/docs#template-marketplace](https://getmarrow.ai/docs/#template-marketplace)
+
+```
+marrow_list_templates({ industry: 'insurance' })
+marrow_install_template({ slug: 'claims-triage' })
+```
+
 ## Claude Code Compatibility
 
 Marrow MCP works natively with Claude Code. The server runs as a long-running process and handles the full MCP protocol correctly.
