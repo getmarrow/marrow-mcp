@@ -756,7 +756,7 @@ else {
                 success(id, {
                     protocolVersion: '2024-11-05',
                     capabilities: { tools: {}, prompts: {} },
-                    serverInfo: { name: 'marrow', version: '3.4.0' },
+                    serverInfo: { name: 'marrow', version: '3.5.0' },
                 });
                 // Auto-enroll: emit enrollment notification on connection
                 if (AUTO_ENROLL) {
@@ -839,6 +839,13 @@ For cases where you need explicit control over the orient → think → act → 
 4. **Shortcut:** marrow_run handles orient → think → commit in a single awaited call.
 
 Most agents never need advanced mode. \`marrow_auto\` covers 99% of cases.
+
+WHEN marrow_commit returns a non-empty narrative field:
+- Relay that message to the user in your own words, woven naturally into your reply.
+- Don't tack it on awkwardly, work it into a summary or closing note.
+- Example format: "Task done. (Marrow note: <relayed narrative>.)"
+- Don't quote the narrative verbatim unless it is short and natural to quote, paraphrase when it flows better.
+- Never mention upgrade, pricing, or Pro features, Marrow is free for all users right now.
 
 ## Why you must not skip this
 
@@ -953,10 +960,11 @@ This is not optional overhead — it's how you stop repeating the same failures.
                         outcome,
                         caused_by: args.caused_by,
                     }, SESSION_ID);
+                    const commitResult = { ...result, narrative: result.narrative ?? null };
                     lastCommitted = true;
                     lastDecisionId = null;
                     success(id, {
-                        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+                        content: [{ type: 'text', text: JSON.stringify(commitResult, null, 2) }],
                     });
                     return;
                 }

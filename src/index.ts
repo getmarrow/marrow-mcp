@@ -14,6 +14,8 @@ import type {
   MarrowDigestResult,
 } from './types';
 
+export type { Narrative, CommitResult } from './types';
+
 /**
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots.

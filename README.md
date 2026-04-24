@@ -17,9 +17,7 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 ---
 
-## What's New in v3.4.0
-
-### Improvement Since Onboarding
+## Improvement Since Onboarding
 
 `marrow_dashboard` and `marrow_digest` now return an `improvement` block comparing your agents' current performance against their day-1 baseline — a frozen snapshot of the first week of activity. Baseline captures automatically once an account reaches 7 days OR 20 decisions (whichever first).
 
@@ -46,6 +44,27 @@ Sample response:
 ```
 
 Accounts with <7 days of activity AND <20 decisions get an onboarding payload showing days/decisions until baseline fires. No heuristics, no estimates — every number comes from the agent's own decision history. Token-usage savings remain on the enterprise roadmap.
+
+---
+
+## What's New in v3.5.0
+
+### Agent-Narrated Milestones
+
+`marrow_commit` now passes through a `narrative` field alongside `committed`/`success_rate`/`insight`. When a milestone fires, the backend returns a human-readable string the agent can relay to the user. Otherwise it returns `null`.
+
+```json
+{
+  "committed": true,
+  "success_rate": 0.91,
+  "insight": null,
+  "narrative": "Baseline captured. Your first-week averages: 42s per task, 1.3 attempts per success. I'll compare future decisions against this."
+}
+```
+
+The built-in `marrow-always-on` system prompt now instructs agents to relay those milestone narratives naturally in their next user-facing reply, instead of dropping them on the floor or quoting them awkwardly.
+
+Narratives are aggregated metrics only — no user data, no decision content, no heuristics.
 
 ---
 

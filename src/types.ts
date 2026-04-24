@@ -2,6 +2,8 @@
  * @getmarrow/mcp — Type Definitions
  */
 
+export type Narrative = string | null;
+
 export interface ActionableInsight {
   type: 'frequency' | 'failure_pattern' | 'workflow_gap' | 'hive_trend';
   summary: string;
@@ -59,6 +61,7 @@ export interface CommitResult {
   committed: boolean;
   success_rate: number;
   insight: string | null;
+  narrative: Narrative;
 }
 
 export interface StatusResult {
