@@ -756,7 +756,7 @@ else {
                 success(id, {
                     protocolVersion: '2024-11-05',
                     capabilities: { tools: {}, prompts: {} },
-                    serverInfo: { name: 'marrow', version: '3.3.0' },
+                    serverInfo: { name: 'marrow', version: '3.4.0' },
                 });
                 // Auto-enroll: emit enrollment notification on connection
                 if (AUTO_ENROLL) {

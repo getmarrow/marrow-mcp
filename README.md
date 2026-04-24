@@ -17,11 +17,41 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 ---
 
-## What's New in v3.3.0
+## What's New in v3.4.0
 
-### Velocity Metrics
+### Improvement Since Onboarding
 
-`marrow_dashboard` and `marrow_digest` now include three measured velocity metrics:
+`marrow_dashboard` and `marrow_digest` now return an `improvement` block comparing your agents' current performance against their day-1 baseline — a frozen snapshot of the first week of activity. Baseline captures automatically once an account reaches 7 days OR 20 decisions (whichever first).
+
+Four measured deltas, all from real decision data:
+
+- `attempts_per_success` — baseline week vs current week
+- `time_to_success_seconds` — median think → successful commit
+- `drift_rate` — % of decisions without a matching prior pattern
+- `success_rate` — baseline vs current outcome fraction
+
+Sample response:
+
+```json
+{
+  "improvement": {
+    "status": "active",
+    "days_since_baseline": 20,
+    "decisions_since_baseline": 2124,
+    "baseline_captured_at": "2026-04-23T15:07:41.919Z",
+    "trigger_reason": "time_7d",
+    "time_to_success_seconds": { "baseline": 244, "current": 24, "delta_pct": -90.16 }
+  }
+}
+```
+
+Accounts with <7 days of activity AND <20 decisions get an onboarding payload showing days/decisions until baseline fires. No heuristics, no estimates — every number comes from the agent's own decision history. Token-usage savings remain on the enterprise roadmap.
+
+---
+
+## Velocity Metrics
+
+`marrow_dashboard` and `marrow_digest` include three measured velocity metrics:
 
 - `attempts_per_success` — avg decisions before an agent lands a success
 - `time_to_success_seconds` — median seconds from `marrow_think` to successful `marrow_commit`
@@ -29,7 +59,7 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 Each reports `{current, previous, delta_pct, direction}` so operators see whether agents are trending toward or away from improvement.
 
-All metrics are computed from real decision data — no estimates, no heuristics. Token-usage savings are on the enterprise roadmap.
+All metrics are computed from real decision data — no estimates, no heuristics.
 
 ---
 
