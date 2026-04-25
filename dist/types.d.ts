@@ -47,6 +47,7 @@ export interface ThinkResult {
         tier: string;
         url: string;
     };
+    marrow_contributed?: ThinkContribution;
     loop_warnings?: Array<{
         type: 'LOOP_DETECTED';
         severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
@@ -64,11 +65,31 @@ export interface ThinkResult {
         };
     }>;
 }
+/** V6.7: what Marrow contributed for this commit. Agent narrates if has_signal=true. */
+export interface CommitContribution {
+    success: boolean;
+    pattern_reused: boolean;
+    linked_to_prior_decision: boolean;
+    warning_avoided: boolean;
+    has_signal: boolean;
+}
+/** V6.7: what Marrow contributed for this think. Agent narrates if has_signal=true. */
+export interface ThinkContribution {
+    warnings_consulted: number;
+    hive_patterns_surfaced: number;
+    similar_decisions_found: number;
+    workflow_templates_available: number;
+    loop_detected: boolean;
+    collective_intelligence: boolean;
+    team_context_present: boolean;
+    has_signal: boolean;
+}
 export interface CommitResult {
     committed: boolean;
     success_rate: number;
     insight: string | null;
     narrative: Narrative;
+    marrow_contributed?: CommitContribution;
 }
 export interface StatusResult {
     status: string;

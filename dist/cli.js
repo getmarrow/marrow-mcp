@@ -756,7 +756,7 @@ else {
                 success(id, {
                     protocolVersion: '2024-11-05',
                     capabilities: { tools: {}, prompts: {} },
-                    serverInfo: { name: 'marrow', version: '3.5.0' },
+                    serverInfo: { name: 'marrow', version: '3.6.0' },
                 });
                 // Auto-enroll: emit enrollment notification on connection
                 if (AUTO_ENROLL) {
@@ -846,6 +846,24 @@ WHEN marrow_commit returns a non-empty narrative field:
 - Example format: "Task done. (Marrow note: <relayed narrative>.)"
 - Don't quote the narrative verbatim unless it is short and natural to quote, paraphrase when it flows better.
 - Never mention upgrade, pricing, or Pro features, Marrow is free for all users right now.
+
+WHEN marrow_think or marrow_commit returns marrow_contributed.has_signal === true:
+- After completing your action (or while explaining your approach), tell the user in ONE sentence what Marrow contributed.
+- Be factual, not hypey. Pick the single most useful signal — don't list everything.
+- Examples that hit the right tone:
+  - think: "Pulling 12 similar tasks from the hive — using the approach that worked 11/12 times."
+  - think: "Marrow flagged this approach failed 4× last week — taking a different angle."
+  - think: "Following your installed deployment workflow."
+  - commit: "Skipped a known retry loop based on Marrow's pattern history."
+  - commit: "Reused a pattern that's worked for similar tasks."
+- If marrow_contributed.has_signal is false (or marrow_contributed is missing), don't mention Marrow.
+
+WHEN marrow_session_end returns session_summary.has_signal === true:
+- As you wrap up the session / hand back to the user, surface session_summary.narrative in 1-2 lines.
+- Example: "Session done. Marrow note: 12 decisions, 3 retries avoided via warnings, 8 pattern reuses from your history."
+- If has_signal is false, don't bother — the session was too small or had nothing notable.
+
+The point of these narrations: the user installed Marrow to make their agent better. They should hear, in plain English, what Marrow actually did. No dashboard, no logs — your reply IS their visibility.
 
 ## Why you must not skip this
 

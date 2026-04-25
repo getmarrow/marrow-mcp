@@ -47,22 +47,53 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.5.0
+## What's New in v3.6.0
 
-### Agent-Narrated Milestones
+### Agent-Narrated Marrow Contribution
 
-`marrow_commit` now passes through a `narrative` field alongside `committed`/`success_rate`/`insight`. When a milestone fires, the backend returns a human-readable string the agent can relay to the user. Otherwise it returns `null`.
+Marrow now tells the agent exactly what it contributed to each decision, so the agent can surface that contribution to the user in plain English — no dashboard required.
+
+Three new fields:
+
+- `marrow_think` returns `marrow_contributed` describing what intelligence Marrow surfaced for this decision (warnings consulted, hive patterns, similar decisions, workflow templates, loop detection, collective insight).
+- `marrow_commit` returns `marrow_contributed` describing concrete signals on the commit itself (pattern reused, warning avoided, workflow step).
+- `marrow_session_end` returns `session_summary` aggregating Marrow's contribution across the session, plus a one-line `narrative` for the agent to surface as it wraps up.
+
+Each object includes `has_signal: boolean` — when true, the agent narrates Marrow's role in 1 sentence; when false, it stays quiet. The built-in `marrow-always-on` system prompt now instructs agents on tone and timing for these narrations.
+
+Sample think response:
+
+```json
+{
+  "decision_id": "...",
+  "intelligence": { "...": "..." },
+  "marrow_contributed": {
+    "warnings_consulted": 2,
+    "hive_patterns_surfaced": 12,
+    "similar_decisions_found": 8,
+    "workflow_templates_available": 1,
+    "loop_detected": false,
+    "collective_intelligence": true,
+    "team_context_present": false,
+    "has_signal": true
+  }
+}
+```
+
+The user installed Marrow to make their agent better. They should hear, in plain English, what Marrow actually did. Their agent's reply IS the dashboard.
+
+---
+
+## Agent-Narrated Milestones (v3.5.0)
+
+`marrow_commit` returns a `narrative` field. When a milestone fires (first commit, baseline capture, decision 100/500/1000/5000, weekly recap), the backend returns a human-readable string the agent relays to the user. Otherwise it returns `null`.
 
 ```json
 {
   "committed": true,
-  "success_rate": 0.91,
-  "insight": null,
-  "narrative": "Baseline captured. Your first-week averages: 42s per task, 1.3 attempts per success. I'll compare future decisions against this."
+  "narrative": "Baseline captured. Your first-week averages: 42s per task, 1.3 attempts per success."
 }
 ```
-
-The built-in `marrow-always-on` system prompt now instructs agents to relay those milestone narratives naturally in their next user-facing reply, instead of dropping them on the floor or quoting them awkwardly.
 
 Narratives are aggregated metrics only — no user data, no decision content, no heuristics.
 
