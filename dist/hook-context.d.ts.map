@@ -1,0 +1,1 @@
+{"version":3,"file":"hook-context.d.ts","sourceRoot":"","sources":["../src/hook-context.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;GAaG;AAIH,eAAO,MAAM,oBAAoB,uCAAuC,CAAC;AAWzE,UAAU,aAAa;IACrB,YAAY,EAAE,MAAM,CAAC;IACrB,SAAS,EAAE,OAAO,CAAC;CACpB;AAqKD,wBAAsB,qBAAqB,IAAI,OAAO,CAAC,IAAI,CAAC,CAgF3D;AAED;;;;GAIG;AACH,wBAAgB,2BAA2B,CAAC,QAAQ,GAAE,MAAsB,GAAG,aAAa,CAkE3F"}

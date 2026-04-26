@@ -27,12 +27,13 @@ import {
   validateBaseUrl,
 } from './index';
 import { installPostToolUseHook, runHookCommand } from './hook';
+import { installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import type { ThinkResult, OrientResult, MarrowMemory } from './types';
 
 // Parse CLI args
-function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean } {
+function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean } {
   const args = process.argv.slice(2);
-  const result: { apiKey?: string; setup?: boolean; hook?: boolean } = {};
+  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
@@ -43,6 +44,9 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean } {
     }
     if (args[i] === 'hook' || args[i] === '--hook') {
       result.hook = true;
+    }
+    if (args[i] === 'context-hook' || args[i] === '--context-hook') {
+      result.contextHook = true;
     }
   }
   return result;
@@ -114,12 +118,21 @@ ${MARROW_BLOCK_END}`;
 
   const hookInstall = installPostToolUseHook(process.cwd());
   if (hookInstall.installed) {
-    process.stdout.write('Installed PostToolUse hook — your agent\'s tool calls now auto-log to Marrow. Set MARROW_AUTO_HOOK=false to disable.\n');
+    process.stdout.write('Installed PostToolUse hook — your agent\'s tool calls now auto-log to Marrow.\n');
   } else {
-    process.stdout.write('PostToolUse hook already installed — your agent\'s tool calls already auto-log to Marrow. Set MARROW_AUTO_HOOK=false to disable.\n');
+    process.stdout.write('PostToolUse hook already installed — agent tool calls auto-log to Marrow.\n');
   }
+
+  const contextHookInstall = installUserPromptSubmitHook(process.cwd());
+  if (contextHookInstall.installed) {
+    process.stdout.write('Installed UserPromptSubmit hook — Marrow will inject relevant context (warnings, hive patterns, similar past decisions) into your prompts automatically.\n');
+  } else {
+    process.stdout.write('UserPromptSubmit hook already installed — Marrow context is injected on every prompt.\n');
+  }
+
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
-  process.stdout.write('Your agent will now use Marrow automatically in every session.\n');
+  process.stdout.write('Set MARROW_AUTO_HOOK=false to disable both hooks.\n');
+  process.stdout.write('Your agent will now use Marrow automatically — both writing decisions AND reading past intelligence — in every session.\n');
   process.exit(0);
 }
 
@@ -127,6 +140,8 @@ const cliArgs = parseArgs();
 
 if (cliArgs.hook) {
   void runHookCommand();
+} else if (cliArgs.contextHook) {
+  void runContextHookCommand();
 } else if (cliArgs.setup) {
   runSetup();
 } else {
@@ -885,7 +900,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.6.0' },
+        serverInfo: { name: 'marrow', version: '3.7.0' },
       });
 
       // Auto-enroll: emit enrollment notification on connection

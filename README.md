@@ -47,6 +47,25 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
+## What's New in v3.7.0
+
+### Passive Context Injection (UserPromptSubmit hook)
+
+Marrow's passive loop is now complete. v3.2.0 shipped the **write side** — every tool call your agent makes is auto-logged via a PostToolUse hook. v3.7.0 ships the **read side** — Marrow's intelligence is auto-injected into your agent's prompt window via a UserPromptSubmit hook. No agent discipline required for either side.
+
+When you run `npx @getmarrow/mcp setup`, both hooks install automatically. From the next user prompt forward:
+
+1. You type a message to your agent
+2. Hook fires, takes your prompt, queries Marrow for relevant warnings + hive patterns + similar past decisions
+3. Marrow context (if any) is injected into your agent's view as `additionalContext`
+4. Agent responds knowing what failed last time, what worked, and what patterns to leverage
+
+The hook is fail-silent: 2-second timeout on the Marrow API call, errors swallowed, never blocks your prompt. No signal → no injection. `MARROW_AUTO_HOOK=false` disables both hooks. `MARROW_CONTEXT_HOOK_DEBUG=true` enables stderr diagnostics.
+
+This closes the loop Buu identified: Marrow now *just works* — your agent reads from the hive without you ever telling it to.
+
+---
+
 ## What's New in v3.6.0
 
 ### Agent-Narrated Marrow Contribution
