@@ -66,9 +66,7 @@ This closes the loop Buu identified: Marrow now *just works* — your agent read
 
 ---
 
-## What's New in v3.6.0
-
-### Agent-Narrated Marrow Contribution
+## Agent-Narrated Marrow Contribution
 
 Marrow now tells the agent exactly what it contributed to each decision, so the agent can surface that contribution to the user in plain English — no dashboard required.
 
@@ -103,7 +101,7 @@ The user installed Marrow to make their agent better. They should hear, in plain
 
 ---
 
-## Agent-Narrated Milestones (v3.5.0)
+## Agent-Narrated Milestones
 
 `marrow_commit` returns a `narrative` field. When a milestone fires (first commit, baseline capture, decision 100/500/1000/5000, weekly recap), the backend returns a human-readable string the agent relays to the user. Otherwise it returns `null`.
 
