@@ -232,6 +232,9 @@ else {
         }
         return val;
     }
+    function formatKeyMaterialWarning() {
+        return 'Copy this key now. Marrow will only show the full plaintext key once.';
+    }
     // [FIX #6 & #7] Safe JSON response helper for memory API functions
     async function safeMemoryResponse(res) {
         if (!res.ok) {
@@ -529,6 +532,59 @@ else {
             inputSchema: { type: 'object', properties: {}, required: [] },
         },
         {
+            name: 'marrow_create_key',
+            description: 'Create a new API key. Full plaintext key is returned once — copy it now.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'Human-readable key name' },
+                    key_type: { type: 'string', enum: ['live', 'test'], description: 'Key type (default: live)' },
+                    scopes: { type: 'array', items: { type: 'string' }, description: 'Allowed scopes' },
+                    agent_ids: { type: 'array', items: { type: 'string' }, description: 'Optional agent bindings' },
+                    expires_at: { type: 'string', description: 'Optional ISO-8601 expiry' },
+                },
+                required: ['name'],
+            },
+        },
+        {
+            name: 'marrow_list_keys',
+            description: 'List API keys. Keys are masked here by design.',
+            inputSchema: { type: 'object', properties: {}, required: [] },
+        },
+        {
+            name: 'marrow_get_key',
+            description: 'Get a single API key by ID. The key value is masked after creation.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string', description: 'API key ID' },
+                },
+                required: ['id'],
+            },
+        },
+        {
+            name: 'marrow_revoke_key',
+            description: 'Revoke an API key by ID.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string', description: 'API key ID' },
+                },
+                required: ['id'],
+            },
+        },
+        {
+            name: 'marrow_rotate_key',
+            description: 'Rotate an API key by ID. Full plaintext key is returned once — copy it now.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string', description: 'API key ID' },
+                },
+                required: ['id'],
+            },
+        },
+        {
             name: 'marrow_list_memories',
             description: 'List memories with optional filters (status, query, limit, agent_id for shared memories).',
             inputSchema: {
@@ -771,7 +827,7 @@ else {
                 success(id, {
                     protocolVersion: '2024-11-05',
                     capabilities: { tools: {}, prompts: {} },
-                    serverInfo: { name: 'marrow', version: '3.7.1' },
+                    serverInfo: { name: 'marrow', version: '3.8.0' },
                 });
                 // Auto-enroll: emit enrollment notification on connection
                 if (AUTO_ENROLL) {
@@ -1098,6 +1154,45 @@ This is not optional overhead — it's how you stop repeating the same failures.
                     const result = await (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
                     success(id, {
                         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+                    });
+                    return;
+                }
+                if (toolName === 'marrow_create_key') {
+                    const name = requireString(args, 'name');
+                    const result = await (0, index_1.marrowCreateKey)(API_KEY, BASE_URL, {
+                        name,
+                        key_type: args.key_type,
+                        scopes: args.scopes,
+                        agent_ids: args.agent_ids,
+                        expires_at: args.expires_at,
+                    }, SESSION_ID, FLEET_AGENT_ID);
+                    success(id, {
+                        content: [{ type: 'text', text: JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) }],
+                    });
+                    return;
+                }
+                if (toolName === 'marrow_list_keys') {
+                    const result = await (0, index_1.marrowListKeys)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                    success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                    return;
+                }
+                if (toolName === 'marrow_get_key') {
+                    const keyId = requireString(args, 'id');
+                    const result = await (0, index_1.marrowGetKey)(API_KEY, BASE_URL, keyId, SESSION_ID, FLEET_AGENT_ID);
+                    success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                    return;
+                }
+                if (toolName === 'marrow_revoke_key') {
+                    const keyId = requireString(args, 'id');
+                    const result = await (0, index_1.marrowRevokeKey)(API_KEY, BASE_URL, keyId, SESSION_ID, FLEET_AGENT_ID);
+                    success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                    return;
+                }
+                if (toolName === 'marrow_rotate_key') {
+                    const keyId = requireString(args, 'id');
+                    const result = await (0, index_1.marrowRotateKey)(API_KEY, BASE_URL, keyId, SESSION_ID, FLEET_AGENT_ID);
+                    success(id, {
+                        content: [{ type: 'text', text: JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) }],
                     });
                     return;
                 }

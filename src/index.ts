@@ -13,6 +13,17 @@ import type {
   MarrowDashboardResult,
   MarrowDigestResult,
 } from './types';
+import {
+  MarrowClient,
+  type CreateApiKeyParams,
+  type CreateApiKeyResult,
+  type GetKeyAuditParams,
+  type GetKeyAuditResult,
+  type ListApiKeysResult,
+  type MarrowApiKey,
+  type RevokeApiKeyResult,
+  type RotateApiKeyResult,
+} from '@getmarrow/sdk';
 
 export type { Narrative, CommitResult } from './types';
 
@@ -91,6 +102,69 @@ function buildHeaders(
     }
   }
   return headers;
+}
+
+function createSdkClient(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): MarrowClient {
+  return new MarrowClient(apiKey, { baseUrl, sessionId, agentId });
+}
+
+export async function marrowCreateKey(
+  apiKey: string,
+  baseUrl: string,
+  params: CreateApiKeyParams,
+  sessionId?: string,
+  agentId?: string
+): Promise<CreateApiKeyResult> {
+  return createSdkClient(apiKey, baseUrl, sessionId, agentId).createApiKey(params);
+}
+
+export async function marrowListKeys(
+  apiKey: string,
+  baseUrl: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<ListApiKeysResult> {
+  return createSdkClient(apiKey, baseUrl, sessionId, agentId).listApiKeys();
+}
+
+export async function marrowGetKey(
+  apiKey: string,
+  baseUrl: string,
+  id: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<MarrowApiKey | null> {
+  return createSdkClient(apiKey, baseUrl, sessionId, agentId).getApiKey(id);
+}
+
+export async function marrowRevokeKey(
+  apiKey: string,
+  baseUrl: string,
+  id: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<RevokeApiKeyResult> {
+  return createSdkClient(apiKey, baseUrl, sessionId, agentId).revokeApiKey(id);
+}
+
+export async function marrowRotateKey(
+  apiKey: string,
+  baseUrl: string,
+  id: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<RotateApiKeyResult> {
+  return createSdkClient(apiKey, baseUrl, sessionId, agentId).rotateApiKey(id);
+}
+
+export async function marrowGetKeyAudit(
+  apiKey: string,
+  baseUrl: string,
+  params?: GetKeyAuditParams,
+  sessionId?: string,
+  agentId?: string
+): Promise<GetKeyAuditResult> {
+  return createSdkClient(apiKey, baseUrl, sessionId, agentId).getKeyAudit(params);
 }
 
 /**

@@ -5,6 +5,12 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.validatePathParam = validatePathParam;
 exports.validateBaseUrl = validateBaseUrl;
+exports.marrowCreateKey = marrowCreateKey;
+exports.marrowListKeys = marrowListKeys;
+exports.marrowGetKey = marrowGetKey;
+exports.marrowRevokeKey = marrowRevokeKey;
+exports.marrowRotateKey = marrowRotateKey;
+exports.marrowGetKeyAudit = marrowGetKeyAudit;
 exports.marrowThink = marrowThink;
 exports.marrowCommit = marrowCommit;
 exports.marrowAuto = marrowAuto;
@@ -19,6 +25,7 @@ exports.marrowSessionEnd = marrowSessionEnd;
 exports.marrowAcceptDetected = marrowAcceptDetected;
 exports.marrowListTemplates = marrowListTemplates;
 exports.marrowInstallTemplate = marrowInstallTemplate;
+const sdk_1 = require("@getmarrow/sdk");
 /**
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots.
@@ -91,6 +98,27 @@ function buildHeaders(apiKey, sessionId, contentType, agentId) {
         }
     }
     return headers;
+}
+function createSdkClient(apiKey, baseUrl, sessionId, agentId) {
+    return new sdk_1.MarrowClient(apiKey, { baseUrl, sessionId, agentId });
+}
+async function marrowCreateKey(apiKey, baseUrl, params, sessionId, agentId) {
+    return createSdkClient(apiKey, baseUrl, sessionId, agentId).createApiKey(params);
+}
+async function marrowListKeys(apiKey, baseUrl, sessionId, agentId) {
+    return createSdkClient(apiKey, baseUrl, sessionId, agentId).listApiKeys();
+}
+async function marrowGetKey(apiKey, baseUrl, id, sessionId, agentId) {
+    return createSdkClient(apiKey, baseUrl, sessionId, agentId).getApiKey(id);
+}
+async function marrowRevokeKey(apiKey, baseUrl, id, sessionId, agentId) {
+    return createSdkClient(apiKey, baseUrl, sessionId, agentId).revokeApiKey(id);
+}
+async function marrowRotateKey(apiKey, baseUrl, id, sessionId, agentId) {
+    return createSdkClient(apiKey, baseUrl, sessionId, agentId).rotateApiKey(id);
+}
+async function marrowGetKeyAudit(apiKey, baseUrl, params, sessionId, agentId) {
+    return createSdkClient(apiKey, baseUrl, sessionId, agentId).getKeyAudit(params);
 }
 /**
  * Log intent and get collective intelligence before acting.

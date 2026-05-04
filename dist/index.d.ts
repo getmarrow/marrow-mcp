@@ -2,6 +2,7 @@
  * @getmarrow/mcp — API Functions
  */
 import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDigestResult } from './types';
+import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 export type { Narrative, CommitResult } from './types';
 /**
  * Validate a path parameter to prevent path traversal attacks.
@@ -12,6 +13,12 @@ export declare function validatePathParam(value: string, paramName: string): str
  * Validate and sanitize a base URL. Requires HTTPS.
  */
 export declare function validateBaseUrl(rawUrl: string): string;
+export declare function marrowCreateKey(apiKey: string, baseUrl: string, params: CreateApiKeyParams, sessionId?: string, agentId?: string): Promise<CreateApiKeyResult>;
+export declare function marrowListKeys(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<ListApiKeysResult>;
+export declare function marrowGetKey(apiKey: string, baseUrl: string, id: string, sessionId?: string, agentId?: string): Promise<MarrowApiKey | null>;
+export declare function marrowRevokeKey(apiKey: string, baseUrl: string, id: string, sessionId?: string, agentId?: string): Promise<RevokeApiKeyResult>;
+export declare function marrowRotateKey(apiKey: string, baseUrl: string, id: string, sessionId?: string, agentId?: string): Promise<RotateApiKeyResult>;
+export declare function marrowGetKeyAudit(apiKey: string, baseUrl: string, params?: GetKeyAuditParams, sessionId?: string, agentId?: string): Promise<GetKeyAuditResult>;
 /**
  * Log intent and get collective intelligence before acting.
  */
