@@ -67,7 +67,16 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ### Standalone CLI + Multi-API-Key Management
 
-Five new MCP tools for managing API keys across your agent fleet — no dashboard required:
+**Standalone CLI commands (new in v3.9.0):**
+```bash
+npx @getmarrow/mcp keys create --name "Prod" --type live
+npx @getmarrow/mcp keys list
+npx @getmarrow/mcp keys rotate --id key_abc123
+npx @getmarrow/mcp keys revoke --id key_abc123
+npx @getmarrow/mcp keys audit --limit 20
+```
+
+**MCP tools (for Claude/Cursor agents):**
 
 - `marrow_create_key` — Create named, scoped API keys (`live`/`test` type, optional scopes and agent bindings)
 - `marrow_list_keys` — List all API keys with masked display and tier limits
