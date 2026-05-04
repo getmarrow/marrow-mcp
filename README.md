@@ -63,7 +63,7 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.3
+## What's New in v3.9.4
 
 ### Standalone CLI + Multi-API-Key Management
 
