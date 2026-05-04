@@ -28,6 +28,7 @@ import {
   marrowGetKey,
   marrowRevokeKey,
   marrowRotateKey,
+  marrowGetKeyAudit,
   validatePathParam,
   validateBaseUrl,
 } from './index';
@@ -142,6 +143,85 @@ ${MARROW_BLOCK_END}`;
 }
 
 const cliArgs = parseArgs();
+
+function formatKeyMaterialWarning(): string {
+  return 'Copy this key now. Marrow will only show the full plaintext key once.';
+}
+
+// ─── Standalone CLI: key management ───
+if (process.argv[2] === 'keys') {
+  const cmd = process.argv[3];
+  const API_KEY = cliArgs.apiKey || process.env.MARROW_API_KEY || '';
+  if (!API_KEY) {
+    process.stderr.write('Error: MARROW_API_KEY required. Use --key or set MARROW_API_KEY env var.\n');
+    process.exit(1);
+  }
+
+  const getFlag = (name: string, short?: string): string | undefined => {
+    const idx = process.argv.findIndex(a => a === `--${name}` || (short ? a === `-${short}` : false));
+    return idx >= 0 ? process.argv[idx + 1] : undefined;
+  };
+  const getFlagList = (name: string): string[] => {
+    const val = getFlag(name);
+    return val ? val.split(',').map(s => s.trim()) : [];
+  };
+
+  const runCli = async () => {
+    try {
+      if (cmd === 'create') {
+        const name = getFlag('name', 'n');
+        if (!name) { process.stderr.write('Error: --name required\n'); process.exit(1); }
+        const result = await marrowCreateKey(API_KEY, 'https://api.getmarrow.ai', {
+          name,
+          key_type: (getFlag('type', 't') || 'live') as 'live' | 'test',
+          scopes: getFlagList('scopes') as any,
+          agent_ids: getFlagList('agents'),
+          expires_at: getFlag('expires'),
+        }, undefined, undefined);
+        process.stdout.write(JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) + '\n');
+      } else if (cmd === 'list') {
+        const result = await marrowListKeys(API_KEY, 'https://api.getmarrow.ai', undefined, undefined);
+        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      } else if (cmd === 'get') {
+        const id = getFlag('id', 'i') || process.argv[4];
+        if (!id) { process.stderr.write('Error: --id required\n'); process.exit(1); }
+        const result = await marrowGetKey(API_KEY, 'https://api.getmarrow.ai', id, undefined, undefined);
+        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      } else if (cmd === 'rotate') {
+        const id = getFlag('id', 'i') || process.argv[4];
+        if (!id) { process.stderr.write('Error: --id required\n'); process.exit(1); }
+        const result = await marrowRotateKey(API_KEY, 'https://api.getmarrow.ai', id, undefined, undefined);
+        process.stdout.write(JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) + '\n');
+      } else if (cmd === 'revoke') {
+        const id = getFlag('id', 'i') || process.argv[4];
+        if (!id) { process.stderr.write('Error: --id required\n'); process.exit(1); }
+        const result = await marrowRevokeKey(API_KEY, 'https://api.getmarrow.ai', id, undefined, undefined);
+        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      } else if (cmd === 'audit') {
+        const limit = parseInt(getFlag('limit', 'l') || '20', 10);
+        const result = await marrowGetKeyAudit(API_KEY, 'https://api.getmarrow.ai', { limit }, undefined, undefined);
+        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      } else {
+        process.stderr.write(`Usage: npx @getmarrow/mcp keys <create|list|get|rotate|revoke|audit> [options]\n\n`);
+        process.stderr.write(`  create  --name <name> [--type live|test] [--scopes scope1,scope2] [--agents id1,id2] [--expires ISO]\n`);
+        process.stderr.write(`  list\n`);
+        process.stderr.write(`  get     --id <key-id>\n`);
+        process.stderr.write(`  rotate  --id <key-id>\n`);
+        process.stderr.write(`  revoke  --id <key-id>\n`);
+        process.stderr.write(`  audit   [--limit <n>]\n`);
+        process.stderr.write(`\nOptions: --key <api-key>\n`);
+        process.exit(1);
+      }
+    } catch (e: any) {
+      process.stderr.write(`Error: ${e.message || e}\n`);
+      process.exit(1);
+    }
+  };
+  void runCli().then(() => process.exit(0));
+}
+
+// Only start MCP server if not handling a CLI command
+if (process.argv[2] !== 'keys') {
 
 if (cliArgs.hook) {
   void runHookCommand();
@@ -287,10 +367,6 @@ function requireString(args: Record<string, unknown>, name: string): string {
     throw new Error(`"${name}" is required and must be a non-empty string`);
   }
   return val;
-}
-
-function formatKeyMaterialWarning(): string {
-  return 'Copy this key now. Marrow will only show the full plaintext key once.';
 }
 
 // [FIX #6 & #7] Safe JSON response helper for memory API functions
@@ -1633,4 +1709,5 @@ process.stdin.on('error', (err) => {
   process.stderr.write(`[marrow] stdin error: ${err}\n`);
   process.exit(1);
 });
+} // Close the if (process.argv[2] !== 'keys') block
 }
