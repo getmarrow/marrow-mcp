@@ -5,7 +5,7 @@
 ![npm](https://img.shields.io/npm/v/@getmarrow/mcp)
 ![npm](https://img.shields.io/npm/dw/@getmarrow/mcp)
 ![npm bundle size](https://img.shields.io/bundlephobia/minzip/@getmarrow/mcp)
-![GitHub](https://img.shields.io/github/license/MajinBuu0x9/marrow-mcp)
+![GitHub](https://img.shields.io/github/license/getmarrow/marrow-mcp)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)
 ![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)
 
