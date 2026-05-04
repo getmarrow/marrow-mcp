@@ -28,7 +28,13 @@
     "learning",
     "Model Context Protocol",
     "TypeScript",
-    "Node.js"
+    "Node.js",
+    "key-management",
+    "api-key",
+    "multi-key",
+    "api-key-management",
+    "cli-key-management",
+    "standalone-cli"
   ],
   "repository": {
     "type": "git",
