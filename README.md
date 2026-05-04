@@ -225,7 +225,7 @@ Convert a detected recurring pattern into an enforced workflow. Pattern ID comes
 - **Media (1):** `content-publish`
 - **Enterprise (1):** `change-management`
 
-Full catalog with descriptions: [getmarrow.ai/docs#template-marketplace](https://getmarrow.ai/docs/#template-marketplace)
+Full catalog with descriptions: [https://getmarrow.ai/docs/#template-marketplace](https://getmarrow.ai/docs/#template-marketplace)
 
 ```
 marrow_list_templates({ industry: 'insurance' })
@@ -525,5 +525,4 @@ MIT
 
 - **[@getmarrow/sdk](https://www.npmjs.com/package/@getmarrow/sdk)** — TypeScript/Node.js SDK for programmatic access to Marrow. Use this for custom agent integrations outside of MCP.
 
-**📖 Full API reference with all endpoints:**
-**[getmarrow.ai/docs/#api-reference](https://getmarrow.ai/docs/#api-reference)**
+**📖 Full API reference with all endpoints:** [https://getmarrow.ai/docs/#api-reference](https://getmarrow.ai/docs/#api-reference)
