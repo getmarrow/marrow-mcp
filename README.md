@@ -63,9 +63,9 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.8.0
+## What's New in v3.9.3
 
-### Multi-API-Key Management Tools
+### Standalone CLI + Multi-API-Key Management
 
 Five new MCP tools for managing API keys across your agent fleet — no dashboard required:
 
