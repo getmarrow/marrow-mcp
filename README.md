@@ -53,7 +53,7 @@ Add to your Claude Desktop or MCP client config:
 | `marrow_digest` | Weekly summary with trends |
 | `marrow_session_end` | Close session with summary |
 
-### 🆕 v3.9.0 — Standalone CLI + Multi-API-Key Management
+### 🆕 v3.9.1 — Standalone CLI + Multi-API-Key Management
 
 **Standalone CLI commands:**
 ```bash
