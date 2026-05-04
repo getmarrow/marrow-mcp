@@ -17,6 +17,22 @@ With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, i
 
 ---
 
+## Auto-Logging
+
+Marrow auto-logs at three layers — transparent to your agent, invisible to you:
+
+| Layer | How | Agent effort |
+|-------|-----|-------------|
+| Server-side | Every authenticated API call auto-logged as a decision | Zero |
+| SDK | `marrow.think()` / `marrow.commit()` — explicit control | Minimal |
+| MCP hooks | `npx @getmarrow/mcp setup` — PostToolUse + UserPromptSubmit hooks | Zero |
+
+**Passive mode in action:** Run `npx @getmarrow/mcp setup` once. Every tool call your agent makes (Bash, file edits, MCP calls) is auto-logged in the background. Marrow intelligence is auto-injected into your agent's context. Fail-silent, 2-second timeout, never blocks your prompt.
+
+Disable: `MARROW_AUTO_HOOK=false`. Debug: `MARROW_HOOK_DEBUG=true`.
+
+---
+
 ## Improvement Since Onboarding
 
 `marrow_dashboard` and `marrow_digest` now return an `improvement` block comparing your agents' current performance against their day-1 baseline — a frozen snapshot of the first week of activity. Baseline captures automatically once an account reaches 7 days OR 20 decisions (whichever first).
