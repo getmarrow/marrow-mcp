@@ -1,18 +1,50 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AUTO_HOOK_MATCHER = exports.AUTO_HOOK_COMMAND = void 0;
+exports.shouldSkipAutoLog = shouldSkipAutoLog;
 exports.installPostToolUseHook = installPostToolUseHook;
 exports.runHookCommand = runHookCommand;
 const index_1 = require("./index");
 const SKIP_TOOLS = new Set([
-    'Read',
-    'Grep',
-    'Glob',
-    'LS',
-    'NotebookRead',
-    'TodoRead',
-    'TaskList',
-    'TaskGet',
+    'read',
+    'grep',
+    'glob',
+    'ls',
+    'notebookread',
+    'todoread',
+    'tasklist',
+    'taskget',
+    'sessions_list',
+    'sessions_history',
+    'session_status',
+    'marrow_list_memories',
+    'marrow_retrieve_memories',
+    'marrow_get_memory',
+    'marrow_dashboard',
+    'marrow_digest',
+    'marrow_status',
+    'marrow_orient',
+    'marrow_ask',
+]);
+const READ_ONLY_BASH_COMMANDS = new Set([
+    'read',
+    'grep',
+    'ls',
+    'cat',
+    'find',
+    'tail',
+    'head',
+    'wc',
+    'file',
+    'stat',
+    'which',
+    'type',
+    'echo',
+    'pwd',
+    'date',
+    'env',
+    'whoami',
+    'uname',
 ]);
 exports.AUTO_HOOK_COMMAND = 'npx -y @getmarrow/mcp hook';
 exports.AUTO_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*';
@@ -28,6 +60,9 @@ function asRecord(value) {
 }
 function getString(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+function normalizeToolName(toolName) {
+    return toolName.replace(/^mcp__/, '').trim().toLowerCase();
 }
 function truncate(value, max) {
     if (value.length <= max)
@@ -55,6 +90,56 @@ function extractFilePath(toolInput) {
 }
 function extractDescription(toolInput) {
     return getString(toolInput.description);
+}
+function isPathOnlyInput(toolInput) {
+    const record = asRecord(toolInput);
+    if (!record)
+        return false;
+    const keys = Object.keys(record);
+    if (keys.length === 0)
+        return false;
+    if (!keys.every((key) => ['path', 'file_path', 'filename', 'target_file'].includes(key))) {
+        return false;
+    }
+    return Object.values(record).every((value) => typeof value === 'string' && value.trim().length > 0);
+}
+function hasWriteLikeShellSyntax(command) {
+    if (/(^|[^>])>(?!>)|>>|\btee\b|\btouch\b|\bmkdir\b|\brm\b|\bmv\b|\bcp\b|\binstall\b|\buninstall\b|\bpublish\b|\bsed\s+-i\b|\bperl\s+-i\b/i.test(command)) {
+        return true;
+    }
+    if (/\b(curl|wget|nc|ncat|netcat|scp|rsync|ssh|ftp|tftp)\b/i.test(command)) {
+        return true;
+    }
+    return false;
+}
+function shouldSkipBashCommand(command) {
+    const normalized = normalizeWhitespace(command);
+    if (!normalized || hasWriteLikeShellSyntax(normalized))
+        return false;
+    if (/^node\s+-v(?:ersion)?$/i.test(normalized) || /^npm\s+-v(?:ersion)?$/i.test(normalized)) {
+        return true;
+    }
+    const firstToken = normalized.split(/[\s|;&]+/, 1)[0]?.toLowerCase();
+    return !!firstToken && READ_ONLY_BASH_COMMANDS.has(firstToken);
+}
+function shouldSkipAutoLog(event) {
+    const rawToolName = getString(event.tool_name);
+    if (!rawToolName)
+        return true;
+    const toolName = normalizeToolName(rawToolName);
+    if (SKIP_TOOLS.has(toolName))
+        return true;
+    if (toolName.startsWith('marrow_') && SKIP_TOOLS.has(toolName))
+        return true;
+    const toolInput = asRecord(event.tool_input) || {};
+    const command = getString(toolInput.command) || extractDescription(toolInput) || extractFirstArg(event.tool_input);
+    if (toolName === 'bash' && command && shouldSkipBashCommand(command)) {
+        return true;
+    }
+    if (toolName !== 'edit' && toolName !== 'write' && toolName !== 'multiedit' && isPathOnlyInput(event.tool_input)) {
+        return true;
+    }
+    return false;
 }
 function extractFirstArg(toolInput) {
     if (typeof toolInput === 'string')
@@ -102,7 +187,7 @@ function buildMcpArgsSummary(toolInput) {
 }
 function deriveAction(event) {
     const toolName = getString(event.tool_name);
-    if (!toolName || SKIP_TOOLS.has(toolName))
+    if (!toolName || shouldSkipAutoLog(event))
         return null;
     if (toolName.startsWith('mcp__marrow_'))
         return null;
@@ -253,6 +338,11 @@ async function runHookCommand() {
         }
         catch {
             debug('[marrow-hook] skipped invalid JSON');
+            process.exit(0);
+            return;
+        }
+        if (shouldSkipAutoLog(event)) {
+            debug('[marrow-hook] skipped read-only tool');
             process.exit(0);
             return;
         }
