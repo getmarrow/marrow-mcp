@@ -63,9 +63,15 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.4
+## What's New in v3.9.9
 
-### Standalone CLI + Multi-API-Key Management
+### Hook Noise Filtering
+
+MCP hooks now skip auto-logging for read-only operations. Tools like `read`, `grep`, `ls`, `sessions_list`, `marrow_list_memories`, and other context-read operations no longer generate Marrow decisions. Only meaningful tool calls (edits, writes, deploys) are logged.
+
+This reduces noise in your decision history and keeps your Marrow training data clean — automatically, no agent discipline required.
+
+### Previous: v3.9.4 — Standalone CLI + Multi-API-Key Management
 
 **Standalone CLI commands (new in v3.9.0):**
 ```bash
