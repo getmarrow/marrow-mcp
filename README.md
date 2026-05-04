@@ -47,9 +47,29 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.7.0
+## What's New in v3.8.0
 
-### Passive Context Injection (UserPromptSubmit hook)
+### Multi-API-Key Management Tools
+
+Five new MCP tools for managing API keys across your agent fleet — no dashboard required:
+
+- `marrow_create_key` — Create named, scoped API keys (`live`/`test` type, optional scopes and agent bindings)
+- `marrow_list_keys` — List all API keys with masked display and tier limits
+- `marrow_get_key` — Get key details, usage stats, and expiry info
+- `marrow_revoke_key` — Permanently revoke a key
+- `marrow_rotate_key` — Atomically rotate (revoke old + create new, returns new key once)
+
+Create/rotate return the full key exactly once with a warning. All other tools return masked keys only.
+
+```bash
+npx @getmarrow/mcp --key mrw_...
+# Now available: marrow_create_key, marrow_list_keys, marrow_get_key,
+#                 marrow_revoke_key, marrow_rotate_key
+```
+
+---
+
+### Previous: v3.7.0 — Passive Context Injection
 
 Marrow's passive loop is now complete. v3.2.0 shipped the **write side** — every tool call your agent makes is auto-logged via a PostToolUse hook. v3.7.0 ships the **read side** — Marrow's intelligence is auto-injected into your agent's prompt window via a UserPromptSubmit hook. No agent discipline required for either side.
 
