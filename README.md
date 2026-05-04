@@ -53,7 +53,18 @@ Add to your Claude Desktop or MCP client config:
 | `marrow_digest` | Weekly summary with trends |
 | `marrow_session_end` | Close session with summary |
 
-### 🆕 v3.8.2 — Multi-API-Key Management
+### 🆕 v3.9.0 — Standalone CLI + Multi-API-Key Management
+
+**Standalone CLI commands:**
+```bash
+npx @getmarrow/mcp keys create --name "Prod" --type live
+npx @getmarrow/mcp keys list
+npx @getmarrow/mcp keys rotate --id key_abc123
+npx @getmarrow/mcp keys revoke --id key_abc123
+npx @getmarrow/mcp keys audit --limit 20
+```
+
+**MCP tools (for Claude/Cursor agents):**
 
 | Tool | Description |
 |------|-------------|
