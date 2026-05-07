@@ -12,6 +12,8 @@ import type {
   WorkflowResult,
   MarrowDashboardResult,
   MarrowDigestResult,
+  MarrowAgentStatusResult,
+  MarrowNudgeResult,
 } from './types';
 import {
   MarrowClient,
@@ -615,6 +617,43 @@ export async function marrowDigest(
 ): Promise<MarrowDigestResult> {
   const days = parseInt(period) || 7;
   const res = await fetch(`${baseUrl}/v1/digest?period=${days}`, {
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+/**
+ * Get agent-native proof that Marrow is active and collecting useful signal.
+ */
+export async function marrowAgentStatus(
+  apiKey: string,
+  baseUrl: string,
+  period: string = '7d',
+  agentIdFilter?: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<MarrowAgentStatusResult> {
+  const days = parseInt(period) || 7;
+  const qs = new URLSearchParams({ period: String(days) });
+  if (agentIdFilter) qs.set('agent_id', agentIdFilter);
+  const res = await fetch(`${baseUrl}/v1/analytics/agent-status?${qs.toString()}`, {
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+/**
+ * Get a periodic improvement nudge when Marrow has something worth surfacing.
+ */
+export async function marrowNudge(
+  apiKey: string,
+  baseUrl: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<MarrowNudgeResult> {
+  const res = await fetch(`${baseUrl}/v1/agent/nudge`, {
     headers: buildHeaders(apiKey, sessionId, undefined, agentId),
   });
   const json = await safeJsonResponse(res);

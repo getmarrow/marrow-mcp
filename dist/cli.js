@@ -853,6 +853,20 @@ if (process.argv[2] !== 'keys') {
                 },
             },
             {
+                name: 'marrow_agent_status',
+                description: 'Check whether Marrow is passively active for this agent or fleet. ' +
+                    'Returns connected state, signal quality, non-sensitive proof, and next actions. ' +
+                    'Use at session start or before owner reporting to prove Marrow is working without a dashboard.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        period: { type: 'string', description: 'Time period: 7d (default), 14d, or 30d' },
+                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to MARROW_AGENT_ID.' },
+                    },
+                    required: [],
+                },
+            },
+            {
                 name: 'marrow_session_end',
                 description: 'Explicitly end the current session. Optionally auto-commits any open decision. ' +
                     'Prevents orphaned decisions when an agent finishes a task.',
@@ -917,7 +931,7 @@ if (process.argv[2] !== 'keys') {
                     success(id, {
                         protocolVersion: '2024-11-05',
                         capabilities: { tools: {}, prompts: {} },
-                        serverInfo: { name: 'marrow', version: '3.8.0' },
+                        serverInfo: { name: 'marrow', version: '3.9.12' },
                     });
                     // Auto-enroll: emit enrollment notification on connection
                     if (AUTO_ENROLL) {
@@ -1373,6 +1387,11 @@ This is not optional overhead — it's how you stop repeating the same failures.
                     }
                     if (toolName === 'marrow_digest') {
                         const result = await (0, index_1.marrowDigest)(API_KEY, BASE_URL, args.period || '7d', SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_agent_status') {
+                        const result = await (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }

@@ -19,6 +19,7 @@ import {
   marrowWorkflow,
   marrowDashboard,
   marrowDigest,
+  marrowAgentStatus,
   marrowSessionEnd,
   marrowAcceptDetected,
   marrowListTemplates,
@@ -963,6 +964,21 @@ const TOOLS = [
     },
   },
   {
+    name: 'marrow_agent_status',
+    description:
+      'Check whether Marrow is passively active for this agent or fleet. ' +
+      'Returns connected state, signal quality, non-sensitive proof, and next actions. ' +
+      'Use at session start or before owner reporting to prove Marrow is working without a dashboard.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        period: { type: 'string', description: 'Time period: 7d (default), 14d, or 30d' },
+        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to MARROW_AGENT_ID.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'marrow_session_end',
     description:
       'Explicitly end the current session. Optionally auto-commits any open decision. ' +
@@ -1038,7 +1054,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.8.0' },
+        serverInfo: { name: 'marrow', version: '3.9.12' },
       });
 
       // Auto-enroll: emit enrollment notification on connection
@@ -1588,6 +1604,20 @@ This is not optional overhead — it's how you stop repeating the same failures.
         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
         return;
       }
+
+      if (toolName === 'marrow_agent_status') {
+        const result = await marrowAgentStatus(
+          API_KEY,
+          BASE_URL,
+          (args.period as string) || '7d',
+          (args.agentId as string) || AGENT_ID,
+          SESSION_ID,
+          FLEET_AGENT_ID
+        );
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
 
       if (toolName === 'marrow_session_end') {
         const result = await marrowSessionEnd(API_KEY, BASE_URL, Boolean(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);
