@@ -22,6 +22,7 @@ exports.marrowWorkflow = marrowWorkflow;
 exports.marrowDashboard = marrowDashboard;
 exports.marrowDigest = marrowDigest;
 exports.marrowAgentStatus = marrowAgentStatus;
+exports.marrowDecisionBrief = marrowDecisionBrief;
 exports.marrowNudge = marrowNudge;
 exports.marrowSessionEnd = marrowSessionEnd;
 exports.marrowAcceptDetected = marrowAcceptDetected;
@@ -466,6 +467,23 @@ async function marrowAgentStatus(apiKey, baseUrl, period = '7d', agentIdFilter, 
         qs.set('agent_id', agentIdFilter);
     const res = await fetch(`${baseUrl}/v1/analytics/agent-status?${qs.toString()}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+/**
+ * Get one pre-action operating brief for risky or meaningful agent work.
+ */
+async function marrowDecisionBrief(apiKey, baseUrl, input, sessionId, agentId) {
+    const body = {
+        ...input,
+        agent_id: input.agent_id || agentId,
+        session_id: input.session_id || sessionId,
+    };
+    const res = await fetch(`${baseUrl}/v1/analytics/decision-brief`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify(body),
     });
     const json = await safeJsonResponse(res);
     return json.data;

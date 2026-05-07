@@ -20,6 +20,7 @@ import {
   marrowDashboard,
   marrowDigest,
   marrowAgentStatus,
+  marrowDecisionBrief,
   marrowSessionEnd,
   marrowAcceptDetected,
   marrowListTemplates,
@@ -73,9 +74,11 @@ function runSetup(): void {
 You have Marrow MCP connected. Use it on EVERY session automatically:
 
 1. **Session start:** Call \`marrow_orient\` FIRST before any work. It warns you about past failures.
-2. **Before meaningful actions:** Call \`marrow_auto({ action: "what you're about to do" })\` — deploys, file changes, config changes, publishes.
-3. **After actions:** Call \`marrow_auto({ action: "what you did", outcome: "what happened", success: true/false })\`.
-4. **To query history:** Call \`marrow_ask("plain english question")\` — ask what failed, what worked, what to avoid.
+2. **Before risky actions:** Call \`marrow_decision_brief({ action: "what you're about to do" })\` — deploys, publishes, merges, audits, patches, secret changes, production work. One call returns risk, workflow, handoff, checks, proof pack, and next actions.
+3. **Before acting:** Still log intent with \`marrow_auto({ action: "what you're about to do" })\` or \`marrow_think\`. The decision brief is guidance, not a replacement for the Marrow loop.
+4. **Before normal meaningful actions:** Call \`marrow_auto({ action: "what you're about to do" })\` — file changes, config changes, implementation work.
+5. **After actions:** Call \`marrow_auto({ action: "what you did", outcome: "what happened", success: true/false })\`.
+6. **To query history:** Call \`marrow_ask("plain english question")\` — ask what failed, what worked, what to avoid.
 
 Do NOT skip logging. Every decision you log compounds — failure rates drop, patterns emerge, the next session starts smarter. This is not optional overhead.
 
@@ -979,6 +982,30 @@ const TOOLS = [
     },
   },
   {
+    name: 'marrow_decision_brief',
+    description:
+      'One pre-action call before meaningful or risky work. Returns risk level, workflow/playbook steps, ' +
+      'handoff requirements, freshness/source-of-truth checks, minimum verification checks, proof-pack fields, ' +
+      'and next actions. Use this before deploys, publishes, merges, audits, patches, secret changes, or production work.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: 'What the agent is about to do.' },
+        type: { type: 'string', description: 'Decision type, e.g. deploy, audit, patch, review.' },
+        role: { type: 'string', description: 'Agent role/playbook: deploy, audit, patch, review, or general.' },
+        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to MARROW_AGENT_ID.' },
+        sessionId: { type: 'string', description: 'Optional session id. Defaults to MARROW_SESSION_ID.' },
+        surfaces: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Surfaces to keep current, e.g. github, npm, docs, production, secrets.',
+        },
+        period: { type: 'number', description: 'Lookback period in days, default 7, max 90.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'marrow_session_end',
     description:
       'Explicitly end the current session. Optionally auto-commits any open decision. ' +
@@ -1618,6 +1645,25 @@ This is not optional overhead — it's how you stop repeating the same failures.
         return;
       }
 
+      if (toolName === 'marrow_decision_brief') {
+        const result = await marrowDecisionBrief(
+          API_KEY,
+          BASE_URL,
+          {
+            action: args.action as string,
+            type: args.type as string | undefined,
+            role: args.role as string | undefined,
+            agent_id: (args.agentId as string) || AGENT_ID,
+            session_id: (args.sessionId as string) || SESSION_ID,
+            surfaces: Array.isArray(args.surfaces) ? args.surfaces as string[] : undefined,
+            period: args.period as number | undefined,
+          },
+          SESSION_ID,
+          FLEET_AGENT_ID
+        );
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
 
       if (toolName === 'marrow_session_end') {
         const result = await marrowSessionEnd(API_KEY, BASE_URL, Boolean(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);
