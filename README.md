@@ -63,7 +63,9 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.13
+## What's New in v3.9.14
+
+v3.9.14 is a README-only patch release for npmjs. It keeps the package page focused on the current install surface and sends full feature history, examples, and API reference to [getmarrow.ai/docs](https://getmarrow.ai/docs/).
 
 ### Decision Brief Tool
 
