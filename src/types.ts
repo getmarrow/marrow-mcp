@@ -2,14 +2,56 @@
  * @getmarrow/mcp — Type Definitions
  */
 
-export type Narrative = string | null;
+import type {
+  ActionableInsight as SdkActionableInsight,
+  CommitContribution as SdkCommitContribution,
+  MarrowAskResult as SdkMarrowAskResult,
+  MarrowDashboardResult as SdkMarrowDashboardResult,
+  MarrowDigestResult as SdkMarrowDigestResult,
+  MarrowMemory as SdkMarrowMemory,
+  Narrative as SdkNarrative,
+  ThinkContribution as SdkThinkContribution,
+  VelocityMetric as SdkVelocityMetric,
+} from '@getmarrow/sdk/dist/types';
 
-export interface ActionableInsight {
-  type: 'frequency' | 'failure_pattern' | 'workflow_gap' | 'hive_trend';
+export type Narrative = SdkNarrative;
+export type ActionableInsight = SdkActionableInsight;
+export type ThinkContribution = SdkThinkContribution;
+export type CommitContribution = SdkCommitContribution;
+export type MarrowMemory = SdkMarrowMemory;
+export type MarrowAskResult = SdkMarrowAskResult;
+export type VelocityMetric = SdkVelocityMetric;
+export type MarrowDashboardResult = SdkMarrowDashboardResult;
+export type MarrowDigestResult = SdkMarrowDigestResult;
+
+export interface MarrowAgentStatusResult {
+  period: { days: number; start: string; end: string };
+  scope: { agent_id: string | null };
+  active: boolean;
+  state: 'inactive' | 'warming_up' | 'needs_outcomes' | 'learning' | 'proving_value';
   summary: string;
-  action: string;
-  severity: 'info' | 'warning' | 'critical';
-  count: number;
+  signals: {
+    decisions_logged: number;
+    outcomes_recorded: number;
+    outcome_coverage: number;
+    success_rate: number;
+    saves: { period: number; total: number };
+    active_agents: number;
+    first_decision_at: string | null;
+    last_decision_at: string | null;
+  };
+  quality: {
+    enough_signal: boolean;
+    measurement_risk: 'low' | 'medium' | 'high';
+  };
+  proof: {
+    recent_decision_count: number;
+    last_decision_at: string | null;
+    has_recent_outcomes: boolean;
+    has_prevented_failures: boolean;
+    raw_data_exposed: false;
+  };
+  next_actions: string[];
 }
 
 export interface MarrowIntelligence {
@@ -58,27 +100,6 @@ export interface ThinkResult {
   }>;
 }
 
-/** V6.7: what Marrow contributed for this commit. Agent narrates if has_signal=true. */
-export interface CommitContribution {
-  success: boolean;
-  pattern_reused: boolean;
-  linked_to_prior_decision: boolean;
-  warning_avoided: boolean;
-  has_signal: boolean;
-}
-
-/** V6.7: what Marrow contributed for this think. Agent narrates if has_signal=true. */
-export interface ThinkContribution {
-  warnings_consulted: number;
-  hive_patterns_surfaced: number;
-  similar_decisions_found: number;
-  workflow_templates_available: number;
-  loop_detected: boolean;
-  collective_intelligence: boolean;
-  team_context_present: boolean;
-  has_signal: boolean;
-}
-
 export interface CommitResult {
   committed: boolean;
   success_rate: number;
@@ -117,28 +138,6 @@ export interface AgentPatternsResult {
   generated_at: string;
 }
 
-export interface MarrowAskResult {
-  answer: string;
-  stats: {
-    total: number;
-    success: number;
-    failure: number;
-    failure_rate: number;
-  } | null;
-  top_outcomes: string[];
-  decisions_matched: number;
-}
-
-export interface MarrowMemory {
-  id: string;
-  text: string;
-  status: string;
-  createdAt: string;
-  updatedAt: string;
-  source: string | null;
-  tags: string[];
-}
-
 export interface OrientResult {
   warnings: Array<{
     type: string;
@@ -161,74 +160,22 @@ export interface WorkflowResult {
   error?: string;
 }
 
-export interface VelocityMetric {
-  current: number;
-  previous: number;
-  delta_pct: number;
-  direction: 'improving' | 'declining' | 'stable';
-}
-
-export interface Velocity {
-  attempts_per_success: VelocityMetric;
-  time_to_success_seconds: VelocityMetric;
-  drift_rate: VelocityMetric;
-}
-
-/** Baseline → current delta for a single improvement metric. */
-export interface ImprovementMetricDelta {
-  baseline: number;
-  current: number;
-  delta_pct: number;
-}
-
-/** Active improvement block — returned once baseline has been captured. */
-export interface ImprovementActive {
-  status: 'active';
-  days_since_baseline: number;
-  decisions_since_baseline: number;
-  baseline_captured_at: string;
-  trigger_reason: 'time_7d' | 'volume_20';
-  attempts_per_success: ImprovementMetricDelta;
-  time_to_success_seconds: ImprovementMetricDelta;
-  /** 0-100 percentage. Lower = more pattern reuse, less rediscovery. */
-  drift_rate: ImprovementMetricDelta;
-  /** 0-1 fraction. Higher = better. */
-  success_rate: ImprovementMetricDelta;
-}
-
-/** Onboarding payload — returned until an account has 7 days OR 20 decisions. */
-export interface ImprovementOnboarding {
-  status: 'onboarding';
-  days_elapsed: number;
-  decisions_elapsed: number;
-  days_until_time_trigger: number;
-  decisions_until_volume_trigger: number;
-  reason: string;
-}
-
-export type Improvement = ImprovementActive | ImprovementOnboarding;
-
-export interface MarrowDashboardResult {
-  account: { agent_count: number; total_decisions: number; active_since: string };
-  health: { overall_score: number; label: string; success_rate_7d: number; success_rate_30d: number; trend: string; trend_delta: number };
-  top_failures: Array<{ decision_type: string; failure_rate: number; count: number; last_seen: string; top_reason: string | null }>;
-  workflow_status: { active: number; completed_this_week: number; stalled: number; stalled_workflows: Array<{ instance_id: string; workflow_name: string; stalled_at_step: number; stalled_since: string; waiting_for: string }> };
-  impact: { saves_this_week: number; saves_total: number; failures_prevented_details: Array<unknown> };
-  velocity: Velocity;
-  improvement: Improvement;
-  recent_decisions: { today: number; this_week: number; by_type: Record<string, number> };
-}
-
-export interface MarrowDigestResult {
-  period: string;
-  summary: string;
-  decisions: { total: number; successful: number; failed: number };
-  success_rate: { current: number; previous_period: number; change: number; direction: string };
-  saves: { count: number; details: unknown[] };
-  velocity: Velocity;
-  improvement: Improvement;
-  top_improvements: string[];
-  top_risks: string[];
-  workflows_completed: number;
-  workflows_stalled: number;
+export interface MarrowNudgeResult {
+  nudge: boolean;
+  message: string | null;
+  metrics: {
+    total_decisions: number;
+    decisions_since_last_nudge: number;
+    nudged_at: string | null;
+    nudged_decision_count: number;
+    saves_count: number;
+    highlights: Array<{
+      key: string;
+      label: string;
+      delta_pct?: number;
+      value?: number;
+      sentence: string;
+    }>;
+    improvement?: unknown;
+  } | null;
 }

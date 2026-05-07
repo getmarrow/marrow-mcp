@@ -1,7 +1,7 @@
 /**
  * @getmarrow/mcp — API Functions
  */
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDigestResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowNudgeResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 export type { Narrative, CommitResult } from './types';
 /**
@@ -108,6 +108,14 @@ export declare function marrowDashboard(apiKey: string, baseUrl: string, session
  * Get periodic summary of agent activity and Marrow impact.
  */
 export declare function marrowDigest(apiKey: string, baseUrl: string, period?: string, sessionId?: string, agentId?: string): Promise<MarrowDigestResult>;
+/**
+ * Get agent-native proof that Marrow is active and collecting useful signal.
+ */
+export declare function marrowAgentStatus(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<MarrowAgentStatusResult>;
+/**
+ * Get a periodic improvement nudge when Marrow has something worth surfacing.
+ */
+export declare function marrowNudge(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<MarrowNudgeResult>;
 /**
  * Explicitly end the current session.
  */

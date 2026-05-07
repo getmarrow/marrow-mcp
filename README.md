@@ -63,9 +63,30 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.9
+## What's New in v3.9.12
 
-### Hook Noise Filtering
+### Agent Status Tool
+
+New MCP tool: `marrow_agent_status`.
+
+Use it at session start or before owner reporting to prove Marrow is passively active. It returns connected state, signal quality, non-sensitive proof, and next actions for the configured agent or fleet.
+
+```json
+{
+  "active": true,
+  "state": "proving_value",
+  "signals": {
+    "decisions_logged": 42,
+    "outcome_coverage": 0.88,
+    "success_rate": 0.81
+  },
+  "quality": { "enough_signal": true, "measurement_risk": "low" }
+}
+```
+
+No raw action, context, or outcome text is returned.
+
+### Previous: v3.9.9 — Hook Noise Filtering
 
 MCP hooks now skip auto-logging for read-only operations. Tools like `read`, `grep`, `ls`, `sessions_list`, `marrow_list_memories`, and other context-read operations no longer generate Marrow decisions. Only meaningful tool calls (edits, writes, deploys) are logged.
 
@@ -200,6 +221,10 @@ Operator dashboard in one call. Account health, top failures, workflow status, r
 ### marrow_digest
 
 Periodic summary with success rate trend vs previous period. Optional `period` parameter (default `7d`). Now includes velocity summary (see v3.3.0 section above).
+
+### marrow_agent_status
+
+Agent-native proof that Marrow is connected and collecting useful signal. Optional `period` and `agentId` parameters. Returns `active`, `state`, `signals`, `quality`, `proof`, and `next_actions` without exposing raw decision text.
 
 ### marrow_session_end
 
