@@ -42,6 +42,26 @@ export interface VelocityMetric {
 export type MarrowDashboardResult = SdkMarrowDashboardResult;
 export type MarrowDigestResult = SdkMarrowDigestResult;
 
+export interface MarrowValueReportResult {
+  period: { days: number; start: string; end: string };
+  scope: { agent_id: string | null };
+  summary: string;
+  metrics: {
+    decisions: { total: number; recorded: number; successful: number; failed: number };
+    success_rate: number;
+    saves: { period: number; total: number };
+  };
+  fleet: {
+    active_agents: number;
+    top_agents: Array<{ agent_id: string; decisions: number; success_rate: number }>;
+  };
+  risks: {
+    top_failure_types: Array<{ decision_type: string; failures: number; failure_rate: number }>;
+  };
+  recommendations: string[];
+  improvement: Record<string, unknown>;
+}
+
 export interface MarrowDecisionBriefRequest {
   action: string;
   type?: string;

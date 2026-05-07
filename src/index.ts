@@ -15,6 +15,7 @@ import type {
   MarrowDecisionBriefResult,
   MarrowDigestResult,
   MarrowAgentStatusResult,
+  MarrowValueReportResult,
   MarrowNudgeResult,
 } from './types';
 import {
@@ -110,6 +111,12 @@ function buildHeaders(
 
 function createSdkClient(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): MarrowClient {
   return new MarrowClient(apiKey, { baseUrl, sessionId, agentId });
+}
+
+function clampPeriodDays(value: string | number | undefined, defaultDays: number = 7): number {
+  const parsed = typeof value === 'number' ? value : parseInt(String(value || defaultDays), 10);
+  if (!Number.isFinite(parsed)) return defaultDays;
+  return Math.min(90, Math.max(1, Math.floor(parsed)));
 }
 
 export async function marrowCreateKey(
@@ -640,6 +647,27 @@ export async function marrowAgentStatus(
   const qs = new URLSearchParams({ period: String(days) });
   if (agentIdFilter) qs.set('agent_id', agentIdFilter);
   const res = await fetch(`${baseUrl}/v1/analytics/agent-status?${qs.toString()}`, {
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+/**
+ * Get owner-ready proof of Marrow value for an agent or fleet.
+ */
+export async function marrowValueReport(
+  apiKey: string,
+  baseUrl: string,
+  period: string = '7d',
+  agentIdFilter?: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<MarrowValueReportResult> {
+  const days = clampPeriodDays(period);
+  const qs = new URLSearchParams({ period: String(days) });
+  if (agentIdFilter) qs.set('agent_id', agentIdFilter);
+  const res = await fetch(`${baseUrl}/v1/analytics/value-report?${qs.toString()}`, {
     headers: buildHeaders(apiKey, sessionId, undefined, agentId),
   });
   const json = await safeJsonResponse(res);

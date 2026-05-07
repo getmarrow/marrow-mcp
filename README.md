@@ -63,9 +63,26 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.15
+## What's New in v3.9.16
 
-v3.9.15 makes Marrow more passive after install. The `UserPromptSubmit` hook now automatically calls the decision brief backend for risky prompts and injects the operating brief into the agent context before the agent starts work.
+v3.9.16 adds `marrow_value_report` so MCP agents can pull owner-ready proof of Marrow value without a dashboard. The existing passive hooks remain the default install path: `PostToolUse` logs meaningful tool outcomes and `UserPromptSubmit` injects relevant context plus decision briefs for risky prompts.
+
+### Value Report Tool
+
+MCP tool: `marrow_value_report`.
+
+Use it when an agent needs to explain whether Marrow is active, useful, and improving the fleet.
+
+```json
+{
+  "period": "7d",
+  "agentId": "jarvis-agent"
+}
+```
+
+The response includes summary, decisions, success rate, saves, active agents, top risks, recommendations, and improvement data. It does not expose raw action, context, or outcome text.
+
+### Passive Decision Briefs
 
 Agents no longer need to remember to call `marrow_decision_brief` for common deploy, publish, merge, audit, patch, secret, or production prompts. They still can call it explicitly when they need stronger control.
 

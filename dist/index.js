@@ -22,6 +22,7 @@ exports.marrowWorkflow = marrowWorkflow;
 exports.marrowDashboard = marrowDashboard;
 exports.marrowDigest = marrowDigest;
 exports.marrowAgentStatus = marrowAgentStatus;
+exports.marrowValueReport = marrowValueReport;
 exports.marrowDecisionBrief = marrowDecisionBrief;
 exports.marrowNudge = marrowNudge;
 exports.marrowSessionEnd = marrowSessionEnd;
@@ -104,6 +105,12 @@ function buildHeaders(apiKey, sessionId, contentType, agentId) {
 }
 function createSdkClient(apiKey, baseUrl, sessionId, agentId) {
     return new sdk_1.MarrowClient(apiKey, { baseUrl, sessionId, agentId });
+}
+function clampPeriodDays(value, defaultDays = 7) {
+    const parsed = typeof value === 'number' ? value : parseInt(String(value || defaultDays), 10);
+    if (!Number.isFinite(parsed))
+        return defaultDays;
+    return Math.min(90, Math.max(1, Math.floor(parsed)));
 }
 async function marrowCreateKey(apiKey, baseUrl, params, sessionId, agentId) {
     return createSdkClient(apiKey, baseUrl, sessionId, agentId).createApiKey(params);
@@ -466,6 +473,20 @@ async function marrowAgentStatus(apiKey, baseUrl, period = '7d', agentIdFilter, 
     if (agentIdFilter)
         qs.set('agent_id', agentIdFilter);
     const res = await fetch(`${baseUrl}/v1/analytics/agent-status?${qs.toString()}`, {
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+/**
+ * Get owner-ready proof of Marrow value for an agent or fleet.
+ */
+async function marrowValueReport(apiKey, baseUrl, period = '7d', agentIdFilter, sessionId, agentId) {
+    const days = clampPeriodDays(period);
+    const qs = new URLSearchParams({ period: String(days) });
+    if (agentIdFilter)
+        qs.set('agent_id', agentIdFilter);
+    const res = await fetch(`${baseUrl}/v1/analytics/value-report?${qs.toString()}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
     const json = await safeJsonResponse(res);

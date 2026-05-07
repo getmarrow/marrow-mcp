@@ -20,6 +20,7 @@ import {
   marrowDashboard,
   marrowDigest,
   marrowAgentStatus,
+  marrowValueReport,
   marrowDecisionBrief,
   marrowSessionEnd,
   marrowAcceptDetected,
@@ -984,6 +985,20 @@ const TOOLS = [
     },
   },
   {
+    name: 'marrow_value_report',
+    description:
+      'Get owner-ready proof of Marrow value for this agent or fleet. ' +
+      'Returns summary, decision metrics, saves, active agents, top risks, recommendations, and improvement data without raw decision text.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        period: { type: 'string', description: 'Time period: 7d (default), 14d, 30d, or a day count up to 90.' },
+        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to MARROW_AGENT_ID.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'marrow_decision_brief',
     description:
       'One pre-action call before meaningful or risky work. Returns risk level, workflow/playbook steps, ' +
@@ -1636,6 +1651,19 @@ This is not optional overhead — it's how you stop repeating the same failures.
 
       if (toolName === 'marrow_agent_status') {
         const result = await marrowAgentStatus(
+          API_KEY,
+          BASE_URL,
+          (args.period as string) || '7d',
+          (args.agentId as string) || AGENT_ID,
+          SESSION_ID,
+          FLEET_AGENT_ID
+        );
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_value_report') {
+        const result = await marrowValueReport(
           API_KEY,
           BASE_URL,
           (args.period as string) || '7d',

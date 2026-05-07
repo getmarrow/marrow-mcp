@@ -1,7 +1,7 @@
 /**
  * @getmarrow/mcp — API Functions
  */
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowNudgeResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowNudgeResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 export type { Narrative, CommitResult } from './types';
 /**
@@ -112,6 +112,10 @@ export declare function marrowDigest(apiKey: string, baseUrl: string, period?: s
  * Get agent-native proof that Marrow is active and collecting useful signal.
  */
 export declare function marrowAgentStatus(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<MarrowAgentStatusResult>;
+/**
+ * Get owner-ready proof of Marrow value for an agent or fleet.
+ */
+export declare function marrowValueReport(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<MarrowValueReportResult>;
 /**
  * Get one pre-action operating brief for risky or meaningful agent work.
  */
