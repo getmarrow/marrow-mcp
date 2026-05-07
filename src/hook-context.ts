@@ -13,12 +13,19 @@
  * disabled with `MARROW_AUTO_HOOK=false`.
  */
 
-import { marrowThink, validateBaseUrl } from './index';
+import { marrowDecisionBrief, marrowThink, validateBaseUrl } from './index';
+import type { MarrowDecisionBriefResult } from './types';
 
 export const CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
-const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true';
+const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 2000;
 const MAX_CONTEXT_BYTES = 4000; // safety cap on injected context size
+const PASSIVE_BRIEF_MODE = process.env.MARROW_PASSIVE_BRIEF || 'auto';
+
+const RISKY_PROMPT_TERMS = /\b(?:audit|auth|cloudflare|commit|config|credential|database|deploy|environment|github|incident|key|merge|migration|npm|package|patch|permission|production|publish|release|rollback|secret|security|token|upgrade|worker|write)\b/i;
+const MUTATING_PROMPT_TERMS = /\b(?:add|apply|change|commit|configure|create|delete|deploy|edit|fix|harden|merge|modify|patch|publish|push|release|remove|rollback|rotate|ship|update|upgrade|write)\b/i;
+const EXPLICIT_MUTATING_PROMPT_TERMS = /\b(?:add|apply|commit|configure|create|delete|edit|fix|harden|merge|modify|patch|publish|push|release|remove|rollback|rotate|ship|update|upgrade|write)\b|\bdeploy\s+(?:latest|release|to|worker|cloudflare|production|prod)\b/i;
+const READ_ONLY_PROMPT_TERMS = /\b(?:analyze|assess|brainstorm|check|compare|describe|explain|inspect|look at|plan only|read|report on|review|review only|summarize|tell me|what are|what is|why|without changing|without editing|no changes|do not edit)\b/i;
 
 interface UserPromptSubmitEvent {
   session_id?: string;
@@ -65,6 +72,13 @@ interface ContextSignals {
   primaryInsight: string | null;
   collectiveInsight: string | null;
   hasSignal: boolean;
+}
+
+interface PassiveBriefInput {
+  action: string;
+  type: string;
+  role: string;
+  surfaces: string[];
 }
 
 function extractSignals(thinkResult: unknown): ContextSignals {
@@ -163,6 +177,107 @@ function buildContextBlock(signals: ContextSignals): string {
   return block;
 }
 
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/\b(Bearer|Token|ApiKey|API_KEY|MARROW_API_KEY|MARROW_KEY)\s+[\w.\-+/=]{12,}\b/gi, '$1 [REDACTED]')
+    .replace(/\b([A-Z0-9_]*(?:SECRET|TOKEN|API[_-]?KEY|CREDENTIAL|PASSWORD|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*[:=]\s*['"]?[^'"\s,;]{6,}/gi, '$1=[REDACTED]')
+    .replace(/\b(mrw_(?:live|test)_[A-Za-z0-9_\-]{8,})\b/g, '[REDACTED_MARROW_KEY]')
+    .replace(/\b(?:sk|pk|ghp|github_pat|npm)_[A-Za-z0-9_\-]{12,}\b/g, '[REDACTED_TOKEN]');
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function inferPassiveBriefInput(prompt: string): PassiveBriefInput | null {
+  const redactedPrompt = redactSensitiveText(prompt);
+  const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
+  const lower = prompt.toLowerCase();
+  const isRisky = RISKY_PROMPT_TERMS.test(prompt);
+  const isMutating = MUTATING_PROMPT_TERMS.test(prompt);
+  const isExplicitlyMutating = EXPLICIT_MUTATING_PROMPT_TERMS.test(prompt);
+  const isReadOnly = READ_ONLY_PROMPT_TERMS.test(prompt);
+
+  const shouldBrief =
+    PASSIVE_BRIEF_MODE === 'always' ||
+    (PASSIVE_BRIEF_MODE !== 'false' && isRisky && (isReadOnly ? isExplicitlyMutating : isMutating));
+
+  if (!shouldBrief) return null;
+
+  let type = 'general';
+  if (/\b(?:deploy|release|publish|cloudflare|worker|npm)\b/.test(lower)) type = 'deploy';
+  else if (/\b(?:audit|security|secret|token|credential|permission|opsec)\b/.test(lower)) type = 'audit';
+  else if (/\b(?:patch|fix|bug|harden|remediate)\b/.test(lower)) type = 'patch';
+  else if (/\b(?:review|merge|pr|pull request)\b/.test(lower)) type = 'review';
+
+  let role = 'general';
+  if (type === 'deploy') role = 'deploy';
+  else if (type === 'audit') role = 'audit';
+  else if (type === 'patch') role = 'patch';
+  else if (type === 'review') role = 'review';
+
+  const surfaces = unique([
+    /\b(?:github|git|merge|pr|pull request|commit|push)\b/.test(lower) ? 'github' : '',
+    /\b(?:npm|package|publish|sdk|mcp)\b/.test(lower) ? 'npm' : '',
+    /\b(?:doc|docs|readme|getmarrow\.ai)\b/.test(lower) ? 'docs' : '',
+    /\b(?:prod|production|deploy|release|cloudflare|worker)\b/.test(lower) ? 'production' : '',
+    /\b(?:secret|token|credential|key|permission)\b/.test(lower) ? 'secrets' : '',
+  ]);
+
+  return {
+    action,
+    type,
+    role,
+    surfaces: surfaces.length > 0 ? surfaces : ['workspace'],
+  };
+}
+
+function appendPassiveBrief(lines: string[], brief: MarrowDecisionBriefResult | null): void {
+  if (!brief) return;
+
+  lines.push('');
+  lines.push('## Marrow passive decision brief');
+  lines.push(`- Risk: ${brief.risk.level}${brief.risk.reasons.length ? ` — ${brief.risk.reasons.slice(0, 2).join('; ')}` : ''}`);
+  lines.push(`- Workflow: ${brief.workflow.recommended}`);
+
+  for (const step of brief.workflow.steps.slice(0, 4)) {
+    lines.push(`  - ${step}`);
+  }
+
+  if (brief.handoff.required) {
+    lines.push(`- Handoff required. Checkpoint markers: ${brief.handoff.checkpoint_markers.slice(0, 5).join(', ')}`);
+  }
+
+  if (brief.freshness.check_required) {
+    lines.push(`- Freshness required for: ${brief.freshness.surfaces.join(', ')}`);
+  }
+
+  if (brief.quality.minimum_checks.length > 0) {
+    lines.push(`- Minimum checks: ${brief.quality.minimum_checks.slice(0, 5).join('; ')}`);
+  }
+
+  if (brief.proof_pack.required) {
+    lines.push(`- Proof pack fields: ${brief.proof_pack.fields.slice(0, 6).join(', ')}`);
+  }
+
+  if (brief.next_actions.length > 0) {
+    lines.push(`- Next: ${brief.next_actions.slice(0, 3).join('; ')}`);
+  }
+
+  lines.push('- Continue the Marrow loop: log intent, do the work, verify, then commit the outcome.');
+}
+
+function buildCombinedContextBlock(signals: ContextSignals, brief: MarrowDecisionBriefResult | null): string {
+  const lines = buildContextBlock(signals).split('\n');
+  appendPassiveBrief(lines, brief);
+
+  let block = lines.join('\n');
+  if (block.length > MAX_CONTEXT_BYTES) {
+    block = block.slice(0, MAX_CONTEXT_BYTES - 1) + '…';
+  }
+  return block;
+}
+
 function emitNoContext(): void {
   process.stdout.write('{}');
 }
@@ -242,14 +357,24 @@ export async function runContextHookCommand(): Promise<void> {
     const agentId = process.env.MARROW_FLEET_AGENT_ID || undefined;
 
     // Truncate prompt for the action field (Marrow think actions don't need full multi-K-token prompts)
-    const action = prompt.length > 500 ? prompt.slice(0, 500) + '…' : prompt;
+    const redactedPrompt = redactSensitiveText(prompt);
+    const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
 
-    const thinkResult = await withTimeout(
-      marrowThink(apiKey, baseUrl, { action, type: 'general' }, sessionId, agentId),
-      MARROW_API_TIMEOUT_MS
-    );
+    const passiveBriefInput = inferPassiveBriefInput(prompt);
+    const [thinkResult, briefResult] = await Promise.all([
+      withTimeout(
+        marrowThink(apiKey, baseUrl, { action, type: passiveBriefInput?.type || 'general' }, sessionId, agentId),
+        MARROW_API_TIMEOUT_MS
+      ),
+      passiveBriefInput
+        ? withTimeout(
+            marrowDecisionBrief(apiKey, baseUrl, passiveBriefInput, sessionId, agentId),
+            MARROW_API_TIMEOUT_MS
+          )
+        : Promise.resolve(null),
+    ]);
 
-    if (!thinkResult) {
+    if (!thinkResult && !briefResult) {
       debug('[marrow-context-hook] marrow_think timed out or errored');
       emitNoContext();
       process.exit(0);
@@ -257,14 +382,14 @@ export async function runContextHookCommand(): Promise<void> {
     }
 
     const signals = extractSignals(thinkResult);
-    if (!signals.hasSignal) {
+    if (!signals.hasSignal && !briefResult) {
       debug('[marrow-context-hook] no signal — no context to inject');
       emitNoContext();
       process.exit(0);
       return;
     }
 
-    const context = buildContextBlock(signals);
+    const context = buildCombinedContextBlock(signals, briefResult);
     debug(`[marrow-context-hook] injected ${context.length} bytes of context`);
     emitContext(context);
     process.exit(0);

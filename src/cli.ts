@@ -73,11 +73,11 @@ function runSetup(): void {
 
 You have Marrow MCP connected. Use it on EVERY session automatically:
 
-1. **Session start:** Call \`marrow_orient\` FIRST before any work. It warns you about past failures.
-2. **Before risky actions:** Call \`marrow_decision_brief({ action: "what you're about to do" })\` — deploys, publishes, merges, audits, patches, secret changes, production work. One call returns risk, workflow, handoff, checks, proof pack, and next actions.
-3. **Before acting:** Still log intent with \`marrow_auto({ action: "what you're about to do" })\` or \`marrow_think\`. The decision brief is guidance, not a replacement for the Marrow loop.
-4. **Before normal meaningful actions:** Call \`marrow_auto({ action: "what you're about to do" })\` — file changes, config changes, implementation work.
-5. **After actions:** Call \`marrow_auto({ action: "what you did", outcome: "what happened", success: true/false })\`.
+1. **Passive by default:** Marrow hooks auto-log meaningful tool use and auto-inject relevant warnings, patterns, and risky-work decision briefs into your prompt context.
+2. **Session start:** Call \`marrow_orient\` FIRST before any work when you need an explicit status read.
+3. **Before risky actions:** The prompt hook automatically calls \`marrow_decision_brief\` for deploys, publishes, merges, audits, patches, secret changes, and production work. If you need stronger control, call it explicitly.
+4. **Before acting:** Still log intent with \`marrow_auto({ action: "what you're about to do" })\` or \`marrow_think\` when your runtime does not support hooks. The decision brief is guidance, not a replacement for the Marrow loop.
+5. **After actions:** Hooks auto-log tool outcomes. For important final results, call \`marrow_auto({ action: "what you did", outcome: "what happened", success: true/false })\` or \`marrow_commit\`.
 6. **To query history:** Call \`marrow_ask("plain english question")\` — ask what failed, what worked, what to avoid.
 
 Do NOT skip logging. Every decision you log compounds — failure rates drop, patterns emerge, the next session starts smarter. This is not optional overhead.
@@ -135,13 +135,15 @@ ${MARROW_BLOCK_END}`;
 
   const contextHookInstall = installUserPromptSubmitHook(process.cwd());
   if (contextHookInstall.installed) {
-    process.stdout.write('Installed UserPromptSubmit hook — Marrow will inject relevant context (warnings, hive patterns, similar past decisions) into your prompts automatically.\n');
+    process.stdout.write('Installed UserPromptSubmit hook — Marrow will inject relevant context and passive decision briefs into your prompts automatically.\n');
   } else {
-    process.stdout.write('UserPromptSubmit hook already installed — Marrow context is injected on every prompt.\n');
+    process.stdout.write('UserPromptSubmit hook already installed — Marrow context and passive decision briefs are injected on matching prompts.\n');
   }
 
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
   process.stdout.write('Set MARROW_AUTO_HOOK=false to disable both hooks.\n');
+  process.stdout.write('Set MARROW_PASSIVE_BRIEF=false to disable automatic decision briefs, or MARROW_PASSIVE_BRIEF=always to brief every prompt.\n');
+  process.stdout.write('Set MARROW_HOOK_DEBUG=true for write-side hook diagnostics, or MARROW_CONTEXT_HOOK_DEBUG=true for prompt-context diagnostics.\n');
   process.stdout.write('Your agent will now use Marrow automatically — both writing decisions AND reading past intelligence — in every session.\n');
   process.exit(0);
 }

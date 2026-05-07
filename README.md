@@ -63,13 +63,15 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.14
+## What's New in v3.9.15
 
-v3.9.14 is a README-only patch release for npmjs. It keeps the package page focused on the current install surface and sends full feature history, examples, and API reference to [getmarrow.ai/docs](https://getmarrow.ai/docs/).
+v3.9.15 makes Marrow more passive after install. The `UserPromptSubmit` hook now automatically calls the decision brief backend for risky prompts and injects the operating brief into the agent context before the agent starts work.
+
+Agents no longer need to remember to call `marrow_decision_brief` for common deploy, publish, merge, audit, patch, secret, or production prompts. They still can call it explicitly when they need stronger control.
 
 ### Decision Brief Tool
 
-New MCP tool: `marrow_decision_brief`.
+MCP tool: `marrow_decision_brief`.
 
 Use it before deploys, publishes, merges, audits, patches, secret changes, or production work. One call returns the agent's operating brief: risk, workflow/playbook steps, handoff requirements, freshness/source-of-truth checks, minimum verification checks, proof-pack fields, and next actions.
 
@@ -85,6 +87,8 @@ Use it before deploys, publishes, merges, audits, patches, secret changes, or pr
 Marrow returns aggregated prior failure categories only. It does not expose raw action, context, or outcome text from past decisions.
 
 `marrow_decision_brief` is additive. It gives the pre-action operating brief, then the agent still logs intent with `marrow_think`/passive auto-logging and commits the verified outcome with `marrow_commit`.
+
+Passive decision briefs are enabled by default. Set `MARROW_PASSIVE_BRIEF=false` to disable them, or `MARROW_PASSIVE_BRIEF=always` to brief every prompt.
 
 Full feature history, examples, and API reference live at [getmarrow.ai/docs](https://getmarrow.ai/docs/).
 
@@ -474,7 +478,9 @@ claude mcp add marrow -e MARROW_API_KEY=mrw_your_api_key -- npx @getmarrow/mcp
 | `MARROW_FLEET_AGENT_ID` | No | Agent identifier sent as `X-Marrow-Agent-Id` for fleet attribution |
 | `MARROW_AUTO_ENROLL` | No | Auto-enrollment prompt (default: `true`). Set to `false` to disable. |
 | `MARROW_AUTO_HOOK` | No | PostToolUse auto-logging kill switch. Set to `false` to disable the hook without editing settings. |
-| `MARROW_HOOK_DEBUG` | No | When set to `true`, the hook emits one-line stderr diagnostics for invalid JSON, missing API key, and runtime failures. |
+| `MARROW_PASSIVE_BRIEF` | No | Passive decision-brief mode for the prompt hook. Defaults to `auto`; set `false` to disable or `always` to brief every prompt. |
+| `MARROW_HOOK_DEBUG` | No | When set to `true`, write-side and prompt-context hooks emit one-line stderr diagnostics. |
+| `MARROW_CONTEXT_HOOK_DEBUG` | No | When set to `true`, only the UserPromptSubmit context hook emits one-line stderr diagnostics. |
 
 ---
 
