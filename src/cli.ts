@@ -20,7 +20,6 @@ import {
   marrowDashboard,
   marrowDigest,
   marrowAgentStatus,
-  marrowNudge,
   marrowSessionEnd,
   marrowAcceptDetected,
   marrowListTemplates,
@@ -980,13 +979,6 @@ const TOOLS = [
     },
   },
   {
-    name: 'marrow_nudge',
-    description:
-      'Get a periodic, non-spammy improvement summary when Marrow has something meaningful to surface. ' +
-      'Returns nudge=false when it is too soon or nothing notable improved.',
-    inputSchema: { type: 'object', properties: {}, required: [] },
-  },
-  {
     name: 'marrow_session_end',
     description:
       'Explicitly end the current session. Optionally auto-commits any open decision. ' +
@@ -1626,11 +1618,6 @@ This is not optional overhead — it's how you stop repeating the same failures.
         return;
       }
 
-      if (toolName === 'marrow_nudge') {
-        const result = await marrowNudge(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
-        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-        return;
-      }
 
       if (toolName === 'marrow_session_end') {
         const result = await marrowSessionEnd(API_KEY, BASE_URL, Boolean(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);

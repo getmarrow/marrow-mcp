@@ -4,23 +4,41 @@
 
 import type {
   ActionableInsight as SdkActionableInsight,
-  CommitContribution as SdkCommitContribution,
   MarrowAskResult as SdkMarrowAskResult,
   MarrowDashboardResult as SdkMarrowDashboardResult,
   MarrowDigestResult as SdkMarrowDigestResult,
   MarrowMemory as SdkMarrowMemory,
   Narrative as SdkNarrative,
-  ThinkContribution as SdkThinkContribution,
-  VelocityMetric as SdkVelocityMetric,
-} from '@getmarrow/sdk/dist/types';
+} from '@getmarrow/sdk';
 
 export type Narrative = SdkNarrative;
 export type ActionableInsight = SdkActionableInsight;
-export type ThinkContribution = SdkThinkContribution;
-export type CommitContribution = SdkCommitContribution;
+export interface ThinkContribution {
+  warnings_consulted: number;
+  hive_patterns_surfaced: number;
+  similar_decisions_found: number;
+  workflow_templates_available: number;
+  loop_detected: boolean;
+  collective_intelligence: boolean;
+  team_context_present: boolean;
+  has_signal: boolean;
+}
+
+export interface CommitContribution {
+  success: boolean;
+  pattern_reused: boolean;
+  linked_to_prior_decision: boolean;
+  warning_avoided: boolean;
+  has_signal: boolean;
+}
 export type MarrowMemory = SdkMarrowMemory;
 export type MarrowAskResult = SdkMarrowAskResult;
-export type VelocityMetric = SdkVelocityMetric;
+export interface VelocityMetric {
+  current: number;
+  previous: number;
+  delta_pct: number;
+  direction: 'improving' | 'declining' | 'stable';
+}
 export type MarrowDashboardResult = SdkMarrowDashboardResult;
 export type MarrowDigestResult = SdkMarrowDigestResult;
 

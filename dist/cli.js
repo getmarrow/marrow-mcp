@@ -867,12 +867,6 @@ if (process.argv[2] !== 'keys') {
                 },
             },
             {
-                name: 'marrow_nudge',
-                description: 'Get a periodic, non-spammy improvement summary when Marrow has something meaningful to surface. ' +
-                    'Returns nudge=false when it is too soon or nothing notable improved.',
-                inputSchema: { type: 'object', properties: {}, required: [] },
-            },
-            {
                 name: 'marrow_session_end',
                 description: 'Explicitly end the current session. Optionally auto-commits any open decision. ' +
                     'Prevents orphaned decisions when an agent finishes a task.',
@@ -1398,11 +1392,6 @@ This is not optional overhead — it's how you stop repeating the same failures.
                     }
                     if (toolName === 'marrow_agent_status') {
                         const result = await (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_nudge') {
-                        const result = await (0, index_1.marrowNudge)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
