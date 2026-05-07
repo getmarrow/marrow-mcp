@@ -973,7 +973,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         period: { type: 'string', description: 'Time period: 7d (default), 14d, or 30d' },
-        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to the configured agent.' },
+        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to MARROW_AGENT_ID.' },
       },
       required: [],
     },
@@ -1610,7 +1610,7 @@ This is not optional overhead — it's how you stop repeating the same failures.
           API_KEY,
           BASE_URL,
           (args.period as string) || '7d',
-          (args.agentId as string) || FLEET_AGENT_ID,
+          (args.agentId as string) || AGENT_ID,
           SESSION_ID,
           FLEET_AGENT_ID
         );

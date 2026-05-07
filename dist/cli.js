@@ -861,7 +861,7 @@ if (process.argv[2] !== 'keys') {
                     type: 'object',
                     properties: {
                         period: { type: 'string', description: 'Time period: 7d (default), 14d, or 30d' },
-                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to the configured agent.' },
+                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to MARROW_AGENT_ID.' },
                     },
                     required: [],
                 },
@@ -1391,7 +1391,7 @@ This is not optional overhead — it's how you stop repeating the same failures.
                         return;
                     }
                     if (toolName === 'marrow_agent_status') {
-                        const result = await (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
+                        const result = await (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }

@@ -69,7 +69,7 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 New MCP tool: `marrow_agent_status`.
 
-Use it at session start or before owner reporting to prove Marrow is passively active. It returns connected state, signal quality, non-sensitive proof, and next actions for the configured agent or fleet.
+Use it at session start or before owner reporting to prove Marrow is passively active. It returns connected state, signal quality, non-sensitive proof, and next actions for the configured agent. Pass `agentId` explicitly when you want a different agent or fleet-scoped status.
 
 ```json
 {
@@ -224,7 +224,7 @@ Periodic summary with success rate trend vs previous period. Optional `period` p
 
 ### marrow_agent_status
 
-Agent-native proof that Marrow is connected and collecting useful signal. Optional `period` and `agentId` parameters. Returns `active`, `state`, `signals`, `quality`, `proof`, and `next_actions` without exposing raw decision text.
+Agent-native proof that Marrow is connected and collecting useful signal. Optional `period` and `agentId` parameters; when omitted, the tool filters by `MARROW_AGENT_ID`. Returns `active`, `state`, `signals`, `quality`, `proof`, and `next_actions` without exposing raw decision text.
 
 ### marrow_session_end
 
