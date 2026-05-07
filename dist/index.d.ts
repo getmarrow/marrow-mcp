@@ -1,7 +1,7 @@
 /**
  * @getmarrow/mcp — API Functions
  */
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowNudgeResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowNudgeResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 export type { Narrative, CommitResult } from './types';
 /**
@@ -112,6 +112,10 @@ export declare function marrowDigest(apiKey: string, baseUrl: string, period?: s
  * Get agent-native proof that Marrow is active and collecting useful signal.
  */
 export declare function marrowAgentStatus(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<MarrowAgentStatusResult>;
+/**
+ * Get one pre-action operating brief for risky or meaningful agent work.
+ */
+export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
 /**
  * Get a periodic improvement nudge when Marrow has something worth surfacing.
  */

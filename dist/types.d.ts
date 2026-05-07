@@ -31,6 +31,80 @@ export interface VelocityMetric {
 }
 export type MarrowDashboardResult = SdkMarrowDashboardResult;
 export type MarrowDigestResult = SdkMarrowDigestResult;
+export interface MarrowDecisionBriefRequest {
+    action: string;
+    type?: string;
+    agent_id?: string;
+    session_id?: string;
+    role?: string;
+    surfaces?: string[];
+    period?: number | string;
+}
+export interface MarrowDecisionBriefResult {
+    period: {
+        days: number;
+        start: string;
+        end: string;
+    };
+    scope: {
+        agent_id: string | null;
+        session_id: string | null;
+        role: 'deploy' | 'audit' | 'patch' | 'review' | 'general';
+    };
+    summary: string;
+    risk: {
+        level: 'low' | 'medium' | 'high';
+        reasons: string[];
+        similar_failures: Array<{
+            decision_type: string;
+            failures: number;
+            failure_rate: number;
+        }>;
+    };
+    workflow: {
+        recommended: string;
+        steps: string[];
+        source: 'role_playbook' | 'risk_pattern' | 'general';
+    };
+    handoff: {
+        required: boolean;
+        checkpoint_markers: string[];
+        stale_after_minutes: number;
+    };
+    freshness: {
+        check_required: boolean;
+        surfaces: string[];
+        stale_context_warning: boolean;
+    };
+    quality: {
+        minimum_checks: string[];
+        outcome_required: boolean;
+        score_floor: number;
+    };
+    role_playbook: {
+        role: 'deploy' | 'audit' | 'patch' | 'review' | 'general';
+        guidance: string[];
+    };
+    failure_alerts: Array<{
+        decision_type: string;
+        message: string;
+        severity: 'info' | 'warning' | 'critical';
+    }>;
+    proof_pack: {
+        required: boolean;
+        fields: string[];
+    };
+    source_of_truth: {
+        required_surfaces: string[];
+        docs_required: boolean;
+    };
+    fleet_reliability: {
+        active_agents: number;
+        outcome_coverage: number;
+        measurement_risk: 'low' | 'medium' | 'high';
+    };
+    next_actions: string[];
+}
 export interface MarrowAgentStatusResult {
     period: {
         days: number;

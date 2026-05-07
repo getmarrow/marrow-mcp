@@ -63,9 +63,30 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.12
+## What's New in v3.9.13
 
-### Agent Status Tool
+### Decision Brief Tool
+
+New MCP tool: `marrow_decision_brief`.
+
+Use it before deploys, publishes, merges, audits, patches, secret changes, or production work. One call returns the agent's operating brief: risk, workflow/playbook steps, handoff requirements, freshness/source-of-truth checks, minimum verification checks, proof-pack fields, and next actions.
+
+```json
+{
+  "action": "publish SDK and MCP packages to npm and update docs",
+  "type": "deploy",
+  "role": "deploy",
+  "surfaces": ["github", "npm", "docs", "production"]
+}
+```
+
+Marrow returns aggregated prior failure categories only. It does not expose raw action, context, or outcome text from past decisions.
+
+`marrow_decision_brief` is additive. It gives the pre-action operating brief, then the agent still logs intent with `marrow_think`/passive auto-logging and commits the verified outcome with `marrow_commit`.
+
+### Previous: v3.9.12 — Agent Status
+
+Agent Status Tool
 
 New MCP tool: `marrow_agent_status`.
 
@@ -225,6 +246,12 @@ Periodic summary with success rate trend vs previous period. Optional `period` p
 ### marrow_agent_status
 
 Agent-native proof that Marrow is connected and collecting useful signal. Optional `period` and `agentId` parameters; when omitted, the tool filters by `MARROW_AGENT_ID`. Returns `active`, `state`, `signals`, `quality`, `proof`, and `next_actions` without exposing raw decision text.
+
+### marrow_decision_brief
+
+One pre-action call before meaningful work. Returns `risk`, `workflow`, `handoff`, `freshness`, `quality`, `role_playbook`, `failure_alerts`, `proof_pack`, `source_of_truth`, `fleet_reliability`, and `next_actions`.
+
+Use this before risky work so the agent does not need to stitch together multiple backend calls. It does not replace outcome logging.
 
 ### marrow_session_end
 
