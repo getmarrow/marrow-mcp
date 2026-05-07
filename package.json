@@ -46,7 +46,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@getmarrow/sdk": "^3.7.11"
+    "@getmarrow/sdk": "^3.7.10"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
