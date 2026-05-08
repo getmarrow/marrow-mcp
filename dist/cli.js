@@ -907,6 +907,95 @@ if (process.argv[2] !== 'keys') {
                 },
             },
             {
+                name: 'marrow_agent_performance',
+                description: 'Get agent-facing fleet value metrics: avoided mistakes, reused winning decisions, failed patterns, token/time saved estimate, reliability score, and next improvements.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        period: { type: 'string', description: 'Time period: 7d (default), 14d, 30d, or day count up to 90.' },
+                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to MARROW_AGENT_ID.' },
+                    },
+                    required: [],
+                },
+            },
+            {
+                name: 'marrow_fleet_lessons',
+                description: 'Retrieve ranked reusable fleet lessons before similar work. Use before deploys, handoffs, migrations, audits, and repeated task types.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        query: { type: 'string', description: 'Search phrase for similar work.' },
+                        type: { type: 'string', enum: ['success', 'failure', 'deploy', 'incident', 'handoff', 'general'] },
+                        agentId: { type: 'string', description: 'Optional agent filter.' },
+                        limit: { type: 'number', description: 'Max lessons to return, default 10.' },
+                    },
+                    required: [],
+                },
+            },
+            {
+                name: 'marrow_record_deployment_memory',
+                description: 'Record deploy or incident memory: PR, commit, tests, smoke result, rollback plan, production health, and incident notes.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        release_id: { type: 'string' },
+                        pr_url: { type: 'string' },
+                        commit_sha: { type: 'string' },
+                        environment: { type: 'string' },
+                        status: { type: 'string', enum: ['planned', 'dry_run', 'deployed', 'verified', 'rolled_back', 'incident'] },
+                        tests: { type: 'array', items: { type: 'string' } },
+                        smoke_result: { type: 'string' },
+                        rollback_plan: { type: 'string' },
+                        prod_health: { type: 'string' },
+                        incident_summary: { type: 'string' },
+                    },
+                    required: [],
+                },
+            },
+            {
+                name: 'marrow_create_handoff',
+                description: 'Create a structured cross-agent handoff that Marrow can track for pending, stale, blocked, and complete states.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        to_agent_id: { type: 'string' },
+                        task: { type: 'string' },
+                        workflow_id: { type: 'string' },
+                        from_agent_id: { type: 'string' },
+                        checkpoint: { type: 'string' },
+                        stale_after_seconds: { type: 'number' },
+                    },
+                    required: ['to_agent_id', 'task'],
+                },
+            },
+            {
+                name: 'marrow_update_handoff',
+                description: 'Update a Marrow handoff checkpoint/status when an agent accepts, blocks, completes, or needs review.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        handoffId: { type: 'string' },
+                        status: { type: 'string', enum: ['pending', 'accepted', 'working', 'blocked', 'complete', 'stale', 'cancelled'] },
+                        checkpoint: { type: 'string' },
+                        result_summary: { type: 'string' },
+                    },
+                    required: ['handoffId'],
+                },
+            },
+            {
+                name: 'marrow_handoff_status',
+                description: 'Ask who is pending, stuck, stale, blocked, or complete across the agent fleet.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        status: { type: 'string' },
+                        agentId: { type: 'string' },
+                        limit: { type: 'number' },
+                    },
+                    required: [],
+                },
+            },
+            {
                 name: 'marrow_session_end',
                 description: 'Explicitly end the current session. Optionally auto-commits any open decision. ' +
                     'Prevents orphaned decisions when an agent finishes a task.',
@@ -1449,6 +1538,50 @@ This is not optional overhead — it's how you stop repeating the same failures.
                             session_id: args.sessionId || SESSION_ID,
                             surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
                             period: args.period,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_agent_performance') {
+                        const result = await (0, index_1.marrowAgentPerformance)(API_KEY, BASE_URL, args.period || '7d', args.agentId || AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_fleet_lessons') {
+                        const result = await (0, index_1.marrowFleetLessons)(API_KEY, BASE_URL, {
+                            query: args.query,
+                            type: args.type,
+                            agentId: args.agentId || AGENT_ID,
+                            limit: args.limit,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_record_deployment_memory') {
+                        const result = await (0, index_1.marrowRecordDeploymentMemory)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_create_handoff') {
+                        const result = await (0, index_1.marrowCreateHandoff)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_update_handoff') {
+                        const handoffId = args.handoffId;
+                        if (!handoffId) {
+                            error(id, -32602, 'handoffId is required');
+                            return;
+                        }
+                        const result = await (0, index_1.marrowUpdateHandoff)(API_KEY, BASE_URL, handoffId, args, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_handoff_status') {
+                        const result = await (0, index_1.marrowHandoffStatus)(API_KEY, BASE_URL, {
+                            status: args.status,
+                            agentId: args.agentId || AGENT_ID,
+                            limit: args.limit,
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
