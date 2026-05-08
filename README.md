@@ -63,9 +63,26 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.16
+## What's New in v3.9.17
 
-v3.9.16 adds `marrow_value_report` so MCP agents can pull owner-ready proof of Marrow value without a dashboard. The existing passive hooks remain the default install path: `PostToolUse` logs meaningful tool outcomes and `UserPromptSubmit` injects relevant context plus decision briefs for risky prompts.
+v3.9.17 adds Phase 1 passive install support with the new universal installer:
+
+```bash
+npx @getmarrow/install --mcp --dry-run
+npx @getmarrow/install --mcp --yes
+```
+
+The installer detects Claude Code, Cursor, Codex/agent instruction files, OpenClaw-style workspaces, MCP config, Node, and Python projects. It can write MCP hook config, markdown instructions, SDK passive preload files, and run a harmless Marrow self-test when `MARROW_API_KEY` is present.
+
+`marrow_agent_status` now pairs with the enhanced `/v1/agent/status` health contract so agents can prove Marrow is active without a human dashboard.
+
+Full feature history, examples, and API reference live at [getmarrow.ai/docs](https://getmarrow.ai/docs/).
+
+---
+
+## Agent Value Report
+
+`marrow_value_report` lets MCP agents pull owner-ready proof of Marrow value without a dashboard. The existing passive hooks remain the default install path: `PostToolUse` logs meaningful tool outcomes and `UserPromptSubmit` injects relevant context plus decision briefs for risky prompts.
 
 ### Value Report Tool
 
