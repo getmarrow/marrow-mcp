@@ -13,14 +13,15 @@
  * disabled with `MARROW_AUTO_HOOK=false`.
  */
 
-import { marrowDecisionBrief, marrowThink, validateBaseUrl } from './index';
-import type { MarrowDecisionBriefResult } from './types';
+import { marrowDecisionBrief, marrowThink, marrowValueReport, validateBaseUrl } from './index';
+import type { MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
 
 export const CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 2000;
 const MAX_CONTEXT_BYTES = 4000; // safety cap on injected context size
 const PASSIVE_BRIEF_MODE = process.env.MARROW_PASSIVE_BRIEF || 'auto';
+const PASSIVE_VALUE_MODE = process.env.MARROW_PASSIVE_VALUE_SUMMARY || 'auto';
 
 const RISKY_PROMPT_TERMS = /\b(?:audit|auth|cloudflare|commit|config|credential|database|deploy|environment|github|incident|key|merge|migration|npm|package|patch|permission|production|publish|release|rollback|secret|security|token|upgrade|worker|write)\b/i;
 const MUTATING_PROMPT_TERMS = /\b(?:add|apply|change|commit|configure|create|delete|deploy|edit|fix|harden|merge|modify|patch|publish|push|release|remove|rollback|rotate|ship|update|upgrade|write)\b/i;
@@ -267,9 +268,14 @@ function appendPassiveBrief(lines: string[], brief: MarrowDecisionBriefResult | 
   lines.push('- Continue the Marrow loop: log intent, do the work, verify, then commit the outcome.');
 }
 
-function buildCombinedContextBlock(signals: ContextSignals, brief: MarrowDecisionBriefResult | null): string {
+function buildCombinedContextBlock(
+  signals: ContextSignals,
+  brief: MarrowDecisionBriefResult | null,
+  valueReport: MarrowValueReportResult | null
+): string {
   const lines = buildContextBlock(signals).split('\n');
   appendPassiveBrief(lines, brief);
+  appendValueSummary(lines, valueReport);
 
   let block = lines.join('\n');
   if (block.length > MAX_CONTEXT_BYTES) {
@@ -361,7 +367,11 @@ export async function runContextHookCommand(): Promise<void> {
     const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
 
     const passiveBriefInput = inferPassiveBriefInput(prompt);
-    const [thinkResult, briefResult] = await Promise.all([
+    const shouldFetchValueSummary =
+      PASSIVE_VALUE_MODE === 'always' ||
+      (PASSIVE_VALUE_MODE !== 'false' && (Boolean(passiveBriefInput) || /(?:status|summary|report|improve|better|value|metrics|passive|fleet)/i.test(prompt)));
+
+    const [thinkResult, briefResult, valueReport] = await Promise.all([
       withTimeout(
         marrowThink(apiKey, baseUrl, { action, type: passiveBriefInput?.type || 'general' }, sessionId, agentId),
         MARROW_API_TIMEOUT_MS
@@ -372,9 +382,15 @@ export async function runContextHookCommand(): Promise<void> {
             MARROW_API_TIMEOUT_MS
           )
         : Promise.resolve(null),
+      shouldFetchValueSummary
+        ? withTimeout(
+            marrowValueReport(apiKey, baseUrl, process.env.MARROW_VALUE_REPORT_PERIOD || '7d', agentId, sessionId, agentId),
+            MARROW_API_TIMEOUT_MS
+          )
+        : Promise.resolve(null),
     ]);
 
-    if (!thinkResult && !briefResult) {
+    if (!thinkResult && !briefResult && !valueReport) {
       debug('[marrow-context-hook] marrow_think timed out or errored');
       emitNoContext();
       process.exit(0);
@@ -382,14 +398,14 @@ export async function runContextHookCommand(): Promise<void> {
     }
 
     const signals = extractSignals(thinkResult);
-    if (!signals.hasSignal && !briefResult) {
+    if (!signals.hasSignal && !briefResult && !valueReport) {
       debug('[marrow-context-hook] no signal — no context to inject');
       emitNoContext();
       process.exit(0);
       return;
     }
 
-    const context = buildCombinedContextBlock(signals, briefResult);
+    const context = buildCombinedContextBlock(signals, briefResult, valueReport);
     debug(`[marrow-context-hook] injected ${context.length} bytes of context`);
     emitContext(context);
     process.exit(0);
@@ -398,6 +414,17 @@ export async function runContextHookCommand(): Promise<void> {
     debug(`[marrow-context-hook] ${msg}`);
     emitNoContext();
     process.exit(0);
+  }
+}
+
+function appendValueSummary(lines: string[], report: MarrowValueReportResult | null): void {
+  if (!report) return;
+  lines.push('');
+  lines.push('## Marrow value summary');
+  lines.push(`- ${report.summary}`);
+  lines.push(`- Decisions: ${report.metrics.decisions.total}; success rate: ${Math.round(report.metrics.success_rate * 100)}%; saves: ${report.metrics.saves.period}.`);
+  if (report.recommendations.length > 0) {
+    lines.push(`- Next improvement: ${report.recommendations[0]}`);
   }
 }
 

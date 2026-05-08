@@ -23,6 +23,7 @@ const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.e
 const MARROW_API_TIMEOUT_MS = 2000;
 const MAX_CONTEXT_BYTES = 4000; // safety cap on injected context size
 const PASSIVE_BRIEF_MODE = process.env.MARROW_PASSIVE_BRIEF || 'auto';
+const PASSIVE_VALUE_MODE = process.env.MARROW_PASSIVE_VALUE_SUMMARY || 'auto';
 const RISKY_PROMPT_TERMS = /\b(?:audit|auth|cloudflare|commit|config|credential|database|deploy|environment|github|incident|key|merge|migration|npm|package|patch|permission|production|publish|release|rollback|secret|security|token|upgrade|worker|write)\b/i;
 const MUTATING_PROMPT_TERMS = /\b(?:add|apply|change|commit|configure|create|delete|deploy|edit|fix|harden|merge|modify|patch|publish|push|release|remove|rollback|rotate|ship|update|upgrade|write)\b/i;
 const EXPLICIT_MUTATING_PROMPT_TERMS = /\b(?:add|apply|commit|configure|create|delete|edit|fix|harden|merge|modify|patch|publish|push|release|remove|rollback|rotate|ship|update|upgrade|write)\b|\bdeploy\s+(?:latest|release|to|worker|cloudflare|production|prod)\b/i;
@@ -208,9 +209,10 @@ function appendPassiveBrief(lines, brief) {
     }
     lines.push('- Continue the Marrow loop: log intent, do the work, verify, then commit the outcome.');
 }
-function buildCombinedContextBlock(signals, brief) {
+function buildCombinedContextBlock(signals, brief, valueReport) {
     const lines = buildContextBlock(signals).split('\n');
     appendPassiveBrief(lines, brief);
+    appendValueSummary(lines, valueReport);
     let block = lines.join('\n');
     if (block.length > MAX_CONTEXT_BYTES) {
         block = block.slice(0, MAX_CONTEXT_BYTES - 1) + '…';
@@ -291,26 +293,31 @@ async function runContextHookCommand() {
         const redactedPrompt = redactSensitiveText(prompt);
         const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
         const passiveBriefInput = inferPassiveBriefInput(prompt);
-        const [thinkResult, briefResult] = await Promise.all([
+        const shouldFetchValueSummary = PASSIVE_VALUE_MODE === 'always' ||
+            (PASSIVE_VALUE_MODE !== 'false' && (Boolean(passiveBriefInput) || /(?:status|summary|report|improve|better|value|metrics|passive|fleet)/i.test(prompt)));
+        const [thinkResult, briefResult, valueReport] = await Promise.all([
             withTimeout((0, index_1.marrowThink)(apiKey, baseUrl, { action, type: passiveBriefInput?.type || 'general' }, sessionId, agentId), MARROW_API_TIMEOUT_MS),
             passiveBriefInput
                 ? withTimeout((0, index_1.marrowDecisionBrief)(apiKey, baseUrl, passiveBriefInput, sessionId, agentId), MARROW_API_TIMEOUT_MS)
                 : Promise.resolve(null),
+            shouldFetchValueSummary
+                ? withTimeout((0, index_1.marrowValueReport)(apiKey, baseUrl, process.env.MARROW_VALUE_REPORT_PERIOD || '7d', agentId, sessionId, agentId), MARROW_API_TIMEOUT_MS)
+                : Promise.resolve(null),
         ]);
-        if (!thinkResult && !briefResult) {
+        if (!thinkResult && !briefResult && !valueReport) {
             debug('[marrow-context-hook] marrow_think timed out or errored');
             emitNoContext();
             process.exit(0);
             return;
         }
         const signals = extractSignals(thinkResult);
-        if (!signals.hasSignal && !briefResult) {
+        if (!signals.hasSignal && !briefResult && !valueReport) {
             debug('[marrow-context-hook] no signal — no context to inject');
             emitNoContext();
             process.exit(0);
             return;
         }
-        const context = buildCombinedContextBlock(signals, briefResult);
+        const context = buildCombinedContextBlock(signals, briefResult, valueReport);
         debug(`[marrow-context-hook] injected ${context.length} bytes of context`);
         emitContext(context);
         process.exit(0);
@@ -320,6 +327,17 @@ async function runContextHookCommand() {
         debug(`[marrow-context-hook] ${msg}`);
         emitNoContext();
         process.exit(0);
+    }
+}
+function appendValueSummary(lines, report) {
+    if (!report)
+        return;
+    lines.push('');
+    lines.push('## Marrow value summary');
+    lines.push(`- ${report.summary}`);
+    lines.push(`- Decisions: ${report.metrics.decisions.total}; success rate: ${Math.round(report.metrics.success_rate * 100)}%; saves: ${report.metrics.saves.period}.`);
+    if (report.recommendations.length > 0) {
+        lines.push(`- Next improvement: ${report.recommendations[0]}`);
     }
 }
 /**
