@@ -120,6 +120,21 @@ export declare function marrowValueReport(apiKey: string, baseUrl: string, perio
  * Get one pre-action operating brief for risky or meaningful agent work.
  */
 export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
+export declare function marrowAgentPerformance(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowFleetLessons(apiKey: string, baseUrl: string, options?: {
+    query?: string;
+    type?: string;
+    agentId?: string;
+    limit?: number;
+}, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowRecordDeploymentMemory(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowCreateHandoff(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowUpdateHandoff(apiKey: string, baseUrl: string, handoffId: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowHandoffStatus(apiKey: string, baseUrl: string, options?: {
+    status?: string;
+    agentId?: string;
+    limit?: number;
+}, sessionId?: string, agentId?: string): Promise<unknown>;
 /**
  * Get a periodic improvement nudge when Marrow has something worth surfacing.
  */

@@ -24,6 +24,12 @@ exports.marrowDigest = marrowDigest;
 exports.marrowAgentStatus = marrowAgentStatus;
 exports.marrowValueReport = marrowValueReport;
 exports.marrowDecisionBrief = marrowDecisionBrief;
+exports.marrowAgentPerformance = marrowAgentPerformance;
+exports.marrowFleetLessons = marrowFleetLessons;
+exports.marrowRecordDeploymentMemory = marrowRecordDeploymentMemory;
+exports.marrowCreateHandoff = marrowCreateHandoff;
+exports.marrowUpdateHandoff = marrowUpdateHandoff;
+exports.marrowHandoffStatus = marrowHandoffStatus;
 exports.marrowNudge = marrowNudge;
 exports.marrowSessionEnd = marrowSessionEnd;
 exports.marrowAcceptDetected = marrowAcceptDetected;
@@ -505,6 +511,87 @@ async function marrowDecisionBrief(apiKey, baseUrl, input, sessionId, agentId) {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowAgentPerformance(apiKey, baseUrl, period = '7d', agentIdFilter, sessionId, agentId) {
+    const qs = new URLSearchParams({ period: String(clampPeriodDays(period)) });
+    if (agentIdFilter || agentId)
+        qs.set('agent_id', agentIdFilter || agentId || '');
+    const res = await fetch(`${baseUrl}/v1/analytics/agent-performance?${qs.toString()}`, {
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowFleetLessons(apiKey, baseUrl, options = {}, sessionId, agentId) {
+    const qs = new URLSearchParams();
+    if (options.query)
+        qs.set('query', options.query);
+    if (options.type)
+        qs.set('type', options.type);
+    if (options.agentId || agentId)
+        qs.set('agent_id', options.agentId || agentId || '');
+    if (options.limit)
+        qs.set('limit', String(options.limit));
+    const res = await fetch(`${baseUrl}/v1/fleet/lessons${qs.toString() ? `?${qs.toString()}` : ''}`, {
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowRecordDeploymentMemory(apiKey, baseUrl, input, sessionId, agentId) {
+    const res = await fetch(`${baseUrl}/v1/fleet/deployment-memory`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify({
+            ...input,
+            agent_id: String(input.agent_id || agentId || ''),
+            tests: Array.isArray(input.tests) ? input.tests : undefined,
+        }),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowCreateHandoff(apiKey, baseUrl, input, sessionId, agentId) {
+    const res = await fetch(`${baseUrl}/v1/fleet/handoffs`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify({
+            ...input,
+            from_agent_id: String(input.from_agent_id || agentId || ''),
+            to_agent_id: String(input.to_agent_id || ''),
+            task: String(input.task || ''),
+        }),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowUpdateHandoff(apiKey, baseUrl, handoffId, input, sessionId, agentId) {
+    const safeId = validatePathParam(handoffId, 'handoffId');
+    const res = await fetch(`${baseUrl}/v1/fleet/handoffs/${safeId}`, {
+        method: 'PATCH',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify({
+            status: typeof input.status === 'string' ? input.status : undefined,
+            checkpoint: typeof input.checkpoint === 'string' ? input.checkpoint : undefined,
+            result_summary: typeof input.result_summary === 'string' ? input.result_summary : undefined,
+        }),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowHandoffStatus(apiKey, baseUrl, options = {}, sessionId, agentId) {
+    const qs = new URLSearchParams();
+    if (options.status)
+        qs.set('status', options.status);
+    if (options.agentId || agentId)
+        qs.set('agent_id', options.agentId || agentId || '');
+    if (options.limit)
+        qs.set('limit', String(options.limit));
+    const res = await fetch(`${baseUrl}/v1/fleet/handoffs/status${qs.toString() ? `?${qs.toString()}` : ''}`, {
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
     const json = await safeJsonResponse(res);
     return json.data;

@@ -63,18 +63,21 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.17
+## What's New in v3.9.18
 
-v3.9.17 adds Phase 1 passive install support with the new universal installer:
+v3.9.18 adds Phase 2 fleet learning tools for MCP agents:
 
-```bash
-npx @getmarrow/install --mcp --dry-run
-npx @getmarrow/install --mcp --yes
+- `marrow_fleet_lessons` retrieves ranked lessons before similar work.
+- `marrow_record_deployment_memory` records PR, commit, tests, smoke result, rollback plan, production health, and incident notes.
+- `marrow_create_handoff`, `marrow_update_handoff`, and `marrow_handoff_status` track cross-agent work.
+- `marrow_agent_performance` returns avoided mistakes, reused winning decisions, failed patterns, token/time saved estimate, reliability score, and next improvements.
+
+```json
+{
+  "query": "deploy production worker",
+  "limit": 5
+}
 ```
-
-The installer detects Claude Code, Cursor, Codex/agent instruction files, OpenClaw-style workspaces, MCP config, Node, and Python projects. It can write MCP hook config, markdown instructions, SDK passive preload files, and run a harmless Marrow self-test when `MARROW_API_KEY` is present.
-
-`marrow_agent_status` now pairs with the enhanced `/v1/agent/status` health contract so agents can prove Marrow is active without a human dashboard.
 
 Full feature history, examples, and API reference live at [getmarrow.ai/docs](https://getmarrow.ai/docs/).
 
