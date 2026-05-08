@@ -146,6 +146,29 @@ export interface MarrowDecisionBriefResult {
     };
     next_actions: string[];
 }
+export interface MarrowWorkflowGateRequest {
+    action: string;
+    description?: string;
+    context?: Record<string, unknown>;
+    risk_tolerance?: 'low' | 'medium' | 'high';
+    requires_approval?: boolean;
+}
+export interface MarrowWorkflowGateResult {
+    allow: boolean;
+    decision: 'allow' | 'warn' | 'review_required' | 'block';
+    risk_level: 'low' | 'medium' | 'high';
+    reasons: Array<{
+        code: string;
+        severity: string;
+        message: string;
+    }>;
+    agent_id?: string | null;
+    session_id?: string | null;
+    gate_event_id?: string | null;
+    prior_lessons?: unknown[];
+    deployment_playbooks?: unknown[];
+    next?: Record<string, unknown>;
+}
 export interface MarrowAgentStatusResult {
     period: {
         days: number;

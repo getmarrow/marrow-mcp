@@ -63,19 +63,18 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.18
+## What's New in v3.9.19
 
-v3.9.18 adds Phase 2 fleet learning tools for MCP agents:
+v3.9.19 adds the Phase 1 passive-value layer for MCP agents:
 
-- `marrow_fleet_lessons` retrieves ranked lessons before similar work.
-- `marrow_record_deployment_memory` records PR, commit, tests, smoke result, rollback plan, production health, and incident notes.
-- `marrow_create_handoff`, `marrow_update_handoff`, and `marrow_handoff_status` track cross-agent work.
-- `marrow_agent_performance` returns avoided mistakes, reused winning decisions, failed patterns, token/time saved estimate, reliability score, and next improvements.
+- `marrow_workflow_gate` gives agents a pre-action risk gate for deploys, publishes, merges, migrations, key rotation, destructive commands, and production work.
+- Passive prompt hooks can inject compact value summaries when the prompt asks about status, value, metrics, passive usage, or fleet improvement.
+- Passive decision briefs remain enabled for risky work and now pair cleanly with the explicit workflow gate when stronger control is needed.
 
 ```json
 {
-  "query": "deploy production worker",
-  "limit": 5
+  "action": "deploy Cloudflare Worker to production",
+  "riskTolerance": "medium"
 }
 ```
 
@@ -126,6 +125,24 @@ Marrow returns aggregated prior failure categories only. It does not expose raw 
 `marrow_decision_brief` is additive. It gives the pre-action operating brief, then the agent still logs intent with `marrow_think`/passive auto-logging and commits the verified outcome with `marrow_commit`.
 
 Passive decision briefs are enabled by default. Set `MARROW_PASSIVE_BRIEF=false` to disable them, or `MARROW_PASSIVE_BRIEF=always` to brief every prompt.
+
+### Workflow Gate Tool
+
+MCP tool: `marrow_workflow_gate`.
+
+Use it before deploys, publishes, merges, DB migrations, key rotation, destructive commands, or production work.
+
+```json
+{
+  "action": "rotate Cloudflare deploy token and verify production",
+  "riskTolerance": "medium",
+  "requiresApproval": true
+}
+```
+
+The response returns `allow`, `warn`, `review_required`, or `block`, plus prior lessons and deployment playbooks when available.
+
+Passive value summaries are enabled by default in auto mode. Set `MARROW_PASSIVE_VALUE_SUMMARY=false` to disable them, or `MARROW_PASSIVE_VALUE_SUMMARY=always` to include them on every prompt hook.
 
 Full feature history, examples, and API reference live at [getmarrow.ai/docs](https://getmarrow.ai/docs/).
 
@@ -388,7 +405,7 @@ The value compounds with use. Each decision your agent logs makes the hive smart
 
 ```bash
 # 1. Add the MCP server
-claude mcp add marrow -e MARROW_API_KEY=mrw_your_api_key -- npx @getmarrow/mcp
+claude mcp add marrow -e MARROW_API_KEY="$MARROW_API_KEY" -- npx @getmarrow/mcp
 
 # 2. Set up auto-enrollment (agent uses Marrow automatically)
 npx @getmarrow/mcp setup
@@ -401,14 +418,10 @@ That's it. Your agent will use Marrow automatically in every session.
 Run it directly with `npx`:
 
 ```bash
-# Option 1: Pass API key via CLI flag
-npx @getmarrow/mcp --key mrw_your_api_key
-
-# Option 2: Use environment variable
-MARROW_API_KEY=mrw_your_api_key npx @getmarrow/mcp
+MARROW_API_KEY="$MARROW_API_KEY" npx @getmarrow/mcp
 ```
 
-Or register it in your MCP client config.
+Or register it in your MCP client config using environment variables or your client's secret storage. Avoid putting API keys in command arguments or static config files.
 
 ---
 
@@ -487,7 +500,7 @@ Check Marrow platform health and status.
 ## Claude Code Config
 
 ```bash
-claude mcp add marrow -e MARROW_API_KEY=mrw_your_api_key -- npx @getmarrow/mcp
+claude mcp add marrow -e MARROW_API_KEY="$MARROW_API_KEY" -- npx @getmarrow/mcp
 ```
 
 ## Claude Desktop Config
@@ -497,7 +510,10 @@ claude mcp add marrow -e MARROW_API_KEY=mrw_your_api_key -- npx @getmarrow/mcp
   "mcpServers": {
     "marrow": {
       "command": "npx",
-      "args": ["@getmarrow/mcp", "--key", "mrw_your_api_key"]
+      "args": ["@getmarrow/mcp"],
+      "env": {
+        "MARROW_API_KEY": "${MARROW_API_KEY}"
+      }
     }
   }
 }
@@ -509,7 +525,7 @@ claude mcp add marrow -e MARROW_API_KEY=mrw_your_api_key -- npx @getmarrow/mcp
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MARROW_API_KEY` | Yes | Your API key from getmarrow.ai (or use `--key` flag) |
+| `MARROW_API_KEY` | Yes | Your API key from getmarrow.ai. Prefer environment variables or client secret storage. |
 | `MARROW_BASE_URL` | No | Custom API URL (default: `https://api.getmarrow.ai`). Must use HTTPS. |
 | `MARROW_SESSION_ID` | No | Session identifier for multi-agent setups |
 | `MARROW_FLEET_AGENT_ID` | No | Agent identifier sent as `X-Marrow-Agent-Id` for fleet attribution |
