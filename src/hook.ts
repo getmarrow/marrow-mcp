@@ -412,7 +412,17 @@ export async function runHookCommand(): Promise<void> {
     await marrowAuto(
       apiKey,
       baseUrl,
-      { action, outcome, success, type: 'general' },
+      {
+        action,
+        outcome,
+        success,
+        type: 'general',
+        context: {
+          marrow_auto_outcome_closure: true,
+          marrow_auto_outcome_source: 'mcp_post_tool_use',
+          marrow_tool_name: getString(event.tool_name) || 'unknown',
+        },
+      },
       sessionId,
       agentId,
       2000

@@ -49,6 +49,7 @@ export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
     outcome?: string;
     success?: boolean;
     type?: string;
+    context?: Record<string, unknown>;
 }, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<{
     decision_id: string;
     committed: boolean;

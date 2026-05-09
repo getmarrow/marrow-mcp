@@ -286,6 +286,7 @@ export async function marrowAuto(
     outcome?: string;
     success?: boolean;
     type?: string;
+    context?: Record<string, unknown>;
   },
   sessionId?: string,
   agentId?: string,
@@ -302,6 +303,7 @@ export async function marrowAuto(
       body: JSON.stringify({
         action: params.action,
         type: params.type || 'general',
+        context: params.context,
       }),
       signal: thinkTimeout.signal,
     });

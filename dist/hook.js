@@ -361,7 +361,17 @@ async function runHookCommand() {
         const sessionId = process.env.MARROW_SESSION_ID || getString(event.session_id);
         const agentId = process.env.MARROW_FLEET_AGENT_ID || undefined;
         const { success, outcome } = deriveOutcome(event);
-        await (0, index_1.marrowAuto)(apiKey, baseUrl, { action, outcome, success, type: 'general' }, sessionId, agentId, 2000);
+        await (0, index_1.marrowAuto)(apiKey, baseUrl, {
+            action,
+            outcome,
+            success,
+            type: 'general',
+            context: {
+                marrow_auto_outcome_closure: true,
+                marrow_auto_outcome_source: 'mcp_post_tool_use',
+                marrow_tool_name: getString(event.tool_name) || 'unknown',
+            },
+        }, sessionId, agentId, 2000);
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);

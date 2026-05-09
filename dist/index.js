@@ -207,6 +207,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             body: JSON.stringify({
                 action: params.action,
                 type: params.type || 'general',
+                context: params.context,
             }),
             signal: thinkTimeout.signal,
         });
