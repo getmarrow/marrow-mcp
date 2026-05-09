@@ -13,6 +13,8 @@ import type {
   MarrowDashboardResult,
   MarrowDecisionBriefRequest,
   MarrowDecisionBriefResult,
+  MarrowAgentRuntimeRequest,
+  MarrowAgentRuntimeResult,
   MarrowWorkflowGateRequest,
   MarrowWorkflowGateResult,
   MarrowDigestResult,
@@ -713,6 +715,27 @@ export async function marrowWorkflowGate(
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(input),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+export async function marrowAgentRuntime(
+  apiKey: string,
+  baseUrl: string,
+  input: MarrowAgentRuntimeRequest,
+  sessionId?: string,
+  agentId?: string
+): Promise<MarrowAgentRuntimeResult> {
+  const body = {
+    ...input,
+    agent_id: input.agent_id || agentId,
+    session_id: input.session_id || sessionId,
+  };
+  const res = await fetch(`${baseUrl}/v1/agent/runtime`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    body: JSON.stringify(body),
   });
   const json = await safeJsonResponse(res);
   return json.data;

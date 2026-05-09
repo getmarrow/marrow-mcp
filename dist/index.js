@@ -25,6 +25,7 @@ exports.marrowAgentStatus = marrowAgentStatus;
 exports.marrowValueReport = marrowValueReport;
 exports.marrowDecisionBrief = marrowDecisionBrief;
 exports.marrowWorkflowGate = marrowWorkflowGate;
+exports.marrowAgentRuntime = marrowAgentRuntime;
 exports.marrowAgentPerformance = marrowAgentPerformance;
 exports.marrowFleetLessons = marrowFleetLessons;
 exports.marrowRecordDeploymentMemory = marrowRecordDeploymentMemory;
@@ -522,6 +523,20 @@ async function marrowWorkflowGate(apiKey, baseUrl, input, sessionId, agentId) {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(input),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId) {
+    const body = {
+        ...input,
+        agent_id: input.agent_id || agentId,
+        session_id: input.session_id || sessionId,
+    };
+    const res = await fetch(`${baseUrl}/v1/agent/runtime`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify(body),
     });
     const json = await safeJsonResponse(res);
     return json.data;

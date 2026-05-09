@@ -14,6 +14,7 @@
  */
 
 import { marrowDecisionBrief, marrowThink, marrowValueReport, validateBaseUrl } from './index';
+import { redactSensitiveText } from './redact';
 import type { MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
 
 export const CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
@@ -176,14 +177,6 @@ function buildContextBlock(signals: ContextSignals): string {
     block = block.slice(0, MAX_CONTEXT_BYTES - 1) + '…';
   }
   return block;
-}
-
-function redactSensitiveText(value: string): string {
-  return value
-    .replace(/\b(Bearer|Token|ApiKey|API_KEY|MARROW_API_KEY|MARROW_KEY)\s+[\w.\-+/=]{12,}\b/gi, '$1 [REDACTED]')
-    .replace(/\b([A-Z0-9_]*(?:SECRET|TOKEN|API[_-]?KEY|CREDENTIAL|PASSWORD|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*[:=]\s*['"]?[^'"\s,;]{6,}/gi, '$1=[REDACTED]')
-    .replace(/\b(mrw_(?:live|test)_[A-Za-z0-9_\-]{8,})\b/g, '[REDACTED_MARROW_KEY]')
-    .replace(/\b(?:sk|pk|ghp|github_pat|npm)_[A-Za-z0-9_\-]{12,}\b/g, '[REDACTED_TOKEN]');
 }
 
 function unique(values: string[]): string[] {

@@ -13,6 +13,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const index_1 = require("./index");
 const hook_1 = require("./hook");
 const hook_context_1 = require("./hook-context");
+const redact_1 = require("./redact");
 // Parse CLI args
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -33,35 +34,6 @@ function parseArgs() {
         }
     }
     return result;
-}
-function redactSensitiveText(value) {
-    return value
-        .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)=)([^\s"'`]+|"[^"]*"|'[^']*')/gi, '$1[REDACTED]')
-        .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)\s+)([^\s"'`]+|"[^"]*"|'[^']*')/gi, '$1[REDACTED]')
-        .replace(/\b(Bearer|Token|ApiKey|API_KEY|MARROW_API_KEY|MARROW_KEY)\s+[\w.\-+/=]{12,}\b/gi, '$1 [REDACTED]')
-        .replace(/\b([A-Z0-9_]*(?:SECRET|TOKEN|API[_-]?KEY|CREDENTIAL|PASSWORD|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*[:=]\s*['"]?[^'"\s,;]{6,}/gi, '$1=[REDACTED]')
-        .replace(/\b(mrw_(?:live|test)_[A-Za-z0-9_\-]{8,})\b/g, '[REDACTED_MARROW_KEY]')
-        .replace(/\b(?:sk|pk|ghp|github_pat|npm|cfut)_[A-Za-z0-9_\-]{12,}\b/g, '[REDACTED_TOKEN]');
-}
-function redactSensitiveValue(value, depth = 0) {
-    if (depth > 4)
-        return '[redacted-depth]';
-    if (typeof value === 'string')
-        return redactSensitiveText(value);
-    if (typeof value === 'number' || typeof value === 'boolean' || value == null)
-        return value;
-    if (Array.isArray(value))
-        return value.slice(0, 20).map((item) => redactSensitiveValue(item, depth + 1));
-    if (typeof value === 'object') {
-        const out = {};
-        for (const [key, item] of Object.entries(value).slice(0, 40)) {
-            out[key] = /(?:secret|token|api[_-]?key|password|credential|authorization|private[_-]?key)/i.test(key)
-                ? '[redacted]'
-                : redactSensitiveValue(item, depth + 1);
-        }
-        return out;
-    }
-    return String(value);
 }
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
 function runSetup() {
@@ -936,6 +908,31 @@ if (process.argv[2] !== 'keys') {
                 },
             },
             {
+                name: 'marrow_agent_runtime',
+                description: 'One-call agent-native Marrow loop. Returns passive status, decision brief, risk gate, relevant lessons, ' +
+                    'template suggestion, required proof pack, before-you-act instruction, and exact next action. ' +
+                    'Use this before meaningful work when you want Marrow to guide the whole action in one call.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        action: { type: 'string', description: 'What the agent is about to do.' },
+                        type: { type: 'string', description: 'Decision type, e.g. deploy, audit, patch, review.' },
+                        role: { type: 'string', description: 'Agent role/playbook: deploy, audit, patch, review, or general.' },
+                        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to MARROW_AGENT_ID.' },
+                        sessionId: { type: 'string', description: 'Optional session id. Defaults to MARROW_SESSION_ID.' },
+                        surfaces: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Surfaces to keep current, e.g. github, npm, docs, production, secrets.',
+                        },
+                        context: { type: 'object', description: 'Optional non-sensitive metadata.' },
+                        proof: { type: 'object', description: 'Optional proof fields already collected, such as checks, rollback_target, smoke_result.' },
+                        period: { type: 'number', description: 'Lookback period in days, default 7, max 90.' },
+                    },
+                    required: ['action'],
+                },
+            },
+            {
                 name: 'marrow_workflow_gate',
                 description: 'Pre-action risk gate for deploys, publishes, merges, DB migrations, key rotation, destructive commands, and production work. ' +
                     'Returns allow, warn, review_required, or block plus prior lessons/playbooks.',
@@ -1587,14 +1584,33 @@ This is not optional overhead — it's how you stop repeating the same failures.
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
+                    if (toolName === 'marrow_agent_runtime') {
+                        const result = await (0, index_1.marrowAgentRuntime)(API_KEY, BASE_URL, {
+                            action: (0, redact_1.redactSensitiveText)(args.action),
+                            type: args.type,
+                            role: args.role,
+                            agent_id: args.agentId || AGENT_ID,
+                            session_id: args.sessionId || SESSION_ID,
+                            surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
+                            context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+                                ? (0, redact_1.redactSensitiveValue)(args.context)
+                                : undefined,
+                            proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+                                ? (0, redact_1.redactSensitiveValue)(args.proof)
+                                : undefined,
+                            period: args.period,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
                     if (toolName === 'marrow_workflow_gate') {
                         const result = await (0, index_1.marrowWorkflowGate)(API_KEY, BASE_URL, {
-                            action: redactSensitiveText(args.action),
-                            description: args.description ? redactSensitiveText(args.description) : undefined,
+                            action: (0, redact_1.redactSensitiveText)(args.action),
+                            description: args.description ? (0, redact_1.redactSensitiveText)(args.description) : undefined,
                             risk_tolerance: args.riskTolerance,
                             requires_approval: args.requiresApproval,
                             context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
-                                ? redactSensitiveValue(args.context)
+                                ? (0, redact_1.redactSensitiveValue)(args.context)
                                 : undefined,
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });

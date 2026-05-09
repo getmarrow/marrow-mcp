@@ -80,6 +80,8 @@ export interface MarrowDecisionBriefRequest {
     role?: string;
     surfaces?: string[];
     period?: number | string;
+    context?: Record<string, unknown>;
+    proof?: Record<string, unknown>;
 }
 export interface MarrowDecisionBriefResult {
     period: {
@@ -168,6 +170,34 @@ export interface MarrowWorkflowGateResult {
     prior_lessons?: unknown[];
     deployment_playbooks?: unknown[];
     next?: Record<string, unknown>;
+}
+export interface MarrowAgentRuntimeRequest extends MarrowDecisionBriefRequest {
+    risk_tolerance?: 'low' | 'medium' | 'high';
+    requires_approval?: boolean;
+}
+export interface MarrowAgentRuntimeResult {
+    ok: boolean;
+    action: string;
+    agent_id: string | null;
+    session_id: string | null;
+    status: Record<string, unknown>;
+    decision_brief: MarrowDecisionBriefResult;
+    risk_gate: MarrowWorkflowGateResult;
+    relevant_lessons: unknown[];
+    deployment_playbooks: unknown[];
+    template_suggestion: Record<string, unknown>;
+    proof_pack: {
+        required: boolean;
+        enforced: boolean;
+        fields: string[];
+        missing: string[];
+        complete: boolean;
+        commit_endpoint: string;
+        rule: string;
+    };
+    before_you_act: string | null;
+    exact_next_action: string | null;
+    auto_outcome_closure: Record<string, unknown> | null;
 }
 export interface MarrowAgentStatusResult {
     period: {

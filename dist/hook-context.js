@@ -18,6 +18,7 @@ exports.CONTEXT_HOOK_COMMAND = void 0;
 exports.runContextHookCommand = runContextHookCommand;
 exports.installUserPromptSubmitHook = installUserPromptSubmitHook;
 const index_1 = require("./index");
+const redact_1 = require("./redact");
 exports.CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 2000;
@@ -128,18 +129,11 @@ function buildContextBlock(signals) {
     }
     return block;
 }
-function redactSensitiveText(value) {
-    return value
-        .replace(/\b(Bearer|Token|ApiKey|API_KEY|MARROW_API_KEY|MARROW_KEY)\s+[\w.\-+/=]{12,}\b/gi, '$1 [REDACTED]')
-        .replace(/\b([A-Z0-9_]*(?:SECRET|TOKEN|API[_-]?KEY|CREDENTIAL|PASSWORD|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*[:=]\s*['"]?[^'"\s,;]{6,}/gi, '$1=[REDACTED]')
-        .replace(/\b(mrw_(?:live|test)_[A-Za-z0-9_\-]{8,})\b/g, '[REDACTED_MARROW_KEY]')
-        .replace(/\b(?:sk|pk|ghp|github_pat|npm)_[A-Za-z0-9_\-]{12,}\b/g, '[REDACTED_TOKEN]');
-}
 function unique(values) {
     return Array.from(new Set(values.filter(Boolean)));
 }
 function inferPassiveBriefInput(prompt) {
-    const redactedPrompt = redactSensitiveText(prompt);
+    const redactedPrompt = (0, redact_1.redactSensitiveText)(prompt);
     const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
     const lower = prompt.toLowerCase();
     const isRisky = RISKY_PROMPT_TERMS.test(prompt);
@@ -290,7 +284,7 @@ async function runContextHookCommand() {
         const sessionId = process.env.MARROW_SESSION_ID || asString(event.session_id);
         const agentId = process.env.MARROW_FLEET_AGENT_ID || undefined;
         // Truncate prompt for the action field (Marrow think actions don't need full multi-K-token prompts)
-        const redactedPrompt = redactSensitiveText(prompt);
+        const redactedPrompt = (0, redact_1.redactSensitiveText)(prompt);
         const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
         const passiveBriefInput = inferPassiveBriefInput(prompt);
         const shouldFetchValueSummary = PASSIVE_VALUE_MODE === 'always' ||

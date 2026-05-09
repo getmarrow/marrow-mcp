@@ -63,19 +63,20 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.20
+## What's New in v3.9.21
 
-v3.9.20 adds actionable degraded-health repair and explicit automatic outcome closure for MCP agents:
+v3.9.21 adds the agent-native runtime loop to MCP:
 
-- PostToolUse now marks automatic outcome closure metadata for successful and failed tool calls.
-- `marrow_auto()` can carry safe context metadata into the intent log.
-- `/v1/agent/status` can tell agents exactly when the outcome hook is missing and how to repair it.
-- Degraded passive capture now points agents to `npx @getmarrow/install --yes` or `npx @getmarrow/mcp setup`.
+- New `marrow_agent_runtime` tool returns passive status, decision brief, risk gate, lessons, template suggestion, proof pack, and exact next action in one call.
+- Proof-pack enforcement tells agents which fields are missing before they complete deploy, merge, publish, or security work.
+- PostToolUse still marks automatic outcome closure metadata for successful and failed tool calls.
+- Degraded passive capture still points agents to `npx @getmarrow/install --repair`, `npx @getmarrow/install --yes`, or `npx @getmarrow/mcp setup`.
 
 ```json
 {
   "action": "deploy Cloudflare Worker to production",
-  "riskTolerance": "medium"
+  "type": "deploy",
+  "surfaces": ["github", "cloudflare", "production"]
 }
 ```
 

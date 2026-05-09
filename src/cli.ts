@@ -22,6 +22,7 @@ import {
   marrowAgentStatus,
   marrowValueReport,
   marrowDecisionBrief,
+  marrowAgentRuntime,
   marrowWorkflowGate,
   marrowAgentPerformance,
   marrowFleetLessons,
@@ -44,6 +45,7 @@ import {
 } from './index';
 import { installPostToolUseHook, runHookCommand } from './hook';
 import { installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
+import { redactSensitiveText, redactSensitiveValue } from './redact';
 import type { ThinkResult, OrientResult, MarrowMemory } from './types';
 
 // Parse CLI args
@@ -66,33 +68,6 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     }
   }
   return result;
-}
-
-function redactSensitiveText(value: string): string {
-  return value
-    .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)=)([^\s"'`]+|"[^"]*"|'[^']*')/gi, '$1[REDACTED]')
-    .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)\s+)([^\s"'`]+|"[^"]*"|'[^']*')/gi, '$1[REDACTED]')
-    .replace(/\b(Bearer|Token|ApiKey|API_KEY|MARROW_API_KEY|MARROW_KEY)\s+[\w.\-+/=]{12,}\b/gi, '$1 [REDACTED]')
-    .replace(/\b([A-Z0-9_]*(?:SECRET|TOKEN|API[_-]?KEY|CREDENTIAL|PASSWORD|PRIVATE[_-]?KEY)[A-Z0-9_]*)\s*[:=]\s*['"]?[^'"\s,;]{6,}/gi, '$1=[REDACTED]')
-    .replace(/\b(mrw_(?:live|test)_[A-Za-z0-9_\-]{8,})\b/g, '[REDACTED_MARROW_KEY]')
-    .replace(/\b(?:sk|pk|ghp|github_pat|npm|cfut)_[A-Za-z0-9_\-]{12,}\b/g, '[REDACTED_TOKEN]');
-}
-
-function redactSensitiveValue(value: unknown, depth: number = 0): unknown {
-  if (depth > 4) return '[redacted-depth]';
-  if (typeof value === 'string') return redactSensitiveText(value);
-  if (typeof value === 'number' || typeof value === 'boolean' || value == null) return value;
-  if (Array.isArray(value)) return value.slice(0, 20).map((item) => redactSensitiveValue(item, depth + 1));
-  if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 40)) {
-      out[key] = /(?:secret|token|api[_-]?key|password|credential|authorization|private[_-]?key)/i.test(key)
-        ? '[redacted]'
-        : redactSensitiveValue(item, depth + 1);
-    }
-    return out;
-  }
-  return String(value);
 }
 
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
@@ -1057,6 +1032,32 @@ const TOOLS = [
     },
   },
   {
+    name: 'marrow_agent_runtime',
+    description:
+      'One-call agent-native Marrow loop. Returns passive status, decision brief, risk gate, relevant lessons, ' +
+      'template suggestion, required proof pack, before-you-act instruction, and exact next action. ' +
+      'Use this before meaningful work when you want Marrow to guide the whole action in one call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: 'What the agent is about to do.' },
+        type: { type: 'string', description: 'Decision type, e.g. deploy, audit, patch, review.' },
+        role: { type: 'string', description: 'Agent role/playbook: deploy, audit, patch, review, or general.' },
+        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to MARROW_AGENT_ID.' },
+        sessionId: { type: 'string', description: 'Optional session id. Defaults to MARROW_SESSION_ID.' },
+        surfaces: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Surfaces to keep current, e.g. github, npm, docs, production, secrets.',
+        },
+        context: { type: 'object', description: 'Optional non-sensitive metadata.' },
+        proof: { type: 'object', description: 'Optional proof fields already collected, such as checks, rollback_target, smoke_result.' },
+        period: { type: 'number', description: 'Lookback period in days, default 7, max 90.' },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'marrow_workflow_gate',
     description:
       'Pre-action risk gate for deploys, publishes, merges, DB migrations, key rotation, destructive commands, and production work. ' +
@@ -1832,6 +1833,32 @@ This is not optional overhead — it's how you stop repeating the same failures.
             agent_id: (args.agentId as string) || AGENT_ID,
             session_id: (args.sessionId as string) || SESSION_ID,
             surfaces: Array.isArray(args.surfaces) ? args.surfaces as string[] : undefined,
+            period: args.period as number | undefined,
+          },
+          SESSION_ID,
+          FLEET_AGENT_ID
+        );
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_agent_runtime') {
+        const result = await marrowAgentRuntime(
+          API_KEY,
+          BASE_URL,
+          {
+            action: redactSensitiveText(args.action as string),
+            type: args.type as string | undefined,
+            role: args.role as string | undefined,
+            agent_id: (args.agentId as string) || AGENT_ID,
+            session_id: (args.sessionId as string) || SESSION_ID,
+            surfaces: Array.isArray(args.surfaces) ? args.surfaces as string[] : undefined,
+            context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+              ? redactSensitiveValue(args.context) as Record<string, unknown>
+              : undefined,
+            proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+              ? redactSensitiveValue(args.proof) as Record<string, unknown>
+              : undefined,
             period: args.period as number | undefined,
           },
           SESSION_ID,
