@@ -196,6 +196,18 @@ export interface MarrowAgentRuntimeResult {
         rule: string;
     };
     before_you_act: string | null;
+    before_you_act_injection?: {
+        required: boolean;
+        source: string;
+        message: string | null;
+        must_use_before_action: boolean;
+        lesson_id: string | null;
+        lesson_score: number | null;
+        action_pattern: string | null;
+        outcome_success: boolean | null;
+        playbook_id: string | null;
+        risk_level: string;
+    };
     exact_next_action: string | null;
     auto_outcome_closure: Record<string, unknown> | null;
 }

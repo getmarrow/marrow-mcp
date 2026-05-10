@@ -63,14 +63,14 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.21
+## What's New in v3.9.22
 
-v3.9.21 adds the agent-native runtime loop to MCP:
+v3.9.22 makes the agent-native runtime loop the default passive prompt signal for MCP agents:
 
-- New `marrow_agent_runtime` tool returns passive status, decision brief, risk gate, lessons, template suggestion, proof pack, and exact next action in one call.
-- Proof-pack enforcement tells agents which fields are missing before they complete deploy, merge, publish, or security work.
-- PostToolUse still marks automatic outcome closure metadata for successful and failed tool calls.
-- Degraded passive capture still points agents to `npx @getmarrow/install --repair`, `npx @getmarrow/install --yes`, or `npx @getmarrow/mcp setup`.
+- UserPromptSubmit hooks call the one-call runtime for risky prompts, so agents receive status, risk gate, lessons, proof requirements, and exact next action before acting.
+- `marrow_agent_runtime` now includes structured `before_you_act_injection` data for fleet lessons and deployment playbooks.
+- PostToolUse continues to close outcomes automatically for successful and failed tool calls.
+- Degraded passive capture points agents to exact installer/MCP/SDK repair commands.
 
 ```json
 {

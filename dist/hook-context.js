@@ -203,8 +203,31 @@ function appendPassiveBrief(lines, brief) {
     }
     lines.push('- Continue the Marrow loop: log intent, do the work, verify, then commit the outcome.');
 }
-function buildCombinedContextBlock(signals, brief, valueReport) {
+function appendAgentRuntime(lines, runtime) {
+    if (!runtime)
+        return;
+    lines.push('');
+    lines.push('## Marrow agent runtime');
+    if (runtime.before_you_act) {
+        lines.push(`- Before you act: ${runtime.before_you_act}`);
+    }
+    if (runtime.exact_next_action) {
+        lines.push(`- Next: ${runtime.exact_next_action}`);
+    }
+    if (runtime.risk_gate) {
+        lines.push(`- Risk gate: ${runtime.risk_gate.decision} (${runtime.risk_gate.risk_level})`);
+    }
+    if (runtime.proof_pack?.required) {
+        lines.push(`- Required proof: ${runtime.proof_pack.fields.slice(0, 6).join(', ')}`);
+    }
+    const closure = asRecord(runtime.auto_outcome_closure);
+    if (closure) {
+        lines.push(`- Outcome closure: ${asString(closure.state) || 'unknown'}${typeof closure.recent_coverage_24h === 'number' ? ` (${Math.round(closure.recent_coverage_24h * 100)}% recent)` : ''}`);
+    }
+}
+function buildCombinedContextBlock(signals, brief, valueReport, runtime = null) {
     const lines = buildContextBlock(signals).split('\n');
+    appendAgentRuntime(lines, runtime);
     appendPassiveBrief(lines, brief);
     appendValueSummary(lines, valueReport);
     let block = lines.join('\n');
@@ -289,29 +312,32 @@ async function runContextHookCommand() {
         const passiveBriefInput = inferPassiveBriefInput(prompt);
         const shouldFetchValueSummary = PASSIVE_VALUE_MODE === 'always' ||
             (PASSIVE_VALUE_MODE !== 'false' && (Boolean(passiveBriefInput) || /(?:status|summary|report|improve|better|value|metrics|passive|fleet)/i.test(prompt)));
-        const [thinkResult, briefResult, valueReport] = await Promise.all([
+        const [thinkResult, runtimeResult, briefResult, valueReport] = await Promise.all([
             withTimeout((0, index_1.marrowThink)(apiKey, baseUrl, { action, type: passiveBriefInput?.type || 'general' }, sessionId, agentId), MARROW_API_TIMEOUT_MS),
             passiveBriefInput
+                ? withTimeout((0, index_1.marrowAgentRuntime)(apiKey, baseUrl, passiveBriefInput, sessionId, agentId), MARROW_API_TIMEOUT_MS)
+                : Promise.resolve(null),
+            passiveBriefInput && process.env.MARROW_RUNTIME_FALLBACK_BRIEF === 'true'
                 ? withTimeout((0, index_1.marrowDecisionBrief)(apiKey, baseUrl, passiveBriefInput, sessionId, agentId), MARROW_API_TIMEOUT_MS)
                 : Promise.resolve(null),
             shouldFetchValueSummary
                 ? withTimeout((0, index_1.marrowValueReport)(apiKey, baseUrl, process.env.MARROW_VALUE_REPORT_PERIOD || '7d', agentId, sessionId, agentId), MARROW_API_TIMEOUT_MS)
                 : Promise.resolve(null),
         ]);
-        if (!thinkResult && !briefResult && !valueReport) {
+        if (!thinkResult && !runtimeResult && !briefResult && !valueReport) {
             debug('[marrow-context-hook] marrow_think timed out or errored');
             emitNoContext();
             process.exit(0);
             return;
         }
         const signals = extractSignals(thinkResult);
-        if (!signals.hasSignal && !briefResult && !valueReport) {
+        if (!signals.hasSignal && !runtimeResult && !briefResult && !valueReport) {
             debug('[marrow-context-hook] no signal — no context to inject');
             emitNoContext();
             process.exit(0);
             return;
         }
-        const context = buildCombinedContextBlock(signals, briefResult, valueReport);
+        const context = buildCombinedContextBlock(signals, briefResult || runtimeResult?.decision_brief || null, valueReport, runtimeResult);
         debug(`[marrow-context-hook] injected ${context.length} bytes of context`);
         emitContext(context);
         process.exit(0);
