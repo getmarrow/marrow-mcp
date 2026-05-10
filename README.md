@@ -576,6 +576,7 @@ MIT
 
 ## Related Packages
 
+- **[@getmarrow/install](https://www.npmjs.com/package/@getmarrow/install)** — Universal installer for passive agent setup. Detects local agent/runtime surfaces, writes safe config, runs self-tests, and reports first-value proof.
 - **[@getmarrow/sdk](https://www.npmjs.com/package/@getmarrow/sdk)** — TypeScript/Node.js SDK for programmatic access to Marrow. Use this for custom agent integrations outside of MCP.
 
 **📖 Full API reference with all endpoints:** [https://getmarrow.ai/docs/#api-reference](https://getmarrow.ai/docs/#api-reference)
