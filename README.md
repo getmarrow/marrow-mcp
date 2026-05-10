@@ -63,12 +63,12 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.25
+## What's New in v3.9.23
 
-v3.9.25 makes the agent-native runtime loop the default passive prompt signal for MCP agents and makes required prior lessons harder to bypass:
+v3.9.23 makes the agent-native runtime loop the default passive prompt signal for MCP agents and makes required prior lessons harder to miss:
 
-- UserPromptSubmit hooks call the one-call runtime by default, so agents receive status, risk gate, lessons, proof requirements, and exact next action before acting.
-- When Marrow marks `before_you_act_injection.must_use_before_action=true`, the prompt injection labels the Marrow action gate as required and tells the agent to stop if the lesson/proof cannot be applied.
+- UserPromptSubmit hooks call the one-call runtime for risky prompts, so agents receive status, risk gate, lessons, proof requirements, and exact next action before acting.
+- When Marrow marks `before_you_act_injection.must_use_before_action=true`, the prompt injection labels the Marrow action gate as required before the agent acts.
 - `marrow_agent_runtime` now includes structured `before_you_act_injection` data for fleet lessons and deployment playbooks.
 - PostToolUse continues to close outcomes automatically for successful and failed tool calls.
 - Degraded passive capture points agents to exact installer/MCP/SDK repair commands.
@@ -576,7 +576,6 @@ MIT
 
 ## Related Packages
 
-- **[@getmarrow/install](https://www.npmjs.com/package/@getmarrow/install)** — Universal installer for passive agent setup. Detects local agent/runtime surfaces, writes safe config, runs self-tests, and reports first-value proof.
 - **[@getmarrow/sdk](https://www.npmjs.com/package/@getmarrow/sdk)** — TypeScript/Node.js SDK for programmatic access to Marrow. Use this for custom agent integrations outside of MCP.
 
 **📖 Full API reference with all endpoints:** [https://getmarrow.ai/docs/#api-reference](https://getmarrow.ai/docs/#api-reference)

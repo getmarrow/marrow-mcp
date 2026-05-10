@@ -83,17 +83,6 @@ interface PassiveBriefInput {
   surfaces: string[];
 }
 
-function defaultRuntimeInput(prompt: string): PassiveBriefInput {
-  const redactedPrompt = redactSensitiveText(prompt);
-  const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
-  return {
-    action,
-    type: 'general',
-    role: 'general',
-    surfaces: ['workspace'],
-  };
-}
-
 function extractSignals(thinkResult: unknown): ContextSignals {
   const result = asRecord(thinkResult) || {};
   const intel = asRecord(result.intelligence) || {};
@@ -278,13 +267,6 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
   lines.push('## Marrow agent runtime');
   if (runtime.before_you_act_injection?.must_use_before_action) {
     lines.push('Action gate: REQUIRED. Apply this Marrow lesson or proof requirement before acting.');
-    lines.push('Do not proceed until the lesson/proof requirement is applied. If it cannot be applied, stop and report the work as blocked.');
-  }
-  if (runtime.before_you_act_injection?.untrusted_memory_notice) {
-    lines.push(`- Memory safety: ${runtime.before_you_act_injection.untrusted_memory_notice}`);
-  }
-  if (runtime.before_you_act_injection?.untrusted_memory_excerpt) {
-    lines.push(`- Untrusted memory reference, quoted for context only: "${runtime.before_you_act_injection.untrusted_memory_excerpt}"`);
   }
   if (runtime.before_you_act) {
     lines.push(`- Before you act: ${runtime.before_you_act}`);
@@ -294,14 +276,9 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
   }
   if (runtime.risk_gate) {
     lines.push(`- Risk gate: ${runtime.risk_gate.decision} (${runtime.risk_gate.risk_level})`);
-    if (runtime.risk_gate.allow === false) {
-      lines.push('- Required action: stop before external changes and collect owner approval or proof required by Marrow.');
-    }
   }
   if (runtime.proof_pack?.required) {
     lines.push(`- Required proof: ${runtime.proof_pack.fields.slice(0, 6).join(', ')}`);
-    const missing = Array.isArray(runtime.proof_pack.missing) ? runtime.proof_pack.missing.slice(0, 6).join(', ') : '';
-    if (missing) lines.push(`- Missing proof before completion: ${missing}`);
   }
   const closure = asRecord(runtime.auto_outcome_closure);
   if (closure) {
@@ -410,7 +387,6 @@ export async function runContextHookCommand(): Promise<void> {
     const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
 
     const passiveBriefInput = inferPassiveBriefInput(prompt);
-    const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
     const shouldFetchValueSummary =
       PASSIVE_VALUE_MODE === 'always' ||
       (PASSIVE_VALUE_MODE !== 'false' && (Boolean(passiveBriefInput) || /(?:status|summary|report|improve|better|value|metrics|passive|fleet)/i.test(prompt)));
@@ -420,11 +396,9 @@ export async function runContextHookCommand(): Promise<void> {
         marrowThink(apiKey, baseUrl, { action, type: passiveBriefInput?.type || 'general' }, sessionId, agentId),
         MARROW_API_TIMEOUT_MS
       ),
-      process.env.MARROW_AGENT_RUNTIME === 'false'
-        ? Promise.resolve(null)
-        : runtimeInput
+      passiveBriefInput
         ? withTimeout(
-            marrowAgentRuntime(apiKey, baseUrl, runtimeInput, sessionId, agentId),
+            marrowAgentRuntime(apiKey, baseUrl, passiveBriefInput, sessionId, agentId),
             MARROW_API_TIMEOUT_MS
           )
         : Promise.resolve(null),
