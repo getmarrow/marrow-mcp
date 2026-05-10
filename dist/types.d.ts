@@ -200,6 +200,8 @@ export interface MarrowAgentRuntimeResult {
         required: boolean;
         source: string;
         message: string | null;
+        untrusted_memory_notice?: string | null;
+        untrusted_memory_excerpt?: string | null;
         must_use_before_action: boolean;
         lesson_id: string | null;
         lesson_score: number | null;
