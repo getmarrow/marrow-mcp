@@ -208,6 +208,9 @@ function appendAgentRuntime(lines, runtime) {
         return;
     lines.push('');
     lines.push('## Marrow agent runtime');
+    if (runtime.before_you_act_injection?.must_use_before_action) {
+        lines.push('Action gate: REQUIRED. Apply this Marrow lesson or proof requirement before acting.');
+    }
     if (runtime.before_you_act) {
         lines.push(`- Before you act: ${runtime.before_you_act}`);
     }
