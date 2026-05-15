@@ -85,6 +85,14 @@ Full feature history, examples, and API reference live at [getmarrow.ai/docs](ht
 
 ---
 
+## Human-Directed Attribution Status
+
+The Marrow API supports privacy-preserving provenance fields on direct `POST /v1/decisions` calls: `source_kind`, `human_directed`, `source_confidence`, `instruction_ref`, `instruction_hash`, and `source_meta`. These fields classify instruction source class without identifying the human or storing raw prompts/PII.
+
+Current MCP tools and passive hooks remain backward compatible and do **not** yet expose first-class provenance parameters or automatically mark prompts as `human_directed`. MCP provenance wiring is deferred; direct API users should follow the live API reference at https://getmarrow.ai/docs.
+
+---
+
 ## Agent Value Report
 
 `marrow_value_report` lets MCP agents pull owner-ready proof of Marrow value without a dashboard. The existing passive hooks remain the default install path: `PostToolUse` logs meaningful tool outcomes and `UserPromptSubmit` injects relevant context plus decision briefs for risky prompts.
