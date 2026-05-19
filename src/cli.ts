@@ -662,6 +662,14 @@ const TOOLS = [
         previous_success: { type: 'boolean', description: 'Did the previous action succeed?' },
         previous_outcome: { type: 'string', description: 'What happened in the previous action (required if previous_decision_id provided)' },
         checkLoop: { type: 'boolean', description: 'Enable loop detection: warns if you are about to retry a failed approach. Recommended: true.' },
+        source_kind: {
+          type: 'string',
+          enum: ['human_directed', 'agent_autonomous', 'scheduled', 'integration', 'system', 'unknown'],
+          description: 'Optional provenance source. Defaults to agent_autonomous for MCP calls.',
+        },
+        human_directed: { type: 'boolean', description: 'True only when the action is directly requested by the owner/user.' },
+        instruction_ref: { type: 'string', description: 'Optional opaque non-PII instruction reference.' },
+        source_meta: { type: 'object', description: 'Optional provenance metadata. PII and raw provider IDs are rejected by the API.' },
       },
       required: ['action'],
     },
@@ -1447,8 +1455,13 @@ This is not optional overhead — it's how you stop repeating the same failures.
             previous_success: args.previous_success as boolean,
             previous_outcome: args.previous_outcome as string,
             checkLoop: (args.checkLoop as boolean) ?? true,
+            source_kind: args.source_kind as any,
+            human_directed: args.human_directed as boolean,
+            instruction_ref: args.instruction_ref as string,
+            source_meta: args.source_meta as Record<string, unknown>,
           },
-          SESSION_ID
+          SESSION_ID,
+          FLEET_AGENT_ID
         );
 
         // Refresh orient warnings every 5th think call
@@ -1532,7 +1545,8 @@ This is not optional overhead — it's how you stop repeating the same failures.
             action: description,
             type: (args.type as string) || 'general',
           },
-          SESSION_ID
+          SESSION_ID,
+          FLEET_AGENT_ID
         );
 
         let commitResult = null;

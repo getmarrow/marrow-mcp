@@ -422,6 +422,11 @@ export async function runHookCommand(): Promise<void> {
           marrow_auto_outcome_source: 'mcp_post_tool_use',
           marrow_tool_name: getString(event.tool_name) || 'unknown',
         },
+        source_meta: {
+          channel: 'mcp',
+          client: 'openclaw',
+          user_intent: 'operate',
+        },
       },
       sessionId,
       agentId,

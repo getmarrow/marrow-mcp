@@ -149,6 +149,21 @@ async function marrowThink(apiKey, baseUrl, params, sessionId, agentId) {
     if (params.context) {
         body.context = params.context;
     }
+    body.source_kind = params.source_kind || 'agent_autonomous';
+    body.source_confidence = params.source_confidence ?? 0.9;
+    body.human_directed = params.human_directed ?? false;
+    if (params.instruction_ref !== undefined)
+        body.instruction_ref = params.instruction_ref;
+    if (params.instruction !== undefined)
+        body.instruction = params.instruction;
+    if (params.instruction_hash !== undefined)
+        body.instruction_hash = params.instruction_hash;
+    body.source_meta = {
+        channel: 'mcp',
+        client: 'openclaw',
+        user_intent: 'operate',
+        ...(params.source_meta || {}),
+    };
     if (params.checkLoop) {
         body.checkLoop = true;
     }
@@ -209,6 +224,15 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
                 action: params.action,
                 type: params.type || 'general',
                 context: params.context,
+                source_kind: 'agent_autonomous',
+                source_confidence: 0.9,
+                human_directed: false,
+                source_meta: {
+                    channel: 'mcp',
+                    client: 'openclaw',
+                    user_intent: 'operate',
+                    ...(params.source_meta || {}),
+                },
             }),
             signal: thinkTimeout.signal,
         });

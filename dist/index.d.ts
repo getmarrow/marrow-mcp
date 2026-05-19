@@ -30,6 +30,13 @@ export declare function marrowThink(apiKey: string, baseUrl: string, params: {
     previous_success?: boolean;
     previous_outcome?: string;
     checkLoop?: boolean;
+    source_kind?: 'human_directed' | 'agent_autonomous' | 'scheduled' | 'integration' | 'system' | 'unknown';
+    source_confidence?: number;
+    human_directed?: boolean;
+    instruction_ref?: string | null;
+    instruction?: string;
+    instruction_hash?: string;
+    source_meta?: Record<string, unknown>;
 }, sessionId?: string, agentId?: string): Promise<ThinkResult>;
 /**
  * Explicitly commit the result of an action to Marrow.
@@ -50,6 +57,7 @@ export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
     success?: boolean;
     type?: string;
     context?: Record<string, unknown>;
+    source_meta?: Record<string, unknown>;
 }, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<{
     decision_id: string;
     committed: boolean;
