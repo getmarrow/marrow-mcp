@@ -15,6 +15,8 @@ import type {
   MarrowDecisionBriefResult,
   MarrowAgentRuntimeRequest,
   MarrowAgentRuntimeResult,
+  MarrowFirstValueRequest,
+  MarrowFirstValueResult,
   MarrowWorkflowGateRequest,
   MarrowWorkflowGateResult,
   MarrowDigestResult,
@@ -763,6 +765,27 @@ export async function marrowAgentRuntime(
     session_id: input.session_id || sessionId,
   };
   const res = await fetch(`${baseUrl}/v1/agent/runtime`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    body: JSON.stringify(body),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+export async function marrowFirstValue(
+  apiKey: string,
+  baseUrl: string,
+  input: MarrowFirstValueRequest = {},
+  sessionId?: string,
+  agentId?: string
+): Promise<MarrowFirstValueResult> {
+  const body = {
+    ...input,
+    agent_id: input.agent_id || agentId,
+    session_id: input.session_id || sessionId,
+  };
+  const res = await fetch(`${baseUrl}/v1/agent/first-value`, {
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(body),
