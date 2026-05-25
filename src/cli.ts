@@ -23,6 +23,7 @@ import {
   marrowValueReport,
   marrowDecisionBrief,
   marrowAgentRuntime,
+  marrowFirstValue,
   marrowWorkflowGate,
   marrowAgentPerformance,
   marrowFleetLessons,
@@ -1040,6 +1041,26 @@ const TOOLS = [
     },
   },
   {
+    name: 'marrow_first_value',
+    description:
+      'First-run Marrow value proof. Returns what is captured, whether outcome closure/runtime gate are active, ' +
+      'a plain-English first useful lesson, and a five-minute try-this-now prompt for agents and owners.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: 'Optional action to test. Defaults to a production deploy safety prompt.' },
+        type: { type: 'string', description: 'Decision type, e.g. deploy, audit, patch, review.' },
+        role: { type: 'string', description: 'Agent role/playbook: deploy, audit, patch, review, or general.' },
+        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to MARROW_AGENT_ID.' },
+        sessionId: { type: 'string', description: 'Optional session id. Defaults to MARROW_SESSION_ID.' },
+        surfaces: { type: 'array', items: { type: 'string' }, description: 'Surfaces to test, e.g. production, deploy, github, npm.' },
+        context: { type: 'object', description: 'Optional non-sensitive metadata.' },
+        proof: { type: 'object', description: 'Optional proof fields already collected.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'marrow_agent_runtime',
     description:
       'One-call agent-native Marrow loop. Returns passive status, decision brief, risk gate, relevant lessons, ' +
@@ -1848,6 +1869,31 @@ This is not optional overhead — it's how you stop repeating the same failures.
             session_id: (args.sessionId as string) || SESSION_ID,
             surfaces: Array.isArray(args.surfaces) ? args.surfaces as string[] : undefined,
             period: args.period as number | undefined,
+          },
+          SESSION_ID,
+          FLEET_AGENT_ID
+        );
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_first_value') {
+        const result = await marrowFirstValue(
+          API_KEY,
+          BASE_URL,
+          {
+            action: args.action ? redactSensitiveText(args.action as string) : undefined,
+            type: args.type as string | undefined,
+            role: args.role as string | undefined,
+            agent_id: (args.agentId as string) || AGENT_ID,
+            session_id: (args.sessionId as string) || SESSION_ID,
+            surfaces: Array.isArray(args.surfaces) ? args.surfaces as string[] : undefined,
+            context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+              ? redactSensitiveValue(args.context) as Record<string, unknown>
+              : undefined,
+            proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+              ? redactSensitiveValue(args.proof) as Record<string, unknown>
+              : undefined,
           },
           SESSION_ID,
           FLEET_AGENT_ID

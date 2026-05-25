@@ -1,7 +1,7 @@
 /**
  * @getmarrow/mcp — API Functions
  */
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowNudgeResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowNudgeResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 export type { Narrative, CommitResult } from './types';
 /**
@@ -131,6 +131,7 @@ export declare function marrowValueReport(apiKey: string, baseUrl: string, perio
 export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
 export declare function marrowWorkflowGate(apiKey: string, baseUrl: string, input: MarrowWorkflowGateRequest, sessionId?: string, agentId?: string): Promise<MarrowWorkflowGateResult>;
 export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string): Promise<MarrowAgentRuntimeResult>;
+export declare function marrowFirstValue(apiKey: string, baseUrl: string, input?: MarrowFirstValueRequest, sessionId?: string, agentId?: string): Promise<MarrowFirstValueResult>;
 export declare function marrowAgentPerformance(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<unknown>;
 export declare function marrowFleetLessons(apiKey: string, baseUrl: string, options?: {
     query?: string;

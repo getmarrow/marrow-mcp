@@ -222,6 +222,18 @@ function appendAgentRuntime(lines, runtime) {
         lines.push('Action gate: REQUIRED. Apply this Marrow lesson or proof requirement before acting.');
         lines.push('Do not proceed until the lesson/proof requirement is applied. If it cannot be applied, stop and report the work as blocked.');
     }
+    if (runtime.before_you_act_injection?.state) {
+        lines.push(`- Interruption state: ${runtime.before_you_act_injection.state}`);
+    }
+    if (runtime.before_you_act_injection?.why_now) {
+        lines.push(`- Why now: ${runtime.before_you_act_injection.why_now}`);
+    }
+    if (runtime.before_you_act_injection?.noise_policy) {
+        lines.push(`- Noise policy: ${runtime.before_you_act_injection.noise_policy}`);
+    }
+    if (Array.isArray(runtime.before_you_act_injection?.required_proof) && runtime.before_you_act_injection.required_proof.length > 0) {
+        lines.push(`- Runtime required proof: ${runtime.before_you_act_injection.required_proof.slice(0, 6).join(', ')}`);
+    }
     if (runtime.before_you_act_injection?.untrusted_memory_notice) {
         lines.push(`- Memory safety: ${runtime.before_you_act_injection.untrusted_memory_notice}`);
     }
