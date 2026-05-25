@@ -26,6 +26,7 @@ npx @getmarrow/install --yes
 ```
 
 The installer detects your MCP client, agent instructions, Node project, and runtime surfaces, then wires the safest passive setup automatically.
+MCP clients can also call `marrow_first_value` to show the first five-minute proof payload directly inside the agent.
 
 Use this MCP package directly when you want manual MCP server/hook setup for Claude Code, Claude Desktop, Cursor, or another MCP-compatible client. Use `@getmarrow/sdk` when you are building a custom Node/TypeScript integration in code.
 
@@ -75,9 +76,15 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.25
+## What's New in v3.9.29
 
-v3.9.25 makes the agent-native runtime loop the default passive prompt signal for MCP agents and makes required prior lessons harder to bypass:
+v3.9.29 adds first-run value proof and stronger before-you-act prompt context for MCP agents:
+
+- `marrow_first_value` returns the five-minute proof payload: capture status, runtime gate, first useful lesson, value proof, and the exact try-this-now prompt.
+- UserPromptSubmit hook context now shows runtime interruption state, why Marrow is interrupting, required proof, and the quiet/noise policy.
+- `before_you_act_injection` types now expose `state`, `why_now`, `noise_policy`, `required_proof`, `missing_proof`, and `owner_approval_required`.
+
+Previous agent-native runtime behavior remains current:
 
 - UserPromptSubmit hooks call the one-call runtime by default, so agents receive status, risk gate, lessons, proof requirements, and exact next action before acting.
 - When Marrow marks `before_you_act_injection.must_use_before_action=true`, the prompt injection labels the Marrow action gate as required and tells the agent to stop if the lesson/proof cannot be applied.

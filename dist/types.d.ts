@@ -175,6 +175,30 @@ export interface MarrowAgentRuntimeRequest extends MarrowDecisionBriefRequest {
     risk_tolerance?: 'low' | 'medium' | 'high';
     requires_approval?: boolean;
 }
+export interface MarrowFirstValueRequest {
+    action?: string;
+    type?: string;
+    role?: string;
+    surfaces?: string[];
+    context?: Record<string, unknown>;
+    proof?: Record<string, unknown>;
+    agent_id?: string | null;
+    session_id?: string | null;
+}
+export interface MarrowFirstValueResult {
+    ok: boolean;
+    active: boolean;
+    headline: string;
+    setup_decision_captured: boolean;
+    outcome_closed: boolean;
+    runtime_gate_active: boolean;
+    first_value: Record<string, unknown>;
+    history_signal: Record<string, unknown>;
+    capture: Record<string, unknown>;
+    value_proof: Record<string, unknown>;
+    next_action: Record<string, unknown>;
+    runtime: MarrowAgentRuntimeResult;
+}
 export interface MarrowAgentRuntimeResult {
     ok: boolean;
     action: string;
@@ -198,8 +222,14 @@ export interface MarrowAgentRuntimeResult {
     before_you_act: string | null;
     before_you_act_injection?: {
         required: boolean;
+        state?: 'proceed' | 'warn' | 'block' | 'owner_approval_required';
         source: string;
         message: string | null;
+        why_now?: string | null;
+        noise_policy?: string | null;
+        required_proof?: string[];
+        missing_proof?: string[];
+        owner_approval_required?: boolean;
         untrusted_memory_notice?: string | null;
         untrusted_memory_excerpt?: string | null;
         must_use_before_action: boolean;
@@ -209,6 +239,12 @@ export interface MarrowAgentRuntimeResult {
         outcome_success: boolean | null;
         playbook_id: string | null;
         risk_level: string;
+    };
+    runtime_policy?: {
+        interruption: 'proceed' | 'warn' | 'block' | 'owner_approval_required';
+        quiet_for_normal_work: boolean;
+        interrupts_when: string[];
+        blocks_only_when: string[];
     };
     exact_next_action: string | null;
     auto_outcome_closure: Record<string, unknown> | null;
