@@ -76,13 +76,18 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.30
+## What's New in v3.9.31
 
-v3.9.30 adds the backend-first before-action intervention contract to MCP tools and prompt hooks:
+v3.9.31 is a docs-sync release. It keeps npm and GitHub README copy aligned with Marrow's current backend-first runtime contract and proof/gate enforcement loop. Runtime behavior is unchanged from v3.9.30.
+
+v3.9.30 brings MCP tools and passive prompt hooks up to Marrow's current backend-first runtime contract and proof/gate enforcement loop:
 
 - UserPromptSubmit context now prefers `intervention.agent_copy`, so agents see the strongest `before you act` instruction before legacy runtime text.
 - `marrow_agent_runtime` types now expose `intervention`, `runtime_contract`, `risk_gate_event`, and `behavior_governance` for `/v1/agent/runtime`.
 - MCP now supports the backend-first contracts `marrow.before-action-intervention.v1` and `agent-runtime-contract.v3`.
+- `marrow_commit` exposes `proof`, `gate_receipt_id`, `action`, `surfaces`, and `auto_gate` fields for gated work.
+- MCP commit paths preserve the same fleet agent identity used by `marrow_think`, preventing agent-bound key commit mismatches.
+- `marrow_run` and `marrow_auto` attach standard proof packs when they close outcomes automatically.
 
 First-run value proof remains current:
 
