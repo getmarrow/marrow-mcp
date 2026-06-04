@@ -276,7 +276,24 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
   if (!runtime) return;
   lines.push('');
   lines.push('## Marrow agent runtime');
-  if (runtime.before_you_act_injection?.must_use_before_action) {
+  if (runtime.intervention) {
+    lines.push(`Intervention: ${runtime.intervention.decision}. ${runtime.intervention.agent_copy || runtime.intervention.headline}`);
+    lines.push(`- Contract: ${runtime.intervention.contract}`);
+    if (runtime.intervention.must_use_before_action) {
+      lines.push('Action gate: REQUIRED. Apply this Marrow intervention before acting.');
+      lines.push('Do not proceed until the intervention, lesson, playbook, or proof requirement is applied. If it cannot be applied, stop and report the work as blocked.');
+    }
+    if (runtime.intervention.playbook?.source) {
+      lines.push(`- Playbook source: ${runtime.intervention.playbook.source}`);
+    }
+    if (Array.isArray(runtime.intervention.playbook?.required_steps) && runtime.intervention.playbook.required_steps.length > 0) {
+      lines.push(`- Required steps: ${runtime.intervention.playbook.required_steps.slice(0, 5).join('; ')}`);
+    }
+    if (Array.isArray(runtime.intervention.playbook?.required_proof) && runtime.intervention.playbook.required_proof.length > 0) {
+      lines.push(`- Intervention required proof: ${runtime.intervention.playbook.required_proof.slice(0, 6).join(', ')}`);
+    }
+  }
+  if (!runtime.intervention && runtime.before_you_act_injection?.must_use_before_action) {
     lines.push('Action gate: REQUIRED. Apply this Marrow lesson or proof requirement before acting.');
     lines.push('Do not proceed until the lesson/proof requirement is applied. If it cannot be applied, stop and report the work as blocked.');
   }
@@ -321,7 +338,7 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
   }
 }
 
-function buildCombinedContextBlock(
+export function buildCombinedContextBlock(
   signals: ContextSignals,
   brief: MarrowDecisionBriefResult | null,
   valueReport: MarrowValueReportResult | null,
