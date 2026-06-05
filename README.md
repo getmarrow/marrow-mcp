@@ -76,6 +76,15 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
+## What's New in v3.9.32
+
+v3.9.32 is a docs-sync release for Marrow's enterprise readiness contract. Runtime behavior is unchanged from v3.9.31.
+
+- MCP agents can call the Marrow API endpoint `GET /v1/agent/enterprise-readiness?agents=20` when an owner asks whether Marrow is ready for a fleet rollout.
+- The response is owner-safe and covers tenant isolation, data boundaries, fail behavior, policy controls, scale proof, and a 30-day pilot package.
+- Marrow is explicit about readiness: controlled business pilots are supported when production gates pass; regulated enterprise use still requires formal SOC 2/legal/SLA completion.
+- The source-of-truth docs now include the enterprise trust and scale readiness page at [getmarrow.ai/docs](https://getmarrow.ai/docs/).
+
 ## What's New in v3.9.31
 
 v3.9.31 is a docs-sync release. It keeps npm and GitHub README copy aligned with Marrow's current backend-first runtime contract and proof/gate enforcement loop. Runtime behavior is unchanged from v3.9.30.
