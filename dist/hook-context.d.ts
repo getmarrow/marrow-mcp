@@ -12,11 +12,23 @@
  * Both hooks are installed by `npx @getmarrow/mcp setup`. Either can be
  * disabled with `MARROW_AUTO_HOOK=false`.
  */
+import type { MarrowAgentRuntimeResult, MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
 export declare const CONTEXT_HOOK_COMMAND = "npx -y @getmarrow/mcp context-hook";
 interface InstallResult {
     settingsPath: string;
     installed: boolean;
 }
+interface ContextSignals {
+    warnings: string[];
+    loopWarnings: string[];
+    similarCount: number;
+    patternsCount: number;
+    templatesAvailable: number;
+    primaryInsight: string | null;
+    collectiveInsight: string | null;
+    hasSignal: boolean;
+}
+export declare function buildCombinedContextBlock(signals: ContextSignals, brief: MarrowDecisionBriefResult | null, valueReport: MarrowValueReportResult | null, runtime?: MarrowAgentRuntimeResult | null): string;
 export declare function runContextHookCommand(): Promise<void>;
 /**
  * Idempotent installer. Adds (or upgrades to) the UserPromptSubmit hook entry
