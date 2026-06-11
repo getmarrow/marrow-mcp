@@ -11,9 +11,15 @@
 
 Marrow gives your agent a memory that compounds.
 
-With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, inspect live loop state during work, and commit outcomes back to the hive when the work is done. That means your agent stops operating like an amnesiac and starts carrying forward real decision history.
+With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, inspect live loop state during work, and commit outcomes back to Marrow when the work is done. That means your agent stops operating like an amnesiac and starts carrying forward real decision history.
 
-**Your agent stops repeating the same mistakes. It learns from prior sessions — and from the wider Marrow hive — through a clean MCP tool surface.**
+**Your agent stops repeating the same mistakes. It learns from prior sessions — and from authorized fleet memory plus sanitized shared signals — through a clean MCP tool surface.**
+
+## Trust and Data Boundaries
+
+Marrow is tenant-aware by design. Private account, fleet, memory, workflow, and proof-pack data stays scoped to the authenticated account and authorized agent-bound keys. Shared/hive learning uses visibility-controlled, sanitized aggregate signals; it is not raw cross-customer decision sharing.
+
+For business pilots, review the live trust notes before production rollout: https://getmarrow.ai/docs#trust-boundaries
 
 ---
 
@@ -26,6 +32,7 @@ npx @getmarrow/install --yes
 ```
 
 The installer detects your MCP client, agent instructions, Node project, and runtime surfaces, then wires the safest passive setup automatically.
+It now also includes a governed runner: `npx @getmarrow/install run --agent <agent-id> -- <command>`, which gives MCP and non-MCP agents the same pre-action Marrow risk gate and automatic outcome closure for existing shell, deploy, publish, merge, and migration commands.
 MCP clients can also call `marrow_first_value` to show the first five-minute proof payload directly inside the agent.
 
 Use this MCP package directly when you want manual MCP server/hook setup for Claude Code, Claude Desktop, Cursor, or another MCP-compatible client. Use `@getmarrow/sdk` when you are building a custom Node/TypeScript integration in code.
@@ -37,6 +44,7 @@ Marrow auto-logs at three layers — transparent to your agent, invisible to you
 | Layer | How | Agent effort |
 |-------|-----|-------------|
 | Server-side | Every authenticated API call auto-logged as a decision | Zero |
+| Governed runner | `npx @getmarrow/install run --agent <id> -- <command>` — pre-action gate + outcome proof around existing commands | Minimal |
 | SDK | `marrow.think()` / `marrow.commit()` — explicit control | Minimal |
 | MCP hooks | `npx @getmarrow/mcp setup` — PostToolUse + UserPromptSubmit hooks | Zero |
 
@@ -76,14 +84,35 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.32
+## What's New in v3.9.33
 
-v3.9.32 is a docs-sync release for Marrow's enterprise readiness contract. Runtime behavior is unchanged from v3.9.31.
+v3.9.33 adds MCP tools for adaptive governance recommendations and explicit policy profiles, while keeping the enterprise readiness contract documented for business pilots.
 
-- MCP agents can call the Marrow API endpoint `GET /v1/agent/enterprise-readiness?agents=20` when an owner asks whether Marrow is ready for a fleet rollout.
+- `marrow_mode_recommend` returns an explainable `passive`, `pilot`, or `enforce` recommendation for the current project/workflow.
+- `marrow_policy_profiles` lists saved account policy profiles, including the default business starter profile.
+- `marrow_create_policy_profile` creates or updates explicit rules such as local=passive, staging=pilot, production deploys=enforce.
+- `marrow_assign_project_policy_profile` binds an active profile to a project key so future resolves use it automatically.
+- `marrow_policy_resolve` resolves the current workflow mode from saved policy profiles, falling back to recommendation.
+- Marrow does not silently auto-switch modes. The agent/user must accept or override the recommendation.
+- MCP agents can call `GET /v1/agent/enterprise-readiness?agents=20` when an owner asks whether Marrow is ready for a fleet rollout.
 - The response is owner-safe and covers tenant isolation, data boundaries, fail behavior, policy controls, scale proof, and a 30-day pilot package.
-- Marrow is explicit about readiness: controlled business pilots are supported when production gates pass; regulated enterprise use still requires formal SOC 2/legal/SLA completion.
-- The source-of-truth docs now include the enterprise trust and scale readiness page at [getmarrow.ai/docs](https://getmarrow.ai/docs/).
+- The source-of-truth docs include the enterprise trust and scale readiness page at [getmarrow.ai/docs](https://getmarrow.ai/docs/).
+
+```json
+{
+  "project": {
+    "name": "marrow-api",
+    "type": "node",
+    "frameworks": ["cloudflare-workers"],
+    "signals": ["package_json", "wrangler_config", "github_actions"]
+  },
+  "workflow": {
+    "action": "deploy production worker",
+    "type": "deploy",
+    "environment": "production"
+  }
+}
+```
 
 ## What's New in v3.9.31
 
@@ -123,6 +152,31 @@ Previous agent-native runtime behavior remains current:
 Full feature history, examples, and API reference live at [getmarrow.ai/docs](https://getmarrow.ai/docs/).
 
 ---
+
+### Gated Commit Proof
+
+For risky actions, call `marrow_agent_runtime` before acting and pass the receipt plus proof into `marrow_commit`:
+
+```json
+{
+  "decision_id": "...",
+  "success": true,
+  "outcome": "Deploy succeeded and production smoke passed",
+  "gate_receipt_id": "runtime.gate_receipt.id",
+  "proof": {
+    "summary": "Production deploy completed",
+    "checks": ["tests passed", "smoke passed"],
+    "outcome": "success",
+    "blockers": "none",
+    "commits_prs_shas": "abc123",
+    "rollback_target": "previous Worker version",
+    "handoff_result_file": "/tmp/marrow-handoffs/release/result.md",
+    "deployment_and_smoke": "production smoke passed"
+  }
+}
+```
+
+If you provide `action` and omit `gate_receipt_id`, `marrow_commit` can fetch a matching runtime gate receipt automatically.
 
 ## Human-Directed Attribution Status
 
@@ -204,7 +258,7 @@ Marrow now tells the agent exactly what it contributed to each decision, so the 
 
 Three new fields:
 
-- `marrow_think` returns `marrow_contributed` describing what intelligence Marrow surfaced for this decision (warnings consulted, hive patterns, similar decisions, workflow templates, loop detection, collective insight).
+- `marrow_think` returns `marrow_contributed` describing what intelligence Marrow surfaced for this decision (warnings consulted, shared patterns, similar decisions, workflow templates, loop detection, collective insight).
 - `marrow_commit` returns `marrow_contributed` describing concrete signals on the commit itself (pattern reused, warning avoided, workflow step).
 - `marrow_session_end` returns `session_summary` aggregating Marrow's contribution across the session, plus a one-line `narrative` for the agent to surface as it wraps up.
 

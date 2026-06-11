@@ -46,7 +46,16 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     success: boolean;
     outcome: string;
     caused_by?: string;
-}, sessionId?: string, agentId?: string): Promise<CommitResult>;
+    proof?: Record<string, unknown>;
+    gate_receipt_id?: string;
+    gate_receipt?: string;
+    action?: string;
+    type?: string;
+    surfaces?: string[];
+    auto_gate?: boolean;
+}, sessionId?: string, agentId?: string): Promise<CommitResult & {
+    runtime_gate?: MarrowAgentRuntimeResult | null;
+}>;
 /**
  * Fire-and-forget style logging helper for tool hooks and simple integrations.
  * Logs intent, and when outcome is supplied, immediately commits it.
@@ -58,6 +67,10 @@ export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
     type?: string;
     context?: Record<string, unknown>;
     source_meta?: Record<string, unknown>;
+    proof?: Record<string, unknown>;
+    gate_receipt_id?: string;
+    action_for_gate?: string;
+    surfaces?: string[];
 }, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<{
     decision_id: string;
     committed: boolean;
@@ -131,6 +144,11 @@ export declare function marrowValueReport(apiKey: string, baseUrl: string, perio
 export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
 export declare function marrowWorkflowGate(apiKey: string, baseUrl: string, input: MarrowWorkflowGateRequest, sessionId?: string, agentId?: string): Promise<MarrowWorkflowGateResult>;
 export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string): Promise<MarrowAgentRuntimeResult>;
+export declare function marrowRecommendGovernanceMode(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowListPolicyProfiles(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowCreatePolicyProfile(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowAssignProjectPolicyProfile(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowResolvePolicy(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
 export declare function marrowFirstValue(apiKey: string, baseUrl: string, input?: MarrowFirstValueRequest, sessionId?: string, agentId?: string): Promise<MarrowFirstValueResult>;
 export declare function marrowAgentPerformance(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<unknown>;
 export declare function marrowFleetLessons(apiKey: string, baseUrl: string, options?: {

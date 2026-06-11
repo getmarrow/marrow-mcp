@@ -105,3 +105,106 @@ test('context hook renders before-action intervention before legacy runtime text
   assert.match(context, /Playbook source: fleet_lesson/);
   assert.match(context, /Intervention required proof: summary, checks, rollback_target/);
 });
+
+test('marrowAuto redacts action context and source_meta before think', async () => {
+  const { marrowAuto } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const leaked = 'cfut_abcdefghijklmnopqrstuvwxyz1234567890';
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ data: { decision_id: 'decision_123' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const result = await marrowAuto('mrw_test_key', 'https://api.example.com', {
+      action: `deploy with ${leaked} https://example.com?token=tokensecret123`,
+      context: { nested: { token: leaked, url: 'https://example.com?client_secret=clientsecret123' } },
+      source_meta: { api_key: leaked, callback: 'https://example.com?signature=signedsecret123' },
+    });
+
+    const bodyText = JSON.stringify(calls[0].body);
+    assert.equal(result.decision_id, 'decision_123');
+    assert.doesNotMatch(bodyText, new RegExp(leaked));
+    assert.doesNotMatch(bodyText, /tokensecret123|clientsecret123|signedsecret123/);
+    assert.match(bodyText, /\[REDACTED_TOKEN\]|\[redacted\]/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowCommit auto_gate fails closed when runtime lookup fails', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('runtime unavailable', { status: 503 });
+
+  try {
+    await assert.rejects(
+      () => marrowCommit('mrw_test_key', 'https://api.example.com', {
+        decision_id: 'decision_123',
+        success: true,
+        outcome: 'ok',
+        action: 'deploy to production',
+      }),
+      /auto_gate failed/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowCommit auto_gate fails closed when required receipt is missing', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+    return new Response(JSON.stringify({ data: { gate_receipt: { required: true } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    await assert.rejects(
+      () => marrowCommit('mrw_test_key', 'https://api.example.com', {
+        decision_id: 'decision_123',
+        success: true,
+        outcome: 'ok',
+        action: 'deploy to production',
+      }),
+      /required a gate receipt/
+    );
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/v1\/agent\/runtime$/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+test('marrowThink redacts direct action context source_meta and previous outcome', async () => {
+  const { marrowThink } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const leaked = 'cfut_abcdefghijklmnopqrstuvwxyz1234567890';
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ data: { decision_id: 'decision_123' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    await marrowThink('mrw_test_key', 'https://api.example.com', {
+      action: `deploy with ${leaked} https://example.com?token=tokensecret123`,
+      context: { token: leaked, nested: { url: 'https://example.com?client_secret=clientsecret123' } },
+      source_meta: { api_key: leaked, callback: 'https://example.com?signature=signedsecret123' },
+      instruction: `do not leak ${leaked}`,
+      previous_decision_id: 'decision_previous',
+      previous_outcome: `prior outcome ${leaked} https://example.com?code=oauthsecret123`,
+    });
+
+    const bodyText = JSON.stringify(calls[0].body);
+    assert.doesNotMatch(bodyText, new RegExp(leaked));
+    assert.doesNotMatch(bodyText, /tokensecret123|clientsecret123|signedsecret123|oauthsecret123/);
+    assert.match(bodyText, /\[REDACTED_TOKEN\]|\[redacted\]/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
