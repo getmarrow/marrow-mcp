@@ -26,6 +26,11 @@ exports.marrowValueReport = marrowValueReport;
 exports.marrowDecisionBrief = marrowDecisionBrief;
 exports.marrowWorkflowGate = marrowWorkflowGate;
 exports.marrowAgentRuntime = marrowAgentRuntime;
+exports.marrowRecommendGovernanceMode = marrowRecommendGovernanceMode;
+exports.marrowListPolicyProfiles = marrowListPolicyProfiles;
+exports.marrowCreatePolicyProfile = marrowCreatePolicyProfile;
+exports.marrowAssignProjectPolicyProfile = marrowAssignProjectPolicyProfile;
+exports.marrowResolvePolicy = marrowResolvePolicy;
 exports.marrowFirstValue = marrowFirstValue;
 exports.marrowAgentPerformance = marrowAgentPerformance;
 exports.marrowFleetLessons = marrowFleetLessons;
@@ -39,6 +44,7 @@ exports.marrowAcceptDetected = marrowAcceptDetected;
 exports.marrowListTemplates = marrowListTemplates;
 exports.marrowInstallTemplate = marrowInstallTemplate;
 const sdk_1 = require("@getmarrow/sdk");
+const redact_1 = require("./redact");
 /**
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots.
@@ -115,6 +121,11 @@ function buildHeaders(apiKey, sessionId, contentType, agentId) {
 function createSdkClient(apiKey, baseUrl, sessionId, agentId) {
     return new sdk_1.MarrowClient(apiKey, { baseUrl, sessionId, agentId });
 }
+function runtimeGateReceiptId(runtime) {
+    if (!runtime)
+        return null;
+    return runtime.gate_receipt?.id || runtime.gate_receipt_id || null;
+}
 function clampPeriodDays(value, defaultDays = 7) {
     const parsed = typeof value === 'number' ? value : parseInt(String(value || defaultDays), 10);
     if (!Number.isFinite(parsed))
@@ -144,11 +155,11 @@ async function marrowGetKeyAudit(apiKey, baseUrl, params, sessionId, agentId) {
  */
 async function marrowThink(apiKey, baseUrl, params, sessionId, agentId) {
     const body = {
-        action: params.action,
+        action: (0, redact_1.redactSensitiveText)(params.action),
         type: params.type || 'general',
     };
     if (params.context) {
-        body.context = params.context;
+        body.context = (0, redact_1.redactSensitiveValue)(params.context);
     }
     body.source_kind = params.source_kind || 'agent_autonomous';
     body.source_confidence = params.source_confidence ?? 0.9;
@@ -156,22 +167,22 @@ async function marrowThink(apiKey, baseUrl, params, sessionId, agentId) {
     if (params.instruction_ref !== undefined)
         body.instruction_ref = params.instruction_ref;
     if (params.instruction !== undefined)
-        body.instruction = params.instruction;
+        body.instruction = (0, redact_1.redactSensitiveText)(params.instruction);
     if (params.instruction_hash !== undefined)
         body.instruction_hash = params.instruction_hash;
-    body.source_meta = {
+    body.source_meta = (0, redact_1.redactSensitiveValue)({
         channel: 'mcp',
         client: 'openclaw',
         user_intent: 'operate',
         ...(params.source_meta || {}),
-    };
+    });
     if (params.checkLoop) {
         body.checkLoop = true;
     }
     if (params.previous_decision_id) {
         body.previous_decision_id = params.previous_decision_id;
         body.previous_success = params.previous_success ?? true;
-        body.previous_outcome = params.previous_outcome ?? '';
+        body.previous_outcome = (0, redact_1.redactSensitiveText)(params.previous_outcome ?? '');
     }
     const res = await fetch(`${baseUrl}/v1/agent/think`, {
         method: 'POST',
@@ -185,13 +196,44 @@ async function marrowThink(apiKey, baseUrl, params, sessionId, agentId) {
  * Explicitly commit the result of an action to Marrow.
  */
 async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
+    let runtimeGate = null;
+    let gateReceiptId = params.gate_receipt_id || params.gate_receipt;
+    if (!gateReceiptId && params.auto_gate !== false && params.action) {
+        try {
+            runtimeGate = await marrowAgentRuntime(apiKey, baseUrl, {
+                action: (0, redact_1.redactSensitiveText)(params.action),
+                type: params.type || 'handoff',
+                surfaces: params.surfaces || ['handoff'],
+                context: { mcp_commit_auto_gate: true },
+                proof: params.proof ? (0, redact_1.redactSensitiveValue)(params.proof) : undefined,
+            }, sessionId, agentId);
+        }
+        catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            throw new Error(`marrowCommit auto_gate failed before outcome closure: ${msg}`);
+        }
+        gateReceiptId = runtimeGateReceiptId(runtimeGate) || undefined;
+        if (!gateReceiptId && runtimeGate?.gate_receipt?.required) {
+            throw new Error('marrowCommit auto_gate required a gate receipt, but /v1/agent/runtime did not return one');
+        }
+    }
+    const body = {
+        decision_id: params.decision_id,
+        success: params.success,
+        outcome: (0, redact_1.redactSensitiveText)(params.outcome),
+        caused_by: params.caused_by ? (0, redact_1.redactSensitiveText)(params.caused_by) : undefined,
+    };
+    if (params.proof)
+        body.proof = (0, redact_1.redactSensitiveValue)(params.proof);
+    if (gateReceiptId)
+        body.gate_receipt_id = gateReceiptId;
     const res = await fetch(`${baseUrl}/v1/agent/commit`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
-        body: JSON.stringify(params),
+        body: JSON.stringify(body),
     });
     const json = await safeJsonResponse(res);
-    return json.data;
+    return { ...json.data, runtime_gate: runtimeGate };
 }
 function createTimeoutSignal(timeoutMs, startedAt) {
     if (!timeoutMs || timeoutMs <= 0) {
@@ -222,18 +264,18 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             method: 'POST',
             headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
             body: JSON.stringify({
-                action: params.action,
+                action: (0, redact_1.redactSensitiveText)(params.action),
                 type: params.type || 'general',
-                context: params.context,
+                context: params.context ? (0, redact_1.redactSensitiveValue)(params.context) : undefined,
                 source_kind: 'agent_autonomous',
                 source_confidence: 0.9,
                 human_directed: false,
-                source_meta: {
+                source_meta: (0, redact_1.redactSensitiveValue)({
                     channel: 'mcp',
                     client: 'openclaw',
                     user_intent: 'operate',
                     ...(params.source_meta || {}),
-                },
+                }),
             }),
             signal: thinkTimeout.signal,
         });
@@ -251,17 +293,16 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
     }
     const commitTimeout = createTimeoutSignal(timeoutMs, startedAt);
     try {
-        const commitRes = await fetch(`${baseUrl}/v1/agent/commit`, {
-            method: 'POST',
-            headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
-            body: JSON.stringify({
-                decision_id: decisionId,
-                success: params.success ?? true,
-                outcome: params.outcome,
-            }),
-            signal: commitTimeout.signal,
-        });
-        await safeJsonResponse(commitRes);
+        await marrowCommit(apiKey, baseUrl, {
+            decision_id: decisionId,
+            success: params.success ?? true,
+            outcome: params.outcome,
+            proof: params.proof,
+            gate_receipt_id: params.gate_receipt_id,
+            action: params.action_for_gate || params.action,
+            type: params.type || 'general',
+            surfaces: params.surfaces,
+        }, sessionId, agentId);
     }
     finally {
         commitTimeout.cancel();
@@ -562,6 +603,50 @@ async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId) {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowRecommendGovernanceMode(apiKey, baseUrl, input, sessionId, agentId) {
+    const res = await fetch(`${baseUrl}/v1/agent/mode/recommend`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify(input),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowListPolicyProfiles(apiKey, baseUrl, sessionId, agentId) {
+    const res = await fetch(`${baseUrl}/v1/agent/policy-profiles`, {
+        method: 'GET',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowCreatePolicyProfile(apiKey, baseUrl, input, sessionId, agentId) {
+    const res = await fetch(`${baseUrl}/v1/agent/policy-profiles`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify(input),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowAssignProjectPolicyProfile(apiKey, baseUrl, input, sessionId, agentId) {
+    const res = await fetch(`${baseUrl}/v1/agent/project-policy-profile`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify(input),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowResolvePolicy(apiKey, baseUrl, input, sessionId, agentId) {
+    const res = await fetch(`${baseUrl}/v1/agent/policy/resolve`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify(input),
     });
     const json = await safeJsonResponse(res);
     return json.data;

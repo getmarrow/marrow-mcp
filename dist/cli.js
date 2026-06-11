@@ -296,7 +296,7 @@ if (process.argv[2] !== 'keys') {
                         decision_id: lastDecisionId,
                         success: false,
                         outcome: 'Session ended without explicit commit',
-                    }, SESSION_ID);
+                    }, SESSION_ID, FLEET_AGENT_ID);
                 }
                 catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
@@ -572,6 +572,15 @@ if (process.argv[2] !== 'keys') {
                         success: { type: 'boolean', description: 'Did the action succeed?' },
                         outcome: { type: 'string', description: 'What happened — be specific, this trains the hive' },
                         caused_by: { type: 'string', description: 'Optional: what caused this action' },
+                        proof: {
+                            type: 'object',
+                            description: 'Optional required proof pack for gated work: summary, checks, outcome, blockers, commits_prs_shas, rollback_target, handoff_result_file, deployment_and_smoke.',
+                        },
+                        gate_receipt_id: { type: 'string', description: 'Receipt id from marrow_agent_runtime.gate_receipt.id for risky work.' },
+                        action: { type: 'string', description: 'Optional original action. If provided and gate_receipt_id is omitted, MCP can fetch a matching runtime gate receipt before commit.' },
+                        type: { type: 'string', description: 'Optional original action type for auto gate lookup, e.g. deploy, publish, merge, handoff, implementation.' },
+                        surfaces: { type: 'array', items: { type: 'string' }, description: 'Optional surfaces for auto gate receipt, e.g. github, cloudflare, npm, production.' },
+                        auto_gate: { type: 'boolean', description: 'If true/default and action is provided, call marrow_agent_runtime to obtain gate_receipt_id before commit.' },
                     },
                     required: ['decision_id', 'success', 'outcome'],
                 },
@@ -960,6 +969,66 @@ if (process.argv[2] !== 'keys') {
                 },
             },
             {
+                name: 'marrow_mode_recommend',
+                description: 'Recommend passive, pilot, or enforce mode from project/workflow signals. Marrow never auto-switches here; the agent/user must accept or override.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        project: { type: 'object', description: 'Project signals: name, type, frameworks, signals, package_scripts, config_files.' },
+                        workflow: { type: 'object', description: 'Workflow context: action, type, branch, environment.' },
+                        agent: { type: 'object', description: 'Agent context: id and role.' },
+                        selected_mode: { type: 'string', enum: ['passive', 'pilot', 'enforce'], description: 'Optional final user-selected mode to log.' },
+                        selection_source: { type: 'string', enum: ['accepted', 'overridden', 'ignored', 'system'], description: 'How the final mode was selected.' },
+                    },
+                    required: [],
+                },
+            },
+            {
+                name: 'marrow_policy_profiles',
+                description: 'List saved Marrow governance policy profiles for this account. Returns default-business when none are saved.',
+                inputSchema: { type: 'object', properties: {}, required: [] },
+            },
+            {
+                name: 'marrow_create_policy_profile',
+                description: 'Create or update an explicit governance policy profile. Mutating call; requires a key with full scope.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        name: { type: 'string', description: 'Profile name, e.g. default-business or production-agents.' },
+                        description: { type: 'string', description: 'Optional profile description.' },
+                        rules: { type: 'array', items: { type: 'object' }, description: 'Rules with match fields and mode passive/pilot/enforce.' },
+                    },
+                    required: ['name'],
+                },
+            },
+            {
+                name: 'marrow_assign_project_policy_profile',
+                description: 'Assign an active governance policy profile to a project key. Mutating call; requires a key with full scope.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        project_key: { type: 'string', description: 'Stable project key, e.g. marrow-api or clinic-api.' },
+                        profile_id: { type: 'string', description: 'Active policy profile id.' },
+                    },
+                    required: ['project_key', 'profile_id'],
+                },
+            },
+            {
+                name: 'marrow_policy_resolve',
+                description: 'Resolve the explicit mode for a project/workflow from saved policy profiles, falling back to recommendation. Does not auto-apply.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        profile_id: { type: 'string', description: 'Optional policy profile id.' },
+                        profile_name: { type: 'string', description: 'Optional policy profile name.' },
+                        project: { type: 'object', description: 'Project signals: name, type, frameworks, signals, package_scripts, config_files.' },
+                        workflow: { type: 'object', description: 'Workflow context: action, type, branch, environment.' },
+                        agent: { type: 'object', description: 'Agent context: id and role.' },
+                    },
+                    required: [],
+                },
+            },
+            {
                 name: 'marrow_workflow_gate',
                 description: 'Pre-action risk gate for deploys, publishes, merges, DB migrations, key rotation, destructive commands, and production work. ' +
                     'Returns allow, warn, review_required, or block plus prior lessons/playbooks.',
@@ -1263,13 +1332,13 @@ This is not optional overhead — it's how you stop repeating the same failures.
                         let result;
                         const wantAutoWarn = args.autoWarn ?? true;
                         try {
-                            result = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType: args.taskType, autoWarn: wantAutoWarn }, SESSION_ID);
+                            result = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType: args.taskType, autoWarn: wantAutoWarn }, SESSION_ID, FLEET_AGENT_ID);
                         }
                         catch (e) {
                             // autoWarn endpoint may not be deployed yet — fall back to legacy orient
                             if (wantAutoWarn) {
                                 process.stderr.write(`[marrow] autoWarn orient not available, falling back to legacy\n`);
-                                result = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType: args.taskType, autoWarn: false }, SESSION_ID);
+                                result = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType: args.taskType, autoWarn: false }, SESSION_ID, FLEET_AGENT_ID);
                             }
                             else {
                                 throw e;
@@ -1354,7 +1423,13 @@ This is not optional overhead — it's how you stop repeating the same failures.
                             success: args.success,
                             outcome,
                             caused_by: args.caused_by,
-                        }, SESSION_ID);
+                            proof: args.proof,
+                            gate_receipt_id: args.gate_receipt_id,
+                            action: args.action,
+                            type: args.type,
+                            surfaces: args.surfaces,
+                            auto_gate: args.auto_gate,
+                        }, SESSION_ID, FLEET_AGENT_ID);
                         const commitResult = { ...result, narrative: result.narrative ?? null };
                         lastCommitted = true;
                         lastDecisionId = null;
@@ -1386,7 +1461,19 @@ This is not optional overhead — it's how you stop repeating the same failures.
                                 decision_id: thinkResult.decision_id,
                                 success: args.success ?? true,
                                 outcome,
-                            }, SESSION_ID);
+                                proof: {
+                                    summary: description,
+                                    checks: ['marrow_run completed'],
+                                    outcome,
+                                    blockers: (args.success ?? true) ? 'none' : 'see outcome',
+                                    commits_prs_shas: 'not applicable',
+                                    rollback_target: 'not applicable',
+                                    handoff_result_file: 'not applicable',
+                                    deployment_and_smoke: 'not applicable',
+                                },
+                                action: description,
+                                type: args.type || 'general',
+                            }, SESSION_ID, FLEET_AGENT_ID);
                         }
                         catch (err) {
                             const msg = err instanceof Error ? err.message : String(err);
@@ -1435,7 +1522,23 @@ This is not optional overhead — it's how you stop repeating the same failures.
                                 }
                                 else {
                                     const thinkResult = await (0, index_1.marrowThink)(API_KEY, BASE_URL, { action, type }, SESSION_ID, FLEET_AGENT_ID);
-                                    await (0, index_1.marrowCommit)(API_KEY, BASE_URL, { decision_id: thinkResult.decision_id, success: outcomeSuccess, outcome }, SESSION_ID);
+                                    await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
+                                        decision_id: thinkResult.decision_id,
+                                        success: outcomeSuccess,
+                                        outcome,
+                                        proof: {
+                                            summary: action,
+                                            checks: ['marrow_auto completed'],
+                                            outcome,
+                                            blockers: outcomeSuccess ? 'none' : 'see outcome',
+                                            commits_prs_shas: 'not applicable',
+                                            rollback_target: 'not applicable',
+                                            handoff_result_file: 'not applicable',
+                                            deployment_and_smoke: 'not applicable',
+                                        },
+                                        action,
+                                        type,
+                                    }, SESSION_ID, FLEET_AGENT_ID);
                                 }
                             }
                             catch (err) {
@@ -1648,6 +1751,62 @@ This is not optional overhead — it's how you stop repeating the same failures.
                                 ? (0, redact_1.redactSensitiveValue)(args.proof)
                                 : undefined,
                             period: args.period,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_mode_recommend') {
+                        const result = await (0, index_1.marrowRecommendGovernanceMode)(API_KEY, BASE_URL, {
+                            project: args.project && typeof args.project === 'object' && !Array.isArray(args.project)
+                                ? (0, redact_1.redactSensitiveValue)(args.project)
+                                : undefined,
+                            workflow: args.workflow && typeof args.workflow === 'object' && !Array.isArray(args.workflow)
+                                ? (0, redact_1.redactSensitiveValue)(args.workflow)
+                                : undefined,
+                            agent: args.agent && typeof args.agent === 'object' && !Array.isArray(args.agent)
+                                ? (0, redact_1.redactSensitiveValue)(args.agent)
+                                : { id: FLEET_AGENT_ID || AGENT_ID },
+                            selected_mode: args.selected_mode,
+                            selection_source: args.selection_source,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_policy_profiles') {
+                        const result = await (0, index_1.marrowListPolicyProfiles)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_create_policy_profile') {
+                        const result = await (0, index_1.marrowCreatePolicyProfile)(API_KEY, BASE_URL, {
+                            name: args.name,
+                            description: args.description,
+                            rules: Array.isArray(args.rules) ? args.rules : undefined,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_assign_project_policy_profile') {
+                        const result = await (0, index_1.marrowAssignProjectPolicyProfile)(API_KEY, BASE_URL, {
+                            project_key: args.project_key,
+                            profile_id: args.profile_id,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_policy_resolve') {
+                        const result = await (0, index_1.marrowResolvePolicy)(API_KEY, BASE_URL, {
+                            profile_id: args.profile_id,
+                            profile_name: args.profile_name,
+                            project: args.project && typeof args.project === 'object' && !Array.isArray(args.project)
+                                ? (0, redact_1.redactSensitiveValue)(args.project)
+                                : undefined,
+                            workflow: args.workflow && typeof args.workflow === 'object' && !Array.isArray(args.workflow)
+                                ? (0, redact_1.redactSensitiveValue)(args.workflow)
+                                : undefined,
+                            agent: args.agent && typeof args.agent === 'object' && !Array.isArray(args.agent)
+                                ? (0, redact_1.redactSensitiveValue)(args.agent)
+                                : { id: FLEET_AGENT_ID || AGENT_ID },
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;

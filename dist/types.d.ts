@@ -251,6 +251,16 @@ export interface MarrowAgentRuntimeResult {
     relevant_lessons: unknown[];
     deployment_playbooks: unknown[];
     template_suggestion: Record<string, unknown>;
+    gate_receipt_id?: string | null;
+    gate_receipt?: {
+        id: string;
+        required: boolean;
+        decision?: string;
+        expires_at?: string;
+        owner_approval_required?: boolean;
+        required_steps?: string[];
+        exact_fix?: string;
+    } | null;
     proof_pack: {
         required: boolean;
         enforced: boolean;
@@ -408,6 +418,11 @@ export interface CommitResult {
     insight: string | null;
     narrative: Narrative;
     marrow_contributed?: CommitContribution;
+    pre_action_gate?: {
+        receipt_id?: string | null;
+        decision?: string | null;
+        enforced: boolean;
+    } | null;
 }
 export interface StatusResult {
     status: string;
