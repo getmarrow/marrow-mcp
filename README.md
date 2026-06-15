@@ -101,13 +101,13 @@ v3.9.33 adds MCP tools for adaptive governance recommendations and explicit poli
 ```json
 {
   "project": {
-    "name": "marrow-api",
+    "name": "agent-api",
     "type": "node",
-    "frameworks": ["cloudflare-workers"],
-    "signals": ["package_json", "wrangler_config", "github_actions"]
+    "frameworks": ["edge-service"],
+    "signals": ["package_json", "platform_config", "github_actions"]
   },
   "workflow": {
-    "action": "deploy production worker",
+    "action": "deploy production service",
     "type": "deploy",
     "environment": "production"
   }
@@ -143,9 +143,9 @@ Previous agent-native runtime behavior remains current:
 
 ```json
 {
-  "action": "deploy Cloudflare Worker to production",
+  "action": "deploy edge service to production",
   "type": "deploy",
-  "surfaces": ["github", "cloudflare", "production"]
+  "surfaces": ["github", "deployment-platform", "production"]
 }
 ```
 
@@ -169,7 +169,7 @@ For risky actions, call `marrow_agent_runtime` before acting and pass the receip
     "outcome": "success",
     "blockers": "none",
     "commits_prs_shas": "abc123",
-    "rollback_target": "previous Worker version",
+    "rollback_target": "previous release version",
     "handoff_result_file": "/tmp/marrow-handoffs/release/result.md",
     "deployment_and_smoke": "production smoke passed"
   }
@@ -238,7 +238,7 @@ Use it before deploys, publishes, merges, DB migrations, key rotation, destructi
 
 ```json
 {
-  "action": "rotate Cloudflare deploy token and verify production",
+  "action": "rotate deployment token and verify production",
   "riskTolerance": "medium",
   "requiresApproval": true
 }
