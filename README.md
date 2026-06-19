@@ -639,7 +639,8 @@ claude mcp add marrow -e MARROW_API_KEY="$MARROW_API_KEY" -- npx @getmarrow/mcp
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MARROW_API_KEY` | Yes | Your API key from getmarrow.ai. Prefer environment variables or client secret storage. |
+| `MARROW_API_KEY` | Yes | Your API key from getmarrow.ai. Prefer environment variables or client secret storage. MCP also auto-loads `.marrow/env`, `.marrow/env.local`, `.env`, `.env.local`, `~/.marrow/env`, and `~/.marrow/env.local`. |
+| `MARROW_KEY` | No | Alias accepted by MCP for fleet runners and secret managers. |
 | `MARROW_BASE_URL` | No | Custom API URL (default: `https://api.getmarrow.ai`). Must use HTTPS. |
 | `MARROW_SESSION_ID` | No | Session identifier for multi-agent setups |
 | `MARROW_FLEET_AGENT_ID` | No | Agent identifier sent as `X-Marrow-Agent-Id` for fleet attribution |
@@ -648,6 +649,21 @@ claude mcp add marrow -e MARROW_API_KEY="$MARROW_API_KEY" -- npx @getmarrow/mcp
 | `MARROW_PASSIVE_BRIEF` | No | Passive decision-brief mode for the prompt hook. Defaults to `auto`; set `false` to disable or `always` to brief every prompt. |
 | `MARROW_HOOK_DEBUG` | No | When set to `true`, write-side and prompt-context hooks emit one-line stderr diagnostics. |
 | `MARROW_CONTEXT_HOOK_DEBUG` | No | When set to `true`, only the UserPromptSubmit context hook emits one-line stderr diagnostics. |
+
+If hooks are installed but no decisions are being logged, run:
+
+```bash
+npx @getmarrow/install doctor
+```
+
+Stable project-local key file:
+
+```bash
+mkdir -p .marrow
+printf "MARROW_API_KEY=mrw_live_...\\n" > .marrow/env
+chmod 600 .marrow/env
+npx @getmarrow/mcp setup
+```
 
 ---
 
