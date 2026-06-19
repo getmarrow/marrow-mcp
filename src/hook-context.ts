@@ -14,6 +14,7 @@
  */
 
 import { marrowAgentRuntime, marrowDecisionBrief, marrowThink, marrowValueReport, validateBaseUrl } from './index';
+import { resolveMarrowEnv } from './env';
 import { redactSensitiveText } from './redact';
 import type { MarrowAgentRuntimeResult, MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
 
@@ -422,17 +423,18 @@ export async function runContextHookCommand(): Promise<void> {
       return;
     }
 
-    const apiKey = process.env.MARROW_API_KEY || '';
+    const resolvedEnv = resolveMarrowEnv();
+    const apiKey = resolvedEnv.apiKey || '';
     if (!apiKey) {
-      debug('[marrow-context-hook] missing MARROW_API_KEY');
+      debug(`[marrow-context-hook] missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
       emitNoContext();
       process.exit(0);
       return;
     }
 
-    const baseUrl = validateBaseUrl(process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai');
-    const sessionId = process.env.MARROW_SESSION_ID || asString(event.session_id);
-    const agentId = process.env.MARROW_FLEET_AGENT_ID || undefined;
+    const baseUrl = validateBaseUrl(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
+    const sessionId = resolvedEnv.sessionId || asString(event.session_id);
+    const agentId = resolvedEnv.agentId || undefined;
 
     // Truncate prompt for the action field (Marrow think actions don't need full multi-K-token prompts)
     const redactedPrompt = redactSensitiveText(prompt);

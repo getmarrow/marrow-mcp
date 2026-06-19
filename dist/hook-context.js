@@ -19,6 +19,7 @@ exports.buildCombinedContextBlock = buildCombinedContextBlock;
 exports.runContextHookCommand = runContextHookCommand;
 exports.installUserPromptSubmitHook = installUserPromptSubmitHook;
 const index_1 = require("./index");
+const env_1 = require("./env");
 const redact_1 = require("./redact");
 exports.CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
@@ -352,16 +353,17 @@ async function runContextHookCommand() {
             process.exit(0);
             return;
         }
-        const apiKey = process.env.MARROW_API_KEY || '';
+        const resolvedEnv = (0, env_1.resolveMarrowEnv)();
+        const apiKey = resolvedEnv.apiKey || '';
         if (!apiKey) {
-            debug('[marrow-context-hook] missing MARROW_API_KEY');
+            debug(`[marrow-context-hook] missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
             emitNoContext();
             process.exit(0);
             return;
         }
-        const baseUrl = (0, index_1.validateBaseUrl)(process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai');
-        const sessionId = process.env.MARROW_SESSION_ID || asString(event.session_id);
-        const agentId = process.env.MARROW_FLEET_AGENT_ID || undefined;
+        const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
+        const sessionId = resolvedEnv.sessionId || asString(event.session_id);
+        const agentId = resolvedEnv.agentId || undefined;
         // Truncate prompt for the action field (Marrow think actions don't need full multi-K-token prompts)
         const redactedPrompt = (0, redact_1.redactSensitiveText)(prompt);
         const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;

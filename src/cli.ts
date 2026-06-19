@@ -51,6 +51,7 @@ import {
 } from './index';
 import { installPostToolUseHook, runHookCommand } from './hook';
 import { installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
+import { resolveMarrowEnv } from './env';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import type { ThinkResult, OrientResult, MarrowMemory } from './types';
 
@@ -173,9 +174,10 @@ function formatKeyMaterialWarning(): string {
 // ─── Standalone CLI: key management ───
 if (process.argv[2] === 'keys') {
   const cmd = process.argv[3];
-  const API_KEY = cliArgs.apiKey || process.env.MARROW_API_KEY || '';
+  const resolvedEnv = resolveMarrowEnv();
+  const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
   if (!API_KEY) {
-    process.stderr.write('Error: MARROW_API_KEY required. Use --key or set MARROW_API_KEY env var.\n');
+    process.stderr.write(`Error: MARROW_API_KEY required. ${resolvedEnv.exactFix}\n`);
     process.exit(1);
   }
 
@@ -252,19 +254,21 @@ if (cliArgs.hook) {
 } else if (cliArgs.setup) {
   runSetup();
 } else {
-const API_KEY = cliArgs.apiKey || process.env.MARROW_API_KEY || '';
+const resolvedEnv = resolveMarrowEnv();
+const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
 
 // [SECURITY #3] Validate BASE_URL — require HTTPS to prevent SSRF / credential leakage
-const rawBaseUrl = process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai';
+const rawBaseUrl = resolvedEnv.baseUrl || 'https://api.getmarrow.ai';
 const BASE_URL = validateBaseUrl(rawBaseUrl);
 
-const SESSION_ID = process.env.MARROW_SESSION_ID || undefined;
-const FLEET_AGENT_ID = process.env.MARROW_FLEET_AGENT_ID || undefined; // V5: agent UUID for X-Marrow-Agent-Id header
+const SESSION_ID = resolvedEnv.sessionId || undefined;
+const FLEET_AGENT_ID = resolvedEnv.agentId || undefined; // V5: agent UUID for X-Marrow-Agent-Id header
 const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
 const AGENT_ID = process.env.MARROW_AGENT_ID || `${require('os').hostname()}-${Date.now().toString(36)}`;
 
 if (!API_KEY) {
   process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
+  process.stderr.write(`${resolvedEnv.exactFix}\n`);
   process.stderr.write('Usage: MARROW_API_KEY=mrw_yourkey npx @getmarrow/mcp\n');
   process.stderr.write('   or: npx @getmarrow/mcp --key mrw_yourkey\n');
   process.exit(1);
