@@ -179,6 +179,48 @@ test('marrowCommit auto_gate fails closed when required receipt is missing', asy
   }
 });
 
+test('marrowCommit queues transient commit failures and drains on next commit', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({ error: 'temporary upstream failure' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ data: { committed: true } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    await assert.rejects(
+      () => marrowCommit('mrw_test_key', 'https://api.example.com', {
+        decision_id: 'decision_retry_1',
+        success: true,
+        outcome: 'queued',
+        auto_gate: false,
+      }),
+      /503/
+    );
+    await marrowCommit('mrw_test_key', 'https://api.example.com', {
+      decision_id: 'decision_retry_2',
+      success: true,
+      outcome: 'drain',
+      auto_gate: false,
+    });
+    assert.equal(calls.length, 3);
+    assert.equal(calls[1].body.decision_id, 'decision_retry_1');
+    assert.equal(calls[2].body.decision_id, 'decision_retry_2');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 
 test('marrowThink redacts direct action context source_meta and previous outcome', async () => {
   const { marrowThink } = require('../dist/index.js');

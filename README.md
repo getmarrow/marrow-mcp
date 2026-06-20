@@ -326,6 +326,8 @@ For troubleshooting hook behavior, set `MARROW_HOOK_DEBUG=true` to re-enable one
 
 PostToolUse now marks automatic outcome closure explicitly. Successful tool calls commit success, tool errors commit failure, and `/v1/agent/status` can tell the agent whether the outcome hook is missing. If status is degraded, run `npx @getmarrow/install --yes` or `npx @getmarrow/mcp setup` to repair passive capture.
 
+MCP write paths now keep a bounded in-process retry queue for temporary network/server failures on `think` and `commit`. Auth failures, policy blocks, proof-pack failures, and validation errors are not retried blindly; status returns exact failure reasons and fix commands instead.
+
 **Operator visibility + auto-intelligence tools.**
 
 ## Operator Tools
@@ -340,7 +342,7 @@ Periodic summary with success rate trend vs previous period. Optional `period` p
 
 ### marrow_agent_status
 
-Agent-native proof that Marrow is connected and collecting useful signal. Optional `period` and `agentId` parameters; when omitted, the tool filters by `MARROW_AGENT_ID`. Returns `active`, `state`, `signals`, `quality`, `proof`, and `next_actions` without exposing raw decision text.
+Agent-native proof that Marrow is connected and collecting useful signal. Optional `period` and `agentId` parameters; when omitted, the tool filters by `MARROW_AGENT_ID`. Returns `active`, `state`, `signals`, `quality`, `proof`, `failure_reasons`, `agent_warnings`, `diagnostics`, and `next_actions` without exposing raw decision text. Common failure reasons include `missing_key`, `invalid_key`, `wrong_agent_id`, `network_blocked`, and `proof_required`.
 
 ### marrow_decision_brief
 
@@ -655,6 +657,14 @@ If hooks are installed but no decisions are being logged, run:
 ```bash
 npx @getmarrow/install doctor
 ```
+
+Deep doctor with harmless write/outcome verification:
+
+```bash
+MARROW_API_KEY=mrw_live_... npx @getmarrow/install doctor --self-test
+```
+
+Healthy output should confirm `key valid: yes`, `account active: yes`, `agent identity accepted: yes`, `write test event: passed`, and `outcome closed: passed`. If it fails, Marrow returns the exact reason and fix command.
 
 Stable project-local key file:
 
