@@ -97,6 +97,64 @@ async function safeJsonResponse(res) {
     }
     return json;
 }
+const retryQueue = [];
+let retryQueueDraining = false;
+function isRetryableStatus(status) {
+    return [408, 425, 429, 500, 502, 503, 504].includes(status);
+}
+function isRetryableError(error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    if (/\b(401|403|unauthorized|forbidden|invalid api key|insufficient scope|proof pack|required proof|policy|blocked)\b/.test(message)) {
+        return false;
+    }
+    return /\b(timeout|timed out|econnreset|enotfound|eai_again|network|fetch failed|temporar|rate limit)\b/.test(message);
+}
+async function drainRetryQueue() {
+    if (retryQueueDraining || retryQueue.length === 0)
+        return;
+    retryQueueDraining = true;
+    const remaining = [];
+    try {
+        const queued = retryQueue.splice(0, 5);
+        for (const item of queued) {
+            try {
+                const res = await fetch(item.url, item.init);
+                if (!res.ok && isRetryableStatus(res.status) && item.attempts < 2) {
+                    remaining.push({ ...item, attempts: item.attempts + 1 });
+                }
+            }
+            catch (error) {
+                if (isRetryableError(error) && item.attempts < 2) {
+                    remaining.push({ ...item, attempts: item.attempts + 1 });
+                }
+            }
+        }
+    }
+    finally {
+        retryQueue.unshift(...remaining);
+        retryQueueDraining = false;
+    }
+}
+async function fetchWithRetryQueue(url, init, queueable = false) {
+    await drainRetryQueue();
+    try {
+        const res = await fetch(url, init);
+        if (queueable && !res.ok && isRetryableStatus(res.status)) {
+            if (retryQueue.length >= 25)
+                retryQueue.shift();
+            retryQueue.push({ url, init, attempts: 0 });
+        }
+        return res;
+    }
+    catch (error) {
+        if (queueable && isRetryableError(error)) {
+            if (retryQueue.length >= 25)
+                retryQueue.shift();
+            retryQueue.push({ url, init, attempts: 0 });
+        }
+        throw error;
+    }
+}
 function buildHeaders(apiKey, sessionId, contentType, agentId) {
     const headers = {
         Authorization: `Bearer ${apiKey}`,
@@ -184,11 +242,11 @@ async function marrowThink(apiKey, baseUrl, params, sessionId, agentId) {
         body.previous_success = params.previous_success ?? true;
         body.previous_outcome = (0, redact_1.redactSensitiveText)(params.previous_outcome ?? '');
     }
-    const res = await fetch(`${baseUrl}/v1/agent/think`, {
+    const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/think`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
-    });
+    }, true);
     const json = await safeJsonResponse(res);
     return json.data;
 }
@@ -227,11 +285,11 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
         body.proof = (0, redact_1.redactSensitiveValue)(params.proof);
     if (gateReceiptId)
         body.gate_receipt_id = gateReceiptId;
-    const res = await fetch(`${baseUrl}/v1/agent/commit`, {
+    const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/commit`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
-    });
+    }, true);
     const json = await safeJsonResponse(res);
     return { ...json.data, runtime_gate: runtimeGate };
 }
@@ -260,7 +318,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
     const thinkTimeout = createTimeoutSignal(timeoutMs, startedAt);
     let thinkJson;
     try {
-        const thinkRes = await fetch(`${baseUrl}/v1/agent/think`, {
+        const thinkRes = await fetchWithRetryQueue(`${baseUrl}/v1/agent/think`, {
             method: 'POST',
             headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
             body: JSON.stringify({
@@ -278,7 +336,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
                 }),
             }),
             signal: thinkTimeout.signal,
-        });
+        }, true);
         thinkJson = await safeJsonResponse(thinkRes);
     }
     finally {

@@ -89,6 +89,69 @@ async function safeJsonResponse(res: Response): Promise<any> {
   return json;
 }
 
+type QueuedRequest = {
+  url: string;
+  init: RequestInit;
+  attempts: number;
+};
+
+const retryQueue: QueuedRequest[] = [];
+let retryQueueDraining = false;
+
+function isRetryableStatus(status: number): boolean {
+  return [408, 425, 429, 500, 502, 503, 504].includes(status);
+}
+
+function isRetryableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  if (/\b(401|403|unauthorized|forbidden|invalid api key|insufficient scope|proof pack|required proof|policy|blocked)\b/.test(message)) {
+    return false;
+  }
+  return /\b(timeout|timed out|econnreset|enotfound|eai_again|network|fetch failed|temporar|rate limit)\b/.test(message);
+}
+
+async function drainRetryQueue(): Promise<void> {
+  if (retryQueueDraining || retryQueue.length === 0) return;
+  retryQueueDraining = true;
+  const remaining: QueuedRequest[] = [];
+  try {
+    const queued = retryQueue.splice(0, 5);
+    for (const item of queued) {
+      try {
+        const res = await fetch(item.url, item.init);
+        if (!res.ok && isRetryableStatus(res.status) && item.attempts < 2) {
+          remaining.push({ ...item, attempts: item.attempts + 1 });
+        }
+      } catch (error) {
+        if (isRetryableError(error) && item.attempts < 2) {
+          remaining.push({ ...item, attempts: item.attempts + 1 });
+        }
+      }
+    }
+  } finally {
+    retryQueue.unshift(...remaining);
+    retryQueueDraining = false;
+  }
+}
+
+async function fetchWithRetryQueue(url: string, init: RequestInit, queueable = false): Promise<Response> {
+  await drainRetryQueue();
+  try {
+    const res = await fetch(url, init);
+    if (queueable && !res.ok && isRetryableStatus(res.status)) {
+      if (retryQueue.length >= 25) retryQueue.shift();
+      retryQueue.push({ url, init, attempts: 0 });
+    }
+    return res;
+  } catch (error) {
+    if (queueable && isRetryableError(error)) {
+      if (retryQueue.length >= 25) retryQueue.shift();
+      retryQueue.push({ url, init, attempts: 0 });
+    }
+    throw error;
+  }
+}
+
 function buildHeaders(
   apiKey: string,
   sessionId?: string,
@@ -247,11 +310,11 @@ export async function marrowThink(
     body.previous_outcome = redactSensitiveText(params.previous_outcome ?? '');
   }
 
-  const res = await fetch(`${baseUrl}/v1/agent/think`, {
+  const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/think`, {
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(body),
-  });
+  }, true);
 
   const json = await safeJsonResponse(res);
   return json.data;
@@ -316,11 +379,11 @@ export async function marrowCommit(
   if (params.proof) body.proof = redactSensitiveValue(params.proof) as Record<string, unknown>;
   if (gateReceiptId) body.gate_receipt_id = gateReceiptId;
 
-  const res = await fetch(`${baseUrl}/v1/agent/commit`, {
+  const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/commit`, {
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(body),
-  });
+  }, true);
 
   const json = await safeJsonResponse(res);
   return { ...json.data, runtime_gate: runtimeGate };
@@ -376,7 +439,7 @@ export async function marrowAuto(
   const thinkTimeout = createTimeoutSignal(timeoutMs, startedAt);
   let thinkJson: any;
   try {
-    const thinkRes = await fetch(`${baseUrl}/v1/agent/think`, {
+    const thinkRes = await fetchWithRetryQueue(`${baseUrl}/v1/agent/think`, {
       method: 'POST',
       headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
       body: JSON.stringify({
@@ -394,7 +457,7 @@ export async function marrowAuto(
         }) as Record<string, unknown>,
       }),
       signal: thinkTimeout.signal,
-    });
+    }, true);
     thinkJson = await safeJsonResponse(thinkRes);
   } finally {
     thinkTimeout.cancel();
