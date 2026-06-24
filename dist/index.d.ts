@@ -1,7 +1,7 @@
 /**
  * @getmarrow/mcp — API Functions
  */
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowNudgeResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 export type { Narrative, CommitResult } from './types';
 /**
@@ -53,9 +53,12 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     type?: string;
     surfaces?: string[];
     auto_gate?: boolean;
+    model_usage?: MarrowModelUsageInput;
+    modelUsage?: MarrowModelUsageInput;
 }, sessionId?: string, agentId?: string): Promise<CommitResult & {
     runtime_gate?: MarrowAgentRuntimeResult | null;
 }>;
+export declare function marrowModelUsage(apiKey: string, baseUrl: string, input: MarrowModelUsageInput, sessionId?: string, agentId?: string): Promise<MarrowModelUsageResult>;
 /**
  * Fire-and-forget style logging helper for tool hooks and simple integrations.
  * Logs intent, and when outcome is supplied, immediately commits it.

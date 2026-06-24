@@ -355,7 +355,52 @@ export interface CommitResult {
   insight: string | null;
   narrative: Narrative;
   marrow_contributed?: CommitContribution;
+  token_value_signal?: MarrowTokenValueSignal | null;
   pre_action_gate?: { receipt_id?: string | null; decision?: string | null; enforced: boolean } | null;
+}
+
+export interface MarrowModelUsageInput {
+  agent_id?: string | null;
+  session_id?: string | null;
+  workflow_id?: string | null;
+  decision_id?: string | null;
+  provider?: string;
+  model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cached_tokens?: number;
+  total_tokens?: number;
+  cost_usd?: number;
+  latency_ms?: number;
+  task_type?: string;
+  action_type?: string;
+  source?: string;
+  marrow_intervention?: string;
+  success?: boolean;
+  baseline_tokens?: number;
+  estimated_tokens_saved?: number;
+  estimated_cost_saved_usd?: number;
+  estimated_minutes_saved?: number;
+}
+
+export interface MarrowTokenValueSignal {
+  enabled: true;
+  capture_default: string;
+  observed: Record<string, unknown>;
+  savings: Record<string, unknown>;
+  trend: Record<string, unknown>;
+  top_models: Array<Record<string, unknown>>;
+  proof_line: string;
+  exact_next_action: string;
+}
+
+export interface MarrowModelUsageResult {
+  recorded: boolean;
+  usage_id: string;
+  token_value_signal: MarrowTokenValueSignal;
+  value_proof_endpoint: string;
+  batch_ingest_equivalent?: Record<string, unknown>;
+  exact_next_action: string;
 }
 
 export interface StatusResult {
