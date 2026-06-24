@@ -858,6 +858,24 @@ export async function marrowAgentStatus(
 }
 
 /**
+ * Get live runtime hook diagnostics from /v1/agent/status.
+ */
+export async function marrowRuntimeStatus(
+  apiKey: string,
+  baseUrl: string,
+  fast: boolean = true,
+  sessionId?: string,
+  agentId?: string
+): Promise<Record<string, unknown>> {
+  const qs = fast ? '?fast=1' : '';
+  const res = await fetch(`${baseUrl}/v1/agent/status${qs}`, {
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+/**
  * Get owner-ready proof of Marrow value for an agent or fleet.
  */
 export async function marrowValueReport(

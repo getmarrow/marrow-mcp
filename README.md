@@ -84,12 +84,13 @@ Accounts with <7 days of activity AND <20 decisions get an onboarding payload sh
 
 ---
 
-## What's New in v3.9.36
+## What's New in v3.9.37
 
-v3.9.36 adds MCP token-value proof support.
+v3.9.37 adds MCP token-value proof status parity.
 
 - `marrow_model_usage` records compact provider/model token counts through `/v1/agent/model-usage`.
 - `marrow_commit` accepts optional `model_usage` and returns `token_value_signal` from the backend.
+- `marrow_runtime_status` calls `/v1/agent/status?fast=1` for live passive hook, token-capture, outcome-closure, and exact repair-command diagnostics.
 - Token usage data is counts and labels only: provider, model, input/output/cached/total tokens, cost, latency, outcome linkage, and optional saved-token estimates.
 - Do not send raw prompts, completions, tool logs, secrets, or customer content.
 

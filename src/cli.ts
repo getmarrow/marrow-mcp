@@ -20,6 +20,7 @@ import {
   marrowDashboard,
   marrowDigest,
   marrowAgentStatus,
+  marrowRuntimeStatus,
   marrowValueReport,
   marrowDecisionBrief,
   marrowAgentRuntime,
@@ -1052,6 +1053,19 @@ const TOOLS = [
     },
   },
   {
+    name: 'marrow_runtime_status',
+    description:
+      'Read live Marrow runtime hook diagnostics from /v1/agent/status. ' +
+      'Use this when an agent needs exact passive hook, token-capture, outcome-closure, and repair-command status.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        fast: { type: 'boolean', description: 'Use fast cached summary path when available. Defaults to true.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'marrow_value_report',
     description:
       'Get owner-ready proof of Marrow value for this agent or fleet. ' +
@@ -2002,6 +2016,18 @@ This is not optional overhead — it's how you stop repeating the same failures.
           BASE_URL,
           (args.period as string) || '7d',
           (args.agentId as string) || AGENT_ID,
+          SESSION_ID,
+          FLEET_AGENT_ID
+        );
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_runtime_status') {
+        const result = await marrowRuntimeStatus(
+          API_KEY,
+          BASE_URL,
+          args.fast !== false,
           SESSION_ID,
           FLEET_AGENT_ID
         );

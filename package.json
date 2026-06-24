@@ -1,6 +1,6 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.36",
+  "version": "3.9.37",
   "description": "Your go-to memory provider for all agents, for any AI model.",
   "bin": {
     "marrow-mcp": "dist/cli.js"
@@ -47,7 +47,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@getmarrow/sdk": "^3.7.35"
+    "@getmarrow/sdk": "^3.7.36"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
