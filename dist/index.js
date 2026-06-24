@@ -23,6 +23,7 @@ exports.marrowWorkflow = marrowWorkflow;
 exports.marrowDashboard = marrowDashboard;
 exports.marrowDigest = marrowDigest;
 exports.marrowAgentStatus = marrowAgentStatus;
+exports.marrowRuntimeStatus = marrowRuntimeStatus;
 exports.marrowValueReport = marrowValueReport;
 exports.marrowDecisionBrief = marrowDecisionBrief;
 exports.marrowWorkflowGate = marrowWorkflowGate;
@@ -643,6 +644,17 @@ async function marrowAgentStatus(apiKey, baseUrl, period = '7d', agentIdFilter, 
     if (agentIdFilter)
         qs.set('agent_id', agentIdFilter);
     const res = await fetch(`${baseUrl}/v1/analytics/agent-status?${qs.toString()}`, {
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+/**
+ * Get live runtime hook diagnostics from /v1/agent/status.
+ */
+async function marrowRuntimeStatus(apiKey, baseUrl, fast = true, sessionId, agentId) {
+    const qs = fast ? '?fast=1' : '';
+    const res = await fetch(`${baseUrl}/v1/agent/status${qs}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
     const json = await safeJsonResponse(res);

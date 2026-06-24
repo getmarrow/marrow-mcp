@@ -921,6 +921,18 @@ if (process.argv[2] !== 'keys') {
                 },
             },
             {
+                name: 'marrow_runtime_status',
+                description: 'Read live Marrow runtime hook diagnostics from /v1/agent/status. ' +
+                    'Use this when an agent needs exact passive hook, token-capture, outcome-closure, and repair-command status.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        fast: { type: 'boolean', description: 'Use fast cached summary path when available. Defaults to true.' },
+                    },
+                    required: [],
+                },
+            },
+            {
                 name: 'marrow_value_report',
                 description: 'Get owner-ready proof of Marrow value for this agent or fleet. ' +
                     'Returns summary, decision metrics, saves, active agents, top risks, recommendations, and improvement data without raw decision text.',
@@ -1737,6 +1749,11 @@ This is not optional overhead — it's how you stop repeating the same failures.
                     }
                     if (toolName === 'marrow_agent_status') {
                         const result = await (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_runtime_status') {
+                        const result = await (0, index_1.marrowRuntimeStatus)(API_KEY, BASE_URL, args.fast !== false, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }

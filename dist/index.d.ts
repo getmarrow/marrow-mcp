@@ -138,6 +138,10 @@ export declare function marrowDigest(apiKey: string, baseUrl: string, period?: s
  */
 export declare function marrowAgentStatus(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<MarrowAgentStatusResult>;
 /**
+ * Get live runtime hook diagnostics from /v1/agent/status.
+ */
+export declare function marrowRuntimeStatus(apiKey: string, baseUrl: string, fast?: boolean, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+/**
  * Get owner-ready proof of Marrow value for an agent or fleet.
  */
 export declare function marrowValueReport(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<MarrowValueReportResult>;
