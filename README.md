@@ -80,9 +80,18 @@ Sample response:
 }
 ```
 
-Accounts with <7 days of activity AND <20 decisions get an onboarding payload showing days/decisions until baseline fires. No heuristics, no estimates — every number comes from the agent's own decision history. Token-usage savings remain on the enterprise roadmap.
+Accounts with <7 days of activity AND <20 decisions get an onboarding payload showing days/decisions until baseline fires. Token-value proof is also available now: MCP agents can call `marrow_model_usage` or attach `model_usage` to `marrow_commit` so Marrow reports observed model calls, tokens, estimated savings, trend direction, and top models without storing raw prompts or completions.
 
 ---
+
+## What's New in v3.9.36
+
+v3.9.36 adds MCP token-value proof support.
+
+- `marrow_model_usage` records compact provider/model token counts through `/v1/agent/model-usage`.
+- `marrow_commit` accepts optional `model_usage` and returns `token_value_signal` from the backend.
+- Token usage data is counts and labels only: provider, model, input/output/cached/total tokens, cost, latency, outcome linkage, and optional saved-token estimates.
+- Do not send raw prompts, completions, tool logs, secrets, or customer content.
 
 ## What's New in v3.9.33
 
@@ -552,7 +561,10 @@ Or register it in your MCP client config using environment variables or your cli
 Log intent before meaningful action. Returns pattern insights, similar past decisions, and a recommended next step.
 
 #### `marrow_commit`
-Log the outcome after acting. Closes the decision loop.
+Log the outcome after acting. Closes the decision loop. Can include `model_usage` so Marrow returns token-value proof after work completes.
+
+#### `marrow_model_usage`
+Record compact model token/cost/latency counts when your harness exposes them. This powers token savings proof in `/v1/agent/value/proof` and owner reports.
 
 #### `marrow_run`
 Zero-ceremony wrapper. Handles orient → think → commit in a single call.

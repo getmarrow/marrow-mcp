@@ -22,6 +22,8 @@ import type {
   MarrowDigestResult,
   MarrowAgentStatusResult,
   MarrowValueReportResult,
+  MarrowModelUsageInput,
+  MarrowModelUsageResult,
   MarrowNudgeResult,
 } from './types';
 import {
@@ -38,6 +40,22 @@ import {
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 
 export type { Narrative, CommitResult } from './types';
+
+function normalizeModelUsage(input: MarrowModelUsageInput = {}): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  const copyString = (key: keyof MarrowModelUsageInput) => {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim()) body[String(key)] = redactSensitiveText(value).slice(0, 180);
+  };
+  const copyNumber = (key: keyof MarrowModelUsageInput) => {
+    const value = Number(input[key]);
+    if (Number.isFinite(value) && value >= 0) body[String(key)] = value;
+  };
+  (['agent_id', 'session_id', 'workflow_id', 'decision_id', 'provider', 'model', 'task_type', 'action_type', 'source', 'marrow_intervention'] as Array<keyof MarrowModelUsageInput>).forEach(copyString);
+  (['input_tokens', 'output_tokens', 'cached_tokens', 'total_tokens', 'cost_usd', 'latency_ms', 'baseline_tokens', 'estimated_tokens_saved', 'estimated_cost_saved_usd', 'estimated_minutes_saved'] as Array<keyof MarrowModelUsageInput>).forEach(copyNumber);
+  if (typeof input.success === 'boolean') body.success = input.success;
+  return body;
+}
 
 /**
  * Validate a path parameter to prevent path traversal attacks.
@@ -338,6 +356,8 @@ export async function marrowCommit(
     type?: string;
     surfaces?: string[];
     auto_gate?: boolean;
+    model_usage?: MarrowModelUsageInput;
+    modelUsage?: MarrowModelUsageInput;
   },
   sessionId?: string,
   agentId?: string
@@ -378,6 +398,8 @@ export async function marrowCommit(
   };
   if (params.proof) body.proof = redactSensitiveValue(params.proof) as Record<string, unknown>;
   if (gateReceiptId) body.gate_receipt_id = gateReceiptId;
+  const modelUsage = params.model_usage || params.modelUsage;
+  if (modelUsage) body.model_usage = normalizeModelUsage(modelUsage);
 
   const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/commit`, {
     method: 'POST',
@@ -387,6 +409,28 @@ export async function marrowCommit(
 
   const json = await safeJsonResponse(res);
   return { ...json.data, runtime_gate: runtimeGate };
+}
+
+export async function marrowModelUsage(
+  apiKey: string,
+  baseUrl: string,
+  input: MarrowModelUsageInput,
+  sessionId?: string,
+  agentId?: string
+): Promise<MarrowModelUsageResult> {
+  const body = normalizeModelUsage({
+    ...input,
+    agent_id: input.agent_id || agentId,
+    session_id: input.session_id || sessionId,
+    source: input.source || 'mcp',
+  });
+  const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/model-usage`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    body: JSON.stringify(body),
+  }, true);
+  const json = await safeJsonResponse(res);
+  return json.data;
 }
 
 function createTimeoutSignal(timeoutMs?: number, startedAt?: number): {

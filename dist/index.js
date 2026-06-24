@@ -13,6 +13,7 @@ exports.marrowRotateKey = marrowRotateKey;
 exports.marrowGetKeyAudit = marrowGetKeyAudit;
 exports.marrowThink = marrowThink;
 exports.marrowCommit = marrowCommit;
+exports.marrowModelUsage = marrowModelUsage;
 exports.marrowAuto = marrowAuto;
 exports.marrowAgentPatterns = marrowAgentPatterns;
 exports.marrowOrient = marrowOrient;
@@ -45,6 +46,24 @@ exports.marrowListTemplates = marrowListTemplates;
 exports.marrowInstallTemplate = marrowInstallTemplate;
 const sdk_1 = require("@getmarrow/sdk");
 const redact_1 = require("./redact");
+function normalizeModelUsage(input = {}) {
+    const body = {};
+    const copyString = (key) => {
+        const value = input[key];
+        if (typeof value === 'string' && value.trim())
+            body[String(key)] = (0, redact_1.redactSensitiveText)(value).slice(0, 180);
+    };
+    const copyNumber = (key) => {
+        const value = Number(input[key]);
+        if (Number.isFinite(value) && value >= 0)
+            body[String(key)] = value;
+    };
+    ['agent_id', 'session_id', 'workflow_id', 'decision_id', 'provider', 'model', 'task_type', 'action_type', 'source', 'marrow_intervention'].forEach(copyString);
+    ['input_tokens', 'output_tokens', 'cached_tokens', 'total_tokens', 'cost_usd', 'latency_ms', 'baseline_tokens', 'estimated_tokens_saved', 'estimated_cost_saved_usd', 'estimated_minutes_saved'].forEach(copyNumber);
+    if (typeof input.success === 'boolean')
+        body.success = input.success;
+    return body;
+}
 /**
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots.
@@ -285,6 +304,9 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
         body.proof = (0, redact_1.redactSensitiveValue)(params.proof);
     if (gateReceiptId)
         body.gate_receipt_id = gateReceiptId;
+    const modelUsage = params.model_usage || params.modelUsage;
+    if (modelUsage)
+        body.model_usage = normalizeModelUsage(modelUsage);
     const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/commit`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
@@ -292,6 +314,21 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
     }, true);
     const json = await safeJsonResponse(res);
     return { ...json.data, runtime_gate: runtimeGate };
+}
+async function marrowModelUsage(apiKey, baseUrl, input, sessionId, agentId) {
+    const body = normalizeModelUsage({
+        ...input,
+        agent_id: input.agent_id || agentId,
+        session_id: input.session_id || sessionId,
+        source: input.source || 'mcp',
+    });
+    const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/model-usage`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify(body),
+    }, true);
+    const json = await safeJsonResponse(res);
+    return json.data;
 }
 function createTimeoutSignal(timeoutMs, startedAt) {
     if (!timeoutMs || timeoutMs <= 0) {

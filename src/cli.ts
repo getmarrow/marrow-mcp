@@ -23,6 +23,7 @@ import {
   marrowValueReport,
   marrowDecisionBrief,
   marrowAgentRuntime,
+  marrowModelUsage,
   marrowRecommendGovernanceMode,
   marrowListPolicyProfiles,
   marrowCreatePolicyProfile,
@@ -707,8 +708,37 @@ const TOOLS = [
         type: { type: 'string', description: 'Optional original action type for auto gate lookup, e.g. deploy, publish, merge, handoff, implementation.' },
         surfaces: { type: 'array', items: { type: 'string' }, description: 'Optional surfaces for auto gate receipt, e.g. github, cloudflare, npm, production.' },
         auto_gate: { type: 'boolean', description: 'If true/default and action is provided, call marrow_agent_runtime to obtain gate_receipt_id before commit.' },
+        model_usage: { type: 'object', description: 'Optional compact token/cost/latency counts. Do not include raw prompts or completions.' },
       },
       required: ['decision_id', 'success', 'outcome'],
+    },
+  },
+  {
+    name: 'marrow_model_usage',
+    description:
+      'Record compact model token usage for value proof. Use when the harness exposes provider/model token counts. Do not send raw prompts, completions, tool logs, secrets, or customer content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        provider: { type: 'string', description: 'Model provider, e.g. openai, anthropic, google, xai, qwen, deepseek.' },
+        model: { type: 'string', description: 'Model name.' },
+        input_tokens: { type: 'number' },
+        output_tokens: { type: 'number' },
+        cached_tokens: { type: 'number' },
+        total_tokens: { type: 'number' },
+        cost_usd: { type: 'number' },
+        latency_ms: { type: 'number' },
+        task_type: { type: 'string' },
+        action_type: { type: 'string' },
+        marrow_intervention: { type: 'string', description: 'runtime_gate, risk_gate, prior_lesson, proof_pack, before_you_act, fleet_lesson, or other compact reason.' },
+        estimated_tokens_saved: { type: 'number' },
+        estimated_cost_saved_usd: { type: 'number' },
+        estimated_minutes_saved: { type: 'number' },
+        decision_id: { type: 'string' },
+        workflow_id: { type: 'string' },
+        success: { type: 'boolean' },
+      },
+      required: [],
     },
   },
   {
@@ -1622,6 +1652,7 @@ This is not optional overhead — it's how you stop repeating the same failures.
             type: args.type as string,
             surfaces: args.surfaces as string[],
             auto_gate: args.auto_gate as boolean,
+            model_usage: args.model_usage as any,
           },
           SESSION_ID,
           FLEET_AGENT_ID
@@ -1631,6 +1662,20 @@ This is not optional overhead — it's how you stop repeating the same failures.
         lastDecisionId = null;
         success(id, {
           content: [{ type: 'text', text: JSON.stringify(commitResult, null, 2) }],
+        });
+        return;
+      }
+
+      if (toolName === 'marrow_model_usage') {
+        const result = await marrowModelUsage(
+          API_KEY,
+          BASE_URL,
+          args as any,
+          SESSION_ID,
+          FLEET_AGENT_ID
+        );
+        success(id, {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         });
         return;
       }
