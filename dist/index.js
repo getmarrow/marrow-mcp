@@ -47,6 +47,34 @@ exports.marrowListTemplates = marrowListTemplates;
 exports.marrowInstallTemplate = marrowInstallTemplate;
 const sdk_1 = require("@getmarrow/sdk");
 const redact_1 = require("./redact");
+const SOURCE_CLIENTS = new Set(['claude-code', 'cursor', 'windsurf', 'openclaw', 'codex', 'gemini', 'grok', 'deepseek', 'qwen', 'kimi', 'minimax', 'cline', 'opencode', 'hermes', 'glm', 'custom', 'unknown']);
+function defaultSourceClient() {
+    const raw = String(process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || process.env.MARROW_AGENT_CLIENT || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/^@/, '');
+    const aliases = {
+        claude: 'claude-code',
+        claude_code: 'claude-code',
+        'claude-code': 'claude-code',
+        cursor: 'cursor',
+        windsurf: 'windsurf',
+        openclaw: 'openclaw',
+        codex: 'codex',
+        'openai-codex': 'codex',
+        gemini: 'gemini',
+        google: 'gemini',
+        grok: 'grok',
+        deepseek: 'deepseek',
+        qwen: 'qwen',
+        kimi: 'kimi',
+        minimax: 'minimax',
+        cline: 'cline',
+        opencode: 'opencode',
+        'open-code': 'opencode',
+        hermes: 'hermes',
+        'hermes-agent': 'hermes',
+        glm: 'glm',
+    };
+    return aliases[raw] || (SOURCE_CLIENTS.has(raw) ? raw : 'openclaw');
+}
 function normalizeModelUsage(input = {}) {
     const body = {};
     const copyString = (key) => {
@@ -194,6 +222,7 @@ function buildHeaders(apiKey, sessionId, contentType, agentId) {
             headers['X-Marrow-Agent-Id'] = safe;
         }
     }
+    headers['X-Marrow-Client'] = defaultSourceClient();
     return headers;
 }
 function createSdkClient(apiKey, baseUrl, sessionId, agentId) {
@@ -250,7 +279,7 @@ async function marrowThink(apiKey, baseUrl, params, sessionId, agentId) {
         body.instruction_hash = params.instruction_hash;
     body.source_meta = (0, redact_1.redactSensitiveValue)({
         channel: 'mcp',
-        client: 'openclaw',
+        client: defaultSourceClient(),
         user_intent: 'operate',
         ...(params.source_meta || {}),
     });
@@ -368,7 +397,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
                 human_directed: false,
                 source_meta: (0, redact_1.redactSensitiveValue)({
                     channel: 'mcp',
-                    client: 'openclaw',
+                    client: defaultSourceClient(),
                     user_intent: 'operate',
                     ...(params.source_meta || {}),
                 }),

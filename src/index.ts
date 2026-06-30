@@ -41,6 +41,36 @@ import { redactSensitiveText, redactSensitiveValue } from './redact';
 
 export type { Narrative, CommitResult } from './types';
 
+const SOURCE_CLIENTS = new Set(['claude-code', 'cursor', 'windsurf', 'openclaw', 'codex', 'gemini', 'grok', 'deepseek', 'qwen', 'kimi', 'minimax', 'cline', 'opencode', 'hermes', 'glm', 'custom', 'unknown']);
+
+function defaultSourceClient(): string {
+  const raw = String(process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || process.env.MARROW_AGENT_CLIENT || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/^@/, '');
+  const aliases: Record<string, string> = {
+    claude: 'claude-code',
+    claude_code: 'claude-code',
+    'claude-code': 'claude-code',
+    cursor: 'cursor',
+    windsurf: 'windsurf',
+    openclaw: 'openclaw',
+    codex: 'codex',
+    'openai-codex': 'codex',
+    gemini: 'gemini',
+    google: 'gemini',
+    grok: 'grok',
+    deepseek: 'deepseek',
+    qwen: 'qwen',
+    kimi: 'kimi',
+    minimax: 'minimax',
+    cline: 'cline',
+    opencode: 'opencode',
+    'open-code': 'opencode',
+    hermes: 'hermes',
+    'hermes-agent': 'hermes',
+    glm: 'glm',
+  };
+  return aliases[raw] || (SOURCE_CLIENTS.has(raw) ? raw : 'openclaw');
+}
+
 function normalizeModelUsage(input: MarrowModelUsageInput = {}): Record<string, unknown> {
   const body: Record<string, unknown> = {};
   const copyString = (key: keyof MarrowModelUsageInput) => {
@@ -194,6 +224,7 @@ function buildHeaders(
       headers['X-Marrow-Agent-Id'] = safe;
     }
   }
+  headers['X-Marrow-Client'] = defaultSourceClient();
   return headers;
 }
 
@@ -313,7 +344,7 @@ export async function marrowThink(
   if (params.instruction_hash !== undefined) body.instruction_hash = params.instruction_hash;
   body.source_meta = redactSensitiveValue({
     channel: 'mcp',
-    client: 'openclaw',
+    client: defaultSourceClient(),
     user_intent: 'operate',
     ...(params.source_meta || {}),
   }) as Record<string, unknown>;
@@ -495,7 +526,7 @@ export async function marrowAuto(
         human_directed: false,
         source_meta: redactSensitiveValue({
           channel: 'mcp',
-          client: 'openclaw',
+          client: defaultSourceClient(),
           user_intent: 'operate',
           ...(params.source_meta || {}),
         }) as Record<string, unknown>,
