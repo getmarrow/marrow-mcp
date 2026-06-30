@@ -124,7 +124,20 @@ v3.9.33 adds MCP tools for adaptive governance recommendations and explicit poli
 }
 ```
 
-## What's New in v3.9.31
+## What's New in v3.9.38
+
+v3.9.38 improves passive attribution quality for external/customer decisions.
+
+- MCP requests now send `X-Marrow-Client` from `MARROW_CLIENT`, `MARROW_HARNESS`, or `MARROW_AGENT_CLIENT`.
+- `marrow_think`, `marrow_auto`, PostToolUse hooks, and passive prompt workflows attach safe `agent_id`, source channel, client/harness, and inferred workflow intent metadata.
+- Supported client labels now include `codex`, `gemini`, `grok`, `deepseek`, `qwen`, `kimi`, `minimax`, `cline`, `opencode`, `hermes`, `glm`, `claude-code`, `cursor`, `windsurf`, `openclaw`, and `custom`.
+- Invalid client labels fall back to the MCP default; Marrow still rejects malformed structured `source_meta` instead of storing bad metadata.
+
+Business value: Marrow dashboards and reports can show which agents, harnesses, and workflow types are improving instead of grouping too much work into `unknown`.
+
+## Previous Release Notes
+
+### v3.9.31
 
 v3.9.31 is a docs-sync release. It keeps npm and GitHub README copy aligned with Marrow's current backend-first runtime contract and proof/gate enforcement loop. Runtime behavior is unchanged from v3.9.30.
 
@@ -192,7 +205,7 @@ If you provide `action` and omit `gate_receipt_id`, `marrow_commit` can fetch a 
 
 The Marrow API supports privacy-preserving provenance fields on direct `POST /v1/decisions` calls: `source_kind`, `human_directed`, `source_confidence`, `instruction_ref`, `instruction_hash`, and `source_meta`. These fields classify instruction source class without identifying the human or storing raw prompts/PII.
 
-Current MCP tools and passive hooks remain backward compatible and do **not** yet expose first-class provenance parameters or automatically mark prompts as `human_directed`. MCP provenance wiring is deferred; direct API users should follow the live API reference at https://getmarrow.ai/docs.
+MCP tools and passive hooks now attach structured attribution by default. Marrow sends `X-Marrow-Agent-Id` when `MARROW_FLEET_AGENT_ID` or `MARROW_AGENT_ID` is configured, and it fills `source_meta.channel`, `source_meta.client`, `source_meta.agent_id`, and `source_meta.user_intent` where safe. Set `MARROW_CLIENT`, `MARROW_HARNESS`, or `MARROW_AGENT_CLIENT` to one of the supported client labels (`codex`, `claude-code`, `cursor`, `gemini`, `grok`, `deepseek`, `qwen`, `kimi`, `minimax`, `cline`, `opencode`, `hermes`, `glm`, `openclaw`, `windsurf`, or `custom`) for cleaner per-harness reporting.
 
 ---
 
@@ -659,6 +672,7 @@ claude mcp add marrow -e MARROW_API_KEY="$MARROW_API_KEY" -- npx @getmarrow/mcp
 | `MARROW_BASE_URL` | No | Custom API URL (default: `https://api.getmarrow.ai`). Must use HTTPS. |
 | `MARROW_SESSION_ID` | No | Session identifier for multi-agent setups |
 | `MARROW_FLEET_AGENT_ID` | No | Agent identifier sent as `X-Marrow-Agent-Id` for fleet attribution |
+| `MARROW_CLIENT` / `MARROW_HARNESS` / `MARROW_AGENT_CLIENT` | No | Harness/client label used for per-client reporting, such as `codex`, `claude-code`, `cursor`, `gemini`, `qwen`, `opencode`, or `custom` |
 | `MARROW_AUTO_ENROLL` | No | Auto-enrollment prompt (default: `true`). Set to `false` to disable. |
 | `MARROW_AUTO_HOOK` | No | PostToolUse auto-logging kill switch. Set to `false` to disable the hook without editing settings. |
 | `MARROW_PASSIVE_BRIEF` | No | Passive decision-brief mode for the prompt hook. Defaults to `auto`; set `false` to disable or `always` to brief every prompt. |

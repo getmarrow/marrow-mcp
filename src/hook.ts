@@ -426,7 +426,6 @@ export async function runHookCommand(): Promise<void> {
         },
         source_meta: {
           channel: 'mcp',
-          client: 'openclaw',
           user_intent: 'operate',
         },
       },

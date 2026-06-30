@@ -375,7 +375,6 @@ async function runHookCommand() {
             },
             source_meta: {
                 channel: 'mcp',
-                client: 'openclaw',
                 user_intent: 'operate',
             },
         }, sessionId, agentId, 2000);
