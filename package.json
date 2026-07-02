@@ -1,7 +1,7 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.38",
-  "description": "Your go-to memory provider for all agents, for any AI model.",
+  "version": "3.9.39",
+  "description": "Governance, proof, and intelligence controls for MCP-compatible agent fleets.",
   "bin": {
     "marrow-mcp": "dist/cli.js"
   },
@@ -16,6 +16,9 @@
     "mcp",
     "claude",
     "ai",
+    "governance",
+    "proof-packs",
+    "agent-control-plane",
     "memory",
     "agents",
     "LLM",
@@ -47,7 +50,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@getmarrow/sdk": "^3.7.36"
+    "@getmarrow/sdk": "^3.7.38"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",

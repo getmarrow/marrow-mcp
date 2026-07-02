@@ -988,6 +988,95 @@ export async function marrowAgentRuntime(
   return json.data;
 }
 
+export async function marrowGovernanceControlPlane(
+  apiKey: string,
+  baseUrl: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${baseUrl}/v1/agent/governance/control-plane`, {
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+export async function marrowHermesIntegration(
+  apiKey: string,
+  baseUrl: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${baseUrl}/v1/agent/integrations/hermes`, {
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+export async function marrowCompletionContracts(
+  apiKey: string,
+  baseUrl: string,
+  sessionId?: string,
+  agentId?: string
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${baseUrl}/v1/agent/governance/completion-contracts`, {
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+export async function marrowEvaluateCompletionContract(
+  apiKey: string,
+  baseUrl: string,
+  input: Record<string, unknown>,
+  sessionId?: string,
+  agentId?: string
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${baseUrl}/v1/agent/governance/completion-contracts/evaluate`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    body: JSON.stringify(input),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+export async function marrowGovernanceTimeline(
+  apiKey: string,
+  baseUrl: string,
+  options: { agentId?: string; limit?: number } = {},
+  sessionId?: string,
+  agentId?: string
+): Promise<Record<string, unknown>> {
+  const qs = new URLSearchParams();
+  if (options.agentId || agentId) qs.set('agent_id', options.agentId || agentId || '');
+  if (options.limit) qs.set('limit', String(options.limit));
+  const res = await fetch(`${baseUrl}/v1/agent/governance/timeline${qs.toString() ? `?${qs.toString()}` : ''}`, {
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+export async function marrowBuyerProof(
+  apiKey: string,
+  baseUrl: string,
+  options: { agentId?: string; periodDays?: number } = {},
+  sessionId?: string,
+  agentId?: string
+): Promise<Record<string, unknown>> {
+  const qs = new URLSearchParams();
+  if (options.agentId || agentId) qs.set('agent_id', options.agentId || agentId || '');
+  if (options.periodDays) qs.set('period_days', String(options.periodDays));
+  const res = await fetch(`${baseUrl}/v1/agent/governance/buyer-proof${qs.toString() ? `?${qs.toString()}` : ''}`, {
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
 export async function marrowRecommendGovernanceMode(
   apiKey: string,
   baseUrl: string,
