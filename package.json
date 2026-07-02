@@ -42,7 +42,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/MajinBuu0x9/marrow-mcp.git"
+    "url": "git+https://github.com/getmarrow/marrow-mcp.git"
   },
   "license": "MIT",
   "files": [
