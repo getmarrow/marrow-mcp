@@ -151,6 +151,18 @@ export declare function marrowValueReport(apiKey: string, baseUrl: string, perio
 export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
 export declare function marrowWorkflowGate(apiKey: string, baseUrl: string, input: MarrowWorkflowGateRequest, sessionId?: string, agentId?: string): Promise<MarrowWorkflowGateResult>;
 export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string): Promise<MarrowAgentRuntimeResult>;
+export declare function marrowGovernanceControlPlane(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowHermesIntegration(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowCompletionContracts(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowEvaluateCompletionContract(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowGovernanceTimeline(apiKey: string, baseUrl: string, options?: {
+    agentId?: string;
+    limit?: number;
+}, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowBuyerProof(apiKey: string, baseUrl: string, options?: {
+    agentId?: string;
+    periodDays?: number;
+}, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
 export declare function marrowRecommendGovernanceMode(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
 export declare function marrowListPolicyProfiles(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
 export declare function marrowCreatePolicyProfile(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;

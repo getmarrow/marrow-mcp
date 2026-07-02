@@ -1,6 +1,6 @@
 # @getmarrow/mcp
 
-> **Memory and decision intelligence for MCP-compatible agents.**
+> **Governance, proof, and decision intelligence for MCP-compatible agent fleets.**
 
 ![npm](https://img.shields.io/npm/v/@getmarrow/mcp)
 ![npm](https://img.shields.io/npm/dw/@getmarrow/mcp)
@@ -9,17 +9,28 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)
 ![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)
 
-Marrow gives your agent a memory that compounds.
+Marrow gives your agent a governance loop that compounds.
 
-With `@getmarrow/mcp`, any MCP-compatible client can log intent before acting, inspect live loop state during work, and commit outcomes back to Marrow when the work is done. That means your agent stops operating like an amnesiac and starts carrying forward real decision history.
+With `@getmarrow/mcp`, any MCP-compatible client can ask Marrow before risky work, inspect live loop state during work, collect required proof, and commit outcomes when the work is done. That means your agent stops operating without accountability and starts carrying forward real decision history.
 
-**Your agent stops repeating the same mistakes. It learns from prior sessions — and from authorized fleet memory plus sanitized shared signals — through a clean MCP tool surface.**
+**Your agent stops repeating the same mistakes. It learns from prior sessions, authorized fleet history, and sanitized shared signals while staying inside proof, policy, and tenant boundaries.**
 
 ## Trust and Data Boundaries
 
 Marrow is tenant-aware by design. Private account, fleet, memory, workflow, and proof-pack data stays scoped to the authenticated account and authorized agent-bound keys. Shared/hive learning uses visibility-controlled, sanitized aggregate signals; it is not raw cross-customer decision sharing.
 
 For business pilots, review the live trust notes before production rollout: https://getmarrow.ai/docs#trust-boundaries
+
+## What's New in v3.9.39
+
+v3.9.39 adds MCP tools for Marrow's governance-control layer.
+
+- `marrow_governance_control_plane` returns Marrow's cross-harness control-plane contract.
+- `marrow_hermes_integration` maps Hermes `/goal`, verification evidence, `/learn`, `/journey`, and background subagents into Marrow proof/outcome workflows.
+- `marrow_completion_contracts` lists built-in proof contracts for deploy, merge, publish, migration, security, support, and Hermes goal workflows.
+- `marrow_evaluate_completion_contract` checks whether an agent has enough proof to mark work complete.
+- `marrow_governance_timeline` returns a fleet journey timeline across decisions, gates, and proof packs.
+- `marrow_buyer_proof` returns owner/procurement-ready value proof: failures avoided, risky actions reviewed, proofs completed, token/time saved, failure classes, and reliability score.
 
 ---
 
@@ -487,7 +498,7 @@ The `marrow_think` tool now accepts `checkLoop: true` and detects if you're abou
 
 ## The Problem
 
-Most agents still operate with shallow memory.
+Most agents still operate with shallow governance.
 
 They might keep a short context window, maybe write a note or two, then lose the important part:
 - what they were trying to do
@@ -497,7 +508,7 @@ They might keep a short context window, maybe write a note or two, then lose the
 
 That creates a familiar failure loop:
 - the same mistakes repeat
-- work gets marked done without structured outcome memory
+- work gets marked done without structured outcome proof
 - agents drift between sessions
 - hosts have no clean way to inspect whether the work loop is actually closed
 
@@ -507,7 +518,7 @@ Through MCP, your agent can:
 - orient at session start
 - log intent before meaningful action
 - inspect loop state before handoff or completion
-- commit outcomes back to memory cleanly
+- commit outcomes back to Marrow with proof cleanly
 
 ---
 
@@ -519,14 +530,14 @@ Marrow exposes a simple operating loop through MCP:
 orient -> think -> act -> check -> commit
 ```
 
-That gives agents an actual memory discipline:
+That gives agents an actual governance discipline:
 - **orient** → pick up recent lessons and current loop state
 - **think** → log intent and receive decision intelligence
 - **act** → perform the meaningful work
 - **check** → inspect whether the loop is still open or missing something
 - **commit** → log the outcome and close the loop
 
-The value compounds with use. Each decision your agent logs makes the hive smarter — failure rates drop, patterns emerge, and the next session starts with real intelligence instead of a blank slate. Teams running multiple agents see this compound fastest, but even a single agent builds meaningful history within a few sessions.
+The value compounds with use. Each decision your agent logs makes the fleet safer — failure rates drop, patterns emerge, proof requirements get clearer, and the next session starts with real intelligence instead of a blank slate. Teams running multiple agents see this compound fastest, but even a single agent builds meaningful history within a few sessions.
 
 ---
 

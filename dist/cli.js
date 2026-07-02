@@ -1013,6 +1013,59 @@ if (process.argv[2] !== 'keys') {
                 },
             },
             {
+                name: 'marrow_governance_control_plane',
+                description: 'Return Marrow control-plane proof: governance, runtime gates, proof packs, fleet intelligence, supported harnesses, and exact next action.',
+                inputSchema: { type: 'object', properties: {}, required: [] },
+            },
+            {
+                name: 'marrow_hermes_integration',
+                description: 'Return the Hermes Agent integration guide mapping /goal, verification evidence, /learn, /journey, and background subagents into Marrow proof and outcome workflows.',
+                inputSchema: { type: 'object', properties: {}, required: [] },
+            },
+            {
+                name: 'marrow_completion_contracts',
+                description: 'List Marrow completion contracts for deploy, merge, publish, database migration, security change, support response, and Hermes goal workflows.',
+                inputSchema: { type: 'object', properties: {}, required: [] },
+            },
+            {
+                name: 'marrow_evaluate_completion_contract',
+                description: 'Evaluate whether an agent has enough proof to mark work complete. Returns complete, missing_proof, review_required, or blocked with missing proof fields.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        action: { type: 'string', description: 'Action/workflow being completed, e.g. deploy, publish, db_migration, hermes_goal.' },
+                        workflow_type: { type: 'string', description: 'Optional workflow type if action is not supplied.' },
+                        risk_level: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Optional risk override.' },
+                        evidence: { type: 'object', description: 'Non-sensitive proof fields already collected.' },
+                    },
+                    required: [],
+                },
+            },
+            {
+                name: 'marrow_governance_timeline',
+                description: 'Return the recent fleet governance timeline across decisions, risk gates, and proof-pack events.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        agentId: { type: 'string', description: 'Optional agent filter. Defaults to MARROW_AGENT_ID.' },
+                        limit: { type: 'number', description: 'Max events to return, default 25, max 100.' },
+                    },
+                    required: [],
+                },
+            },
+            {
+                name: 'marrow_buyer_proof',
+                description: 'Return buyer-grade value proof: failures avoided, risky actions reviewed, proofs completed, token/time saved, failure classes, agent leaderboard, and reliability score.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        agentId: { type: 'string', description: 'Optional agent filter. Defaults to MARROW_AGENT_ID.' },
+                        periodDays: { type: 'number', description: 'Lookback period in days, default 30, max 90.' },
+                    },
+                    required: [],
+                },
+            },
+            {
                 name: 'marrow_mode_recommend',
                 description: 'Recommend passive, pilot, or enforce mode from project/workflow signals. Marrow never auto-switches here; the agent/user must accept or override.',
                 inputSchema: {
@@ -1808,6 +1861,50 @@ This is not optional overhead — it's how you stop repeating the same failures.
                                 ? (0, redact_1.redactSensitiveValue)(args.proof)
                                 : undefined,
                             period: args.period,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_governance_control_plane') {
+                        const result = await (0, index_1.marrowGovernanceControlPlane)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_hermes_integration') {
+                        const result = await (0, index_1.marrowHermesIntegration)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_completion_contracts') {
+                        const result = await (0, index_1.marrowCompletionContracts)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_evaluate_completion_contract') {
+                        const input = {
+                            action: args.action,
+                            workflow_type: args.workflow_type,
+                            risk_level: args.risk_level,
+                            evidence: args.evidence && typeof args.evidence === 'object' && !Array.isArray(args.evidence)
+                                ? (0, redact_1.redactSensitiveValue)(args.evidence)
+                                : undefined,
+                        };
+                        const result = await (0, index_1.marrowEvaluateCompletionContract)(API_KEY, BASE_URL, input, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_governance_timeline') {
+                        const result = await (0, index_1.marrowGovernanceTimeline)(API_KEY, BASE_URL, {
+                            agentId: args.agentId || AGENT_ID,
+                            limit: args.limit,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_buyer_proof') {
+                        const result = await (0, index_1.marrowBuyerProof)(API_KEY, BASE_URL, {
+                            agentId: args.agentId || AGENT_ID,
+                            periodDays: args.periodDays,
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
