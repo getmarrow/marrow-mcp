@@ -1,6 +1,6 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.40",
+  "version": "3.9.41",
   "description": "Governance, proof, and intelligence controls for MCP-compatible agent fleets.",
   "bin": {
     "marrow-mcp": "dist/cli.js"
