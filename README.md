@@ -148,16 +148,15 @@ v3.9.33 adds MCP tools for adaptive governance recommendations and explicit poli
 }
 ```
 
-## What's New in v3.9.38
+## What's New in v3.9.42
 
-v3.9.38 improves passive attribution quality for external/customer decisions.
+v3.9.42 adds typed adaptive capacity instructions to the MCP runtime contract.
 
-- MCP requests now send `X-Marrow-Client` from `MARROW_CLIENT`, `MARROW_HARNESS`, or `MARROW_AGENT_CLIENT`.
-- `marrow_think`, `marrow_auto`, PostToolUse hooks, and passive prompt workflows attach safe `agent_id`, source channel, client/harness, and inferred workflow intent metadata.
-- Supported client labels now include `codex`, `gemini`, `grok`, `deepseek`, `qwen`, `kimi`, `minimax`, `cline`, `opencode`, `hermes`, `glm`, `claude-code`, `cursor`, `windsurf`, `openclaw`, and `custom`.
-- Invalid client labels fall back to the MCP default; Marrow still rejects malformed structured `source_meta` instead of storing bad metadata.
+- `marrow_agent_runtime` now types `capacity_guidance` with capacity state, cache duration, recommended batch size, retry delay, safe parallelism, and polling guidance.
+- Passive hooks can keep low-risk work moving with bounded cached guidance while requiring a fresh gate and proof for high-risk actions.
+- The field is additive and remains compatible with existing MCP setup and outcome-closure hooks.
 
-Business value: Marrow dashboards and reports can show which agents, harnesses, and workflow types are improving instead of grouping too much work into `unknown`.
+Business value: MCP-compatible fleets get explicit backpressure behavior from Marrow instead of hard-coded retry guesses in every agent.
 
 ## Previous Release Notes
 
