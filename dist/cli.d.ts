@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Marrow MCP stdio server — collective memory for Claude and MCP agents.
- * Exposes: marrow_orient (call first!), marrow_think, marrow_commit, marrow_status
+ * Marrow MCP stdio server - runtime control and proof for MCP-compatible agents.
+ * Exposes pre-action governance, intent capture, outcome closure, and fleet evidence.
  *
  * Usage:
  *   npx @getmarrow/mcp                          (reads MARROW_API_KEY from env)

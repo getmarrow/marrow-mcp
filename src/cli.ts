@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Marrow MCP stdio server — collective memory for Claude and MCP agents.
- * Exposes: marrow_orient (call first!), marrow_think, marrow_commit, marrow_status
+ * Marrow MCP stdio server - runtime control and proof for MCP-compatible agents.
+ * Exposes pre-action governance, intent capture, outcome closure, and fleet evidence.
  *
  * Usage:
  *   npx @getmarrow/mcp                          (reads MARROW_API_KEY from env)
@@ -637,10 +637,10 @@ const TOOLS = [
   {
     name: 'marrow_orient',
     description:
-      '⚡ CALL THIS FIRST — every session, before any other tool. ' +
-      'Returns failure warnings from your history so you avoid known mistakes immediately. ' +
-      'If shouldPause=true, review lessons before acting. ' +
-      'orient() reads from the hive. think() writes to it. Both are required — this is what makes Marrow compound.',
+      'Call at session start or before meaningful work. ' +
+      'Returns authorized prior lessons and failure warnings for the current account or agent. ' +
+      'If shouldPause=true, stop and review the lesson before acting. ' +
+      'Use marrow_agent_runtime for the policy gate before a consequential side effect.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -662,9 +662,8 @@ const TOOLS = [
   {
     name: 'marrow_think',
     description:
-      'Log intent and get collective intelligence before acting. ' +
-      'Call this before every meaningful action. ' +
-      'Returns pattern insights, similar past decisions, failure detection, and a recommendedNext field — follow it. ' +
+      'Record intent and retrieve authorized governance intelligence before acting. ' +
+      'Returns a decision_id for outcome closure plus relevant patterns, prior outcomes, and recommendedNext. ' +
       'Pass previous_outcome to auto-commit the last decision and open a new one. ' +
       'Response MAY include: onboarding_hint (new accounts), intelligence.collective (cross-account patterns), intelligence.team_context (recent decisions from other sessions).',
     inputSchema: {
@@ -696,9 +695,9 @@ const TOOLS = [
   {
     name: 'marrow_commit',
     description:
-      'Explicitly commit the result of an action to Marrow. ' +
-      'Optional — marrow_think() auto-commits if you pass previous_outcome. ' +
-      'Use when you need explicit control over commit timing.',
+      'Close a recorded action with success/failure, a specific outcome, and required proof. ' +
+      'Use the decision_id from marrow_think and the gate receipt from marrow_agent_runtime for consequential work. ' +
+      'Outcome closure is required for accountable fleet learning.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1464,7 +1463,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.9.12' },
+        serverInfo: { name: 'marrow', version: '3.9.43' },
       });
 
       // Auto-enroll: emit enrollment notification on connection
