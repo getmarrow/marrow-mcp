@@ -58,19 +58,14 @@ test('Stop hook retries use deterministic source correlation without an environm
   }
 });
 
-test('the complete Stop hook is bounded when session-end fetch never resolves', async () => {
+test('the complete Stop hook is bounded when every fetch ignores abort', async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
-    if (String(url).endsWith('/v1/agent/integrations/events')) {
-      return new Response('{}', { status: 200 });
-    }
-    return new Promise(() => {});
-  };
+  globalThis.fetch = () => new Promise(() => {});
   try {
     await withHookEnvironment(async () => {
       const started = Date.now();
       await runSessionHookCommand({ session_id: 'bounded-session', hook_event_name: 'Stop' });
-      assert.ok(Date.now() - started < 1600);
+      assert.ok(Date.now() - started < 2400);
     });
   } finally {
     globalThis.fetch = originalFetch;
