@@ -17,6 +17,7 @@ import { marrowAgentRuntime, marrowDecisionBrief, marrowThink, marrowValueReport
 import { resolveMarrowEnv } from './env';
 import { redactSensitiveText } from './redact';
 import type { MarrowAgentRuntimeResult, MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
+import { recordLifecycleEvent } from './lifecycle-spool';
 
 export const CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
@@ -442,6 +443,19 @@ export async function runContextHookCommand(): Promise<void> {
 
     const passiveBriefInput = inferPassiveBriefInput(prompt);
     const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
+    void recordLifecycleEvent({
+      apiKey,
+      baseUrl,
+      event: {
+        event_type: 'prompt_submitted',
+        harness: 'claude-code',
+        agent_id: agentId,
+        session_id: sessionId,
+        action: `user prompt submitted: ${passiveBriefInput?.type || 'general'}`,
+        risk_level: passiveBriefInput ? 'medium' : 'low',
+        outcome_state: 'pending',
+      },
+    }).catch(() => {});
     const shouldFetchValueSummary =
       PASSIVE_VALUE_MODE === 'always' ||
       (PASSIVE_VALUE_MODE !== 'false' && (Boolean(passiveBriefInput) || /(?:status|summary|report|improve|better|value|metrics|passive|fleet)/i.test(prompt)));
@@ -489,6 +503,21 @@ export async function runContextHookCommand(): Promise<void> {
     }
 
     const context = buildCombinedContextBlock(signals, briefResult || runtimeResult?.decision_brief || null, valueReport, runtimeResult);
+    if (runtimeResult) {
+      void recordLifecycleEvent({
+        apiKey,
+        baseUrl,
+        event: {
+          event_type: 'pre_action_checked',
+          harness: 'claude-code',
+          agent_id: agentId,
+          session_id: sessionId,
+          action: `pre-action check: ${passiveBriefInput?.type || 'general'}`,
+          risk_level: runtimeResult.risk_gate?.risk_level,
+          outcome_state: 'pending',
+        },
+      }).catch(() => {});
+    }
     debug(`[marrow-context-hook] injected ${context.length} bytes of context`);
     emitContext(context);
     process.exit(0);

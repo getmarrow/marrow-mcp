@@ -1,5 +1,7 @@
 import { marrowAuto, validateBaseUrl } from './index';
 import { resolveMarrowEnv } from './env';
+import { recordLifecycleEvent } from './lifecycle-spool';
+import { randomUUID } from 'node:crypto';
 
 const SKIP_TOOLS = new Set([
   'read',
@@ -249,7 +251,13 @@ function deriveOutcome(event: HookEvent): { success: boolean; outcome: string } 
   const responseRecord = asRecord(response);
   const errorValue = responseRecord?.error;
 
-  if (errorValue !== undefined && errorValue !== null) {
+  const failed = errorValue !== undefined && errorValue !== null
+    || responseRecord?.is_error === true
+    || responseRecord?.success === false
+    || (typeof responseRecord?.exit_code === 'number' && responseRecord.exit_code !== 0)
+    || /^(?:failed|error|blocked)$/i.test(String(responseRecord?.status || ''));
+
+  if (failed) {
     return {
       success: false,
       outcome: truncate(`failed: ${normalizeWhitespace(safeStringify(errorValue, 240))}`, 500),
@@ -411,10 +419,28 @@ export async function runHookCommand(): Promise<void> {
     const agentId = resolvedEnv.agentId || undefined;
     const { success, outcome } = deriveOutcome(event);
 
-    await marrowAuto(
+    const toolName = normalizeToolName(getString(event.tool_name) || 'tool');
+    const eventType = toolName === 'bash'
+      ? success ? 'command_completed' : 'command_failed'
+      : success ? 'tool_completed' : 'tool_failed';
+    const lifecycleCorrelation = `mcp-hook-${randomUUID()}`;
+    await recordLifecycleEvent({
       apiKey,
       baseUrl,
-      {
+      event: {
+        event_type: eventType,
+        harness: 'claude-code',
+        agent_id: agentId,
+        session_id: sessionId,
+        workflow_id: lifecycleCorrelation,
+        action,
+        success,
+        outcome_state: 'pending',
+      },
+    });
+
+    const closed = await marrowAuto(
+      apiKey, baseUrl, {
         action,
         outcome,
         success,
@@ -428,11 +454,22 @@ export async function runHookCommand(): Promise<void> {
           channel: 'mcp',
           user_intent: 'operate',
         },
+      }, sessionId, agentId, 2000);
+    await recordLifecycleEvent({
+      apiKey,
+      baseUrl,
+      event: {
+        event_type: 'outcome_committed',
+        harness: 'claude-code',
+        agent_id: agentId,
+        session_id: sessionId,
+        workflow_id: lifecycleCorrelation,
+        decision_id: typeof closed?.decision_id === 'string' ? closed.decision_id : undefined,
+        action,
+        success,
+        outcome_state: 'closed',
       },
-      sessionId,
-      agentId,
-      2000
-    );
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     debug(`[marrow-hook] ${message}`);

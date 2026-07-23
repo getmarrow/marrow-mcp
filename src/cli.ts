@@ -29,6 +29,7 @@ import {
   marrowCompletionContracts,
   marrowEvaluateCompletionContract,
   marrowGovernanceTimeline,
+  marrowDecisionTrace,
   marrowBuyerProof,
   marrowModelUsage,
   marrowRecommendGovernanceMode,
@@ -59,14 +60,15 @@ import {
 } from './index';
 import { installPostToolUseHook, runHookCommand } from './hook';
 import { installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
+import { installSessionEndHook, runSessionHookCommand } from './hook-session';
 import { resolveMarrowEnv } from './env';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import type { ThinkResult, OrientResult, MarrowMemory } from './types';
 
 // Parse CLI args
-function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean } {
+function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; sessionHook?: boolean } {
   const args = process.argv.slice(2);
-  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean } = {};
+  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; sessionHook?: boolean } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
@@ -81,6 +83,9 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     if (args[i] === 'context-hook' || args[i] === '--context-hook') {
       result.contextHook = true;
     }
+    if (args[i] === 'session-hook' || args[i] === '--session-hook') {
+      result.sessionHook = true;
+    }
   }
   return result;
 }
@@ -94,18 +99,18 @@ function runSetup(): void {
   const MARROW_BLOCK_END = '<!-- marrow:end -->';
 
   const marrowInstructions = `${MARROW_BLOCK_START}
-## Marrow — Decision Memory (auto-injected by @getmarrow/mcp setup)
+## Marrow — Agent Control and Proof (auto-injected by @getmarrow/mcp setup)
 
 You have Marrow MCP connected. Use it on EVERY session automatically:
 
-1. **Passive by default:** Marrow hooks auto-log meaningful tool use and auto-inject relevant warnings, patterns, and risky-work decision briefs into your prompt context.
-2. **Session start:** Call \`marrow_orient\` FIRST before any work when you need an explicit status read.
-3. **Before risky actions:** The prompt hook automatically calls \`marrow_decision_brief\` for deploys, publishes, merges, audits, patches, secret changes, and production work. If you need stronger control, call it explicitly.
-4. **Before acting:** Still log intent with \`marrow_auto({ action: "what you're about to do" })\` or \`marrow_think\` when your runtime does not support hooks. The decision brief is guidance, not a replacement for the Marrow loop.
-5. **After actions:** Hooks auto-log tool outcomes. For important final results, call \`marrow_auto({ action: "what you did", outcome: "what happened", success: true/false })\` or \`marrow_commit\`.
-6. **To query history:** Call \`marrow_ask("plain english question")\` — ask what failed, what worked, what to avoid.
+1. **Passive by default:** Marrow hooks record compact lifecycle receipts and inject relevant policy, warnings, lessons, and risky-work decision briefs into your prompt context.
+2. **Before risky actions:** Respect the returned \`allow\`, \`warn\`, \`review_required\`, or \`block\` decision and its proof contract. Call \`marrow_agent_runtime\` explicitly when the passive hook cannot cover the action.
+3. **After meaningful work:** Record the real success or failure with \`marrow_commit\` or \`marrow_auto\`. A tool exit or session end is not proof that the business outcome succeeded.
+4. **Unfinished work:** Leave pending outcomes visible. Do not invent success to clear a closure item.
+5. **To explain a decision:** Use \`marrow_decision_trace\` to connect the prior failure, lesson, gate, proof, workflow, and outcome.
+6. **To query authorized history:** Call \`marrow_ask("plain english question")\` — ask what failed, what worked, and what policy should apply.
 
-Do NOT skip logging. Every decision you log compounds — failure rates drop, patterns emerge, the next session starts smarter. This is not optional overhead.
+Do not skip the gate or outcome. Marrow's value comes from controlling the action before execution and preserving evidence afterward.
 
 For one-shot logging: \`marrow_auto({ action: "did X", outcome: "result Y", success: true })\` — one call, done.
 ${MARROW_BLOCK_END}`;
@@ -164,9 +169,15 @@ ${MARROW_BLOCK_END}`;
   } else {
     process.stdout.write('UserPromptSubmit hook already installed — Marrow context and passive decision briefs are injected on matching prompts.\n');
   }
+  const sessionHookInstall = installSessionEndHook(process.cwd());
+  if (sessionHookInstall.installed) {
+    process.stdout.write('Installed Stop hook — unfinished outcomes remain visible for reconciliation.\n');
+  } else {
+    process.stdout.write('Stop hook already installed — unfinished outcomes remain visible for reconciliation.\n');
+  }
 
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
-  process.stdout.write('Set MARROW_AUTO_HOOK=false to disable both hooks.\n');
+  process.stdout.write('Set MARROW_AUTO_HOOK=false to disable passive hooks.\n');
   process.stdout.write('Set MARROW_PASSIVE_BRIEF=false to disable automatic decision briefs, or MARROW_PASSIVE_BRIEF=always to brief every prompt.\n');
   process.stdout.write('Set MARROW_HOOK_DEBUG=true for write-side hook diagnostics, or MARROW_CONTEXT_HOOK_DEBUG=true for prompt-context diagnostics.\n');
   process.stdout.write('Your agent will now use Marrow automatically — both writing decisions AND reading past intelligence — in every session.\n');
@@ -259,6 +270,8 @@ if (cliArgs.hook) {
   void runHookCommand();
 } else if (cliArgs.contextHook) {
   void runContextHookCommand();
+} else if (cliArgs.sessionHook) {
+  void runSessionHookCommand();
 } else if (cliArgs.setup) {
   runSetup();
 } else {
@@ -1201,6 +1214,17 @@ const TOOLS = [
     },
   },
   {
+    name: 'marrow_decision_trace',
+    description: 'Inspect the tenant-scoped path from a decision to prior failures, reused lessons, gate, proof, workflow, and observed outcome.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        decisionId: { type: 'string', description: 'Decision ID owned by this account and agent scope.' },
+      },
+      required: ['decisionId'],
+    },
+  },
+  {
     name: 'marrow_buyer_proof',
     description:
       'Return buyer-grade value proof: failures avoided, risky actions reviewed, proofs completed, token/time saved, failure classes, agent leaderboard, and reliability score.',
@@ -1463,7 +1487,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.9.43' },
+        serverInfo: { name: 'marrow', version: '3.9.44' },
       });
 
       // Auto-enroll: emit enrollment notification on connection
@@ -1492,7 +1516,7 @@ async function handleRequest(req: {
             {
               name: 'marrow-always-on',
               description:
-                'Always-on Marrow memory loop. Instructs the agent to orient at session start, log intent before meaningful actions, and commit outcomes after completion. Install once — works automatically.',
+                'Always-on Marrow control and proof loop. Applies before-action guidance, records compact lifecycle receipts, and keeps unfinished outcomes visible.',
               arguments: [],
             },
           ],
@@ -1510,78 +1534,39 @@ async function handleRequest(req: {
         return;
       }
       success(id, {
-        description: 'Always-on Marrow memory loop — automatic, zero-config',
+        description: 'Always-on Marrow control and proof loop — automatic, zero-config',
         messages: [
           {
             role: 'user',
             content: {
               type: 'text',
-              text: `You have Marrow — a memory layer that tells you what went wrong last time before you do it again.
+              text: `You have Marrow — the agent control and proof layer around this workflow.
 
-## PRIMARY: Use marrow_auto for everything
+## Passive operating contract
 
-One tool. Two calls max. Zero loop management.
+Installed hooks handle supported lifecycle capture automatically:
+- UserPromptSubmit requests relevant policy, warnings, lessons, and a decision brief before risky work.
+- PostToolUse records compact tool success or failure receipts.
+- Stop keeps unfinished outcomes visible instead of silently treating session exit as success.
 
-The minimum loop:
-1. Before any external action: \`marrow_auto({ action: "...what you are about to do" })\`
-2. After the action: \`marrow_auto({ action: "...", outcome: "...what happened", success: true/false })\`
+Hooks never make a blocked action safe. Before a consequential action, respect the returned allow, warn, review_required, or block decision and its required proof. Call marrow_agent_runtime explicitly when the passive hook cannot cover the action.
 
-If you only have time for one call: \`marrow_auto({ action: "did X", outcome: "result", success: true })\` — that's the whole loop.
+## Outcome closure
 
-You never need think + commit separately. \`marrow_auto\` handles everything.
+A successful command or tool exit is not proof that the business outcome succeeded. After meaningful work, close the real outcome with marrow_commit or marrow_auto and include success or failure plus the required evidence. If the result is unknown, leave it pending. Never invent success to clear a closure item.
 
-All Marrow API calls run in the background — \`marrow_auto\` returns instantly with cached warnings so you never wait.
+Use marrow_decision_trace when you need to explain why Marrow changed an action. It connects the relevant prior failure, proven lesson, gate, proof, workflow, and outcome without exposing another tenant's data.
 
-## Query the hive
+## Owner-visible value
 
-Use marrow_ask to query your decision history in plain English:
+When Marrow returns a factual value signal, relay the single most useful result in one plain sentence. Mention a prevented repeat failure, reused proven lesson, completed proof, or measured improvement only when the response contains evidence. Do not invent savings, success rates, customer examples, pricing, or upgrade claims.
+
+Use marrow_ask for authorized history questions such as:
 - "what keeps breaking our deploys?"
-- "what's our failure rate on security tasks?"
+- "which proof is missing from this workflow?"
 - "what worked last time we published?"
 
-## Advanced mode: fine-grained control
-
-For cases where you need explicit control over the orient → think → act → commit loop:
-
-1. **Session start:** Call marrow_orient FIRST. It surfaces failure warnings so you avoid known mistakes.
-2. **Before acting:** Call marrow_think with what you're about to do. Returns pattern insights and recommendedNext — follow it.
-3. **After acting:** Call marrow_commit with what happened.
-4. **Shortcut:** marrow_run handles orient → think → commit in a single awaited call.
-
-Most agents never need advanced mode. \`marrow_auto\` covers 99% of cases.
-
-WHEN marrow_commit returns a non-empty narrative field:
-- Relay that message to the user in your own words, woven naturally into your reply.
-- Don't tack it on awkwardly, work it into a summary or closing note.
-- Example format: "Task done. (Marrow note: <relayed narrative>.)"
-- Don't quote the narrative verbatim unless it is short and natural to quote, paraphrase when it flows better.
-- Never mention upgrade, pricing, or Pro features, Marrow is free for all users right now.
-
-WHEN marrow_think or marrow_commit returns marrow_contributed.has_signal === true:
-- After completing your action (or while explaining your approach), tell the user in ONE sentence what Marrow contributed.
-- Be factual, not hypey. Pick the single most useful signal — don't list everything.
-- Examples that hit the right tone:
-  - think: "Pulling 12 similar tasks from the hive — using the approach that worked 11/12 times."
-  - think: "Marrow flagged this approach failed 4× last week — taking a different angle."
-  - think: "Following your installed deployment workflow."
-  - commit: "Skipped a known retry loop based on Marrow's pattern history."
-  - commit: "Reused a pattern that's worked for similar tasks."
-- If marrow_contributed.has_signal is false (or marrow_contributed is missing), don't mention Marrow.
-
-WHEN marrow_session_end returns session_summary.has_signal === true:
-- As you wrap up the session / hand back to the user, surface session_summary.narrative in 1-2 lines.
-- Example: "Session done. Marrow note: 12 decisions, 3 retries avoided via warnings, 8 pattern reuses from your history."
-- If has_signal is false, don't bother — the session was too small or had nothing notable.
-
-The point of these narrations: the user installed Marrow to make their agent better. They should hear, in plain English, what Marrow actually did. No dashboard, no logs — your reply IS their visibility.
-
-## Why you must not skip this
-
-If you skip logging, the hive can't protect you or future agents from this mistake.
-Every decision you log compounds. Failure rates drop. Patterns emerge. The next session starts smarter.
-Marrow tells you what went wrong last time before you do it again. But only if you logged it.
-
-This is not optional overhead — it's how you stop repeating the same failures.`,
+Marrow is not a replacement agent or a standalone memory app. Context and prior lessons support the control loop; policy before action, proof after action, accountable outcomes, and fleet improvement are the product.`,
             },
           },
         ],
@@ -1627,18 +1612,13 @@ This is not optional overhead — it's how you stop repeating the same failures.
         }
 
         if (AUTO_ENROLL && orientCallCount === 1) {
-          const enrollmentText = `\n\n📋 **Marrow Auto-Enroll Active**\n\n` +
-            `You have Marrow — a collective memory that tells you what went wrong last time before you do it again.\n\n` +
-            `## How it works (2 tools max):\n\n` +
-            `1. **Session start:** Call marrow_orient FIRST. You just did — it surfaces failure warnings.\n` +
-            `2. **Before any action:** Call marrow_think({ action: "..." }) — returns pattern insights + recommendedNext.\n` +
-            `3. **After acting:** Call marrow_commit({ decision_id, success, outcome }) — or pass previous_outcome to auto-commit.\n\n` +
-            `## Quick mode (one tool):\n` +
-            `- marrow_run({ description, success, outcome }) — handles orient → think → commit in one call.\n` +
-            `- marrow_auto({ action, outcome?, success? }) — fire-and-forget background logging.\n\n` +
-            `## Why you must not skip this:\n` +
-            `Every decision you log compounds. Failure rates drop. The next session starts smarter.\n` +
-            `Marrow tells you what went wrong last time — but only if you logged it.\n`;
+          const enrollmentText = `\n\n**Marrow control and proof active**\n\n` +
+            `Marrow applies relevant policy and prior lessons before consequential actions, then records evidence and the real outcome afterward.\n\n` +
+            `1. Respect allow, warn, review_required, and block decisions before acting.\n` +
+            `2. Use marrow_agent_runtime when a risky action needs an explicit gate.\n` +
+            `3. Close meaningful work with marrow_commit; a tool exit alone is not outcome proof.\n` +
+            `4. Use marrow_decision_trace to explain the prior failure, lesson, gate, proof, workflow, and outcome path.\n\n` +
+            `Installed hooks cover supported passive lifecycle events. Leave unknown outcomes pending instead of inventing success.\n`;
 
           const orientText = JSON.stringify(result, null, 2);
           success(id, {
@@ -2226,6 +2206,14 @@ This is not optional overhead — it's how you stop repeating the same failures.
           SESSION_ID,
           FLEET_AGENT_ID
         );
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_decision_trace') {
+        const decisionId = args.decisionId as string;
+        if (!decisionId) { error(id, -32602, 'decisionId is required'); return; }
+        const result = await marrowDecisionTrace(API_KEY, BASE_URL, decisionId, SESSION_ID, FLEET_AGENT_ID);
         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
         return;
       }

@@ -38,6 +38,7 @@ import {
   type RotateApiKeyResult,
 } from '@getmarrow/sdk';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
+import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 
 export type { Narrative, CommitResult } from './types';
 
@@ -1326,6 +1327,39 @@ export async function marrowSessionEnd(
   });
   const json = await safeJsonResponse(res);
   return json.data;
+}
+
+export async function marrowIntegrationEvent(
+  apiKey: string,
+  baseUrl: string,
+  event: LifecycleEvent,
+  sessionId?: string,
+  agentId?: string,
+): Promise<unknown> {
+  return recordLifecycleEvent({
+    apiKey,
+    baseUrl,
+    event: {
+      ...event,
+      session_id: event.session_id || sessionId,
+      agent_id: event.agent_id || agentId,
+    },
+  });
+}
+
+export async function marrowDecisionTrace(
+  apiKey: string,
+  baseUrl: string,
+  decisionId: string,
+  sessionId?: string,
+  agentId?: string,
+): Promise<unknown> {
+  const safeId = validatePathParam(decisionId, 'decisionId');
+  const response = await fetch(`${baseUrl}/v1/agent/governance/trace/${safeId}`, {
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+  });
+  const json = await safeJsonResponse(response);
+  return json.data || json;
 }
 
 /**

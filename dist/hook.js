@@ -6,6 +6,8 @@ exports.installPostToolUseHook = installPostToolUseHook;
 exports.runHookCommand = runHookCommand;
 const index_1 = require("./index");
 const env_1 = require("./env");
+const lifecycle_spool_1 = require("./lifecycle-spool");
+const node_crypto_1 = require("node:crypto");
 const SKIP_TOOLS = new Set([
     'read',
     'grep',
@@ -227,7 +229,12 @@ function deriveOutcome(event) {
     const response = event.tool_response ?? event.tool_result;
     const responseRecord = asRecord(response);
     const errorValue = responseRecord?.error;
-    if (errorValue !== undefined && errorValue !== null) {
+    const failed = errorValue !== undefined && errorValue !== null
+        || responseRecord?.is_error === true
+        || responseRecord?.success === false
+        || (typeof responseRecord?.exit_code === 'number' && responseRecord.exit_code !== 0)
+        || /^(?:failed|error|blocked)$/i.test(String(responseRecord?.status || ''));
+    if (failed) {
         return {
             success: false,
             outcome: truncate(`failed: ${normalizeWhitespace(safeStringify(errorValue, 240))}`, 500),
@@ -363,7 +370,26 @@ async function runHookCommand() {
         const sessionId = resolvedEnv.sessionId || getString(event.session_id);
         const agentId = resolvedEnv.agentId || undefined;
         const { success, outcome } = deriveOutcome(event);
-        await (0, index_1.marrowAuto)(apiKey, baseUrl, {
+        const toolName = normalizeToolName(getString(event.tool_name) || 'tool');
+        const eventType = toolName === 'bash'
+            ? success ? 'command_completed' : 'command_failed'
+            : success ? 'tool_completed' : 'tool_failed';
+        const lifecycleCorrelation = `mcp-hook-${(0, node_crypto_1.randomUUID)()}`;
+        await (0, lifecycle_spool_1.recordLifecycleEvent)({
+            apiKey,
+            baseUrl,
+            event: {
+                event_type: eventType,
+                harness: 'claude-code',
+                agent_id: agentId,
+                session_id: sessionId,
+                workflow_id: lifecycleCorrelation,
+                action,
+                success,
+                outcome_state: 'pending',
+            },
+        });
+        const closed = await (0, index_1.marrowAuto)(apiKey, baseUrl, {
             action,
             outcome,
             success,
@@ -378,6 +404,21 @@ async function runHookCommand() {
                 user_intent: 'operate',
             },
         }, sessionId, agentId, 2000);
+        await (0, lifecycle_spool_1.recordLifecycleEvent)({
+            apiKey,
+            baseUrl,
+            event: {
+                event_type: 'outcome_committed',
+                harness: 'claude-code',
+                agent_id: agentId,
+                session_id: sessionId,
+                workflow_id: lifecycleCorrelation,
+                decision_id: typeof closed?.decision_id === 'string' ? closed.decision_id : undefined,
+                action,
+                success,
+                outcome_state: 'closed',
+            },
+        });
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);

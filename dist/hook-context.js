@@ -21,6 +21,7 @@ exports.installUserPromptSubmitHook = installUserPromptSubmitHook;
 const index_1 = require("./index");
 const env_1 = require("./env");
 const redact_1 = require("./redact");
+const lifecycle_spool_1 = require("./lifecycle-spool");
 exports.CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 2000;
@@ -369,6 +370,19 @@ async function runContextHookCommand() {
         const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
         const passiveBriefInput = inferPassiveBriefInput(prompt);
         const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
+        void (0, lifecycle_spool_1.recordLifecycleEvent)({
+            apiKey,
+            baseUrl,
+            event: {
+                event_type: 'prompt_submitted',
+                harness: 'claude-code',
+                agent_id: agentId,
+                session_id: sessionId,
+                action: `user prompt submitted: ${passiveBriefInput?.type || 'general'}`,
+                risk_level: passiveBriefInput ? 'medium' : 'low',
+                outcome_state: 'pending',
+            },
+        }).catch(() => { });
         const shouldFetchValueSummary = PASSIVE_VALUE_MODE === 'always' ||
             (PASSIVE_VALUE_MODE !== 'false' && (Boolean(passiveBriefInput) || /(?:status|summary|report|improve|better|value|metrics|passive|fleet)/i.test(prompt)));
         const [thinkResult, runtimeResult, briefResult, valueReport] = await Promise.all([
@@ -399,6 +413,21 @@ async function runContextHookCommand() {
             return;
         }
         const context = buildCombinedContextBlock(signals, briefResult || runtimeResult?.decision_brief || null, valueReport, runtimeResult);
+        if (runtimeResult) {
+            void (0, lifecycle_spool_1.recordLifecycleEvent)({
+                apiKey,
+                baseUrl,
+                event: {
+                    event_type: 'pre_action_checked',
+                    harness: 'claude-code',
+                    agent_id: agentId,
+                    session_id: sessionId,
+                    action: `pre-action check: ${passiveBriefInput?.type || 'general'}`,
+                    risk_level: runtimeResult.risk_gate?.risk_level,
+                    outcome_state: 'pending',
+                },
+            }).catch(() => { });
+        }
         debug(`[marrow-context-hook] injected ${context.length} bytes of context`);
         emitContext(context);
         process.exit(0);
