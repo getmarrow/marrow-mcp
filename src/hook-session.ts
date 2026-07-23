@@ -1,9 +1,76 @@
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { marrowSessionEnd, validateBaseUrl } from './index';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 export const SESSION_HOOK_COMMAND = 'npx -y @getmarrow/mcp session-hook';
+const MAX_HOOK_INPUT_BYTES = 64 * 1024;
+const SESSION_END_TIMEOUT_MS = 900;
+
+type StopHookSource = {
+  session_id?: string;
+  transcript_path?: string;
+  cwd?: string;
+  hook_event_name?: string;
+};
+
+function readStopHookSource(input?: unknown): StopHookSource {
+  let value = input;
+  if (value === undefined) {
+    try {
+      const raw = readFileSync(0, 'utf8').slice(0, MAX_HOOK_INPUT_BYTES);
+      value = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      value = {};
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const source = value as Record<string, unknown>;
+  const take = (field: string): string | undefined => {
+    const candidate = typeof source[field] === 'string' ? String(source[field]).trim().slice(0, 1024) : '';
+    return candidate || undefined;
+  };
+  return {
+    session_id: take('session_id'),
+    transcript_path: take('transcript_path'),
+    cwd: take('cwd'),
+    hook_event_name: take('hook_event_name'),
+  };
+}
+
+function stopCorrelation(source: StopHookSource, sessionId?: string): string {
+  const stableSource = sessionId || JSON.stringify([
+    source.session_id || '',
+    source.transcript_path || '',
+    source.cwd || '',
+    source.hook_event_name || 'Stop',
+  ]);
+  return createHash('sha256').update(stableSource).digest('hex').slice(0, 32);
+}
+
+async function boundedSessionEnd(
+  apiKey: string,
+  baseUrl: string,
+  sessionId?: string,
+  agentId?: string,
+): Promise<void> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      marrowSessionEnd(apiKey, baseUrl, false, sessionId, agentId, controller.signal),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error('session end timeout'));
+        }, SESSION_END_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 function settingsPath(startDir: string): string {
   const fs = require('fs') as typeof import('fs');
@@ -38,16 +105,15 @@ export function installSessionEndHook(startDir = process.cwd()): { settingsPath:
   return { settingsPath: target, installed: !installed };
 }
 
-export async function runSessionHookCommand(): Promise<void> {
+export async function runSessionHookCommand(input?: unknown): Promise<void> {
   if (process.env.MARROW_AUTO_HOOK === 'false') return;
   const resolved = resolveMarrowEnv();
   if (!resolved.apiKey) return;
   const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
-  const sessionId = resolved.sessionId || undefined;
+  const source = readStopHookSource(input);
+  const sessionId = resolved.sessionId || source.session_id || undefined;
   const agentId = resolved.agentId || undefined;
-  const correlation = sessionId
-    ? createHash('sha256').update(sessionId).digest('hex').slice(0, 32)
-    : randomUUID().replace(/-/g, '');
+  const correlation = stopCorrelation(source, sessionId);
   await recordLifecycleEvent({
     apiKey: resolved.apiKey,
     baseUrl,
@@ -63,7 +129,7 @@ export async function runSessionHookCommand(): Promise<void> {
     },
   });
   try {
-    await marrowSessionEnd(resolved.apiKey, baseUrl, false, sessionId, agentId);
+    await boundedSessionEnd(resolved.apiKey, baseUrl, sessionId, agentId);
   } catch {
     // The pending lifecycle receipt remains durable for later reconciliation.
   }

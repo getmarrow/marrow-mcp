@@ -30,9 +30,9 @@ exports.LIFECYCLE_EVENT_TYPES = [
 const EVENT_TYPES = new Set(exports.LIFECYCLE_EVENT_TYPES);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
 const OUTCOME_STATES = new Set(['pending', 'closed', 'unknown', 'timed_out']);
-const MAX_EVENTS = 100;
+const MAX_EVENTS = 1000;
 const MAX_RECORD_BYTES = 2048;
-const MAX_SPOOL_BYTES = 256 * 1024;
+const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
 const MAX_ATTEMPTS = 3;
 const DELIVERY_TIMEOUT_MS = 1800;
 const LOCK_WAIT_MS = 20;
@@ -196,7 +196,9 @@ function readUnlocked(path) {
         const parsed = JSON.parse((0, node_fs_1.readFileSync)(path, 'utf8'));
         if (!Array.isArray(parsed))
             throw new Error('invalid lifecycle spool');
-        return { events: parsed.slice(-MAX_EVENTS).map(validateStoredEvent), recoveredCorruption: false };
+        if (parsed.length > MAX_EVENTS)
+            throw new Error('lifecycle spool exceeds event capacity');
+        return { events: parsed.map(validateStoredEvent), recoveredCorruption: false };
     }
     catch {
         const quarantine = `${path}.corrupt-${Date.now()}-${(0, node_crypto_1.randomUUID)()}`;
@@ -205,12 +207,15 @@ function readUnlocked(path) {
     }
 }
 function writeUnlocked(path, events) {
-    let bounded = events.slice(-MAX_EVENTS);
-    while (bounded.length > 0 && Buffer.byteLength(JSON.stringify(bounded), 'utf8') > MAX_SPOOL_BYTES) {
-        bounded = bounded.slice(1);
+    if (events.length > MAX_EVENTS) {
+        throw new Error('lifecycle spool capacity exceeded; receipt was not accepted');
+    }
+    const serialized = JSON.stringify(events);
+    if (Buffer.byteLength(serialized, 'utf8') > MAX_SPOOL_BYTES) {
+        throw new Error('lifecycle spool byte capacity exceeded; receipt was not accepted');
     }
     const temporary = `${path}.${process.pid}.${(0, node_crypto_1.randomUUID)()}.tmp`;
-    (0, node_fs_1.writeFileSync)(temporary, JSON.stringify(bounded), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    (0, node_fs_1.writeFileSync)(temporary, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     (0, node_fs_1.chmodSync)(temporary, 0o600);
     (0, node_fs_1.renameSync)(temporary, path);
     (0, node_fs_1.chmodSync)(path, 0o600);

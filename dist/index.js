@@ -958,11 +958,12 @@ async function marrowNudge(apiKey, baseUrl, sessionId, agentId) {
 /**
  * Explicitly end the current session.
  */
-async function marrowSessionEnd(apiKey, baseUrl, autoCommitOpen = false, sessionId, agentId) {
+async function marrowSessionEnd(apiKey, baseUrl, autoCommitOpen = false, sessionId, agentId, signal) {
     const res = await fetch(`${baseUrl}/v1/agent/session/end`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({ auto_commit_open: autoCommitOpen }),
+        signal,
     });
     const json = await safeJsonResponse(res);
     return json.data;
