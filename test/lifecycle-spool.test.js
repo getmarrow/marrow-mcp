@@ -184,18 +184,16 @@ test('corrupt spool is quarantined and custom parent permissions are preserved',
   }
 });
 
-test('bounded delivery timeout cannot stall a hook indefinitely', async () => {
+test('bounded delivery timeout cannot stall a hook when fetch ignores abort', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-timeout-'));
   const path = join(directory, 'spool.json');
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (_url, init) => new Promise((_resolve, reject) => {
-    init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-  });
+  globalThis.fetch = () => new Promise(() => {});
   try {
     await withSpoolPath(path, async () => {
       const started = Date.now();
       const result = await recordLifecycleEvent(lifecycleInput({ event_id: 'timeout-event' }));
-      assert.ok(Date.now() - started < 3000);
+      assert.ok(Date.now() - started < 1500);
       assert.equal(result.queued, true);
       assert.match(readFileSync(path, 'utf8'), /timeout-event/);
     });

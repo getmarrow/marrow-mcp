@@ -34,7 +34,8 @@ const MAX_EVENTS = 1000;
 const MAX_RECORD_BYTES = 2048;
 const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
 const MAX_ATTEMPTS = 3;
-const DELIVERY_TIMEOUT_MS = 1800;
+const DELIVERY_REQUEST_TIMEOUT_MS = 750;
+const DELIVERY_DRAIN_BUDGET_MS = 900;
 const LOCK_WAIT_MS = 20;
 const LOCK_ATTEMPTS = 250;
 const LOCK_STALE_MS = 30_000;
@@ -234,26 +235,35 @@ function snapshot(path, ownsParent) {
 function retryable(status) {
     return status === 0 || [408, 425, 429, 500, 502, 503, 504].includes(status);
 }
-async function deliver(baseUrl, apiKey, queued) {
+async function deliver(baseUrl, apiKey, queued, timeoutMs) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
+    let timeout;
     try {
-        const response = await fetch(`${baseUrl}/v1/agent/integrations/events`, {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${apiKey}`,
-                'Content-Type': 'application/json',
-                'X-Marrow-Client': 'mcp',
-                ...(queued.session_id ? { 'X-Marrow-Session-Id': queued.session_id } : {}),
-                ...(queued.agent_id !== 'unknown' ? { 'X-Marrow-Agent-Id': queued.agent_id } : {}),
-            },
-            body: JSON.stringify(queued),
-            signal: controller.signal,
-        });
+        const response = await Promise.race([
+            fetch(`${baseUrl}/v1/agent/integrations/events`, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json',
+                    'X-Marrow-Client': 'mcp',
+                    ...(queued.session_id ? { 'X-Marrow-Session-Id': queued.session_id } : {}),
+                    ...(queued.agent_id !== 'unknown' ? { 'X-Marrow-Agent-Id': queued.agent_id } : {}),
+                },
+                body: JSON.stringify(queued),
+                signal: controller.signal,
+            }),
+            new Promise((_resolve, reject) => {
+                timeout = setTimeout(() => {
+                    controller.abort();
+                    reject(new Error('lifecycle delivery timeout'));
+                }, timeoutMs);
+            }),
+        ]);
         return response.status;
     }
     finally {
-        clearTimeout(timeout);
+        if (timeout)
+            clearTimeout(timeout);
     }
 }
 async function recordLifecycleEvent(input) {
@@ -266,10 +276,14 @@ async function recordLifecycleEvent(input) {
     }).recoveredCorruption;
     const initial = snapshot(location.path, location.ownsParent);
     recoveredCorruption ||= initial.recoveredCorruption;
+    const deliveryDeadline = Date.now() + DELIVERY_DRAIN_BUDGET_MS;
     for (const queued of initial.events.filter((row) => row.delivery_state === 'queued').slice(0, 10)) {
+        const remainingMs = Math.min(DELIVERY_REQUEST_TIMEOUT_MS, deliveryDeadline - Date.now());
+        if (remainingMs <= 0)
+            break;
         let status = 0;
         try {
-            status = await deliver(input.baseUrl, input.apiKey, queued);
+            status = await deliver(input.baseUrl, input.apiKey, queued, remainingMs);
         }
         catch {
             status = 0;
