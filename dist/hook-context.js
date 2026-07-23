@@ -20,8 +20,8 @@ exports.runContextHookCommand = runContextHookCommand;
 exports.installUserPromptSubmitHook = installUserPromptSubmitHook;
 const index_1 = require("./index");
 const env_1 = require("./env");
-const redact_1 = require("./redact");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const node_crypto_1 = require("node:crypto");
 exports.CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 2000;
@@ -55,13 +55,39 @@ async function readStdin() {
     });
 }
 function defaultRuntimeInput(prompt) {
-    const redactedPrompt = (0, redact_1.redactSensitiveText)(prompt);
-    const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
+    const classification = classifyPrompt(prompt);
     return {
-        action,
-        type: 'general',
-        role: 'general',
-        surfaces: ['workspace'],
+        action: classification.action,
+        type: classification.type,
+        role: classification.role,
+        surfaces: classification.surfaces,
+    };
+}
+function classifyPrompt(prompt) {
+    const lower = prompt.toLowerCase();
+    let type = 'general';
+    if (/\b(?:deploy|release|publish|cloudflare|worker|npm)\b/.test(lower))
+        type = 'deploy';
+    else if (/\b(?:audit|security|secret|token|credential|permission|opsec)\b/.test(lower))
+        type = 'audit';
+    else if (/\b(?:patch|fix|bug|harden|remediate)\b/.test(lower))
+        type = 'patch';
+    else if (/\b(?:review|merge|pr|pull request)\b/.test(lower))
+        type = 'review';
+    const surfaces = unique([
+        /\b(?:github|git|merge|pr|pull request|commit|push)\b/.test(lower) ? 'github' : '',
+        /\b(?:npm|package|publish|sdk|mcp)\b/.test(lower) ? 'npm' : '',
+        /\b(?:doc|docs|readme|getmarrow\.ai)\b/.test(lower) ? 'docs' : '',
+        /\b(?:prod|production|deploy|release|cloudflare|worker)\b/.test(lower) ? 'production' : '',
+        /\b(?:secret|token|credential|key|permission)\b/.test(lower) ? 'secrets' : '',
+    ]);
+    const role = ['deploy', 'audit', 'patch', 'review'].includes(type) ? type : 'general';
+    const resolvedSurfaces = surfaces.length > 0 ? surfaces : ['workspace'];
+    return {
+        action: `classified agent request: ${type} on ${resolvedSurfaces.join(', ')}`,
+        type,
+        role,
+        surfaces: resolvedSurfaces,
     };
 }
 function extractSignals(thinkResult) {
@@ -146,9 +172,7 @@ function unique(values) {
     return Array.from(new Set(values.filter(Boolean)));
 }
 function inferPassiveBriefInput(prompt) {
-    const redactedPrompt = (0, redact_1.redactSensitiveText)(prompt);
-    const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
-    const lower = prompt.toLowerCase();
+    const classification = classifyPrompt(prompt);
     const isRisky = RISKY_PROMPT_TERMS.test(prompt);
     const isMutating = MUTATING_PROMPT_TERMS.test(prompt);
     const isExplicitlyMutating = EXPLICIT_MUTATING_PROMPT_TERMS.test(prompt);
@@ -157,37 +181,7 @@ function inferPassiveBriefInput(prompt) {
         (PASSIVE_BRIEF_MODE !== 'false' && isRisky && (isReadOnly ? isExplicitlyMutating : isMutating));
     if (!shouldBrief)
         return null;
-    let type = 'general';
-    if (/\b(?:deploy|release|publish|cloudflare|worker|npm)\b/.test(lower))
-        type = 'deploy';
-    else if (/\b(?:audit|security|secret|token|credential|permission|opsec)\b/.test(lower))
-        type = 'audit';
-    else if (/\b(?:patch|fix|bug|harden|remediate)\b/.test(lower))
-        type = 'patch';
-    else if (/\b(?:review|merge|pr|pull request)\b/.test(lower))
-        type = 'review';
-    let role = 'general';
-    if (type === 'deploy')
-        role = 'deploy';
-    else if (type === 'audit')
-        role = 'audit';
-    else if (type === 'patch')
-        role = 'patch';
-    else if (type === 'review')
-        role = 'review';
-    const surfaces = unique([
-        /\b(?:github|git|merge|pr|pull request|commit|push)\b/.test(lower) ? 'github' : '',
-        /\b(?:npm|package|publish|sdk|mcp)\b/.test(lower) ? 'npm' : '',
-        /\b(?:doc|docs|readme|getmarrow\.ai)\b/.test(lower) ? 'docs' : '',
-        /\b(?:prod|production|deploy|release|cloudflare|worker)\b/.test(lower) ? 'production' : '',
-        /\b(?:secret|token|credential|key|permission)\b/.test(lower) ? 'secrets' : '',
-    ]);
-    return {
-        action,
-        type,
-        role,
-        surfaces: surfaces.length > 0 ? surfaces : ['workspace'],
-    };
+    return classification;
 }
 function appendPassiveBrief(lines, brief) {
     if (!brief)
@@ -365,19 +359,23 @@ async function runContextHookCommand() {
         const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
         const sessionId = resolvedEnv.sessionId || asString(event.session_id);
         const agentId = resolvedEnv.agentId || undefined;
-        // Truncate prompt for the action field (Marrow think actions don't need full multi-K-token prompts)
-        const redactedPrompt = (0, redact_1.redactSensitiveText)(prompt);
-        const action = redactedPrompt.length > 500 ? redactedPrompt.slice(0, 500) + '…' : redactedPrompt;
         const passiveBriefInput = inferPassiveBriefInput(prompt);
         const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
+        const action = runtimeInput.action;
+        const requestCorrelation = (0, node_crypto_1.createHash)('sha256')
+            .update(JSON.stringify([sessionId || '', event.hook_event_name || 'UserPromptSubmit', prompt]))
+            .digest('hex')
+            .slice(0, 32);
         void (0, lifecycle_spool_1.recordLifecycleEvent)({
             apiKey,
             baseUrl,
             event: {
+                event_id: `prompt-${requestCorrelation}`,
                 event_type: 'prompt_submitted',
                 harness: 'claude-code',
                 agent_id: agentId,
                 session_id: sessionId,
+                workflow_id: `request-${requestCorrelation}`,
                 action: `user prompt submitted: ${passiveBriefInput?.type || 'general'}`,
                 risk_level: passiveBriefInput ? 'medium' : 'low',
                 outcome_state: 'pending',
@@ -418,10 +416,12 @@ async function runContextHookCommand() {
                 apiKey,
                 baseUrl,
                 event: {
+                    event_id: `preaction-${requestCorrelation}`,
                     event_type: 'pre_action_checked',
                     harness: 'claude-code',
                     agent_id: agentId,
                     session_id: sessionId,
+                    workflow_id: `request-${requestCorrelation}`,
                     action: `pre-action check: ${passiveBriefInput?.type || 'general'}`,
                     risk_level: runtimeResult.risk_gate?.risk_level,
                     outcome_state: 'pending',
