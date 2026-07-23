@@ -209,7 +209,7 @@ test('same-namespace concurrent hook processes do not lose lifecycle receipts', 
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-concurrent-'));
   const path = join(directory, 'spool.json');
   const modulePath = resolve(__dirname, '../dist/lifecycle-spool.js');
-  const workers = Array.from({ length: 24 }, (_, index) => new Promise((resolveWorker, rejectWorker) => {
+  const workers = Array.from({ length: 120 }, (_, index) => new Promise((resolveWorker, rejectWorker) => {
     const script = `
       global.fetch = async () => new Response('{}', { status: 503 });
       const { recordLifecycleEvent } = require(${JSON.stringify(modulePath)});
@@ -237,7 +237,7 @@ test('same-namespace concurrent hook processes do not lose lifecycle receipts', 
   try {
     await Promise.all(workers);
     const events = JSON.parse(readFileSync(path, 'utf8'));
-    assert.equal(new Set(events.map((event) => event.event_id)).size, 24);
+    assert.equal(new Set(events.map((event) => event.event_id)).size, 120);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

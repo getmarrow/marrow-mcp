@@ -3,5 +3,5 @@ export declare function installSessionEndHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;
 };
-export declare function runSessionHookCommand(): Promise<void>;
+export declare function runSessionHookCommand(input?: unknown): Promise<void>;
 //# sourceMappingURL=hook-session.d.ts.map

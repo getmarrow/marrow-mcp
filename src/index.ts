@@ -1318,12 +1318,14 @@ export async function marrowSessionEnd(
   baseUrl: string,
   autoCommitOpen: boolean = false,
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const res = await fetch(`${baseUrl}/v1/agent/session/end`, {
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify({ auto_commit_open: autoCommitOpen }),
+    signal,
   });
   const json = await safeJsonResponse(res);
   return json.data;

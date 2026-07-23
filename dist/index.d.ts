@@ -192,7 +192,7 @@ export declare function marrowNudge(apiKey: string, baseUrl: string, sessionId?:
 /**
  * Explicitly end the current session.
  */
-export declare function marrowSessionEnd(apiKey: string, baseUrl: string, autoCommitOpen?: boolean, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowSessionEnd(apiKey: string, baseUrl: string, autoCommitOpen?: boolean, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<unknown>;
 export declare function marrowIntegrationEvent(apiKey: string, baseUrl: string, event: LifecycleEvent, sessionId?: string, agentId?: string): Promise<unknown>;
 export declare function marrowDecisionTrace(apiKey: string, baseUrl: string, decisionId: string, sessionId?: string, agentId?: string): Promise<unknown>;
 /**
