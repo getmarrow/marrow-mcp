@@ -194,38 +194,21 @@ function deriveAction(event) {
         return null;
     if (toolName.startsWith('mcp__marrow_'))
         return null;
-    const toolInput = asRecord(event.tool_input) || {};
-    const description = extractDescription(toolInput);
-    const firstArg = extractFirstArg(event.tool_input);
-    let action = null;
     if (toolName === 'Bash') {
-        action = `ran: ${truncate(normalizeWhitespace(description || getString(toolInput.command) || firstArg || 'bash command'), 120)}`;
+        return 'shell command execution observed; business outcome pending';
     }
-    else if (toolName === 'Edit') {
-        action = `edited: ${extractFilePath(toolInput) || truncate(normalizeWhitespace(description || firstArg || 'unknown file'), 120)}`;
+    if (['Edit', 'Write', 'MultiEdit'].includes(toolName)) {
+        return 'workspace mutation observed; business outcome pending';
     }
-    else if (toolName === 'Write') {
-        action = `wrote: ${extractFilePath(toolInput) || truncate(normalizeWhitespace(description || firstArg || 'unknown file'), 120)}`;
-    }
-    else if (toolName === 'MultiEdit') {
-        action = `multi-edited: ${extractFilePath(toolInput) || truncate(normalizeWhitespace(description || firstArg || 'unknown file'), 120)}`;
-    }
-    else if (toolName.startsWith('mcp__')) {
-        const tool = toolName.slice('mcp__'.length);
+    if (toolName.startsWith('mcp__')) {
+        const tool = normalizeToolName(toolName);
         if (tool.startsWith('marrow_'))
             return null;
-        const args = buildMcpArgsSummary(event.tool_input);
-        action = args ? `called MCP tool: ${tool} with ${args}` : `called MCP tool: ${tool}`;
+        return `external MCP tool execution observed (${truncate(tool, 80)}); business outcome pending`;
     }
-    else if (description) {
-        action = description;
-    }
-    else {
-        action = `${toolName}: ${truncate(normalizeWhitespace(firstArg || 'no args'), 120)}`;
-    }
-    return truncate(normalizeWhitespace(action), 500);
+    return `${truncate(normalizeToolName(toolName), 80)} tool execution observed; business outcome pending`;
 }
-function deriveOutcome(event) {
+function deriveToolSuccess(event) {
     const response = event.tool_response ?? event.tool_result;
     const responseRecord = asRecord(response);
     const errorValue = responseRecord?.error;
@@ -234,16 +217,17 @@ function deriveOutcome(event) {
         || responseRecord?.success === false
         || (typeof responseRecord?.exit_code === 'number' && responseRecord.exit_code !== 0)
         || /^(?:failed|error|blocked)$/i.test(String(responseRecord?.status || ''));
-    if (failed) {
-        return {
-            success: false,
-            outcome: truncate(`failed: ${normalizeWhitespace(safeStringify(errorValue, 240))}`, 500),
-        };
-    }
-    return {
-        success: true,
-        outcome: 'completed successfully',
-    };
+    return !failed;
+}
+function stableHookCorrelation(event) {
+    const source = getString(event.tool_use_id)
+        || JSON.stringify([
+            getString(event.session_id) || '',
+            getString(event.hook_event_name) || 'PostToolUse',
+            getString(event.tool_name) || 'tool',
+            event.tool_input || null,
+        ]);
+    return (0, node_crypto_1.createHash)('sha256').update(source).digest('hex').slice(0, 32);
 }
 async function readStdin() {
     const chunks = [];
@@ -369,54 +353,25 @@ async function runHookCommand() {
         const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
         const sessionId = resolvedEnv.sessionId || getString(event.session_id);
         const agentId = resolvedEnv.agentId || undefined;
-        const { success, outcome } = deriveOutcome(event);
+        const success = deriveToolSuccess(event);
         const toolName = normalizeToolName(getString(event.tool_name) || 'tool');
         const eventType = toolName === 'bash'
             ? success ? 'command_completed' : 'command_failed'
             : success ? 'tool_completed' : 'tool_failed';
-        const lifecycleCorrelation = `mcp-hook-${(0, node_crypto_1.randomUUID)()}`;
+        const lifecycleCorrelation = stableHookCorrelation(event);
         await (0, lifecycle_spool_1.recordLifecycleEvent)({
             apiKey,
             baseUrl,
             event: {
+                event_id: `posttool-${lifecycleCorrelation}`,
                 event_type: eventType,
                 harness: 'claude-code',
                 agent_id: agentId,
                 session_id: sessionId,
-                workflow_id: lifecycleCorrelation,
+                workflow_id: `workflow-${lifecycleCorrelation}`,
                 action,
                 success,
                 outcome_state: 'pending',
-            },
-        });
-        const closed = await (0, index_1.marrowAuto)(apiKey, baseUrl, {
-            action,
-            outcome,
-            success,
-            type: 'general',
-            context: {
-                marrow_auto_outcome_closure: true,
-                marrow_auto_outcome_source: 'mcp_post_tool_use',
-                marrow_tool_name: getString(event.tool_name) || 'unknown',
-            },
-            source_meta: {
-                channel: 'mcp',
-                user_intent: 'operate',
-            },
-        }, sessionId, agentId, 2000);
-        await (0, lifecycle_spool_1.recordLifecycleEvent)({
-            apiKey,
-            baseUrl,
-            event: {
-                event_type: 'outcome_committed',
-                harness: 'claude-code',
-                agent_id: agentId,
-                session_id: sessionId,
-                workflow_id: lifecycleCorrelation,
-                decision_id: typeof closed?.decision_id === 'string' ? closed.decision_id : undefined,
-                action,
-                success,
-                outcome_state: 'closed',
             },
         });
     }

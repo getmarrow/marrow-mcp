@@ -1,6 +1,7 @@
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { marrowSessionEnd, validateBaseUrl } from './index';
+import { createHash, randomUUID } from 'node:crypto';
 
 export const SESSION_HOOK_COMMAND = 'npx -y @getmarrow/mcp session-hook';
 
@@ -44,14 +45,19 @@ export async function runSessionHookCommand(): Promise<void> {
   const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
   const sessionId = resolved.sessionId || undefined;
   const agentId = resolved.agentId || undefined;
+  const correlation = sessionId
+    ? createHash('sha256').update(sessionId).digest('hex').slice(0, 32)
+    : randomUUID().replace(/-/g, '');
   await recordLifecycleEvent({
     apiKey: resolved.apiKey,
     baseUrl,
     event: {
+      event_id: `session-stop-${correlation}`,
       event_type: 'session_completed',
       harness: 'claude-code',
       agent_id: agentId,
       session_id: sessionId,
+      workflow_id: `session-${correlation}`,
       action: 'agent session ended',
       outcome_state: 'pending',
     },

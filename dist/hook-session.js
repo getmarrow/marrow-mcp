@@ -6,6 +6,7 @@ exports.runSessionHookCommand = runSessionHookCommand;
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const index_1 = require("./index");
+const node_crypto_1 = require("node:crypto");
 exports.SESSION_HOOK_COMMAND = 'npx -y @getmarrow/mcp session-hook';
 function settingsPath(startDir) {
     const fs = require('fs');
@@ -50,14 +51,19 @@ async function runSessionHookCommand() {
     const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
     const sessionId = resolved.sessionId || undefined;
     const agentId = resolved.agentId || undefined;
+    const correlation = sessionId
+        ? (0, node_crypto_1.createHash)('sha256').update(sessionId).digest('hex').slice(0, 32)
+        : (0, node_crypto_1.randomUUID)().replace(/-/g, '');
     await (0, lifecycle_spool_1.recordLifecycleEvent)({
         apiKey: resolved.apiKey,
         baseUrl,
         event: {
+            event_id: `session-stop-${correlation}`,
             event_type: 'session_completed',
             harness: 'claude-code',
             agent_id: agentId,
             session_id: sessionId,
+            workflow_id: `session-${correlation}`,
             action: 'agent session ended',
             outcome_state: 'pending',
         },
