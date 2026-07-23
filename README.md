@@ -37,16 +37,17 @@ For most new installations, start with the universal installer instead:
 npx @getmarrow/install --yes
 ```
 
-## What's New in v3.9.43
+## What's New in v3.9.44
 
-v3.9.43 aligns the package entry point with Marrow's business product contract:
+v3.9.44 makes the MCP integration an always-on governance lifecycle rather than a prompt reminder:
 
-- runtime control before consequential actions;
-- proof and outcome closure afterward;
-- tenant-scoped fleet improvement across interchangeable agents and harnesses;
-- context, lessons, and workflow examples presented as supporting controls rather than a separate memory product.
+- `UserPromptSubmit` obtains relevant before-action guidance without storing raw prompt text;
+- `PostToolUse` records compact success/failure lifecycle receipts;
+- `Stop` keeps unfinished outcomes visible instead of silently treating a session exit as success;
+- transient lifecycle delivery failures use an owner-only, bounded local spool with stable event IDs;
+- `marrow_decision_trace` explains the tenant-scoped path from prior failure and lesson through gate, proof, workflow, and outcome.
 
-This patch changes package documentation and positioning. Existing MCP tool behavior and names remain compatible.
+Existing MCP tools and stable context API names remain compatible. Authentication, policy, proof, and validation failures are surfaced rather than retried as network failures.
 
 ## Governed Action Flow
 
@@ -105,7 +106,9 @@ High-risk work can be allowed, warned, held for review, or blocked according to 
 
 ## Passive Use
 
-`npx @getmarrow/mcp setup` installs supported hooks so the agent can receive before-action context and record meaningful tool outcomes without the owner repeatedly prompting it to use Marrow.
+`npx @getmarrow/mcp setup` installs supported prompt, tool-result, and session-stop hooks so the agent can receive before-action context, record meaningful tool outcomes, and keep unfinished closure visible without the owner repeatedly prompting it to use Marrow.
+
+The hooks send compact classifications and lifecycle receipts. They do not need raw prompts, completions, command output, tool output, or credentials. A completed tool or session does not automatically become a successful business outcome; explicit success/failure closure is required.
 
 Check the installed runtime:
 
@@ -130,6 +133,7 @@ Status diagnostics distinguish missing keys, invalid keys, wrong bound-agent ide
 | `marrow_value_report` | Return account/agent value evidence without requiring a dashboard |
 | `marrow_buyer_proof` | Return owner-ready governance and reliability evidence |
 | `marrow_governance_timeline` | Inspect decisions, gates, proof packs, and outcomes over time |
+| `marrow_decision_trace` | Explain the tenant-scoped causal path behind one governed decision |
 | `marrow_fleet_lessons` | Retrieve proven lessons authorized for the current account or agent |
 | `marrow_model_usage` | Record compact token, cost, and latency counts when the harness exposes them |
 

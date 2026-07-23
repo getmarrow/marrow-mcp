@@ -3,6 +3,7 @@
  */
 import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
+import { type LifecycleEvent } from './lifecycle-spool';
 export type { Narrative, CommitResult } from './types';
 /**
  * Validate a path parameter to prevent path traversal attacks.
@@ -192,6 +193,8 @@ export declare function marrowNudge(apiKey: string, baseUrl: string, sessionId?:
  * Explicitly end the current session.
  */
 export declare function marrowSessionEnd(apiKey: string, baseUrl: string, autoCommitOpen?: boolean, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowIntegrationEvent(apiKey: string, baseUrl: string, event: LifecycleEvent, sessionId?: string, agentId?: string): Promise<unknown>;
+export declare function marrowDecisionTrace(apiKey: string, baseUrl: string, decisionId: string, sessionId?: string, agentId?: string): Promise<unknown>;
 /**
  * Convert a detected decision pattern into an enforced workflow.
  */

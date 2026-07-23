@@ -48,11 +48,14 @@ exports.marrowUpdateHandoff = marrowUpdateHandoff;
 exports.marrowHandoffStatus = marrowHandoffStatus;
 exports.marrowNudge = marrowNudge;
 exports.marrowSessionEnd = marrowSessionEnd;
+exports.marrowIntegrationEvent = marrowIntegrationEvent;
+exports.marrowDecisionTrace = marrowDecisionTrace;
 exports.marrowAcceptDetected = marrowAcceptDetected;
 exports.marrowListTemplates = marrowListTemplates;
 exports.marrowInstallTemplate = marrowInstallTemplate;
 const sdk_1 = require("@getmarrow/sdk");
 const redact_1 = require("./redact");
+const lifecycle_spool_1 = require("./lifecycle-spool");
 const SOURCE_CLIENTS = new Set(['claude-code', 'cursor', 'windsurf', 'openclaw', 'codex', 'gemini', 'grok', 'deepseek', 'qwen', 'kimi', 'minimax', 'cline', 'opencode', 'hermes', 'glm', 'custom', 'unknown']);
 function defaultSourceClient() {
     const raw = String(process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || process.env.MARROW_AGENT_CLIENT || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/^@/, '');
@@ -963,6 +966,25 @@ async function marrowSessionEnd(apiKey, baseUrl, autoCommitOpen = false, session
     });
     const json = await safeJsonResponse(res);
     return json.data;
+}
+async function marrowIntegrationEvent(apiKey, baseUrl, event, sessionId, agentId) {
+    return (0, lifecycle_spool_1.recordLifecycleEvent)({
+        apiKey,
+        baseUrl,
+        event: {
+            ...event,
+            session_id: event.session_id || sessionId,
+            agent_id: event.agent_id || agentId,
+        },
+    });
+}
+async function marrowDecisionTrace(apiKey, baseUrl, decisionId, sessionId, agentId) {
+    const safeId = validatePathParam(decisionId, 'decisionId');
+    const response = await fetch(`${baseUrl}/v1/agent/governance/trace/${safeId}`, {
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    });
+    const json = await safeJsonResponse(response);
+    return json.data || json;
 }
 /**
  * Convert a detected decision pattern into an enforced workflow.
