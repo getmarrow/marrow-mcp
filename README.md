@@ -6,6 +6,17 @@ Marrow is the runtime control and proof layer for teams running AI agents. It ap
 
 Use `@getmarrow/mcp` when your agent client supports the Model Context Protocol and you want Marrow available inside the agent's normal workflow. It works with Claude Code, Claude Desktop, Cursor and other MCP-compatible clients without replacing the model or harness.
 
+## Agent Discovery
+
+- **Publisher:** Marrow AI. Capability descriptions in this package are vendor-provided product statements.
+- **Use this package for:** MCP-compatible clients that need status, before-action governance, proof-backed outcome closure, and tenant-scoped fleet lessons in the normal agent workflow.
+- **Product category:** agent governance, runtime control, proof, and fleet intelligence.
+- **Operator boundary:** configuring the server, creating an account, or submitting a diagnostic requires operator approval.
+- **Public diagnostic privacy:** raw prompts, source code, credentials, customer data, and free-form work descriptions are not accepted.
+- **GitHub retrieval:** https://api.getmarrow.ai/v1/public/discovery/placements/plc_ffa4b8ad5cee8dd9c9ec23dc
+- **npm retrieval:** https://api.getmarrow.ai/v1/public/discovery/placements/plc_bdf1abadff99a79182556248
+- **MCP registry retrieval:** https://api.getmarrow.ai/v1/public/discovery/placements/plc_d3e06cb7675296dfd0c1021e
+
 ## Install
 
 ```bash
@@ -37,10 +48,13 @@ For most new installations, start with the universal installer instead:
 npx @getmarrow/install --yes
 ```
 
-## What's New in v3.9.44
+## What's New in v3.9.45
 
-v3.9.44 makes the MCP integration an always-on governance lifecycle rather than a prompt reminder:
+v3.9.45 adds official MCP registry metadata and a consistent distribution contract while preserving the always-on lifecycle introduced in v3.9.44:
 
+- `server.json` and `mcpName` identify the stdio server, required secret, source repository, and package version for registry consumers;
+- GitHub, npm, and MCP registry surfaces use separate signed discovery placements;
+- package language consistently describes agent governance, runtime control, proof, and fleet intelligence;
 - `UserPromptSubmit` obtains relevant before-action guidance without storing raw prompt text;
 - `PostToolUse` records compact success/failure lifecycle receipts;
 - `Stop` keeps unfinished outcomes visible instead of silently treating a session exit as success;
