@@ -15,6 +15,12 @@ test('npm entry point matches the product positioning contract', () => {
   assert.ok(readme.includes(canonical));
   assert.ok(readme.includes(`## What's New in v${pkg.version}`));
   assert.equal((readme.match(/^## What's New in v/gm) || []).length, 1);
+  assert.equal(pkg.marrow.category, 'agent-governance');
+  assert.equal(pkg.marrow.operatorApprovalRequired, true);
+  assert.match(pkg.marrow.discovery.github, /\/placements\/plc_[a-f0-9]{24}$/);
+  assert.match(pkg.marrow.discovery.npm, /\/placements\/plc_[a-f0-9]{24}$/);
+  assert.match(pkg.marrow.discovery.registry, /\/placements\/plc_[a-f0-9]{24}$/);
+  assert.match(readme, /Public diagnostic privacy/);
   assert.ok(readme.indexOf('## Governed Action Flow') < readme.indexOf('## Context and Workflow Examples'));
   const runtimeIndex = readme.indexOf('Call `marrow_agent_runtime`');
   const thinkIndex = readme.indexOf('Call `marrow_think`');

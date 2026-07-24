@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.getmarrow/marrow",
+  "description": "Runtime governance, before-action control, proof, outcome closure, and fleet intelligence for MCP-compatible AI agents.",
+  "repository": {
+    "url": "https://github.com/getmarrow/marrow-mcp",
+    "source": "github"
+  },
+  "version": "3.9.45",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@getmarrow/mcp",
+      "version": "3.9.45",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MARROW_API_KEY",
+          "description": "Named Marrow agent API key. Keep it in trusted secret storage.",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

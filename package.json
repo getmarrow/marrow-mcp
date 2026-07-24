@@ -1,6 +1,7 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.44",
+  "version": "3.9.45",
+  "mcpName": "io.github.getmarrow/marrow",
   "description": "Runtime control, proof, and fleet intelligence for MCP-compatible AI agents.",
   "bin": {
     "marrow-mcp": "dist/cli.js"
@@ -19,15 +20,11 @@
     "governance",
     "proof-packs",
     "agent-control-plane",
-    "memory",
     "agents",
     "LLM",
     "GPT",
     "OpenAI",
     "autonomous",
-    "context",
-    "state",
-    "persistence",
     "decision",
     "learning",
     "Model Context Protocol",
@@ -44,10 +41,26 @@
     "type": "git",
     "url": "git+https://github.com/getmarrow/marrow-mcp.git"
   },
+  "homepage": "https://getmarrow.ai/marrow-for-mcp",
+  "bugs": {
+    "url": "https://github.com/getmarrow/marrow-mcp/issues"
+  },
+  "marrow": {
+    "category": "agent-governance",
+    "role": "mcp-runtime-control-and-proof-server",
+    "operatorApprovalRequired": true,
+    "privacy": "No raw prompts, source code, credentials, or customer data are accepted by public discovery.",
+    "discovery": {
+      "github": "https://api.getmarrow.ai/v1/public/discovery/placements/plc_ffa4b8ad5cee8dd9c9ec23dc",
+      "npm": "https://api.getmarrow.ai/v1/public/discovery/placements/plc_bdf1abadff99a79182556248",
+      "registry": "https://api.getmarrow.ai/v1/public/discovery/placements/plc_d3e06cb7675296dfd0c1021e"
+    }
+  },
   "license": "MIT",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "server.json"
   ],
   "dependencies": {
     "@getmarrow/sdk": "^3.7.43"
