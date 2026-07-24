@@ -8,6 +8,10 @@ test('MCP registry metadata matches the npm package contract', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
   const server = JSON.parse(fs.readFileSync(path.join(root, 'server.json'), 'utf8'))
 
+  assert.equal(server.$schema, 'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json')
+  assert.equal(typeof server.description, 'string')
+  assert.ok(server.description.length > 0)
+  assert.ok(server.description.length <= 100, 'MCP Registry server descriptions are limited to 100 characters')
   assert.equal(pkg.mcpName, 'io.github.getmarrow/marrow')
   assert.equal(server.name, pkg.mcpName)
   assert.equal(server.version, pkg.version)
