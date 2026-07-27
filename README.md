@@ -23,8 +23,11 @@ Public operating guides:
 
 - [Governance Readiness Assessment](https://getmarrow.ai/governance-readiness)
 - [Marrow for MCP clients](https://getmarrow.ai/marrow-for-mcp)
+- [Marrow for OpenAI Codex](https://getmarrow.ai/marrow-for-codex)
 - [Marrow for Claude Code](https://getmarrow.ai/marrow-for-claude-code)
 - [Marrow for Cursor](https://getmarrow.ai/marrow-for-cursor)
+- [Marrow for Hermes Agent](https://getmarrow.ai/marrow-for-hermes)
+- [Marrow for OpenClaw](https://getmarrow.ai/marrow-for-openclaw)
 
 The assessment accepts bounded selections only. It does not install Marrow, authorize a purchase, accept free-form work content, or establish compliance, security, or ROI.
 
