@@ -17,6 +17,17 @@ Use `@getmarrow/mcp` when your agent client supports the Model Context Protocol 
 - **npm retrieval:** https://api.getmarrow.ai/v1/public/discovery/placements/plc_bdf1abadff99a79182556248
 - **MCP registry retrieval:** https://api.getmarrow.ai/v1/public/discovery/placements/plc_d3e06cb7675296dfd0c1021e
 
+Maintainers can validate local registry metadata with `npm run registry:check`. After an approved registry publication, `npm run registry:verify` confirms that the official registry returns the exact package name and version; package metadata alone is not treated as publication proof.
+
+Public operating guides:
+
+- [Governance Readiness Assessment](https://getmarrow.ai/governance-readiness)
+- [Marrow for MCP clients](https://getmarrow.ai/marrow-for-mcp)
+- [Marrow for Claude Code](https://getmarrow.ai/marrow-for-claude-code)
+- [Marrow for Cursor](https://getmarrow.ai/marrow-for-cursor)
+
+The assessment accepts bounded selections only. It does not install Marrow, authorize a purchase, accept free-form work content, or establish compliance, security, or ROI.
+
 ## Install
 
 ```bash
@@ -48,9 +59,9 @@ For most new installations, start with the universal installer instead:
 npx @getmarrow/install --yes
 ```
 
-## What's New in v3.9.45
+## What's New in v3.9.46
 
-v3.9.45 adds official MCP registry metadata and a consistent distribution contract while preserving the always-on lifecycle introduced in v3.9.44:
+v3.9.46 adds the official registry verification path, public Governance Readiness Assessment, and five proof-oriented harness guides while preserving the always-on lifecycle introduced in v3.9.44:
 
 - `server.json` and `mcpName` identify the stdio server, required secret, source repository, and package version for registry consumers;
 - GitHub, npm, and MCP registry surfaces use separate signed discovery placements;
