@@ -481,26 +481,51 @@ async function marrowOrient(apiKey, baseUrl, params, sessionId, agentId) {
     const intervention = runtime.intervention;
     const interventionDecision = intervention?.decision ? String(intervention.decision) : '';
     const gateDecision = runtime.risk_gate?.decision ? String(runtime.risk_gate.decision) : '';
-    let decision;
-    if (interventionDecision) {
-        decision = ['proceed', 'warn', 'block', 'owner_approval_required'].includes(interventionDecision)
-            ? interventionDecision
-            : 'block';
+    const receiptDecision = runtime.gate_receipt?.decision ? String(runtime.gate_receipt.decision) : '';
+    const decisionRank = {
+        proceed: 0,
+        warn: 1,
+        owner_approval_required: 2,
+        block: 3,
+    };
+    const normalizeDecision = (value, source) => {
+        if (!value)
+            return null;
+        if (value === 'proceed' || value === 'allow')
+            return 'proceed';
+        if (value === 'warn')
+            return 'warn';
+        if (value === 'owner_approval_required' || value === 'review_required') {
+            return 'owner_approval_required';
+        }
+        if (value === 'block' || value === 'deny' || value === 'denied' || value === 'reject' || value === 'rejected') {
+            return 'block';
+        }
+        // New or malformed policy values must never silently weaken a runtime gate.
+        return source === 'intervention' || source === 'gate' ? 'block' : null;
+    };
+    const normalizedIntervention = normalizeDecision(interventionDecision, 'intervention');
+    const normalizedGate = normalizeDecision(gateDecision, 'gate');
+    const normalizedReceipt = normalizeDecision(receiptDecision, 'gate');
+    const decisions = [
+        normalizedIntervention,
+        normalizedGate,
+        normalizedReceipt,
+    ].filter((value) => value !== null);
+    const interventionDenyContradictsDecision = (intervention?.allow === false || intervention?.must_stop)
+        && normalizedIntervention !== 'block'
+        && normalizedIntervention !== 'owner_approval_required';
+    const gateDenyContradictsDecision = runtime.risk_gate?.allow === false
+        && normalizedGate !== 'block'
+        && normalizedGate !== 'owner_approval_required';
+    if (interventionDenyContradictsDecision || gateDenyContradictsDecision) {
+        decisions.push('block');
     }
-    else {
-        decision = gateDecision === 'allow'
-            ? 'proceed'
-            : gateDecision === 'warn'
-                ? 'warn'
-                : gateDecision === 'review_required'
-                    ? 'owner_approval_required'
-                    : 'block';
+    if (intervention?.enforcement?.owner_approval_required || runtime.gate_receipt?.owner_approval_required) {
+        decisions.push('owner_approval_required');
     }
-    const shouldPause = Boolean(intervention?.must_stop)
-        || runtime.risk_gate?.allow === false
-        || Boolean(runtime.gate_receipt?.owner_approval_required)
-        || decision === 'block'
-        || decision === 'owner_approval_required';
+    const decision = decisions.reduce((strictest, candidate) => decisionRank[candidate] > decisionRank[strictest] ? candidate : strictest, 'proceed');
+    const shouldPause = decision === 'block' || decision === 'owner_approval_required';
     const gateReason = Array.isArray(runtime.risk_gate?.reasons)
         ? runtime.risk_gate.reasons.find((reason) => reason && typeof reason.message === 'string')?.message
         : undefined;
