@@ -148,3 +148,171 @@ test('orient fails closed on unknown intervention decisions', async (t) => {
   assert.equal(result.warnings[0].type, 'runtime_block');
   assert.equal(result.serverWarnings[0].severity, 'HIGH');
 });
+
+test('orient honors a blocking gate receipt over proceed signals', async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({
+    data: {
+      status: {},
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      relevant_lessons: [],
+      deployment_playbooks: [],
+      template_suggestion: {},
+      proof_pack: { required: true },
+      gate_receipt: {
+        id: 'gate-block',
+        required: true,
+        decision: 'block',
+        exact_fix: 'Collect deployment proof before continuing.',
+      },
+      intervention: { decision: 'proceed', allow: true, must_stop: false },
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+
+  const result = await marrowOrient('test-key', 'https://api.example.test', {}, 'session', 'agent');
+
+  assert.equal(result.shouldPause, true);
+  assert.equal(result.warnings[0].type, 'runtime_block');
+  assert.equal(result.warnings[0].message, 'Collect deployment proof before continuing.');
+});
+
+test('orient honors intervention enforcement owner approval over proceed', async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({
+    data: {
+      status: {},
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      relevant_lessons: [],
+      deployment_playbooks: [],
+      template_suggestion: {},
+      proof_pack: { required: false },
+      intervention: {
+        decision: 'proceed',
+        allow: true,
+        must_stop: false,
+        enforcement: { owner_approval_required: true },
+        before_action: 'Obtain owner approval before continuing.',
+      },
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+
+  const result = await marrowOrient('test-key', 'https://api.example.test', {}, 'session', 'agent');
+
+  assert.equal(result.shouldPause, true);
+  assert.equal(result.warnings[0].type, 'runtime_owner_approval_required');
+});
+
+test('orient honors explicit owner approval and standalone deny signals', async (t) => {
+  const originalFetch = global.fetch;
+  const responses = [
+    {
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      intervention: { decision: 'owner_approval_required', allow: true, must_stop: false },
+    },
+    {
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      intervention: { decision: 'proceed', allow: false, must_stop: false },
+    },
+  ];
+  global.fetch = async () => {
+    const response = responses.shift();
+    return new Response(JSON.stringify({
+      data: {
+        status: {},
+        ...response,
+        relevant_lessons: [],
+        deployment_playbooks: [],
+        template_suggestion: {},
+        proof_pack: { required: false },
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  const ownerApproval = await marrowOrient('test-key', 'https://api.example.test', {}, 'session', 'agent');
+  const explicitDeny = await marrowOrient('test-key', 'https://api.example.test', {}, 'session', 'agent');
+
+  assert.equal(ownerApproval.shouldPause, true);
+  assert.equal(ownerApproval.warnings[0].type, 'runtime_owner_approval_required');
+  assert.equal(explicitDeny.shouldPause, true);
+  assert.equal(explicitDeny.warnings[0].type, 'runtime_block');
+});
+
+test('orient fails closed on unknown required gate receipt decisions', async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({
+    data: {
+      status: {},
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      relevant_lessons: [],
+      deployment_playbooks: [],
+      template_suggestion: {},
+      proof_pack: { required: true },
+      gate_receipt: { id: 'gate-future', required: true, decision: 'future_policy_value' },
+      intervention: { decision: 'proceed', allow: true, must_stop: false },
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+
+  const result = await marrowOrient('test-key', 'https://api.example.test', {}, 'session', 'agent');
+
+  assert.equal(result.shouldPause, true);
+  assert.equal(result.warnings[0].type, 'runtime_block');
+});
+
+test('orient applies the strictest signal across contradictory gate fields', async (t) => {
+  const originalFetch = global.fetch;
+  const cases = [
+    {
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      intervention: { decision: 'proceed', allow: true, must_stop: false },
+      gate_receipt: { id: 'gate-owner', required: true, owner_approval_required: true },
+      expectedType: 'runtime_owner_approval_required',
+    },
+    {
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      intervention: { decision: 'proceed', allow: true, must_stop: false },
+      gate_receipt: { id: 'gate-review', required: true, decision: 'review_required' },
+      expectedType: 'runtime_owner_approval_required',
+    },
+    {
+      risk_gate: { allow: true, decision: 'block', reasons: [] },
+      intervention: { decision: 'proceed', allow: true, must_stop: false },
+      expectedType: 'runtime_block',
+    },
+    {
+      risk_gate: { allow: false, decision: 'allow', reasons: [] },
+      intervention: { decision: 'proceed', allow: true, must_stop: false },
+      expectedType: 'runtime_block',
+    },
+  ];
+  global.fetch = async () => {
+    const current = cases.shift();
+    return new Response(JSON.stringify({
+      data: {
+        status: {},
+        risk_gate: current.risk_gate,
+        intervention: current.intervention,
+        gate_receipt: current.gate_receipt,
+        relevant_lessons: [],
+        deployment_playbooks: [],
+        template_suggestion: {},
+        proof_pack: { required: Boolean(current.gate_receipt?.required) },
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  for (const expectedType of [
+    'runtime_owner_approval_required',
+    'runtime_owner_approval_required',
+    'runtime_block',
+    'runtime_block',
+  ]) {
+    const result = await marrowOrient('test-key', 'https://api.example.test', {}, 'session', 'agent');
+    assert.equal(result.shouldPause, true);
+    assert.equal(result.warnings[0].type, expectedType);
+  }
+});
