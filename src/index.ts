@@ -604,8 +604,9 @@ export async function marrowAgentPatterns(
 }
 
 /**
- * Get failure warnings from history before acting.
- * When autoWarn=true, hits the enhanced orient endpoint for active warnings.
+ * Get the current before-action warning from the canonical runtime contract.
+ * The retired orient/pattern routes required broader legacy scopes and could
+ * leave otherwise valid agent-bound keys unable to start a session.
  */
 export async function marrowOrient(
   apiKey: string,
@@ -614,54 +615,61 @@ export async function marrowOrient(
   sessionId?: string,
   agentId?: string
 ): Promise<OrientResult> {
-  // If autoWarn, hit the new POST endpoint
-  if (params?.autoWarn) {
-    const res = await fetch(`${baseUrl}/v1/agent/orient`, {
-      method: 'POST',
-      headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
-      body: JSON.stringify({
-        task: params.taskType,
-        autoWarn: true,
-      }),
-    });
-
-    const json = await safeJsonResponse(res);
-
-    const warnings = (json.data?.warnings || []).map((w: Record<string, unknown>) => ({
-      type: String(w.pattern || ''),
-      failureRate: 0, // computed server-side from failure count
-      message: String(w.message || ''),
-      severity: w.severity as 'HIGH' | 'MEDIUM' | 'LOW',
-    }));
-
-    return {
-      warnings,
-      serverWarnings: json.data?.warnings || [],
-      loopState: json.data?.loopState || { isOpen: false, lastCommit: null },
-      shouldPause: warnings.some((w: { severity?: string }) => w.severity === 'HIGH'),
-    };
-  }
-
-  // Legacy: compute from agent patterns
-  const patterns = await marrowAgentPatterns(
+  const taskType = params?.taskType || 'general';
+  const runtime = await marrowAgentRuntime(
     apiKey,
     baseUrl,
-    params?.taskType ? { type: params.taskType } : undefined,
+    {
+      action: `Orient before ${taskType} work`,
+      type: taskType,
+      context: {
+        source: 'mcp',
+        event_kind: 'session_orientation',
+        auto_warn: params?.autoWarn !== false,
+      },
+    },
     sessionId,
     agentId
   );
 
-  const warnings = patterns.failure_patterns
-    .filter((p) => p.failure_rate > 0.15)
-    .map((p) => ({
-      type: p.decision_type,
-      failureRate: p.failure_rate,
-      message: `${p.decision_type} has ${Math.round(p.failure_rate * 100)}% failure rate over ${p.count} decisions — review lessons before acting`,
-    }));
+  const intervention = runtime.intervention;
+  const decision = intervention?.decision || 'proceed';
+  const shouldPause = Boolean(intervention?.must_stop)
+    || decision === 'block'
+    || decision === 'owner_approval_required';
+  const message = intervention?.before_action
+    || intervention?.exact_next_action
+    || intervention?.headline
+    || runtime.before_you_act
+    || null;
+  const severity: 'HIGH' | 'MEDIUM' | 'LOW' = shouldPause
+    ? 'HIGH'
+    : decision === 'warn'
+      ? 'MEDIUM'
+      : 'LOW';
+  const serverWarnings = message && (decision !== 'proceed' || params?.autoWarn !== false)
+    ? [{
+        severity,
+        message,
+        pattern: `runtime_${decision}`,
+        recommendation: intervention?.exact_next_action || undefined,
+      }]
+    : [];
+  const warnings = serverWarnings.map((warning) => ({
+    type: warning.pattern,
+    failureRate: 0,
+    message: warning.message,
+    severity: warning.severity,
+  }));
 
   return {
     warnings,
-    shouldPause: warnings.some((w) => w.failureRate > 0.4),
+    serverWarnings,
+    loopState: {
+      isOpen: Boolean(runtime.gate_receipt?.required),
+      lastCommit: null,
+    },
+    shouldPause,
   };
 }
 

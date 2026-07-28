@@ -85,9 +85,9 @@ For most new installations, start with the universal installer instead:
 npx @getmarrow/install --yes
 ```
 
-## What's New in v3.9.47
+## What's New in v3.9.48
 
-v3.9.47 adds one machine-readable governance-fit contract across discovery, evidence, and integration surfaces while preserving the always-on lifecycle introduced in v3.9.44:
+v3.9.48 moves session orientation onto Marrow's canonical `/v1/agent/runtime` contract. Agent-bound keys now receive before-action warnings without depending on retired broad-scope orient or pattern routes. It preserves the machine-readable governance-fit contract introduced in v3.9.47 and the always-on lifecycle introduced in v3.9.44:
 
 - `server.json` and `mcpName` identify the stdio server, required secret, source repository, and package version for registry consumers;
 - GitHub, npm, and MCP registry surfaces use separate signed discovery placements;

@@ -87,8 +87,9 @@ export declare function marrowAgentPatterns(apiKey: string, baseUrl: string, par
     limit?: number;
 }, sessionId?: string, agentId?: string): Promise<AgentPatternsResult>;
 /**
- * Get failure warnings from history before acting.
- * When autoWarn=true, hits the enhanced orient endpoint for active warnings.
+ * Get the current before-action warning from the canonical runtime contract.
+ * The retired orient/pattern routes required broader legacy scopes and could
+ * leave otherwise valid agent-bound keys unable to start a session.
  */
 export declare function marrowOrient(apiKey: string, baseUrl: string, params?: {
     taskType?: string;
