@@ -1,0 +1,98 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const { marrowOrient } = require('../dist/index.js');
+
+test('orient uses the canonical runtime contract with the bound agent identity', async (t) => {
+  const calls = [];
+  const originalFetch = global.fetch;
+  global.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(JSON.stringify({
+      data: {
+        ok: true,
+        action: 'Orient before security work',
+        agent_id: 'jarvis',
+        session_id: 'jarvis-session',
+        status: {},
+        decision_brief: {},
+        risk_gate: {},
+        relevant_lessons: [],
+        deployment_playbooks: [],
+        template_suggestion: {},
+        proof_pack: {
+          required: false,
+          enforced: false,
+          fields: [],
+          missing: [],
+          complete: true,
+          commit_endpoint: '/v1/agent/commit',
+          rule: 'none',
+        },
+        before_you_act: 'Review the matching deployment lesson.',
+        intervention: {
+          contract: 'marrow.before-action-intervention.v1',
+          decision: 'warn',
+          allow: true,
+          must_stop: false,
+          must_use_before_action: true,
+          headline: 'A prior failure matches this action.',
+          before_action: 'Review the matching deployment lesson.',
+          exact_next_action: 'Use the proven deployment playbook.',
+          relevant_prior_signal: null,
+          playbook: { source: 'fleet_lesson', lesson: null },
+          reason_codes: ['prior_failure'],
+        },
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  const result = await marrowOrient(
+    'test-key',
+    'https://api.example.test',
+    { taskType: 'security', autoWarn: true },
+    'jarvis-session',
+    'jarvis'
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.example.test/v1/agent/runtime');
+  assert.equal(calls[0].init.method, 'POST');
+  const payload = JSON.parse(calls[0].init.body);
+  assert.equal(payload.type, 'security');
+  assert.equal(payload.agent_id, 'jarvis');
+  assert.equal(payload.session_id, 'jarvis-session');
+  assert.equal(payload.context.event_kind, 'session_orientation');
+  assert.equal(result.shouldPause, false);
+  assert.equal(result.warnings[0].type, 'runtime_warn');
+  assert.equal(result.serverWarnings[0].severity, 'MEDIUM');
+});
+
+test('orient pauses on a runtime block', async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({
+    data: {
+      status: {},
+      risk_gate: {},
+      relevant_lessons: [],
+      deployment_playbooks: [],
+      template_suggestion: {},
+      proof_pack: { required: true },
+      gate_receipt: { id: 'gate-1', required: true },
+      intervention: {
+        decision: 'block',
+        must_stop: true,
+        headline: 'Required production proof is missing.',
+        before_action: 'Collect the required proof before release.',
+      },
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+
+  const result = await marrowOrient('test-key', 'https://api.example.test', {}, 'session', 'agent');
+
+  assert.equal(result.shouldPause, true);
+  assert.equal(result.loopState.isOpen, true);
+  assert.equal(result.serverWarnings[0].severity, 'HIGH');
+});
