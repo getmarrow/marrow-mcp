@@ -2,6 +2,9 @@ name: Publish MCP Registry Metadata
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'mcp-registry-v*'
 
 permissions:
   contents: read
