@@ -96,3 +96,55 @@ test('orient pauses on a runtime block', async (t) => {
   assert.equal(result.loopState.isOpen, true);
   assert.equal(result.serverWarnings[0].severity, 'HIGH');
 });
+
+test('orient maps review-required risk gates when intervention is omitted', async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({
+    data: {
+      status: {},
+      risk_gate: {
+        allow: false,
+        decision: 'review_required',
+        reasons: [{ code: 'owner_review', severity: 'high', message: 'Owner review is required.' }],
+      },
+      relevant_lessons: [],
+      deployment_playbooks: [],
+      template_suggestion: {},
+      proof_pack: { required: false },
+      before_you_act: null,
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+
+  const result = await marrowOrient('test-key', 'https://api.example.test', {}, 'session', 'agent');
+
+  assert.equal(result.shouldPause, true);
+  assert.equal(result.warnings[0].type, 'runtime_owner_approval_required');
+  assert.equal(result.warnings[0].message, 'Owner review is required.');
+});
+
+test('orient fails closed on unknown intervention decisions', async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({
+    data: {
+      status: {},
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      relevant_lessons: [],
+      deployment_playbooks: [],
+      template_suggestion: {},
+      proof_pack: { required: false },
+      intervention: {
+        decision: 'unexpected_future_value',
+        must_stop: false,
+        headline: 'Unknown policy result.',
+      },
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+
+  const result = await marrowOrient('test-key', 'https://api.example.test', {}, 'session', 'agent');
+
+  assert.equal(result.shouldPause, true);
+  assert.equal(result.warnings[0].type, 'runtime_block');
+  assert.equal(result.serverWarnings[0].severity, 'HIGH');
+});

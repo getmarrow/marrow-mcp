@@ -479,15 +479,38 @@ async function marrowOrient(apiKey, baseUrl, params, sessionId, agentId) {
         },
     }, sessionId, agentId);
     const intervention = runtime.intervention;
-    const decision = intervention?.decision || 'proceed';
+    const interventionDecision = intervention?.decision ? String(intervention.decision) : '';
+    const gateDecision = runtime.risk_gate?.decision ? String(runtime.risk_gate.decision) : '';
+    let decision;
+    if (interventionDecision) {
+        decision = ['proceed', 'warn', 'block', 'owner_approval_required'].includes(interventionDecision)
+            ? interventionDecision
+            : 'block';
+    }
+    else {
+        decision = gateDecision === 'allow'
+            ? 'proceed'
+            : gateDecision === 'warn'
+                ? 'warn'
+                : gateDecision === 'review_required'
+                    ? 'owner_approval_required'
+                    : 'block';
+    }
     const shouldPause = Boolean(intervention?.must_stop)
+        || runtime.risk_gate?.allow === false
+        || Boolean(runtime.gate_receipt?.owner_approval_required)
         || decision === 'block'
         || decision === 'owner_approval_required';
+    const gateReason = Array.isArray(runtime.risk_gate?.reasons)
+        ? runtime.risk_gate.reasons.find((reason) => reason && typeof reason.message === 'string')?.message
+        : undefined;
     const message = intervention?.before_action
         || intervention?.exact_next_action
         || intervention?.headline
+        || runtime.gate_receipt?.exact_fix
+        || gateReason
         || runtime.before_you_act
-        || null;
+        || (shouldPause ? 'Pause and inspect the runtime gate before acting.' : null);
     const severity = shouldPause
         ? 'HIGH'
         : decision === 'warn'
