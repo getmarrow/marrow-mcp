@@ -9,6 +9,12 @@ export declare const NATIVE_EXPECTED_HOOKS: readonly ["prompt", "pre_action", "a
 type HookSettings = Record<string, unknown>;
 export declare function findHookSettingsPath(startDir?: string): string;
 export declare function readHookSettings(startDir?: string): HookSettings;
+export declare function readHookSettingsForInstall(startDir?: string): HookSettings;
+export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' | 'session-hook';
+export declare function reconcileMarrowCommandHook(settings: HookSettings, eventName: string, subcommand: MarrowHookSubcommand, command: string, matcher?: string): {
+    entries: unknown[];
+    changed: boolean;
+};
 export declare function hasExactCommandHook(settings: HookSettings, eventName: string, command: string, matcher?: string): boolean;
 export declare function nativeHookConfigurationFingerprint(startDir?: string): string;
 export declare function nativeHookEvidence(observedHook: typeof NATIVE_EXPECTED_HOOKS[number], startDir?: string): {

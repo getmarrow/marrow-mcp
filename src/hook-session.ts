@@ -4,9 +4,9 @@ import { marrowSessionEnd, validateBaseUrl } from './index';
 import { readFileSync } from 'node:fs';
 import {
   findHookSettingsPath,
-  hasExactCommandHook,
   nativeHookEvidence,
-  readHookSettings,
+  readHookSettingsForInstall,
+  reconcileMarrowCommandHook,
   SESSION_END_HOOK_COMMAND,
   stableSessionWorkflowId,
 } from './hook-contract';
@@ -73,17 +73,15 @@ export function installSessionEndHook(startDir = process.cwd()): { settingsPath:
   const fs = require('fs') as typeof import('fs');
   const path = require('path') as typeof import('path');
   const target = findHookSettingsPath(startDir);
-  const settings = readHookSettings(startDir);
+  const settings = readHookSettingsForInstall(startDir);
   const hooks = settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
     ? settings.hooks as Record<string, unknown>
     : {};
-  const stop = Array.isArray(hooks.Stop) ? [...hooks.Stop] : [];
-  const installed = hasExactCommandHook(settings, 'Stop', SESSION_HOOK_COMMAND);
-  if (!installed) stop.push({ hooks: [{ type: 'command', command: SESSION_HOOK_COMMAND }] });
-  settings.hooks = { ...hooks, Stop: stop };
+  const reconciled = reconcileMarrowCommandHook(settings, 'Stop', 'session-hook', SESSION_HOOK_COMMAND);
+  settings.hooks = { ...hooks, Stop: reconciled.entries };
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, JSON.stringify(settings, null, 2) + '\n');
-  return { settingsPath: target, installed: !installed };
+  return { settingsPath: target, installed: reconciled.changed };
 }
 
 export async function runSessionHookCommand(input?: unknown): Promise<void> {

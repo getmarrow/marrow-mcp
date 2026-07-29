@@ -3,11 +3,11 @@ import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import {
   findHookSettingsPath,
-  hasExactCommandHook,
   nativeHookEvidence,
   NATIVE_HOOK_MATCHER,
   PRE_ACTION_HOOK_COMMAND,
-  readHookSettings,
+  readHookSettingsForInstall,
+  reconcileMarrowCommandHook,
   stableSessionWorkflowId,
   stableToolCorrelation,
 } from './hook-contract';
@@ -120,20 +120,19 @@ async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): P
 export function installPreActionHook(startDir = process.cwd()): { settingsPath: string; installed: boolean } {
   const fs = require('node:fs') as typeof import('node:fs');
   const path = findHookSettingsPath(startDir);
-  const settings = readHookSettings(startDir);
+  const settings = readHookSettingsForInstall(startDir);
   const hooks = asRecord(settings.hooks) || {};
-  const preToolUse = Array.isArray(hooks.PreToolUse) ? [...hooks.PreToolUse] : [];
-  const installed = hasExactCommandHook(settings, 'PreToolUse', PRE_ACTION_HOOK_COMMAND, NATIVE_HOOK_MATCHER);
-  if (!installed) {
-    preToolUse.push({
-      matcher: NATIVE_HOOK_MATCHER,
-      hooks: [{ type: 'command', command: PRE_ACTION_HOOK_COMMAND }],
-    });
-  }
-  settings.hooks = { ...hooks, PreToolUse: preToolUse };
+  const reconciled = reconcileMarrowCommandHook(
+    settings,
+    'PreToolUse',
+    'pre-action-hook',
+    PRE_ACTION_HOOK_COMMAND,
+    NATIVE_HOOK_MATCHER,
+  );
+  settings.hooks = { ...hooks, PreToolUse: reconciled.entries };
   fs.mkdirSync(require('node:path').dirname(path), { recursive: true });
   fs.writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
-  return { settingsPath: path, installed: !installed };
+  return { settingsPath: path, installed: reconciled.changed };
 }
 
 export async function runPreActionHookCommand(input?: unknown): Promise<void> {

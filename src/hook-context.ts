@@ -20,9 +20,9 @@ import { recordLifecycleEvent } from './lifecycle-spool';
 import {
   CONTEXT_HOOK_COMMAND as CONTRACT_CONTEXT_HOOK_COMMAND,
   findHookSettingsPath,
-  hasExactCommandHook,
   nativeHookEvidence,
-  readHookSettings,
+  readHookSettingsForInstall,
+  reconcileMarrowCommandHook,
   stablePromptCorrelation,
   stableSessionWorkflowId,
 } from './hook-contract';
@@ -561,22 +561,19 @@ export function installUserPromptSubmitHook(startDir: string = process.cwd()): I
   const path = require('path') as typeof import('path');
 
   const settingsPath = findHookSettingsPath(startDir);
-  const settings = readHookSettings(startDir);
+  const settings = readHookSettingsForInstall(startDir);
 
   const hooks = asRecord(settings.hooks) || {};
-  const userPromptSubmit = Array.isArray(hooks.UserPromptSubmit) ? [...hooks.UserPromptSubmit] : [];
-
-  const alreadyInstalled = hasExactCommandHook(settings, 'UserPromptSubmit', CONTEXT_HOOK_COMMAND);
-
-  if (!alreadyInstalled) {
-    userPromptSubmit.push({
-      hooks: [{ type: 'command', command: CONTEXT_HOOK_COMMAND }],
-    });
-  }
+  const reconciled = reconcileMarrowCommandHook(
+    settings,
+    'UserPromptSubmit',
+    'context-hook',
+    CONTEXT_HOOK_COMMAND,
+  );
 
   settings.hooks = {
     ...hooks,
-    UserPromptSubmit: userPromptSubmit,
+    UserPromptSubmit: reconciled.entries,
   };
 
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
@@ -584,6 +581,6 @@ export function installUserPromptSubmitHook(startDir: string = process.cwd()): I
 
   return {
     settingsPath,
-    installed: !alreadyInstalled,
+    installed: reconciled.changed,
   };
 }

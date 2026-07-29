@@ -212,34 +212,20 @@ function installPostToolUseHook(startDir = process.cwd()) {
     const fs = require('fs');
     const path = require('path');
     const settingsPath = (0, hook_contract_1.findHookSettingsPath)(startDir);
-    const settings = (0, hook_contract_1.readHookSettings)(startDir);
+    const settings = (0, hook_contract_1.readHookSettingsForInstall)(startDir);
     const hooks = asRecord(settings.hooks) || {};
-    const postToolUse = Array.isArray(hooks.PostToolUse) ? [...hooks.PostToolUse] : [];
-    const postToolUseFailure = Array.isArray(hooks.PostToolUseFailure) ? [...hooks.PostToolUseFailure] : [];
-    const successInstalled = (0, hook_contract_1.hasExactCommandHook)(settings, 'PostToolUse', exports.AUTO_HOOK_COMMAND, exports.AUTO_HOOK_MATCHER);
-    const failureInstalled = (0, hook_contract_1.hasExactCommandHook)(settings, 'PostToolUseFailure', exports.AUTO_HOOK_COMMAND, exports.AUTO_HOOK_MATCHER);
-    if (!successInstalled) {
-        postToolUse.push({
-            matcher: exports.AUTO_HOOK_MATCHER,
-            hooks: [{ type: 'command', command: exports.AUTO_HOOK_COMMAND }],
-        });
-    }
-    if (!failureInstalled) {
-        postToolUseFailure.push({
-            matcher: exports.AUTO_HOOK_MATCHER,
-            hooks: [{ type: 'command', command: exports.AUTO_HOOK_COMMAND }],
-        });
-    }
+    const success = (0, hook_contract_1.reconcileMarrowCommandHook)(settings, 'PostToolUse', 'hook', exports.AUTO_HOOK_COMMAND, exports.AUTO_HOOK_MATCHER);
+    const failure = (0, hook_contract_1.reconcileMarrowCommandHook)(settings, 'PostToolUseFailure', 'hook', exports.AUTO_HOOK_COMMAND, exports.AUTO_HOOK_MATCHER);
     settings.hooks = {
         ...hooks,
-        PostToolUse: postToolUse,
-        PostToolUseFailure: postToolUseFailure,
+        PostToolUse: success.entries,
+        PostToolUseFailure: failure.entries,
     };
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
     return {
         settingsPath,
-        installed: !successInstalled || !failureInstalled,
+        installed: success.changed || failure.changed,
     };
 }
 async function runHookCommand() {
