@@ -91,11 +91,12 @@ export function reconcileMarrowCommandHook(
     const remaining: unknown[] = [];
     for (const hook of record.hooks) {
       const handler = asRecord(hook);
-      if (handler?.type === 'command' && marrowHookSubcommand(handler.command) === subcommand) {
+      const detected = marrowHookSubcommand(handler?.command);
+      if (handler?.type === 'command' && detected) {
         const exactMatcher = matcher === undefined
           ? record.matcher === undefined
           : record.matcher === matcher;
-        if (!preferredHandler || (handler.command === command && exactMatcher)) {
+        if (detected === subcommand && (!preferredHandler || (handler.command === command && exactMatcher))) {
           preferredHandler = handler;
         }
         continue;
