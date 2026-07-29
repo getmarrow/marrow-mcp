@@ -62,14 +62,15 @@ import {
 import { installPostToolUseHook, runHookCommand } from './hook';
 import { installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand } from './hook-session';
+import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
 import { resolveMarrowEnv } from './env';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import type { ThinkResult, OrientResult, MarrowMemory } from './types';
 
 // Parse CLI args
-function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; sessionHook?: boolean } {
+function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean } {
   const args = process.argv.slice(2);
-  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; sessionHook?: boolean } = {};
+  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
@@ -83,6 +84,9 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     }
     if (args[i] === 'context-hook' || args[i] === '--context-hook') {
       result.contextHook = true;
+    }
+    if (args[i] === 'pre-action-hook' || args[i] === '--pre-action-hook') {
+      result.preActionHook = true;
     }
     if (args[i] === 'session-hook' || args[i] === '--session-hook') {
       result.sessionHook = true;
@@ -169,6 +173,12 @@ ${MARROW_BLOCK_END}`;
     process.stdout.write('Installed UserPromptSubmit hook — Marrow will inject relevant context and passive decision briefs into your prompts automatically.\n');
   } else {
     process.stdout.write('UserPromptSubmit hook already installed — Marrow context and passive decision briefs are injected on matching prompts.\n');
+  }
+  const preActionHookInstall = installPreActionHook(process.cwd());
+  if (preActionHookInstall.installed) {
+    process.stdout.write('Installed PreToolUse hook — Marrow now checks each matched action before execution.\n');
+  } else {
+    process.stdout.write('PreToolUse hook already installed — matched actions are checked before execution.\n');
   }
   const sessionHookInstall = installSessionEndHook(process.cwd());
   if (sessionHookInstall.installed) {
@@ -271,6 +281,8 @@ if (cliArgs.hook) {
   void runHookCommand();
 } else if (cliArgs.contextHook) {
   void runContextHookCommand();
+} else if (cliArgs.preActionHook) {
+  void runPreActionHookCommand();
 } else if (cliArgs.sessionHook) {
   void runSessionHookCommand();
 } else if (cliArgs.setup) {

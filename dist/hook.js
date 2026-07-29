@@ -7,7 +7,7 @@ exports.runHookCommand = runHookCommand;
 const index_1 = require("./index");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
-const node_crypto_1 = require("node:crypto");
+const hook_contract_1 = require("./hook-contract");
 const SKIP_TOOLS = new Set([
     'read',
     'grep',
@@ -49,8 +49,8 @@ const READ_ONLY_BASH_COMMANDS = new Set([
     'whoami',
     'uname',
 ]);
-exports.AUTO_HOOK_COMMAND = 'npx -y @getmarrow/mcp hook';
-exports.AUTO_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*';
+exports.AUTO_HOOK_COMMAND = hook_contract_1.ACTION_RESULT_HOOK_COMMAND;
+exports.AUTO_HOOK_MATCHER = hook_contract_1.NATIVE_HOOK_MATCHER;
 const HOOK_DEBUG = process.env.MARROW_HOOK_DEBUG === 'true';
 function debug(msg) {
     if (HOOK_DEBUG)
@@ -82,14 +82,6 @@ function safeStringify(value, max) {
     catch {
         return truncate(String(value), max);
     }
-}
-function extractFilePath(toolInput) {
-    for (const key of ['file_path', 'path', 'target_file', 'filename']) {
-        const value = getString(toolInput[key]);
-        if (value)
-            return value;
-    }
-    return undefined;
 }
 function extractDescription(toolInput) {
     return getString(toolInput.description);
@@ -175,19 +167,6 @@ function extractFirstArg(toolInput) {
     }
     return safeStringify(record, 120);
 }
-function buildMcpArgsSummary(toolInput) {
-    const record = asRecord(toolInput);
-    if (!record) {
-        const first = extractFirstArg(toolInput);
-        return first ? truncate(normalizeWhitespace(first), 120) : undefined;
-    }
-    const clone = { ...record };
-    delete clone.description;
-    const keys = Object.keys(clone);
-    if (keys.length === 0)
-        return undefined;
-    return safeStringify(clone, 120);
-}
 function deriveAction(event) {
     const toolName = getString(event.tool_name);
     if (!toolName || shouldSkipAutoLog(event))
@@ -212,22 +191,14 @@ function deriveToolSuccess(event) {
     const response = event.tool_response ?? event.tool_result;
     const responseRecord = asRecord(response);
     const errorValue = responseRecord?.error;
-    const failed = errorValue !== undefined && errorValue !== null
+    const failed = event.hook_event_name === 'PostToolUseFailure'
+        || event.error != null
+        || errorValue !== undefined && errorValue !== null
         || responseRecord?.is_error === true
         || responseRecord?.success === false
         || (typeof responseRecord?.exit_code === 'number' && responseRecord.exit_code !== 0)
         || /^(?:failed|error|blocked)$/i.test(String(responseRecord?.status || ''));
     return !failed;
-}
-function stableHookCorrelation(event) {
-    const source = getString(event.tool_use_id)
-        || JSON.stringify([
-            getString(event.session_id) || '',
-            getString(event.hook_event_name) || 'PostToolUse',
-            getString(event.tool_name) || 'tool',
-            event.tool_input || null,
-        ]);
-    return (0, node_crypto_1.createHash)('sha256').update(source).digest('hex').slice(0, 32);
 }
 async function readStdin() {
     const chunks = [];
@@ -237,67 +208,24 @@ async function readStdin() {
     }
     return chunks.join('');
 }
-function getHomeDir() {
-    return process.env.HOME || process.env.USERPROFILE || process.cwd();
-}
-function looksLikeProjectRoot(dir) {
-    const fs = require('fs');
-    const path = require('path');
-    return ['.git', 'package.json', 'CLAUDE.md'].some((name) => fs.existsSync(path.join(dir, name)));
-}
-function findSettingsPath(startDir) {
-    const fs = require('fs');
-    const path = require('path');
-    let dir = startDir;
-    let fallbackProjectDir = null;
-    while (true) {
-        const claudeDir = path.join(dir, '.claude');
-        const settingsPath = path.join(claudeDir, 'settings.json');
-        if (fs.existsSync(settingsPath) || fs.existsSync(claudeDir)) {
-            return settingsPath;
-        }
-        if (!fallbackProjectDir && looksLikeProjectRoot(dir)) {
-            fallbackProjectDir = dir;
-        }
-        const parent = path.dirname(dir);
-        if (parent === dir)
-            break;
-        dir = parent;
-    }
-    if (fallbackProjectDir) {
-        return path.join(fallbackProjectDir, '.claude', 'settings.json');
-    }
-    return path.join(getHomeDir(), '.claude', 'settings.json');
-}
 function installPostToolUseHook(startDir = process.cwd()) {
     const fs = require('fs');
     const path = require('path');
-    const settingsPath = findSettingsPath(startDir);
-    let settings = {};
-    if (fs.existsSync(settingsPath)) {
-        const raw = fs.readFileSync(settingsPath, 'utf8').trim();
-        if (raw) {
-            const parsed = JSON.parse(raw);
-            const record = asRecord(parsed);
-            if (!record) {
-                throw new Error(`Existing settings file is not a JSON object: ${settingsPath}`);
-            }
-            settings = record;
-        }
-    }
+    const settingsPath = (0, hook_contract_1.findHookSettingsPath)(startDir);
+    const settings = (0, hook_contract_1.readHookSettings)(startDir);
     const hooks = asRecord(settings.hooks) || {};
     const postToolUse = Array.isArray(hooks.PostToolUse) ? [...hooks.PostToolUse] : [];
-    const alreadyInstalled = postToolUse.some((entry) => {
-        const record = asRecord(entry);
-        if (!record || !Array.isArray(record.hooks))
-            return false;
-        return record.hooks.some((hook) => {
-            const hookRecord = asRecord(hook);
-            return !!(hookRecord && typeof hookRecord.command === 'string' && hookRecord.command.includes(exports.AUTO_HOOK_COMMAND));
-        });
-    });
-    if (!alreadyInstalled) {
+    const postToolUseFailure = Array.isArray(hooks.PostToolUseFailure) ? [...hooks.PostToolUseFailure] : [];
+    const successInstalled = (0, hook_contract_1.hasExactCommandHook)(settings, 'PostToolUse', exports.AUTO_HOOK_COMMAND, exports.AUTO_HOOK_MATCHER);
+    const failureInstalled = (0, hook_contract_1.hasExactCommandHook)(settings, 'PostToolUseFailure', exports.AUTO_HOOK_COMMAND, exports.AUTO_HOOK_MATCHER);
+    if (!successInstalled) {
         postToolUse.push({
+            matcher: exports.AUTO_HOOK_MATCHER,
+            hooks: [{ type: 'command', command: exports.AUTO_HOOK_COMMAND }],
+        });
+    }
+    if (!failureInstalled) {
+        postToolUseFailure.push({
             matcher: exports.AUTO_HOOK_MATCHER,
             hooks: [{ type: 'command', command: exports.AUTO_HOOK_COMMAND }],
         });
@@ -305,12 +233,13 @@ function installPostToolUseHook(startDir = process.cwd()) {
     settings.hooks = {
         ...hooks,
         PostToolUse: postToolUse,
+        PostToolUseFailure: postToolUseFailure,
     };
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
     return {
         settingsPath,
-        installed: !alreadyInstalled,
+        installed: !successInstalled || !failureInstalled,
     };
 }
 async function runHookCommand() {
@@ -358,7 +287,7 @@ async function runHookCommand() {
         const eventType = toolName === 'bash'
             ? success ? 'command_completed' : 'command_failed'
             : success ? 'tool_completed' : 'tool_failed';
-        const lifecycleCorrelation = stableHookCorrelation(event);
+        const lifecycleCorrelation = (0, hook_contract_1.stableToolCorrelation)({ ...event, session_id: sessionId });
         await (0, lifecycle_spool_1.recordLifecycleEvent)({
             apiKey,
             baseUrl,
@@ -368,9 +297,9 @@ async function runHookCommand() {
                 harness: 'claude-code',
                 agent_id: agentId,
                 session_id: sessionId,
-                workflow_id: `workflow-${lifecycleCorrelation}`,
+                workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, event.tool_use_id),
                 correlation_id: lifecycleCorrelation,
-                observed_hook: 'action_result',
+                ...(0, hook_contract_1.nativeHookEvidence)('action_result'),
                 action,
                 success,
                 outcome_state: 'pending',

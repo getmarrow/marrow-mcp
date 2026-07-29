@@ -15,6 +15,13 @@ const { join, resolve } = require('node:path');
 const test = require('node:test');
 
 const { recordLifecycleEvent } = require('../dist/lifecycle-spool.js');
+const {
+  nativeHookConfigurationFingerprint,
+  nativeHookEvidence,
+  stableSessionWorkflowId,
+  stableToolCorrelation,
+} = require('../dist/hook-contract.js');
+const { preActionHookOutput } = require('../dist/hook-pre-action.js');
 
 function withSpoolPath(path, callback) {
   const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
@@ -43,24 +50,26 @@ function lifecycleInput(event) {
   };
 }
 
-test('passive hooks use stable source correlations and never auto-close tool exits as business success', () => {
+test('passive hooks use joinable source correlations and never auto-close tool exits as business success', () => {
   const hook = readFileSync(join(__dirname, '../src/hook.ts'), 'utf8');
   const context = readFileSync(join(__dirname, '../src/hook-context.ts'), 'utf8');
+  const preAction = readFileSync(join(__dirname, '../src/hook-pre-action.ts'), 'utf8');
 
-  assert.match(hook, /stableHookCorrelation/);
+  assert.match(hook, /stableToolCorrelation/);
+  assert.match(preAction, /stableToolCorrelation/);
   assert.match(hook, /event_id: `posttool-\$\{lifecycleCorrelation\}`/);
+  assert.match(preAction, /event_id: `pretool-\$\{correlation\}`/);
   assert.match(hook, /business outcome pending/);
   assert.doesNotMatch(hook, /marrowAuto\(/);
   assert.doesNotMatch(hook, /outcome_committed/);
   assert.match(context, /classified agent request:/);
   assert.doesNotMatch(context, /const action = redactedPrompt|action: redactedPrompt/);
   assert.match(context, /event_id: `prompt-\$\{requestCorrelation\}`/);
-  assert.match(context, /event_id: `preaction-\$\{requestCorrelation\}`/);
-  assert.match(hook, /observed_hook: 'action_result'/);
-  assert.match(context, /observed_hook: 'pre_action'/);
+  assert.match(hook, /nativeHookEvidence\('action_result'\)/);
+  assert.match(context, /nativeHookEvidence\('prompt'\)/);
 });
 
-test('native MCP hook receipts carry bounded capability and configuration evidence', async () => {
+test('generic lifecycle events cannot impersonate native hook coverage', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-capability-'));
   const path = join(directory, 'spool.json');
   const originalFetch = globalThis.fetch;
@@ -73,16 +82,91 @@ test('native MCP hook receipts carry bounded capability and configuration eviden
       }));
       const [event] = JSON.parse(readFileSync(path, 'utf8'));
       assert.equal(event.correlation_id, 'correlation-one');
-      assert.equal(event.capability_level, 'native_hooks');
-      assert.equal(event.adapter_version, '3.9.50');
-      assert.match(event.config_fingerprint, /^[a-f0-9]{64}$/);
-      assert.deepEqual(event.expected_hooks, ['pre_action', 'action_result', 'session_end']);
+      assert.equal('capability_level' in event, false);
+      assert.equal('adapter_version' in event, false);
+      assert.equal('config_fingerprint' in event, false);
+      assert.equal('expected_hooks' in event, false);
       assert.equal(event.observed_hook, 'action_result');
     });
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('native MCP hook receipts carry bounded capability and actual configuration evidence', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-native-capability-'));
+  const path = join(directory, 'spool.json');
+  const settingsDir = join(directory, '.claude');
+  mkdirSync(settingsDir, { recursive: true });
+  writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({
+    hooks: {
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp context-hook' }] }],
+      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp pre-action-hook' }] }],
+      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp hook' }] }],
+      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp hook' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp session-hook' }] }],
+    },
+  }));
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{}', { status: 503 });
+  try {
+    await withSpoolPath(path, async () => {
+      await recordLifecycleEvent(lifecycleInput({
+        correlation_id: 'correlation-native',
+        ...nativeHookEvidence('action_result', directory),
+      }));
+      const [event] = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(event.capability_level, 'native_hooks');
+      assert.equal(event.adapter_version, '3.9.50');
+      assert.match(event.config_fingerprint, /^[a-f0-9]{64}$/);
+      assert.deepEqual(event.expected_hooks, ['prompt', 'pre_action', 'action_result', 'session_end']);
+      assert.equal(event.observed_hook, 'action_result');
+
+      const before = nativeHookConfigurationFingerprint(directory);
+      const changed = JSON.parse(readFileSync(join(settingsDir, 'settings.json'), 'utf8'));
+      changed.hooks.PreToolUse[0].hooks[0].command = 'echo fake';
+      writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify(changed));
+      assert.notEqual(nativeHookConfigurationFingerprint(directory), before);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('pre-action and result hooks share tool correlation while sessions share workflow identity', () => {
+  const event = {
+    session_id: 'session-one',
+    tool_use_id: 'tool-use-one',
+    tool_name: 'Bash',
+    tool_input: { command: 'deploy' },
+  };
+  assert.equal(stableToolCorrelation(event), stableToolCorrelation({ ...event, tool_input: { command: 'changed after execution' } }));
+  assert.notEqual(stableToolCorrelation(event), stableToolCorrelation({ ...event, tool_use_id: 'tool-use-two' }));
+  assert.equal(stableSessionWorkflowId('session-one'), stableSessionWorkflowId('session-one', 'other'));
+});
+
+test('pre-action policy maps block to deny, review to ask, and allow to native permission flow', () => {
+  const block = preActionHookOutput({
+    risk_gate: { allow: false, decision: 'block', reasons: [{ message: 'proof missing' }] },
+    exact_next_action: 'collect proof',
+  });
+  assert.equal(block.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(block.hookSpecificOutput.permissionDecisionReason, 'collect proof');
+
+  const review = preActionHookOutput({
+    risk_gate: { allow: true, decision: 'review_required', reasons: [] },
+    exact_next_action: 'ask owner',
+  });
+  assert.equal(review.hookSpecificOutput.permissionDecision, 'ask');
+
+  const allow = preActionHookOutput({
+    risk_gate: { allow: true, decision: 'allow', reasons: [] },
+    before_you_act: 'reuse the prior lesson',
+  });
+  assert.equal('permissionDecision' in allow.hookSpecificOutput, false);
+  assert.equal(allow.hookSpecificOutput.additionalContext, 'reuse the prior lesson');
 });
 
 test('MCP lifecycle spool keeps compact redacted receipts across process attempts', async () => {

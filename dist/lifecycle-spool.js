@@ -32,11 +32,6 @@ const RISK_LEVELS = new Set(['low', 'medium', 'high']);
 const OUTCOME_STATES = new Set(['pending', 'closed', 'unknown', 'timed_out']);
 const CAPABILITY_LEVELS = new Set(['native_hooks', 'mcp', 'sdk_passive_runtime', 'governed_wrapper', 'event_contract']);
 const INTERVENTION_DISPOSITIONS = new Set(['followed', 'ignored', 'overridden']);
-const MCP_ADAPTER_VERSION = '3.9.50';
-const MCP_EXPECTED_HOOKS = ['pre_action', 'action_result', 'session_end'];
-const MCP_CONFIG_FINGERPRINT = (0, node_crypto_1.createHash)('sha256')
-    .update(`mcp-native-hooks:${MCP_ADAPTER_VERSION}:${MCP_EXPECTED_HOOKS.join(',')}`)
-    .digest('hex');
 const MAX_EVENTS = 1000;
 const MAX_RECORD_BYTES = 4096;
 const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
@@ -216,7 +211,7 @@ function compact(input) {
         || workflowId
         || sessionId
         || eventId;
-    const expectedHooks = hookList(input.expected_hooks || MCP_EXPECTED_HOOKS);
+    const expectedHooks = hookList(input.expected_hooks);
     return validateStoredEvent({
         event_id: eventId,
         event_type: input.event_type,
@@ -227,11 +222,11 @@ function compact(input) {
         ...(sessionId ? { session_id: sessionId } : {}),
         ...(decisionId ? { decision_id: decisionId } : {}),
         correlation_id: correlationId,
-        adapter_version: optionalId(input.adapter_version, 'adapter_version') || MCP_ADAPTER_VERSION,
-        capability_level: input.capability_level || 'native_hooks',
-        config_fingerprint: optionalId(input.config_fingerprint, 'config_fingerprint') || MCP_CONFIG_FINGERPRINT,
-        expected_hooks: expectedHooks,
-        observed_hook: optionalId(input.observed_hook, 'observed_hook') || 'action_result',
+        ...(optionalId(input.adapter_version, 'adapter_version') ? { adapter_version: optionalId(input.adapter_version, 'adapter_version') } : {}),
+        ...(input.capability_level ? { capability_level: input.capability_level } : {}),
+        ...(optionalId(input.config_fingerprint, 'config_fingerprint') ? { config_fingerprint: optionalId(input.config_fingerprint, 'config_fingerprint') } : {}),
+        ...(expectedHooks ? { expected_hooks: expectedHooks } : {}),
+        ...(optionalId(input.observed_hook, 'observed_hook') ? { observed_hook: optionalId(input.observed_hook, 'observed_hook') } : {}),
         ...(input.intervention_disposition ? { intervention_disposition: input.intervention_disposition } : {}),
         ...(typeof input.action_changed === 'boolean' ? { action_changed: input.action_changed } : {}),
         ...(input.risk_level ? { risk_level: input.risk_level } : {}),

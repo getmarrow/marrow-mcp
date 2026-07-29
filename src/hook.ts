@@ -1,7 +1,16 @@
 import { validateBaseUrl } from './index';
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
-import { createHash } from 'node:crypto';
+import {
+  ACTION_RESULT_HOOK_COMMAND,
+  findHookSettingsPath,
+  hasExactCommandHook,
+  nativeHookEvidence,
+  NATIVE_HOOK_MATCHER,
+  readHookSettings,
+  stableSessionWorkflowId,
+  stableToolCorrelation,
+} from './hook-contract';
 
 const SKIP_TOOLS = new Set([
   'read',
@@ -46,8 +55,8 @@ const READ_ONLY_BASH_COMMANDS = new Set([
   'uname',
 ]);
 
-export const AUTO_HOOK_COMMAND = 'npx -y @getmarrow/mcp hook';
-export const AUTO_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*';
+export const AUTO_HOOK_COMMAND = ACTION_RESULT_HOOK_COMMAND;
+export const AUTO_HOOK_MATCHER = NATIVE_HOOK_MATCHER;
 const HOOK_DEBUG = process.env.MARROW_HOOK_DEBUG === 'true';
 
 function debug(msg: string): void {
@@ -62,6 +71,8 @@ interface HookEvent {
   tool_input?: unknown;
   tool_response?: unknown;
   tool_result?: unknown;
+  error?: unknown;
+  is_interrupt?: boolean;
 }
 
 interface HookInstallResult {
@@ -98,14 +109,6 @@ function safeStringify(value: unknown, max: number): string {
   } catch {
     return truncate(String(value), max);
   }
-}
-
-function extractFilePath(toolInput: Record<string, unknown>): string | undefined {
-  for (const key of ['file_path', 'path', 'target_file', 'filename']) {
-    const value = getString(toolInput[key]);
-    if (value) return value;
-  }
-  return undefined;
 }
 
 function extractDescription(toolInput: Record<string, unknown>): string | undefined {
@@ -201,20 +204,6 @@ function extractFirstArg(toolInput: unknown): string | undefined {
   return safeStringify(record, 120);
 }
 
-function buildMcpArgsSummary(toolInput: unknown): string | undefined {
-  const record = asRecord(toolInput);
-  if (!record) {
-    const first = extractFirstArg(toolInput);
-    return first ? truncate(normalizeWhitespace(first), 120) : undefined;
-  }
-
-  const clone: Record<string, unknown> = { ...record };
-  delete clone.description;
-  const keys = Object.keys(clone);
-  if (keys.length === 0) return undefined;
-  return safeStringify(clone, 120);
-}
-
 function deriveAction(event: HookEvent): string | null {
   const toolName = getString(event.tool_name);
   if (!toolName || shouldSkipAutoLog(event)) return null;
@@ -239,24 +228,15 @@ function deriveToolSuccess(event: HookEvent): boolean {
   const responseRecord = asRecord(response);
   const errorValue = responseRecord?.error;
 
-  const failed = errorValue !== undefined && errorValue !== null
+  const failed = event.hook_event_name === 'PostToolUseFailure'
+    || event.error != null
+    || errorValue !== undefined && errorValue !== null
     || responseRecord?.is_error === true
     || responseRecord?.success === false
     || (typeof responseRecord?.exit_code === 'number' && responseRecord.exit_code !== 0)
     || /^(?:failed|error|blocked)$/i.test(String(responseRecord?.status || ''));
 
   return !failed;
-}
-
-function stableHookCorrelation(event: HookEvent): string {
-  const source = getString(event.tool_use_id)
-    || JSON.stringify([
-      getString(event.session_id) || '',
-      getString(event.hook_event_name) || 'PostToolUse',
-      getString(event.tool_name) || 'tool',
-      event.tool_input || null,
-    ]);
-  return createHash('sha256').update(source).digest('hex').slice(0, 32);
 }
 
 async function readStdin(): Promise<string> {
@@ -268,80 +248,27 @@ async function readStdin(): Promise<string> {
   return chunks.join('');
 }
 
-function getHomeDir(): string {
-  return process.env.HOME || process.env.USERPROFILE || process.cwd();
-}
-
-function looksLikeProjectRoot(dir: string): boolean {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-  return ['.git', 'package.json', 'CLAUDE.md'].some((name) => fs.existsSync(path.join(dir, name)));
-}
-
-function findSettingsPath(startDir: string): string {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-
-  let dir = startDir;
-  let fallbackProjectDir: string | null = null;
-
-  while (true) {
-    const claudeDir = path.join(dir, '.claude');
-    const settingsPath = path.join(claudeDir, 'settings.json');
-
-    if (fs.existsSync(settingsPath) || fs.existsSync(claudeDir)) {
-      return settingsPath;
-    }
-
-    if (!fallbackProjectDir && looksLikeProjectRoot(dir)) {
-      fallbackProjectDir = dir;
-    }
-
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-
-  if (fallbackProjectDir) {
-    return path.join(fallbackProjectDir, '.claude', 'settings.json');
-  }
-
-  return path.join(getHomeDir(), '.claude', 'settings.json');
-}
-
 export function installPostToolUseHook(startDir: string = process.cwd()): HookInstallResult {
   const fs = require('fs') as typeof import('fs');
   const path = require('path') as typeof import('path');
 
-  const settingsPath = findSettingsPath(startDir);
-  let settings: Record<string, unknown> = {};
-
-  if (fs.existsSync(settingsPath)) {
-    const raw = fs.readFileSync(settingsPath, 'utf8').trim();
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      const record = asRecord(parsed);
-      if (!record) {
-        throw new Error(`Existing settings file is not a JSON object: ${settingsPath}`);
-      }
-      settings = record;
-    }
-  }
+  const settingsPath = findHookSettingsPath(startDir);
+  const settings = readHookSettings(startDir);
 
   const hooks = asRecord(settings.hooks) || {};
   const postToolUse = Array.isArray(hooks.PostToolUse) ? [...hooks.PostToolUse] : [];
+  const postToolUseFailure = Array.isArray(hooks.PostToolUseFailure) ? [...hooks.PostToolUseFailure] : [];
+  const successInstalled = hasExactCommandHook(settings, 'PostToolUse', AUTO_HOOK_COMMAND, AUTO_HOOK_MATCHER);
+  const failureInstalled = hasExactCommandHook(settings, 'PostToolUseFailure', AUTO_HOOK_COMMAND, AUTO_HOOK_MATCHER);
 
-  const alreadyInstalled = postToolUse.some((entry) => {
-    const record = asRecord(entry);
-    if (!record || !Array.isArray(record.hooks)) return false;
-    return record.hooks.some((hook) => {
-      const hookRecord = asRecord(hook);
-      return !!(hookRecord && typeof hookRecord.command === 'string' && hookRecord.command.includes(AUTO_HOOK_COMMAND));
-    });
-  });
-
-  if (!alreadyInstalled) {
+  if (!successInstalled) {
     postToolUse.push({
+      matcher: AUTO_HOOK_MATCHER,
+      hooks: [{ type: 'command', command: AUTO_HOOK_COMMAND }],
+    });
+  }
+  if (!failureInstalled) {
+    postToolUseFailure.push({
       matcher: AUTO_HOOK_MATCHER,
       hooks: [{ type: 'command', command: AUTO_HOOK_COMMAND }],
     });
@@ -350,6 +277,7 @@ export function installPostToolUseHook(startDir: string = process.cwd()): HookIn
   settings.hooks = {
     ...hooks,
     PostToolUse: postToolUse,
+    PostToolUseFailure: postToolUseFailure,
   };
 
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
@@ -357,7 +285,7 @@ export function installPostToolUseHook(startDir: string = process.cwd()): HookIn
 
   return {
     settingsPath,
-    installed: !alreadyInstalled,
+    installed: !successInstalled || !failureInstalled,
   };
 }
 
@@ -412,7 +340,7 @@ export async function runHookCommand(): Promise<void> {
     const eventType = toolName === 'bash'
       ? success ? 'command_completed' : 'command_failed'
       : success ? 'tool_completed' : 'tool_failed';
-    const lifecycleCorrelation = stableHookCorrelation(event);
+    const lifecycleCorrelation = stableToolCorrelation({ ...event, session_id: sessionId });
     await recordLifecycleEvent({
       apiKey,
       baseUrl,
@@ -422,9 +350,9 @@ export async function runHookCommand(): Promise<void> {
         harness: 'claude-code',
         agent_id: agentId,
         session_id: sessionId,
-        workflow_id: `workflow-${lifecycleCorrelation}`,
+        workflow_id: stableSessionWorkflowId(sessionId, event.tool_use_id),
         correlation_id: lifecycleCorrelation,
-        observed_hook: 'action_result',
+        ...nativeHookEvidence('action_result'),
         action,
         success,
         outcome_state: 'pending',
