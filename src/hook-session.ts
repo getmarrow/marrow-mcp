@@ -124,6 +124,8 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
       agent_id: agentId,
       session_id: sessionId,
       workflow_id: `session-${correlation}`,
+      correlation_id: correlation,
+      observed_hook: 'session_end',
       action: 'agent session ended',
       outcome_state: 'pending',
     },

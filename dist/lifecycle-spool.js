@@ -30,8 +30,15 @@ exports.LIFECYCLE_EVENT_TYPES = [
 const EVENT_TYPES = new Set(exports.LIFECYCLE_EVENT_TYPES);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
 const OUTCOME_STATES = new Set(['pending', 'closed', 'unknown', 'timed_out']);
+const CAPABILITY_LEVELS = new Set(['native_hooks', 'mcp', 'sdk_passive_runtime', 'governed_wrapper', 'event_contract']);
+const INTERVENTION_DISPOSITIONS = new Set(['followed', 'ignored', 'overridden']);
+const MCP_ADAPTER_VERSION = '3.9.50';
+const MCP_EXPECTED_HOOKS = ['pre_action', 'action_result', 'session_end'];
+const MCP_CONFIG_FINGERPRINT = (0, node_crypto_1.createHash)('sha256')
+    .update(`mcp-native-hooks:${MCP_ADAPTER_VERSION}:${MCP_EXPECTED_HOOKS.join(',')}`)
+    .digest('hex');
 const MAX_EVENTS = 1000;
-const MAX_RECORD_BYTES = 2048;
+const MAX_RECORD_BYTES = 4096;
 const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
 const MAX_ATTEMPTS = 3;
 const DELIVERY_REQUEST_TIMEOUT_MS = 750;
@@ -63,6 +70,16 @@ function compactAction(value) {
     if (!safe)
         throw new Error('invalid lifecycle action');
     return safe;
+}
+function hookList(value) {
+    if (value == null)
+        return undefined;
+    if (!Array.isArray(value) || value.length > 12)
+        throw new Error('invalid lifecycle expected_hooks');
+    const hooks = value.map((hook) => optionalId(hook, 'expected_hooks'));
+    if (hooks.some((hook) => !hook))
+        throw new Error('invalid lifecycle expected_hooks');
+    return [...new Set(hooks)];
 }
 function canonicalTimestamp(value) {
     const timestamp = value == null ? new Date().toISOString() : String(value).trim();
@@ -136,6 +153,13 @@ function validateStoredEvent(value) {
         throw new Error('invalid lifecycle risk_level');
     if (event.outcome_state != null && !OUTCOME_STATES.has(String(event.outcome_state)))
         throw new Error('invalid lifecycle outcome_state');
+    if (event.capability_level != null && !CAPABILITY_LEVELS.has(String(event.capability_level)))
+        throw new Error('invalid lifecycle capability_level');
+    if (event.intervention_disposition != null && !INTERVENTION_DISPOSITIONS.has(String(event.intervention_disposition)))
+        throw new Error('invalid lifecycle intervention_disposition');
+    if (event.action_changed != null && typeof event.action_changed !== 'boolean')
+        throw new Error('invalid lifecycle action_changed');
+    const expectedHooks = hookList(event.expected_hooks);
     const stored = {
         event_id: safeId(event.event_id) || (() => { throw new Error('invalid lifecycle event_id'); })(),
         event_type: String(event.event_type),
@@ -145,6 +169,14 @@ function validateStoredEvent(value) {
         ...(safeId(event.workflow_id) ? { workflow_id: safeId(event.workflow_id) } : {}),
         ...(safeId(event.session_id) ? { session_id: safeId(event.session_id) } : {}),
         ...(safeId(event.decision_id) ? { decision_id: safeId(event.decision_id) } : {}),
+        ...(safeId(event.correlation_id) ? { correlation_id: safeId(event.correlation_id) } : {}),
+        ...(safeId(event.adapter_version) ? { adapter_version: safeId(event.adapter_version) } : {}),
+        ...(event.capability_level ? { capability_level: String(event.capability_level) } : {}),
+        ...(safeId(event.config_fingerprint) ? { config_fingerprint: safeId(event.config_fingerprint) } : {}),
+        ...(expectedHooks ? { expected_hooks: expectedHooks } : {}),
+        ...(safeId(event.observed_hook) ? { observed_hook: safeId(event.observed_hook) } : {}),
+        ...(event.intervention_disposition ? { intervention_disposition: String(event.intervention_disposition) } : {}),
+        ...(typeof event.action_changed === 'boolean' ? { action_changed: event.action_changed } : {}),
         ...(event.risk_level ? { risk_level: String(event.risk_level) } : {}),
         ...(event.outcome_state ? { outcome_state: String(event.outcome_state) } : {}),
         ...(typeof event.success === 'boolean' ? { success: event.success } : {}),
@@ -167,12 +199,24 @@ function compact(input) {
         throw new Error('invalid lifecycle risk_level');
     if (input.outcome_state != null && !OUTCOME_STATES.has(input.outcome_state))
         throw new Error('invalid lifecycle outcome_state');
+    if (input.capability_level != null && !CAPABILITY_LEVELS.has(input.capability_level))
+        throw new Error('invalid lifecycle capability_level');
+    if (input.intervention_disposition != null && !INTERVENTION_DISPOSITIONS.has(input.intervention_disposition))
+        throw new Error('invalid lifecycle intervention_disposition');
+    if (input.action_changed != null && typeof input.action_changed !== 'boolean')
+        throw new Error('invalid lifecycle action_changed');
     const eventId = optionalId(input.event_id, 'event_id') || (0, node_crypto_1.randomUUID)();
     const harness = optionalId(input.harness, 'harness') || 'custom';
     const agentId = optionalId(input.agent_id, 'agent_id') || 'unknown';
     const workflowId = optionalId(input.workflow_id, 'workflow_id');
     const sessionId = optionalId(input.session_id, 'session_id');
     const decisionId = optionalId(input.decision_id, 'decision_id');
+    const correlationId = optionalId(input.correlation_id, 'correlation_id')
+        || decisionId
+        || workflowId
+        || sessionId
+        || eventId;
+    const expectedHooks = hookList(input.expected_hooks || MCP_EXPECTED_HOOKS);
     return validateStoredEvent({
         event_id: eventId,
         event_type: input.event_type,
@@ -182,6 +226,14 @@ function compact(input) {
         ...(workflowId ? { workflow_id: workflowId } : {}),
         ...(sessionId ? { session_id: sessionId } : {}),
         ...(decisionId ? { decision_id: decisionId } : {}),
+        correlation_id: correlationId,
+        adapter_version: optionalId(input.adapter_version, 'adapter_version') || MCP_ADAPTER_VERSION,
+        capability_level: input.capability_level || 'native_hooks',
+        config_fingerprint: optionalId(input.config_fingerprint, 'config_fingerprint') || MCP_CONFIG_FINGERPRINT,
+        expected_hooks: expectedHooks,
+        observed_hook: optionalId(input.observed_hook, 'observed_hook') || 'action_result',
+        ...(input.intervention_disposition ? { intervention_disposition: input.intervention_disposition } : {}),
+        ...(typeof input.action_changed === 'boolean' ? { action_changed: input.action_changed } : {}),
         ...(input.risk_level ? { risk_level: input.risk_level } : {}),
         ...(input.outcome_state ? { outcome_state: input.outcome_state } : {}),
         ...(typeof input.success === 'boolean' ? { success: input.success } : {}),

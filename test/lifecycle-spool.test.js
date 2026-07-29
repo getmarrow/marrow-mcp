@@ -56,6 +56,33 @@ test('passive hooks use stable source correlations and never auto-close tool exi
   assert.doesNotMatch(context, /const action = redactedPrompt|action: redactedPrompt/);
   assert.match(context, /event_id: `prompt-\$\{requestCorrelation\}`/);
   assert.match(context, /event_id: `preaction-\$\{requestCorrelation\}`/);
+  assert.match(hook, /observed_hook: 'action_result'/);
+  assert.match(context, /observed_hook: 'pre_action'/);
+});
+
+test('native MCP hook receipts carry bounded capability and configuration evidence', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-capability-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{}', { status: 503 });
+  try {
+    await withSpoolPath(path, async () => {
+      await recordLifecycleEvent(lifecycleInput({
+        correlation_id: 'correlation-one',
+        observed_hook: 'action_result',
+      }));
+      const [event] = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(event.correlation_id, 'correlation-one');
+      assert.equal(event.capability_level, 'native_hooks');
+      assert.equal(event.adapter_version, '3.9.50');
+      assert.match(event.config_fingerprint, /^[a-f0-9]{64}$/);
+      assert.deepEqual(event.expected_hooks, ['pre_action', 'action_result', 'session_end']);
+      assert.equal(event.observed_hook, 'action_result');
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('MCP lifecycle spool keeps compact redacted receipts across process attempts', async () => {

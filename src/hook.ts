@@ -423,6 +423,8 @@ export async function runHookCommand(): Promise<void> {
         agent_id: agentId,
         session_id: sessionId,
         workflow_id: `workflow-${lifecycleCorrelation}`,
+        correlation_id: lifecycleCorrelation,
+        observed_hook: 'action_result',
         action,
         success,
         outcome_state: 'pending',

@@ -82,12 +82,20 @@ Then configure the MCP server:
 For most new installations, start with the universal installer instead:
 
 ```bash
-npx @getmarrow/install --yes
+npx @getmarrow/install activate
 ```
 
-## What's New in v3.9.49
+## What's New in v3.9.50
 
-v3.9.49 adds `marrow_arbitrate`, a typed tool for resolving conflicting tenant-agent proposals through Marrow's canonical `/v1/agent/runtime` contract before execution. It returns the normal gate/proof contract plus an explainable `selected`, `synthesized`, `review_required`, or `blocked` receipt. It preserves the session-orientation hardening introduced in v3.9.48, the machine-readable governance-fit contract introduced in v3.9.47, and the always-on lifecycle introduced in v3.9.44:
+v3.9.50 makes native passive-hook coverage verifiable. `UserPromptSubmit`, `PostToolUse`, and `Stop` now attach one stable source correlation, the observed hook surface, the native-hook capability level, the adapter version, and a one-way configuration fingerprint to compact lifecycle receipts:
+
+- agents and owners can distinguish “MCP configured” from “pre-action, result, and session hooks actually observed”;
+- retries preserve the same correlation and capability evidence in the owner-only durable spool;
+- configuration drift can be diagnosed without sending configuration contents;
+- missing outcome closure remains visible rather than treating tool or session exit as business success;
+- existing MCP tools and lifecycle inputs remain compatible.
+
+It preserves `marrow_arbitrate` from v3.9.49, the session-orientation hardening introduced in v3.9.48, and the always-on lifecycle introduced in v3.9.44:
 
 - `server.json` and `mcpName` identify the stdio server, required secret, source repository, and package version for registry consumers;
 - GitHub, npm, and MCP registry surfaces use separate signed discovery placements;
@@ -101,6 +109,8 @@ v3.9.49 adds `marrow_arbitrate`, a typed tool for resolving conflicting tenant-a
 - `marrow_decision_trace` explains the tenant-scoped path from prior failure and lesson through gate, proof, workflow, and outcome.
 
 Existing MCP tools and stable context API names remain compatible. Authentication, policy, proof, and validation failures are surfaced rather than retried as network failures.
+
+Coverage percentages are produced only when Marrow has exact observed receipts. An installed config without observed hooks is shown as warming up or degraded, with `npx @getmarrow/install --repair` as the bounded repair path.
 
 ## Governed Action Flow
 
