@@ -51,7 +51,10 @@ test('setup upgrades legacy and old pinned hooks to one exact certified handler'
     permissions: { allow: ['Read'] },
     hooks: {
       UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp context-hook', timeout: 11 }] }],
-      PreToolUse: [{ matcher: NATIVE_HOOK_MATCHER, hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.49 pre-action-hook', timeout: 12 }] }],
+      PreToolUse: [{ matcher: NATIVE_HOOK_MATCHER, hooks: [
+        { type: 'command', command: 'npx -y @getmarrow/mcp@3.9.49 pre-action-hook', timeout: 12 },
+        { type: 'command', command: 'npx -y @getmarrow/mcp@3.9.49 hook', timeout: 99 },
+      ] }],
       PostToolUse: [{ matcher: NATIVE_HOOK_MATCHER, hooks: [
         { type: 'command', command: 'npx -y @getmarrow/mcp hook', timeout: 13 },
         { type: 'command', command: 'printf unrelated' },
@@ -81,6 +84,10 @@ test('setup upgrades legacy and old pinned hooks to one exact certified handler'
     assert.deepEqual(settings.permissions, { allow: ['Read'] });
     assert.equal(settings.hooks.PostToolUse[0].hooks[0].command, 'printf unrelated');
     assert.equal(commandHandlers(settings, 'PostToolUseFailure', 'hook')[0].handler.timeout, 14);
+    const activeMarrowHandlers = Object.values(settings.hooks).flatMap((entries) => entries)
+      .flatMap((entry) => entry.hooks || [])
+      .filter((handler) => /^npx\s+(?:-y\s+)?@getmarrow\/mcp(?:@[^\s]+)?\s+/.test(handler.command || ''));
+    assert.equal(activeMarrowHandlers.length, 5);
 
     installAll(directory);
     assert.equal(readFileSync(settingsPath, 'utf8'), first);
