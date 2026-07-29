@@ -14,7 +14,6 @@ import {
   marrowCommit,
   marrowOrient,
   marrowStatus,
-  marrowAgentPatterns,
   marrowAsk,
   marrowWorkflow,
   marrowDashboard,
@@ -65,7 +64,7 @@ import { installSessionEndHook, runSessionHookCommand } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
 import { resolveMarrowEnv } from './env';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
-import type { ThinkResult, OrientResult, MarrowMemory } from './types';
+import type { ThinkResult, MarrowMemory } from './types';
 
 // Parse CLI args
 function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean } {
@@ -318,34 +317,6 @@ let cachedOrientWarnings: Array<{ type: string; failureRate: number; message: st
 let thinkCallCount = 0;
 let orientCallCount = 0;
 let initialized = false;
-
-// Pending decision map for marrow_auto (action hash → decision_id)
-interface PendingDecision {
-  decision_id: string;
-  timestamp: number;
-}
-const pendingDecisions = new Map<string, PendingDecision>();
-const PENDING_TTL_MS = 30 * 60 * 1000; // 30 min TTL
-
-function actionHash(action: string): string {
-  const normalized = action.toLowerCase().trim().replace(/\s+/g, ' ');
-  let h = 5381;
-  for (let i = 0; i < normalized.length; i++) {
-    h = ((h << 5) + h) ^ normalized.charCodeAt(i);
-    h = h >>> 0;
-  }
-  return h.toString(36) + '_' + normalized.slice(0, 32);
-}
-
-// [FIX #11] Actually call cleanupPending to prevent unbounded map growth
-function cleanupPending(): void {
-  const now = Date.now();
-  for (const [key, val] of pendingDecisions) {
-    if (now - val.timestamp > PENDING_TTL_MS) {
-      pendingDecisions.delete(key);
-    }
-  }
-}
 
 function formatWarningActionably(w: { type: string; failureRate: number; message: string }): string {
   const pct = Math.round(w.failureRate * 100);
@@ -1893,9 +1864,6 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
         const outcome = args.outcome as string | undefined;
         const outcomeSuccess = (args.success as boolean) ?? true;
         const type = (args.type as string) || 'general';
-
-        // [FIX #11] Cleanup pending decisions on each auto call
-        cleanupPending();
 
         // [FIX #8] Include pending flag so agent knows logging is deferred
         const response: Record<string, unknown> = {
