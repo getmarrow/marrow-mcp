@@ -815,7 +815,7 @@ async function marrowWorkflowGate(apiKey, baseUrl, input, sessionId, agentId) {
     const json = await safeJsonResponse(res);
     return json.data;
 }
-async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId) {
+async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId, signal) {
     const body = {
         ...input,
         agent_id: input.agent_id || agentId,
@@ -825,6 +825,7 @@ async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId) {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
+        signal,
     });
     const json = await safeJsonResponse(res);
     return json.data;

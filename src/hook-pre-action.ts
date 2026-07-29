@@ -97,13 +97,15 @@ function emitDecision(runtime: Awaited<ReturnType<typeof marrowAgentRuntime>> | 
   process.stdout.write(JSON.stringify(preActionHookOutput(runtime)));
 }
 
-async function withTimeout<T>(promise: Promise<T>): Promise<T | null> {
+async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      promise,
+      operation(controller.signal),
       new Promise<null>((resolve) => {
         timer = setTimeout(() => {
+          controller.abort();
           resolve(null);
         }, RUNTIME_TIMEOUT_MS);
       }),
@@ -178,12 +180,12 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       outcome_state: 'pending',
     },
   }).catch(() => null);
-  const runtime = marrowAgentRuntime(resolved.apiKey, baseUrl, {
+  const runtime = (signal: AbortSignal) => marrowAgentRuntime(resolved.apiKey, baseUrl, {
     action: classified.action,
     type: classified.type,
     role: classified.role,
     surfaces: classified.surfaces,
-  }, sessionId, agentId);
+  }, sessionId, agentId, signal);
   const [result] = await Promise.all([withTimeout(runtime), lifecycle]);
   emitDecision(result);
 }
