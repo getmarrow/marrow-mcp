@@ -85,9 +85,9 @@ For most new installations, start with the universal installer instead:
 npx @getmarrow/install --yes
 ```
 
-## What's New in v3.9.48
+## What's New in v3.9.49
 
-v3.9.48 moves session orientation onto Marrow's canonical `/v1/agent/runtime` contract. Agent-bound keys now receive before-action warnings without depending on retired broad-scope orient or pattern routes. It preserves the machine-readable governance-fit contract introduced in v3.9.47 and the always-on lifecycle introduced in v3.9.44:
+v3.9.49 adds `marrow_arbitrate`, a typed tool for resolving conflicting tenant-agent proposals through Marrow's canonical `/v1/agent/runtime` contract before execution. It returns the normal gate/proof contract plus an explainable `selected`, `synthesized`, `review_required`, or `blocked` receipt. It preserves the session-orientation hardening introduced in v3.9.48, the machine-readable governance-fit contract introduced in v3.9.47, and the always-on lifecycle introduced in v3.9.44:
 
 - `server.json` and `mcpName` identify the stdio server, required secret, source repository, and package version for registry consumers;
 - GitHub, npm, and MCP registry surfaces use separate signed discovery placements;
@@ -157,6 +157,43 @@ Example closeout:
 
 High-risk work can be allowed, warned, held for review, or blocked according to account policy. Low-risk work can use passive guidance and bounded cached state where the runtime contract permits it.
 
+When two or more agents disagree on the next action, call `marrow_arbitrate`
+before either proposal executes. It uses the same `/v1/agent/runtime` control
+plane and returns `selected`, `synthesized`, `review_required`, or `blocked`
+with a durable tenant-scoped receipt explaining the policy, evidence, authority,
+risk, and dissent behind the result.
+
+```json
+{
+  "tool": "marrow_arbitrate",
+  "arguments": {
+    "objective": "Release the audited backend change safely",
+    "ownerIntent": "Production deploys require independent audit proof",
+    "proposals": [
+      {
+        "proposal_id": "deploy-now",
+        "agent_id": "jarvis",
+        "action": "Deploy the tested commit now",
+        "risk_level": "high"
+      },
+      {
+        "proposal_id": "audit-first",
+        "agent_id": "barvis",
+        "action": "Audit the exact commit, then release only if it passes"
+      }
+    ]
+  }
+}
+```
+
+Marrow resolves agent roles from the account rather than trusting caller claims.
+Evidence references must be opaque identifiers; do not send raw prompts, logs,
+URLs, paths, credentials, or customer content. The arbitration response owns the
+`decision_id`, gate receipt, and arbitration receipt used at commit. A
+`review_required` result must be approved from an authenticated Marrow dashboard
+session; pass its short-lived, single-use `owner_approval_receipt_id` to
+`marrow_commit`. An agent cannot authorize itself with a proof field.
+
 ## Passive Use
 
 `npx @getmarrow/mcp setup` installs supported prompt, tool-result, and session-stop hooks so the agent can receive before-action context, record meaningful tool outcomes, and keep unfinished closure visible without the owner repeatedly prompting it to use Marrow.
@@ -176,6 +213,7 @@ Status diagnostics distinguish missing keys, invalid keys, wrong bound-agent ide
 | Tool | Purpose |
 | --- | --- |
 | `marrow_agent_runtime` | One-call pre-action status, policy gate, relevant lessons, proof requirements, and exact next action |
+| `marrow_arbitrate` | Resolve conflicting agent proposals before execution and return an explainable arbitration receipt |
 | `marrow_decision_brief` | Compact operating brief for meaningful work |
 | `marrow_think` | Record intent and retrieve relevant governance intelligence |
 | `marrow_commit` | Close an action with outcome, receipt, and proof |

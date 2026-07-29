@@ -133,6 +133,175 @@ test('marrowAuto redacts action context and source_meta before think', async () 
   }
 });
 
+test('marrowArbitrate uses agent runtime and redacts conflicting proposals', async () => {
+  const { marrowArbitrate } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const leaked = 'MARROW_API_KEY=arbitration-test-secret-value';
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({
+      data: { ok: true, arbitration: { receipt_id: 'arb_1', resolution: 'selected' } },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const result = await marrowArbitrate('mrw_test_key', 'https://api.example.com', {
+      objective: 'Resolve release disagreement',
+      owner_intent: `Require proof ${leaked}`,
+      proposals: [
+        {
+          proposal_id: 'deploy',
+          agent_id: 'jarvis',
+          action: `Deploy ${leaked}`,
+          evidence: [{ kind: 'test_result', reference: 'tests:1325' }],
+        },
+        { proposal_id: 'audit', agent_id: 'barvis', action: 'Audit exact SHA first' },
+      ],
+    });
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/v1\/agent\/runtime$/);
+    assert.equal(calls[0].body.type, 'coordination');
+    assert.equal(calls[0].body.coordination.proposals.length, 2);
+    assert.equal(calls[0].body.coordination.proposals[0].evidence[0].reference, 'tests:1325');
+    assert.equal(result.arbitration.resolution, 'selected');
+    assert.doesNotMatch(JSON.stringify(calls[0].body), new RegExp(leaked));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowArbitrate redacts generated and explicit actions and enforces public collection bounds', async () => {
+  const { marrowArbitrate } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const leaked = 'MARROW_API_KEY=arbitration-objective-secret-value';
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({
+      data: { arbitration: { receipt_id: 'arb_safe', decision_id: 'decision_safe', resolution: 'selected' } },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  const proposals = Array.from({ length: 8 }, (_, index) => ({
+    proposal_id: `proposal-${index}`,
+    agent_id: `agent-${index}`,
+    action: `Verify option ${index}`,
+    evidence: Array.from({ length: 8 }, (__, evidenceIndex) => ({
+      kind: 'test_result',
+      reference: `evidence:${index}:${evidenceIndex}`,
+    })),
+  }));
+  try {
+    await marrowArbitrate('mrw_test_key', 'https://api.example.com', {
+      objective: `Resolve ${leaked}`,
+      proposals,
+    });
+    await marrowArbitrate('mrw_test_key', 'https://api.example.com', {
+      objective: 'Resolve safely',
+      action: `Deploy ${leaked}`,
+      proposals,
+    });
+    assert.equal(calls.length, 2);
+    assert.doesNotMatch(JSON.stringify(calls), new RegExp(leaked));
+    assert.equal(calls[0].body.coordination.proposals.length, 8);
+    assert.equal(calls[0].body.coordination.proposals[0].evidence.length, 8);
+
+    await assert.rejects(
+      () => marrowArbitrate('mrw_test_key', 'https://api.example.com', {
+        objective: 'Too few',
+        proposals: proposals.slice(0, 1),
+      }),
+      /between 2 and 8 proposals/,
+    );
+    await assert.rejects(
+      () => marrowArbitrate('mrw_test_key', 'https://api.example.com', {
+        objective: 'Too many',
+        proposals: [...proposals, proposals[0]],
+      }),
+      /between 2 and 8 proposals/,
+    );
+    await assert.rejects(
+      () => marrowArbitrate('mrw_test_key', 'https://api.example.com', {
+        objective: 'Too much evidence',
+        proposals: [
+          { ...proposals[0], evidence: [...proposals[0].evidence, { kind: 'test_result', reference: 'evidence:extra' }] },
+          proposals[1],
+        ],
+      }),
+      /at most 8 evidence references/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowArbitrate preserves valid opaque identifiers and rejects unsafe aliases before transport', async () => {
+  const { marrowArbitrate } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({
+      data: { arbitration: { receipt_id: 'arb_opaque', decision_id: 'decision_opaque', resolution: 'selected' } },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const opaque = 'package_publish_candidate_20260729';
+    await marrowArbitrate('mrw_test_key', 'https://api.example.com', {
+      objective: 'Select the publication candidate',
+      proposals: [
+        {
+          proposal_id: opaque,
+          agent_id: 'release-agent',
+          action: 'Publish the candidate',
+          evidence: [{ kind: 'package_ref', reference: opaque }],
+        },
+        { proposal_id: 'hold-candidate', agent_id: 'review-agent', action: 'Hold the candidate' },
+      ],
+    });
+    assert.equal(calls[0].body.coordination.proposals[0].proposal_id, opaque);
+    assert.equal(calls[0].body.coordination.proposals[0].evidence[0].reference, opaque);
+
+    const secretShapes = ['sk', 'pk', 'ghp', 'github_pat', 'npm', 'cfut', 'mrw']
+      .map((prefix) => `${prefix}_${'a'.repeat(20)}`);
+    const baseProposal = {
+      proposal_id: 'proposal-one',
+      agent_id: 'release-agent',
+      action: 'Publish the candidate',
+      evidence: [{ kind: 'package_ref', reference: 'package:evidence' }],
+    };
+    const invalidProposals = [
+      ...secretShapes.flatMap((secretShape) => [
+        { ...baseProposal, proposal_id: secretShape },
+        { ...baseProposal, agent_id: secretShape },
+        { ...baseProposal, evidence: [{ kind: secretShape, reference: 'package:evidence' }] },
+        { ...baseProposal, evidence: [{ kind: 'package_ref', reference: secretShape }] },
+      ]),
+      { ...baseProposal, proposal_id: ' proposal-one' },
+      { ...baseProposal, agent_id: 'release-agent ' },
+      { ...baseProposal, evidence: [{ kind: ' package_ref', reference: 'package:evidence' }] },
+      { ...baseProposal, evidence: [{ kind: 'package_ref', reference: 'package:evidence ' }] },
+    ];
+    for (const invalid of invalidProposals) {
+      await assert.rejects(
+        () => marrowArbitrate('mrw_test_key', 'https://api.example.com', {
+          objective: 'Reject unsafe or aliased opaque values',
+          proposals: [
+            invalid,
+            { proposal_id: 'proposal-two', agent_id: 'review-agent', action: 'Hold the candidate' },
+          ],
+        }),
+        /safe opaque identifier/,
+      );
+    }
+    assert.equal(calls.length, 1, 'invalid opaque values must not reach transport');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('marrowCommit auto_gate fails closed when runtime lookup fails', async () => {
   const { marrowCommit } = require('../dist/index.js');
   const originalFetch = globalThis.fetch;
@@ -148,6 +317,36 @@ test('marrowCommit auto_gate fails closed when runtime lookup fails', async () =
       }),
       /auto_gate failed/
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowCommit carries an arbitration receipt through normal outcome closure', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (url, options) => {
+    captured = { url: String(url), body: JSON.parse(options.body) };
+    return new Response(JSON.stringify({ data: { committed: true } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  try {
+    await marrowCommit('mrw_test_key', 'https://api.example.com', {
+      decision_id: 'decision_arb_1',
+      success: true,
+      outcome: 'Verified the selected action',
+      gate_receipt_id: 'gate_arb_1',
+      arbitration_receipt_id: 'arb_receipt_1',
+      owner_approval_receipt_id: 'approval_receipt_1',
+      auto_gate: false,
+    });
+    assert.match(captured.url, /\/v1\/agent\/commit$/);
+    assert.equal(captured.body.arbitration_receipt_id, 'arb_receipt_1');
+    assert.equal(captured.body.owner_approval_receipt_id, 'approval_receipt_1');
   } finally {
     globalThis.fetch = originalFetch;
   }
