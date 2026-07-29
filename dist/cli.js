@@ -276,26 +276,6 @@ if (process.argv[2] !== 'keys') {
         let thinkCallCount = 0;
         let orientCallCount = 0;
         let initialized = false;
-        const pendingDecisions = new Map();
-        const PENDING_TTL_MS = 30 * 60 * 1000; // 30 min TTL
-        function actionHash(action) {
-            const normalized = action.toLowerCase().trim().replace(/\s+/g, ' ');
-            let h = 5381;
-            for (let i = 0; i < normalized.length; i++) {
-                h = ((h << 5) + h) ^ normalized.charCodeAt(i);
-                h = h >>> 0;
-            }
-            return h.toString(36) + '_' + normalized.slice(0, 32);
-        }
-        // [FIX #11] Actually call cleanupPending to prevent unbounded map growth
-        function cleanupPending() {
-            const now = Date.now();
-            for (const [key, val] of pendingDecisions) {
-                if (now - val.timestamp > PENDING_TTL_MS) {
-                    pendingDecisions.delete(key);
-                }
-            }
-        }
         function formatWarningActionably(w) {
             const pct = Math.round(w.failureRate * 100);
             return `⚠️ ${w.type} has ${pct}% failure rate — check what went wrong last time before proceeding`;
@@ -1663,8 +1643,6 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         const outcome = args.outcome;
                         const outcomeSuccess = args.success ?? true;
                         const type = args.type || 'general';
-                        // [FIX #11] Cleanup pending decisions on each auto call
-                        cleanupPending();
                         // [FIX #8] Include pending flag so agent knows logging is deferred
                         const response = {
                             action,
