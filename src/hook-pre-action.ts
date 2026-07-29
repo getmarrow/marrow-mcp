@@ -79,10 +79,10 @@ export function preActionHookOutput(runtime: Awaited<ReturnType<typeof marrowAge
   const reason = runtime.exact_next_action
     || gate.reasons?.[0]?.message
     || 'Marrow requires additional proof or operator review before this action.';
-  const permissionDecision = gate.allow === false || gate.decision === 'block'
-    ? 'deny'
-    : gate.decision === 'review_required'
+  const permissionDecision = gate.decision === 'review_required'
     ? 'ask'
+    : gate.decision === 'block' || gate.allow === false
+    ? 'deny'
     : null;
   return {
     hookSpecificOutput: {
