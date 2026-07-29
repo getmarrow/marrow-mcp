@@ -8,6 +8,7 @@ const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const redact_1 = require("./redact");
 exports.LIFECYCLE_EVENT_TYPES = [
+    'activation_profile_registered',
     'prompt_submitted',
     'goal_started',
     'pre_action_checked',

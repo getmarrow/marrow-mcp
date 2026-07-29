@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { redactSensitiveText } from './redact';
 
 export const LIFECYCLE_EVENT_TYPES = [
+  'activation_profile_registered',
   'prompt_submitted',
   'goal_started',
   'pre_action_checked',
