@@ -108,5 +108,17 @@ test('fingerprint includes unexpected active legacy and duplicate Marrow handler
     });
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
     assert.notEqual(nativeHookConfigurationFingerprint(directory), certified);
+
+    const repaired = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    repaired.hooks.PreToolUse = repaired.hooks.PreToolUse.filter((entry) =>
+      !entry.hooks?.some((handler) => handler.command === 'npx -y @getmarrow/mcp pre-action-hook'));
+    writeFileSync(settingsPath, JSON.stringify(repaired, null, 2));
+    const expectedOnly = nativeHookConfigurationFingerprint(directory);
+    repaired.hooks.PreToolUse.push({
+      matcher: NATIVE_HOOK_MATCHER,
+      hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.49 hook', timeout: 77 }],
+    });
+    writeFileSync(settingsPath, JSON.stringify(repaired, null, 2));
+    assert.notEqual(nativeHookConfigurationFingerprint(directory), expectedOnly);
   });
 });

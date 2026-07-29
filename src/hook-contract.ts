@@ -119,7 +119,7 @@ export function reconcileMarrowCommandHook(
 function marrowHookDescriptors(
   settings: HookSettings,
   eventName: string,
-  subcommand: MarrowHookSubcommand,
+  subcommand?: MarrowHookSubcommand,
 ): Array<{ matcher: string | null; command: string; timeout: number | null }> {
   const hooks = asRecord(settings.hooks);
   const entries = hooks?.[eventName];
@@ -129,7 +129,8 @@ function marrowHookDescriptors(
     if (!record || !Array.isArray(record.hooks)) return [];
     return record.hooks.flatMap((hook) => {
       const handler = asRecord(hook);
-      if (handler?.type !== 'command' || marrowHookSubcommand(handler.command) !== subcommand) return [];
+      const detected = marrowHookSubcommand(handler?.command);
+      if (handler?.type !== 'command' || !detected || (subcommand && detected !== subcommand)) return [];
       return [{
         matcher: typeof record.matcher === 'string' ? record.matcher : null,
         command: String(handler.command).trim(),
@@ -209,11 +210,11 @@ export function nativeHookConfigurationFingerprint(startDir = process.cwd()): st
       session_end: exactHookDescriptors(settings, 'Stop', SESSION_END_HOOK_COMMAND),
     },
     active_marrow_handlers: {
-      prompt: marrowHookDescriptors(settings, 'UserPromptSubmit', 'context-hook'),
-      pre_action: marrowHookDescriptors(settings, 'PreToolUse', 'pre-action-hook'),
-      action_result_success: marrowHookDescriptors(settings, 'PostToolUse', 'hook'),
-      action_result_failure: marrowHookDescriptors(settings, 'PostToolUseFailure', 'hook'),
-      session_end: marrowHookDescriptors(settings, 'Stop', 'session-hook'),
+      prompt: marrowHookDescriptors(settings, 'UserPromptSubmit'),
+      pre_action: marrowHookDescriptors(settings, 'PreToolUse'),
+      action_result_success: marrowHookDescriptors(settings, 'PostToolUse'),
+      action_result_failure: marrowHookDescriptors(settings, 'PostToolUseFailure'),
+      session_end: marrowHookDescriptors(settings, 'Stop'),
     },
   };
   return createHash('sha256').update(JSON.stringify(contract)).digest('hex');
