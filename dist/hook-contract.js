@@ -3,6 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.NATIVE_EXPECTED_HOOKS = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
 exports.findHookSettingsPath = findHookSettingsPath;
 exports.readHookSettings = readHookSettings;
+exports.readHookSettingsForInstall = readHookSettingsForInstall;
+exports.reconcileMarrowCommandHook = reconcileMarrowCommandHook;
 exports.hasExactCommandHook = hasExactCommandHook;
 exports.nativeHookConfigurationFingerprint = nativeHookConfigurationFingerprint;
 exports.nativeHookEvidence = nativeHookEvidence;
@@ -51,6 +53,91 @@ function readHookSettings(startDir = process.cwd()) {
     catch {
         return {};
     }
+}
+function readHookSettingsForInstall(startDir = process.cwd()) {
+    const path = findHookSettingsPath(startDir);
+    if (!(0, node_fs_1.existsSync)(path))
+        return {};
+    let parsed;
+    try {
+        parsed = JSON.parse((0, node_fs_1.readFileSync)(path, 'utf8'));
+    }
+    catch (error) {
+        const detail = error instanceof Error ? error.message : 'invalid JSON';
+        throw new Error(`Cannot update Claude hook settings at ${path}: ${detail}`);
+    }
+    const settings = asRecord(parsed);
+    if (!settings) {
+        throw new Error(`Cannot update Claude hook settings at ${path}: root must be a JSON object`);
+    }
+    return settings;
+}
+function marrowHookSubcommand(command) {
+    if (typeof command !== 'string')
+        return null;
+    const match = command.trim().match(/^npx\s+(?:-y\s+)?@getmarrow\/mcp(?:@[^\s]+)?\s+(context-hook|pre-action-hook|hook|session-hook)$/);
+    return match?.[1] || null;
+}
+function reconcileMarrowCommandHook(settings, eventName, subcommand, command, matcher) {
+    const hooks = asRecord(settings.hooks);
+    const original = Array.isArray(hooks?.[eventName]) ? hooks[eventName] : [];
+    let preferredHandler = null;
+    const retained = [];
+    for (const entry of original) {
+        const record = asRecord(entry);
+        if (!record || !Array.isArray(record.hooks)) {
+            retained.push(entry);
+            continue;
+        }
+        const remaining = [];
+        for (const hook of record.hooks) {
+            const handler = asRecord(hook);
+            if (handler?.type === 'command' && marrowHookSubcommand(handler.command) === subcommand) {
+                const exactMatcher = matcher === undefined
+                    ? record.matcher === undefined
+                    : record.matcher === matcher;
+                if (!preferredHandler || (handler.command === command && exactMatcher)) {
+                    preferredHandler = handler;
+                }
+                continue;
+            }
+            remaining.push(hook);
+        }
+        if (remaining.length > 0)
+            retained.push({ ...record, hooks: remaining });
+    }
+    const handler = { ...(preferredHandler || {}), type: 'command', command };
+    const canonicalEntry = { hooks: [handler] };
+    if (matcher !== undefined)
+        canonicalEntry.matcher = matcher;
+    retained.push(canonicalEntry);
+    return {
+        entries: retained,
+        changed: JSON.stringify(original) !== JSON.stringify(retained),
+    };
+}
+function marrowHookDescriptors(settings, eventName, subcommand) {
+    const hooks = asRecord(settings.hooks);
+    const entries = hooks?.[eventName];
+    if (!Array.isArray(entries))
+        return [];
+    return entries.flatMap((entry) => {
+        const record = asRecord(entry);
+        if (!record || !Array.isArray(record.hooks))
+            return [];
+        return record.hooks.flatMap((hook) => {
+            const handler = asRecord(hook);
+            if (handler?.type !== 'command' || marrowHookSubcommand(handler.command) !== subcommand)
+                return [];
+            return [{
+                    matcher: typeof record.matcher === 'string' ? record.matcher : null,
+                    command: String(handler.command).trim(),
+                    timeout: typeof handler.timeout === 'number' && Number.isFinite(handler.timeout)
+                        ? handler.timeout
+                        : null,
+                }];
+        });
+    });
 }
 function hasExactCommandHook(settings, eventName, command, matcher) {
     const hooks = asRecord(settings.hooks);
@@ -111,6 +198,13 @@ function nativeHookConfigurationFingerprint(startDir = process.cwd()) {
             action_result_success: exactHookDescriptors(settings, 'PostToolUse', exports.ACTION_RESULT_HOOK_COMMAND, exports.NATIVE_HOOK_MATCHER),
             action_result_failure: exactHookDescriptors(settings, 'PostToolUseFailure', exports.ACTION_RESULT_HOOK_COMMAND, exports.NATIVE_HOOK_MATCHER),
             session_end: exactHookDescriptors(settings, 'Stop', exports.SESSION_END_HOOK_COMMAND),
+        },
+        active_marrow_handlers: {
+            prompt: marrowHookDescriptors(settings, 'UserPromptSubmit', 'context-hook'),
+            pre_action: marrowHookDescriptors(settings, 'PreToolUse', 'pre-action-hook'),
+            action_result_success: marrowHookDescriptors(settings, 'PostToolUse', 'hook'),
+            action_result_failure: marrowHookDescriptors(settings, 'PostToolUseFailure', 'hook'),
+            session_end: marrowHookDescriptors(settings, 'Stop', 'session-hook'),
         },
     };
     return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(contract)).digest('hex');

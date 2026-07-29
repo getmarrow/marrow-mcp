@@ -461,24 +461,18 @@ function installUserPromptSubmitHook(startDir = process.cwd()) {
     const fs = require('fs');
     const path = require('path');
     const settingsPath = (0, hook_contract_1.findHookSettingsPath)(startDir);
-    const settings = (0, hook_contract_1.readHookSettings)(startDir);
+    const settings = (0, hook_contract_1.readHookSettingsForInstall)(startDir);
     const hooks = asRecord(settings.hooks) || {};
-    const userPromptSubmit = Array.isArray(hooks.UserPromptSubmit) ? [...hooks.UserPromptSubmit] : [];
-    const alreadyInstalled = (0, hook_contract_1.hasExactCommandHook)(settings, 'UserPromptSubmit', exports.CONTEXT_HOOK_COMMAND);
-    if (!alreadyInstalled) {
-        userPromptSubmit.push({
-            hooks: [{ type: 'command', command: exports.CONTEXT_HOOK_COMMAND }],
-        });
-    }
+    const reconciled = (0, hook_contract_1.reconcileMarrowCommandHook)(settings, 'UserPromptSubmit', 'context-hook', exports.CONTEXT_HOOK_COMMAND);
     settings.hooks = {
         ...hooks,
-        UserPromptSubmit: userPromptSubmit,
+        UserPromptSubmit: reconciled.entries,
     };
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
     return {
         settingsPath,
-        installed: !alreadyInstalled,
+        installed: reconciled.changed,
     };
 }
 //# sourceMappingURL=hook-context.js.map

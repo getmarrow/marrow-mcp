@@ -102,20 +102,13 @@ async function withTimeout(operation) {
 function installPreActionHook(startDir = process.cwd()) {
     const fs = require('node:fs');
     const path = (0, hook_contract_1.findHookSettingsPath)(startDir);
-    const settings = (0, hook_contract_1.readHookSettings)(startDir);
+    const settings = (0, hook_contract_1.readHookSettingsForInstall)(startDir);
     const hooks = asRecord(settings.hooks) || {};
-    const preToolUse = Array.isArray(hooks.PreToolUse) ? [...hooks.PreToolUse] : [];
-    const installed = (0, hook_contract_1.hasExactCommandHook)(settings, 'PreToolUse', hook_contract_1.PRE_ACTION_HOOK_COMMAND, hook_contract_1.NATIVE_HOOK_MATCHER);
-    if (!installed) {
-        preToolUse.push({
-            matcher: hook_contract_1.NATIVE_HOOK_MATCHER,
-            hooks: [{ type: 'command', command: hook_contract_1.PRE_ACTION_HOOK_COMMAND }],
-        });
-    }
-    settings.hooks = { ...hooks, PreToolUse: preToolUse };
+    const reconciled = (0, hook_contract_1.reconcileMarrowCommandHook)(settings, 'PreToolUse', 'pre-action-hook', hook_contract_1.PRE_ACTION_HOOK_COMMAND, hook_contract_1.NATIVE_HOOK_MATCHER);
+    settings.hooks = { ...hooks, PreToolUse: reconciled.entries };
     fs.mkdirSync(require('node:path').dirname(path), { recursive: true });
     fs.writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
-    return { settingsPath: path, installed: !installed };
+    return { settingsPath: path, installed: reconciled.changed };
 }
 async function runPreActionHookCommand(input) {
     if (process.env.MARROW_AUTO_HOOK === 'false')

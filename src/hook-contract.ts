@@ -43,6 +43,104 @@ export function readHookSettings(startDir = process.cwd()): HookSettings {
   }
 }
 
+export function readHookSettingsForInstall(startDir = process.cwd()): HookSettings {
+  const path = findHookSettingsPath(startDir);
+  if (!existsSync(path)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'invalid JSON';
+    throw new Error(`Cannot update Claude hook settings at ${path}: ${detail}`);
+  }
+  const settings = asRecord(parsed);
+  if (!settings) {
+    throw new Error(`Cannot update Claude hook settings at ${path}: root must be a JSON object`);
+  }
+  return settings;
+}
+
+export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' | 'session-hook';
+
+function marrowHookSubcommand(command: unknown): MarrowHookSubcommand | null {
+  if (typeof command !== 'string') return null;
+  const match = command.trim().match(
+    /^npx\s+(?:-y\s+)?@getmarrow\/mcp(?:@[^\s]+)?\s+(context-hook|pre-action-hook|hook|session-hook)$/,
+  );
+  return match?.[1] as MarrowHookSubcommand | undefined || null;
+}
+
+export function reconcileMarrowCommandHook(
+  settings: HookSettings,
+  eventName: string,
+  subcommand: MarrowHookSubcommand,
+  command: string,
+  matcher?: string,
+): { entries: unknown[]; changed: boolean } {
+  const hooks = asRecord(settings.hooks);
+  const original = Array.isArray(hooks?.[eventName]) ? hooks[eventName] as unknown[] : [];
+  let preferredHandler: Record<string, unknown> | null = null;
+  const retained: unknown[] = [];
+
+  for (const entry of original) {
+    const record = asRecord(entry);
+    if (!record || !Array.isArray(record.hooks)) {
+      retained.push(entry);
+      continue;
+    }
+    const remaining: unknown[] = [];
+    for (const hook of record.hooks) {
+      const handler = asRecord(hook);
+      if (handler?.type === 'command' && marrowHookSubcommand(handler.command) === subcommand) {
+        const exactMatcher = matcher === undefined
+          ? record.matcher === undefined
+          : record.matcher === matcher;
+        if (!preferredHandler || (handler.command === command && exactMatcher)) {
+          preferredHandler = handler;
+        }
+        continue;
+      }
+      remaining.push(hook);
+    }
+    if (remaining.length > 0) retained.push({ ...record, hooks: remaining });
+  }
+
+  const handler = { ...(preferredHandler || {}), type: 'command', command };
+  const canonicalEntry: Record<string, unknown> = { hooks: [handler] };
+  if (matcher !== undefined) canonicalEntry.matcher = matcher;
+  retained.push(canonicalEntry);
+
+  return {
+    entries: retained,
+    changed: JSON.stringify(original) !== JSON.stringify(retained),
+  };
+}
+
+function marrowHookDescriptors(
+  settings: HookSettings,
+  eventName: string,
+  subcommand: MarrowHookSubcommand,
+): Array<{ matcher: string | null; command: string; timeout: number | null }> {
+  const hooks = asRecord(settings.hooks);
+  const entries = hooks?.[eventName];
+  if (!Array.isArray(entries)) return [];
+  return entries.flatMap((entry) => {
+    const record = asRecord(entry);
+    if (!record || !Array.isArray(record.hooks)) return [];
+    return record.hooks.flatMap((hook) => {
+      const handler = asRecord(hook);
+      if (handler?.type !== 'command' || marrowHookSubcommand(handler.command) !== subcommand) return [];
+      return [{
+        matcher: typeof record.matcher === 'string' ? record.matcher : null,
+        command: String(handler.command).trim(),
+        timeout: typeof handler.timeout === 'number' && Number.isFinite(handler.timeout)
+          ? handler.timeout
+          : null,
+      }];
+    });
+  });
+}
+
 export function hasExactCommandHook(
   settings: HookSettings,
   eventName: string,
@@ -109,6 +207,13 @@ export function nativeHookConfigurationFingerprint(startDir = process.cwd()): st
       action_result_success: exactHookDescriptors(settings, 'PostToolUse', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
       action_result_failure: exactHookDescriptors(settings, 'PostToolUseFailure', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
       session_end: exactHookDescriptors(settings, 'Stop', SESSION_END_HOOK_COMMAND),
+    },
+    active_marrow_handlers: {
+      prompt: marrowHookDescriptors(settings, 'UserPromptSubmit', 'context-hook'),
+      pre_action: marrowHookDescriptors(settings, 'PreToolUse', 'pre-action-hook'),
+      action_result_success: marrowHookDescriptors(settings, 'PostToolUse', 'hook'),
+      action_result_failure: marrowHookDescriptors(settings, 'PostToolUseFailure', 'hook'),
+      session_end: marrowHookDescriptors(settings, 'Stop', 'session-hook'),
     },
   };
   return createHash('sha256').update(JSON.stringify(contract)).digest('hex');

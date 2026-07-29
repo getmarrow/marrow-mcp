@@ -4,10 +4,10 @@ import { recordLifecycleEvent } from './lifecycle-spool';
 import {
   ACTION_RESULT_HOOK_COMMAND,
   findHookSettingsPath,
-  hasExactCommandHook,
   nativeHookEvidence,
   NATIVE_HOOK_MATCHER,
-  readHookSettings,
+  readHookSettingsForInstall,
+  reconcileMarrowCommandHook,
   stableSessionWorkflowId,
   stableToolCorrelation,
 } from './hook-contract';
@@ -253,31 +253,16 @@ export function installPostToolUseHook(startDir: string = process.cwd()): HookIn
   const path = require('path') as typeof import('path');
 
   const settingsPath = findHookSettingsPath(startDir);
-  const settings = readHookSettings(startDir);
+  const settings = readHookSettingsForInstall(startDir);
 
   const hooks = asRecord(settings.hooks) || {};
-  const postToolUse = Array.isArray(hooks.PostToolUse) ? [...hooks.PostToolUse] : [];
-  const postToolUseFailure = Array.isArray(hooks.PostToolUseFailure) ? [...hooks.PostToolUseFailure] : [];
-  const successInstalled = hasExactCommandHook(settings, 'PostToolUse', AUTO_HOOK_COMMAND, AUTO_HOOK_MATCHER);
-  const failureInstalled = hasExactCommandHook(settings, 'PostToolUseFailure', AUTO_HOOK_COMMAND, AUTO_HOOK_MATCHER);
-
-  if (!successInstalled) {
-    postToolUse.push({
-      matcher: AUTO_HOOK_MATCHER,
-      hooks: [{ type: 'command', command: AUTO_HOOK_COMMAND }],
-    });
-  }
-  if (!failureInstalled) {
-    postToolUseFailure.push({
-      matcher: AUTO_HOOK_MATCHER,
-      hooks: [{ type: 'command', command: AUTO_HOOK_COMMAND }],
-    });
-  }
+  const success = reconcileMarrowCommandHook(settings, 'PostToolUse', 'hook', AUTO_HOOK_COMMAND, AUTO_HOOK_MATCHER);
+  const failure = reconcileMarrowCommandHook(settings, 'PostToolUseFailure', 'hook', AUTO_HOOK_COMMAND, AUTO_HOOK_MATCHER);
 
   settings.hooks = {
     ...hooks,
-    PostToolUse: postToolUse,
-    PostToolUseFailure: postToolUseFailure,
+    PostToolUse: success.entries,
+    PostToolUseFailure: failure.entries,
   };
 
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
@@ -285,7 +270,7 @@ export function installPostToolUseHook(startDir: string = process.cwd()): HookIn
 
   return {
     settingsPath,
-    installed: !successInstalled || !failureInstalled,
+    installed: success.changed || failure.changed,
   };
 }
 

@@ -59,18 +59,15 @@ function installSessionEndHook(startDir = process.cwd()) {
     const fs = require('fs');
     const path = require('path');
     const target = (0, hook_contract_1.findHookSettingsPath)(startDir);
-    const settings = (0, hook_contract_1.readHookSettings)(startDir);
+    const settings = (0, hook_contract_1.readHookSettingsForInstall)(startDir);
     const hooks = settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
         ? settings.hooks
         : {};
-    const stop = Array.isArray(hooks.Stop) ? [...hooks.Stop] : [];
-    const installed = (0, hook_contract_1.hasExactCommandHook)(settings, 'Stop', exports.SESSION_HOOK_COMMAND);
-    if (!installed)
-        stop.push({ hooks: [{ type: 'command', command: exports.SESSION_HOOK_COMMAND }] });
-    settings.hooks = { ...hooks, Stop: stop };
+    const reconciled = (0, hook_contract_1.reconcileMarrowCommandHook)(settings, 'Stop', 'session-hook', exports.SESSION_HOOK_COMMAND);
+    settings.hooks = { ...hooks, Stop: reconciled.entries };
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, JSON.stringify(settings, null, 2) + '\n');
-    return { settingsPath: target, installed: !installed };
+    return { settingsPath: target, installed: reconciled.changed };
 }
 async function runSessionHookCommand(input) {
     if (process.env.MARROW_AUTO_HOOK === 'false')
