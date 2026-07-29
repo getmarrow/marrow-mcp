@@ -127,7 +127,8 @@ function marrowHookDescriptors(settings, eventName, subcommand) {
             return [];
         return record.hooks.flatMap((hook) => {
             const handler = asRecord(hook);
-            if (handler?.type !== 'command' || marrowHookSubcommand(handler.command) !== subcommand)
+            const detected = marrowHookSubcommand(handler?.command);
+            if (handler?.type !== 'command' || !detected || (subcommand && detected !== subcommand))
                 return [];
             return [{
                     matcher: typeof record.matcher === 'string' ? record.matcher : null,
@@ -200,11 +201,11 @@ function nativeHookConfigurationFingerprint(startDir = process.cwd()) {
             session_end: exactHookDescriptors(settings, 'Stop', exports.SESSION_END_HOOK_COMMAND),
         },
         active_marrow_handlers: {
-            prompt: marrowHookDescriptors(settings, 'UserPromptSubmit', 'context-hook'),
-            pre_action: marrowHookDescriptors(settings, 'PreToolUse', 'pre-action-hook'),
-            action_result_success: marrowHookDescriptors(settings, 'PostToolUse', 'hook'),
-            action_result_failure: marrowHookDescriptors(settings, 'PostToolUseFailure', 'hook'),
-            session_end: marrowHookDescriptors(settings, 'Stop', 'session-hook'),
+            prompt: marrowHookDescriptors(settings, 'UserPromptSubmit'),
+            pre_action: marrowHookDescriptors(settings, 'PreToolUse'),
+            action_result_success: marrowHookDescriptors(settings, 'PostToolUse'),
+            action_result_failure: marrowHookDescriptors(settings, 'PostToolUseFailure'),
+            session_end: marrowHookDescriptors(settings, 'Stop'),
         },
     };
     return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(contract)).digest('hex');
