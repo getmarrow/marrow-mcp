@@ -63,10 +63,36 @@ export function hasExactCommandHook(
   });
 }
 
+function exactHookDescriptors(
+  settings: HookSettings,
+  eventName: string,
+  command: string,
+  matcher?: string,
+): Array<{ matcher: string | null; command: string; timeout: number | null }> {
+  const hooks = asRecord(settings.hooks);
+  const entries = hooks?.[eventName];
+  if (!Array.isArray(entries)) return [];
+  return entries.flatMap((entry) => {
+    const record = asRecord(entry);
+    if (!record || (matcher !== undefined && record.matcher !== matcher) || !Array.isArray(record.hooks)) return [];
+    return record.hooks.flatMap((hook) => {
+      const handler = asRecord(hook);
+      if (handler?.type !== 'command' || typeof handler.command !== 'string' || handler.command.trim() !== command) return [];
+      return [{
+        matcher: typeof record.matcher === 'string' ? record.matcher : null,
+        command,
+        timeout: typeof handler.timeout === 'number' && Number.isFinite(handler.timeout)
+          ? handler.timeout
+          : null,
+      }];
+    });
+  });
+}
+
 export function nativeHookConfigurationFingerprint(startDir = process.cwd()): string {
   const settings = readHookSettings(startDir);
   const contract = {
-    schema: 'marrow-claude-native-hooks.v2',
+    schema: 'marrow-claude-native-hooks.v3',
     adapter_version: MCP_ADAPTER_VERSION,
     expected_hooks: NATIVE_EXPECTED_HOOKS,
     configured: {
@@ -75,6 +101,13 @@ export function nativeHookConfigurationFingerprint(startDir = process.cwd()): st
       action_result_success: hasExactCommandHook(settings, 'PostToolUse', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
       action_result_failure: hasExactCommandHook(settings, 'PostToolUseFailure', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
       session_end: hasExactCommandHook(settings, 'Stop', SESSION_END_HOOK_COMMAND),
+    },
+    descriptors: {
+      prompt: exactHookDescriptors(settings, 'UserPromptSubmit', CONTEXT_HOOK_COMMAND),
+      pre_action: exactHookDescriptors(settings, 'PreToolUse', PRE_ACTION_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
+      action_result_success: exactHookDescriptors(settings, 'PostToolUse', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
+      action_result_failure: exactHookDescriptors(settings, 'PostToolUseFailure', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
+      session_end: exactHookDescriptors(settings, 'Stop', SESSION_END_HOOK_COMMAND),
     },
   };
   return createHash('sha256').update(JSON.stringify(contract)).digest('hex');

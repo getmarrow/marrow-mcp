@@ -125,7 +125,7 @@ test('native MCP hook receipts carry bounded capability and actual configuration
 
       const before = nativeHookConfigurationFingerprint(directory);
       const changed = JSON.parse(readFileSync(join(settingsDir, 'settings.json'), 'utf8'));
-      changed.hooks.PreToolUse[0].hooks[0].command = 'echo fake';
+      changed.hooks.PreToolUse[0].hooks[0].timeout = 15;
       writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify(changed));
       assert.notEqual(nativeHookConfigurationFingerprint(directory), before);
     });
@@ -156,7 +156,7 @@ test('pre-action policy maps block to deny, review to ask, and allow to native p
   assert.equal(block.hookSpecificOutput.permissionDecisionReason, 'collect proof');
 
   const review = preActionHookOutput({
-    risk_gate: { allow: true, decision: 'review_required', reasons: [] },
+    risk_gate: { allow: false, decision: 'review_required', reasons: [] },
     exact_next_action: 'ask owner',
   });
   assert.equal(review.hookSpecificOutput.permissionDecision, 'ask');
