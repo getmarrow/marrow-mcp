@@ -15,6 +15,7 @@ import type {
   MarrowDecisionBriefResult,
   MarrowAgentRuntimeRequest,
   MarrowAgentRuntimeResult,
+  MarrowArbitrationRequest,
   MarrowFirstValueRequest,
   MarrowFirstValueResult,
   MarrowWorkflowGateRequest,
@@ -43,6 +44,25 @@ import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 export type { Narrative, CommitResult } from './types';
 
 const SOURCE_CLIENTS = new Set(['claude-code', 'cursor', 'windsurf', 'openclaw', 'codex', 'gemini', 'grok', 'deepseek', 'qwen', 'kimi', 'minimax', 'cline', 'opencode', 'hermes', 'glm', 'custom', 'unknown']);
+
+const SAFE_ARBITRATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
+const SAFE_ARBITRATION_EVIDENCE_KIND = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$/;
+const SAFE_ARBITRATION_EVIDENCE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const SECRETISH_ARBITRATION_REFERENCE =
+  /(?:^|[._:-])(?:secret|token|password|credential|api[_-]?key|authorization|bearer)(?:$|[._:-])|^(?:sk|pk|ghp|github_pat|npm|cfut|mrw)_[A-Za-z0-9_-]+$/i;
+
+function preserveOpaqueArbitrationValue(
+  value: string,
+  pattern: RegExp,
+  field: string
+): string {
+  if (value !== value.trim()
+    || !pattern.test(value)
+    || SECRETISH_ARBITRATION_REFERENCE.test(value)) {
+    throw new TypeError(`Agent arbitration ${field} must be a safe opaque identifier.`);
+  }
+  return value;
+}
 
 function defaultSourceClient(): string {
   const raw = String(process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || process.env.MARROW_AGENT_CLIENT || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/^@/, '');
@@ -384,6 +404,8 @@ export async function marrowCommit(
     proof?: Record<string, unknown>;
     gate_receipt_id?: string;
     gate_receipt?: string;
+    arbitration_receipt_id?: string;
+    owner_approval_receipt_id?: string;
     action?: string;
     type?: string;
     surfaces?: string[];
@@ -430,6 +452,8 @@ export async function marrowCommit(
   };
   if (params.proof) body.proof = redactSensitiveValue(params.proof) as Record<string, unknown>;
   if (gateReceiptId) body.gate_receipt_id = gateReceiptId;
+  if (params.arbitration_receipt_id) body.arbitration_receipt_id = params.arbitration_receipt_id;
+  if (params.owner_approval_receipt_id) body.owner_approval_receipt_id = params.owner_approval_receipt_id;
   const modelUsage = params.model_usage || params.modelUsage;
   if (modelUsage) body.model_usage = normalizeModelUsage(modelUsage);
 
@@ -1044,6 +1068,92 @@ export async function marrowAgentRuntime(
   });
   const json = await safeJsonResponse(res);
   return json.data;
+}
+
+/**
+ * Resolve conflicting agent proposals through the existing runtime control
+ * plane. This is a client convenience, not a separate backend API.
+ */
+export async function marrowArbitrate(
+  apiKey: string,
+  baseUrl: string,
+  input: MarrowArbitrationRequest & {
+    action?: string;
+    type?: string;
+    agent_id?: string;
+    session_id?: string;
+    surfaces?: string[];
+    context?: Record<string, unknown>;
+    proof?: Record<string, unknown>;
+  },
+  sessionId?: string,
+  agentId?: string
+): Promise<MarrowAgentRuntimeResult> {
+  const { action, type, agent_id, session_id, surfaces, context, proof, ...coordination } = input;
+  if (!Array.isArray(coordination.proposals)
+    || coordination.proposals.length < 2
+    || coordination.proposals.length > 8) {
+    throw new RangeError('Agent arbitration requires between 2 and 8 proposals.');
+  }
+  for (const proposal of coordination.proposals) {
+    if (Array.isArray(proposal.evidence) && proposal.evidence.length > 8) {
+      throw new RangeError('Agent arbitration accepts at most 8 evidence references per proposal.');
+    }
+  }
+  const safeCoordination: MarrowArbitrationRequest = {
+    objective: redactSensitiveText(coordination.objective),
+    ...(typeof coordination.owner_intent === 'string'
+      ? { owner_intent: redactSensitiveText(coordination.owner_intent) }
+      : {}),
+    ...(coordination.conflict_type ? { conflict_type: coordination.conflict_type } : {}),
+    proposals: coordination.proposals.map((proposal) => ({
+          proposal_id: preserveOpaqueArbitrationValue(
+            proposal.proposal_id,
+            SAFE_ARBITRATION_IDENTIFIER,
+            'proposal_id'
+          ),
+          agent_id: preserveOpaqueArbitrationValue(
+            proposal.agent_id,
+            SAFE_ARBITRATION_IDENTIFIER,
+            'agent_id'
+          ),
+          action: redactSensitiveText(proposal.action),
+          ...(typeof proposal.rationale === 'string'
+            ? { rationale: redactSensitiveText(proposal.rationale) }
+            : {}),
+          ...(typeof proposal.confidence === 'number' ? { confidence: proposal.confidence } : {}),
+          ...(proposal.risk_level ? { risk_level: proposal.risk_level } : {}),
+          ...(typeof proposal.requires_owner_approval === 'boolean'
+            ? { requires_owner_approval: proposal.requires_owner_approval }
+            : {}),
+          ...(Array.isArray(proposal.evidence)
+            ? {
+                evidence: proposal.evidence.map((evidence) => ({
+                  kind: preserveOpaqueArbitrationValue(
+                    evidence.kind,
+                    SAFE_ARBITRATION_EVIDENCE_KIND,
+                    'evidence kind'
+                  ),
+                  reference: preserveOpaqueArbitrationValue(
+                    evidence.reference,
+                    SAFE_ARBITRATION_EVIDENCE_REFERENCE,
+                    'evidence reference'
+                  ),
+                })),
+              }
+            : {}),
+        })),
+  };
+  return marrowAgentRuntime(apiKey, baseUrl, {
+    action: redactSensitiveText(action || `Resolve conflicting agent proposals for ${safeCoordination.objective}`),
+    type: type || 'coordination',
+    agent_id: agent_id || agentId,
+    session_id: session_id || sessionId,
+    surfaces,
+    context: context ? redactSensitiveValue(context) as Record<string, unknown> : undefined,
+    proof: proof ? redactSensitiveValue(proof) as Record<string, unknown> : undefined,
+    coordination: safeCoordination,
+  }, sessionId, agentId);
 }
 
 export async function marrowGovernanceControlPlane(

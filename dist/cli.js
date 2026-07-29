@@ -594,6 +594,8 @@ if (process.argv[2] !== 'keys') {
                             description: 'Optional required proof pack for gated work: summary, checks, outcome, blockers, commits_prs_shas, rollback_target, handoff_result_file, deployment_and_smoke.',
                         },
                         gate_receipt_id: { type: 'string', description: 'Receipt id from marrow_agent_runtime.gate_receipt.id for risky work.' },
+                        arbitration_receipt_id: { type: 'string', description: 'Required for arbitrated work: use marrow_arbitrate.arbitration.receipt_id from the same runtime response.' },
+                        owner_approval_receipt_id: { type: 'string', description: 'Single-use owner approval receipt issued by authenticated dashboard review for review_required arbitration.' },
                         action: { type: 'string', description: 'Optional original action. If provided and gate_receipt_id is omitted, MCP can fetch a matching runtime gate receipt before commit.' },
                         type: { type: 'string', description: 'Optional original action type for auto gate lookup, e.g. deploy, publish, merge, handoff, implementation.' },
                         surfaces: { type: 'array', items: { type: 'string' }, description: 'Optional surfaces for auto gate receipt, e.g. github, cloudflare, npm, production.' },
@@ -1026,6 +1028,61 @@ if (process.argv[2] !== 'keys') {
                 },
             },
             {
+                name: 'marrow_arbitrate',
+                description: 'Resolve conflicting next-step proposals from two or more tenant agents before execution. ' +
+                    'Uses the existing Marrow runtime gate and returns a durable arbitration receipt with the selected, ' +
+                    'synthesized, review-required, or blocked action and exactly why it changed.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        objective: { type: 'string', description: 'The shared owner or workflow objective.' },
+                        ownerIntent: { type: 'string', description: 'Optional bounded owner intent used for deterministic alignment.' },
+                        conflictType: {
+                            type: 'string',
+                            enum: ['action_conflict', 'policy_conflict', 'evidence_conflict', 'authority_conflict', 'risk_conflict'],
+                        },
+                        proposals: {
+                            type: 'array',
+                            minItems: 2,
+                            maxItems: 8,
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    proposal_id: { type: 'string', description: 'Stable opaque proposal id.' },
+                                    agent_id: { type: 'string', description: 'Existing agent id in this Marrow account.' },
+                                    action: { type: 'string', description: 'Proposed next action.' },
+                                    rationale: { type: 'string', description: 'Optional concise rationale; redacted before transport.' },
+                                    confidence: { type: 'number', minimum: 0, maximum: 1 },
+                                    risk_level: { type: 'string', enum: ['low', 'medium', 'high'] },
+                                    requires_owner_approval: { type: 'boolean' },
+                                    evidence: {
+                                        type: 'array',
+                                        maxItems: 8,
+                                        items: {
+                                            type: 'object',
+                                            properties: {
+                                                kind: { type: 'string' },
+                                                reference: { type: 'string', description: 'Opaque identifier only; no URL, path, or raw evidence.' },
+                                            },
+                                            required: ['kind', 'reference'],
+                                        },
+                                    },
+                                },
+                                required: ['proposal_id', 'agent_id', 'action'],
+                            },
+                        },
+                        action: { type: 'string', description: 'Optional runtime action label.' },
+                        type: { type: 'string', description: 'Optional runtime action type. Defaults to coordination.' },
+                        agentId: { type: 'string', description: 'Requesting agent id. Defaults to MARROW_AGENT_ID.' },
+                        sessionId: { type: 'string', description: 'Optional workflow session id.' },
+                        surfaces: { type: 'array', items: { type: 'string' } },
+                        context: { type: 'object', description: 'Optional non-sensitive runtime metadata.' },
+                        proof: { type: 'object', description: 'Optional proof already available to the runtime gate.' },
+                    },
+                    required: ['objective', 'proposals'],
+                },
+            },
+            {
                 name: 'marrow_governance_control_plane',
                 description: 'Return Marrow control-plane proof: governance, runtime gates, proof packs, fleet intelligence, supported harnesses, and exact next action.',
                 inputSchema: { type: 'object', properties: {}, required: [] },
@@ -1319,7 +1376,7 @@ if (process.argv[2] !== 'keys') {
                     success(id, {
                         protocolVersion: '2024-11-05',
                         capabilities: { tools: {}, prompts: {} },
-                        serverInfo: { name: 'marrow', version: '3.9.48' },
+                        serverInfo: { name: 'marrow', version: '3.9.49' },
                     });
                     // Auto-enroll: emit enrollment notification on connection
                     if (AUTO_ENROLL) {
@@ -1502,6 +1559,8 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             caused_by: args.caused_by,
                             proof: args.proof,
                             gate_receipt_id: args.gate_receipt_id,
+                            arbitration_receipt_id: args.arbitration_receipt_id,
+                            owner_approval_receipt_id: args.owner_approval_receipt_id,
                             action: args.action,
                             type: args.type,
                             surfaces: args.surfaces,
@@ -1841,6 +1900,29 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 ? (0, redact_1.redactSensitiveValue)(args.proof)
                                 : undefined,
                             period: args.period,
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        return;
+                    }
+                    if (toolName === 'marrow_arbitrate') {
+                        const result = await (0, index_1.marrowArbitrate)(API_KEY, BASE_URL, {
+                            objective: (0, redact_1.redactSensitiveText)(args.objective),
+                            owner_intent: typeof args.ownerIntent === 'string' ? (0, redact_1.redactSensitiveText)(args.ownerIntent) : undefined,
+                            conflict_type: args.conflictType,
+                            proposals: Array.isArray(args.proposals)
+                                ? args.proposals
+                                : [],
+                            action: typeof args.action === 'string' ? (0, redact_1.redactSensitiveText)(args.action) : undefined,
+                            type: args.type,
+                            agent_id: args.agentId || AGENT_ID,
+                            session_id: args.sessionId || SESSION_ID,
+                            surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
+                            context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+                                ? (0, redact_1.redactSensitiveValue)(args.context)
+                                : undefined,
+                            proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+                                ? (0, redact_1.redactSensitiveValue)(args.proof)
+                                : undefined,
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;

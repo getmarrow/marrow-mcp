@@ -28,6 +28,7 @@ exports.marrowValueReport = marrowValueReport;
 exports.marrowDecisionBrief = marrowDecisionBrief;
 exports.marrowWorkflowGate = marrowWorkflowGate;
 exports.marrowAgentRuntime = marrowAgentRuntime;
+exports.marrowArbitrate = marrowArbitrate;
 exports.marrowGovernanceControlPlane = marrowGovernanceControlPlane;
 exports.marrowHermesIntegration = marrowHermesIntegration;
 exports.marrowCompletionContracts = marrowCompletionContracts;
@@ -57,6 +58,18 @@ const sdk_1 = require("@getmarrow/sdk");
 const redact_1 = require("./redact");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const SOURCE_CLIENTS = new Set(['claude-code', 'cursor', 'windsurf', 'openclaw', 'codex', 'gemini', 'grok', 'deepseek', 'qwen', 'kimi', 'minimax', 'cline', 'opencode', 'hermes', 'glm', 'custom', 'unknown']);
+const SAFE_ARBITRATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
+const SAFE_ARBITRATION_EVIDENCE_KIND = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$/;
+const SAFE_ARBITRATION_EVIDENCE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const SECRETISH_ARBITRATION_REFERENCE = /(?:^|[._:-])(?:secret|token|password|credential|api[_-]?key|authorization|bearer)(?:$|[._:-])|^(?:sk|pk|ghp|github_pat|npm|cfut|mrw)_[A-Za-z0-9_-]+$/i;
+function preserveOpaqueArbitrationValue(value, pattern, field) {
+    if (value !== value.trim()
+        || !pattern.test(value)
+        || SECRETISH_ARBITRATION_REFERENCE.test(value)) {
+        throw new TypeError(`Agent arbitration ${field} must be a safe opaque identifier.`);
+    }
+    return value;
+}
 function defaultSourceClient() {
     const raw = String(process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || process.env.MARROW_AGENT_CLIENT || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/^@/, '');
     const aliases = {
@@ -343,6 +356,10 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
         body.proof = (0, redact_1.redactSensitiveValue)(params.proof);
     if (gateReceiptId)
         body.gate_receipt_id = gateReceiptId;
+    if (params.arbitration_receipt_id)
+        body.arbitration_receipt_id = params.arbitration_receipt_id;
+    if (params.owner_approval_receipt_id)
+        body.owner_approval_receipt_id = params.owner_approval_receipt_id;
     const modelUsage = params.model_usage || params.modelUsage;
     if (modelUsage)
         body.model_usage = normalizeModelUsage(modelUsage);
@@ -811,6 +828,61 @@ async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId) {
     });
     const json = await safeJsonResponse(res);
     return json.data;
+}
+/**
+ * Resolve conflicting agent proposals through the existing runtime control
+ * plane. This is a client convenience, not a separate backend API.
+ */
+async function marrowArbitrate(apiKey, baseUrl, input, sessionId, agentId) {
+    const { action, type, agent_id, session_id, surfaces, context, proof, ...coordination } = input;
+    if (!Array.isArray(coordination.proposals)
+        || coordination.proposals.length < 2
+        || coordination.proposals.length > 8) {
+        throw new RangeError('Agent arbitration requires between 2 and 8 proposals.');
+    }
+    for (const proposal of coordination.proposals) {
+        if (Array.isArray(proposal.evidence) && proposal.evidence.length > 8) {
+            throw new RangeError('Agent arbitration accepts at most 8 evidence references per proposal.');
+        }
+    }
+    const safeCoordination = {
+        objective: (0, redact_1.redactSensitiveText)(coordination.objective),
+        ...(typeof coordination.owner_intent === 'string'
+            ? { owner_intent: (0, redact_1.redactSensitiveText)(coordination.owner_intent) }
+            : {}),
+        ...(coordination.conflict_type ? { conflict_type: coordination.conflict_type } : {}),
+        proposals: coordination.proposals.map((proposal) => ({
+            proposal_id: preserveOpaqueArbitrationValue(proposal.proposal_id, SAFE_ARBITRATION_IDENTIFIER, 'proposal_id'),
+            agent_id: preserveOpaqueArbitrationValue(proposal.agent_id, SAFE_ARBITRATION_IDENTIFIER, 'agent_id'),
+            action: (0, redact_1.redactSensitiveText)(proposal.action),
+            ...(typeof proposal.rationale === 'string'
+                ? { rationale: (0, redact_1.redactSensitiveText)(proposal.rationale) }
+                : {}),
+            ...(typeof proposal.confidence === 'number' ? { confidence: proposal.confidence } : {}),
+            ...(proposal.risk_level ? { risk_level: proposal.risk_level } : {}),
+            ...(typeof proposal.requires_owner_approval === 'boolean'
+                ? { requires_owner_approval: proposal.requires_owner_approval }
+                : {}),
+            ...(Array.isArray(proposal.evidence)
+                ? {
+                    evidence: proposal.evidence.map((evidence) => ({
+                        kind: preserveOpaqueArbitrationValue(evidence.kind, SAFE_ARBITRATION_EVIDENCE_KIND, 'evidence kind'),
+                        reference: preserveOpaqueArbitrationValue(evidence.reference, SAFE_ARBITRATION_EVIDENCE_REFERENCE, 'evidence reference'),
+                    })),
+                }
+                : {}),
+        })),
+    };
+    return marrowAgentRuntime(apiKey, baseUrl, {
+        action: (0, redact_1.redactSensitiveText)(action || `Resolve conflicting agent proposals for ${safeCoordination.objective}`),
+        type: type || 'coordination',
+        agent_id: agent_id || agentId,
+        session_id: session_id || sessionId,
+        surfaces,
+        context: context ? (0, redact_1.redactSensitiveValue)(context) : undefined,
+        proof: proof ? (0, redact_1.redactSensitiveValue)(proof) : undefined,
+        coordination: safeCoordination,
+    }, sessionId, agentId);
 }
 async function marrowGovernanceControlPlane(apiKey, baseUrl, sessionId, agentId) {
     const res = await fetch(`${baseUrl}/v1/agent/governance/control-plane`, {

@@ -1,7 +1,7 @@
 /**
  * @getmarrow/mcp — API Functions
  */
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowArbitrationRequest, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 import { type LifecycleEvent } from './lifecycle-spool';
 export type { Narrative, CommitResult } from './types';
@@ -50,6 +50,8 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     proof?: Record<string, unknown>;
     gate_receipt_id?: string;
     gate_receipt?: string;
+    arbitration_receipt_id?: string;
+    owner_approval_receipt_id?: string;
     action?: string;
     type?: string;
     surfaces?: string[];
@@ -153,6 +155,19 @@ export declare function marrowValueReport(apiKey: string, baseUrl: string, perio
 export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
 export declare function marrowWorkflowGate(apiKey: string, baseUrl: string, input: MarrowWorkflowGateRequest, sessionId?: string, agentId?: string): Promise<MarrowWorkflowGateResult>;
 export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string): Promise<MarrowAgentRuntimeResult>;
+/**
+ * Resolve conflicting agent proposals through the existing runtime control
+ * plane. This is a client convenience, not a separate backend API.
+ */
+export declare function marrowArbitrate(apiKey: string, baseUrl: string, input: MarrowArbitrationRequest & {
+    action?: string;
+    type?: string;
+    agent_id?: string;
+    session_id?: string;
+    surfaces?: string[];
+    context?: Record<string, unknown>;
+    proof?: Record<string, unknown>;
+}, sessionId?: string, agentId?: string): Promise<MarrowAgentRuntimeResult>;
 export declare function marrowGovernanceControlPlane(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
 export declare function marrowHermesIntegration(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
 export declare function marrowCompletionContracts(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
