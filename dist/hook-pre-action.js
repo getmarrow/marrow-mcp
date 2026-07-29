@@ -77,13 +77,15 @@ function preActionHookOutput(runtime) {
 function emitDecision(runtime) {
     process.stdout.write(JSON.stringify(preActionHookOutput(runtime)));
 }
-async function withTimeout(promise) {
+async function withTimeout(operation) {
+    const controller = new AbortController();
     let timer;
     try {
         return await Promise.race([
-            promise,
+            operation(controller.signal),
             new Promise((resolve) => {
                 timer = setTimeout(() => {
+                    controller.abort();
                     resolve(null);
                 }, RUNTIME_TIMEOUT_MS);
             }),
@@ -161,12 +163,12 @@ async function runPreActionHookCommand(input) {
             outcome_state: 'pending',
         },
     }).catch(() => null);
-    const runtime = (0, index_1.marrowAgentRuntime)(resolved.apiKey, baseUrl, {
+    const runtime = (signal) => (0, index_1.marrowAgentRuntime)(resolved.apiKey, baseUrl, {
         action: classified.action,
         type: classified.type,
         role: classified.role,
         surfaces: classified.surfaces,
-    }, sessionId, agentId);
+    }, sessionId, agentId, signal);
     const [result] = await Promise.all([withTimeout(runtime), lifecycle]);
     emitDecision(result);
 }

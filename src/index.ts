@@ -1054,7 +1054,8 @@ export async function marrowAgentRuntime(
   baseUrl: string,
   input: MarrowAgentRuntimeRequest,
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<MarrowAgentRuntimeResult> {
   const body = {
     ...input,
@@ -1065,6 +1066,7 @@ export async function marrowAgentRuntime(
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(body),
+    signal,
   });
   const json = await safeJsonResponse(res);
   return json.data;

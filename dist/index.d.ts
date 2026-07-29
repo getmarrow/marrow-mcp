@@ -154,7 +154,7 @@ export declare function marrowValueReport(apiKey: string, baseUrl: string, perio
  */
 export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
 export declare function marrowWorkflowGate(apiKey: string, baseUrl: string, input: MarrowWorkflowGateRequest, sessionId?: string, agentId?: string): Promise<MarrowWorkflowGateResult>;
-export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string): Promise<MarrowAgentRuntimeResult>;
+export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowAgentRuntimeResult>;
 /**
  * Resolve conflicting agent proposals through the existing runtime control
  * plane. This is a client convenience, not a separate backend API.
