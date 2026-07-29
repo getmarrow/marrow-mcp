@@ -6,9 +6,9 @@ exports.runSessionHookCommand = runSessionHookCommand;
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const index_1 = require("./index");
-const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
-exports.SESSION_HOOK_COMMAND = 'npx -y @getmarrow/mcp session-hook';
+const hook_contract_1 = require("./hook-contract");
+exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const SESSION_END_TIMEOUT_MS = 900;
 function readStopHookSource(input) {
@@ -36,15 +36,6 @@ function readStopHookSource(input) {
         hook_event_name: take('hook_event_name'),
     };
 }
-function stopCorrelation(source, sessionId) {
-    const stableSource = sessionId || JSON.stringify([
-        source.session_id || '',
-        source.transcript_path || '',
-        source.cwd || '',
-        source.hook_event_name || 'Stop',
-    ]);
-    return (0, node_crypto_1.createHash)('sha256').update(stableSource).digest('hex').slice(0, 32);
-}
 async function boundedSessionEnd(apiKey, baseUrl, sessionId, agentId) {
     const controller = new AbortController();
     let timeout;
@@ -64,33 +55,16 @@ async function boundedSessionEnd(apiKey, baseUrl, sessionId, agentId) {
             clearTimeout(timeout);
     }
 }
-function settingsPath(startDir) {
-    const fs = require('fs');
-    const path = require('path');
-    let dir = startDir;
-    while (true) {
-        const candidate = path.join(dir, '.claude', 'settings.json');
-        if (fs.existsSync(candidate) || fs.existsSync(path.join(dir, '.git')))
-            return candidate;
-        const parent = path.dirname(dir);
-        if (parent === dir)
-            break;
-        dir = parent;
-    }
-    return path.join(startDir, '.claude', 'settings.json');
-}
 function installSessionEndHook(startDir = process.cwd()) {
     const fs = require('fs');
     const path = require('path');
-    const target = settingsPath(startDir);
-    const settings = fs.existsSync(target) && fs.readFileSync(target, 'utf8').trim()
-        ? JSON.parse(fs.readFileSync(target, 'utf8'))
-        : {};
+    const target = (0, hook_contract_1.findHookSettingsPath)(startDir);
+    const settings = (0, hook_contract_1.readHookSettings)(startDir);
     const hooks = settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
         ? settings.hooks
         : {};
     const stop = Array.isArray(hooks.Stop) ? [...hooks.Stop] : [];
-    const installed = stop.some((entry) => JSON.stringify(entry).includes(exports.SESSION_HOOK_COMMAND));
+    const installed = (0, hook_contract_1.hasExactCommandHook)(settings, 'Stop', exports.SESSION_HOOK_COMMAND);
     if (!installed)
         stop.push({ hooks: [{ type: 'command', command: exports.SESSION_HOOK_COMMAND }] });
     settings.hooks = { ...hooks, Stop: stop };
@@ -108,7 +82,8 @@ async function runSessionHookCommand(input) {
     const source = readStopHookSource(input);
     const sessionId = resolved.sessionId || source.session_id || undefined;
     const agentId = resolved.agentId || undefined;
-    const correlation = stopCorrelation(source, sessionId);
+    const workflowId = (0, hook_contract_1.stableSessionWorkflowId)(sessionId, [source.transcript_path, source.cwd]);
+    const correlation = workflowId.slice('session-'.length);
     await (0, lifecycle_spool_1.recordLifecycleEvent)({
         apiKey: resolved.apiKey,
         baseUrl,
@@ -118,9 +93,9 @@ async function runSessionHookCommand(input) {
             harness: 'claude-code',
             agent_id: agentId,
             session_id: sessionId,
-            workflow_id: `session-${correlation}`,
+            workflow_id: workflowId,
             correlation_id: correlation,
-            observed_hook: 'session_end',
+            ...(0, hook_contract_1.nativeHookEvidence)('session_end'),
             action: 'agent session ended',
             outcome_state: 'pending',
         },

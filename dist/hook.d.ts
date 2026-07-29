@@ -8,6 +8,8 @@ interface HookEvent {
     tool_input?: unknown;
     tool_response?: unknown;
     tool_result?: unknown;
+    error?: unknown;
+    is_interrupt?: boolean;
 }
 interface HookInstallResult {
     settingsPath: string;

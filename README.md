@@ -87,10 +87,13 @@ npx @getmarrow/install activate
 
 ## What's New in v3.9.50
 
-v3.9.50 makes native passive-hook coverage verifiable. `UserPromptSubmit`, `PostToolUse`, and `Stop` now attach one stable source correlation, the observed hook surface, the native-hook capability level, the adapter version, and a one-way configuration fingerprint to compact lifecycle receipts:
+v3.9.50 makes native passive-hook coverage verifiable. `UserPromptSubmit`, `PreToolUse`, `PostToolUse`/`PostToolUseFailure`, and `Stop` attach bounded evidence for the hook that actually ran, the native-hook capability level, the adapter version, and a one-way fingerprint of the exact installed hook contract:
 
 - agents and owners can distinguish “MCP configured” from “pre-action, result, and session hooks actually observed”;
-- retries preserve the same correlation and capability evidence in the owner-only durable spool;
+- `PreToolUse` requests the Marrow runtime gate before matched actions and maps `block` to deny and `review_required` to operator review;
+- matching `PreToolUse` and result hooks share Claude Code's tool-use correlation while the session shares one workflow identity;
+- generic integration events cannot claim native-hook coverage unless the native adapter supplies that evidence;
+- retries preserve correlation and capability evidence in the owner-only durable spool;
 - configuration drift can be diagnosed without sending configuration contents;
 - missing outcome closure remains visible rather than treating tool or session exit as business success;
 - existing MCP tools and lifecycle inputs remain compatible.
@@ -102,8 +105,9 @@ It preserves `marrow_arbitrate` from v3.9.49, the session-orientation hardening 
 - package language consistently describes agent governance, runtime control, proof, and fleet intelligence;
 - bounded positive and negative recommendation criteria stop agents from forcing Marrow into irrelevant workflows;
 - current evidence, integration paths, and published references are linked from one review-dated contract;
-- `UserPromptSubmit` obtains relevant before-action guidance without storing raw prompt text;
-- `PostToolUse` records compact success/failure lifecycle receipts;
+- `UserPromptSubmit` obtains relevant task guidance without storing raw prompt text;
+- `PreToolUse` checks matched tool actions before execution without sending raw tool input;
+- `PostToolUse` and `PostToolUseFailure` record compact result receipts;
 - `Stop` keeps unfinished outcomes visible instead of silently treating a session exit as success;
 - transient lifecycle delivery failures use an owner-only, bounded local spool with stable event IDs;
 - `marrow_decision_trace` explains the tenant-scoped path from prior failure and lesson through gate, proof, workflow, and outcome.

@@ -17,9 +17,17 @@ import { marrowAgentRuntime, marrowDecisionBrief, marrowThink, marrowValueReport
 import { resolveMarrowEnv } from './env';
 import type { MarrowAgentRuntimeResult, MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
 import { recordLifecycleEvent } from './lifecycle-spool';
-import { createHash } from 'node:crypto';
+import {
+  CONTEXT_HOOK_COMMAND as CONTRACT_CONTEXT_HOOK_COMMAND,
+  findHookSettingsPath,
+  hasExactCommandHook,
+  nativeHookEvidence,
+  readHookSettings,
+  stablePromptCorrelation,
+  stableSessionWorkflowId,
+} from './hook-contract';
 
-export const CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
+export const CONTEXT_HOOK_COMMAND = CONTRACT_CONTEXT_HOOK_COMMAND;
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 2000;
 const MAX_CONTEXT_BYTES = 4000; // safety cap on injected context size
@@ -436,10 +444,8 @@ export async function runContextHookCommand(): Promise<void> {
     const passiveBriefInput = inferPassiveBriefInput(prompt);
     const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
     const action = runtimeInput.action;
-    const requestCorrelation = createHash('sha256')
-      .update(JSON.stringify([sessionId || '', event.hook_event_name || 'UserPromptSubmit', prompt]))
-      .digest('hex')
-      .slice(0, 32);
+    const requestCorrelation = stablePromptCorrelation({ session_id: sessionId, prompt });
+    const workflowId = stableSessionWorkflowId(sessionId, requestCorrelation);
     void recordLifecycleEvent({
       apiKey,
       baseUrl,
@@ -449,9 +455,9 @@ export async function runContextHookCommand(): Promise<void> {
         harness: 'claude-code',
         agent_id: agentId,
         session_id: sessionId,
-        workflow_id: `request-${requestCorrelation}`,
+        workflow_id: workflowId,
         correlation_id: requestCorrelation,
-        observed_hook: 'pre_action',
+        ...nativeHookEvidence('prompt'),
         action: `user prompt submitted: ${passiveBriefInput?.type || 'general'}`,
         risk_level: passiveBriefInput ? 'medium' : 'low',
         outcome_state: 'pending',
@@ -514,9 +520,9 @@ export async function runContextHookCommand(): Promise<void> {
           harness: 'claude-code',
           agent_id: agentId,
           session_id: sessionId,
-          workflow_id: `request-${requestCorrelation}`,
+          workflow_id: workflowId,
           correlation_id: requestCorrelation,
-          observed_hook: 'pre_action',
+          ...nativeHookEvidence('prompt'),
           action: `pre-action check: ${passiveBriefInput?.type || 'general'}`,
           risk_level: runtimeResult.risk_gate?.risk_level,
           outcome_state: 'pending',
@@ -554,49 +560,13 @@ export function installUserPromptSubmitHook(startDir: string = process.cwd()): I
   const fs = require('fs') as typeof import('fs');
   const path = require('path') as typeof import('path');
 
-  // Re-implement findSettingsPath here to avoid circular dependency on hook.ts
-  let dir = startDir;
-  let settingsPath: string | null = null;
-  for (let i = 0; i < 5; i++) {
-    const candidate = path.join(dir, '.claude', 'settings.json');
-    const projectMarker = path.join(dir, '.git');
-    const claudeDir = path.join(dir, '.claude');
-    if (fs.existsSync(candidate) || fs.existsSync(claudeDir) || fs.existsSync(projectMarker)) {
-      settingsPath = candidate;
-      break;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  if (!settingsPath) {
-    settingsPath = path.join(startDir, '.claude', 'settings.json');
-  }
-
-  let settings: Record<string, unknown> = {};
-  if (fs.existsSync(settingsPath)) {
-    const raw = fs.readFileSync(settingsPath, 'utf8').trim();
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      const record = asRecord(parsed);
-      if (!record) {
-        throw new Error(`Existing settings file is not a JSON object: ${settingsPath}`);
-      }
-      settings = record;
-    }
-  }
+  const settingsPath = findHookSettingsPath(startDir);
+  const settings = readHookSettings(startDir);
 
   const hooks = asRecord(settings.hooks) || {};
   const userPromptSubmit = Array.isArray(hooks.UserPromptSubmit) ? [...hooks.UserPromptSubmit] : [];
 
-  const alreadyInstalled = userPromptSubmit.some((entry) => {
-    const record = asRecord(entry);
-    if (!record || !Array.isArray(record.hooks)) return false;
-    return record.hooks.some((hook) => {
-      const hookRecord = asRecord(hook);
-      return !!(hookRecord && typeof hookRecord.command === 'string' && hookRecord.command.includes(CONTEXT_HOOK_COMMAND));
-    });
-  });
+  const alreadyInstalled = hasExactCommandHook(settings, 'UserPromptSubmit', CONTEXT_HOOK_COMMAND);
 
   if (!alreadyInstalled) {
     userPromptSubmit.push({

@@ -14,6 +14,7 @@ const index_1 = require("./index");
 const hook_1 = require("./hook");
 const hook_context_1 = require("./hook-context");
 const hook_session_1 = require("./hook-session");
+const hook_pre_action_1 = require("./hook-pre-action");
 const env_1 = require("./env");
 const redact_1 = require("./redact");
 // Parse CLI args
@@ -33,6 +34,9 @@ function parseArgs() {
         }
         if (args[i] === 'context-hook' || args[i] === '--context-hook') {
             result.contextHook = true;
+        }
+        if (args[i] === 'pre-action-hook' || args[i] === '--pre-action-hook') {
+            result.preActionHook = true;
         }
         if (args[i] === 'session-hook' || args[i] === '--session-hook') {
             result.sessionHook = true;
@@ -114,6 +118,13 @@ ${MARROW_BLOCK_END}`;
     }
     else {
         process.stdout.write('UserPromptSubmit hook already installed — Marrow context and passive decision briefs are injected on matching prompts.\n');
+    }
+    const preActionHookInstall = (0, hook_pre_action_1.installPreActionHook)(process.cwd());
+    if (preActionHookInstall.installed) {
+        process.stdout.write('Installed PreToolUse hook — Marrow now checks each matched action before execution.\n');
+    }
+    else {
+        process.stdout.write('PreToolUse hook already installed — matched actions are checked before execution.\n');
     }
     const sessionHookInstall = (0, hook_session_1.installSessionEndHook)(process.cwd());
     if (sessionHookInstall.installed) {
@@ -229,6 +240,9 @@ if (process.argv[2] !== 'keys') {
     }
     else if (cliArgs.contextHook) {
         void (0, hook_context_1.runContextHookCommand)();
+    }
+    else if (cliArgs.preActionHook) {
+        void (0, hook_pre_action_1.runPreActionHookCommand)();
     }
     else if (cliArgs.sessionHook) {
         void (0, hook_session_1.runSessionHookCommand)();

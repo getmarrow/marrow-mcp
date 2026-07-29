@@ -1,0 +1,129 @@
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+export const MCP_ADAPTER_VERSION = '3.9.50';
+export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*';
+export const CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
+export const PRE_ACTION_HOOK_COMMAND = 'npx -y @getmarrow/mcp pre-action-hook';
+export const ACTION_RESULT_HOOK_COMMAND = 'npx -y @getmarrow/mcp hook';
+export const SESSION_END_HOOK_COMMAND = 'npx -y @getmarrow/mcp session-hook';
+export const NATIVE_EXPECTED_HOOKS = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
+
+type HookSettings = Record<string, unknown>;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+export function findHookSettingsPath(startDir = process.cwd()): string {
+  let dir = startDir;
+  let fallback: string | null = null;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const candidate = join(dir, '.claude', 'settings.json');
+    if (existsSync(candidate) || existsSync(join(dir, '.claude'))) return candidate;
+    if (!fallback && existsSync(join(dir, '.git'))) fallback = candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return fallback || join(startDir, '.claude', 'settings.json');
+}
+
+export function readHookSettings(startDir = process.cwd()): HookSettings {
+  const path = findHookSettingsPath(startDir);
+  if (!existsSync(path)) return {};
+  try {
+    return asRecord(JSON.parse(readFileSync(path, 'utf8'))) || {};
+  } catch {
+    return {};
+  }
+}
+
+export function hasExactCommandHook(
+  settings: HookSettings,
+  eventName: string,
+  command: string,
+  matcher?: string,
+): boolean {
+  const hooks = asRecord(settings.hooks);
+  const entries = hooks?.[eventName];
+  if (!Array.isArray(entries)) return false;
+  return entries.some((entry) => {
+    const record = asRecord(entry);
+    if (!record || (matcher !== undefined && record.matcher !== matcher) || !Array.isArray(record.hooks)) return false;
+    return record.hooks.some((hook) => {
+      const handler = asRecord(hook);
+      return handler?.type === 'command'
+        && typeof handler.command === 'string'
+        && handler.command.trim() === command;
+    });
+  });
+}
+
+export function nativeHookConfigurationFingerprint(startDir = process.cwd()): string {
+  const settings = readHookSettings(startDir);
+  const contract = {
+    schema: 'marrow-claude-native-hooks.v2',
+    adapter_version: MCP_ADAPTER_VERSION,
+    expected_hooks: NATIVE_EXPECTED_HOOKS,
+    configured: {
+      prompt: hasExactCommandHook(settings, 'UserPromptSubmit', CONTEXT_HOOK_COMMAND),
+      pre_action: hasExactCommandHook(settings, 'PreToolUse', PRE_ACTION_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
+      action_result_success: hasExactCommandHook(settings, 'PostToolUse', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
+      action_result_failure: hasExactCommandHook(settings, 'PostToolUseFailure', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
+      session_end: hasExactCommandHook(settings, 'Stop', SESSION_END_HOOK_COMMAND),
+    },
+  };
+  return createHash('sha256').update(JSON.stringify(contract)).digest('hex');
+}
+
+export function nativeHookEvidence(
+  observedHook: typeof NATIVE_EXPECTED_HOOKS[number],
+  startDir = process.cwd(),
+): {
+  adapter_version: string;
+  capability_level: 'native_hooks';
+  config_fingerprint: string;
+  expected_hooks: string[];
+  observed_hook: typeof observedHook;
+} {
+  return {
+    adapter_version: MCP_ADAPTER_VERSION,
+    capability_level: 'native_hooks',
+    config_fingerprint: nativeHookConfigurationFingerprint(startDir),
+    expected_hooks: [...NATIVE_EXPECTED_HOOKS],
+    observed_hook: observedHook,
+  };
+}
+
+function stableHash(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32);
+}
+
+export function stableToolCorrelation(event: {
+  session_id?: string;
+  tool_use_id?: string;
+  tool_name?: string;
+  tool_input?: unknown;
+}): string {
+  return stableHash([
+    event.session_id || '',
+    event.tool_use_id || '',
+    event.tool_name || 'tool',
+    event.tool_use_id ? null : event.tool_input ?? null,
+  ]);
+}
+
+export function stablePromptCorrelation(event: {
+  session_id?: string;
+  prompt?: string;
+}): string {
+  return stableHash([event.session_id || '', event.prompt || '']);
+}
+
+export function stableSessionWorkflowId(sessionId?: string, fallback?: unknown): string {
+  return `session-${stableHash([sessionId || '', sessionId ? null : fallback ?? null])}`;
+}
