@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NATIVE_EXPECTED_HOOKS = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.NATIVE_EXPECTED_HOOKS = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
 exports.findHookSettingsPath = findHookSettingsPath;
 exports.readHookSettings = readHookSettings;
 exports.hasExactCommandHook = hasExactCommandHook;
@@ -14,10 +14,11 @@ const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
 exports.MCP_ADAPTER_VERSION = '3.9.50';
 exports.NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*';
-exports.CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
-exports.PRE_ACTION_HOOK_COMMAND = 'npx -y @getmarrow/mcp pre-action-hook';
-exports.ACTION_RESULT_HOOK_COMMAND = 'npx -y @getmarrow/mcp hook';
-exports.SESSION_END_HOOK_COMMAND = 'npx -y @getmarrow/mcp session-hook';
+exports.MCP_PACKAGE_SPEC = `@getmarrow/mcp@${exports.MCP_ADAPTER_VERSION}`;
+exports.CONTEXT_HOOK_COMMAND = `npx -y ${exports.MCP_PACKAGE_SPEC} context-hook`;
+exports.PRE_ACTION_HOOK_COMMAND = `npx -y ${exports.MCP_PACKAGE_SPEC} pre-action-hook`;
+exports.ACTION_RESULT_HOOK_COMMAND = `npx -y ${exports.MCP_PACKAGE_SPEC} hook`;
+exports.SESSION_END_HOOK_COMMAND = `npx -y ${exports.MCP_PACKAGE_SPEC} session-hook`;
 exports.NATIVE_EXPECTED_HOOKS = ['prompt', 'pre_action', 'action_result', 'session_end'];
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value)

@@ -4,10 +4,11 @@ import { dirname, join } from 'node:path';
 
 export const MCP_ADAPTER_VERSION = '3.9.50';
 export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*';
-export const CONTEXT_HOOK_COMMAND = 'npx -y @getmarrow/mcp context-hook';
-export const PRE_ACTION_HOOK_COMMAND = 'npx -y @getmarrow/mcp pre-action-hook';
-export const ACTION_RESULT_HOOK_COMMAND = 'npx -y @getmarrow/mcp hook';
-export const SESSION_END_HOOK_COMMAND = 'npx -y @getmarrow/mcp session-hook';
+export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
+export const CONTEXT_HOOK_COMMAND = `npx -y ${MCP_PACKAGE_SPEC} context-hook`;
+export const PRE_ACTION_HOOK_COMMAND = `npx -y ${MCP_PACKAGE_SPEC} pre-action-hook`;
+export const ACTION_RESULT_HOOK_COMMAND = `npx -y ${MCP_PACKAGE_SPEC} hook`;
+export const SESSION_END_HOOK_COMMAND = `npx -y ${MCP_PACKAGE_SPEC} session-hook`;
 export const NATIVE_EXPECTED_HOOKS = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
 
 type HookSettings = Record<string, unknown>;

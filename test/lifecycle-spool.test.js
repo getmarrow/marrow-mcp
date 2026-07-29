@@ -101,11 +101,11 @@ test('native MCP hook receipts carry bounded capability and actual configuration
   mkdirSync(settingsDir, { recursive: true });
   writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({
     hooks: {
-      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp context-hook' }] }],
-      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp pre-action-hook' }] }],
-      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp hook' }] }],
-      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp hook' }] }],
-      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp session-hook' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 context-hook' }] }],
+      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 pre-action-hook' }] }],
+      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 hook' }] }],
+      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 hook' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 session-hook' }] }],
     },
   }));
   const originalFetch = globalThis.fetch;

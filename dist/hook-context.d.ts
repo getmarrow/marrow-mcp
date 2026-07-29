@@ -13,7 +13,7 @@
  * disabled with `MARROW_AUTO_HOOK=false`.
  */
 import type { MarrowAgentRuntimeResult, MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
-export declare const CONTEXT_HOOK_COMMAND = "npx -y @getmarrow/mcp context-hook";
+export declare const CONTEXT_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.50 context-hook";
 interface InstallResult {
     settingsPath: string;
     installed: boolean;

@@ -1,4 +1,4 @@
-export declare const AUTO_HOOK_COMMAND = "npx -y @getmarrow/mcp hook";
+export declare const AUTO_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.50 hook";
 export declare const AUTO_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*";
 interface HookEvent {
     session_id?: string;
