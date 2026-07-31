@@ -131,6 +131,17 @@ test('protected command variants fail closed without trusted Marrow credentials'
       'printf file | xargs /bin/rm',
       'dd if=/dev/zero of=generated-cache/image.bin bs=1 count=1',
       `git -c ${'credential.helper=x'.repeat(600)} push origin master`,
+      'npm org set my-org billing-email user@example.test',
+      'git update-ref refs/heads/main abc',
+      'gh repo transfer acme/app acme2',
+      'nomad node drain -enable node1',
+      'cdk watch PlatformStack',
+      'ansible all -m shell -a reboot',
+      'curl --config write.conf https://example.test',
+      "mysql -e 'REPLACE INTO t VALUES (1)' appdb",
+      'redis-cli --pipe',
+      'vault operator rekey',
+      '"/usr/bin/rm" -rf generated',
     ]) {
       let output = '';
       process.stdout.write = (chunk) => { output += String(chunk); return true; };
