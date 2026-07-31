@@ -26,12 +26,19 @@ test('protected operations are classified from tool names and commands without i
   const terraformApply = classifyTool({ tool_name: 'Bash', tool_input: { command: 'terraform -chdir=infra apply -auto-approve' } });
   const npmUnpublish = classifyTool({ tool_name: 'Bash', tool_input: { command: 'npm unpublish @example/package@1.0.0' } });
   const remoteD1Execute = classifyTool({ tool_name: 'Bash', tool_input: { command: 'wrangler d1 execute app --remote --file migration.sql' } });
+  const remoteHttpDelete = classifyTool({ tool_name: 'Bash', tool_input: { command: 'curl -X DELETE https://api.github.com/repos/acme/app' } });
+  const githubApiDelete = classifyTool({ tool_name: 'Bash', tool_input: { command: 'gh api repos/acme/app/hooks/1 --method DELETE' } });
+  const remoteSqlDelete = classifyTool({ tool_name: 'Bash', tool_input: { command: 'psql "$DATABASE_URL" -c "DELETE FROM jobs"' } });
+  const cloudObjectDelete = classifyTool({ tool_name: 'Bash', tool_input: { command: 'aws s3 rm s3://bucket/release.tar.gz' } });
+  const clusterDrain = classifyTool({ tool_name: 'Bash', tool_input: { command: 'kubectl drain node-1 --ignore-daemonsets' } });
+  const secretEdit = classifyTool({ tool_name: 'Bash', tool_input: { command: 'vault kv put secret/app token=value' } });
+  const cargoYank = classifyTool({ tool_name: 'Bash', tool_input: { command: 'cargo yank --vers 1.0.0 package' } });
   const unknownMcp = classifyTool({ tool_name: 'mcp__payments__execute', tool_input: { amount: 25 } });
   const deceptiveMcp = classifyTool({ tool_name: 'mcp__records__get_and_delete', tool_input: { id: 'record-1' } });
   const compoundShell = classifyTool({ tool_name: 'Bash', tool_input: { command: 'cat package.json && node mutate.js' } });
   const readOnly = classifyTool({ tool_name: 'Bash', tool_input: { command: 'cat package.json' } });
 
-  for (const result of [publish, npmUnpublish, push, pushWithGlobalOptions, merge, kubectlApply, terraformApply, remoteD1Execute, unknownMcp, deceptiveMcp]) {
+  for (const result of [publish, npmUnpublish, push, pushWithGlobalOptions, merge, kubectlApply, terraformApply, remoteD1Execute, remoteHttpDelete, githubApiDelete, remoteSqlDelete, cloudObjectDelete, clusterDrain, secretEdit, cargoYank, unknownMcp, deceptiveMcp]) {
     assert.equal(result.protected, true);
     assert.equal(result.risk, 'high');
   }
@@ -69,6 +76,13 @@ test('protected command variants fail closed without trusted Marrow credentials'
       'terraform apply -auto-approve',
       'npm unpublish @example/package@1.0.0',
       'wrangler d1 execute app --remote --file migration.sql',
+      'curl -X DELETE https://api.github.com/repos/acme/app',
+      'gh api repos/acme/app/hooks/1 --method DELETE',
+      'psql "$DATABASE_URL" -c "DELETE FROM jobs"',
+      'aws s3 rm s3://bucket/release.tar.gz',
+      'kubectl drain node-1 --ignore-daemonsets',
+      'vault kv put secret/app token=value',
+      'cargo yank --vers 1.0.0 package',
     ]) {
       let output = '';
       process.stdout.write = (chunk) => { output += String(chunk); return true; };
