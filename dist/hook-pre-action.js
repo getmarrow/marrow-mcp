@@ -176,7 +176,21 @@ async function runPreActionHookCommand(input) {
         process.stdout.write('{}');
         return;
     }
-    const resolved = (0, env_1.resolveMarrowEnv)({ trustedOnly: true });
+    let resolved;
+    let baseUrl;
+    try {
+        resolved = (0, env_1.resolveMarrowEnv)({ trustedOnly: true });
+        baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
+    }
+    catch {
+        emitDecision({
+            runtime: null,
+            permit: null,
+            protectedRisk: classified.protected,
+            enforcementError: 'Marrow enforcement configuration is unavailable. Restore the trusted configuration before retrying this protected action.',
+        });
+        return;
+    }
     if (!resolved.apiKey) {
         emitDecision({
             runtime: null,
@@ -186,7 +200,6 @@ async function runPreActionHookCommand(input) {
         });
         return;
     }
-    const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
     const sessionId = resolved.sessionId || source.session_id;
     const agentId = resolved.agentId || undefined;
     const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
