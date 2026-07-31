@@ -124,8 +124,8 @@ test('context hook makes a server update advisory visible to the agent', () => {
     {
       status: {
         client_update: {
-          installed_version: '3.9.50',
-          latest_version: '3.9.51',
+          installed_version: '3.9.51',
+          latest_version: '3.9.52',
           version_status: 'behind',
           update_available: true,
           notification_state: 'recommended',
@@ -140,7 +140,7 @@ test('context hook makes a server update advisory visible to the agent', () => {
     }
   );
 
-  assert.match(context, /Marrow client update available: installed=3\.9\.50; latest=3\.9\.51/);
+  assert.match(context, /Marrow client update available: installed=3\.9\.51; latest=3\.9\.52/);
   assert.match(context, /Update command \(operator approval\): npx @getmarrow\/mcp@latest setup/);
   assert.match(context, /Hosted Marrow services are already current; no local changes were applied/);
 });
