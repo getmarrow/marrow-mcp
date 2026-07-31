@@ -44,6 +44,19 @@ function asRecord(value) {
 function asString(value) {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
+const CLIENT_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const CLIENT_TARGET_PATTERN = '(?:latest|(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?)';
+const CLIENT_UPDATE_COMMAND_PATTERN = new RegExp(`^(?:npx @getmarrow/install@${CLIENT_TARGET_PATTERN} (?:--repair|doctor)|npx @getmarrow/mcp@${CLIENT_TARGET_PATTERN} setup|npm install @getmarrow/sdk@${CLIENT_TARGET_PATTERN})$`);
+function strictClientVersion(value) {
+    const version = typeof value === 'string' ? value.trim() : '';
+    return version.length <= 64 && CLIENT_VERSION_PATTERN.test(version) ? version : undefined;
+}
+function strictClientUpdateCommand(value) {
+    if (typeof value !== 'string' || value.length > 240 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value))
+        return undefined;
+    const command = value.trim();
+    return CLIENT_UPDATE_COMMAND_PATTERN.test(command) ? command : undefined;
+}
 async function readStdin() {
     return new Promise((resolve) => {
         const chunks = [];
@@ -278,27 +291,34 @@ function appendAgentRuntime(lines, runtime) {
     }
     const status = asRecord(runtime.status);
     const update = asRecord(runtime.client_update) || asRecord(status?.client_update);
-    const updateAvailable = update?.update_available === true;
-    const notification = asString(update?.notification_state) || asString(update?.notification);
-    const versionStatus = asString(update?.version_status);
-    const priority = notification === 'security_required'
-        ? 'security_required'
-        : notification === 'recommended'
-            ? 'recommended'
-            : versionStatus === 'unknown' || notification === 'unknown' || notification === 'version_unknown'
-                ? 'version_unknown'
-                : asString(update?.priority) || 'recommended';
-    if (update && (updateAvailable || versionStatus === 'unknown' || notification === 'unknown' || notification === 'version_unknown' || priority === 'security_required')) {
-        const current = asString(update.installed_version) || asString(update.current_version) || 'unknown';
-        const latest = asString(update.latest_version) || 'unknown';
+    const rawNotification = update?.notification_state ?? update?.notification;
+    const notification = rawNotification === 'unknown' || rawNotification === 'version_unknown' || rawNotification === 'recommended' || rawNotification === 'security_required' || rawNotification === 'none'
+        ? rawNotification
+        : undefined;
+    const versionStatus = update?.version_status === 'unknown' || update?.version_status === 'behind' || update?.version_status === 'current' || update?.version_status === 'ahead'
+        ? update.version_status
+        : undefined;
+    const currentVersion = strictClientVersion(update?.installed_version) || strictClientVersion(update?.current_version);
+    const latestVersion = strictClientVersion(update?.latest_version);
+    const versionUnknown = versionStatus === 'unknown' || notification === 'unknown' || notification === 'version_unknown';
+    const priority = versionUnknown
+        ? 'version_unknown'
+        : notification === 'security_required' && update?.update_available === true && Boolean(currentVersion && latestVersion)
+            ? 'security_required'
+            : notification === 'recommended' && versionStatus === 'behind' && update?.update_available === true && Boolean(currentVersion && latestVersion)
+                ? 'recommended'
+                : null;
+    if (update && priority) {
+        const current = currentVersion || 'unknown';
+        const latest = latestVersion || 'unknown';
         const updateSummary = priority === 'version_unknown'
             ? 'Marrow client version unrecognized'
             : priority === 'security_required'
                 ? 'Marrow client update required by server policy'
                 : 'Marrow client update available';
         lines.push(`- ${updateSummary}: installed=${current}; latest=${latest}. Hosted Marrow services are already current; no local changes were applied.`);
-        const updateCommand = asString(update.update_command) || asString(update.exact_update_command);
-        const verifyCommand = asString(update.verification_command) || asString(update.exact_verification_command);
+        const updateCommand = strictClientUpdateCommand(update.update_command) || strictClientUpdateCommand(update.exact_update_command);
+        const verifyCommand = strictClientUpdateCommand(update.verification_command) || strictClientUpdateCommand(update.exact_verification_command);
         if (updateCommand)
             lines.push(`- Update command (operator approval): ${updateCommand}`);
         if (verifyCommand)
