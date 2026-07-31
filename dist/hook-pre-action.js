@@ -245,6 +245,7 @@ async function runPreActionHookCommand(input) {
             action: classified.action,
             action_type: classified.type,
             target: classified.target,
+            surfaces: classified.surfaces,
             correlation_id: correlation,
             harness: 'claude-code',
         }, sessionId, agentId, signal);
