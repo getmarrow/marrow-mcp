@@ -28,6 +28,7 @@ exports.marrowValueReport = marrowValueReport;
 exports.marrowDecisionBrief = marrowDecisionBrief;
 exports.marrowWorkflowGate = marrowWorkflowGate;
 exports.marrowAgentRuntime = marrowAgentRuntime;
+exports.marrowEnforcement = marrowEnforcement;
 exports.marrowArbitrate = marrowArbitrate;
 exports.marrowGovernanceControlPlane = marrowGovernanceControlPlane;
 exports.marrowHermesIntegration = marrowHermesIntegration;
@@ -825,6 +826,21 @@ async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId, si
         session_id: input.session_id || sessionId,
     };
     const res = await fetch(`${baseUrl}/v1/agent/runtime`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify(body),
+        signal,
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+async function marrowEnforcement(apiKey, baseUrl, input, sessionId, agentId, signal) {
+    const body = {
+        ...input,
+        agent_id: input.agent_id || agentId,
+        session_id: input.session_id || sessionId,
+    };
+    const res = await fetch(`${baseUrl}/v1/agent/enforcement`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),

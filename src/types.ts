@@ -126,6 +126,38 @@ export interface MarrowAgentRuntimeRequest extends MarrowDecisionBriefRequest {
   coordination?: MarrowArbitrationRequest;
 }
 
+export interface MarrowEnforcementRequest {
+  operation: 'issue' | 'verify' | 'close' | 'heartbeat';
+  permit?: string;
+  permit_id?: string;
+  action?: string;
+  action_type?: string;
+  target?: string;
+  agent_id?: string;
+  session_id?: string;
+  harness?: string;
+  correlation_id?: string;
+  decision_id?: string | null;
+  gate_receipt_id?: string | null;
+  owner_approval_receipt_id?: string | null;
+  proof_requirements?: string[];
+  surfaces?: string[];
+  success?: boolean;
+  evidence?: Record<string, unknown>;
+}
+
+export interface MarrowEnforcementResult {
+  permit?: string;
+  permit_id?: string;
+  verified?: boolean;
+  closed?: boolean;
+  decision?: 'allow' | 'warn' | 'review_required' | 'block' | 'break_glass';
+  expires_at?: string;
+  required_proof?: string[];
+  exact_next_action?: string;
+  credential_capability?: Record<string, unknown>;
+}
+
 export interface MarrowArbitrationEvidence {
   kind: string;
   reference: string;
@@ -241,6 +273,7 @@ export interface MarrowBeforeActionIntervention {
 
 export interface MarrowAgentRuntimeResult {
   ok: boolean;
+  decision_id?: string;
   action: string;
   agent_id: string | null;
   session_id: string | null;

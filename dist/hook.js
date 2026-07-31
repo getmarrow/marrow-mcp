@@ -2,11 +2,13 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AUTO_HOOK_MATCHER = exports.AUTO_HOOK_COMMAND = void 0;
 exports.shouldSkipAutoLog = shouldSkipAutoLog;
+exports.deriveAction = deriveAction;
 exports.installPostToolUseHook = installPostToolUseHook;
 exports.runHookCommand = runHookCommand;
 const index_1 = require("./index");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const hook_pre_action_1 = require("./hook-pre-action");
 const hook_contract_1 = require("./hook-contract");
 const SKIP_TOOLS = new Set([
     'read',
@@ -173,19 +175,7 @@ function deriveAction(event) {
         return null;
     if (toolName.startsWith('mcp__marrow_'))
         return null;
-    if (toolName === 'Bash') {
-        return 'shell command execution observed; business outcome pending';
-    }
-    if (['Edit', 'Write', 'MultiEdit'].includes(toolName)) {
-        return 'workspace mutation observed; business outcome pending';
-    }
-    if (toolName.startsWith('mcp__')) {
-        const tool = normalizeToolName(toolName);
-        if (tool.startsWith('marrow_'))
-            return null;
-        return `external MCP tool execution observed (${truncate(tool, 80)}); business outcome pending`;
-    }
-    return `${truncate(normalizeToolName(toolName), 80)} tool execution observed; business outcome pending`;
+    return (0, hook_pre_action_1.classifyTool)(event).action;
 }
 function deriveToolSuccess(event) {
     const response = event.tool_response ?? event.tool_result;

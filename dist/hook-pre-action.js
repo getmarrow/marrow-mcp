@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.classifyTool = classifyTool;
 exports.preActionHookOutput = preActionHookOutput;
 exports.installPreActionHook = installPreActionHook;
 exports.runPreActionHookCommand = runPreActionHookCommand;
@@ -8,7 +9,7 @@ const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_contract_1 = require("./hook-contract");
 const MAX_INPUT_BYTES = 64 * 1024;
-const RUNTIME_TIMEOUT_MS = 900;
+const RUNTIME_TIMEOUT_MS = 3000;
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -53,7 +54,17 @@ function classifyTool(event) {
         risk,
     };
 }
-function preActionHookOutput(runtime) {
+function preActionHookOutput(result) {
+    const { runtime, permit, protectedRisk } = result;
+    if (protectedRisk && (!runtime || !permit?.verified)) {
+        return {
+            hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.',
+            },
+        };
+    }
     if (!runtime?.risk_gate) {
         return {};
     }
@@ -70,12 +81,17 @@ function preActionHookOutput(runtime) {
         hookSpecificOutput: {
             hookEventName: 'PreToolUse',
             ...(permissionDecision ? { permissionDecision, permissionDecisionReason: reason } : {}),
-            ...(runtime.before_you_act ? { additionalContext: runtime.before_you_act } : {}),
+            ...(runtime.before_you_act || permit?.permit_id ? {
+                additionalContext: [
+                    runtime.before_you_act,
+                    permit?.permit_id ? `Marrow action permit verified: ${permit.permit_id}. Evidence and outcome closure remain required.` : null,
+                ].filter(Boolean).join('\n'),
+            } : {}),
         },
     };
 }
-function emitDecision(runtime) {
-    process.stdout.write(JSON.stringify(preActionHookOutput(runtime)));
+function emitDecision(result) {
+    process.stdout.write(JSON.stringify(preActionHookOutput(result)));
 }
 async function withTimeout(operation) {
     const controller = new AbortController();
@@ -156,13 +172,54 @@ async function runPreActionHookCommand(input) {
             outcome_state: 'pending',
         },
     }).catch(() => null);
-    const runtime = (signal) => (0, index_1.marrowAgentRuntime)(resolved.apiKey, baseUrl, {
-        action: classified.action,
-        type: classified.type,
-        role: classified.role,
-        surfaces: classified.surfaces,
-    }, sessionId, agentId, signal);
-    const [result] = await Promise.all([withTimeout(runtime), lifecycle]);
-    emitDecision(result);
+    const control = async (signal) => {
+        const runtime = await (0, index_1.marrowAgentRuntime)(resolved.apiKey, baseUrl, {
+            action: classified.action,
+            type: classified.type,
+            role: classified.role,
+            surfaces: classified.surfaces,
+        }, sessionId, agentId, signal);
+        const decision = await (0, index_1.marrowThink)(resolved.apiKey, baseUrl, {
+            action: classified.action,
+            type: classified.type,
+            source_kind: 'integration',
+            source_meta: {
+                harness: 'claude-code',
+                correlation_id: correlation,
+                gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
+            },
+        }, sessionId, agentId);
+        const issued = await (0, index_1.marrowEnforcement)(resolved.apiKey, baseUrl, {
+            operation: 'issue',
+            action: classified.action,
+            action_type: classified.type,
+            target: correlation,
+            correlation_id: correlation,
+            harness: 'claude-code',
+            decision_id: decision.decision_id,
+            gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
+            proof_requirements: runtime.proof_pack?.fields || [],
+            surfaces: classified.surfaces,
+        }, sessionId, agentId, signal);
+        if (!issued.permit)
+            return { runtime, permit: issued, protectedRisk: classified.risk === 'high', enforcementError: 'Marrow did not issue an action permit.' };
+        const verified = await (0, index_1.marrowEnforcement)(resolved.apiKey, baseUrl, {
+            operation: 'verify',
+            permit: issued.permit,
+            action: classified.action,
+            action_type: classified.type,
+            target: correlation,
+            correlation_id: correlation,
+            harness: 'claude-code',
+        }, sessionId, agentId, signal);
+        return { runtime, permit: { ...issued, ...verified, permit: undefined }, protectedRisk: classified.risk === 'high' };
+    };
+    const [result] = await Promise.all([withTimeout(control), lifecycle]);
+    emitDecision(result || {
+        runtime: null,
+        permit: null,
+        protectedRisk: classified.risk === 'high',
+        enforcementError: 'Marrow governance timed out before this protected action. Retry instead of bypassing the gate.',
+    });
 }
 //# sourceMappingURL=hook-pre-action.js.map

@@ -16,6 +16,7 @@ interface HookInstallResult {
     installed: boolean;
 }
 export declare function shouldSkipAutoLog(event: HookEvent): boolean;
+export declare function deriveAction(event: HookEvent): string | null;
 export declare function installPostToolUseHook(startDir?: string): HookInstallResult;
 export declare function runHookCommand(): Promise<void>;
 export {};
