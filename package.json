@@ -71,7 +71,7 @@
     "scripts/mcp-registry-verify.cjs"
   ],
   "dependencies": {
-    "@getmarrow/sdk": "^3.7.43"
+    "@getmarrow/sdk": "^3.7.51"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",

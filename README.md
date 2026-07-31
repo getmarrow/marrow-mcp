@@ -105,6 +105,8 @@ Detection and notification are automatic. Package and configuration changes rema
 
 v3.9.52 combines operator-controlled client update notices with signed, action-bound permit verification in native hooks. Official MCP requests identify the installed package version, and passive context renders a request-specific server advisory with exact update and verification commands:
 
+This release is certified against `@getmarrow/sdk@3.7.51`. The deterministic release order is SDK `3.7.51` first, MCP `3.9.52` second, and installer `0.1.36` last; publication stops if the exact SDK tarball integrity does not match the MCP lockfile.
+
 - update availability or unrecognized version metadata appears during normal authenticated runtime/status activity;
 - messaging clearly states that hosted Marrow services are already current and that no local change was applied;
 - agents are instructed to tell the operator and respect local change policy instead of silently changing packages or configuration;

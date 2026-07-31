@@ -83,6 +83,22 @@ test('protected command variants fail closed without trusted Marrow credentials'
       'kubectl drain node-1 --ignore-daemonsets',
       'vault kv put secret/app token=value',
       'cargo yank --vers 1.0.0 package',
+      'npm access grant read-write team:developers @example/package',
+      'yarn npm tag add @example/package@1.0.0 latest',
+      'gh api repos/acme/app/hooks -f name=web --field active=true',
+      'gh pr close 42',
+      'kubectl run maintenance --image=busybox',
+      'oc apply -f deployment.yaml',
+      'terragrunt apply -auto-approve',
+      'curl -T artifact.tar.gz https://uploads.example.test/artifact',
+      'http https://api.example.test/items name=created',
+      'redis-cli UNLINK cache-key',
+      'aws s3 cp artifact.tar.gz s3://bucket/artifact.tar.gz',
+      'gcloud storage cp artifact.tar.gz gs://bucket/artifact.tar.gz',
+      'az storage blob upload --file artifact.tar.gz --container-name releases',
+      'rclone copy artifact.tar.gz remote:releases',
+      'git remote set-url origin https://github.com/acme/app.git',
+      'rm -rf build-output',
     ]) {
       let output = '';
       process.stdout.write = (chunk) => { output += String(chunk); return true; };
@@ -99,6 +115,54 @@ test('protected command variants fail closed without trusted Marrow credentials'
       else process.env[key] = value;
     }
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('look-alike Marrow MCP namespaces remain governed', () => {
+  const official = classifyTool({ tool_name: 'mcp__marrow__marrow_commit', tool_input: { decision_id: 'decision-1' } });
+  const lookalike = classifyTool({ tool_name: 'mcp__marrow_evil__delete', tool_input: { id: 'record-1' } });
+  assert.equal(official.protected, false);
+  assert.equal(lookalike.protected, true);
+  assert.equal(lookalike.risk, 'high');
+});
+
+test('protected pre-action hook rejects a verified permit with a mismatched identity', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWrite = process.stdout.write;
+  const previous = {
+    MARROW_API_KEY: process.env.MARROW_API_KEY,
+    MARROW_BASE_URL: process.env.MARROW_BASE_URL,
+  };
+  let output = '';
+  process.env.MARROW_API_KEY = 'test-pre-action-key';
+  process.env.MARROW_BASE_URL = 'https://api.example.test';
+  process.stdout.write = (chunk) => { output += String(chunk); return true; };
+  globalThis.fetch = async (url, init = {}) => {
+    const pathname = new URL(String(url)).pathname;
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    if (pathname === '/v1/agent/runtime') return Response.json({ data: { risk_gate: { allow: true, decision: 'allow', reasons: [] } } });
+    if (pathname === '/v1/agent/think') return Response.json({ data: { decision_id: 'decision-one' } });
+    if (pathname === '/v1/agent/enforcement' && body.operation === 'issue') {
+      return Response.json({ data: { permit_id: 'permit-issued', permit: 'signed-permit' } });
+    }
+    if (pathname === '/v1/agent/enforcement' && body.operation === 'verify') {
+      return Response.json({ data: { permit_id: 'permit-other', verified: true } });
+    }
+    return Response.json({ data: { accepted: true } });
+  };
+  try {
+    await runPreActionHookCommand({ tool_name: 'Bash', tool_input: { command: 'npm publish' } });
+    const result = JSON.parse(output);
+    assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(result.hookSpecificOutput.permissionDecisionReason, /did not match/i);
+    assert.doesNotMatch(output, /signed-permit/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.stdout.write = originalWrite;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 
