@@ -46,20 +46,24 @@ function parseEnvFile(filePath: string): Record<string, string> {
   return values;
 }
 
-function candidateEnvFiles(cwd: string, home: string): string[] {
-  const files: string[] = [];
+function candidateEnvFiles(cwd: string, home: string, trustedOnly: boolean): string[] {
+  const ownerFiles = [
+    path.join(home, '.marrow', 'env.local'),
+    path.join(home, '.marrow', 'env'),
+  ];
+  if (trustedOnly) return ownerFiles;
+
+  const files: string[] = [...ownerFiles];
   let dir = path.resolve(cwd || process.cwd());
   for (let depth = 0; depth < 8; depth += 1) {
-    files.push(path.join(dir, '.marrow', 'env'));
     files.push(path.join(dir, '.marrow', 'env.local'));
-    files.push(path.join(dir, '.env'));
+    files.push(path.join(dir, '.marrow', 'env'));
     files.push(path.join(dir, '.env.local'));
+    files.push(path.join(dir, '.env'));
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  files.push(path.join(home, '.marrow', 'env'));
-  files.push(path.join(home, '.marrow', 'env.local'));
   return [...new Set(files)];
 }
 
@@ -69,7 +73,12 @@ function pickKey(env: Record<string, string | undefined>): { key: string; source
   return { key: '', source: null };
 }
 
-export function resolveMarrowEnv(options: { cwd?: string; env?: NodeJS.ProcessEnv; home?: string } = {}): ResolvedMarrowEnv {
+export function resolveMarrowEnv(options: {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+  trustedOnly?: boolean;
+} = {}): ResolvedMarrowEnv {
   const env = options.env || process.env;
   const cwd = options.cwd || process.cwd();
   const home = options.home || env.HOME || env.USERPROFILE || os.homedir();
@@ -86,7 +95,7 @@ export function resolveMarrowEnv(options: { cwd?: string; env?: NodeJS.ProcessEn
     };
   }
 
-  for (const filePath of candidateEnvFiles(cwd, home)) {
+  for (const filePath of candidateEnvFiles(cwd, home, options.trustedOnly === true)) {
     const parsed = parseEnvFile(filePath);
     const found = pickKey(parsed);
     if (!found.key) continue;
@@ -108,6 +117,6 @@ export function resolveMarrowEnv(options: { cwd?: string; env?: NodeJS.ProcessEn
     sessionId: env.MARROW_SESSION_ID,
     source: null,
     missing: true,
-    exactFix: 'Create an API key at https://getmarrow.ai, then run: mkdir -p .marrow && printf "MARROW_API_KEY=mrw_live_...\\n" > .marrow/env && chmod 600 .marrow/env && npx @getmarrow/mcp setup',
+    exactFix: 'Create an API key at https://getmarrow.ai, then export MARROW_API_KEY from trusted secret storage or place it in ~/.marrow/env with owner-only permissions before running npx @getmarrow/mcp setup.',
   };
 }
