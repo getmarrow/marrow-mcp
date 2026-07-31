@@ -112,9 +112,9 @@ v3.9.52 combines operator-controlled client update notices with signed, action-b
 The native `PreToolUse` hook verifies the permit before protected work can execute. It obtains the runtime gate, records the exact governed decision, requests a permit bound to that gate, decision, target, and canonical action surfaces, and consumes it immediately before returning control to the harness:
 
 - protected deploy, publish, merge, migration, credential, and production actions fail closed on timeout or permit failure;
-- the permit is bound to the authenticated account, key, agent, session, action, target, canonical surfaces, decision, and runtime gate;
+- the permit is bound to the authenticated account, key, agent, session, action, target, canonical action surfaces, decision, and runtime gate;
 - raw tool input and permit tokens are never written into hook output or lifecycle telemetry;
-- matching result and closure hooks preserve one correlation so evidence can close the consumed permit automatically;
+- matching result and closure hooks preserve one correlation so every exact server-required proof field can close the consumed permit automatically;
 - the bounded hook timeout prevents a control-plane wait from hanging the agent indefinitely;
 - low-risk work retains passive/advisory behavior unless account policy requires stronger enforcement.
 

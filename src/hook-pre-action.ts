@@ -276,6 +276,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       action: classified.action,
       action_type: classified.type,
       target: classified.target,
+      surfaces: classified.surfaces,
       correlation_id: correlation,
       harness: 'claude-code',
     }, sessionId, agentId, signal);

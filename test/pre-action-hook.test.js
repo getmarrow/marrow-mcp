@@ -151,6 +151,7 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
     assert.notEqual(calls[0].body.target, 'tool-one');
     assert.deepEqual(calls[0].body.surfaces, calls[1].body.surfaces);
     assert.deepEqual(calls[1].body.surfaces, calls[2].body.surfaces);
+    assert.deepEqual(calls[2].body.surfaces, calls[3].body.surfaces);
     assert.equal(calls[3].body.operation, 'verify');
     assert.equal(calls[3].body.permit, 'signed-permit');
     assert.equal(calls.every((entry) => entry.signal instanceof AbortSignal), true);
