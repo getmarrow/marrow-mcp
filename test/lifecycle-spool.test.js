@@ -101,11 +101,11 @@ test('native MCP hook receipts carry bounded capability and actual configuration
   mkdirSync(settingsDir, { recursive: true });
   writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({
     hooks: {
-      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 context-hook' }] }],
-      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 pre-action-hook' }] }],
-      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 hook' }] }],
-      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 hook' }] }],
-      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.50 session-hook' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.51 context-hook' }] }],
+      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.51 pre-action-hook' }] }],
+      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.51 hook' }] }],
+      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.51 hook' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.51 session-hook' }] }],
     },
   }));
   const originalFetch = globalThis.fetch;
@@ -118,7 +118,7 @@ test('native MCP hook receipts carry bounded capability and actual configuration
       }));
       const [event] = JSON.parse(readFileSync(path, 'utf8'));
       assert.equal(event.capability_level, 'native_hooks');
-      assert.equal(event.adapter_version, '3.9.50');
+      assert.equal(event.adapter_version, '3.9.51');
       assert.match(event.config_fingerprint, /^[a-f0-9]{64}$/);
       assert.deepEqual(event.expected_hooks, ['prompt', 'pre_action', 'action_result', 'session_end']);
       assert.equal(event.observed_hook, 'action_result');

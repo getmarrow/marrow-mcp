@@ -99,9 +99,17 @@ npx -y @getmarrow/mcp@latest setup
 
 Detection and notification are automatic. Package and configuration changes remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.50
+## What's New in v3.9.51
 
-v3.9.50 makes native passive-hook coverage verifiable. `UserPromptSubmit`, `PreToolUse`, `PostToolUse`/`PostToolUseFailure`, and `Stop` attach bounded evidence for the hook that actually ran, the native-hook capability level, the adapter version, and a one-way fingerprint of the exact installed hook contract:
+v3.9.51 makes Marrow client updates visible inside an agent's normal governed workflow. Official MCP requests identify the installed package version, and passive context renders a request-specific server advisory with exact update and verification commands:
+
+- update availability or unrecognized version metadata appears during normal authenticated runtime/status activity;
+- messaging clearly states that hosted Marrow services are already current and that no local change was applied;
+- agents are instructed to tell the operator and respect local change policy instead of silently changing packages or configuration;
+- unknown versions do not imply a vulnerability, while server-designated security requirements remain distinct;
+- existing MCP tools and older server responses remain compatible when no advisory is returned.
+
+It preserves the verifiable native passive-hook coverage introduced in v3.9.50. `UserPromptSubmit`, `PreToolUse`, `PostToolUse`/`PostToolUseFailure`, and `Stop` attach bounded evidence for the hook that actually ran, the native-hook capability level, the adapter version, and a one-way fingerprint of the exact installed hook contract:
 
 - agents and owners can distinguish “MCP configured” from “pre-action, result, and session hooks actually observed”;
 - `PreToolUse` requests the Marrow runtime gate before matched actions and maps `block` to deny and `review_required` to operator review;
