@@ -43,9 +43,10 @@ function isPrivateOwnerFile(filePath: string, home: string): boolean {
       && homeStat.isDirectory() && !homeStat.isSymbolicLink() && fs.realpathSync(resolvedHome) === resolvedHome
       && parentStat.isDirectory() && !parentStat.isSymbolicLink() && fs.realpathSync(parent) === parent
       && fileStat.isFile() && !fileStat.isSymbolicLink()
-      && (uid === null || fileStat.uid === uid && parentStat.uid === uid)
+      && (uid === null || fileStat.uid === uid && parentStat.uid === uid && homeStat.uid === uid)
       && (fileStat.mode & 0o077) === 0
-      && (parentStat.mode & 0o022) === 0;
+      && (parentStat.mode & 0o022) === 0
+      && (homeStat.mode & 0o022) === 0;
   } catch {
     return false;
   }

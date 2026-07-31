@@ -35,28 +35,36 @@ const MUTATION_TOOL_VERB = /(?:^|__|_)(?:create|update|delete|remove|write|edit|
 const READ_ONLY_TOOL_VERB = /(?:^|__|_)(?:get|list|read|search|find|fetch|status|inspect|query)(?:_|$)/;
 
 const PROTECTED_SHELL_MUTATION_FAMILIES = [
-  /\b(?:npm|pnpm|yarn)(?:\s+npm)?\b[\s\S]{0,8192}\b(?:publish|unpublish|deprecate|access|owner|team|token|dist-tag|tag\s+(?:add|remove))\b/i,
+  /\b(?:npm|pnpm|yarn)(?:\s+npm)?\b[\s\S]{0,8192}\b(?:publish|unpublish|deprecate|access|owner|team|token|login|logout|profile\s+(?:set|enable-2fa|disable-2fa)|dist-tag|tag\s+(?:add|remove))\b/i,
   /\b(?:cargo\s+(?:publish|yank|owner)|twine\s+upload|gem\s+(?:push|yank|owner)|(?:dotnet\s+nuget|nuget)\s+(?:push|delete))\b/i,
-  /\bgit\b[\s\S]{0,8192}\b(?:push|commit|merge|rebase|reset|tag|clean|rm|cherry-pick|revert|branch\s+(?:-[dDmM]|--delete|--move)|remote\s+(?:add|remove|rename|set-url|set-head|prune|update)|checkout\s+-[bB]|switch\s+-[cC])\b/i,
-  /\bgh\b[\s\S]{0,8192}\b(?:pr\s+(?:merge|close|reopen|edit|review|comment)|issue\s+(?:create|close|reopen|edit|comment)|release\s+(?:create|delete|edit|upload)|repo\s+(?:archive|delete|edit|rename)|workflow\s+run|secret\s+(?:set|delete)|variable\s+(?:set|delete))\b/i,
+  /\bgit\b[\s\S]{0,8192}\b(?:push|commit|merge|rebase|reset|tag|clean|rm|cherry-pick|revert|worktree\s+(?:add|move|remove|prune|repair|lock|unlock)|branch\s+(?:-[dDmM]|--delete|--move)|remote\s+(?:add|remove|rename|set-url|set-head|prune|update)|checkout\s+-[bB]|switch\s+-[cC])\b/i,
+  /\bgh\b[\s\S]{0,8192}\b(?:auth\s+logout|pr\s+(?:merge|close|reopen|edit|review|comment)|issue\s+(?:create|close|reopen|edit|comment)|run\s+(?:cancel|delete|rerun)|release\s+(?:create|delete|edit|upload)|repo\s+(?:archive|delete|edit|fork|rename)|workflow\s+run|secret\s+(?:set|delete)|variable\s+(?:set|delete))\b/i,
   /\bgh\s+api\b[\s\S]{0,8192}(?:(?:--method|-X)(?:=|\s+)(?:POST|PUT|PATCH|DELETE)\b|(?:-f|-F|--field|--raw-field|--input)(?:=|\s+))/i,
-  /\b(?:kubectl|oc)\b[\s\S]{0,8192}\b(?:apply|create|delete|edit|patch|replace|rollout|scale|set|drain|cordon|uncordon|taint|exec|cp|run|expose|autoscale|label|annotate|reconcile)\b/i,
-  /\b(?:terraform|terragrunt|tofu)\b[\s\S]{0,8192}\b(?:apply|destroy|import|taint|untaint|force-unlock|state\s+(?:mv|rm|push)|workspace\s+(?:new|delete))\b/i,
+  /\b(?:kubectl|oc)\b[\s\S]{0,8192}\b(?:apply|create|delete|edit|patch|replace|rollout|scale|set|drain|cordon|uncordon|taint|exec|cp|run|expose|autoscale|label|annotate|reconcile|certificate\s+(?:approve|deny))\b/i,
+  /\b(?:terraform|terragrunt|tofu)\b[\s\S]{0,8192}\b(?:apply|destroy|import|taint|untaint|force-unlock|state\s+(?:mv|rm|push|replace-provider)|workspace\s+(?:new|delete))\b/i,
   /\bpulumi\b[\s\S]{0,8192}\b(?:up|destroy|import|refresh|stack\s+rm|config\s+(?:set|rm))\b/i,
   /\bhelm\b[\s\S]{0,8192}\b(?:install|upgrade|uninstall|rollback|push)\b/i,
+  /\bflux\b[\s\S]{0,8192}\b(?:bootstrap|create|delete|install|reconcile|resume|suspend|tag|uninstall)\b/i,
+  /\bnomad\b[\s\S]{0,8192}\b(?:job\s+(?:dispatch|plan|promote|run|scale|stop)|alloc\s+stop|deployment\s+(?:fail|promote)|acl\s+(?:bootstrap|policy|role|token))\b/i,
+  /\bcdk\b[\s\S]{0,8192}\b(?:bootstrap|deploy|destroy|import|rollback)\b/i,
+  /\bansible-playbook\b/i,
   /\b(?:docker|podman)\b[\s\S]{0,8192}\b(?:push|buildx\s+build\b[\s\S]*--push)\b/i,
   /\bwrangler\b[\s\S]{0,8192}\b(?:deploy|delete|rollback|execute|apply|put|bulk|secret|publish)\b/i,
-  /\bcurl\b[\s\S]{0,8192}(?:(?:-X\s*|--request(?:=|\s+))(?:POST|PUT|PATCH|DELETE)\b|--data(?:-raw|-binary|-urlencode)?(?:=|\s+)|-[dF](?:\s+|[^A-Za-z])|--form(?:=|\s+)|(?:-T|--upload-file)(?:=|\s+))/i,
+  /\bcurl\b[\s\S]{0,8192}(?:(?:-X\s*|--request(?:=|\s+))(?:POST|PUT|PATCH|DELETE)\b|--(?:json|data(?:-ascii|-raw|-binary|-urlencode)?)(?:=|\s+)|-[dF](?:\s+|[^A-Za-z])|--form(?:-string)?(?:=|\s+)|(?:-T|--upload-file)(?:=|\s+))/i,
   /\b(?:http|xh)\b[\s\S]{0,8192}(?:\b(?:POST|PUT|PATCH|DELETE)\b|(?:--form|--raw|-f)\b|\s[^\s=:@]+(?::=|=|@))/i,
-  /\bwget\b[\s\S]{0,8192}(?:--post-data|--post-file|--method(?:=|\s+)(?:POST|PUT|PATCH|DELETE))\b/i,
-  /\b(?:psql|mysql|sqlite3|duckdb)\b[\s\S]{0,8192}(?:\b(?:drop|delete|update|insert|alter|truncate|create|grant|revoke)\b|(?:-f|--file|\.read|source)(?:=|\s+)|\s<\s*[^\s])/i,
-  /\bredis-cli\b[\s\S]{0,8192}\b(?:set|setex|psetex|mset|del|unlink|getdel|incr|decr|append|expire|persist|rename|move|flushall|flushdb|shutdown|config\s+set|acl\s+setuser|hset|hdel|lpush|rpush|lpop|rpop|sadd|srem|zadd|zrem|xadd|xdel|publish|restore|migrate)\b/i,
+  /\bwget\b[\s\S]{0,8192}(?:--post-data|--post-file|--body-data|--body-file|--method(?:=|\s+)(?:POST|PUT|PATCH|DELETE))\b/i,
+  /\b(?:psql|mysql|sqlite3|duckdb)\b[\s\S]{0,8192}(?:\b(?:drop|delete|update|insert|alter|truncate|create|grant|revoke|call|do)\b|(?:-f|--file|\.read|source)(?:=|\s+)|\s<\s*[^\s])/i,
+  /\bredis-cli\b[\s\S]{0,8192}\b(?:set|setex|psetex|mset|del|unlink|getdel|incr|decr|append|expire|persist|rename|move|flushall|flushdb|shutdown|eval|evalsha|fcall|fcall_ro|function|script\s+(?:load|flush|kill)|config\s+set|acl\s+setuser|hset|hdel|lpush|rpush|lpop|rpop|sadd|srem|zadd|zrem|xadd|xdel|publish|restore|migrate)\b/i,
   /\baws\b[\s\S]{0,8192}\b(?:create|update|delete|put|attach|detach|associate|disassociate|terminate|stop|start|reboot|modify|restore|rotate|tag|untag|deploy|sync|s3\s+(?:cp|mv|rm)|s3api\s+put-object|ssm\s+(?:put-parameter|delete-parameter|delete-parameters))\b/i,
-  /\bgcloud\b[\s\S]{0,8192}\b(?:create|update|delete|deploy|add|remove|set|destroy|disable|restore|storage\s+(?:cp|mv|rm)|pubsub\s+(?:topics|subscriptions)\s+(?:create|delete|update))\b/i,
+  /\bgcloud\b[\s\S]{0,8192}\b(?:create|update|delete|deploy|add|remove|set|destroy|disable|restore|storage\s+(?:cp|mv|rm|rsync)|pubsub\s+(?:topics|subscriptions)\s+(?:create|delete|update))\b/i,
   /\baz\b[\s\S]{0,8192}\b(?:create|update|delete|set|deploy|start|stop|restart|restore|storage\s+blob\s+(?:upload|delete|copy)|group\s+(?:create|delete|update))\b/i,
   /\brclone\b[\s\S]{0,8192}\b(?:copy|copyto|sync|move|moveto|delete|deletefile|purge|mkdir|rmdir|bisync)\b/i,
-  /\b(?:vault|op)\b[\s\S]{0,8192}\b(?:write|put|patch|delete|edit|create|rotate|revoke|destroy|share)\b/i,
-  /(?:^|[;&|]\s*|\bsudo\s+|\benv\s+)(?:rm\b|shred\b|truncate\b|find\b[\s\S]{0,8192}\s-delete\b)/i,
+  /\bgsutil\b[\s\S]{0,8192}\b(?:cp|mv|rm|rsync|setacl|setmeta|web)\b/i,
+  /(?:^|[;&|]\s*|\bsudo\s+|\benv\s+)mc\b[\s\S]{0,8192}\b(?:cp|mv|rm|mirror|mb|rb|anonymous|admin)\b/i,
+  /\boci\b[\s\S]{0,8192}\bos\b[\s\S]{0,8192}\b(?:put|upload|bulk-upload|delete|rename|restore|reencrypt)\b/i,
+  /\b(?:vault|op)\b[\s\S]{0,8192}\b(?:write|put|patch|delete|edit|create|move|rotate|revoke|destroy|share)\b/i,
+  /\bpass\b[\s\S]{0,8192}\b(?:insert|edit|generate|rm|remove|mv|cp|init|git)\b/i,
+  /(?:^|[\s;&|]|\bsudo\s+|\benv\s+)(?:(?:\/[^\s/]+)*\/)?(?:rm\b|unlink\b|shred\b|truncate\b|dd\b[\s\S]{0,8192}\bof=|find\b[\s\S]{0,8192}\s-delete\b|xargs\b[\s\S]{0,8192}(?:(?:\/[^\s/]+)*\/)?rm\b)/i,
 ];
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -78,7 +86,9 @@ export function isOfficialMarrowMcpTool(value: unknown): boolean {
 }
 
 export function isProtectedShellMutation(command: string): boolean {
-  const bounded = String(command || '').slice(0, 8192);
+  const raw = String(command || '');
+  if (raw.length > 8192) return true;
+  const bounded = raw.slice(0, 8192);
   return PROTECTED_SHELL_MUTATION_FAMILIES.some((pattern) => pattern.test(bounded));
 }
 
