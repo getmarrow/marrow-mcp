@@ -382,8 +382,11 @@ function appendAgentRuntime(lines, runtime) {
                 : versionStatus === 'unknown';
     const versionUnknown = versionStatus === 'unknown' || notification === 'unknown' || notification === 'version_unknown';
     const explicitSecurityPolicy = securityPolicy?.source === 'server_policy'
-        && Boolean(currentVersion && minimumSecureVersion)
-        && compareClientVersions(currentVersion, minimumSecureVersion) < 0;
+        && versionStatus === 'behind'
+        && coherentVersionStatus
+        && Boolean(currentVersion && latestVersion && minimumSecureVersion)
+        && compareClientVersions(currentVersion, minimumSecureVersion) < 0
+        && compareClientVersions(minimumSecureVersion, latestVersion) <= 0;
     const priority = versionUnknown
         ? 'version_unknown'
         : notification === 'security_required' && update?.update_available === true && coherentVersionStatus && Boolean(currentVersion && latestVersion) && explicitSecurityPolicy
