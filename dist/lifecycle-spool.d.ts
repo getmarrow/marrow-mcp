@@ -6,6 +6,8 @@ export type LifecycleEvent = {
     harness?: string;
     agent_id?: string;
     action: string;
+    target?: string;
+    surfaces?: string[];
     workflow_id?: string;
     session_id?: string;
     decision_id?: string;

@@ -45,6 +45,8 @@ export type LifecycleEvent = {
   harness?: string;
   agent_id?: string;
   action: string;
+  target?: string;
+  surfaces?: string[];
   workflow_id?: string;
   session_id?: string;
   decision_id?: string;
@@ -115,6 +117,16 @@ function hookList(value: unknown): string[] | undefined {
   return [...new Set(hooks as string[])];
 }
 
+function surfaceList(value: unknown): string[] | undefined {
+  if (value == null) return undefined;
+  if (!Array.isArray(value) || value.length > 16) throw new Error('invalid lifecycle surfaces');
+  const surfaces = value.map((surface) => optionalId(surface, 'surfaces')?.toLowerCase());
+  if (surfaces.some((surface) => !surface) || new Set(surfaces).size !== surfaces.length) {
+    throw new Error('invalid lifecycle surfaces');
+  }
+  return [...surfaces as string[]].sort();
+}
+
 function canonicalTimestamp(value: unknown): string {
   const timestamp = value == null ? new Date().toISOString() : String(value).trim();
   const parsed = Date.parse(timestamp);
@@ -181,12 +193,15 @@ function validateStoredEvent(value: unknown): StoredEvent {
   if (event.intervention_disposition != null && !INTERVENTION_DISPOSITIONS.has(String(event.intervention_disposition))) throw new Error('invalid lifecycle intervention_disposition');
   if (event.action_changed != null && typeof event.action_changed !== 'boolean') throw new Error('invalid lifecycle action_changed');
   const expectedHooks = hookList(event.expected_hooks);
+  const surfaces = surfaceList(event.surfaces);
   const stored: StoredEvent = {
     event_id: safeId(event.event_id) || (() => { throw new Error('invalid lifecycle event_id'); })(),
     event_type: String(event.event_type) as LifecycleEventType,
     harness: safeId(event.harness, 'custom') || 'custom',
     agent_id: safeId(event.agent_id, 'unknown') || 'unknown',
     action: compactAction(event.action),
+    ...(event.target ? { target: compactAction(event.target) } : {}),
+    ...(surfaces ? { surfaces } : {}),
     ...(safeId(event.workflow_id) ? { workflow_id: safeId(event.workflow_id) } : {}),
     ...(safeId(event.session_id) ? { session_id: safeId(event.session_id) } : {}),
     ...(safeId(event.decision_id) ? { decision_id: safeId(event.decision_id) } : {}),
@@ -232,12 +247,15 @@ function compact(input: LifecycleEvent): StoredEvent {
     || sessionId
     || eventId;
   const expectedHooks = hookList(input.expected_hooks);
+  const surfaces = surfaceList(input.surfaces);
   return validateStoredEvent({
     event_id: eventId,
     event_type: input.event_type,
     harness,
     agent_id: agentId,
     action: compactAction(input.action),
+    ...(input.target ? { target: compactAction(input.target) } : {}),
+    ...(surfaces ? { surfaces } : {}),
     ...(workflowId ? { workflow_id: workflowId } : {}),
     ...(sessionId ? { session_id: sessionId } : {}),
     ...(decisionId ? { decision_id: decisionId } : {}),

@@ -7,6 +7,7 @@ exports.runPreActionHookCommand = runPreActionHookCommand;
 const index_1 = require("./index");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 const MAX_INPUT_BYTES = 64 * 1024;
 const RUNTIME_TIMEOUT_MS = 3000;
@@ -29,9 +30,14 @@ async function readStdin() {
 }
 function classifyTool(event) {
     const tool = String(event.tool_name || 'tool').slice(0, 64);
-    const input = JSON.stringify(event.tool_input || {}).toLowerCase();
+    const normalizedTool = (0, hook_tool_policy_1.normalizeHookToolName)(tool);
+    const command = (0, hook_tool_policy_1.hookToolCommand)(event);
+    const input = `${normalizedTool} ${command} ${JSON.stringify(event.tool_input || {})}`.toLowerCase();
+    const readOnly = (0, hook_tool_policy_1.isReadOnlyToolEvent)(event);
     let type = 'process';
-    if (/\b(?:deploy|release|publish|wrangler)\b/.test(input))
+    if (/\bpublish\b/.test(input))
+        type = 'publish';
+    else if (/\b(?:deploy|release|wrangler)\b/.test(input))
         type = 'deploy';
     else if (/\b(?:merge|pull request|git push)\b/.test(input))
         type = 'review';
@@ -39,19 +45,35 @@ function classifyTool(event) {
         type = 'migration';
     else if (/\b(?:secret|credential|token|key|permission)\b/.test(input))
         type = 'audit';
+    else if (/\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input))
+        type = 'financial';
     const surfaces = [
         /\b(?:deploy|release|production|prod|wrangler)\b/.test(input) ? 'production' : '',
         /\b(?:git|github|merge|pull request|push)\b/.test(input) ? 'github' : '',
         /\b(?:npm|package|publish)\b/.test(input) ? 'npm' : '',
         /\b(?:secret|credential|token|key)\b/.test(input) ? 'secrets' : '',
+        /\b(?:migration|schema|database|d1)\b/.test(input) ? 'database' : '',
+        /\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input) ? 'financial' : '',
     ].filter(Boolean);
-    const risk = surfaces.includes('production') || surfaces.includes('secrets') ? 'high' : 'medium';
+    const protectedAction = !readOnly && (/\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
+        || (String(event.tool_name || '').startsWith('mcp__') && !normalizedTool.startsWith('marrow_')));
+    const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
+    const target = surfaces.includes('npm') ? `npm:${type}`
+        : surfaces.includes('github') ? `github:${type}`
+            : surfaces.includes('production') ? `production:${type}`
+                : surfaces.includes('database') ? `database:${type}`
+                    : surfaces.includes('financial') ? `financial:${type}`
+                        : surfaces.includes('secrets') ? `secrets:${type}`
+                            : `workspace:${type}`;
     return {
         action: `classified ${tool} action: ${type} on ${surfaces.join(', ') || 'workspace'}`,
+        target,
         type,
-        role: ['deploy', 'review', 'migration', 'audit'].includes(type) ? type : 'general',
+        role: type === 'publish' ? 'deploy' : ['deploy', 'review', 'migration', 'audit'].includes(type) ? type : 'general',
         surfaces: surfaces.length ? surfaces : ['workspace'],
         risk,
+        protected: protectedAction,
+        readOnly,
     };
 }
 function preActionHookOutput(result) {
@@ -136,25 +158,34 @@ async function runPreActionHookCommand(input) {
             event = raw ? JSON.parse(raw) : {};
         }
         catch {
-            process.stdout.write('{}');
+            emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow rejected malformed or oversized pre-action input.' });
             return;
         }
     }
     const source = asRecord(event);
     if (!source?.tool_name) {
+        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' });
+        return;
+    }
+    const classified = classifyTool(source);
+    if (classified.readOnly) {
         process.stdout.write('{}');
         return;
     }
     const resolved = (0, env_1.resolveMarrowEnv)();
     if (!resolved.apiKey) {
-        process.stdout.write('{}');
+        emitDecision({
+            runtime: null,
+            permit: null,
+            protectedRisk: classified.protected,
+            enforcementError: 'Marrow credentials are unavailable for this protected action. Restore the configured agent key before retrying.',
+        });
         return;
     }
     const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
     const sessionId = resolved.sessionId || source.session_id;
     const agentId = resolved.agentId || undefined;
     const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
-    const classified = classifyTool(source);
     const lifecycle = (0, lifecycle_spool_1.recordLifecycleEvent)({
         apiKey: resolved.apiKey,
         baseUrl,
@@ -168,6 +199,8 @@ async function runPreActionHookCommand(input) {
             correlation_id: correlation,
             ...(0, hook_contract_1.nativeHookEvidence)('pre_action'),
             action: classified.action,
+            target: classified.target,
+            surfaces: classified.surfaces,
             risk_level: classified.risk,
             outcome_state: 'pending',
         },
@@ -175,12 +208,15 @@ async function runPreActionHookCommand(input) {
     const control = async (signal) => {
         const runtime = await (0, index_1.marrowAgentRuntime)(resolved.apiKey, baseUrl, {
             action: classified.action,
+            target: classified.target,
             type: classified.type,
             role: classified.role,
             surfaces: classified.surfaces,
         }, sessionId, agentId, signal);
         const decision = await (0, index_1.marrowThink)(resolved.apiKey, baseUrl, {
             action: classified.action,
+            target: classified.target,
+            surfaces: classified.surfaces,
             type: classified.type,
             source_kind: 'integration',
             source_meta: {
@@ -188,12 +224,12 @@ async function runPreActionHookCommand(input) {
                 correlation_id: correlation,
                 gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
             },
-        }, sessionId, agentId);
+        }, sessionId, agentId, signal);
         const issued = await (0, index_1.marrowEnforcement)(resolved.apiKey, baseUrl, {
             operation: 'issue',
             action: classified.action,
             action_type: classified.type,
-            target: correlation,
+            target: classified.target,
             correlation_id: correlation,
             harness: 'claude-code',
             decision_id: decision.decision_id,
@@ -202,23 +238,23 @@ async function runPreActionHookCommand(input) {
             surfaces: classified.surfaces,
         }, sessionId, agentId, signal);
         if (!issued.permit)
-            return { runtime, permit: issued, protectedRisk: classified.risk === 'high', enforcementError: 'Marrow did not issue an action permit.' };
+            return { runtime, permit: issued, protectedRisk: classified.protected, enforcementError: 'Marrow did not issue an action permit.' };
         const verified = await (0, index_1.marrowEnforcement)(resolved.apiKey, baseUrl, {
             operation: 'verify',
             permit: issued.permit,
             action: classified.action,
             action_type: classified.type,
-            target: correlation,
+            target: classified.target,
             correlation_id: correlation,
             harness: 'claude-code',
         }, sessionId, agentId, signal);
-        return { runtime, permit: { ...issued, ...verified, permit: undefined }, protectedRisk: classified.risk === 'high' };
+        return { runtime, permit: { ...issued, ...verified, permit: undefined }, protectedRisk: classified.protected };
     };
     const [result] = await Promise.all([withTimeout(control), lifecycle]);
     emitDecision(result || {
         runtime: null,
         permit: null,
-        protectedRisk: classified.risk === 'high',
+        protectedRisk: classified.protected,
         enforcementError: 'Marrow governance timed out before this protected action. Retry instead of bypassing the gate.',
     });
 }
