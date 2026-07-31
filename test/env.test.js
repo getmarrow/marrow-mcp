@@ -61,6 +61,7 @@ test('trusted enforcement rejects permissive and symbolic owner credential files
   fs.mkdirSync(ownerDir, { recursive: true, mode: 0o700 });
   const credential = path.join(ownerDir, 'env');
   fs.writeFileSync(credential, 'MARROW_API_KEY=synthetic-permissive-key\n', { mode: 0o644 });
+  fs.chmodSync(credential, 0o644);
 
   const permissive = resolveMarrowEnv({ cwd: dir, home, env: {}, trustedOnly: true });
   assert.equal(permissive.missing, true);
@@ -73,6 +74,19 @@ test('trusted enforcement rejects permissive and symbolic owner credential files
   const symbolic = resolveMarrowEnv({ cwd: dir, home, env: {}, trustedOnly: true });
   assert.equal(symbolic.missing, true);
   assert.doesNotMatch(JSON.stringify(symbolic), /synthetic-symlink-key/);
+});
+
+test('trusted enforcement rejects an owner credential under an unsafe home boundary', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-mcp-env-unsafe-home-'));
+  const home = path.join(dir, 'home');
+  const ownerDir = path.join(home, '.marrow');
+  fs.mkdirSync(ownerDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(ownerDir, 'env'), 'MARROW_API_KEY=synthetic-unsafe-home-key\n', { mode: 0o600 });
+  fs.chmodSync(home, 0o777);
+
+  const resolved = resolveMarrowEnv({ cwd: dir, home, env: {}, trustedOnly: true });
+  assert.equal(resolved.missing, true);
+  assert.doesNotMatch(JSON.stringify(resolved), /synthetic-unsafe-home-key/);
 });
 
 test('resolveMarrowEnv ignores non-Marrow env file assignments', () => {
