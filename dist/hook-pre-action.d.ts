@@ -14,10 +14,13 @@ type PreActionControlResult = {
 };
 export declare function classifyTool(event: PreToolUseEvent): {
     action: string;
+    target: string;
     type: string;
     role: string;
     surfaces: string[];
     risk: 'low' | 'medium' | 'high';
+    protected: boolean;
+    readOnly: boolean;
 };
 export declare function preActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function installPreActionHook(startDir?: string): {

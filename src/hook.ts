@@ -2,6 +2,7 @@ import { validateBaseUrl } from './index';
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
+import { isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   ACTION_RESULT_HOOK_COMMAND,
   findHookSettingsPath,
@@ -12,49 +13,6 @@ import {
   stableSessionWorkflowId,
   stableToolCorrelation,
 } from './hook-contract';
-
-const SKIP_TOOLS = new Set([
-  'read',
-  'grep',
-  'glob',
-  'ls',
-  'notebookread',
-  'todoread',
-  'tasklist',
-  'taskget',
-  'sessions_list',
-  'sessions_history',
-  'session_status',
-  'marrow_list_memories',
-  'marrow_retrieve_memories',
-  'marrow_get_memory',
-  'marrow_dashboard',
-  'marrow_digest',
-  'marrow_status',
-  'marrow_orient',
-  'marrow_ask',
-]);
-
-const READ_ONLY_BASH_COMMANDS = new Set([
-  'read',
-  'grep',
-  'ls',
-  'cat',
-  'find',
-  'tail',
-  'head',
-  'wc',
-  'file',
-  'stat',
-  'which',
-  'type',
-  'echo',
-  'pwd',
-  'date',
-  'env',
-  'whoami',
-  'uname',
-]);
 
 export const AUTO_HOOK_COMMAND = ACTION_RESULT_HOOK_COMMAND;
 export const AUTO_HOOK_MATCHER = NATIVE_HOOK_MATCHER;
@@ -92,117 +50,11 @@ function getString(value: unknown): string | undefined {
 }
 
 function normalizeToolName(toolName: string): string {
-  return toolName.replace(/^mcp__/, '').trim().toLowerCase();
-}
-
-function truncate(value: string, max: number): string {
-  if (value.length <= max) return value;
-  return value.slice(0, Math.max(0, max - 1)).trimEnd() + '…';
-}
-
-function normalizeWhitespace(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-function safeStringify(value: unknown, max: number): string {
-  try {
-    return truncate(normalizeWhitespace(JSON.stringify(value)), max);
-  } catch {
-    return truncate(String(value), max);
-  }
-}
-
-function extractDescription(toolInput: Record<string, unknown>): string | undefined {
-  return getString(toolInput.description);
-}
-
-function isPathOnlyInput(toolInput: unknown): boolean {
-  const record = asRecord(toolInput);
-  if (!record) return false;
-
-  const keys = Object.keys(record);
-  if (keys.length === 0) return false;
-  if (!keys.every((key) => ['path', 'file_path', 'filename', 'target_file'].includes(key))) {
-    return false;
-  }
-
-  return Object.values(record).every((value) => typeof value === 'string' && value.trim().length > 0);
-}
-
-function hasWriteLikeShellSyntax(command: string): boolean {
-  if (/(^|[^>])>(?!>)|>>|\btee\b|\btouch\b|\bmkdir\b|\brm\b|\bmv\b|\bcp\b|\binstall\b|\buninstall\b|\bpublish\b|\bsed\s+-i\b|\bperl\s+-i\b/i.test(command)) {
-    return true;
-  }
-
-  if (/\b(curl|wget|nc|ncat|netcat|scp|rsync|ssh|ftp|tftp)\b/i.test(command)) {
-    return true;
-  }
-
-  return false;
-}
-
-function shouldSkipBashCommand(command: string): boolean {
-  const normalized = normalizeWhitespace(command);
-  if (!normalized || hasWriteLikeShellSyntax(normalized)) return false;
-
-  if (/^node\s+-v(?:ersion)?$/i.test(normalized) || /^npm\s+-v(?:ersion)?$/i.test(normalized)) {
-    return true;
-  }
-
-  const firstToken = normalized.split(/[\s|;&]+/, 1)[0]?.toLowerCase();
-  return !!firstToken && READ_ONLY_BASH_COMMANDS.has(firstToken);
+  return normalizeHookToolName(toolName);
 }
 
 export function shouldSkipAutoLog(event: HookEvent): boolean {
-  const rawToolName = getString(event.tool_name);
-  if (!rawToolName) return true;
-
-  const toolName = normalizeToolName(rawToolName);
-  if (SKIP_TOOLS.has(toolName)) return true;
-
-  if (toolName.startsWith('marrow_') && SKIP_TOOLS.has(toolName)) return true;
-
-  const toolInput = asRecord(event.tool_input) || {};
-  const command = getString(toolInput.command) || extractDescription(toolInput) || extractFirstArg(event.tool_input);
-
-  if (toolName === 'bash' && command && shouldSkipBashCommand(command)) {
-    return true;
-  }
-
-  if (toolName !== 'edit' && toolName !== 'write' && toolName !== 'multiedit' && isPathOnlyInput(event.tool_input)) {
-    return true;
-  }
-
-  return false;
-}
-
-function extractFirstArg(toolInput: unknown): string | undefined {
-  if (typeof toolInput === 'string') return toolInput;
-
-  if (Array.isArray(toolInput)) {
-    for (const item of toolInput) {
-      if (typeof item === 'string' && item.trim()) return item;
-      if (typeof item === 'number' || typeof item === 'boolean') return String(item);
-      const record = asRecord(item);
-      if (record) return safeStringify(record, 120);
-    }
-    return undefined;
-  }
-
-  const record = asRecord(toolInput);
-  if (!record) return undefined;
-
-  for (const key of ['command', 'path', 'file_path', 'pattern', 'query', 'text', 'url', 'slug', 'name']) {
-    const value = getString(record[key]);
-    if (value) return value;
-  }
-
-  for (const value of Object.values(record)) {
-    if (typeof value === 'string' && value.trim()) return value;
-    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  }
-
-  return safeStringify(record, 120);
+  return isReadOnlyToolEvent(event);
 }
 
 export function deriveAction(event: HookEvent): string | null {
@@ -291,6 +143,7 @@ export async function runHookCommand(): Promise<void> {
       return;
     }
 
+    const classified = classifyTool(event);
     const action = deriveAction(event);
     if (!action) {
       process.exit(0);
@@ -328,6 +181,9 @@ export async function runHookCommand(): Promise<void> {
         correlation_id: lifecycleCorrelation,
         ...nativeHookEvidence('action_result'),
         action,
+        target: classified.target,
+        surfaces: classified.surfaces,
+        risk_level: classified.risk,
         success,
         outcome_state: 'pending',
       },

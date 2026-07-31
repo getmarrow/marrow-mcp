@@ -286,9 +286,11 @@ async function marrowGetKeyAudit(apiKey, baseUrl, params, sessionId, agentId) {
 /**
  * Log intent and get collective intelligence before acting.
  */
-async function marrowThink(apiKey, baseUrl, params, sessionId, agentId) {
+async function marrowThink(apiKey, baseUrl, params, sessionId, agentId, signal) {
     const body = {
         action: (0, redact_1.redactSensitiveText)(params.action),
+        target: params.target ? (0, redact_1.redactSensitiveText)(params.target) : undefined,
+        surfaces: params.surfaces,
         type: params.type || 'general',
     };
     if (params.context) {
@@ -321,6 +323,7 @@ async function marrowThink(apiKey, baseUrl, params, sessionId, agentId) {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
+        signal,
     }, true);
     const json = await safeJsonResponse(res);
     return json.data;

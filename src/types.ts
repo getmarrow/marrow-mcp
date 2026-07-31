@@ -64,6 +64,7 @@ export interface MarrowValueReportResult {
 
 export interface MarrowDecisionBriefRequest {
   action: string;
+  target?: string;
   type?: string;
   agent_id?: string;
   session_id?: string;

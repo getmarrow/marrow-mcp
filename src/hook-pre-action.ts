@@ -1,6 +1,7 @@
 import { marrowAgentRuntime, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
+import { hookToolCommand, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   findHookSettingsPath,
   nativeHookEvidence,
@@ -50,31 +51,55 @@ async function readStdin(): Promise<string> {
 
 export function classifyTool(event: PreToolUseEvent): {
   action: string;
+  target: string;
   type: string;
   role: string;
   surfaces: string[];
   risk: 'low' | 'medium' | 'high';
+  protected: boolean;
+  readOnly: boolean;
 } {
   const tool = String(event.tool_name || 'tool').slice(0, 64);
-  const input = JSON.stringify(event.tool_input || {}).toLowerCase();
+  const normalizedTool = normalizeHookToolName(tool);
+  const command = hookToolCommand(event);
+  const input = `${normalizedTool} ${command} ${JSON.stringify(event.tool_input || {})}`.toLowerCase();
+  const readOnly = isReadOnlyToolEvent(event);
   let type = 'process';
-  if (/\b(?:deploy|release|publish|wrangler)\b/.test(input)) type = 'deploy';
+  if (/\bpublish\b/.test(input)) type = 'publish';
+  else if (/\b(?:deploy|release|wrangler)\b/.test(input)) type = 'deploy';
   else if (/\b(?:merge|pull request|git push)\b/.test(input)) type = 'review';
   else if (/\b(?:migration|schema|database|d1)\b/.test(input)) type = 'migration';
   else if (/\b(?:secret|credential|token|key|permission)\b/.test(input)) type = 'audit';
+  else if (/\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input)) type = 'financial';
   const surfaces = [
     /\b(?:deploy|release|production|prod|wrangler)\b/.test(input) ? 'production' : '',
     /\b(?:git|github|merge|pull request|push)\b/.test(input) ? 'github' : '',
     /\b(?:npm|package|publish)\b/.test(input) ? 'npm' : '',
     /\b(?:secret|credential|token|key)\b/.test(input) ? 'secrets' : '',
+    /\b(?:migration|schema|database|d1)\b/.test(input) ? 'database' : '',
+    /\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input) ? 'financial' : '',
   ].filter(Boolean);
-  const risk = surfaces.includes('production') || surfaces.includes('secrets') ? 'high' : 'medium';
+  const protectedAction = !readOnly && (
+    /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
+    || (String(event.tool_name || '').startsWith('mcp__') && !normalizedTool.startsWith('marrow_'))
+  );
+  const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
+  const target = surfaces.includes('npm') ? `npm:${type}`
+    : surfaces.includes('github') ? `github:${type}`
+    : surfaces.includes('production') ? `production:${type}`
+    : surfaces.includes('database') ? `database:${type}`
+    : surfaces.includes('financial') ? `financial:${type}`
+    : surfaces.includes('secrets') ? `secrets:${type}`
+    : `workspace:${type}`;
   return {
     action: `classified ${tool} action: ${type} on ${surfaces.join(', ') || 'workspace'}`,
+    target,
     type,
-    role: ['deploy', 'review', 'migration', 'audit'].includes(type) ? type : 'general',
+    role: type === 'publish' ? 'deploy' : ['deploy', 'review', 'migration', 'audit'].includes(type) ? type : 'general',
     surfaces: surfaces.length ? surfaces : ['workspace'],
     risk,
+    protected: protectedAction,
+    readOnly,
   };
 }
 
@@ -165,25 +190,34 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       const raw = (await readStdin()).trim();
       event = raw ? JSON.parse(raw) : {};
     } catch {
-      process.stdout.write('{}');
+      emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow rejected malformed or oversized pre-action input.' });
       return;
     }
   }
   const source = asRecord(event) as PreToolUseEvent | null;
   if (!source?.tool_name) {
+    emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' });
+    return;
+  }
+  const classified = classifyTool(source);
+  if (classified.readOnly) {
     process.stdout.write('{}');
     return;
   }
   const resolved = resolveMarrowEnv();
   if (!resolved.apiKey) {
-    process.stdout.write('{}');
+    emitDecision({
+      runtime: null,
+      permit: null,
+      protectedRisk: classified.protected,
+      enforcementError: 'Marrow credentials are unavailable for this protected action. Restore the configured agent key before retrying.',
+    });
     return;
   }
   const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
   const sessionId = resolved.sessionId || source.session_id;
   const agentId = resolved.agentId || undefined;
   const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
-  const classified = classifyTool(source);
   const lifecycle = recordLifecycleEvent({
     apiKey: resolved.apiKey,
     baseUrl,
@@ -197,6 +231,8 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       correlation_id: correlation,
       ...nativeHookEvidence('pre_action'),
       action: classified.action,
+      target: classified.target,
+      surfaces: classified.surfaces,
       risk_level: classified.risk,
       outcome_state: 'pending',
     },
@@ -204,12 +240,15 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   const control = async (signal: AbortSignal): Promise<PreActionControlResult> => {
     const runtime = await marrowAgentRuntime(resolved.apiKey, baseUrl, {
       action: classified.action,
+      target: classified.target,
       type: classified.type,
       role: classified.role,
       surfaces: classified.surfaces,
     }, sessionId, agentId, signal);
     const decision = await marrowThink(resolved.apiKey, baseUrl, {
       action: classified.action,
+      target: classified.target,
+      surfaces: classified.surfaces,
       type: classified.type,
       source_kind: 'integration',
       source_meta: {
@@ -217,12 +256,12 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
         correlation_id: correlation,
         gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
       },
-    }, sessionId, agentId);
+    }, sessionId, agentId, signal);
     const issued = await marrowEnforcement(resolved.apiKey, baseUrl, {
       operation: 'issue',
       action: classified.action,
       action_type: classified.type,
-      target: correlation,
+      target: classified.target,
       correlation_id: correlation,
       harness: 'claude-code',
       decision_id: decision.decision_id,
@@ -230,23 +269,23 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       proof_requirements: runtime.proof_pack?.fields || [],
       surfaces: classified.surfaces,
     }, sessionId, agentId, signal);
-    if (!issued.permit) return { runtime, permit: issued, protectedRisk: classified.risk === 'high', enforcementError: 'Marrow did not issue an action permit.' };
+    if (!issued.permit) return { runtime, permit: issued, protectedRisk: classified.protected, enforcementError: 'Marrow did not issue an action permit.' };
     const verified = await marrowEnforcement(resolved.apiKey, baseUrl, {
       operation: 'verify',
       permit: issued.permit,
       action: classified.action,
       action_type: classified.type,
-      target: correlation,
+      target: classified.target,
       correlation_id: correlation,
       harness: 'claude-code',
     }, sessionId, agentId, signal);
-    return { runtime, permit: { ...issued, ...verified, permit: undefined }, protectedRisk: classified.risk === 'high' };
+    return { runtime, permit: { ...issued, ...verified, permit: undefined }, protectedRisk: classified.protected };
   };
   const [result] = await Promise.all([withTimeout(control), lifecycle]);
   emitDecision(result || {
     runtime: null,
     permit: null,
-    protectedRisk: classified.risk === 'high',
+    protectedRisk: classified.protected,
     enforcementError: 'Marrow governance timed out before this protected action. Retry instead of bypassing the gate.',
   });
 }

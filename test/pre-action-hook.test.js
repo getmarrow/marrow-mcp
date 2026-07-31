@@ -17,6 +17,73 @@ test('pre-action and result hooks use the same privacy-safe action binding', () 
   assert.equal(deriveAction(event), classifyTool(event).action);
 });
 
+test('protected operations are classified from tool names and commands without incidental production keywords', () => {
+  const publish = classifyTool({ tool_name: 'Bash', tool_input: { command: 'npm publish' } });
+  const push = classifyTool({ tool_name: 'Bash', tool_input: { command: 'git push origin master' } });
+  const merge = classifyTool({ tool_name: 'Bash', tool_input: { command: 'gh pr merge 42 --merge' } });
+  const unknownMcp = classifyTool({ tool_name: 'mcp__payments__execute', tool_input: { amount: 25 } });
+  const deceptiveMcp = classifyTool({ tool_name: 'mcp__records__get_and_delete', tool_input: { id: 'record-1' } });
+  const compoundShell = classifyTool({ tool_name: 'Bash', tool_input: { command: 'cat package.json && node mutate.js' } });
+  const readOnly = classifyTool({ tool_name: 'Bash', tool_input: { command: 'cat package.json' } });
+
+  for (const result of [publish, push, merge, unknownMcp, deceptiveMcp]) {
+    assert.equal(result.protected, true);
+    assert.equal(result.risk, 'high');
+  }
+  assert.equal(compoundShell.readOnly, false);
+  assert.equal(compoundShell.risk, 'medium');
+  assert.equal(publish.target, 'npm:publish');
+  assert.equal(push.target, 'github:review');
+  assert.equal(readOnly.readOnly, true);
+  assert.equal(readOnly.risk, 'low');
+  assert.equal(deriveAction({ tool_name: 'Bash', tool_input: { command: 'cat package.json' } }), null);
+});
+
+test('protected pre-action hook denies when the Marrow credential is unavailable', async () => {
+  const originalWrite = process.stdout.write;
+  const originalCwd = process.cwd();
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-no-key-'));
+  const previous = {
+    MARROW_API_KEY: process.env.MARROW_API_KEY,
+    MARROW_KEY: process.env.MARROW_KEY,
+    HOME: process.env.HOME,
+  };
+  let output = '';
+  delete process.env.MARROW_API_KEY;
+  delete process.env.MARROW_KEY;
+  process.env.HOME = directory;
+  process.chdir(directory);
+  process.stdout.write = (chunk) => { output += String(chunk); return true; };
+  try {
+    await runPreActionHookCommand({ tool_name: 'Bash', tool_input: { command: 'npm publish' } });
+    const result = JSON.parse(output);
+    assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(result.hookSpecificOutput.permissionDecisionReason, /credentials are unavailable/i);
+  } finally {
+    process.stdout.write = originalWrite;
+    process.chdir(originalCwd);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('malformed mutation-capable hook input is denied instead of silently bypassed', async () => {
+  const originalWrite = process.stdout.write;
+  let output = '';
+  process.stdout.write = (chunk) => { output += String(chunk); return true; };
+  try {
+    await runPreActionHookCommand({ tool_input: { command: 'unknown mutation' } });
+    const result = JSON.parse(output);
+    assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(result.hookSpecificOutput.permissionDecisionReason, /could not classify/i);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+});
+
 test('protected pre-action hook binds runtime gate to a decision before verifying its permit', async () => {
   const originalFetch = globalThis.fetch;
   const originalWrite = process.stdout.write;
@@ -42,7 +109,7 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
   globalThis.fetch = async (url, init = {}) => {
     const pathname = new URL(String(url)).pathname;
     const body = init.body ? JSON.parse(String(init.body)) : {};
-    if (pathname !== '/v1/agent/integrations/events') calls.push({ pathname, body });
+    if (pathname !== '/v1/agent/integrations/events') calls.push({ pathname, body, signal: init.signal });
     if (pathname === '/v1/agent/runtime') {
       return Response.json({ data: {
         risk_gate: { allow: true, decision: 'allow', reasons: [] },
@@ -78,8 +145,16 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
     ]);
     assert.equal(calls[2].body.decision_id, 'decision-one');
     assert.equal(calls[2].body.gate_receipt_id, 'gate-one');
+    assert.equal(calls[0].body.target, calls[1].body.target);
+    assert.equal(calls[1].body.target, calls[2].body.target);
+    assert.equal(calls[0].body.target, 'production:deploy');
+    assert.notEqual(calls[0].body.target, 'tool-one');
+    assert.deepEqual(calls[0].body.surfaces, calls[1].body.surfaces);
+    assert.deepEqual(calls[1].body.surfaces, calls[2].body.surfaces);
     assert.equal(calls[3].body.operation, 'verify');
     assert.equal(calls[3].body.permit, 'signed-permit');
+    assert.equal(calls.every((entry) => entry.signal instanceof AbortSignal), true);
+    assert.equal(calls.every((entry) => entry.signal === calls[0].signal), true);
     const result = JSON.parse(output);
     assert.notEqual(result.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(result.hookSpecificOutput.additionalContext, /action permit verified/);

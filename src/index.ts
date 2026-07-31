@@ -336,6 +336,8 @@ export async function marrowThink(
   baseUrl: string,
   params: {
     action: string;
+    target?: string;
+    surfaces?: string[];
     type?: string;
     context?: Record<string, unknown>;
     previous_decision_id?: string;
@@ -351,10 +353,13 @@ export async function marrowThink(
     source_meta?: Record<string, unknown>;
   },
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<ThinkResult> {
   const body: Record<string, unknown> = {
     action: redactSensitiveText(params.action),
+    target: params.target ? redactSensitiveText(params.target) : undefined,
+    surfaces: params.surfaces,
     type: params.type || 'general',
   };
 
@@ -389,6 +394,7 @@ export async function marrowThink(
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(body),
+    signal,
   }, true);
 
   const json = await safeJsonResponse(res);

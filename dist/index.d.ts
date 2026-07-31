@@ -25,6 +25,8 @@ export declare function marrowGetKeyAudit(apiKey: string, baseUrl: string, param
  */
 export declare function marrowThink(apiKey: string, baseUrl: string, params: {
     action: string;
+    target?: string;
+    surfaces?: string[];
     type?: string;
     context?: Record<string, unknown>;
     previous_decision_id?: string;
@@ -38,7 +40,7 @@ export declare function marrowThink(apiKey: string, baseUrl: string, params: {
     instruction?: string;
     instruction_hash?: string;
     source_meta?: Record<string, unknown>;
-}, sessionId?: string, agentId?: string): Promise<ThinkResult>;
+}, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<ThinkResult>;
 /**
  * Explicitly commit the result of an action to Marrow.
  */

@@ -67,6 +67,8 @@ test('passive hooks use joinable action bindings without treating tool exits as 
   assert.doesNotMatch(context, /const action = redactedPrompt|action: redactedPrompt/);
   assert.match(context, /event_id: `prompt-\$\{requestCorrelation\}`/);
   assert.match(hook, /nativeHookEvidence\('action_result'\)/);
+  assert.match(hook, /target: classified\.target/);
+  assert.match(hook, /surfaces: classified\.surfaces/);
   assert.match(context, /nativeHookEvidence\('prompt'\)/);
 });
 
@@ -79,10 +81,14 @@ test('generic lifecycle events cannot impersonate native hook coverage', async (
     await withSpoolPath(path, async () => {
       await recordLifecycleEvent(lifecycleInput({
         correlation_id: 'correlation-one',
+        target: 'production:deploy',
+        surfaces: ['production', 'github'],
         observed_hook: 'action_result',
       }));
       const [event] = JSON.parse(readFileSync(path, 'utf8'));
       assert.equal(event.correlation_id, 'correlation-one');
+      assert.equal(event.target, 'production:deploy');
+      assert.deepEqual(event.surfaces, ['github', 'production']);
       assert.equal('capability_level' in event, false);
       assert.equal('adapter_version' in event, false);
       assert.equal('config_fingerprint' in event, false);
