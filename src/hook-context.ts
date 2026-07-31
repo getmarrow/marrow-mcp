@@ -65,18 +65,85 @@ function asString(value: unknown): string | undefined {
 }
 
 const CLIENT_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-const CLIENT_TARGET_PATTERN = '(?:latest|(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?)';
-const CLIENT_UPDATE_COMMAND_PATTERN = new RegExp(`^(?:npx @getmarrow/install@${CLIENT_TARGET_PATTERN} (?:--repair|doctor)|npx @getmarrow/mcp@${CLIENT_TARGET_PATTERN} setup|npm install @getmarrow/sdk@${CLIENT_TARGET_PATTERN})$`);
+
+interface ParsedClientVersion {
+  major: string;
+  minor: string;
+  patch: string;
+  prerelease: string[] | null;
+}
+
+function parseClientVersion(value: unknown): ParsedClientVersion | null {
+  const version = typeof value === 'string' ? value.trim() : '';
+  if (version.length > 64) return null;
+  const match = CLIENT_VERSION_PATTERN.exec(version);
+  return match ? {
+    major: match[1],
+    minor: match[2],
+    patch: match[3],
+    prerelease: match[4] ? match[4].split('.') : null,
+  } : null;
+}
 
 function strictClientVersion(value: unknown): string | undefined {
   const version = typeof value === 'string' ? value.trim() : '';
-  return version.length <= 64 && CLIENT_VERSION_PATTERN.test(version) ? version : undefined;
+  return parseClientVersion(version) ? version : undefined;
+}
+
+function compareNumericIdentifier(left: string, right: string): number {
+  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function compareClientVersions(left: string, right: string): number {
+  const parsedLeft = parseClientVersion(left);
+  const parsedRight = parseClientVersion(right);
+  if (!parsedLeft || !parsedRight) throw new Error('compareClientVersions requires strict semantic versions');
+  for (const key of ['major', 'minor', 'patch'] as const) {
+    const compared = compareNumericIdentifier(parsedLeft[key], parsedRight[key]);
+    if (compared !== 0) return compared;
+  }
+  if (!parsedLeft.prerelease && !parsedRight.prerelease) return 0;
+  if (!parsedLeft.prerelease) return 1;
+  if (!parsedRight.prerelease) return -1;
+  const length = Math.max(parsedLeft.prerelease.length, parsedRight.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftIdentifier = parsedLeft.prerelease[index];
+    const rightIdentifier = parsedRight.prerelease[index];
+    if (leftIdentifier == null) return -1;
+    if (rightIdentifier == null) return 1;
+    if (leftIdentifier === rightIdentifier) continue;
+    const leftNumeric = /^\d+$/.test(leftIdentifier);
+    const rightNumeric = /^\d+$/.test(rightIdentifier);
+    if (leftNumeric && rightNumeric) return compareNumericIdentifier(leftIdentifier, rightIdentifier);
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftIdentifier < rightIdentifier ? -1 : 1;
+  }
+  return 0;
+}
+
+function boundedClientCommand(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 240 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)) return undefined;
+  return value.trim() || undefined;
+}
+
+function validClientCommandTarget(value: string): boolean {
+  return value === 'latest' || Boolean(strictClientVersion(value));
 }
 
 function strictClientUpdateCommand(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.length > 240 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)) return undefined;
-  const command = value.trim();
-  return CLIENT_UPDATE_COMMAND_PATTERN.test(command) ? command : undefined;
+  const command = boundedClientCommand(value);
+  if (!command) return undefined;
+  const match = /^(?:npx @getmarrow\/install@(\S+) --repair|npx @getmarrow\/mcp@(\S+) setup|npm install @getmarrow\/sdk@(\S+))$/.exec(command);
+  const target = match?.[1] || match?.[2] || match?.[3];
+  return target && validClientCommandTarget(target) ? command : undefined;
+}
+
+function strictClientVerificationCommand(value: unknown): string | undefined {
+  const command = boundedClientCommand(value);
+  if (!command) return undefined;
+  const match = /^npx @getmarrow\/install@(\S+) doctor$/.exec(command);
+  return match && validClientCommandTarget(match[1]) ? command : undefined;
 }
 
 async function readStdin(): Promise<string> {
@@ -368,12 +435,27 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
     : undefined;
   const currentVersion = strictClientVersion(update?.installed_version) || strictClientVersion(update?.current_version);
   const latestVersion = strictClientVersion(update?.latest_version);
+  const versionComparison = currentVersion && latestVersion
+    ? compareClientVersions(currentVersion, latestVersion)
+    : null;
+  const securityPolicy = asRecord(update?.security_policy);
+  const minimumSecureVersion = strictClientVersion(securityPolicy?.minimum_secure_version);
+  const coherentVersionStatus = versionStatus === 'behind'
+    ? versionComparison != null && versionComparison < 0
+    : versionStatus === 'current'
+    ? versionComparison === 0
+    : versionStatus === 'ahead'
+    ? versionComparison != null && versionComparison > 0
+    : versionStatus === 'unknown';
   const versionUnknown = versionStatus === 'unknown' || notification === 'unknown' || notification === 'version_unknown';
+  const explicitSecurityPolicy = securityPolicy?.source === 'server_policy'
+    && Boolean(currentVersion && minimumSecureVersion)
+    && compareClientVersions(currentVersion!, minimumSecureVersion!) < 0;
   const priority = versionUnknown
     ? 'version_unknown'
-    : notification === 'security_required' && update?.update_available === true && Boolean(currentVersion && latestVersion)
+    : notification === 'security_required' && update?.update_available === true && coherentVersionStatus && Boolean(currentVersion && latestVersion) && explicitSecurityPolicy
     ? 'security_required'
-    : notification === 'recommended' && versionStatus === 'behind' && update?.update_available === true && Boolean(currentVersion && latestVersion)
+    : notification === 'recommended' && versionStatus === 'behind' && update?.update_available === true && coherentVersionStatus && versionComparison != null && versionComparison < 0
     ? 'recommended'
     : null;
   if (update && priority) {
@@ -386,7 +468,7 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
       : 'Marrow client update available';
     lines.push(`- ${updateSummary}: installed=${current}; latest=${latest}. Hosted Marrow services are already current; no local changes were applied.`);
     const updateCommand = strictClientUpdateCommand(update.update_command) || strictClientUpdateCommand(update.exact_update_command);
-    const verifyCommand = strictClientUpdateCommand(update.verification_command) || strictClientUpdateCommand(update.exact_verification_command);
+    const verifyCommand = strictClientVerificationCommand(update.verification_command) || strictClientVerificationCommand(update.exact_verification_command);
     if (updateCommand) lines.push(`- Update command (operator approval): ${updateCommand}`);
     if (verifyCommand) lines.push(`- Verify after update: ${verifyCommand}`);
   }
