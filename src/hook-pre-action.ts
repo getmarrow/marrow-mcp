@@ -1,7 +1,7 @@
 import { marrowAgentRuntime, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
-import { hookToolCommand, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
+import { hookToolCommand, isOfficialMarrowMcpTool, isProtectedShellMutation, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   findHookSettingsPath,
   nativeHookEvidence,
@@ -64,27 +64,7 @@ export function classifyTool(event: PreToolUseEvent): {
   const command = hookToolCommand(event);
   const input = `${normalizedTool} ${command} ${JSON.stringify(event.tool_input || {})}`.toLowerCase();
   const readOnly = isReadOnlyToolEvent(event);
-  const protectedShellCommand = [
-    /\b(?:npm|pnpm|yarn)\b[^\n;&|]{0,160}\b(?:publish|unpublish|deprecate|dist-tag\s+(?:add|rm)|owner\s+(?:add|rm)|access\s+set|token\s+(?:create|delete|revoke))\b/,
-    /\bgit\b[^\n;&|]{0,240}\b(?:push|merge|commit|rebase|reset|tag)\b/,
-    /\bgh\b[^\n;&|]{0,200}\b(?:pr\s+merge|release\s+(?:create|delete)|repo\s+(?:archive|delete)|api\b[^\n;&|]{0,100}(?:--method|-x)(?:=|\s+)(?:post|put|patch|delete))\b/,
-    /\bkubectl\b[^\n;&|]{0,160}\b(?:apply|create|delete|edit|patch|replace|rollout|scale|set|drain|cordon|uncordon|taint|exec|cp)\b/,
-    /\bterraform\b[^\n;&|]{0,160}\b(?:apply|destroy|import|taint|untaint|state\s+(?:mv|rm))\b/,
-    /\bpulumi\b[^\n;&|]{0,160}\b(?:up|destroy|import|refresh|stack\s+rm)\b/,
-    /\bhelm\b[^\n;&|]{0,160}\b(?:install|upgrade|uninstall|rollback)\b/,
-    /\b(?:docker|podman)\b[^\n;&|]{0,160}\bpush\b/,
-    /\bwrangler\b[^\n;&|]{0,240}\b(?:deploy|delete|rollback|execute|apply|put|bulk|secret)\b/,
-    /\b(?:cargo\s+(?:publish|yank|owner)|twine\s+upload|gem\s+(?:push|yank|owner)|(?:dotnet\s+nuget|nuget)\s+(?:push|delete))\b/,
-    /\bcurl\b[^\n;&|]{0,320}(?:-X\s*|--request(?:=|\s+))(?:POST|PUT|PATCH|DELETE)\b/i,
-    /\b(?:http|xh)\b\s+(?:POST|PUT|PATCH|DELETE)\b/i,
-    /\bcurl\b[^\n;&|]{0,320}(?:--data(?:-raw|-binary|-urlencode)?|-d|--form|-F)\b/,
-    /\b(?:psql|mysql|sqlite3|duckdb)\b[^\n;&|]{0,320}\b(?:drop|delete|update|insert|alter|truncate|create|grant|revoke)\b/,
-    /\bredis-cli\b[^\n;&|]{0,240}\b(?:del|set|mset|flushall|flushdb|shutdown|config\s+set|acl\s+setuser)\b/,
-    /\baws\b[^\n;&|]{0,320}\b(?:s3\s+rm|s3api\s+delete|cloudformation\s+(?:deploy|delete)|secretsmanager\s+(?:create|put|update|delete|restore|rotate)|iam\s+(?:create|update|delete|attach|detach|put))\b/,
-    /\bgcloud\b[^\n;&|]{0,320}\b(?:storage\s+rm|secrets\s+versions\s+(?:add|destroy|disable)|run\s+deploy|functions\s+deploy|projects\s+(?:add|remove)-iam-policy-binding)\b/,
-    /\baz\b[^\n;&|]{0,320}\b(?:storage\b[^\n;&|]{0,80}\bdelete|keyvault\s+secret\s+(?:set|delete|backup|restore)|deployment\b[^\n;&|]{0,80}\b(?:create|delete))\b/,
-    /\b(?:vault|op)\b[^\n;&|]{0,240}\b(?:write|put|patch|delete|edit|create|rotate|revoke|destroy)\b/,
-  ].some((pattern) => pattern.test(command.toLowerCase()));
+  const protectedShellCommand = isProtectedShellMutation(command);
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;
   let type = 'process';
@@ -105,7 +85,7 @@ export function classifyTool(event: PreToolUseEvent): {
   const protectedAction = !readOnly && (
     /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
     || protectedShellCommand
-    || (String(event.tool_name || '').startsWith('mcp__') && !normalizedTool.startsWith('marrow_'))
+    || (String(event.tool_name || '').startsWith('mcp__') && !isOfficialMarrowMcpTool(event.tool_name))
   );
   const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
   const target = surfaces.includes('npm') ? `npm:${type}`
@@ -293,7 +273,10 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       proof_requirements: runtime.proof_pack?.fields || [],
       surfaces: classified.surfaces,
     }, sessionId, agentId, signal);
-    if (!issued.permit) return { runtime, permit: issued, protectedRisk: classified.protected, enforcementError: 'Marrow did not issue an action permit.' };
+    const issuedPermitId = typeof issued.permit_id === 'string' ? issued.permit_id.trim() : '';
+    if (!issued.permit || !issuedPermitId) {
+      return { runtime, permit: { ...issued, verified: false }, protectedRisk: classified.protected, enforcementError: 'Marrow did not issue a complete action permit.' };
+    }
     const verified = await marrowEnforcement(resolved.apiKey, baseUrl, {
       operation: 'verify',
       permit: issued.permit,
@@ -304,7 +287,14 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       correlation_id: correlation,
       harness: 'claude-code',
     }, sessionId, agentId, signal);
-    return { runtime, permit: { ...issued, ...verified, permit: undefined }, protectedRisk: classified.protected };
+    const verifiedPermitId = typeof verified.permit_id === 'string' ? verified.permit_id.trim() : '';
+    const verifiedExactly = verified.verified === true && verifiedPermitId === issuedPermitId;
+    return {
+      runtime,
+      permit: { ...issued, ...verified, permit_id: issuedPermitId, permit: undefined, verified: verifiedExactly },
+      protectedRisk: classified.protected,
+      ...(verifiedExactly ? {} : { enforcementError: 'Marrow permit verification did not match the issued permit.' }),
+    };
   };
   const [result] = await Promise.all([withTimeout(control), lifecycle]);
   emitDecision(result || {

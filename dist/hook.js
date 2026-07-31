@@ -36,7 +36,7 @@ function deriveAction(event) {
     const toolName = getString(event.tool_name);
     if (!toolName || shouldSkipAutoLog(event))
         return null;
-    if (toolName.startsWith('mcp__marrow_'))
+    if ((0, hook_tool_policy_1.isOfficialMarrowMcpTool)(toolName))
         return null;
     return (0, hook_pre_action_1.classifyTool)(event).action;
 }

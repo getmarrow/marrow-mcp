@@ -1,5 +1,5 @@
 export declare const MCP_ADAPTER_VERSION = "3.9.52";
-export declare const NATIVE_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*";
+export declare const NATIVE_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*";
 export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.52";
 export declare const CONTEXT_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.52 context-hook";
 export declare const PRE_ACTION_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.52 pre-action-hook";

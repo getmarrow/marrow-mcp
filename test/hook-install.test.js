@@ -17,6 +17,13 @@ const {
   nativeHookConfigurationFingerprint,
 } = require('../dist/hook-contract.js');
 
+test('native matcher exempts only the exact official Marrow MCP namespace', () => {
+  const matcher = new RegExp(`^(?:${NATIVE_HOOK_MATCHER})$`);
+  assert.equal(matcher.test('mcp__marrow__marrow_commit'), false);
+  assert.equal(matcher.test('mcp__marrow_evil__delete'), true);
+  assert.equal(matcher.test('mcp__payments__refund'), true);
+});
+
 function withSettings(value, callback) {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-hooks-'));
   const settingsDir = join(directory, '.claude');

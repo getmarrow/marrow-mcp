@@ -30,8 +30,30 @@ function stripQuotes(value: string): string {
   return trimmed;
 }
 
-function parseEnvFile(filePath: string): Record<string, string> {
+function isPrivateOwnerFile(filePath: string, home: string): boolean {
+  try {
+    const resolvedHome = path.resolve(home);
+    const resolvedFile = path.resolve(filePath);
+    const parent = path.dirname(resolvedFile);
+    const homeStat = fs.lstatSync(resolvedHome);
+    const parentStat = fs.lstatSync(parent);
+    const fileStat = fs.lstatSync(resolvedFile);
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    return resolvedFile.startsWith(`${resolvedHome}${path.sep}`)
+      && homeStat.isDirectory() && !homeStat.isSymbolicLink() && fs.realpathSync(resolvedHome) === resolvedHome
+      && parentStat.isDirectory() && !parentStat.isSymbolicLink() && fs.realpathSync(parent) === parent
+      && fileStat.isFile() && !fileStat.isSymbolicLink()
+      && (uid === null || fileStat.uid === uid && parentStat.uid === uid)
+      && (fileStat.mode & 0o077) === 0
+      && (parentStat.mode & 0o022) === 0;
+  } catch {
+    return false;
+  }
+}
+
+function parseEnvFile(filePath: string, trustedHome?: string): Record<string, string> {
   if (!fs.existsSync(filePath)) return {};
+  if (trustedHome && !isPrivateOwnerFile(filePath, trustedHome)) return {};
   const values: Record<string, string> = {};
   const raw = fs.readFileSync(filePath, 'utf8');
   for (const line of raw.split(/\r?\n/)) {
@@ -96,7 +118,7 @@ export function resolveMarrowEnv(options: {
   }
 
   for (const filePath of candidateEnvFiles(cwd, home, options.trustedOnly === true)) {
-    const parsed = parseEnvFile(filePath);
+    const parsed = parseEnvFile(filePath, options.trustedOnly === true ? home : undefined);
     const found = pickKey(parsed);
     if (!found.key) continue;
     return {

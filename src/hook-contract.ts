@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export const MCP_ADAPTER_VERSION = '3.9.52';
-export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow_).*';
+export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
 export const CONTEXT_HOOK_COMMAND = `npx -y ${MCP_PACKAGE_SPEC} context-hook`;
 export const PRE_ACTION_HOOK_COMMAND = `npx -y ${MCP_PACKAGE_SPEC} pre-action-hook`;

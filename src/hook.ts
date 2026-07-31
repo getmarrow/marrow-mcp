@@ -2,7 +2,7 @@ import { validateBaseUrl } from './index';
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
-import { isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
+import { isOfficialMarrowMcpTool, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   ACTION_RESULT_HOOK_COMMAND,
   findHookSettingsPath,
@@ -60,7 +60,7 @@ export function shouldSkipAutoLog(event: HookEvent): boolean {
 export function deriveAction(event: HookEvent): string | null {
   const toolName = getString(event.tool_name);
   if (!toolName || shouldSkipAutoLog(event)) return null;
-  if (toolName.startsWith('mcp__marrow_')) return null;
+  if (isOfficialMarrowMcpTool(toolName)) return null;
   return classifyTool(event).action;
 }
 
