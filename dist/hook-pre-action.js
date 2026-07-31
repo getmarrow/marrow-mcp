@@ -34,12 +34,23 @@ function classifyTool(event) {
     const command = (0, hook_tool_policy_1.hookToolCommand)(event);
     const input = `${normalizedTool} ${command} ${JSON.stringify(event.tool_input || {})}`.toLowerCase();
     const readOnly = (0, hook_tool_policy_1.isReadOnlyToolEvent)(event);
+    const protectedShellCommand = [
+        /\bgit\b[^\n;&|]{0,240}\b(?:push|merge|commit|rebase|reset|tag)\b/,
+        /\bgh\b[^\n;&|]{0,160}\b(?:pr\s+merge|release\s+(?:create|delete)|repo\s+(?:archive|delete))\b/,
+        /\bkubectl\b[^\n;&|]{0,160}\b(?:apply|create|delete|edit|patch|replace|rollout|scale|set)\b/,
+        /\bterraform\b[^\n;&|]{0,160}\b(?:apply|destroy|import|taint|untaint|state\s+(?:mv|rm))\b/,
+        /\bpulumi\b[^\n;&|]{0,160}\b(?:up|destroy|import|refresh|stack\s+rm)\b/,
+        /\bhelm\b[^\n;&|]{0,160}\b(?:install|upgrade|uninstall|rollback)\b/,
+        /\b(?:docker|podman)\b[^\n;&|]{0,160}\bpush\b/,
+    ].some((pattern) => pattern.test(command.toLowerCase()));
+    const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
+        && protectedShellCommand;
     let type = 'process';
     if (/\bpublish\b/.test(input))
         type = 'publish';
-    else if (/\b(?:deploy|release|wrangler)\b/.test(input))
+    else if (/\b(?:deploy|release|wrangler)\b/.test(input) || infrastructureDeployment)
         type = 'deploy';
-    else if (/\b(?:merge|pull request|git push)\b/.test(input))
+    else if (/\b(?:merge|pull request|git push)\b/.test(input) || /\bgit\b[^\n;&|]{0,240}\bpush\b/.test(command.toLowerCase()))
         type = 'review';
     else if (/\b(?:migration|schema|database|d1)\b/.test(input))
         type = 'migration';
@@ -48,7 +59,7 @@ function classifyTool(event) {
     else if (/\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input))
         type = 'financial';
     const surfaces = [
-        /\b(?:deploy|release|production|prod|wrangler)\b/.test(input) ? 'production' : '',
+        /\b(?:deploy|release|production|prod|wrangler)\b/.test(input) || infrastructureDeployment ? 'production' : '',
         /\b(?:git|github|merge|pull request|push)\b/.test(input) ? 'github' : '',
         /\b(?:npm|package|publish)\b/.test(input) ? 'npm' : '',
         /\b(?:secret|credential|token|key)\b/.test(input) ? 'secrets' : '',
@@ -56,6 +67,7 @@ function classifyTool(event) {
         /\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input) ? 'financial' : '',
     ].filter(Boolean);
     const protectedAction = !readOnly && (/\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
+        || protectedShellCommand
         || (String(event.tool_name || '').startsWith('mcp__') && !normalizedTool.startsWith('marrow_')));
     const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
     const target = surfaces.includes('npm') ? `npm:${type}`
@@ -172,7 +184,7 @@ async function runPreActionHookCommand(input) {
         process.stdout.write('{}');
         return;
     }
-    const resolved = (0, env_1.resolveMarrowEnv)();
+    const resolved = (0, env_1.resolveMarrowEnv)({ trustedOnly: true });
     if (!resolved.apiKey) {
         emitDecision({
             runtime: null,

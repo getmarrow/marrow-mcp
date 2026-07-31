@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { mkdtempSync, rmSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const test = require('node:test');
@@ -20,13 +20,16 @@ test('pre-action and result hooks use the same privacy-safe action binding', () 
 test('protected operations are classified from tool names and commands without incidental production keywords', () => {
   const publish = classifyTool({ tool_name: 'Bash', tool_input: { command: 'npm publish' } });
   const push = classifyTool({ tool_name: 'Bash', tool_input: { command: 'git push origin master' } });
+  const pushWithGlobalOptions = classifyTool({ tool_name: 'Bash', tool_input: { command: 'git -C /workspace -c core.hooksPath=/tmp/hooks push origin master' } });
   const merge = classifyTool({ tool_name: 'Bash', tool_input: { command: 'gh pr merge 42 --merge' } });
+  const kubectlApply = classifyTool({ tool_name: 'Bash', tool_input: { command: 'kubectl --context production apply -f deployment.yaml' } });
+  const terraformApply = classifyTool({ tool_name: 'Bash', tool_input: { command: 'terraform -chdir=infra apply -auto-approve' } });
   const unknownMcp = classifyTool({ tool_name: 'mcp__payments__execute', tool_input: { amount: 25 } });
   const deceptiveMcp = classifyTool({ tool_name: 'mcp__records__get_and_delete', tool_input: { id: 'record-1' } });
   const compoundShell = classifyTool({ tool_name: 'Bash', tool_input: { command: 'cat package.json && node mutate.js' } });
   const readOnly = classifyTool({ tool_name: 'Bash', tool_input: { command: 'cat package.json' } });
 
-  for (const result of [publish, push, merge, unknownMcp, deceptiveMcp]) {
+  for (const result of [publish, push, pushWithGlobalOptions, merge, kubectlApply, terraformApply, unknownMcp, deceptiveMcp]) {
     assert.equal(result.protected, true);
     assert.equal(result.risk, 'high');
   }
@@ -34,9 +37,88 @@ test('protected operations are classified from tool names and commands without i
   assert.equal(compoundShell.risk, 'medium');
   assert.equal(publish.target, 'npm:publish');
   assert.equal(push.target, 'github:review');
+  assert.equal(pushWithGlobalOptions.target, 'github:review');
+  assert.equal(kubectlApply.target, 'production:deploy');
+  assert.equal(terraformApply.target, 'production:deploy');
   assert.equal(readOnly.readOnly, true);
   assert.equal(readOnly.risk, 'low');
   assert.equal(deriveAction({ tool_name: 'Bash', tool_input: { command: 'cat package.json' } }), null);
+});
+
+test('protected command variants fail closed without trusted Marrow credentials', async () => {
+  const originalWrite = process.stdout.write;
+  const originalCwd = process.cwd();
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-protected-variants-'));
+  const previous = {
+    MARROW_API_KEY: process.env.MARROW_API_KEY,
+    MARROW_KEY: process.env.MARROW_KEY,
+    HOME: process.env.HOME,
+  };
+  delete process.env.MARROW_API_KEY;
+  delete process.env.MARROW_KEY;
+  process.env.HOME = join(directory, 'home');
+  process.chdir(directory);
+  try {
+    for (const command of [
+      'git -C /workspace push origin master',
+      'kubectl apply -f deployment.yaml',
+      'terraform apply -auto-approve',
+    ]) {
+      let output = '';
+      process.stdout.write = (chunk) => { output += String(chunk); return true; };
+      await runPreActionHookCommand({ tool_name: 'Bash', tool_input: { command } });
+      const result = JSON.parse(output);
+      assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(result.hookSpecificOutput.permissionDecisionReason, /credentials are unavailable/i);
+    }
+  } finally {
+    process.stdout.write = originalWrite;
+    process.chdir(originalCwd);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('native enforcement ignores repository-local Marrow credentials', async () => {
+  const originalWrite = process.stdout.write;
+  const originalCwd = process.cwd();
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-hostile-project-env-'));
+  const previous = {
+    MARROW_API_KEY: process.env.MARROW_API_KEY,
+    MARROW_KEY: process.env.MARROW_KEY,
+    HOME: process.env.HOME,
+  };
+  mkdirSync(join(directory, '.marrow'), { recursive: true });
+  writeFileSync(join(directory, '.env'), [
+    'MARROW_API_KEY=synthetic-project-key',
+    'MARROW_BASE_URL=https://hostile.invalid',
+    'MARROW_AGENT_ID=hostile-agent',
+    '',
+  ].join('\n'));
+  delete process.env.MARROW_API_KEY;
+  delete process.env.MARROW_KEY;
+  process.env.HOME = join(directory, 'home');
+  process.chdir(directory);
+  let output = '';
+  process.stdout.write = (chunk) => { output += String(chunk); return true; };
+  try {
+    await runPreActionHookCommand({ tool_name: 'Bash', tool_input: { command: 'npm publish' } });
+    const result = JSON.parse(output);
+    assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(result.hookSpecificOutput.permissionDecisionReason, /credentials are unavailable/i);
+    assert.doesNotMatch(output, /hostile/);
+  } finally {
+    process.stdout.write = originalWrite;
+    process.chdir(originalCwd);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('protected pre-action hook denies when the Marrow credential is unavailable', async () => {

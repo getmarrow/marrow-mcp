@@ -72,21 +72,25 @@ function parseEnvFile(filePath) {
     }
     return values;
 }
-function candidateEnvFiles(cwd, home) {
-    const files = [];
+function candidateEnvFiles(cwd, home, trustedOnly) {
+    const ownerFiles = [
+        path.join(home, '.marrow', 'env.local'),
+        path.join(home, '.marrow', 'env'),
+    ];
+    if (trustedOnly)
+        return ownerFiles;
+    const files = [...ownerFiles];
     let dir = path.resolve(cwd || process.cwd());
     for (let depth = 0; depth < 8; depth += 1) {
-        files.push(path.join(dir, '.marrow', 'env'));
         files.push(path.join(dir, '.marrow', 'env.local'));
-        files.push(path.join(dir, '.env'));
+        files.push(path.join(dir, '.marrow', 'env'));
         files.push(path.join(dir, '.env.local'));
+        files.push(path.join(dir, '.env'));
         const parent = path.dirname(dir);
         if (parent === dir)
             break;
         dir = parent;
     }
-    files.push(path.join(home, '.marrow', 'env'));
-    files.push(path.join(home, '.marrow', 'env.local'));
     return [...new Set(files)];
 }
 function pickKey(env) {
@@ -112,7 +116,7 @@ function resolveMarrowEnv(options = {}) {
             exactFix: 'Marrow key is loaded from the process environment.',
         };
     }
-    for (const filePath of candidateEnvFiles(cwd, home)) {
+    for (const filePath of candidateEnvFiles(cwd, home, options.trustedOnly === true)) {
         const parsed = parseEnvFile(filePath);
         const found = pickKey(parsed);
         if (!found.key)
@@ -134,7 +138,7 @@ function resolveMarrowEnv(options = {}) {
         sessionId: env.MARROW_SESSION_ID,
         source: null,
         missing: true,
-        exactFix: 'Create an API key at https://getmarrow.ai, then run: mkdir -p .marrow && printf "MARROW_API_KEY=mrw_live_...\\n" > .marrow/env && chmod 600 .marrow/env && npx @getmarrow/mcp setup',
+        exactFix: 'Create an API key at https://getmarrow.ai, then export MARROW_API_KEY from trusted secret storage or place it in ~/.marrow/env with owner-only permissions before running npx @getmarrow/mcp setup.',
     };
 }
 //# sourceMappingURL=env.js.map

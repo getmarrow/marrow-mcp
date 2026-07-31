@@ -11,7 +11,7 @@ test('resolveMarrowEnv loads MARROW_KEY alias from project env file', () => {
   fs.mkdirSync(path.join(dir, '.marrow'));
   fs.writeFileSync(path.join(dir, '.marrow', 'env'), [
     'OTHER_SERVICE_SECRET=do_not_materialize',
-    'MARROW_KEY=mrw_test_mcp_alias_key_123456789',
+    'MARROW_KEY=synthetic-mcp-alias-key',
     'MARROW_FLEET_AGENT_ID=mcp-agent',
     '',
   ].join('\n'));
@@ -22,9 +22,36 @@ test('resolveMarrowEnv loads MARROW_KEY alias from project env file', () => {
     env: {},
   });
 
-  assert.equal(resolved.apiKey, 'mrw_test_mcp_alias_key_123456789');
+  assert.equal(resolved.apiKey, 'synthetic-mcp-alias-key');
   assert.equal(resolved.agentId, 'mcp-agent');
   assert.match(resolved.source, /\.marrow\/env:MARROW_KEY$/);
+});
+
+test('trusted enforcement identity uses owner config and cannot be shadowed by repository env files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-mcp-env-precedence-'));
+  const home = path.join(dir, 'home');
+  fs.mkdirSync(path.join(dir, '.marrow'), { recursive: true });
+  fs.mkdirSync(path.join(home, '.marrow'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.env'), [
+    'MARROW_API_KEY=synthetic-project-key',
+    'MARROW_BASE_URL=https://hostile.invalid',
+    'MARROW_AGENT_ID=hostile-agent',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(home, '.marrow', 'env'), [
+    'MARROW_API_KEY=synthetic-owner-key',
+    'MARROW_BASE_URL=https://api.getmarrow.ai',
+    'MARROW_AGENT_ID=owner-agent',
+    '',
+  ].join('\n'));
+
+  const resolved = resolveMarrowEnv({ cwd: dir, home, env: {}, trustedOnly: true });
+
+  assert.equal(resolved.apiKey, 'synthetic-owner-key');
+  assert.equal(resolved.baseUrl, 'https://api.getmarrow.ai');
+  assert.equal(resolved.agentId, 'owner-agent');
+  assert.match(resolved.source, /home\/\.marrow\/env:MARROW_API_KEY$/);
+  assert.doesNotMatch(JSON.stringify(resolved), /hostile/);
 });
 
 test('resolveMarrowEnv ignores non-Marrow env file assignments', () => {
@@ -33,7 +60,7 @@ test('resolveMarrowEnv ignores non-Marrow env file assignments', () => {
   fs.writeFileSync(path.join(dir, '.marrow', 'env'), [
     'OTHER_SERVICE_SECRET=should_not_be_read',
     'DATABASE_URL=postgres://example',
-    'MARROW_KEY=mrw_test_mcp_whitelist_key_123456789',
+    'MARROW_KEY=synthetic-whitelist-key',
     '',
   ].join('\n'));
 
@@ -43,7 +70,7 @@ test('resolveMarrowEnv ignores non-Marrow env file assignments', () => {
     env: {},
   });
 
-  assert.equal(resolved.apiKey, 'mrw_test_mcp_whitelist_key_123456789');
+  assert.equal(resolved.apiKey, 'synthetic-whitelist-key');
   assert.doesNotMatch(JSON.stringify(resolved), /should_not_be_read|postgres/);
 });
 
@@ -57,6 +84,6 @@ test('resolveMarrowEnv gives exact setup fix when no key is available', () => {
 
   assert.equal(resolved.missing, true);
   assert.equal(resolved.apiKey, '');
-  assert.match(resolved.exactFix, /\.marrow\/env/);
+  assert.match(resolved.exactFix, /~\/\.marrow\/env/);
   assert.doesNotMatch(resolved.exactFix, /mrw_live_[A-Za-z0-9_-]{8,}/);
 });

@@ -11,5 +11,6 @@ export declare function resolveMarrowEnv(options?: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     home?: string;
+    trustedOnly?: boolean;
 }): ResolvedMarrowEnv;
 //# sourceMappingURL=env.d.ts.map

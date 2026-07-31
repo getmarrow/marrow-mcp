@@ -66,6 +66,8 @@ Set the key through trusted secret storage:
 export MARROW_API_KEY=mrw_live_...
 ```
 
+For native pre-action enforcement, Marrow accepts the process environment or an owner-controlled `~/.marrow/env` file with owner-only permissions. Repository-local `.env` files are intentionally ignored for enforcement identity so project content cannot replace the account, agent, or API endpoint used to authorize a protected action.
+
 Then configure the MCP server:
 
 ```json
