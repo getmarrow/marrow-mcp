@@ -357,7 +357,12 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
   if (update && (updateAvailable || versionStatus === 'unknown' || notification === 'unknown' || notification === 'version_unknown' || priority === 'security_required')) {
     const current = asString(update.installed_version) || asString(update.current_version) || 'unknown';
     const latest = asString(update.latest_version) || 'unknown';
-    lines.push(`- Marrow update: ${priority}; installed=${current}; latest=${latest}. Local changes are not applied automatically.`);
+    const updateSummary = priority === 'version_unknown'
+      ? 'Marrow client version unrecognized'
+      : priority === 'security_required'
+      ? 'Marrow client update required by server policy'
+      : 'Marrow client update available';
+    lines.push(`- ${updateSummary}: installed=${current}; latest=${latest}. Hosted Marrow services are already current; no local changes were applied.`);
     const updateCommand = asString(update.update_command) || asString(update.exact_update_command);
     const verifyCommand = asString(update.verification_command) || asString(update.exact_verification_command);
     if (updateCommand) lines.push(`- Update command (operator approval): ${updateCommand}`);
