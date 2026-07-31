@@ -113,6 +113,7 @@ You have Marrow MCP connected. Use it on EVERY session automatically:
 4. **Unfinished work:** Leave pending outcomes visible. Do not invent success to clear a closure item.
 5. **To explain a decision:** Use \`marrow_decision_trace\` to connect the prior failure, lesson, gate, proof, workflow, and outcome.
 6. **To query authorized history:** Call \`marrow_ask("plain english question")\` — ask what failed, what worked, and what policy should apply.
+7. **When an update is reported:** Tell the operator and use the returned exact update and verification commands only when local change policy permits. Never silently change packages or configuration.
 
 Do not skip the gate or outcome. Marrow's value comes from controlling the action before execution and preserving evidence afterward.
 
@@ -1060,7 +1061,7 @@ const TOOLS = [
     name: 'marrow_runtime_status',
     description:
       'Read live Marrow runtime hook diagnostics from /v1/agent/status. ' +
-      'Use this when an agent needs exact passive hook, token-capture, outcome-closure, and repair-command status.',
+      'Use this when an agent needs exact passive hook, token-capture, outcome-closure, client-update, and repair-command status.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1592,6 +1593,8 @@ Installed hooks handle supported lifecycle capture automatically:
 - Stop keeps unfinished outcomes visible instead of silently treating session exit as success.
 
 Hooks never make a blocked action safe. Before a consequential action, respect the returned allow, warn, review_required, or block decision and its required proof. Call marrow_agent_runtime explicitly when the passive hook cannot cover the action.
+
+When runtime/status returns a client_update notice, tell the operator and use its exact update and verification commands only when local change policy permits. Never silently change packages or configuration.
 
 ## Outcome closure
 

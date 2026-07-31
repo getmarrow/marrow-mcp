@@ -85,6 +85,20 @@ For most new installations, start with the universal installer instead:
 npx @getmarrow/install activate
 ```
 
+## Keeping MCP Current
+
+Marrow's hosted API, website, and dashboard update automatically; local MCP hooks, configuration, and pinned package commands do not silently rewrite themselves. Keeping them current delivers new client-side features, compatibility improvements, and any published security fixes. During authenticated status/runtime activity, Marrow returns a `client_update` notice when the package is behind or unknown, and passive context shows the agent the exact update and verification commands.
+
+```bash
+npx -y @getmarrow/install@latest activate
+npx -y @getmarrow/install@latest doctor
+
+# Manual MCP-only setup
+npx -y @getmarrow/mcp@latest setup
+```
+
+Detection and notification are automatic. Package and configuration changes remain explicit and subject to the operator's normal change policy.
+
 ## What's New in v3.9.50
 
 v3.9.50 makes native passive-hook coverage verifiable. `UserPromptSubmit`, `PreToolUse`, `PostToolUse`/`PostToolUseFailure`, and `Stop` attach bounded evidence for the hook that actually ran, the native-hook capability level, the adapter version, and a one-way fingerprint of the exact installed hook contract:

@@ -106,6 +106,75 @@ test('context hook renders before-action intervention before legacy runtime text
   assert.match(context, /Intervention required proof: summary, checks, rollback_target/);
 });
 
+test('context hook makes a server update advisory visible to the agent', () => {
+  const { buildCombinedContextBlock } = require('../dist/hook-context.js');
+  const context = buildCombinedContextBlock(
+    {
+      warnings: [],
+      loopWarnings: [],
+      similarCount: 0,
+      patternsCount: 0,
+      templatesAvailable: 0,
+      primaryInsight: null,
+      collectiveInsight: null,
+      hasSignal: true,
+    },
+    null,
+    null,
+    {
+      status: {
+        client_update: {
+          installed_version: '3.9.50',
+          latest_version: '3.9.51',
+          version_status: 'behind',
+          update_available: true,
+          notification_state: 'recommended',
+          update_command: 'npx @getmarrow/mcp@latest setup',
+          verification_command: 'npx @getmarrow/install@latest doctor',
+        },
+      },
+      risk_gate: { decision: 'allow', risk_level: 'low', allow: true },
+      proof_pack: { required: false, fields: [], missing: [] },
+      auto_outcome_closure: null,
+      exact_next_action: null,
+    }
+  );
+
+  assert.match(context, /Marrow update: recommended; installed=3\.9\.50; latest=3\.9\.51/);
+  assert.match(context, /Update command \(operator approval\): npx @getmarrow\/mcp@latest setup/);
+  assert.match(context, /Local changes are not applied automatically/);
+});
+
+test('context hook describes missing version metadata without claiming an update or vulnerability', () => {
+  const { buildCombinedContextBlock } = require('../dist/hook-context.js');
+  const context = buildCombinedContextBlock(
+    {
+      warnings: [], loopWarnings: [], similarCount: 0, patternsCount: 0,
+      templatesAvailable: 0, primaryInsight: null, collectiveInsight: null, hasSignal: true,
+    },
+    null,
+    null,
+    {
+      client_update: {
+        installed_version: null,
+        latest_version: null,
+        version_status: 'unknown',
+        update_available: null,
+        notification_state: 'unknown',
+        update_command: 'npx @getmarrow/install@latest --repair',
+        verification_command: 'npx @getmarrow/install@latest doctor',
+      },
+      risk_gate: { decision: 'allow', risk_level: 'low', allow: true },
+      proof_pack: { required: false, fields: [], missing: [] },
+      auto_outcome_closure: null,
+      exact_next_action: null,
+    },
+  );
+
+  assert.match(context, /Marrow update: version_unknown; installed=unknown; latest=unknown/);
+  assert.doesNotMatch(context, /security_required/);
+});
+
 test('marrowAuto redacts action context and source_meta before think', async () => {
   const { marrowAuto } = require('../dist/index.js');
   const originalFetch = globalThis.fetch;

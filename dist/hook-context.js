@@ -276,6 +276,29 @@ function appendAgentRuntime(lines, runtime) {
     if (closure) {
         lines.push(`- Outcome closure: ${asString(closure.state) || 'unknown'}${typeof closure.recent_coverage_24h === 'number' ? ` (${Math.round(closure.recent_coverage_24h * 100)}% recent)` : ''}`);
     }
+    const status = asRecord(runtime.status);
+    const update = asRecord(runtime.client_update) || asRecord(status?.client_update);
+    const updateAvailable = update?.update_available === true;
+    const notification = asString(update?.notification_state) || asString(update?.notification);
+    const versionStatus = asString(update?.version_status);
+    const priority = notification === 'security_required'
+        ? 'security_required'
+        : notification === 'recommended'
+            ? 'recommended'
+            : versionStatus === 'unknown' || notification === 'unknown' || notification === 'version_unknown'
+                ? 'version_unknown'
+                : asString(update?.priority) || 'recommended';
+    if (update && (updateAvailable || versionStatus === 'unknown' || notification === 'unknown' || notification === 'version_unknown' || priority === 'security_required')) {
+        const current = asString(update.installed_version) || asString(update.current_version) || 'unknown';
+        const latest = asString(update.latest_version) || 'unknown';
+        lines.push(`- Marrow update: ${priority}; installed=${current}; latest=${latest}. Local changes are not applied automatically.`);
+        const updateCommand = asString(update.update_command) || asString(update.exact_update_command);
+        const verifyCommand = asString(update.verification_command) || asString(update.exact_verification_command);
+        if (updateCommand)
+            lines.push(`- Update command (operator approval): ${updateCommand}`);
+        if (verifyCommand)
+            lines.push(`- Verify after update: ${verifyCommand}`);
+    }
 }
 function buildCombinedContextBlock(signals, brief, valueReport, runtime = null) {
     const lines = buildContextBlock(signals).split('\n');
