@@ -1,7 +1,7 @@
 /**
  * @getmarrow/mcp — API Functions
  */
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowArbitrationRequest, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowArbitrationRequest, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult, MarrowEnforcementRequest, MarrowEnforcementResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 import { type LifecycleEvent } from './lifecycle-spool';
 export type { Narrative, CommitResult } from './types';
@@ -155,6 +155,7 @@ export declare function marrowValueReport(apiKey: string, baseUrl: string, perio
 export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
 export declare function marrowWorkflowGate(apiKey: string, baseUrl: string, input: MarrowWorkflowGateRequest, sessionId?: string, agentId?: string): Promise<MarrowWorkflowGateResult>;
 export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowAgentRuntimeResult>;
+export declare function marrowEnforcement(apiKey: string, baseUrl: string, input: MarrowEnforcementRequest, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowEnforcementResult>;
 /**
  * Resolve conflicting agent proposals through the existing runtime control
  * plane. This is a client convenience, not a separate backend API.

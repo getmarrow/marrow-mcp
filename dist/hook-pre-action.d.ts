@@ -1,4 +1,4 @@
-import { marrowAgentRuntime } from './index';
+import { marrowAgentRuntime, marrowEnforcement } from './index';
 export type PreToolUseEvent = {
     session_id?: string;
     hook_event_name?: string;
@@ -6,10 +6,24 @@ export type PreToolUseEvent = {
     tool_name?: string;
     tool_input?: unknown;
 };
-export declare function preActionHookOutput(runtime: Awaited<ReturnType<typeof marrowAgentRuntime>> | null): Record<string, unknown>;
+type PreActionControlResult = {
+    runtime: Awaited<ReturnType<typeof marrowAgentRuntime>> | null;
+    permit: Awaited<ReturnType<typeof marrowEnforcement>> | null;
+    protectedRisk: boolean;
+    enforcementError?: string;
+};
+export declare function classifyTool(event: PreToolUseEvent): {
+    action: string;
+    type: string;
+    role: string;
+    surfaces: string[];
+    risk: 'low' | 'medium' | 'high';
+};
+export declare function preActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function installPreActionHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;
 };
 export declare function runPreActionHookCommand(input?: unknown): Promise<void>;
+export {};
 //# sourceMappingURL=hook-pre-action.d.ts.map

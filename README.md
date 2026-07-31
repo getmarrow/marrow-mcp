@@ -99,9 +99,9 @@ npx -y @getmarrow/mcp@latest setup
 
 Detection and notification are automatic. Package and configuration changes remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.51
+## What's New in v3.9.52
 
-v3.9.51 makes Marrow client updates visible inside an agent's normal governed workflow. Official MCP requests identify the installed package version, and passive context renders a request-specific server advisory with exact update and verification commands:
+v3.9.52 combines operator-controlled client update notices with signed, action-bound permit verification in native hooks. Official MCP requests identify the installed package version, and passive context renders a request-specific server advisory with exact update and verification commands:
 
 - update availability or unrecognized version metadata appears during normal authenticated runtime/status activity;
 - messaging clearly states that hosted Marrow services are already current and that no local change was applied;
@@ -109,7 +109,16 @@ v3.9.51 makes Marrow client updates visible inside an agent's normal governed wo
 - unknown versions do not imply a vulnerability, while server-designated security requirements remain distinct;
 - existing MCP tools and older server responses remain compatible when no advisory is returned.
 
-It preserves the verifiable native passive-hook coverage introduced in v3.9.50. `UserPromptSubmit`, `PreToolUse`, `PostToolUse`/`PostToolUseFailure`, and `Stop` attach bounded evidence for the hook that actually ran, the native-hook capability level, the adapter version, and a one-way fingerprint of the exact installed hook contract:
+The native `PreToolUse` hook verifies the permit before protected work can execute. It obtains the runtime gate, records the exact governed decision, requests a permit bound to that gate, decision, target, and canonical action surfaces, and consumes it immediately before returning control to the harness:
+
+- protected deploy, publish, merge, migration, credential, and production actions fail closed on timeout or permit failure;
+- the permit is bound to the authenticated account, key, agent, session, action, target, canonical surfaces, decision, and runtime gate;
+- raw tool input and permit tokens are never written into hook output or lifecycle telemetry;
+- matching result and closure hooks preserve one correlation so evidence can close the consumed permit automatically;
+- the bounded hook timeout prevents a control-plane wait from hanging the agent indefinitely;
+- low-risk work retains passive/advisory behavior unless account policy requires stronger enforcement.
+
+It preserves the verifiable native-hook coverage introduced in v3.9.50:
 
 - agents and owners can distinguish “MCP configured” from “pre-action, result, and session hooks actually observed”;
 - `PreToolUse` requests the Marrow runtime gate before matched actions and maps `block` to deny and `review_required` to operator review;
@@ -140,12 +149,12 @@ Coverage percentages are produced only when Marrow has exact observed receipts. 
 
 ## Governed Action Flow
 
-Before deploys, merges, publishes, migrations, credential changes, financial operations, or customer-impacting work:
+With installed native hooks, protected tool calls follow this automatically. For explicit/custom MCP flows before deploys, merges, publishes, migrations, credential changes, financial operations, or customer-impacting work:
 
 1. Call `marrow_agent_runtime` or `marrow_decision_brief`.
 2. Stop when the returned decision is `block` or `review_required`; otherwise follow its prior lesson and proof contract.
 3. Call `marrow_think` to record intent and obtain the `decision_id` that will be closed.
-4. Perform the action only when its gate allows it.
+4. Perform the action only when its gate allows it. For a hard external choke point, run the command through `npx @getmarrow/install run`; it verifies the signed action permit immediately before execution.
 5. Call `marrow_commit` with that `decision_id`, the outcome, gate receipt, and required proof.
 
 Example pre-action request:

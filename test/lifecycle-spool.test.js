@@ -50,7 +50,7 @@ function lifecycleInput(event) {
   };
 }
 
-test('passive hooks use joinable source correlations and never auto-close tool exits as business success', () => {
+test('passive hooks use joinable action bindings without treating tool exits as business success', () => {
   const hook = readFileSync(join(__dirname, '../src/hook.ts'), 'utf8');
   const context = readFileSync(join(__dirname, '../src/hook-context.ts'), 'utf8');
   const preAction = readFileSync(join(__dirname, '../src/hook-pre-action.ts'), 'utf8');
@@ -59,7 +59,8 @@ test('passive hooks use joinable source correlations and never auto-close tool e
   assert.match(preAction, /stableToolCorrelation/);
   assert.match(hook, /event_id: `posttool-\$\{lifecycleCorrelation\}`/);
   assert.match(preAction, /event_id: `pretool-\$\{correlation\}`/);
-  assert.match(hook, /business outcome pending/);
+  assert.match(hook, /return classifyTool\(event\)\.action/);
+  assert.match(hook, /outcome_state: 'pending'/);
   assert.doesNotMatch(hook, /marrowAuto\(/);
   assert.doesNotMatch(hook, /outcome_committed/);
   assert.match(context, /classified agent request:/);
@@ -149,24 +150,31 @@ test('pre-action and result hooks share tool correlation while sessions share wo
 
 test('pre-action policy maps block to deny, review to ask, and allow to native permission flow', () => {
   const block = preActionHookOutput({
-    risk_gate: { allow: false, decision: 'block', reasons: [{ message: 'proof missing' }] },
-    exact_next_action: 'collect proof',
+    runtime: { risk_gate: { allow: false, decision: 'block', reasons: [{ message: 'proof missing' }] }, exact_next_action: 'collect proof' },
+    permit: { verified: true, permit_id: 'permit-block' },
+    protectedRisk: true,
   });
   assert.equal(block.hookSpecificOutput.permissionDecision, 'deny');
   assert.equal(block.hookSpecificOutput.permissionDecisionReason, 'collect proof');
 
   const review = preActionHookOutput({
-    risk_gate: { allow: false, decision: 'review_required', reasons: [] },
-    exact_next_action: 'ask owner',
+    runtime: { risk_gate: { allow: false, decision: 'review_required', reasons: [] }, exact_next_action: 'ask owner' },
+    permit: { verified: true, permit_id: 'permit-review' },
+    protectedRisk: true,
   });
   assert.equal(review.hookSpecificOutput.permissionDecision, 'ask');
 
   const allow = preActionHookOutput({
-    risk_gate: { allow: true, decision: 'allow', reasons: [] },
-    before_you_act: 'reuse the prior lesson',
+    runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] }, before_you_act: 'reuse the prior lesson' },
+    permit: { verified: true, permit_id: 'permit-allow' },
+    protectedRisk: false,
   });
   assert.equal('permissionDecision' in allow.hookSpecificOutput, false);
-  assert.equal(allow.hookSpecificOutput.additionalContext, 'reuse the prior lesson');
+  assert.match(allow.hookSpecificOutput.additionalContext, /reuse the prior lesson/);
+  assert.match(allow.hookSpecificOutput.additionalContext, /permit-allow/);
+
+  const unavailable = preActionHookOutput({ runtime: null, permit: null, protectedRisk: true });
+  assert.equal(unavailable.hookSpecificOutput.permissionDecision, 'deny');
 });
 
 test('MCP lifecycle spool keeps compact redacted receipts across process attempts', async () => {

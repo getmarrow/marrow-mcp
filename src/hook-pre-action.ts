@@ -1,4 +1,4 @@
-import { marrowAgentRuntime, validateBaseUrl } from './index';
+import { marrowAgentRuntime, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import {
@@ -13,7 +13,7 @@ import {
 } from './hook-contract';
 
 const MAX_INPUT_BYTES = 64 * 1024;
-const RUNTIME_TIMEOUT_MS = 900;
+const RUNTIME_TIMEOUT_MS = 3000;
 
 export type PreToolUseEvent = {
   session_id?: string;
@@ -21,6 +21,13 @@ export type PreToolUseEvent = {
   tool_use_id?: string;
   tool_name?: string;
   tool_input?: unknown;
+};
+
+type PreActionControlResult = {
+  runtime: Awaited<ReturnType<typeof marrowAgentRuntime>> | null;
+  permit: Awaited<ReturnType<typeof marrowEnforcement>> | null;
+  protectedRisk: boolean;
+  enforcementError?: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -41,7 +48,7 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-function classifyTool(event: PreToolUseEvent): {
+export function classifyTool(event: PreToolUseEvent): {
   action: string;
   type: string;
   role: string;
@@ -71,7 +78,17 @@ function classifyTool(event: PreToolUseEvent): {
   };
 }
 
-export function preActionHookOutput(runtime: Awaited<ReturnType<typeof marrowAgentRuntime>> | null): Record<string, unknown> {
+export function preActionHookOutput(result: PreActionControlResult): Record<string, unknown> {
+  const { runtime, permit, protectedRisk } = result;
+  if (protectedRisk && (!runtime || !permit?.verified)) {
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.',
+      },
+    };
+  }
   if (!runtime?.risk_gate) {
     return {};
   }
@@ -88,13 +105,18 @@ export function preActionHookOutput(runtime: Awaited<ReturnType<typeof marrowAge
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       ...(permissionDecision ? { permissionDecision, permissionDecisionReason: reason } : {}),
-      ...(runtime.before_you_act ? { additionalContext: runtime.before_you_act } : {}),
+      ...(runtime.before_you_act || permit?.permit_id ? {
+        additionalContext: [
+          runtime.before_you_act,
+          permit?.permit_id ? `Marrow action permit verified: ${permit.permit_id}. Evidence and outcome closure remain required.` : null,
+        ].filter(Boolean).join('\n'),
+      } : {}),
     },
   };
 }
 
-function emitDecision(runtime: Awaited<ReturnType<typeof marrowAgentRuntime>> | null): void {
-  process.stdout.write(JSON.stringify(preActionHookOutput(runtime)));
+function emitDecision(result: PreActionControlResult): void {
+  process.stdout.write(JSON.stringify(preActionHookOutput(result)));
 }
 
 async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
@@ -179,12 +201,52 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       outcome_state: 'pending',
     },
   }).catch(() => null);
-  const runtime = (signal: AbortSignal) => marrowAgentRuntime(resolved.apiKey, baseUrl, {
-    action: classified.action,
-    type: classified.type,
-    role: classified.role,
-    surfaces: classified.surfaces,
-  }, sessionId, agentId, signal);
-  const [result] = await Promise.all([withTimeout(runtime), lifecycle]);
-  emitDecision(result);
+  const control = async (signal: AbortSignal): Promise<PreActionControlResult> => {
+    const runtime = await marrowAgentRuntime(resolved.apiKey, baseUrl, {
+      action: classified.action,
+      type: classified.type,
+      role: classified.role,
+      surfaces: classified.surfaces,
+    }, sessionId, agentId, signal);
+    const decision = await marrowThink(resolved.apiKey, baseUrl, {
+      action: classified.action,
+      type: classified.type,
+      source_kind: 'integration',
+      source_meta: {
+        harness: 'claude-code',
+        correlation_id: correlation,
+        gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
+      },
+    }, sessionId, agentId);
+    const issued = await marrowEnforcement(resolved.apiKey, baseUrl, {
+      operation: 'issue',
+      action: classified.action,
+      action_type: classified.type,
+      target: correlation,
+      correlation_id: correlation,
+      harness: 'claude-code',
+      decision_id: decision.decision_id,
+      gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
+      proof_requirements: runtime.proof_pack?.fields || [],
+      surfaces: classified.surfaces,
+    }, sessionId, agentId, signal);
+    if (!issued.permit) return { runtime, permit: issued, protectedRisk: classified.risk === 'high', enforcementError: 'Marrow did not issue an action permit.' };
+    const verified = await marrowEnforcement(resolved.apiKey, baseUrl, {
+      operation: 'verify',
+      permit: issued.permit,
+      action: classified.action,
+      action_type: classified.type,
+      target: correlation,
+      correlation_id: correlation,
+      harness: 'claude-code',
+    }, sessionId, agentId, signal);
+    return { runtime, permit: { ...issued, ...verified, permit: undefined }, protectedRisk: classified.risk === 'high' };
+  };
+  const [result] = await Promise.all([withTimeout(control), lifecycle]);
+  emitDecision(result || {
+    runtime: null,
+    permit: null,
+    protectedRisk: classified.risk === 'high',
+    enforcementError: 'Marrow governance timed out before this protected action. Retry instead of bypassing the gate.',
+  });
 }

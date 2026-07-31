@@ -1,6 +1,7 @@
 import { validateBaseUrl } from './index';
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
+import { classifyTool } from './hook-pre-action';
 import {
   ACTION_RESULT_HOOK_COMMAND,
   findHookSettingsPath,
@@ -204,23 +205,11 @@ function extractFirstArg(toolInput: unknown): string | undefined {
   return safeStringify(record, 120);
 }
 
-function deriveAction(event: HookEvent): string | null {
+export function deriveAction(event: HookEvent): string | null {
   const toolName = getString(event.tool_name);
   if (!toolName || shouldSkipAutoLog(event)) return null;
   if (toolName.startsWith('mcp__marrow_')) return null;
-
-  if (toolName === 'Bash') {
-    return 'shell command execution observed; business outcome pending';
-  }
-  if (['Edit', 'Write', 'MultiEdit'].includes(toolName)) {
-    return 'workspace mutation observed; business outcome pending';
-  }
-  if (toolName.startsWith('mcp__')) {
-    const tool = normalizeToolName(toolName);
-    if (tool.startsWith('marrow_')) return null;
-    return `external MCP tool execution observed (${truncate(tool, 80)}); business outcome pending`;
-  }
-  return `${truncate(normalizeToolName(toolName), 80)} tool execution observed; business outcome pending`;
+  return classifyTool(event).action;
 }
 
 function deriveToolSuccess(event: HookEvent): boolean {

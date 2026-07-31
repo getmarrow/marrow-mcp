@@ -26,6 +26,8 @@ import type {
   MarrowModelUsageInput,
   MarrowModelUsageResult,
   MarrowNudgeResult,
+  MarrowEnforcementRequest,
+  MarrowEnforcementResult,
 } from './types';
 import {
   MarrowClient,
@@ -1066,6 +1068,29 @@ export async function marrowAgentRuntime(
     session_id: input.session_id || sessionId,
   };
   const res = await fetch(`${baseUrl}/v1/agent/runtime`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    body: JSON.stringify(body),
+    signal,
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+export async function marrowEnforcement(
+  apiKey: string,
+  baseUrl: string,
+  input: MarrowEnforcementRequest,
+  sessionId?: string,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<MarrowEnforcementResult> {
+  const body = {
+    ...input,
+    agent_id: input.agent_id || agentId,
+    session_id: input.session_id || sessionId,
+  };
+  const res = await fetch(`${baseUrl}/v1/agent/enforcement`, {
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(body),
