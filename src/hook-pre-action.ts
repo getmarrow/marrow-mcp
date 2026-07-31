@@ -65,6 +65,7 @@ export function classifyTool(event: PreToolUseEvent): {
   const input = `${normalizedTool} ${command} ${JSON.stringify(event.tool_input || {})}`.toLowerCase();
   const readOnly = isReadOnlyToolEvent(event);
   const protectedShellCommand = [
+    /\b(?:npm|pnpm|yarn)\b[^\n;&|]{0,160}\b(?:publish|unpublish|deprecate|dist-tag\s+(?:add|rm)|owner\s+(?:add|rm)|access\s+set|token\s+(?:create|revoke))\b/,
     /\bgit\b[^\n;&|]{0,240}\b(?:push|merge|commit|rebase|reset|tag)\b/,
     /\bgh\b[^\n;&|]{0,160}\b(?:pr\s+merge|release\s+(?:create|delete)|repo\s+(?:archive|delete))\b/,
     /\bkubectl\b[^\n;&|]{0,160}\b(?:apply|create|delete|edit|patch|replace|rollout|scale|set)\b/,
@@ -72,11 +73,12 @@ export function classifyTool(event: PreToolUseEvent): {
     /\bpulumi\b[^\n;&|]{0,160}\b(?:up|destroy|import|refresh|stack\s+rm)\b/,
     /\bhelm\b[^\n;&|]{0,160}\b(?:install|upgrade|uninstall|rollback)\b/,
     /\b(?:docker|podman)\b[^\n;&|]{0,160}\bpush\b/,
+    /\bwrangler\b[^\n;&|]{0,240}\b(?:deploy|delete|rollback|execute|apply|put|bulk|secret)\b/,
   ].some((pattern) => pattern.test(command.toLowerCase()));
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;
   let type = 'process';
-  if (/\bpublish\b/.test(input)) type = 'publish';
+  if (/\b(?:publish|unpublish|deprecate)\b/.test(input)) type = 'publish';
   else if (/\b(?:deploy|release|wrangler)\b/.test(input) || infrastructureDeployment) type = 'deploy';
   else if (/\b(?:merge|pull request|git push)\b/.test(input) || /\bgit\b[^\n;&|]{0,240}\bpush\b/.test(command.toLowerCase())) type = 'review';
   else if (/\b(?:migration|schema|database|d1)\b/.test(input)) type = 'migration';

@@ -24,12 +24,14 @@ test('protected operations are classified from tool names and commands without i
   const merge = classifyTool({ tool_name: 'Bash', tool_input: { command: 'gh pr merge 42 --merge' } });
   const kubectlApply = classifyTool({ tool_name: 'Bash', tool_input: { command: 'kubectl --context production apply -f deployment.yaml' } });
   const terraformApply = classifyTool({ tool_name: 'Bash', tool_input: { command: 'terraform -chdir=infra apply -auto-approve' } });
+  const npmUnpublish = classifyTool({ tool_name: 'Bash', tool_input: { command: 'npm unpublish @example/package@1.0.0' } });
+  const remoteD1Execute = classifyTool({ tool_name: 'Bash', tool_input: { command: 'wrangler d1 execute app --remote --file migration.sql' } });
   const unknownMcp = classifyTool({ tool_name: 'mcp__payments__execute', tool_input: { amount: 25 } });
   const deceptiveMcp = classifyTool({ tool_name: 'mcp__records__get_and_delete', tool_input: { id: 'record-1' } });
   const compoundShell = classifyTool({ tool_name: 'Bash', tool_input: { command: 'cat package.json && node mutate.js' } });
   const readOnly = classifyTool({ tool_name: 'Bash', tool_input: { command: 'cat package.json' } });
 
-  for (const result of [publish, push, pushWithGlobalOptions, merge, kubectlApply, terraformApply, unknownMcp, deceptiveMcp]) {
+  for (const result of [publish, npmUnpublish, push, pushWithGlobalOptions, merge, kubectlApply, terraformApply, remoteD1Execute, unknownMcp, deceptiveMcp]) {
     assert.equal(result.protected, true);
     assert.equal(result.risk, 'high');
   }
@@ -40,6 +42,8 @@ test('protected operations are classified from tool names and commands without i
   assert.equal(pushWithGlobalOptions.target, 'github:review');
   assert.equal(kubectlApply.target, 'production:deploy');
   assert.equal(terraformApply.target, 'production:deploy');
+  assert.equal(npmUnpublish.target, 'npm:publish');
+  assert.equal(remoteD1Execute.target, 'production:deploy');
   assert.equal(readOnly.readOnly, true);
   assert.equal(readOnly.risk, 'low');
   assert.equal(deriveAction({ tool_name: 'Bash', tool_input: { command: 'cat package.json' } }), null);
@@ -63,6 +67,8 @@ test('protected command variants fail closed without trusted Marrow credentials'
       'git -C /workspace push origin master',
       'kubectl apply -f deployment.yaml',
       'terraform apply -auto-approve',
+      'npm unpublish @example/package@1.0.0',
+      'wrangler d1 execute app --remote --file migration.sql',
     ]) {
       let output = '';
       process.stdout.write = (chunk) => { output += String(chunk); return true; };
