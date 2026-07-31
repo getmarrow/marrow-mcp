@@ -370,6 +370,7 @@ export interface MarrowAgentRuntimeResult {
     };
     exact_next_action: string | null;
     auto_outcome_closure: Record<string, unknown> | null;
+    client_update?: Record<string, unknown> | null;
 }
 export interface MarrowAgentStatusResult {
     period: {

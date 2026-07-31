@@ -40,6 +40,7 @@ import {
 } from '@getmarrow/sdk';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
+import { MCP_ADAPTER_VERSION } from './hook-contract';
 
 export type { Narrative, CommitResult } from './types';
 
@@ -246,6 +247,8 @@ function buildHeaders(
     }
   }
   headers['X-Marrow-Client'] = defaultSourceClient();
+  headers['X-Marrow-Package'] = '@getmarrow/mcp';
+  headers['X-Marrow-Package-Version'] = MCP_ADAPTER_VERSION;
   return headers;
 }
 

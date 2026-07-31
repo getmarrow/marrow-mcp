@@ -57,6 +57,7 @@ exports.marrowInstallTemplate = marrowInstallTemplate;
 const sdk_1 = require("@getmarrow/sdk");
 const redact_1 = require("./redact");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const hook_contract_1 = require("./hook-contract");
 const SOURCE_CLIENTS = new Set(['claude-code', 'cursor', 'windsurf', 'openclaw', 'codex', 'gemini', 'grok', 'deepseek', 'qwen', 'kimi', 'minimax', 'cline', 'opencode', 'hermes', 'glm', 'custom', 'unknown']);
 const SAFE_ARBITRATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const SAFE_ARBITRATION_EVIDENCE_KIND = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$/;
@@ -245,6 +246,8 @@ function buildHeaders(apiKey, sessionId, contentType, agentId) {
         }
     }
     headers['X-Marrow-Client'] = defaultSourceClient();
+    headers['X-Marrow-Package'] = '@getmarrow/mcp';
+    headers['X-Marrow-Package-Version'] = hook_contract_1.MCP_ADAPTER_VERSION;
     return headers;
 }
 function createSdkClient(apiKey, baseUrl, sessionId, agentId) {
