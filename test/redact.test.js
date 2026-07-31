@@ -315,6 +315,21 @@ test('context hook rejects invalid command targets and contradictory advisory tu
       update_available: true, notification_state: 'security_required',
       security_policy: { source: 'server_policy', minimum_secure_version: '3.9.51' },
     },
+    {
+      installed_version: '3.9.50', latest_version: '3.9.51', version_status: 'behind',
+      update_available: true, notification_state: 'security_required',
+      security_policy: { source: 'server_policy', minimum_secure_version: '3.9.52' },
+    },
+    {
+      installed_version: '3.9.51', latest_version: '3.9.51', version_status: 'current',
+      update_available: true, notification_state: 'security_required',
+      security_policy: { source: 'server_policy', minimum_secure_version: '3.9.52' },
+    },
+    {
+      installed_version: '3.9.52', latest_version: '3.9.51', version_status: 'ahead',
+      update_available: true, notification_state: 'security_required',
+      security_policy: { source: 'server_policy', minimum_secure_version: '3.9.53' },
+    },
   ]) {
     const context = buildCombinedContextBlock(signals, null, null, runtime(securityUpdate));
     assert.doesNotMatch(context, /Marrow client update required/);
