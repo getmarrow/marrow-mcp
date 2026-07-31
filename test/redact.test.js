@@ -140,9 +140,9 @@ test('context hook makes a server update advisory visible to the agent', () => {
     }
   );
 
-  assert.match(context, /Marrow update: recommended; installed=3\.9\.50; latest=3\.9\.51/);
+  assert.match(context, /Marrow client update available: installed=3\.9\.50; latest=3\.9\.51/);
   assert.match(context, /Update command \(operator approval\): npx @getmarrow\/mcp@latest setup/);
-  assert.match(context, /Local changes are not applied automatically/);
+  assert.match(context, /Hosted Marrow services are already current; no local changes were applied/);
 });
 
 test('context hook describes missing version metadata without claiming an update or vulnerability', () => {
@@ -171,7 +171,7 @@ test('context hook describes missing version metadata without claiming an update
     },
   );
 
-  assert.match(context, /Marrow update: version_unknown; installed=unknown; latest=unknown/);
+  assert.match(context, /Marrow client version unrecognized: installed=unknown; latest=unknown/);
   assert.doesNotMatch(context, /security_required/);
 });
 
