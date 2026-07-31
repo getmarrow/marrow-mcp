@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
+const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const { classifyTool, runPreActionHookCommand } = require('../dist/hook-pre-action.js');
@@ -157,6 +158,37 @@ test('protected command variants fail closed without trusted Marrow credentials'
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('pre-action CLI fails closed without leaking malformed trusted endpoint configuration', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-invalid-base-url-'));
+  try {
+    for (const baseUrl of ['http://api.example.test/private-route', 'not a valid URL']) {
+      const env = {
+        ...process.env,
+        HOME: join(directory, 'home'),
+        MARROW_API_KEY: 'synthetic-pre-action-secret',
+        MARROW_KEY: '',
+        MARROW_BASE_URL: baseUrl,
+        MARROW_AUTO_HOOK: 'true',
+      };
+      const result = spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js'), 'pre-action-hook'], {
+        cwd: directory,
+        env,
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'npm publish' } }),
+        encoding: 'utf8',
+        timeout: 5_000,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /configuration is unavailable/i);
+      assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /synthetic-pre-action-secret/);
+      assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /api\.example\.test|not a valid URL/);
+    }
+  } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });

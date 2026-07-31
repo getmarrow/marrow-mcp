@@ -243,7 +243,10 @@ if (process.argv[2] !== 'keys') {
         void (0, hook_context_1.runContextHookCommand)();
     }
     else if (cliArgs.preActionHook) {
-        void (0, hook_pre_action_1.runPreActionHookCommand)();
+        void (0, hook_pre_action_1.runPreActionHookCommand)().catch(() => {
+            process.stderr.write('Marrow pre-action governance failed closed. Retry after restoring the trusted configuration.\n');
+            process.exitCode = 2;
+        });
     }
     else if (cliArgs.sessionHook) {
         void (0, hook_session_1.runSessionHookCommand)();
