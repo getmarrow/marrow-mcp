@@ -63,13 +63,14 @@ import { installUserPromptSubmitHook, runContextHookCommand } from './hook-conte
 import { installSessionEndHook, runSessionHookCommand } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
 import { resolveMarrowEnv } from './env';
+import { drainLifecycleSpool, lifecycleSpoolStatus } from './lifecycle-spool';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import type { ThinkResult, MarrowMemory } from './types';
 
 // Parse CLI args
-function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean } {
+function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean } {
   const args = process.argv.slice(2);
-  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean } = {};
+  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
@@ -90,8 +91,38 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     if (args[i] === 'session-hook' || args[i] === '--session-hook') {
       result.sessionHook = true;
     }
+    if (args[i] === 'spool-status' || args[i] === '--spool-status') {
+      result.spoolStatus = true;
+    }
+    if (args[i] === 'drain-spool' || args[i] === '--drain-spool') {
+      result.drainSpool = true;
+    }
   }
   return result;
+}
+
+async function runSpoolCommand(drain: boolean): Promise<void> {
+  if (cliArgs.apiKey) {
+    process.stderr.write('Error: lifecycle spool commands require MARROW_API_KEY from trusted environment or owner configuration; --key is not accepted.\n');
+    process.exitCode = 1;
+    return;
+  }
+  const resolved = resolveMarrowEnv({ trustedOnly: true });
+  const apiKey = resolved.apiKey || '';
+  if (!apiKey) {
+    process.stderr.write(`Error: MARROW_API_KEY required. ${resolved.exactFix}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
+  const status = drain
+    ? await drainLifecycleSpool({ apiKey, baseUrl, agentId: resolved.agentId || undefined })
+    : lifecycleSpoolStatus({ apiKey, agentId: resolved.agentId || undefined });
+  process.stdout.write(`${JSON.stringify({
+    ok: status.state !== 'attention_required',
+    lifecycle_spool: status,
+  }, null, 2)}\n`);
+  if (status.state === 'attention_required') process.exitCode = 2;
 }
 
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
@@ -288,6 +319,10 @@ if (cliArgs.hook) {
   });
 } else if (cliArgs.sessionHook) {
   void runSessionHookCommand();
+} else if (cliArgs.spoolStatus) {
+  void runSpoolCommand(false);
+} else if (cliArgs.drainSpool) {
+  void runSpoolCommand(true);
 } else if (cliArgs.setup) {
   runSetup();
 } else {
@@ -1533,7 +1568,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.9.52' },
+        serverInfo: { name: 'marrow', version: '3.9.53' },
       });
 
       // Auto-enroll: emit enrollment notification on connection

@@ -19,6 +19,7 @@ function asRecord(value) {
 async function readStdin() {
     const chunks = [];
     let bytes = 0;
+    process.stdin.resume();
     for await (const chunk of process.stdin) {
         const buffer = Buffer.from(chunk);
         bytes += buffer.length;

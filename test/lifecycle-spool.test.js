@@ -1,20 +1,27 @@
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
+  lstatSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
 const test = require('node:test');
 
-const { recordLifecycleEvent } = require('../dist/lifecycle-spool.js');
+const {
+  drainLifecycleSpool,
+  lifecycleSpoolStatus,
+  recordLifecycleEvent,
+} = require('../dist/lifecycle-spool.js');
 const {
   nativeHookConfigurationFingerprint,
   nativeHookEvidence,
@@ -108,11 +115,11 @@ test('native MCP hook receipts carry bounded capability and actual configuration
   mkdirSync(settingsDir, { recursive: true });
   writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({
     hooks: {
-      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.52 context-hook' }] }],
-      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.52 pre-action-hook' }] }],
-      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.52 hook' }] }],
-      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.52 hook' }] }],
-      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.52 session-hook' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.53 context-hook' }] }],
+      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.53 pre-action-hook' }] }],
+      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.53 hook' }] }],
+      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.53 hook' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.53 session-hook' }] }],
     },
   }));
   const originalFetch = globalThis.fetch;
@@ -125,7 +132,7 @@ test('native MCP hook receipts carry bounded capability and actual configuration
       }));
       const [event] = JSON.parse(readFileSync(path, 'utf8'));
       assert.equal(event.capability_level, 'native_hooks');
-      assert.equal(event.adapter_version, '3.9.52');
+      assert.equal(event.adapter_version, '3.9.53');
       assert.match(event.config_fingerprint, /^[a-f0-9]{64}$/);
       assert.deepEqual(event.expected_hooks, ['prompt', 'pre_action', 'action_result', 'session_end']);
       assert.equal(event.observed_hook, 'action_result');
@@ -216,7 +223,42 @@ test('MCP lifecycle spool keeps compact redacted receipts across process attempt
       assert.equal(drained.accepted, true);
       assert.equal(drained.queued, false);
       assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), []);
-      assert.deepEqual(delivered.slice(-2).map((event) => event.event_id), ['mcp-event-one', 'mcp-event-two']);
+      assert.deepEqual(delivered.slice(-2).map((event) => event.event_id), ['mcp-event-two', 'mcp-event-one']);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('MCP lifecycle spool reports aggregate backlog health and drains without adding an event', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-health-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let available = false;
+  globalThis.fetch = async () => available
+    ? new Response(JSON.stringify({ data: { accepted: true } }), { status: 200 })
+    : new Response('{}', { status: 503 });
+  try {
+    await withSpoolPath(path, async () => {
+      await recordLifecycleEvent(lifecycleInput({ event_id: 'health-event-one' }));
+      const pending = lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' });
+      assert.equal(pending.state, 'pending');
+      assert.equal(pending.pending, 1);
+      assert.equal(pending.failed, 0);
+      assert.match(pending.oldest_pending_at, /^\d{4}-/);
+      assert.equal(pending.available, pending.capacity - 1);
+      assert.doesNotMatch(JSON.stringify(pending), /tool execution observed/);
+
+      available = true;
+      const clear = await drainLifecycleSpool({
+        apiKey: 'test-mcp-spool-key',
+        baseUrl: 'https://api.example.com',
+        agentId: 'agent-one',
+      });
+      assert.equal(clear.state, 'clear');
+      assert.equal(clear.pending, 0);
+      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), []);
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -251,6 +293,76 @@ test('terminal rejection and exhausted retries remain explicit durable dead lett
     globalThis.fetch = originalFetch;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('explicit drain retries durable dead letters after the delivery problem is fixed', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-dead-letter-recovery-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let available = false;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response('{}', { status: available ? 200 : 400 });
+  };
+  try {
+    await withSpoolPath(path, async () => {
+      const rejected = await recordLifecycleEvent(lifecycleInput({ event_id: 'recover-dead-letter' }));
+      assert.equal(rejected.failed, true);
+      assert.equal(lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' }).failed, 1);
+
+      available = true;
+      const drained = await drainLifecycleSpool({
+        apiKey: 'test-mcp-spool-key',
+        baseUrl: 'https://api.example.com',
+        agentId: 'agent-one',
+      });
+      assert.equal(drained.state, 'clear');
+      assert.equal(drained.failed, 0);
+      assert.equal(drained.pending, 0);
+      assert.equal(calls, 2);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('mixed drain does not hide dead letters that were never retried', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-mixed-drain-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  try {
+    await withSpoolPath(path, async () => {
+      globalThis.fetch = async () => new Response('{}', { status: 503 });
+      await recordLifecycleEvent(lifecycleInput({ event_id: 'mixed-pending' }));
+      globalThis.fetch = async () => new Response('{}', { status: 400 });
+      await recordLifecycleEvent(lifecycleInput({ event_id: 'mixed-dead' }));
+
+      globalThis.fetch = async () => new Response('{}', { status: 503 });
+      const status = await drainLifecycleSpool({
+        apiKey: 'test-mcp-spool-key',
+        baseUrl: 'https://api.example.com',
+        agentId: 'agent-one',
+      });
+      assert.equal(status.state, 'attention_required');
+      assert.equal(status.failed, 1);
+      assert.equal(status.pending, 1);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('spool commands reject process-list key material', () => {
+  const result = spawnSync(process.execPath, [resolve(__dirname, '../dist/cli.js'), 'spool-status', '--key', 'synthetic-process-list-key'], {
+    encoding: 'utf8',
+    timeout: 5_000,
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--key is not accepted/);
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /synthetic-process-list-key/);
 });
 
 test('runtime validation rejects unrestricted fields and keeps every record byte-bounded', async () => {
@@ -293,6 +405,7 @@ test('corrupt spool is quarantined and custom parent permissions are preserved',
   mkdirSync(parent, { mode: 0o755 });
   chmodSync(parent, 0o755);
   writeFileSync(path, '{not-json');
+  chmodSync(path, 0o600);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response('{}', { status: 503 });
   try {
@@ -305,6 +418,58 @@ test('corrupt spool is quarantined and custom parent permissions are preserved',
     });
   } finally {
     globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('custom spool rejects a non-sticky world-writable ancestor', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-unsafe-ancestor-'));
+  const unsafeParent = join(directory, 'unsafe');
+  mkdirSync(unsafeParent, { mode: 0o777 });
+  chmodSync(unsafeParent, 0o777);
+  const path = join(unsafeParent, 'state', 'spool.json');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{}', { status: 503 });
+  try {
+    await withSpoolPath(path, async () => {
+      await assert.rejects(
+        recordLifecycleEvent(lifecycleInput({ event_id: 'reject-unsafe-ancestor' })),
+        /non-sticky writable ancestor/,
+      );
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('default spool rejects symlinked path components without mutating the target', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-default-symlink-'));
+  const home = join(directory, 'home');
+  const target = join(directory, 'outside');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  mkdirSync(join(home, '.marrow'), { recursive: true, mode: 0o700 });
+  mkdirSync(target, { mode: 0o755 });
+  symlinkSync(target, join(home, '.marrow', 'spool'), 'dir');
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{}', { status: 503 });
+  try {
+    await assert.rejects(
+      recordLifecycleEvent(lifecycleInput({ event_id: 'reject-default-symlink' })),
+      /cannot contain symlinked components/,
+    );
+    assert.equal(lstatSync(join(home, '.marrow', 'spool')).isSymbolicLink(), true);
+    assert.equal(statSync(target).mode & 0o777, 0o755);
+    assert.deepEqual(readdirSync(target), []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
     rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -333,7 +498,9 @@ test('same-namespace concurrent hook processes do not lose lifecycle receipts', 
   const path = join(directory, 'spool.json');
   const modulePath = resolve(__dirname, '../dist/lifecycle-spool.js');
   const workers = Array.from({ length: 120 }, (_, index) => new Promise((resolveWorker, rejectWorker) => {
+    const errorPath = join(directory, `worker-${index}.error`);
     const script = `
+      const fs = require('node:fs');
       global.fetch = async () => new Response('{}', { status: 503 });
       const { recordLifecycleEvent } = require(${JSON.stringify(modulePath)});
       recordLifecycleEvent({
@@ -347,14 +514,26 @@ test('same-namespace concurrent hook processes do not lose lifecycle receipts', 
           outcome_state: 'pending',
           success: true
         }
-      }).then(() => process.exit(0), () => process.exit(1));
+      }).then(
+        () => { process.exitCode = 0; },
+        (error) => {
+          const detail = String(error?.stack || error);
+          console.error(detail);
+          fs.writeFileSync(${JSON.stringify(errorPath)}, detail);
+          process.exitCode = 1;
+        },
+      );
     `;
     const child = spawn(process.execPath, ['-e', script], {
       env: { ...process.env, MARROW_EVENT_SPOOL_PATH: path },
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
     });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8').slice(0, 1000); });
     child.once('error', rejectWorker);
-    child.once('exit', (code) => code === 0 ? resolveWorker() : rejectWorker(new Error(`worker exited ${code}`)));
+    child.once('exit', (code) => code === 0
+      ? resolveWorker()
+      : rejectWorker(new Error(`worker exited ${code}: ${stderr.trim() || (existsSync(errorPath) ? readFileSync(errorPath, 'utf8') : 'no error detail')}`)));
   }));
 
   try {

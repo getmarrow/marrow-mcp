@@ -24,6 +24,26 @@ export type LifecycleEvent = {
     success?: boolean;
     occurred_at?: string;
 };
+export type LifecycleSpoolStatus = {
+    state: 'clear' | 'pending' | 'attention_required';
+    pending: number;
+    failed: number;
+    oldest_pending_at: string | null;
+    oldest_failed_at: string | null;
+    capacity: number;
+    available: number;
+    recovered_corruption: boolean;
+    exact_fix: string | null;
+};
+export declare function lifecycleSpoolStatus(input: {
+    apiKey: string;
+    agentId?: string;
+}): LifecycleSpoolStatus;
+export declare function drainLifecycleSpool(input: {
+    apiKey: string;
+    baseUrl: string;
+    agentId?: string;
+}): Promise<LifecycleSpoolStatus>;
 export declare function recordLifecycleEvent(input: {
     apiKey: string;
     baseUrl: string;

@@ -99,13 +99,25 @@ npx -y @getmarrow/install@latest doctor
 npx -y @getmarrow/mcp@latest setup
 ```
 
-Detection and notification are automatic. Package and configuration changes remain explicit and subject to the operator's normal change policy.
+Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.52
+## What's New in v3.9.53
+
+v3.9.53 adds exact lifecycle backlog visibility and bounded recovery for MCP-routed agent activity:
+
+- compact, redacted receipts remain in an owner-only spool through transient failures;
+- `spool-status` reports exact pending, failed, capacity, and oldest-receipt evidence;
+- `drain-spool` retries queued receipts without manufacturing a new lifecycle event;
+- a successful current receipt performs one bounded best-effort retry of older queued work;
+- terminal rejections and exhausted retries remain explicit dead letters for operator action.
+
+It preserves the signed action-permit and update controls introduced in v3.9.52.
+
+This release is certified against `@getmarrow/sdk@3.7.52`. The deterministic release order is SDK `3.7.52` first, MCP `3.9.53` second, and installer `0.1.37` last; publication stops if the exact SDK tarball integrity does not match the MCP lockfile.
+
+## Previous: v3.9.52
 
 v3.9.52 combines operator-controlled client update notices with signed, action-bound permit verification in native hooks. Official MCP requests identify the installed package version, and passive context renders a request-specific server advisory with exact update and verification commands:
-
-This release is certified against `@getmarrow/sdk@3.7.51`. The deterministic release order is SDK `3.7.51` first, MCP `3.9.52` second, and installer `0.1.36` last; publication stops if the exact SDK tarball integrity does not match the MCP lockfile.
 
 - update availability or unrecognized version metadata appears during normal authenticated runtime/status activity;
 - messaging clearly states that hosted Marrow services are already current and that no local change was applied;
@@ -248,6 +260,15 @@ session; pass its short-lived, single-use `owner_approval_receipt_id` to
 `npx @getmarrow/mcp setup` installs supported prompt, tool-result, and session-stop hooks so the agent can receive before-action context, record meaningful tool outcomes, and keep unfinished closure visible without the owner repeatedly prompting it to use Marrow.
 
 The hooks send compact classifications and lifecycle receipts. They do not need raw prompts, completions, command output, tool output, or credentials. A completed tool or session does not automatically become a successful business outcome; explicit success/failure closure is required.
+
+Transient lifecycle receipts use a bounded owner-only spool and are retried with stable event IDs. Operators can inspect and drain it without exposing event content:
+
+```bash
+npx @getmarrow/mcp spool-status
+npx @getmarrow/mcp drain-spool
+```
+
+The output contains only state, exact pending/failed counts, oldest receipt timestamps, capacity, and an exact fix. Terminal validation/authentication failures and exhausted retries remain explicit durable failures rather than cycling indefinitely.
 
 Check the installed runtime:
 

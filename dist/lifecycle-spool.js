@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LIFECYCLE_EVENT_TYPES = void 0;
+exports.lifecycleSpoolStatus = lifecycleSpoolStatus;
+exports.drainLifecycleSpool = drainLifecycleSpool;
 exports.recordLifecycleEvent = recordLifecycleEvent;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
@@ -103,12 +105,53 @@ function spoolPath(apiKey, agentId) {
     const namespace = (0, node_crypto_1.createHash)('sha256').update(`${apiKey}:${agentId || 'account'}`).digest('hex').slice(0, 20);
     return { path: (0, node_path_1.join)((0, node_os_1.homedir)(), '.marrow', 'spool', `mcp-${namespace}.json`), ownsParent: true };
 }
+function currentUid() {
+    return typeof process.getuid === 'function' ? process.getuid() : null;
+}
+function assertSafeFile(path, label) {
+    if (!(0, node_fs_1.existsSync)(path))
+        return;
+    const stat = (0, node_fs_1.lstatSync)(path);
+    const uid = currentUid();
+    if (stat.isSymbolicLink() || !stat.isFile())
+        throw new Error(`lifecycle ${label} must be a regular file`);
+    if (uid !== null && stat.uid !== uid)
+        throw new Error(`lifecycle ${label} must be owned by the current user`);
+    if ((stat.mode & 0o077) !== 0)
+        throw new Error(`lifecycle ${label} permissions must be 0600 or stricter`);
+}
 function ensureParent(path, ownsParent) {
-    const parent = (0, node_path_1.dirname)(path);
-    if (!(0, node_fs_1.existsSync)(parent))
-        (0, node_fs_1.mkdirSync)(parent, { recursive: true, mode: 0o700 });
-    if (ownsParent)
+    const parent = (0, node_path_1.resolve)((0, node_path_1.dirname)(path));
+    const parsed = (0, node_path_1.parse)(parent);
+    let current = parsed.root;
+    for (const segment of parent.slice(parsed.root.length).split(node_path_1.sep).filter(Boolean)) {
+        current = (0, node_path_1.join)(current, segment);
+        try {
+            (0, node_fs_1.mkdirSync)(current, { mode: 0o700 });
+        }
+        catch (error) {
+            const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+            if (code !== 'EEXIST')
+                throw error;
+        }
+        const stat = (0, node_fs_1.lstatSync)(current);
+        if (stat.isSymbolicLink() || !stat.isDirectory() || (0, node_fs_1.realpathSync)(current) !== current) {
+            throw new Error('lifecycle spool path cannot contain symlinked components');
+        }
+        if ((stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0) {
+            throw new Error('lifecycle spool path cannot be nested under a non-sticky writable ancestor');
+        }
+    }
+    const stat = (0, node_fs_1.lstatSync)(parent);
+    const uid = currentUid();
+    if (ownsParent) {
+        if (uid !== null && stat.uid !== uid)
+            throw new Error('lifecycle spool directory must be owned by the current user');
         (0, node_fs_1.chmodSync)(parent, 0o700);
+    }
+    else if ((stat.mode & 0o022) !== 0) {
+        throw new Error('custom lifecycle spool directory cannot be group or world writable');
+    }
 }
 function sleep(milliseconds) {
     const lock = new Int32Array(new SharedArrayBuffer(4));
@@ -128,11 +171,16 @@ function withLock(path, ownsParent, operation) {
             if (code !== 'EEXIST')
                 throw error;
             try {
+                assertSafeFile(lockPath, 'spool lock');
                 if (Date.now() - (0, node_fs_1.statSync)(lockPath).mtimeMs > LOCK_STALE_MS)
                     (0, node_fs_1.unlinkSync)(lockPath);
             }
-            catch {
-                // The lock may have been released between checks.
+            catch (inspectionError) {
+                const inspectionCode = inspectionError && typeof inspectionError === 'object' && 'code' in inspectionError
+                    ? String(inspectionError.code)
+                    : '';
+                if (inspectionCode !== 'ENOENT')
+                    throw inspectionError;
             }
             sleep(LOCK_WAIT_MS);
         }
@@ -258,6 +306,7 @@ function compact(input) {
 function readUnlocked(path) {
     if (!(0, node_fs_1.existsSync)(path))
         return { events: [], recoveredCorruption: false };
+    assertSafeFile(path, 'spool file');
     try {
         const parsed = JSON.parse((0, node_fs_1.readFileSync)(path, 'utf8'));
         if (!Array.isArray(parsed))
@@ -280,11 +329,21 @@ function writeUnlocked(path, events) {
     if (Buffer.byteLength(serialized, 'utf8') > MAX_SPOOL_BYTES) {
         throw new Error('lifecycle spool byte capacity exceeded; receipt was not accepted');
     }
+    assertSafeFile(path, 'spool file');
     const temporary = `${path}.${process.pid}.${(0, node_crypto_1.randomUUID)()}.tmp`;
-    (0, node_fs_1.writeFileSync)(temporary, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-    (0, node_fs_1.chmodSync)(temporary, 0o600);
-    (0, node_fs_1.renameSync)(temporary, path);
-    (0, node_fs_1.chmodSync)(path, 0o600);
+    try {
+        (0, node_fs_1.writeFileSync)(temporary, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        (0, node_fs_1.chmodSync)(temporary, 0o600);
+        assertSafeFile(path, 'spool file');
+        (0, node_fs_1.renameSync)(temporary, path);
+        (0, node_fs_1.chmodSync)(path, 0o600);
+    }
+    finally {
+        try {
+            (0, node_fs_1.rmSync)(temporary, { force: true });
+        }
+        catch { }
+    }
 }
 function mutate(path, ownsParent, operation) {
     return withLock(path, ownsParent, () => {
@@ -331,45 +390,125 @@ async function deliver(baseUrl, apiKey, queued, timeoutMs) {
             clearTimeout(timeout);
     }
 }
-async function recordLifecycleEvent(input) {
-    const location = spoolPath(input.apiKey, input.event.agent_id);
-    const event = compact(input.event);
-    let recoveredCorruption = mutate(location.path, location.ownsParent, (events) => {
-        const index = events.findIndex((row) => row.event_id === event.event_id);
-        if (index < 0)
-            events.push(event);
-    }).recoveredCorruption;
-    const initial = snapshot(location.path, location.ownsParent);
-    recoveredCorruption ||= initial.recoveredCorruption;
+function lifecycleSpoolStatus(input) {
+    const location = spoolPath(input.apiKey, input.agentId);
+    const current = snapshot(location.path, location.ownsParent);
+    const queued = current.events.filter((event) => event.delivery_state === 'queued');
+    const failed = current.events.filter((event) => event.delivery_state === 'dead_letter');
+    return {
+        state: failed.length > 0 ? 'attention_required' : queued.length > 0 ? 'pending' : 'clear',
+        pending: queued.length,
+        failed: failed.length,
+        oldest_pending_at: queued.map((event) => event.occurred_at).sort()[0] || null,
+        oldest_failed_at: failed.map((event) => event.occurred_at).sort()[0] || null,
+        capacity: MAX_EVENTS,
+        available: Math.max(0, MAX_EVENTS - current.events.length),
+        recovered_corruption: current.recoveredCorruption,
+        exact_fix: failed.length > 0
+            ? 'Restore authentication or endpoint compatibility, then run npx -y @getmarrow/mcp drain-spool.'
+            : queued.length > 0
+                ? 'Keep MCP activity running so a later event can retry, or run npx -y @getmarrow/mcp drain-spool.'
+                : null,
+    };
+}
+async function attemptQueuedDelivery(input) {
+    let status = 0;
+    try {
+        status = await deliver(input.baseUrl, input.apiKey, input.event, input.timeoutMs);
+    }
+    catch {
+        status = 0;
+    }
+    mutate(input.path, input.ownsParent, (events) => {
+        const current = events.find((row) => row.event_id === input.event.event_id);
+        if (!current || current.delivery_state !== 'queued')
+            return;
+        if (status >= 200 && status < 300) {
+            events.splice(events.indexOf(current), 1);
+            return;
+        }
+        current.attempts += 1;
+        if (!retryable(status) || current.attempts >= MAX_ATTEMPTS) {
+            current.delivery_state = 'dead_letter';
+            if (status > 0)
+                current.last_status = status;
+        }
+    });
+    return status;
+}
+async function drainLifecycleSpool(input) {
+    const location = spoolPath(input.apiKey, input.agentId);
     const deliveryDeadline = Date.now() + DELIVERY_DRAIN_BUDGET_MS;
-    for (const queued of initial.events.filter((row) => row.delivery_state === 'queued').slice(0, 10)) {
+    for (let delivered = 0; delivered < 10; delivered += 1) {
+        let queued = snapshot(location.path, location.ownsParent).events.find((row) => row.delivery_state === 'queued');
+        if (!queued) {
+            queued = mutate(location.path, location.ownsParent, (events) => {
+                const failed = events.find((row) => row.delivery_state === 'dead_letter');
+                if (!failed)
+                    return undefined;
+                failed.delivery_state = 'queued';
+                failed.attempts = 0;
+                delete failed.last_status;
+                return { ...failed };
+            }).result;
+        }
+        if (!queued)
+            break;
         const remainingMs = Math.min(DELIVERY_REQUEST_TIMEOUT_MS, deliveryDeadline - Date.now());
         if (remainingMs <= 0)
             break;
-        let status = 0;
-        try {
-            status = await deliver(input.baseUrl, input.apiKey, queued, remainingMs);
-        }
-        catch {
-            status = 0;
-        }
-        mutate(location.path, location.ownsParent, (events) => {
-            const current = events.find((row) => row.event_id === queued.event_id);
-            if (!current || current.delivery_state !== 'queued')
-                return;
-            if (status >= 200 && status < 300) {
-                events.splice(events.indexOf(current), 1);
-                return;
-            }
-            current.attempts += 1;
-            if (!retryable(status) || current.attempts >= MAX_ATTEMPTS) {
-                current.delivery_state = 'dead_letter';
-                if (status > 0)
-                    current.last_status = status;
-            }
+        const status = await attemptQueuedDelivery({
+            path: location.path,
+            ownsParent: location.ownsParent,
+            apiKey: input.apiKey,
+            baseUrl: input.baseUrl,
+            event: queued,
+            timeoutMs: remainingMs,
         });
         if (!(status >= 200 && status < 300))
             break;
+    }
+    return lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
+}
+async function recordLifecycleEvent(input) {
+    const location = spoolPath(input.apiKey, input.event.agent_id);
+    const event = compact(input.event);
+    const queued = mutate(location.path, location.ownsParent, (events) => {
+        const index = events.findIndex((row) => row.event_id === event.event_id);
+        if (index < 0) {
+            events.push(event);
+            return event;
+        }
+        return events[index];
+    });
+    let recoveredCorruption = queued.recoveredCorruption;
+    let deliveryStatus = 0;
+    if (queued.result.delivery_state === 'queued')
+        deliveryStatus = await attemptQueuedDelivery({
+            path: location.path,
+            ownsParent: location.ownsParent,
+            apiKey: input.apiKey,
+            baseUrl: input.baseUrl,
+            event: queued.result,
+            timeoutMs: DELIVERY_REQUEST_TIMEOUT_MS,
+        });
+    if (deliveryStatus >= 200 && deliveryStatus < 300) {
+        const previous = snapshot(location.path, location.ownsParent).events.find((row) => (row.delivery_state === 'queued' && row.event_id !== event.event_id));
+        if (previous) {
+            try {
+                await attemptQueuedDelivery({
+                    path: location.path,
+                    ownsParent: location.ownsParent,
+                    apiKey: input.apiKey,
+                    baseUrl: input.baseUrl,
+                    event: previous,
+                    timeoutMs: DELIVERY_REQUEST_TIMEOUT_MS,
+                });
+            }
+            catch {
+                // An older receipt retry must not turn a successfully accepted current receipt into a failure.
+            }
+        }
     }
     const final = snapshot(location.path, location.ownsParent);
     recoveredCorruption ||= final.recoveredCorruption;
@@ -379,7 +518,7 @@ async function recordLifecycleEvent(input) {
         accepted: !current,
         queued: current?.delivery_state === 'queued',
         failed: current?.delivery_state === 'dead_letter',
-        pending: final.events.length,
+        pending: final.events.filter((row) => row.delivery_state === 'queued').length,
         recovered_corruption: recoveredCorruption,
     };
 }
