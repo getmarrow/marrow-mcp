@@ -3,16 +3,19 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, parse, resolve, sep } from 'node:path';
 import { redactSensitiveText } from './redact';
 
 export const LIFECYCLE_EVENT_TYPES = [
@@ -144,10 +147,47 @@ function spoolPath(apiKey: string, agentId?: string): { path: string; ownsParent
   return { path: join(homedir(), '.marrow', 'spool', `mcp-${namespace}.json`), ownsParent: true };
 }
 
+function currentUid(): number | null {
+  return typeof process.getuid === 'function' ? process.getuid() : null;
+}
+
+function assertSafeFile(path: string, label: string): void {
+  if (!existsSync(path)) return;
+  const stat = lstatSync(path);
+  const uid = currentUid();
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`lifecycle ${label} must be a regular file`);
+  if (uid !== null && stat.uid !== uid) throw new Error(`lifecycle ${label} must be owned by the current user`);
+  if ((stat.mode & 0o077) !== 0) throw new Error(`lifecycle ${label} permissions must be 0600 or stricter`);
+}
+
 function ensureParent(path: string, ownsParent: boolean): void {
-  const parent = dirname(path);
-  if (!existsSync(parent)) mkdirSync(parent, { recursive: true, mode: 0o700 });
-  if (ownsParent) chmodSync(parent, 0o700);
+  const parent = resolve(dirname(path));
+  const parsed = parse(parent);
+  let current = parsed.root;
+  for (const segment of parent.slice(parsed.root.length).split(sep).filter(Boolean)) {
+    current = join(current, segment);
+    try {
+      mkdirSync(current, { mode: 0o700 });
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+      if (code !== 'EEXIST') throw error;
+    }
+    const stat = lstatSync(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory() || realpathSync(current) !== current) {
+      throw new Error('lifecycle spool path cannot contain symlinked components');
+    }
+    if ((stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0) {
+      throw new Error('lifecycle spool path cannot be nested under a non-sticky writable ancestor');
+    }
+  }
+  const stat = lstatSync(parent);
+  const uid = currentUid();
+  if (ownsParent) {
+    if (uid !== null && stat.uid !== uid) throw new Error('lifecycle spool directory must be owned by the current user');
+    chmodSync(parent, 0o700);
+  } else if ((stat.mode & 0o022) !== 0) {
+    throw new Error('custom lifecycle spool directory cannot be group or world writable');
+  }
 }
 
 function sleep(milliseconds: number): void {
@@ -167,9 +207,13 @@ function withLock<T>(path: string, ownsParent: boolean, operation: () => T): T {
       const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
       if (code !== 'EEXIST') throw error;
       try {
+        assertSafeFile(lockPath, 'spool lock');
         if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) unlinkSync(lockPath);
-      } catch {
-        // The lock may have been released between checks.
+      } catch (inspectionError) {
+        const inspectionCode = inspectionError && typeof inspectionError === 'object' && 'code' in inspectionError
+          ? String(inspectionError.code)
+          : '';
+        if (inspectionCode !== 'ENOENT') throw inspectionError;
       }
       sleep(LOCK_WAIT_MS);
     }
@@ -278,6 +322,7 @@ function compact(input: LifecycleEvent): StoredEvent {
 
 function readUnlocked(path: string): { events: StoredEvent[]; recoveredCorruption: boolean } {
   if (!existsSync(path)) return { events: [], recoveredCorruption: false };
+  assertSafeFile(path, 'spool file');
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'));
     if (!Array.isArray(parsed)) throw new Error('invalid lifecycle spool');
@@ -298,11 +343,17 @@ function writeUnlocked(path: string, events: StoredEvent[]): void {
   if (Buffer.byteLength(serialized, 'utf8') > MAX_SPOOL_BYTES) {
     throw new Error('lifecycle spool byte capacity exceeded; receipt was not accepted');
   }
+  assertSafeFile(path, 'spool file');
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-  chmodSync(temporary, 0o600);
-  renameSync(temporary, path);
-  chmodSync(path, 0o600);
+  try {
+    writeFileSync(temporary, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    chmodSync(temporary, 0o600);
+    assertSafeFile(path, 'spool file');
+    renameSync(temporary, path);
+    chmodSync(path, 0o600);
+  } finally {
+    try { rmSync(temporary, { force: true }); } catch {}
+  }
 }
 
 function mutate<T>(path: string, ownsParent: boolean, operation: (events: StoredEvent[]) => T): { result: T; recoveredCorruption: boolean } {
@@ -352,6 +403,105 @@ async function deliver(baseUrl: string, apiKey: string, queued: StoredEvent, tim
   }
 }
 
+export type LifecycleSpoolStatus = {
+  state: 'clear' | 'pending' | 'attention_required';
+  pending: number;
+  failed: number;
+  oldest_pending_at: string | null;
+  oldest_failed_at: string | null;
+  capacity: number;
+  available: number;
+  recovered_corruption: boolean;
+  exact_fix: string | null;
+};
+
+export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }): LifecycleSpoolStatus {
+  const location = spoolPath(input.apiKey, input.agentId);
+  const current = snapshot(location.path, location.ownsParent);
+  const queued = current.events.filter((event) => event.delivery_state === 'queued');
+  const failed = current.events.filter((event) => event.delivery_state === 'dead_letter');
+  return {
+    state: failed.length > 0 ? 'attention_required' : queued.length > 0 ? 'pending' : 'clear',
+    pending: queued.length,
+    failed: failed.length,
+    oldest_pending_at: queued.map((event) => event.occurred_at).sort()[0] || null,
+    oldest_failed_at: failed.map((event) => event.occurred_at).sort()[0] || null,
+    capacity: MAX_EVENTS,
+    available: Math.max(0, MAX_EVENTS - current.events.length),
+    recovered_corruption: current.recoveredCorruption,
+    exact_fix: failed.length > 0
+      ? 'Restore authentication or endpoint compatibility, then run npx -y @getmarrow/mcp drain-spool.'
+      : queued.length > 0
+        ? 'Keep MCP activity running so a later event can retry, or run npx -y @getmarrow/mcp drain-spool.'
+        : null,
+  };
+}
+
+async function attemptQueuedDelivery(input: {
+  path: string;
+  ownsParent: boolean;
+  apiKey: string;
+  baseUrl: string;
+  event: StoredEvent;
+  timeoutMs: number;
+}): Promise<number> {
+  let status = 0;
+  try {
+    status = await deliver(input.baseUrl, input.apiKey, input.event, input.timeoutMs);
+  } catch {
+    status = 0;
+  }
+  mutate(input.path, input.ownsParent, (events) => {
+    const current = events.find((row) => row.event_id === input.event.event_id);
+    if (!current || current.delivery_state !== 'queued') return;
+    if (status >= 200 && status < 300) {
+      events.splice(events.indexOf(current), 1);
+      return;
+    }
+    current.attempts += 1;
+    if (!retryable(status) || current.attempts >= MAX_ATTEMPTS) {
+      current.delivery_state = 'dead_letter';
+      if (status > 0) current.last_status = status;
+    }
+  });
+  return status;
+}
+
+export async function drainLifecycleSpool(input: {
+  apiKey: string;
+  baseUrl: string;
+  agentId?: string;
+}): Promise<LifecycleSpoolStatus> {
+  const location = spoolPath(input.apiKey, input.agentId);
+  const deliveryDeadline = Date.now() + DELIVERY_DRAIN_BUDGET_MS;
+  for (let delivered = 0; delivered < 10; delivered += 1) {
+    let queued = snapshot(location.path, location.ownsParent).events.find((row) => row.delivery_state === 'queued');
+    if (!queued) {
+      queued = mutate(location.path, location.ownsParent, (events) => {
+        const failed = events.find((row) => row.delivery_state === 'dead_letter');
+        if (!failed) return undefined;
+        failed.delivery_state = 'queued';
+        failed.attempts = 0;
+        delete failed.last_status;
+        return { ...failed };
+      }).result;
+    }
+    if (!queued) break;
+    const remainingMs = Math.min(DELIVERY_REQUEST_TIMEOUT_MS, deliveryDeadline - Date.now());
+    if (remainingMs <= 0) break;
+    const status = await attemptQueuedDelivery({
+      path: location.path,
+      ownsParent: location.ownsParent,
+      apiKey: input.apiKey,
+      baseUrl: input.baseUrl,
+      event: queued,
+      timeoutMs: remainingMs,
+    });
+    if (!(status >= 200 && status < 300)) break;
+  }
+  return lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
+}
+
 export async function recordLifecycleEvent(input: {
   apiKey: string;
   baseUrl: string;
@@ -366,39 +516,44 @@ export async function recordLifecycleEvent(input: {
 }> {
   const location = spoolPath(input.apiKey, input.event.agent_id);
   const event = compact(input.event);
-  let recoveredCorruption = mutate(location.path, location.ownsParent, (events) => {
+  const queued = mutate(location.path, location.ownsParent, (events) => {
     const index = events.findIndex((row) => row.event_id === event.event_id);
-    if (index < 0) events.push(event);
-  }).recoveredCorruption;
-
-  const initial = snapshot(location.path, location.ownsParent);
-  recoveredCorruption ||= initial.recoveredCorruption;
-  const deliveryDeadline = Date.now() + DELIVERY_DRAIN_BUDGET_MS;
-  for (const queued of initial.events.filter((row) => row.delivery_state === 'queued').slice(0, 10)) {
-    const remainingMs = Math.min(DELIVERY_REQUEST_TIMEOUT_MS, deliveryDeadline - Date.now());
-    if (remainingMs <= 0) break;
-    let status = 0;
-    try {
-      status = await deliver(input.baseUrl, input.apiKey, queued, remainingMs);
-    } catch {
-      status = 0;
+    if (index < 0) {
+      events.push(event);
+      return event;
     }
-    mutate(location.path, location.ownsParent, (events) => {
-      const current = events.find((row) => row.event_id === queued.event_id);
-      if (!current || current.delivery_state !== 'queued') return;
-      if (status >= 200 && status < 300) {
-        events.splice(events.indexOf(current), 1);
-        return;
-      }
-      current.attempts += 1;
-      if (!retryable(status) || current.attempts >= MAX_ATTEMPTS) {
-        current.delivery_state = 'dead_letter';
-        if (status > 0) current.last_status = status;
-      }
-    });
-    if (!(status >= 200 && status < 300)) break;
-  }
+    return events[index];
+  });
+  let recoveredCorruption = queued.recoveredCorruption;
 
+  let deliveryStatus = 0;
+  if (queued.result.delivery_state === 'queued') deliveryStatus = await attemptQueuedDelivery({
+    path: location.path,
+    ownsParent: location.ownsParent,
+    apiKey: input.apiKey,
+    baseUrl: input.baseUrl,
+    event: queued.result,
+    timeoutMs: DELIVERY_REQUEST_TIMEOUT_MS,
+  });
+  if (deliveryStatus >= 200 && deliveryStatus < 300) {
+    const previous = snapshot(location.path, location.ownsParent).events.find((row) => (
+      row.delivery_state === 'queued' && row.event_id !== event.event_id
+    ));
+    if (previous) {
+      try {
+        await attemptQueuedDelivery({
+          path: location.path,
+          ownsParent: location.ownsParent,
+          apiKey: input.apiKey,
+          baseUrl: input.baseUrl,
+          event: previous,
+          timeoutMs: DELIVERY_REQUEST_TIMEOUT_MS,
+        });
+      } catch {
+        // An older receipt retry must not turn a successfully accepted current receipt into a failure.
+      }
+    }
+  }
   const final = snapshot(location.path, location.ownsParent);
   recoveredCorruption ||= final.recoveredCorruption;
   const current = final.events.find((row) => row.event_id === event.event_id);
@@ -407,7 +562,7 @@ export async function recordLifecycleEvent(input: {
     accepted: !current,
     queued: current?.delivery_state === 'queued',
     failed: current?.delivery_state === 'dead_letter',
-    pending: final.events.length,
+    pending: final.events.filter((row) => row.delivery_state === 'queued').length,
     recovered_corruption: recoveredCorruption,
   };
 }

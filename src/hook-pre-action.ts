@@ -40,6 +40,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   let bytes = 0;
+  process.stdin.resume();
   for await (const chunk of process.stdin) {
     const buffer = Buffer.from(chunk);
     bytes += buffer.length;

@@ -16,6 +16,7 @@ const hook_context_1 = require("./hook-context");
 const hook_session_1 = require("./hook-session");
 const hook_pre_action_1 = require("./hook-pre-action");
 const env_1 = require("./env");
+const lifecycle_spool_1 = require("./lifecycle-spool");
 const redact_1 = require("./redact");
 // Parse CLI args
 function parseArgs() {
@@ -41,8 +42,38 @@ function parseArgs() {
         if (args[i] === 'session-hook' || args[i] === '--session-hook') {
             result.sessionHook = true;
         }
+        if (args[i] === 'spool-status' || args[i] === '--spool-status') {
+            result.spoolStatus = true;
+        }
+        if (args[i] === 'drain-spool' || args[i] === '--drain-spool') {
+            result.drainSpool = true;
+        }
     }
     return result;
+}
+async function runSpoolCommand(drain) {
+    if (cliArgs.apiKey) {
+        process.stderr.write('Error: lifecycle spool commands require MARROW_API_KEY from trusted environment or owner configuration; --key is not accepted.\n');
+        process.exitCode = 1;
+        return;
+    }
+    const resolved = (0, env_1.resolveMarrowEnv)({ trustedOnly: true });
+    const apiKey = resolved.apiKey || '';
+    if (!apiKey) {
+        process.stderr.write(`Error: MARROW_API_KEY required. ${resolved.exactFix}\n`);
+        process.exitCode = 1;
+        return;
+    }
+    const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
+    const status = drain
+        ? await (0, lifecycle_spool_1.drainLifecycleSpool)({ apiKey, baseUrl, agentId: resolved.agentId || undefined })
+        : (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey, agentId: resolved.agentId || undefined });
+    process.stdout.write(`${JSON.stringify({
+        ok: status.state !== 'attention_required',
+        lifecycle_spool: status,
+    }, null, 2)}\n`);
+    if (status.state === 'attention_required')
+        process.exitCode = 2;
 }
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
 function runSetup() {
@@ -250,6 +281,12 @@ if (process.argv[2] !== 'keys') {
     }
     else if (cliArgs.sessionHook) {
         void (0, hook_session_1.runSessionHookCommand)();
+    }
+    else if (cliArgs.spoolStatus) {
+        void runSpoolCommand(false);
+    }
+    else if (cliArgs.drainSpool) {
+        void runSpoolCommand(true);
     }
     else if (cliArgs.setup) {
         runSetup();
@@ -1374,7 +1411,7 @@ if (process.argv[2] !== 'keys') {
                     success(id, {
                         protocolVersion: '2024-11-05',
                         capabilities: { tools: {}, prompts: {} },
-                        serverInfo: { name: 'marrow', version: '3.9.52' },
+                        serverInfo: { name: 'marrow', version: '3.9.53' },
                     });
                     // Auto-enroll: emit enrollment notification on connection
                     if (AUTO_ENROLL) {

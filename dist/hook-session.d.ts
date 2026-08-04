@@ -1,4 +1,4 @@
-export declare const SESSION_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.52 session-hook";
+export declare const SESSION_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.53 session-hook";
 export declare function installSessionEndHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;
