@@ -451,6 +451,7 @@ test('default spool rejects symlinked path components without mutating the targe
   const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
   mkdirSync(join(home, '.marrow'), { recursive: true, mode: 0o700 });
   mkdirSync(target, { mode: 0o755 });
+  chmodSync(target, 0o755);
   symlinkSync(target, join(home, '.marrow', 'spool'), 'dir');
   process.env.HOME = home;
   delete process.env.MARROW_EVENT_SPOOL_PATH;
