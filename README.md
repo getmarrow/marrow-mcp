@@ -101,7 +101,19 @@ npx -y @getmarrow/mcp@latest setup
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.53
+## What's New in v3.9.54
+
+v3.9.54 makes Marrow's intervention visible through the existing decision-trace workflow:
+
+- `marrow_decision_trace` returns an owner-readable receipt for an evidence-backed block, warning, or review;
+- passive setup tells agents to relay one factual receipt after a meaningful intervention and remain quiet for routine low-risk work;
+- the receipt reports required workflow, proof, permit follow-through, and recorded outcome without raw context, proof values, credentials, or cross-tenant data.
+
+It preserves the bounded MCP lifecycle recovery introduced in v3.9.53.
+
+This release is certified against `@getmarrow/sdk@3.7.53`. The deterministic release order is SDK `3.7.53` first, MCP `3.9.54` second, and installer `0.1.38` last.
+
+## Previous: v3.9.53
 
 v3.9.53 adds exact lifecycle backlog visibility and bounded recovery for MCP-routed agent activity:
 
@@ -112,8 +124,6 @@ v3.9.53 adds exact lifecycle backlog visibility and bounded recovery for MCP-rou
 - terminal rejections and exhausted retries remain explicit dead letters for operator action.
 
 It preserves the signed action-permit and update controls introduced in v3.9.52.
-
-This release is certified against `@getmarrow/sdk@3.7.52`. The deterministic release order is SDK `3.7.52` first, MCP `3.9.53` second, and installer `0.1.37` last; publication stops if the exact SDK tarball integrity does not match the MCP lockfile.
 
 ## Previous: v3.9.52
 
@@ -157,7 +167,7 @@ It preserves `marrow_arbitrate` from v3.9.49, the session-orientation hardening 
 - `PostToolUse` and `PostToolUseFailure` record compact result receipts;
 - `Stop` keeps unfinished outcomes visible instead of silently treating a session exit as success;
 - transient lifecycle delivery failures use an owner-only, bounded local spool with stable event IDs;
-- `marrow_decision_trace` explains the tenant-scoped path from prior failure and lesson through gate, proof, workflow, and outcome.
+- `marrow_decision_trace` explains the tenant-scoped path from prior failure and lesson through gate, proof, workflow, and outcome, and returns an owner-readable intervention receipt.
 
 Existing MCP tools and stable context API names remain compatible. Authentication, policy, proof, and validation failures are surfaced rather than retried as network failures.
 
@@ -294,7 +304,7 @@ Status diagnostics distinguish missing keys, invalid keys, wrong bound-agent ide
 | `marrow_value_report` | Return account/agent value evidence without requiring a dashboard |
 | `marrow_buyer_proof` | Return owner-ready governance and reliability evidence |
 | `marrow_governance_timeline` | Inspect decisions, gates, proof packs, and outcomes over time |
-| `marrow_decision_trace` | Explain the tenant-scoped causal path behind one governed decision |
+| `marrow_decision_trace` | Explain one governed decision and return its owner-readable intervention receipt |
 | `marrow_fleet_lessons` | Retrieve proven lessons authorized for the current account or agent |
 | `marrow_model_usage` | Record compact token, cost, and latency counts when the harness exposes them |
 

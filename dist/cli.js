@@ -90,7 +90,7 @@ You have Marrow MCP connected. Use it on EVERY session automatically:
 2. **Before risky actions:** Respect the returned \`allow\`, \`warn\`, \`review_required\`, or \`block\` decision and its proof contract. Call \`marrow_agent_runtime\` explicitly when the passive hook cannot cover the action.
 3. **After meaningful work:** Record the real success or failure with \`marrow_commit\` or \`marrow_auto\`. A tool exit or session end is not proof that the business outcome succeeded.
 4. **Unfinished work:** Leave pending outcomes visible. Do not invent success to clear a closure item.
-5. **To explain a decision:** Use \`marrow_decision_trace\` to connect the prior failure, lesson, gate, proof, workflow, and outcome.
+5. **To explain an intervention:** Use \`marrow_decision_trace\`, then relay its \`intervention_receipt\` in one factual sentence when Marrow blocked, warned, or required review. Stay quiet for routine low-risk work.
 6. **To query authorized history:** Call \`marrow_ask("plain english question")\` — ask what failed, what worked, and what policy should apply.
 7. **When an update is reported:** Tell the operator and use the returned exact update and verification commands only when local change policy permits. Never silently change packages or configuration.
 
@@ -1160,7 +1160,7 @@ if (process.argv[2] !== 'keys') {
             },
             {
                 name: 'marrow_decision_trace',
-                description: 'Inspect the tenant-scoped path from a decision to prior failures, reused lessons, gate, proof, workflow, and observed outcome.',
+                description: 'Inspect the tenant-scoped path behind one governed decision and return its owner-readable intervention receipt with gate, required workflow, permit follow-through, proof, and observed outcome.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -1411,7 +1411,7 @@ if (process.argv[2] !== 'keys') {
                     success(id, {
                         protocolVersion: '2024-11-05',
                         capabilities: { tools: {}, prompts: {} },
-                        serverInfo: { name: 'marrow', version: '3.9.53' },
+                        serverInfo: { name: 'marrow', version: '3.9.54' },
                     });
                     // Auto-enroll: emit enrollment notification on connection
                     if (AUTO_ENROLL) {
@@ -1478,7 +1478,7 @@ When runtime/status returns a client_update notice, tell the operator and use it
 
 A successful command or tool exit is not proof that the business outcome succeeded. After meaningful work, close the real outcome with marrow_commit or marrow_auto and include success or failure plus the required evidence. If the result is unknown, leave it pending. Never invent success to clear a closure item.
 
-Use marrow_decision_trace when you need to explain why Marrow changed an action. It connects the relevant prior failure, proven lesson, gate, proof, workflow, and outcome without exposing another tenant's data.
+Use marrow_decision_trace when you need to explain why Marrow changed an action. Its intervention_receipt packages the relevant gate, required workflow, permit follow-through, proof, and recorded outcome without raw context, proof values, or another tenant's data. After a meaningful intervention, relay one factual receipt summary to the operator. Stay quiet for routine low-risk work.
 
 ## Owner-visible value
 

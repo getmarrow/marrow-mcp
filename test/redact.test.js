@@ -125,7 +125,7 @@ test('context hook makes a server update advisory visible to the agent', () => {
       status: {
         client_update: {
           installed_version: '3.9.51',
-          latest_version: '3.9.53',
+          latest_version: '3.9.54',
           version_status: 'behind',
           update_available: true,
           notification_state: 'recommended',
@@ -140,7 +140,7 @@ test('context hook makes a server update advisory visible to the agent', () => {
     }
   );
 
-  assert.match(context, /Marrow client update available: installed=3\.9\.51; latest=3\.9\.53/);
+  assert.match(context, /Marrow client update available: installed=3\.9\.51; latest=3\.9\.54/);
   assert.match(context, /Update command \(operator approval\): npx @getmarrow\/mcp@latest setup/);
   assert.match(context, /Hosted Marrow services are already current; no local changes were applied/);
 });
@@ -187,7 +187,7 @@ test('context hook gives unknown metadata precedence over contradictory update s
     {
       client_update: {
         installed_version: '3.9.51',
-        latest_version: '3.9.53',
+        latest_version: '3.9.54',
         version_status: 'unknown',
         update_available: true,
         notification_state: 'recommended',
@@ -318,17 +318,17 @@ test('context hook rejects invalid command targets and contradictory advisory tu
     {
       installed_version: '3.9.50', latest_version: '3.9.51', version_status: 'behind',
       update_available: true, notification_state: 'security_required',
-      security_policy: { source: 'server_policy', minimum_secure_version: '3.9.53' },
+      security_policy: { source: 'server_policy', minimum_secure_version: '3.9.54' },
     },
     {
       installed_version: '3.9.51', latest_version: '3.9.51', version_status: 'current',
       update_available: true, notification_state: 'security_required',
-      security_policy: { source: 'server_policy', minimum_secure_version: '3.9.53' },
+      security_policy: { source: 'server_policy', minimum_secure_version: '3.9.54' },
     },
     {
-    installed_version: '3.9.53', latest_version: '3.9.52', version_status: 'ahead',
+    installed_version: '3.9.54', latest_version: '3.9.52', version_status: 'ahead',
       update_available: true, notification_state: 'security_required',
-      security_policy: { source: 'server_policy', minimum_secure_version: '3.9.53' },
+      security_policy: { source: 'server_policy', minimum_secure_version: '3.9.54' },
     },
   ]) {
     const context = buildCombinedContextBlock(signals, null, null, runtime(securityUpdate));
