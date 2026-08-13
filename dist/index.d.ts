@@ -187,6 +187,16 @@ export declare function marrowBuyerProof(apiKey: string, baseUrl: string, option
     agentId?: string;
     periodDays?: number;
 }, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+/**
+ * Coordinate tenant agents through resource leases and compact proof packets.
+ * This is intentionally one MCP surface over the existing governance routes.
+ */
+export declare function marrowCoordinate(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+/**
+ * Compare already-recorded outcomes and proof for the same task. Marrow does
+ * not execute either model or workflow through this endpoint.
+ */
+export declare function marrowReplayCompare(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
 export declare function marrowRecommendGovernanceMode(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
 export declare function marrowListPolicyProfiles(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
 export declare function marrowCreatePolicyProfile(apiKey: string, baseUrl: string, input: Record<string, unknown>, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
