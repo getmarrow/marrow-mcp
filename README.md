@@ -104,9 +104,9 @@ npx -y @getmarrow/mcp@latest ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.55
+## What's New in v3.9.56
 
-v3.9.55 makes passive Marrow reads fast, bounded, and visible:
+v3.9.56 adds tenant-scoped coordination and evidence-only replay to the existing MCP governance surface:
 
 - each normal user prompt performs one compact `/v1/agent/context` read; risky or mutating prompts perform one `/v1/agent/runtime` call instead;
 - prompt lifecycle receipts are accepted into the owner-only local spool immediately and delivered asynchronously by later lifecycle activity;
@@ -114,11 +114,14 @@ v3.9.55 makes passive Marrow reads fast, bounded, and visible:
 - transient failures can use an owner-only, account/key/agent-scoped last-known brief for at most one hour, clearly labeled with its age;
 - 401 and 403 responses never use cached guidance, and cached runtime guidance cannot authorize high-risk work;
 - `marrow_ask` now maps to the canonical decision brief contract instead of a separate route;
-- `npx -y @getmarrow/mcp@latest ping` reports current latency, rolling measured p50/p99, last success, and lifecycle backlog health.
+- `npx -y @getmarrow/mcp@latest ping` reports current latency, rolling measured p50/p99, last success, and lifecycle backlog health;
+- `marrow_coordinate` acquires/releases tenant-scoped resource leases and carries compact child proof packets without sharing transcripts;
+- `marrow_replay_compare` compares already-recorded baseline and candidate outcomes with durable proof and never executes either model;
+- both new tools preserve agent-bound key scope, reject unsafe path identifiers, and return unavailable or incomplete evidence rather than manufacturing a winner.
 
 The package remains backward compatible with supported server aliases while advertising only implemented tools.
 
-This release is certified against `@getmarrow/sdk@3.7.54`. The deterministic release order is SDK `3.7.54` first, MCP `3.9.55` second, and installer `0.1.39` last.
+This release accepts `@getmarrow/sdk@^3.7.54` and is released after SDK `3.7.55`. The deterministic release order is SDK `3.7.55` first, MCP `3.9.56` second, and installer `0.1.40` last.
 
 ## Previous: v3.9.54
 
@@ -282,6 +285,16 @@ URLs, paths, credentials, or customer content. The arbitration response owns the
 session; pass its short-lived, single-use `owner_approval_receipt_id` to
 `marrow_commit`. An agent cannot authorize itself with a proof field.
 
+Use `marrow_coordinate` when parallel agents could edit the same file, service,
+deployment, or workflow. An acquired lease returns a one-time release capability.
+Child agents can then create a compact proof packet containing only a bounded
+summary and opaque durable evidence references. Complete is accepted only when
+the linked outcome and required proof are actually closed.
+
+Use `marrow_replay_compare` after two model or workflow variants have each
+recorded an outcome. It compares that existing evidence under one tenant task;
+it does not run models, retain prompts, or infer a winner from labels.
+
 ## Passive Use
 
 `npx @getmarrow/mcp setup` installs supported prompt, tool-result, and session-stop hooks so the agent can receive before-action context, record meaningful tool outcomes, and keep unfinished closure visible without the owner repeatedly prompting it to use Marrow.
@@ -311,6 +324,8 @@ Status diagnostics distinguish missing keys, invalid keys, wrong bound-agent ide
 | --- | --- |
 | `marrow_agent_runtime` | One-call pre-action status, policy gate, relevant lessons, proof requirements, and exact next action |
 | `marrow_arbitrate` | Resolve conflicting agent proposals before execution and return an explainable arbitration receipt |
+| `marrow_coordinate` | Acquire/release resource leases and exchange compact child proof packets across tenant agents |
+| `marrow_replay_compare` | Compare two existing proof-backed outcomes without executing a model |
 | `marrow_decision_brief` | Compact operating brief for meaningful work |
 | `marrow_think` | Record intent and retrieve relevant governance intelligence |
 | `marrow_commit` | Close an action with outcome, receipt, and proof |

@@ -24,6 +24,8 @@ import {
   marrowDecisionBrief,
   marrowAgentRuntime,
   marrowArbitrate,
+  marrowCoordinate,
+  marrowReplayCompare,
   marrowGovernanceControlPlane,
   marrowHermesIntegration,
   marrowCompletionContracts,
@@ -1304,6 +1306,66 @@ const TOOLS = [
     },
   },
   {
+    name: 'marrow_coordinate',
+    description:
+      'Coordinate tenant agents without sharing transcripts. Acquire or release a bounded resource lease, ' +
+      'list current leases, or create/list compact evidence-backed child proof packets for a parent agent.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list_leases', 'acquire_lease', 'release_lease', 'list_proof_packets', 'create_proof_packet'],
+        },
+        agent_id: { type: 'string', description: 'Acting agent id. Defaults to MARROW_FLEET_AGENT_ID.' },
+        resource_type: { type: 'string', enum: ['file', 'directory', 'service', 'workflow', 'deployment', 'custom'] },
+        resource: { type: 'string', maxLength: 160, description: 'Bounded tenant-visible resource label. Do not send secrets.' },
+        workflow_id: { type: 'string' },
+        ttl_seconds: { type: 'number', minimum: 30, maximum: 3600 },
+        lease_id: { type: 'string' },
+        lease_token: { type: 'string', description: 'One-time lease capability returned by acquire_lease.' },
+        status: { type: 'string', enum: ['active', 'released', 'expired', 'incomplete', 'complete', 'failed'] },
+        limit: { type: 'number', minimum: 1, maximum: 100 },
+        source_agent_id: { type: 'string' },
+        parent_agent_id: { type: 'string' },
+        decision_id: { type: 'string' },
+        proof_pack_id: { type: 'string' },
+        summary: { type: 'string', maxLength: 280, description: 'Compact result summary; no raw transcript.' },
+        evidence_refs: {
+          type: 'array', maxItems: 20, items: { type: 'string' },
+          description: 'Opaque durable evidence identifiers only.',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'marrow_replay_compare',
+    description:
+      'Compare two already-recorded outcomes for the same tenant task using durable proof. ' +
+      'This does not run a model or replay customer content; it returns complete or insufficient_evidence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        comparison_id: { type: 'string', description: 'Fetch a prior replay comparison by id.' },
+        source_decision_id: { type: 'string', description: 'Original task decision used to bind the comparison.' },
+        workspace_binding_id: { type: 'string', description: 'Optional privacy-safe workspace binding from runtime.' },
+        constraints: { type: 'object', description: 'Bounded comparison constraints; no prompts, code, or credentials.' },
+        baseline: {
+          type: 'object',
+          properties: { label: { type: 'string' }, decision_id: { type: 'string' } },
+          required: ['decision_id'],
+        },
+        candidate: {
+          type: 'object',
+          properties: { label: { type: 'string' }, decision_id: { type: 'string' } },
+          required: ['decision_id'],
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'marrow_governance_control_plane',
     description:
       'Return Marrow control-plane proof: governance, runtime gates, proof packs, fleet intelligence, supported harnesses, and exact next action.',
@@ -1623,7 +1685,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.9.55' },
+        serverInfo: { name: 'marrow', version: '3.9.56' },
       });
 
       // Auto-enroll: emit enrollment notification on connection
@@ -2323,6 +2385,34 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
               ? redactSensitiveValue(args.proof) as Record<string, unknown>
               : undefined,
           },
+          SESSION_ID,
+          FLEET_AGENT_ID
+        );
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_coordinate') {
+        const result = await marrowCoordinate(
+          API_KEY,
+          BASE_URL,
+          {
+            ...args,
+            agent_id: (args.agent_id as string) || FLEET_AGENT_ID || AGENT_ID,
+            source_agent_id: (args.source_agent_id as string) || (args.agent_id as string) || FLEET_AGENT_ID || AGENT_ID,
+          },
+          SESSION_ID,
+          FLEET_AGENT_ID
+        );
+        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        return;
+      }
+
+      if (toolName === 'marrow_replay_compare') {
+        const result = await marrowReplayCompare(
+          API_KEY,
+          BASE_URL,
+          args,
           SESSION_ID,
           FLEET_AGENT_ID
         );

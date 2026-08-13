@@ -37,6 +37,8 @@ exports.marrowCompletionContracts = marrowCompletionContracts;
 exports.marrowEvaluateCompletionContract = marrowEvaluateCompletionContract;
 exports.marrowGovernanceTimeline = marrowGovernanceTimeline;
 exports.marrowBuyerProof = marrowBuyerProof;
+exports.marrowCoordinate = marrowCoordinate;
+exports.marrowReplayCompare = marrowReplayCompare;
 exports.marrowRecommendGovernanceMode = marrowRecommendGovernanceMode;
 exports.marrowListPolicyProfiles = marrowListPolicyProfiles;
 exports.marrowCreatePolicyProfile = marrowCreatePolicyProfile;
@@ -990,6 +992,104 @@ async function marrowBuyerProof(apiKey, baseUrl, options = {}, sessionId, agentI
     });
     const json = await safeJsonResponse(res);
     return json.data;
+}
+/**
+ * Coordinate tenant agents through resource leases and compact proof packets.
+ * This is intentionally one MCP surface over the existing governance routes.
+ */
+async function marrowCoordinate(apiKey, baseUrl, input, sessionId, agentId) {
+    const action = String(input.action || '');
+    const headers = buildHeaders(apiKey, sessionId, 'application/json', agentId);
+    if (action === 'list_leases') {
+        const qs = new URLSearchParams();
+        if (typeof input.status === 'string')
+            qs.set('status', input.status);
+        if (Number.isFinite(Number(input.limit)))
+            qs.set('limit', String(input.limit));
+        const res = await fetch(`${baseUrl}/v1/agent/governance/leases${qs.toString() ? `?${qs}` : ''}`, { headers });
+        return (await safeJsonResponse(res)).data;
+    }
+    if (action === 'acquire_lease') {
+        const body = {
+            agent_id: String(input.agent_id || agentId || ''),
+            resource_type: input.resource_type,
+            resource: typeof input.resource === 'string' ? (0, redact_1.redactSensitiveText)(input.resource) : input.resource,
+            workflow_id: input.workflow_id,
+            ttl_seconds: input.ttl_seconds,
+        };
+        const res = await fetch(`${baseUrl}/v1/agent/governance/leases/acquire`, {
+            method: 'POST', headers, body: JSON.stringify(body),
+        });
+        return (await safeJsonResponse(res)).data;
+    }
+    if (action === 'release_lease') {
+        const leaseId = validatePathParam(String(input.lease_id || ''), 'lease_id');
+        if (!leaseId.startsWith('lease_'))
+            throw new TypeError('lease_id must be a Marrow lease identifier.');
+        const res = await fetch(`${baseUrl}/v1/agent/governance/leases/${leaseId}/release`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                agent_id: String(input.agent_id || agentId || ''),
+                lease_token: input.lease_token,
+            }),
+        });
+        return (await safeJsonResponse(res)).data;
+    }
+    if (action === 'list_proof_packets') {
+        const qs = new URLSearchParams();
+        if (Number.isFinite(Number(input.limit)))
+            qs.set('limit', String(input.limit));
+        const res = await fetch(`${baseUrl}/v1/agent/governance/proof-packets${qs.toString() ? `?${qs}` : ''}`, { headers });
+        return (await safeJsonResponse(res)).data;
+    }
+    if (action === 'create_proof_packet') {
+        const body = (0, redact_1.redactSensitiveValue)({
+            source_agent_id: input.source_agent_id || input.agent_id || agentId,
+            parent_agent_id: input.parent_agent_id,
+            lease_id: input.lease_id,
+            decision_id: input.decision_id,
+            workflow_id: input.workflow_id,
+            proof_pack_id: input.proof_pack_id,
+            status: input.status,
+            summary: input.summary,
+            evidence_refs: input.evidence_refs,
+        });
+        const res = await fetch(`${baseUrl}/v1/agent/governance/proof-packets`, {
+            method: 'POST', headers, body: JSON.stringify(body),
+        });
+        return (await safeJsonResponse(res)).data;
+    }
+    throw new TypeError('Unsupported coordination action.');
+}
+/**
+ * Compare already-recorded outcomes and proof for the same task. Marrow does
+ * not execute either model or workflow through this endpoint.
+ */
+async function marrowReplayCompare(apiKey, baseUrl, input, sessionId, agentId) {
+    const comparisonId = typeof input.comparison_id === 'string' ? input.comparison_id : '';
+    if (comparisonId) {
+        const safeId = validatePathParam(comparisonId, 'comparison_id');
+        if (!safeId.startsWith('replay_'))
+            throw new TypeError('comparison_id must be a Marrow replay identifier.');
+        const res = await fetch(`${baseUrl}/v1/agent/governance/replay-comparisons/${safeId}`, {
+            headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        });
+        return (await safeJsonResponse(res)).data;
+    }
+    const body = (0, redact_1.redactSensitiveValue)({
+        source_decision_id: input.source_decision_id,
+        workspace_binding_id: input.workspace_binding_id,
+        constraints: input.constraints,
+        baseline: input.baseline,
+        candidate: input.candidate,
+    });
+    const res = await fetch(`${baseUrl}/v1/agent/governance/replay-comparisons`, {
+        method: 'POST',
+        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        body: JSON.stringify(body),
+    });
+    return (await safeJsonResponse(res)).data;
 }
 async function marrowRecommendGovernanceMode(apiKey, baseUrl, input, sessionId, agentId) {
     const res = await fetch(`${baseUrl}/v1/agent/mode/recommend`, {
