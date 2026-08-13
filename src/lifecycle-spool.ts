@@ -506,6 +506,7 @@ export async function recordLifecycleEvent(input: {
   apiKey: string;
   baseUrl: string;
   event: LifecycleEvent;
+  deferDelivery?: boolean;
 }): Promise<{
   event_id: string;
   accepted: boolean;
@@ -527,7 +528,7 @@ export async function recordLifecycleEvent(input: {
   let recoveredCorruption = queued.recoveredCorruption;
 
   let deliveryStatus = 0;
-  if (queued.result.delivery_state === 'queued') deliveryStatus = await attemptQueuedDelivery({
+  if (!input.deferDelivery && queued.result.delivery_state === 'queued') deliveryStatus = await attemptQueuedDelivery({
     path: location.path,
     ownsParent: location.ownsParent,
     apiKey: input.apiKey,

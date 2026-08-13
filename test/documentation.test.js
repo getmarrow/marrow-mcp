@@ -48,7 +48,7 @@ test('npm entry point matches the product positioning contract', () => {
   assert.match(readme, /"outcome": "Production deploy succeeded and smoke checks passed\."/);
   assert.doesNotMatch(readme, /"profile": "production"/);
   assert.ok(cliSource.includes(`serverInfo: { name: 'marrow', version: '${pkg.version}' }`));
-  assert.equal(pkg.dependencies['@getmarrow/sdk'], '^3.7.53');
+  assert.equal(pkg.dependencies['@getmarrow/sdk'], '^3.7.54');
 
   for (const [, json] of readme.matchAll(/```json\n([\s\S]*?)```/g)) {
     assert.doesNotThrow(() => JSON.parse(json));

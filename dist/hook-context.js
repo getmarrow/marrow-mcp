@@ -15,19 +15,20 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CONTEXT_HOOK_COMMAND = void 0;
+exports.extractSignals = extractSignals;
 exports.buildCombinedContextBlock = buildCombinedContextBlock;
 exports.runContextHookCommand = runContextHookCommand;
 exports.installUserPromptSubmitHook = installUserPromptSubmitHook;
 const index_1 = require("./index");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const guidance_cache_1 = require("./guidance-cache");
 const hook_contract_1 = require("./hook-contract");
 exports.CONTEXT_HOOK_COMMAND = hook_contract_1.CONTEXT_HOOK_COMMAND;
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
-const MARROW_API_TIMEOUT_MS = 2000;
+const MARROW_API_TIMEOUT_MS = 400;
 const MAX_CONTEXT_BYTES = 4000; // safety cap on injected context size
 const PASSIVE_BRIEF_MODE = process.env.MARROW_PASSIVE_BRIEF || 'auto';
-const PASSIVE_VALUE_MODE = process.env.MARROW_PASSIVE_VALUE_SUMMARY || 'auto';
 const RISKY_PROMPT_TERMS = /\b(?:audit|auth|cloudflare|commit|config|credential|database|deploy|environment|github|incident|key|merge|migration|npm|package|patch|permission|production|publish|release|rollback|secret|security|token|upgrade|worker|write)\b/i;
 const MUTATING_PROMPT_TERMS = /\b(?:add|apply|change|commit|configure|create|delete|deploy|edit|fix|harden|merge|modify|patch|publish|push|release|remove|rollback|rotate|ship|update|upgrade|write)\b/i;
 const EXPLICIT_MUTATING_PROMPT_TERMS = /\b(?:add|apply|commit|configure|create|delete|edit|fix|harden|merge|modify|patch|publish|push|release|remove|rollback|rotate|ship|update|upgrade|write)\b|\bdeploy\s+(?:latest|release|to|worker|cloudflare|production|prod)\b/i;
@@ -436,19 +437,69 @@ function emitContext(context) {
 /**
  * Race a promise against a timeout. If timeout fires first, returns null.
  */
-async function withTimeout(promise, ms) {
-    return new Promise((resolve) => {
-        const timer = setTimeout(() => resolve(null), ms);
-        promise
-            .then((value) => {
+async function withTimeout(operation, ms) {
+    const controller = new AbortController();
+    let timer = null;
+    try {
+        const value = await Promise.race([
+            operation(controller.signal),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => {
+                    controller.abort();
+                    reject(new Error(`Marrow request timed out after ${ms}ms`));
+                }, ms);
+                timer.unref?.();
+            }),
+        ]);
+        return { value, error: null, timedOut: false };
+    }
+    catch (error) {
+        return { value: null, error, timedOut: error instanceof Error && /timed out|abort/i.test(error.message) };
+    }
+    finally {
+        if (timer)
             clearTimeout(timer);
-            resolve(value);
-        })
-            .catch(() => {
-            clearTimeout(timer);
-            resolve(null);
-        });
-    });
+    }
+}
+function isAuthenticationFailure(error) {
+    return error instanceof Error && /\b(?:401|403|unauthorized|forbidden|invalid api key|insufficient scope)\b/i.test(error.message);
+}
+function compactRuntimeContext(runtime) {
+    const intervention = runtime.intervention;
+    const lines = ['## Marrow before-action'];
+    const decision = intervention?.decision || runtime.risk_gate?.decision || 'proceed';
+    lines.push(`- Decision: ${decision}; risk: ${runtime.risk_gate?.risk_level || runtime.decision_brief?.risk?.level || 'unknown'}.`);
+    const why = intervention?.before_action || intervention?.headline || runtime.before_you_act || runtime.decision_brief?.summary;
+    if (why)
+        lines.push(`- Why: ${String(why).slice(0, 320)}`);
+    const steps = intervention?.playbook?.required_steps || runtime.decision_brief?.workflow?.steps || [];
+    if (steps.length)
+        lines.push(`- Apply: ${steps.slice(0, 2).join('; ').slice(0, 360)}`);
+    const proof = runtime.proof_pack?.fields || intervention?.playbook?.required_proof || [];
+    if (proof.length)
+        lines.push(`- Proof: ${proof.slice(0, 4).join(', ')}`);
+    const next = intervention?.exact_next_action || runtime.exact_next_action || runtime.decision_brief?.next_actions?.[0];
+    if (next)
+        lines.push(`- Next: ${String(next).slice(0, 320)}`);
+    lines.push('- Record the measured outcome after meaningful work.');
+    return lines.slice(0, 8).join('\n').slice(0, 1_600);
+}
+function compactAgentContext(context) {
+    const status = asRecord(context.status);
+    const policy = asRecord(context.effective_policy);
+    const lines = ['## Marrow fleet context'];
+    lines.push(`- Health: ${asString(status?.health) || (status?.ok === true ? 'healthy' : 'available')}.`);
+    const policyMode = asString(policy?.mode) || asString(policy?.governance_mode);
+    if (policyMode)
+        lines.push(`- Active governance mode: ${policyMode}.`);
+    const warning = Array.isArray(status?.failure_reasons) ? asRecord(status.failure_reasons[0]) : null;
+    if (warning?.message)
+        lines.push(`- Warning: ${String(warning.message).slice(0, 320)}`);
+    const next = asString(context.exact_next_action) || asString(status?.next_action);
+    if (next)
+        lines.push(`- Next: ${next.slice(0, 360)}`);
+    lines.push('- Use a fresh Marrow runtime gate before high-risk or state-changing work.');
+    return lines.slice(0, 7).join('\n').slice(0, 1_400);
 }
 async function runContextHookCommand() {
     // Kill switch — same flag as PostToolUse
@@ -495,12 +546,12 @@ async function runContextHookCommand() {
         const agentId = resolvedEnv.agentId || undefined;
         const passiveBriefInput = inferPassiveBriefInput(prompt);
         const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
-        const action = runtimeInput.action;
         const requestCorrelation = (0, hook_contract_1.stablePromptCorrelation)({ session_id: sessionId, prompt });
         const workflowId = (0, hook_contract_1.stableSessionWorkflowId)(sessionId, requestCorrelation);
         void (0, lifecycle_spool_1.recordLifecycleEvent)({
             apiKey,
             baseUrl,
+            deferDelivery: true,
             event: {
                 event_id: `prompt-${requestCorrelation}`,
                 event_type: 'prompt_submitted',
@@ -515,40 +566,45 @@ async function runContextHookCommand() {
                 outcome_state: 'pending',
             },
         }).catch(() => { });
-        const shouldFetchValueSummary = PASSIVE_VALUE_MODE === 'always' ||
-            (PASSIVE_VALUE_MODE !== 'false' && (Boolean(passiveBriefInput) || /(?:status|summary|report|improve|better|value|metrics|passive|fleet)/i.test(prompt)));
-        const [thinkResult, runtimeResult, briefResult, valueReport] = await Promise.all([
-            withTimeout((0, index_1.marrowThink)(apiKey, baseUrl, { action, type: passiveBriefInput?.type || 'general' }, sessionId, agentId), MARROW_API_TIMEOUT_MS),
-            process.env.MARROW_AGENT_RUNTIME === 'false'
-                ? Promise.resolve(null)
-                : runtimeInput
-                    ? withTimeout((0, index_1.marrowAgentRuntime)(apiKey, baseUrl, runtimeInput, sessionId, agentId), MARROW_API_TIMEOUT_MS)
-                    : Promise.resolve(null),
-            passiveBriefInput && process.env.MARROW_RUNTIME_FALLBACK_BRIEF === 'true'
-                ? withTimeout((0, index_1.marrowDecisionBrief)(apiKey, baseUrl, passiveBriefInput, sessionId, agentId), MARROW_API_TIMEOUT_MS)
-                : Promise.resolve(null),
-            shouldFetchValueSummary
-                ? withTimeout((0, index_1.marrowValueReport)(apiKey, baseUrl, process.env.MARROW_VALUE_REPORT_PERIOD || '7d', agentId, sessionId, agentId), MARROW_API_TIMEOUT_MS)
-                : Promise.resolve(null),
-        ]);
-        if (!thinkResult && !runtimeResult && !briefResult && !valueReport) {
-            debug('[marrow-context-hook] marrow_think timed out or errored');
+        const live = passiveBriefInput && process.env.MARROW_AGENT_RUNTIME !== 'false'
+            ? await withTimeout((signal) => (0, index_1.marrowAgentRuntime)(apiKey, baseUrl, runtimeInput, sessionId, agentId, signal), MARROW_API_TIMEOUT_MS)
+            : await withTimeout((signal) => (0, index_1.marrowAgentContext)(apiKey, baseUrl, sessionId, agentId, signal), MARROW_API_TIMEOUT_MS);
+        let context = live.value
+            ? passiveBriefInput
+                ? compactRuntimeContext(live.value)
+                : compactAgentContext(live.value)
+            : '';
+        if (context) {
+            try {
+                (0, guidance_cache_1.writeGuidanceCache)({ apiKey, baseUrl, agentId, context });
+            }
+            catch { /* cache is best effort */ }
+        }
+        else if (!isAuthenticationFailure(live.error)) {
+            let cached = null;
+            try {
+                cached = (0, guidance_cache_1.readGuidanceCache)({ apiKey, baseUrl, agentId });
+            }
+            catch { /* cache is best effort */ }
+            if (cached) {
+                const staleSeconds = Math.max(1, Math.round(cached.stale_ms / 1000));
+                const staleWarning = passiveBriefInput
+                    ? '- Fresh Marrow authorization is unavailable. Cached guidance cannot authorize high-risk action.'
+                    : '- Live Marrow read unavailable; using clearly labeled last-known guidance.';
+                context = `## Marrow cached guidance (stale ${staleSeconds}s)\n${staleWarning}\n${cached.context.replace(/^##[^\n]*\n?/, '')}`.slice(0, 1_600);
+            }
+        }
+        if (!context) {
+            debug(`[marrow-context-hook] governance read unavailable${live.timedOut ? ' (timeout)' : ''}`);
             emitNoContext();
             process.exit(0);
             return;
         }
-        const signals = extractSignals(thinkResult);
-        if (!signals.hasSignal && !runtimeResult && !briefResult && !valueReport) {
-            debug('[marrow-context-hook] no signal — no context to inject');
-            emitNoContext();
-            process.exit(0);
-            return;
-        }
-        const context = buildCombinedContextBlock(signals, briefResult || runtimeResult?.decision_brief || null, valueReport, runtimeResult);
-        if (runtimeResult) {
+        if (passiveBriefInput && live.value) {
             void (0, lifecycle_spool_1.recordLifecycleEvent)({
                 apiKey,
                 baseUrl,
+                deferDelivery: true,
                 event: {
                     event_id: `preaction-${requestCorrelation}`,
                     event_type: 'pre_action_checked',
@@ -559,7 +615,7 @@ async function runContextHookCommand() {
                     correlation_id: requestCorrelation,
                     ...(0, hook_contract_1.nativeHookEvidence)('prompt'),
                     action: `pre-action check: ${passiveBriefInput?.type || 'general'}`,
-                    risk_level: runtimeResult.risk_gate?.risk_level,
+                    risk_level: live.value.risk_gate?.risk_level,
                     outcome_state: 'pending',
                 },
             }).catch(() => { });

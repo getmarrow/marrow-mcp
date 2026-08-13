@@ -1,10 +1,10 @@
-export declare const MCP_ADAPTER_VERSION = "3.9.54";
+export declare const MCP_ADAPTER_VERSION = "3.9.55";
 export declare const NATIVE_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*";
-export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.54";
-export declare const CONTEXT_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.54 context-hook";
-export declare const PRE_ACTION_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.54 pre-action-hook";
-export declare const ACTION_RESULT_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.54 hook";
-export declare const SESSION_END_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.54 session-hook";
+export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.55";
+export declare const CONTEXT_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.55 context-hook";
+export declare const PRE_ACTION_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.55 pre-action-hook";
+export declare const ACTION_RESULT_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.55 hook";
+export declare const SESSION_END_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.55 session-hook";
 export declare const NATIVE_EXPECTED_HOOKS: readonly ["prompt", "pre_action", "action_result", "session_end"];
 type HookSettings = Record<string, unknown>;
 export declare function findHookSettingsPath(startDir?: string): string;

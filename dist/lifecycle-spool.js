@@ -483,7 +483,7 @@ async function recordLifecycleEvent(input) {
     });
     let recoveredCorruption = queued.recoveredCorruption;
     let deliveryStatus = 0;
-    if (queued.result.delivery_state === 'queued')
+    if (!input.deferDelivery && queued.result.delivery_state === 'queued')
         deliveryStatus = await attemptQueuedDelivery({
             path: location.path,
             ownsParent: location.ownsParent,
