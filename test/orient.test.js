@@ -1,7 +1,29 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { marrowOrient } = require('../dist/index.js');
+const { marrowAsk, marrowOrient } = require('../dist/index.js');
+
+test('ask maps to the canonical decision brief contract', async (t) => {
+  const originalFetch = global.fetch;
+  let captured;
+  global.fetch = async (url, init) => {
+    captured = { url: String(url), init };
+    return new Response(JSON.stringify({ data: {
+      summary: 'Apply the verified deployment playbook.',
+      next_actions: ['Run the release checks.'],
+      risk: { similar_failures: [{ decision_type: 'deploy', failures: 3, failure_rate: 0.5 }] },
+      failure_alerts: [{ message: 'Prior deploy proof was incomplete.' }],
+      fleet_reliability: { outcome_coverage: 0.8 },
+    } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  const result = await marrowAsk('test-key', 'https://api.example.test', { query: 'How should I deploy?' }, 'session-one', 'agent-one');
+  assert.equal(captured.url, 'https://api.example.test/v1/analytics/decision-brief');
+  assert.equal(JSON.parse(captured.init.body).action, 'How should I deploy?');
+  assert.equal(result.decisions_matched, 3);
+  assert.match(result.answer, /verified deployment playbook/);
+});
 
 test('orient uses the canonical runtime contract with the bound agent identity', async (t) => {
   const calls = [];
@@ -60,7 +82,7 @@ test('orient uses the canonical runtime contract with the bound agent identity',
   assert.equal(calls[0].url, 'https://api.example.test/v1/agent/runtime');
   assert.equal(calls[0].init.method, 'POST');
   assert.equal(calls[0].init.headers['X-Marrow-Package'], '@getmarrow/mcp');
-  assert.equal(calls[0].init.headers['X-Marrow-Package-Version'], '3.9.54');
+  assert.equal(calls[0].init.headers['X-Marrow-Package-Version'], '3.9.55');
   const payload = JSON.parse(calls[0].init.body);
   assert.equal(payload.type, 'security');
   assert.equal(payload.agent_id, 'jarvis');

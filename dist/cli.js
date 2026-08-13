@@ -17,6 +17,7 @@ const hook_session_1 = require("./hook-session");
 const hook_pre_action_1 = require("./hook-pre-action");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const ping_state_1 = require("./ping-state");
 const redact_1 = require("./redact");
 // Parse CLI args
 function parseArgs() {
@@ -48,8 +49,61 @@ function parseArgs() {
         if (args[i] === 'drain-spool' || args[i] === '--drain-spool') {
             result.drainSpool = true;
         }
+        if (args[i] === 'ping' || args[i] === '--ping') {
+            result.ping = true;
+        }
     }
     return result;
+}
+async function runPingCommand() {
+    if (cliArgs.apiKey) {
+        process.stderr.write('Error: ping requires MARROW_API_KEY from trusted environment or owner configuration; --key is not accepted.\n');
+        process.exitCode = 1;
+        return;
+    }
+    const resolved = (0, env_1.resolveMarrowEnv)({ trustedOnly: true });
+    if (!resolved.apiKey) {
+        process.stdout.write(JSON.stringify({ ok: false, error: 'missing_key', exact_fix: resolved.exactFix }) + '\n');
+        process.exitCode = 1;
+        return;
+    }
+    const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 400);
+    timer.unref?.();
+    const started = Date.now();
+    try {
+        const status = await (0, index_1.marrowRuntimeStatus)(resolved.apiKey, baseUrl, true, resolved.sessionId, resolved.agentId, controller.signal);
+        const latencyMs = Date.now() - started;
+        const history = (0, ping_state_1.updatePingState)({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId, latencyMs, success: true });
+        process.stdout.write(JSON.stringify({
+            ok: status.ok === true,
+            health: status.health || 'available',
+            current_ms: latencyMs,
+            p50_ms: history.p50_ms,
+            p99_ms: history.p99_ms,
+            sample_count: history.sample_count,
+            last_success_at: history.last_success_at,
+            lifecycle_spool: (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: resolved.apiKey, agentId: resolved.agentId }),
+        }, null, 2) + '\n');
+    }
+    catch (error) {
+        const history = (0, ping_state_1.updatePingState)({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId, success: false });
+        const message = error instanceof Error ? error.message : String(error);
+        process.stdout.write(JSON.stringify({
+            ok: false,
+            error: /401|unauthorized/i.test(message) ? 'authentication_failed' : /403|forbidden/i.test(message) ? 'permission_denied' : /abort|timeout/i.test(message) ? 'timeout' : 'unavailable',
+            p50_ms: history.p50_ms,
+            p99_ms: history.p99_ms,
+            sample_count: history.sample_count,
+            last_success_at: history.last_success_at,
+            lifecycle_spool: (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: resolved.apiKey, agentId: resolved.agentId }),
+        }, null, 2) + '\n');
+        process.exitCode = 1;
+    }
+    finally {
+        clearTimeout(timer);
+    }
 }
 async function runSpoolCommand(drain) {
     if (cliArgs.apiKey) {
@@ -287,6 +341,9 @@ if (process.argv[2] !== 'keys') {
     }
     else if (cliArgs.drainSpool) {
         void runSpoolCommand(true);
+    }
+    else if (cliArgs.ping) {
+        void runPingCommand();
     }
     else if (cliArgs.setup) {
         runSetup();
@@ -1411,7 +1468,7 @@ if (process.argv[2] !== 'keys') {
                     success(id, {
                         protocolVersion: '2024-11-05',
                         capabilities: { tools: {}, prompts: {} },
-                        serverInfo: { name: 'marrow', version: '3.9.54' },
+                        serverInfo: { name: 'marrow', version: '3.9.55' },
                     });
                     // Auto-enroll: emit enrollment notification on connection
                     if (AUTO_ENROLL) {

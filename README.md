@@ -97,11 +97,30 @@ npx -y @getmarrow/install@latest doctor
 
 # Manual MCP-only setup
 npx -y @getmarrow/mcp@latest setup
+
+# Verify live read latency, last success, and local backlog
+npx -y @getmarrow/mcp@latest ping
 ```
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.54
+## What's New in v3.9.55
+
+v3.9.55 makes passive Marrow reads fast, bounded, and visible:
+
+- each normal user prompt performs one compact `/v1/agent/context` read; risky or mutating prompts perform one `/v1/agent/runtime` call instead;
+- prompt lifecycle receipts are accepted into the owner-only local spool immediately and delivered asynchronously by later lifecycle activity;
+- the prompt read deadline is 400 ms, injected guidance is limited to 3–8 concise lines, and raw prompts are not stored in the guidance cache;
+- transient failures can use an owner-only, account/key/agent-scoped last-known brief for at most one hour, clearly labeled with its age;
+- 401 and 403 responses never use cached guidance, and cached runtime guidance cannot authorize high-risk work;
+- `marrow_ask` now maps to the canonical decision brief contract instead of a separate route;
+- `npx -y @getmarrow/mcp@latest ping` reports current latency, rolling measured p50/p99, last success, and lifecycle backlog health.
+
+The package remains backward compatible with supported server aliases while advertising only implemented tools.
+
+This release is certified against `@getmarrow/sdk@3.7.54`. The deterministic release order is SDK `3.7.54` first, MCP `3.9.55` second, and installer `0.1.39` last.
+
+## Previous: v3.9.54
 
 v3.9.54 makes Marrow's intervention visible through the existing decision-trace workflow:
 
@@ -110,8 +129,6 @@ v3.9.54 makes Marrow's intervention visible through the existing decision-trace 
 - the receipt reports required workflow, proof, permit follow-through, and recorded outcome without raw context, proof values, credentials, or cross-tenant data.
 
 It preserves the bounded MCP lifecycle recovery introduced in v3.9.53.
-
-This release is certified against `@getmarrow/sdk@3.7.53`. The deterministic release order is SDK `3.7.53` first, MCP `3.9.54` second, and installer `0.1.38` last.
 
 ## Previous: v3.9.53
 

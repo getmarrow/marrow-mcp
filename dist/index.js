@@ -24,6 +24,7 @@ exports.marrowDashboard = marrowDashboard;
 exports.marrowDigest = marrowDigest;
 exports.marrowAgentStatus = marrowAgentStatus;
 exports.marrowRuntimeStatus = marrowRuntimeStatus;
+exports.marrowAgentContext = marrowAgentContext;
 exports.marrowValueReport = marrowValueReport;
 exports.marrowDecisionBrief = marrowDecisionBrief;
 exports.marrowWorkflowGate = marrowWorkflowGate;
@@ -593,13 +594,27 @@ async function marrowOrient(apiKey, baseUrl, params, sessionId, agentId) {
  * Query the collective hive for failure patterns and recommendations.
  */
 async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/ask`, {
+    const res = await fetch(`${baseUrl}/v1/analytics/decision-brief`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
-        body: JSON.stringify({ query: params.query }),
+        body: JSON.stringify({
+            action: params.query,
+            type: 'general',
+            role: 'general',
+            agent_id: agentId,
+            session_id: sessionId,
+        }),
     });
     const json = await safeJsonResponse(res);
-    return json.data;
+    const brief = json.data;
+    const similarFailures = Array.isArray(brief.risk?.similar_failures) ? brief.risk.similar_failures : [];
+    return {
+        answer: [brief.summary, brief.next_actions?.[0]].filter(Boolean).join(' '),
+        stats: null,
+        top_outcomes: Array.isArray(brief.failure_alerts) ? brief.failure_alerts.map((item) => item.message).slice(0, 5) : [],
+        decisions_matched: similarFailures.reduce((total, item) => total + Number(item.failures || 0), 0),
+        low_history: Number(brief.fleet_reliability?.outcome_coverage || 0) === 0,
+    };
 }
 /**
  * Get API health status.
@@ -774,10 +789,25 @@ async function marrowAgentStatus(apiKey, baseUrl, period = '7d', agentIdFilter, 
 /**
  * Get live runtime hook diagnostics from /v1/agent/status.
  */
-async function marrowRuntimeStatus(apiKey, baseUrl, fast = true, sessionId, agentId) {
+async function marrowRuntimeStatus(apiKey, baseUrl, fast = true, sessionId, agentId, signal) {
     const qs = fast ? '?fast=1' : '';
     const res = await fetch(`${baseUrl}/v1/agent/status${qs}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+        signal,
+    });
+    const json = await safeJsonResponse(res);
+    return json.data;
+}
+/**
+ * Get the compact canonical read context used by passive prompt hooks.
+ */
+async function marrowAgentContext(apiKey, baseUrl, sessionId, agentId, signal) {
+    const query = new URLSearchParams({ compact: '1' });
+    if (agentId)
+        query.set('agent_id', agentId);
+    const res = await fetch(`${baseUrl}/v1/agent/context?${query.toString()}`, {
+        headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+        signal,
     });
     const json = await safeJsonResponse(res);
     return json.data;

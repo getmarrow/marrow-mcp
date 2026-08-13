@@ -64,13 +64,14 @@ import { installSessionEndHook, runSessionHookCommand } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
 import { resolveMarrowEnv } from './env';
 import { drainLifecycleSpool, lifecycleSpoolStatus } from './lifecycle-spool';
+import { updatePingState } from './ping-state';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import type { ThinkResult, MarrowMemory } from './types';
 
 // Parse CLI args
-function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean } {
+function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean } {
   const args = process.argv.slice(2);
-  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean } = {};
+  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
@@ -97,8 +98,60 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     if (args[i] === 'drain-spool' || args[i] === '--drain-spool') {
       result.drainSpool = true;
     }
+    if (args[i] === 'ping' || args[i] === '--ping') {
+      result.ping = true;
+    }
   }
   return result;
+}
+
+async function runPingCommand(): Promise<void> {
+  if (cliArgs.apiKey) {
+    process.stderr.write('Error: ping requires MARROW_API_KEY from trusted environment or owner configuration; --key is not accepted.\n');
+    process.exitCode = 1;
+    return;
+  }
+  const resolved = resolveMarrowEnv({ trustedOnly: true });
+  if (!resolved.apiKey) {
+    process.stdout.write(JSON.stringify({ ok: false, error: 'missing_key', exact_fix: resolved.exactFix }) + '\n');
+    process.exitCode = 1;
+    return;
+  }
+  const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 400);
+  timer.unref?.();
+  const started = Date.now();
+  try {
+    const status = await marrowRuntimeStatus(resolved.apiKey, baseUrl, true, resolved.sessionId, resolved.agentId, controller.signal);
+    const latencyMs = Date.now() - started;
+    const history = updatePingState({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId, latencyMs, success: true });
+    process.stdout.write(JSON.stringify({
+      ok: status.ok === true,
+      health: status.health || 'available',
+      current_ms: latencyMs,
+      p50_ms: history.p50_ms,
+      p99_ms: history.p99_ms,
+      sample_count: history.sample_count,
+      last_success_at: history.last_success_at,
+      lifecycle_spool: lifecycleSpoolStatus({ apiKey: resolved.apiKey, agentId: resolved.agentId }),
+    }, null, 2) + '\n');
+  } catch (error) {
+    const history = updatePingState({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId, success: false });
+    const message = error instanceof Error ? error.message : String(error);
+    process.stdout.write(JSON.stringify({
+      ok: false,
+      error: /401|unauthorized/i.test(message) ? 'authentication_failed' : /403|forbidden/i.test(message) ? 'permission_denied' : /abort|timeout/i.test(message) ? 'timeout' : 'unavailable',
+      p50_ms: history.p50_ms,
+      p99_ms: history.p99_ms,
+      sample_count: history.sample_count,
+      last_success_at: history.last_success_at,
+      lifecycle_spool: lifecycleSpoolStatus({ apiKey: resolved.apiKey, agentId: resolved.agentId }),
+    }, null, 2) + '\n');
+    process.exitCode = 1;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function runSpoolCommand(drain: boolean): Promise<void> {
@@ -323,6 +376,8 @@ if (cliArgs.hook) {
   void runSpoolCommand(false);
 } else if (cliArgs.drainSpool) {
   void runSpoolCommand(true);
+} else if (cliArgs.ping) {
+  void runPingCommand();
 } else if (cliArgs.setup) {
   runSetup();
 } else {
@@ -1568,7 +1623,7 @@ async function handleRequest(req: {
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
-        serverInfo: { name: 'marrow', version: '3.9.54' },
+        serverInfo: { name: 'marrow', version: '3.9.55' },
       });
 
       // Auto-enroll: emit enrollment notification on connection

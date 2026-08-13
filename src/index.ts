@@ -767,14 +767,28 @@ export async function marrowAsk(
   sessionId?: string,
   agentId?: string
 ): Promise<MarrowAskResult> {
-  const res = await fetch(`${baseUrl}/v1/agent/ask`, {
+  const res = await fetch(`${baseUrl}/v1/analytics/decision-brief`, {
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
-    body: JSON.stringify({ query: params.query }),
+    body: JSON.stringify({
+      action: params.query,
+      type: 'general',
+      role: 'general',
+      agent_id: agentId,
+      session_id: sessionId,
+    }),
   });
 
   const json = await safeJsonResponse(res);
-  return json.data;
+  const brief = json.data as MarrowDecisionBriefResult;
+  const similarFailures = Array.isArray(brief.risk?.similar_failures) ? brief.risk.similar_failures : [];
+  return {
+    answer: [brief.summary, brief.next_actions?.[0]].filter(Boolean).join(' '),
+    stats: null,
+    top_outcomes: Array.isArray(brief.failure_alerts) ? brief.failure_alerts.map((item) => item.message).slice(0, 5) : [],
+    decisions_matched: similarFailures.reduce((total, item) => total + Number(item.failures || 0), 0),
+    low_history: Number(brief.fleet_reliability?.outcome_coverage || 0) === 0,
+  };
 }
 
 /**
@@ -989,11 +1003,33 @@ export async function marrowRuntimeStatus(
   baseUrl: string,
   fast: boolean = true,
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   const qs = fast ? '?fast=1' : '';
   const res = await fetch(`${baseUrl}/v1/agent/status${qs}`, {
     headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    signal,
+  });
+  const json = await safeJsonResponse(res);
+  return json.data;
+}
+
+/**
+ * Get the compact canonical read context used by passive prompt hooks.
+ */
+export async function marrowAgentContext(
+  apiKey: string,
+  baseUrl: string,
+  sessionId?: string,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const query = new URLSearchParams({ compact: '1' });
+  if (agentId) query.set('agent_id', agentId);
+  const res = await fetch(`${baseUrl}/v1/agent/context?${query.toString()}`, {
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    signal,
   });
   const json = await safeJsonResponse(res);
   return json.data;

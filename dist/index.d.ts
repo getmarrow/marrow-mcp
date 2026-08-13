@@ -146,7 +146,11 @@ export declare function marrowAgentStatus(apiKey: string, baseUrl: string, perio
 /**
  * Get live runtime hook diagnostics from /v1/agent/status.
  */
-export declare function marrowRuntimeStatus(apiKey: string, baseUrl: string, fast?: boolean, sessionId?: string, agentId?: string): Promise<Record<string, unknown>>;
+export declare function marrowRuntimeStatus(apiKey: string, baseUrl: string, fast?: boolean, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
+/**
+ * Get the compact canonical read context used by passive prompt hooks.
+ */
+export declare function marrowAgentContext(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
 /**
  * Get owner-ready proof of Marrow value for an agent or fleet.
  */

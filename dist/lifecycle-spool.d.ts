@@ -48,6 +48,7 @@ export declare function recordLifecycleEvent(input: {
     apiKey: string;
     baseUrl: string;
     event: LifecycleEvent;
+    deferDelivery?: boolean;
 }): Promise<{
     event_id: string;
     accepted: boolean;
