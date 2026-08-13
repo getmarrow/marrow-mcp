@@ -128,6 +128,55 @@ export function validatePathParam(value: string, paramName: string): string {
   return value;
 }
 
+const REPLAY_CONSTRAINT_STRING_FIELDS = new Set([
+  'environment',
+  'tests',
+  'policy_profile_id',
+  'workflow_type',
+  'task_type',
+]);
+const REPLAY_CONSTRAINT_BOOLEAN_FIELDS = new Set(['required_proof', 'same_workspace']);
+
+function boundCoordinationAgent(input: Record<string, unknown>, agentId?: string): string {
+  const boundAgentId = typeof agentId === 'string' ? agentId.trim() : '';
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(boundAgentId)) {
+    throw new TypeError('A bound Marrow fleet agent id is required for coordination mutations.');
+  }
+  for (const field of ['agent_id', 'source_agent_id']) {
+    const supplied = input[field];
+    if (supplied != null && String(supplied).trim() !== boundAgentId) {
+      throw new TypeError(`${field} must match the authenticated Marrow fleet agent id.`);
+    }
+  }
+  return boundAgentId;
+}
+
+function normalizeReplayConstraints(value: unknown): Record<string, string | boolean> {
+  if (value == null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('constraints must be a bounded object.');
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 7) throw new TypeError('constraints exceeds the maximum field count.');
+  const normalized: Record<string, string | boolean> = {};
+  for (const [key, raw] of entries.sort(([left], [right]) => left.localeCompare(right))) {
+    if (REPLAY_CONSTRAINT_BOOLEAN_FIELDS.has(key)) {
+      if (typeof raw !== 'boolean') throw new TypeError(`constraints.${key} must be boolean.`);
+      normalized[key] = raw;
+      continue;
+    }
+    if (!REPLAY_CONSTRAINT_STRING_FIELDS.has(key)) {
+      throw new TypeError(`constraints.${key} is not allowed.`);
+    }
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    if (!/^[A-Za-z0-9._:-]{1,80}$/.test(text)) {
+      throw new TypeError(`constraints.${key} must be a bounded identifier.`);
+    }
+    normalized[key] = text;
+  }
+  return normalized;
+}
+
 /**
  * Validate and sanitize a base URL. Requires HTTPS.
  */
@@ -1338,8 +1387,9 @@ export async function marrowCoordinate(
     return (await safeJsonResponse(res)).data;
   }
   if (action === 'acquire_lease') {
+    const boundAgentId = boundCoordinationAgent(input, agentId);
     const body = {
-      agent_id: String(input.agent_id || agentId || ''),
+      agent_id: boundAgentId,
       resource_type: input.resource_type,
       resource: typeof input.resource === 'string' ? redactSensitiveText(input.resource) : input.resource,
       workflow_id: input.workflow_id,
@@ -1351,13 +1401,14 @@ export async function marrowCoordinate(
     return (await safeJsonResponse(res)).data;
   }
   if (action === 'release_lease') {
+    const boundAgentId = boundCoordinationAgent(input, agentId);
     const leaseId = validatePathParam(String(input.lease_id || ''), 'lease_id');
     if (!leaseId.startsWith('lease_')) throw new TypeError('lease_id must be a Marrow lease identifier.');
     const res = await fetch(`${baseUrl}/v1/agent/governance/leases/${leaseId}/release`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        agent_id: String(input.agent_id || agentId || ''),
+        agent_id: boundAgentId,
         lease_token: input.lease_token,
       }),
     });
@@ -1370,8 +1421,9 @@ export async function marrowCoordinate(
     return (await safeJsonResponse(res)).data;
   }
   if (action === 'create_proof_packet') {
+    const boundAgentId = boundCoordinationAgent(input, agentId);
     const body = redactSensitiveValue({
-      source_agent_id: input.source_agent_id || input.agent_id || agentId,
+      source_agent_id: boundAgentId,
       parent_agent_id: input.parent_agent_id,
       lease_id: input.lease_id,
       decision_id: input.decision_id,
@@ -1412,7 +1464,7 @@ export async function marrowReplayCompare(
   const body = redactSensitiveValue({
     source_decision_id: input.source_decision_id,
     workspace_binding_id: input.workspace_binding_id,
-    constraints: input.constraints,
+    constraints: normalizeReplayConstraints(input.constraints),
     baseline: input.baseline,
     candidate: input.candidate,
   });

@@ -1185,7 +1185,6 @@ if (process.argv[2] !== 'keys') {
                             type: 'string',
                             enum: ['list_leases', 'acquire_lease', 'release_lease', 'list_proof_packets', 'create_proof_packet'],
                         },
-                        agent_id: { type: 'string', description: 'Acting agent id. Defaults to MARROW_FLEET_AGENT_ID.' },
                         resource_type: { type: 'string', enum: ['file', 'directory', 'service', 'workflow', 'deployment', 'custom'] },
                         resource: { type: 'string', maxLength: 160, description: 'Bounded tenant-visible resource label. Do not send secrets.' },
                         workflow_id: { type: 'string' },
@@ -1194,7 +1193,6 @@ if (process.argv[2] !== 'keys') {
                         lease_token: { type: 'string', description: 'One-time lease capability returned by acquire_lease.' },
                         status: { type: 'string', enum: ['active', 'released', 'expired', 'incomplete', 'complete', 'failed'] },
                         limit: { type: 'number', minimum: 1, maximum: 100 },
-                        source_agent_id: { type: 'string' },
                         parent_agent_id: { type: 'string' },
                         decision_id: { type: 'string' },
                         proof_pack_id: { type: 'string' },
@@ -1217,7 +1215,21 @@ if (process.argv[2] !== 'keys') {
                         comparison_id: { type: 'string', description: 'Fetch a prior replay comparison by id.' },
                         source_decision_id: { type: 'string', description: 'Original task decision used to bind the comparison.' },
                         workspace_binding_id: { type: 'string', description: 'Optional privacy-safe workspace binding from runtime.' },
-                        constraints: { type: 'object', description: 'Bounded comparison constraints; no prompts, code, or credentials.' },
+                        constraints: {
+                            type: 'object',
+                            additionalProperties: false,
+                            maxProperties: 7,
+                            description: 'Allowlisted comparison labels only; prompts, code, transcripts, credentials, and nested content are rejected.',
+                            properties: {
+                                environment: { type: 'string', maxLength: 80 },
+                                tests: { type: 'string', maxLength: 80 },
+                                policy_profile_id: { type: 'string', maxLength: 80 },
+                                workflow_type: { type: 'string', maxLength: 80 },
+                                task_type: { type: 'string', maxLength: 80 },
+                                required_proof: { type: 'boolean' },
+                                same_workspace: { type: 'boolean' },
+                            },
+                        },
                         baseline: {
                             type: 'object',
                             properties: { label: { type: 'string' }, decision_id: { type: 'string' } },
@@ -2078,11 +2090,10 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_coordinate') {
-                        const result = await (0, index_1.marrowCoordinate)(API_KEY, BASE_URL, {
-                            ...args,
-                            agent_id: args.agent_id || FLEET_AGENT_ID || AGENT_ID,
-                            source_agent_id: args.source_agent_id || args.agent_id || FLEET_AGENT_ID || AGENT_ID,
-                        }, SESSION_ID, FLEET_AGENT_ID);
+                        const coordinationArgs = { ...args };
+                        delete coordinationArgs.agent_id;
+                        delete coordinationArgs.source_agent_id;
+                        const result = await (0, index_1.marrowCoordinate)(API_KEY, BASE_URL, coordinationArgs, SESSION_ID, FLEET_AGENT_ID || AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
