@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
 const { resolve } = require('node:path');
+const { version: packageVersion } = require('../package.json');
 
 const key = process.env.MARROW_API_KEY || '';
 if (!key) {
@@ -28,6 +29,7 @@ function boundedMs(name, fallback, minimum = 100, maximum = 10_000) {
 
 const transportTimeoutMs = boundedMs('MARROW_REQUEST_TIMEOUT_MS', 2_500, 250, 10_000);
 const processTimeoutMs = transportTimeoutMs + 3_000;
+const expectedVersion = process.env.MARROW_EXPECTED_MCP_VERSION || packageVersion;
 const ceilings = {
   marrow_status: boundedMs('MARROW_MCP_STATUS_CEILING_MS', 1_500),
   marrow_ask: boundedMs('MARROW_MCP_ASK_CEILING_MS', 1_000),
@@ -39,13 +41,48 @@ function toolPayload(message, name) {
   if (message.error) throw new Error(`${name} returned JSON-RPC error ${message.error.code}`);
   const result = message.result || {};
   const text = result.content?.[0]?.text;
-  let payload = {};
-  try { payload = text ? JSON.parse(text) : {}; } catch { throw new Error(`${name} returned invalid tool JSON`); }
+  if (typeof text !== 'string' || !text.trim()) throw new Error(`${name} returned no MCP tool payload`);
+  let payload;
+  try { payload = JSON.parse(text); } catch { throw new Error(`${name} returned invalid tool JSON`); }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).length === 0) {
+    throw new Error(`${name} returned an empty or invalid tool payload`);
+  }
   if (result.isError || payload.ok === false || payload.available === false) {
     const code = payload.error?.code || payload.error_code || 'tool_unavailable';
     throw new Error(`${name} unavailable (${code})`);
   }
   return payload;
+}
+
+function validatePayload(name, payload) {
+  const requireField = (valid, field) => {
+    if (!valid) throw new Error(`${name} returned an invalid ${field} contract`);
+  };
+  if (name === 'marrow_status' || name === 'marrow_runtime_status') {
+    requireField(
+      typeof payload.status === 'string'
+        || typeof payload.health === 'string'
+        || typeof payload.active === 'boolean'
+        || (payload.runtime && typeof payload.runtime === 'object'),
+      'status',
+    );
+  } else if (name === 'marrow_orient') {
+    requireField(Array.isArray(payload.warnings) && typeof payload.shouldPause === 'boolean', 'orientation');
+  } else if (name === 'marrow_ask') {
+    requireField(typeof payload.answer === 'string' && payload.answer.trim().length > 0, 'answer');
+  } else if (name === 'marrow_agent_runtime') {
+    requireField(
+      payload.risk_gate
+        && typeof payload.risk_gate === 'object'
+        && typeof payload.risk_gate.allow === 'boolean'
+        && typeof payload.risk_gate.decision === 'string'
+        && payload.proof_pack
+        && typeof payload.proof_pack.complete === 'boolean',
+      'runtime gate',
+    );
+  } else if (name === 'marrow_first_value') {
+    requireField(typeof payload.active === 'boolean' && typeof payload.headline === 'string', 'first-value');
+  }
 }
 
 function runCase(name, args) {
@@ -62,6 +99,7 @@ function runCase(name, args) {
       MARROW_BASE_URL: process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai',
       MARROW_AUTO_ENROLL: 'false',
       MARROW_TOOL_PROFILE: 'full',
+      MARROW_CONTROL_PATH_CANARY: '1',
       MARROW_REQUEST_TIMEOUT_MS: String(transportTimeoutMs),
     },
     input,
@@ -86,6 +124,7 @@ function runCase(name, args) {
   const names = new Set((listed?.result?.tools || []).map((tool) => tool.name));
   if (!names.has(name)) throw new Error(`${name} is missing from the full MCP contract`);
   const payload = toolPayload(called, name);
+  validatePayload(name, payload);
   const live = payload.stale !== true && payload.source !== 'last_known' && payload.available !== false;
   if (!live) throw new Error(`${name} returned cached or unavailable guidance`);
   return { tool: name, ok: true, live: true, latency_ms: latencyMs, package_version: version };
@@ -95,6 +134,9 @@ try {
   const results = cases.map(([name, args]) => runCase(name, args));
   const versions = [...new Set(results.map((row) => row.package_version))];
   if (versions.length !== 1) throw new Error('MCP canary processes reported inconsistent package versions');
+  if (versions[0] !== expectedVersion) {
+    throw new Error(`MCP canary loaded ${versions[0]} instead of expected ${expectedVersion}`);
+  }
   const core = results.filter((row) => Object.hasOwn(ceilings, row.tool));
   const slow = core.find((row) => row.latency_ms > ceilings[row.tool]);
   if (slow && process.env.MARROW_MCP_CANARY_ENFORCE_LATENCY !== '0') {

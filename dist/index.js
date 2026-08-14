@@ -64,6 +64,7 @@ const redact_1 = require("./redact");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_contract_1 = require("./hook-contract");
 const request_reliability_1 = require("./request-reliability");
+const runtime_contract_1 = require("./runtime-contract");
 const fetch = request_reliability_1.reliableFetch;
 const SOURCE_CLIENTS = new Set(['claude-code', 'cursor', 'windsurf', 'openclaw', 'codex', 'gemini', 'grok', 'deepseek', 'qwen', 'kimi', 'minimax', 'cline', 'opencode', 'hermes', 'glm', 'custom', 'unknown']);
 const SAFE_ARBITRATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
@@ -225,12 +226,18 @@ async function safeJsonResponse(res) {
         json = await res.json();
     }
     catch {
-        throw new Error('Marrow API returned an invalid JSON response');
+        throw (0, request_reliability_1.invalidResponseError)();
     }
-    if (json.error) {
-        throw new Error(String(json.error).slice(0, 240));
+    if (!json || typeof json !== 'object' || Array.isArray(json) || json.error) {
+        throw (0, request_reliability_1.invalidResponseError)();
     }
     return json;
+}
+function requireRuntimeResult(value) {
+    const runtime = (0, runtime_contract_1.normalizeRuntimeResult)(value);
+    if (!runtime)
+        throw (0, request_reliability_1.invalidResponseError)();
+    return runtime;
 }
 const retryQueue = [];
 let retryQueueDraining = false;
@@ -936,7 +943,7 @@ async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId, si
         signal,
     });
     const json = await safeJsonResponse(res);
-    return json.data;
+    return requireRuntimeResult(json.data);
 }
 async function marrowEnforcement(apiKey, baseUrl, input, sessionId, agentId, signal) {
     const body = {

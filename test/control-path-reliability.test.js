@@ -6,21 +6,22 @@ const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const { marrowAgentRuntime, marrowAuto, marrowStatus } = require('../dist/index.js');
-const { MarrowRequestError } = require('../dist/request-reliability.js');
+const { MarrowRequestError, reliableFetch } = require('../dist/request-reliability.js');
+const { highRiskRuntimeCanClose, normalizeRuntimeResult } = require('../dist/runtime-contract.js');
 const { writeGuidanceCache } = require('../dist/guidance-cache.js');
 
-function mcpInput(toolName = 'marrow_agent_runtime') {
+function mcpInput(toolName = 'marrow_agent_runtime', args) {
   return [
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
     { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
     {
       jsonrpc: '2.0', id: 3, method: 'tools/call',
-      params: { name: toolName, arguments: toolName === 'marrow_agent_runtime' ? { action: 'deploy safely', type: 'deploy' } : {} },
+      params: { name: toolName, arguments: args || (toolName === 'marrow_agent_runtime' ? { action: 'deploy safely', type: 'deploy' } : {}) },
     },
   ].map((row) => JSON.stringify(row)).join('\n') + '\n';
 }
 
-function runMcp(home, extraEnv = {}) {
+function runMcp(home, extraEnv = {}, input = mcpInput()) {
   return spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js')], {
     env: {
       ...process.env,
@@ -32,7 +33,7 @@ function runMcp(home, extraEnv = {}) {
       MARROW_REQUEST_TIMEOUT_MS: '150',
       ...extraEnv,
     },
-    input: mcpInput(),
+    input,
     encoding: 'utf8',
     timeout: 3_000,
   });
@@ -67,6 +68,90 @@ test('transport errors are typed and never expose raw undici failure text', asyn
         && error.code === 'dns_unavailable'
         && !/fetch failed/i.test(error.message),
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('malformed successful runtime responses fail closed with a typed invalid_response', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const body of [{}, { data: {} }, { data: { risk_gate: { allow: true } } }]) {
+      globalThis.fetch = async () => Response.json(body);
+      await assert.rejects(
+        () => marrowAgentRuntime('fixture-key', 'https://api.example.test', { action: 'deploy safely' }),
+        (error) => error instanceof MarrowRequestError && error.code === 'invalid_response',
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('native slim runtime responses normalize without weakening their decision', () => {
+  const allowed = normalizeRuntimeResult({
+    response_mode: 'slim', decision: 'proceed', risk_level: 'low', gate_required: false,
+    proof_required: false, proof_complete: true, gate_receipt_id: 'gate-low',
+  });
+  assert.equal(allowed.risk_gate.allow, true);
+  assert.equal(allowed.risk_gate.decision, 'allow');
+  assert.equal(allowed.proof_pack.complete, true);
+
+  const blocked = normalizeRuntimeResult({
+    response_mode: 'slim', decision: 'block', risk_level: 'high', gate_required: true,
+    proof_required: true, proof_complete: false, gate_receipt_id: 'gate-blocked',
+  });
+  assert.equal(blocked.risk_gate.allow, false);
+  assert.equal(blocked.risk_gate.decision, 'block');
+  assert.equal(blocked.proof_pack.complete, false);
+  assert.equal(normalizeRuntimeResult({ response_mode: 'slim', decision: 'unknown_policy' }), null);
+});
+
+test('native slim runtime responses reject unknown risk levels', () => {
+  assert.equal(normalizeRuntimeResult({
+    response_mode: 'slim',
+    decision: 'allow',
+    risk_level: 'future_unknown',
+    gate_required: false,
+    proof_required: false,
+    proof_complete: true,
+  }), null);
+});
+
+test('API failure messages and exact fixes redact secret-shaped values', async () => {
+  const originalFetch = globalThis.fetch;
+  const leakedKey = ['mrw', 'sensitive', 'fixture', 'value'].join('_');
+  const leakedConfig = `${['MARROW', 'API', 'KEY'].join('_')}=${['fixture', 'sensitive', 'value'].join('-')}`;
+  globalThis.fetch = async () => Response.json({
+    error: `backend rejected ${leakedKey}`,
+    exact_fix: `retry with ${leakedConfig}`,
+  }, { status: 503 });
+  try {
+    await assert.rejects(
+      () => marrowAgentRuntime('fixture-key', 'https://api.example.test', { action: 'deploy safely' }),
+      (error) => error instanceof MarrowRequestError
+        && error.code === 'service_unavailable'
+        && !String(error.message).includes(leakedKey)
+        && !String(error.exactFix).includes(leakedConfig)
+        && /REDACTED/.test(`${error.message} ${error.exactFix}`),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('caller-supplied abort signals retain one bounded safe retry', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return calls === 1 ? new Response('{}', { status: 503 }) : Response.json({ data: { health: 'healthy' } });
+  };
+  try {
+    const controller = new AbortController();
+    const response = await reliableFetch('https://api.example.test/v1/agent/status', { signal: controller.signal });
+    assert.equal(response.status, 200);
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -119,6 +204,32 @@ test('full MCP profile remains callable for backward-compatible advanced workflo
   }
 });
 
+test('compact MCP profile rejects direct calls to hidden advanced tools', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-control-path-hidden-'));
+  try {
+    const child = runMcp(home, {}, mcpInput('marrow_create_key', { name: 'must-not-run' }));
+    assert.equal(child.status, 0, child.stderr);
+    const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(messages[2].error.code, -32601);
+    assert.match(messages[2].error.message, /active Marrow tool profile/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('high-risk closure requires an allowed fresh receipt and complete proof', () => {
+  const runtime = {
+    risk_gate: { allow: true, decision: 'allow' },
+    proof_pack: { complete: true },
+    gate_receipt: { id: 'gate-one', decision: 'allow', expires_at: '2030-01-01T00:00:00.000Z' },
+  };
+  assert.equal(highRiskRuntimeCanClose(runtime, { test: 'passed' }, undefined, Date.parse('2029-01-01T00:00:00.000Z')), true);
+  assert.equal(highRiskRuntimeCanClose({ ...runtime, risk_gate: { allow: false, decision: 'block' } }, { test: 'passed' }, undefined), false);
+  assert.equal(highRiskRuntimeCanClose({ ...runtime, proof_pack: { complete: false } }, { test: 'passed' }, undefined), false);
+  assert.equal(highRiskRuntimeCanClose({ ...runtime, gate_receipt: { id: 'gate-one', decision: 'review_required' } }, { test: 'passed' }, undefined), false);
+  assert.equal(highRiskRuntimeCanClose(runtime, undefined, undefined), false);
+});
+
 test('auto does not invent successful completion when success is absent', async () => {
   const originalFetch = globalThis.fetch;
   const calls = [];
@@ -144,6 +255,9 @@ test('published canary requires a completed child response for every route', () 
   const source = readFileSync(join(__dirname, '..', 'scripts', 'control-path-canary.cjs'), 'utf8');
   assert.match(source, /spawnSync/);
   assert.match(source, /returned no MCP tool response/);
+  assert.match(source, /empty or invalid tool payload/);
+  assert.match(source, /versions\[0\] !== expectedVersion/);
+  assert.match(source, /validatePayload\(name, payload\)/);
   assert.match(source, /child\.status !== 0/);
   assert.match(source, /tools_checked: results\.length/);
   assert.match(source, /process\.exitCode = 1/);

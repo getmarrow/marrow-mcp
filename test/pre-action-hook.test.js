@@ -396,7 +396,7 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
     assert.equal(calls[3].body.operation, 'verify');
     assert.equal(calls[3].body.permit, 'signed-permit');
     assert.equal(calls.every((entry) => entry.signal instanceof AbortSignal), true);
-    assert.equal(calls.every((entry) => entry.signal === calls[0].signal), true);
+    assert.equal(new Set(calls.map((entry) => entry.signal)).size, calls.length);
     const result = JSON.parse(output);
     assert.notEqual(result.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(result.hookSpecificOutput.additionalContext, /action permit verified/);

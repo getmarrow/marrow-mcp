@@ -1,4 +1,5 @@
 import { MCP_ADAPTER_VERSION } from './hook-contract';
+import { redactSensitiveText } from './redact';
 
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const RUNTIME_PATH = /\/v1\/agent\/runtime(?:[/?]|$)/;
@@ -32,13 +33,13 @@ export class MarrowRequestError extends Error {
     retryAfterMs?: number | null;
     exactFix: string;
   }) {
-    super(input.message);
+    super(redactSensitiveText(input.message).slice(0, 240));
     this.name = 'MarrowRequestError';
     this.code = input.code;
     this.status = input.status ?? null;
     this.retryable = input.retryable ?? false;
     this.retryAfterMs = input.retryAfterMs ?? null;
-    this.exactFix = input.exactFix;
+    this.exactFix = redactSensitiveText(input.exactFix).slice(0, 360);
   }
 }
 
@@ -92,11 +93,20 @@ export function requestErrorFromResponse(response: Response, detail?: Record<str
           : 'request_failed';
   return new MarrowRequestError({
     code,
-    message: `HTTP ${status}: ${apiMessage}`.slice(0, 240),
+    message: `HTTP ${status}: ${apiMessage}`,
     status,
     retryable: RETRYABLE_STATUS.has(status),
     retryAfterMs: retryAfterMs(response),
-    exactFix: apiFix.slice(0, 360),
+    exactFix: apiFix,
+  });
+}
+
+export function invalidResponseError(): MarrowRequestError {
+  return new MarrowRequestError({
+    code: 'invalid_response',
+    message: 'Marrow API returned an invalid response',
+    retryable: true,
+    exactFix: 'Retry once, then run npx -y @getmarrow/install@latest doctor if the response remains invalid.',
   });
 }
 
@@ -145,33 +155,58 @@ function safeToRetry(url: string, init: RequestInit): boolean {
 
 export async function reliableFetch(url: string | URL, init: RequestInit = {}): Promise<Response> {
   const target = String(url);
-  if (init.signal) {
-    try {
-      return await globalThis.fetch(target, init);
-    } catch (error) {
-      throw normalizeRequestError(error);
-    }
-  }
   const timeoutMs = boundedTimeout(target);
   const deadline = Date.now() + timeoutMs;
+  const externalSignal = init.signal;
   let lastError: MarrowRequestError | null = null;
   const attempts = safeToRetry(target, init) ? 2 : 1;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (externalSignal?.aborted) throw normalizeRequestError(externalSignal.reason || new DOMException('Aborted', 'AbortError'));
     const remaining = deadline - Date.now();
     if (remaining < 50) break;
     const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(externalSignal?.reason);
+    externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
     const timer = setTimeout(() => controller.abort(), remaining);
     timer.unref?.();
+    let retryResponse: Response | null = null;
+    let delayMs = 0;
     try {
       const response = await globalThis.fetch(target, { ...init, signal: controller.signal });
       if (!RETRYABLE_STATUS.has(response.status) || attempt + 1 >= attempts) return response;
       lastError = requestErrorFromResponse(response);
+      retryResponse = response;
+      delayMs = lastError.retryAfterMs ?? 50;
     } catch (error) {
       lastError = normalizeRequestError(error);
       if (!lastError.retryable || attempt + 1 >= attempts) throw lastError;
+      delayMs = 50;
     } finally {
       clearTimeout(timer);
+      externalSignal?.removeEventListener('abort', abortFromCaller);
+    }
+
+    const remainingAfterAttempt = deadline - Date.now();
+    if (retryResponse && delayMs >= remainingAfterAttempt - 50) {
+      return retryResponse;
+    }
+    if (delayMs > 0) {
+      await new Promise<void>((resolve, reject) => {
+        const finish = () => {
+          externalSignal?.removeEventListener('abort', abort);
+          resolve();
+        };
+        const retryTimer = setTimeout(finish, Math.min(delayMs, Math.max(0, remainingAfterAttempt - 50)));
+        function abort() {
+          clearTimeout(retryTimer);
+          externalSignal?.removeEventListener('abort', abort);
+          reject(normalizeRequestError(externalSignal?.reason || new DOMException('Aborted', 'AbortError')));
+        }
+        if (!externalSignal) return;
+        if (externalSignal.aborted) abort();
+        else externalSignal.addEventListener('abort', abort, { once: true });
+      });
     }
   }
   throw lastError || normalizeRequestError(new Error('Marrow request deadline exceeded'));

@@ -38,7 +38,7 @@ test('orient uses the canonical runtime contract with the bound agent identity',
         session_id: 'jarvis-session',
         status: {},
         decision_brief: {},
-        risk_gate: {},
+        risk_gate: { allow: true, decision: 'warn', reasons: [] },
         relevant_lessons: [],
         deployment_playbooks: [],
         template_suggestion: {},
@@ -98,7 +98,7 @@ test('orient pauses on a runtime block', async (t) => {
   global.fetch = async () => new Response(JSON.stringify({
     data: {
       status: {},
-      risk_gate: {},
+      risk_gate: { allow: false, decision: 'block', reasons: [] },
       relevant_lessons: [],
       deployment_playbooks: [],
       template_suggestion: {},
