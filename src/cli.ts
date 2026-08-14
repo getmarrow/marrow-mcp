@@ -1325,7 +1325,6 @@ const TOOLS = [
         lease_token: { type: 'string', description: 'One-time lease capability returned by acquire_lease.' },
         status: { type: 'string', enum: ['active', 'released', 'expired', 'incomplete', 'complete', 'failed'] },
         limit: { type: 'number', minimum: 1, maximum: 100 },
-        parent_agent_id: { type: 'string' },
         decision_id: { type: 'string' },
         proof_pack_id: { type: 'string' },
         summary: { type: 'string', maxLength: 280, description: 'Compact result summary; no raw transcript.' },
@@ -2413,7 +2412,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           BASE_URL,
           coordinationArgs,
           SESSION_ID,
-          FLEET_AGENT_ID || AGENT_ID
+          FLEET_AGENT_ID
         );
         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
         return;
