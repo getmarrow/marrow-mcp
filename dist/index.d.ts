@@ -98,17 +98,17 @@ export declare function marrowAgentPatterns(apiKey: string, baseUrl: string, par
 export declare function marrowOrient(apiKey: string, baseUrl: string, params?: {
     taskType?: string;
     autoWarn?: boolean;
-}, sessionId?: string, agentId?: string): Promise<OrientResult>;
+}, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<OrientResult>;
 /**
  * Query the collective hive for failure patterns and recommendations.
  */
 export declare function marrowAsk(apiKey: string, baseUrl: string, params: {
     query: string;
-}, sessionId?: string, agentId?: string): Promise<MarrowAskResult>;
+}, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowAskResult>;
 /**
  * Get API health status.
  */
-export declare function marrowStatus(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<StatusResult>;
+export declare function marrowStatus(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<StatusResult>;
 export declare function marrowWorkflow(apiKey: string, baseUrl: string, params: {
     action: 'register' | 'list' | 'get' | 'update' | 'start' | 'advance' | 'instances';
     workflowId?: string;

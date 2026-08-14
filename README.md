@@ -104,7 +104,19 @@ npx -y @getmarrow/mcp@latest ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.56
+## What's New in v3.9.57
+
+v3.9.57 makes the agent control path reliable and deliberately small by default:
+
+- `marrow_status`, `marrow_ask`, and `marrow_agent_runtime` use authenticated routes with bounded retries and typed failures;
+- transient read failures return an owner-only last-known brief when available, while cached guidance can never authorize high-risk work;
+- normal tool errors return structured `ok`, `error_code`, `exact_fix`, `stale_brief`, and `client_update` data instead of raw MCP `fetch failed` errors;
+- the default agent surface is six tools: runtime, commit, ask, status, auto, and handoff status; set `MARROW_TOOL_PROFILE=full` only for legacy or advanced integrations;
+- risky `marrow_auto` calls obtain a fresh runtime gate automatically and cannot self-close as successful without required proof;
+- `marrow_run` requires an explicit outcome and never invents proof or a successful result;
+- the package includes an exact-version control-path canary covering every route reported in the production incident.
+
+## Previous: v3.9.56
 
 v3.9.56 adds tenant-scoped coordination and evidence-only replay to the existing MCP governance surface:
 
@@ -121,7 +133,7 @@ v3.9.56 adds tenant-scoped coordination and evidence-only replay to the existing
 
 The package remains backward compatible with supported server aliases while advertising only implemented tools.
 
-This release accepts `@getmarrow/sdk@^3.7.54` and is released after SDK `3.7.55`. The deterministic release order is SDK `3.7.55` first, MCP `3.9.56` second, and installer `0.1.40` last.
+This release is paired with SDK `3.7.56` and installer `0.1.41`. The deterministic release order is SDK first, MCP second, installer third, and the API release last.
 
 ## Previous: v3.9.54
 

@@ -1,10 +1,11 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.56",
+  "version": "3.9.57",
   "mcpName": "io.github.getmarrow/marrow",
   "description": "Runtime control, proof, and fleet intelligence for MCP-compatible AI agents.",
   "bin": {
-    "marrow-mcp": "dist/cli.js"
+    "marrow-mcp": "dist/cli.js",
+    "marrow-mcp-canary": "scripts/control-path-canary.cjs"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,7 +14,8 @@
     "dev": "tsc --watch",
     "test": "npm run build && node --test test/*.test.js",
     "registry:check": "node scripts/mcp-registry-check.cjs",
-    "registry:verify": "node scripts/mcp-registry-verify.cjs"
+    "registry:verify": "node scripts/mcp-registry-verify.cjs",
+    "canary:control-path": "node scripts/control-path-canary.cjs"
   },
   "keywords": [
     "mcp",
@@ -68,7 +70,8 @@
     "README.md",
     "server.json",
     "scripts/mcp-registry-check.cjs",
-    "scripts/mcp-registry-verify.cjs"
+    "scripts/mcp-registry-verify.cjs",
+    "scripts/control-path-canary.cjs"
   ],
   "dependencies": {
     "@getmarrow/sdk": "^3.7.54"

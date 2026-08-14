@@ -17,6 +17,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.CONTEXT_HOOK_COMMAND = void 0;
 exports.extractSignals = extractSignals;
 exports.buildCombinedContextBlock = buildCombinedContextBlock;
+exports.compactRuntimeContext = compactRuntimeContext;
 exports.runContextHookCommand = runContextHookCommand;
 exports.installUserPromptSubmitHook = installUserPromptSubmitHook;
 const index_1 = require("./index");

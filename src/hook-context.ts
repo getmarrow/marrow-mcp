@@ -541,7 +541,7 @@ function isAuthenticationFailure(error: unknown): boolean {
   return error instanceof Error && /\b(?:401|403|unauthorized|forbidden|invalid api key|insufficient scope)\b/i.test(error.message);
 }
 
-function compactRuntimeContext(runtime: MarrowAgentRuntimeResult): string {
+export function compactRuntimeContext(runtime: MarrowAgentRuntimeResult): string {
   const intervention = runtime.intervention;
   const lines = ['## Marrow before-action'];
   const decision = intervention?.decision || runtime.risk_gate?.decision || 'proceed';

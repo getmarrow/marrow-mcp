@@ -2,6 +2,8 @@
  * @getmarrow/mcp — API Functions
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type {
   ThinkResult,
   CommitResult,
@@ -43,6 +45,9 @@ import {
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
+import { reliableFetch, requestErrorFromResponse } from './request-reliability';
+
+const fetch = reliableFetch;
 
 export type { Narrative, CommitResult } from './types';
 
@@ -199,13 +204,21 @@ export function validateBaseUrl(rawUrl: string): string {
  */
 async function safeJsonResponse(res: Response): Promise<any> {
   if (!res.ok) {
-    let detail = '';
-    try { detail = await res.text(); } catch { /* ignore */ }
-    throw new Error(`API error ${res.status}: ${detail.slice(0, 200)}`);
+    let detail: Record<string, unknown> | undefined;
+    try {
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('json')) detail = await res.json() as Record<string, unknown>;
+    } catch { /* ignore malformed or non-JSON error bodies */ }
+    throw requestErrorFromResponse(res, detail);
   }
-  const json = await res.json();
+  let json: any;
+  try {
+    json = await res.json();
+  } catch {
+    throw new Error('Marrow API returned an invalid JSON response');
+  }
   if (json.error) {
-    throw new Error(json.error);
+    throw new Error(String(json.error).slice(0, 240));
   }
   return json;
 }
@@ -632,6 +645,10 @@ export async function marrowAuto(
     return { decision_id: decisionId, committed: false };
   }
 
+  if (typeof params.success !== 'boolean') {
+    return { decision_id: decisionId, committed: false };
+  }
+
   const commitTimeout = createTimeoutSignal(timeoutMs, startedAt);
   try {
     await marrowCommit(
@@ -639,7 +656,7 @@ export async function marrowAuto(
       baseUrl,
       {
         decision_id: decisionId,
-        success: params.success ?? true,
+        success: params.success,
         outcome: params.outcome,
         proof: params.proof,
         gate_receipt_id: params.gate_receipt_id,
@@ -697,7 +714,8 @@ export async function marrowOrient(
   baseUrl: string,
   params?: { taskType?: string; autoWarn?: boolean },
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<OrientResult> {
   const taskType = params?.taskType || 'general';
   const runtime = await marrowAgentRuntime(
@@ -713,7 +731,8 @@ export async function marrowOrient(
       },
     },
     sessionId,
-    agentId
+    agentId,
+    signal,
   );
 
   const intervention = runtime.intervention;
@@ -814,7 +833,8 @@ export async function marrowAsk(
   baseUrl: string,
   params: { query: string },
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<MarrowAskResult> {
   const res = await fetch(`${baseUrl}/v1/analytics/decision-brief`, {
     method: 'POST',
@@ -826,6 +846,7 @@ export async function marrowAsk(
       agent_id: agentId,
       session_id: sessionId,
     }),
+    signal,
   });
 
   const json = await safeJsonResponse(res);
@@ -847,10 +868,12 @@ export async function marrowStatus(
   apiKey: string,
   baseUrl: string,
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<StatusResult> {
-  const res = await fetch(`${baseUrl}/health`, {
+  const res = await fetch(`${baseUrl}/v1/agent/status?fast=1`, {
     headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    signal,
   });
 
   const json = await safeJsonResponse(res);
@@ -1158,9 +1181,13 @@ export async function marrowAgentRuntime(
     agent_id: input.agent_id || agentId,
     session_id: input.session_id || sessionId,
   };
+  const idempotencyKey = `mcp-runtime-${randomUUID()}`;
   const res = await fetch(`${baseUrl}/v1/agent/runtime`, {
     method: 'POST',
-    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    headers: {
+      ...buildHeaders(apiKey, sessionId, 'application/json', agentId),
+      'Idempotency-Key': idempotencyKey,
+    },
     body: JSON.stringify(body),
     signal,
   });

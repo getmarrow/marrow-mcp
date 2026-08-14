@@ -47,7 +47,8 @@ test('npm entry point matches the product positioning contract', () => {
   assert.ok(runtimeIndex >= 0 && runtimeIndex < thinkIndex && thinkIndex < commitIndex);
   assert.match(readme, /"outcome": "Production deploy succeeded and smoke checks passed\."/);
   assert.doesNotMatch(readme, /"profile": "production"/);
-  assert.ok(cliSource.includes(`serverInfo: { name: 'marrow', version: '${pkg.version}' }`));
+  assert.ok(cliSource.includes("serverInfo: { name: 'marrow', version: MCP_ADAPTER_VERSION }"));
+  assert.ok(fs.readFileSync(path.join(root, 'src/hook-contract.ts'), 'utf8').includes(`MCP_ADAPTER_VERSION = '${pkg.version}'`));
   assert.equal(pkg.dependencies['@getmarrow/sdk'], '^3.7.54');
 
   for (const [, json] of readme.matchAll(/```json\n([\s\S]*?)```/g)) {
