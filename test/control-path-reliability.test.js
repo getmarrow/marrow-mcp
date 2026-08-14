@@ -5,8 +5,8 @@ const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
-const { marrowAgentRuntime, marrowAuto, marrowStatus } = require('../dist/index.js');
-const { MarrowRequestError, reliableFetch } = require('../dist/request-reliability.js');
+const { marrowAgentRuntime, marrowAuto, marrowBuyerProof, marrowStatus } = require('../dist/index.js');
+const { MarrowRequestError, reliableFetch, structuredRequestFailure } = require('../dist/request-reliability.js');
 const { highRiskRuntimeCanClose, normalizeRuntimeResult } = require('../dist/runtime-contract.js');
 const { writeGuidanceCache } = require('../dist/guidance-cache.js');
 
@@ -140,6 +140,69 @@ test('API failure messages and exact fixes redact secret-shaped values', async (
   }
 });
 
+test('fleet-bound identity is identical in agent-scoped headers, bodies, and query defaults', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({
+      url: String(url),
+      headers: new Headers(init.headers),
+      body: init.body ? JSON.parse(String(init.body)) : null,
+    });
+    if (String(url).includes('/v1/agent/runtime')) {
+      return Response.json({ data: {
+        response_mode: 'slim', decision: 'allow', risk_level: 'low', gate_required: false,
+        proof_required: false, proof_complete: true, gate_receipt_id: 'gate-fixture',
+      } });
+    }
+    return Response.json({ data: {} });
+  };
+  try {
+    const agentId = 'fleet-bound-agent';
+    await marrowAgentRuntime('fixture-key', 'https://api.example.test', { action: 'inspect safely' }, 'session-one', agentId);
+    await marrowBuyerProof('fixture-key', 'https://api.example.test', {}, 'session-one', agentId);
+
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].headers.get('X-Marrow-Agent-Id'), agentId);
+    assert.equal(calls[0].body.agent_id, agentId);
+    assert.equal(calls[1].headers.get('X-Marrow-Agent-Id'), agentId);
+    assert.equal(new URL(calls[1].url).searchParams.get('agent_id'), agentId);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('scope mismatch code and backend exact repair survive a structured 403', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({
+    error: 'Agent identity does not match the key binding.',
+    details: {
+      code: 'MARROW_AGENT_SCOPE_MISMATCH',
+      exact_fix: 'Use the fleet-bound agent identity for both the request body and header.',
+      fix_command: 'export MARROW_FLEET_AGENT_ID=fleet-bound-agent',
+    },
+  }, { status: 403 });
+  try {
+    await assert.rejects(
+      () => marrowAgentRuntime('fixture-key', 'https://api.example.test', { action: 'inspect safely' }, 'session-one', 'fleet-bound-agent'),
+      (error) => {
+        assert.ok(error instanceof MarrowRequestError);
+        assert.equal(error.code, 'permission_denied');
+        assert.equal(error.backendCode, 'MARROW_AGENT_SCOPE_MISMATCH');
+        assert.match(error.exactFix, /fleet-bound agent identity/);
+        const failure = structuredRequestFailure(error);
+        assert.equal(failure.error.code, 'MARROW_AGENT_SCOPE_MISMATCH');
+        assert.equal(failure.error.category, 'permission_denied');
+        assert.match(failure.error.exact_fix, /fleet-bound agent identity/);
+        assert.equal(failure.error.fix_command, 'export MARROW_FLEET_AGENT_ID=fleet-bound-agent');
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('caller-supplied abort signals retain one bounded safe retry', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
@@ -258,7 +321,15 @@ test('published canary requires a completed child response for every route', () 
   assert.match(source, /empty or invalid tool payload/);
   assert.match(source, /versions\[0\] !== expectedVersion/);
   assert.match(source, /validatePayload\(name, payload\)/);
+  assert.match(source, /\['marrow_value_report', \{ period: '7d' \}\]/);
+  assert.doesNotMatch(source, /\['marrow_dashboard', \{\}\]/);
   assert.match(source, /child\.status !== 0/);
   assert.match(source, /tools_checked: results\.length/);
   assert.match(source, /process\.exitCode = 1/);
+});
+
+test('MCP omits an unconfigured agent identity instead of generating restart drift', () => {
+  const source = readFileSync(join(__dirname, '..', 'src', 'cli.ts'), 'utf8');
+  assert.match(source, /const FLEET_AGENT_ID = resolvedEnv\.agentId \|\| undefined/);
+  assert.doesNotMatch(source, /hostname\(\).*Date\.now/);
 });

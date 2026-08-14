@@ -15,18 +15,26 @@ const STATUS_CONTEXT_PATH = /\/v1\/agent\/(?:status|context)(?:[/?]|$)/;
 const DECISION_READ_PATH = /\/(?:v1\/agent\/first-value|v1\/analytics\/decision-brief)(?:[/?]|$)/;
 class MarrowRequestError extends Error {
     code;
+    backendCode;
     status;
     retryable;
     retryAfterMs;
     exactFix;
+    fixCommand;
     constructor(input) {
         super((0, redact_1.redactSensitiveText)(input.message).slice(0, 240));
         this.name = 'MarrowRequestError';
         this.code = input.code;
+        this.backendCode = input.backendCode
+            ? (0, redact_1.redactSensitiveText)(input.backendCode).slice(0, 128)
+            : null;
         this.status = input.status ?? null;
         this.retryable = input.retryable ?? false;
         this.retryAfterMs = input.retryAfterMs ?? null;
         this.exactFix = (0, redact_1.redactSensitiveText)(input.exactFix).slice(0, 360);
+        this.fixCommand = input.fixCommand
+            ? (0, redact_1.redactSensitiveText)(input.fixCommand).slice(0, 360)
+            : null;
     }
 }
 exports.MarrowRequestError = MarrowRequestError;
@@ -65,16 +73,30 @@ function exactFixForStatus(status) {
 }
 function requestErrorFromResponse(response, detail) {
     const status = response.status;
+    const errorObject = detail?.error && typeof detail.error === 'object' && !Array.isArray(detail.error)
+        ? detail.error
+        : undefined;
+    const nestedDetails = detail?.details && typeof detail.details === 'object' && !Array.isArray(detail.details)
+        ? detail.details
+        : errorObject?.details && typeof errorObject.details === 'object' && !Array.isArray(errorObject.details)
+            ? errorObject.details
+            : undefined;
+    const rejectionFields = [nestedDetails, errorObject, detail].filter(Boolean);
+    const firstString = (...fields) => {
+        for (const source of rejectionFields) {
+            for (const field of fields) {
+                if (typeof source[field] === 'string' && String(source[field]).trim())
+                    return String(source[field]);
+            }
+        }
+        return undefined;
+    };
     const apiMessage = typeof detail?.error === 'string'
         ? detail.error
-        : typeof detail?.message === 'string'
-            ? detail.message
-            : `Marrow API returned HTTP ${status}`;
-    const apiFix = typeof detail?.exact_fix === 'string'
-        ? detail.exact_fix
-        : typeof detail?.exact_next_action === 'string'
-            ? detail.exact_next_action
-            : exactFixForStatus(status);
+        : firstString('message', 'error') || `Marrow API returned HTTP ${status}`;
+    const apiFix = firstString('exact_fix', 'exact_next_action', 'fix_command') || exactFixForStatus(status);
+    const fixCommand = firstString('fix_command') || null;
+    const backendCode = firstString('code') || null;
     const code = status === 401
         ? 'authentication_required'
         : status === 403
@@ -86,11 +108,13 @@ function requestErrorFromResponse(response, detail) {
                     : 'request_failed';
     return new MarrowRequestError({
         code,
+        backendCode,
         message: `HTTP ${status}: ${apiMessage}`,
         status,
         retryable: RETRYABLE_STATUS.has(status),
         retryAfterMs: retryAfterMs(response),
         exactFix: apiFix,
+        fixCommand,
     });
 }
 function invalidResponseError() {
@@ -225,12 +249,14 @@ function structuredRequestFailure(error) {
         ok: false,
         available: false,
         error: {
-            code: normalized.code,
+            code: normalized.backendCode || normalized.code,
+            category: normalized.code,
             status: normalized.status,
             retryable: normalized.retryable,
             retry_after_ms: normalized.retryAfterMs,
             message: normalized.message,
             exact_fix: normalized.exactFix,
+            ...(normalized.fixCommand ? { fix_command: normalized.fixCommand } : {}),
         },
         client_update: localClientUpdate(),
     };

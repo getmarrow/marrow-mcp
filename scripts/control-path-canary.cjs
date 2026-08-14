@@ -18,7 +18,7 @@ const cases = [
   ['marrow_first_value', { action: 'Verify Marrow control-path availability', type: 'review', surfaces: ['api'] }],
   ['marrow_buyer_proof', { periodDays: 7 }],
   ['marrow_governance_control_plane', {}],
-  ['marrow_dashboard', {}],
+  ['marrow_value_report', { period: '7d' }],
   ['marrow_fleet_lessons', { query: 'safe release verification', limit: 3 }],
 ];
 
@@ -82,6 +82,16 @@ function validatePayload(name, payload) {
     );
   } else if (name === 'marrow_first_value') {
     requireField(typeof payload.active === 'boolean' && typeof payload.headline === 'string', 'first-value');
+  } else if (name === 'marrow_value_report') {
+    requireField(
+      payload.period
+        && typeof payload.period.days === 'number'
+        && payload.metrics
+        && typeof payload.metrics.decisions?.total === 'number'
+        && payload.fleet
+        && typeof payload.fleet.active_agents === 'number',
+      'value report',
+    );
   }
 }
 

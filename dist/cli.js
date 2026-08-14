@@ -359,9 +359,12 @@ if (process.argv[2] !== 'keys') {
         const rawBaseUrl = resolvedEnv.baseUrl || 'https://api.getmarrow.ai';
         const BASE_URL = (0, index_1.validateBaseUrl)(rawBaseUrl);
         const SESSION_ID = resolvedEnv.sessionId || undefined;
-        const FLEET_AGENT_ID = resolvedEnv.agentId || undefined; // V5: agent UUID for X-Marrow-Agent-Id header
+        // One identity must bind headers, bodies, queries, cache, and lifecycle events.
+        // resolveMarrowEnv already gives MARROW_FLEET_AGENT_ID precedence over MARROW_AGENT_ID.
+        // When no identity is configured, omit it and let the API resolve the key's
+        // bound agent instead of inventing a process-local identity that changes on restart.
+        const FLEET_AGENT_ID = resolvedEnv.agentId || undefined;
         const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
-        const AGENT_ID = process.env.MARROW_AGENT_ID || `${require('os').hostname()}-${Date.now().toString(36)}`;
         if (!API_KEY) {
             process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
             process.stderr.write(`${resolvedEnv.exactFix}\n`);
@@ -1094,7 +1097,7 @@ if (process.argv[2] !== 'keys') {
                     type: 'object',
                     properties: {
                         period: { type: 'string', description: 'Time period: 7d (default), 14d, or 30d' },
-                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to MARROW_AGENT_ID.' },
+                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to the canonical fleet-bound agent identity.' },
                     },
                     required: [],
                 },
@@ -1119,7 +1122,7 @@ if (process.argv[2] !== 'keys') {
                     type: 'object',
                     properties: {
                         period: { type: 'string', description: 'Time period: 7d (default), 14d, 30d, or a day count up to 90.' },
-                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to MARROW_AGENT_ID.' },
+                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to the canonical fleet-bound agent identity.' },
                     },
                     required: [],
                 },
@@ -1135,7 +1138,7 @@ if (process.argv[2] !== 'keys') {
                         action: { type: 'string', description: 'What the agent is about to do.' },
                         type: { type: 'string', description: 'Decision type, e.g. deploy, audit, patch, review.' },
                         role: { type: 'string', description: 'Agent role/playbook: deploy, audit, patch, review, or general.' },
-                        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to MARROW_AGENT_ID.' },
+                        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to the canonical fleet-bound agent identity.' },
                         sessionId: { type: 'string', description: 'Optional session id. Defaults to MARROW_SESSION_ID.' },
                         surfaces: {
                             type: 'array',
@@ -1157,7 +1160,7 @@ if (process.argv[2] !== 'keys') {
                         action: { type: 'string', description: 'Optional action to test. Defaults to a production deploy safety prompt.' },
                         type: { type: 'string', description: 'Decision type, e.g. deploy, audit, patch, review.' },
                         role: { type: 'string', description: 'Agent role/playbook: deploy, audit, patch, review, or general.' },
-                        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to MARROW_AGENT_ID.' },
+                        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to the canonical fleet-bound agent identity.' },
                         sessionId: { type: 'string', description: 'Optional session id. Defaults to MARROW_SESSION_ID.' },
                         surfaces: { type: 'array', items: { type: 'string' }, description: 'Surfaces to test, e.g. production, deploy, github, npm.' },
                         context: { type: 'object', description: 'Optional non-sensitive metadata.' },
@@ -1177,7 +1180,7 @@ if (process.argv[2] !== 'keys') {
                         action: { type: 'string', description: 'What the agent is about to do.' },
                         type: { type: 'string', description: 'Decision type, e.g. deploy, audit, patch, review.' },
                         role: { type: 'string', description: 'Agent role/playbook: deploy, audit, patch, review, or general.' },
-                        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to MARROW_AGENT_ID.' },
+                        agentId: { type: 'string', description: 'Optional agent_id filter. Defaults to the canonical fleet-bound agent identity.' },
                         sessionId: { type: 'string', description: 'Optional session id. Defaults to MARROW_SESSION_ID.' },
                         surfaces: {
                             type: 'array',
@@ -1237,7 +1240,7 @@ if (process.argv[2] !== 'keys') {
                         },
                         action: { type: 'string', description: 'Optional runtime action label.' },
                         type: { type: 'string', description: 'Optional runtime action type. Defaults to coordination.' },
-                        agentId: { type: 'string', description: 'Requesting agent id. Defaults to MARROW_AGENT_ID.' },
+                        agentId: { type: 'string', description: 'Requesting agent id. Defaults to the canonical fleet-bound agent identity.' },
                         sessionId: { type: 'string', description: 'Optional workflow session id.' },
                         surfaces: { type: 'array', items: { type: 'string' } },
                         context: { type: 'object', description: 'Optional non-sensitive runtime metadata.' },
@@ -1350,7 +1353,7 @@ if (process.argv[2] !== 'keys') {
                 inputSchema: {
                     type: 'object',
                     properties: {
-                        agentId: { type: 'string', description: 'Optional agent filter. Defaults to MARROW_AGENT_ID.' },
+                        agentId: { type: 'string', description: 'Optional agent filter. Defaults to the canonical fleet-bound agent identity.' },
                         limit: { type: 'number', description: 'Max events to return, default 25, max 100.' },
                     },
                     required: [],
@@ -1373,7 +1376,7 @@ if (process.argv[2] !== 'keys') {
                 inputSchema: {
                     type: 'object',
                     properties: {
-                        agentId: { type: 'string', description: 'Optional agent filter. Defaults to MARROW_AGENT_ID.' },
+                        agentId: { type: 'string', description: 'Optional agent filter. Defaults to the canonical fleet-bound agent identity.' },
                         periodDays: { type: 'number', description: 'Lookback period in days, default 30, max 90.' },
                     },
                     required: [],
@@ -1462,7 +1465,7 @@ if (process.argv[2] !== 'keys') {
                     type: 'object',
                     properties: {
                         period: { type: 'string', description: 'Time period: 7d (default), 14d, 30d, or day count up to 90.' },
-                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to MARROW_AGENT_ID.' },
+                        agentId: { type: 'string', description: 'Optional agent_id/session_id filter. Defaults to the canonical fleet-bound agent identity.' },
                     },
                     required: [],
                 },
@@ -1640,7 +1643,7 @@ if (process.argv[2] !== 'keys') {
                                 data: {
                                     type: 'auto_enroll',
                                     message: 'Marrow auto-enroll active. Call marrow_orient FIRST, then marrow_think before acting, marrow_commit after. Or use marrow_auto / marrow_run for one-call logging.',
-                                    agentId: AGENT_ID || 'auto',
+                                    agentId: FLEET_AGENT_ID,
                                     client_update: (0, request_reliability_1.localClientUpdate)(),
                                 },
                             },
@@ -2127,7 +2130,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_agent_status') {
-                        const result = await (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
+                        const result = await (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
@@ -2137,7 +2140,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_value_report') {
-                        const result = await (0, index_1.marrowValueReport)(API_KEY, BASE_URL, args.period || '7d', args.agentId || AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
+                        const result = await (0, index_1.marrowValueReport)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
@@ -2146,7 +2149,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             action: args.action,
                             type: args.type,
                             role: args.role,
-                            agent_id: args.agentId || AGENT_ID,
+                            agent_id: args.agentId || FLEET_AGENT_ID,
                             session_id: args.sessionId || SESSION_ID,
                             surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
                             period: args.period,
@@ -2159,7 +2162,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             action: args.action ? (0, redact_1.redactSensitiveText)(args.action) : undefined,
                             type: args.type,
                             role: args.role,
-                            agent_id: args.agentId || AGENT_ID,
+                            agent_id: args.agentId || FLEET_AGENT_ID,
                             session_id: args.sessionId || SESSION_ID,
                             surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
                             context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
@@ -2177,7 +2180,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             action: (0, redact_1.redactSensitiveText)(args.action),
                             type: args.type,
                             role: args.role,
-                            agent_id: args.agentId || AGENT_ID,
+                            agent_id: args.agentId || FLEET_AGENT_ID,
                             session_id: args.sessionId || SESSION_ID,
                             surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
                             context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
@@ -2203,7 +2206,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 : [],
                             action: typeof args.action === 'string' ? (0, redact_1.redactSensitiveText)(args.action) : undefined,
                             type: args.type,
-                            agent_id: args.agentId || AGENT_ID,
+                            agent_id: args.agentId || FLEET_AGENT_ID,
                             session_id: args.sessionId || SESSION_ID,
                             surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
                             context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
@@ -2259,7 +2262,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     }
                     if (toolName === 'marrow_governance_timeline') {
                         const result = await (0, index_1.marrowGovernanceTimeline)(API_KEY, BASE_URL, {
-                            agentId: args.agentId || AGENT_ID,
+                            agentId: args.agentId || FLEET_AGENT_ID,
                             limit: args.limit,
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
@@ -2277,7 +2280,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     }
                     if (toolName === 'marrow_buyer_proof') {
                         const result = await (0, index_1.marrowBuyerProof)(API_KEY, BASE_URL, {
-                            agentId: args.agentId || AGENT_ID,
+                            agentId: args.agentId || FLEET_AGENT_ID,
                             periodDays: args.periodDays,
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
@@ -2293,7 +2296,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 : undefined,
                             agent: args.agent && typeof args.agent === 'object' && !Array.isArray(args.agent)
                                 ? (0, redact_1.redactSensitiveValue)(args.agent)
-                                : { id: FLEET_AGENT_ID || AGENT_ID },
+                                : { id: FLEET_AGENT_ID },
                             selected_mode: args.selected_mode,
                             selection_source: args.selection_source,
                         }, SESSION_ID, FLEET_AGENT_ID);
@@ -2334,7 +2337,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 : undefined,
                             agent: args.agent && typeof args.agent === 'object' && !Array.isArray(args.agent)
                                 ? (0, redact_1.redactSensitiveValue)(args.agent)
-                                : { id: FLEET_AGENT_ID || AGENT_ID },
+                                : { id: FLEET_AGENT_ID },
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
@@ -2353,7 +2356,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_agent_performance') {
-                        const result = await (0, index_1.marrowAgentPerformance)(API_KEY, BASE_URL, args.period || '7d', args.agentId || AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
+                        const result = await (0, index_1.marrowAgentPerformance)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
@@ -2361,7 +2364,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         const result = await (0, index_1.marrowFleetLessons)(API_KEY, BASE_URL, {
                             query: args.query,
                             type: args.type,
-                            agentId: args.agentId || AGENT_ID,
+                            agentId: args.agentId || FLEET_AGENT_ID,
                             limit: args.limit,
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
@@ -2390,7 +2393,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     if (toolName === 'marrow_handoff_status') {
                         const result = await (0, index_1.marrowHandoffStatus)(API_KEY, BASE_URL, {
                             status: args.status,
-                            agentId: args.agentId || AGENT_ID,
+                            agentId: args.agentId || FLEET_AGENT_ID,
                             limit: args.limit,
                         }, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
