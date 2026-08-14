@@ -1193,7 +1193,6 @@ if (process.argv[2] !== 'keys') {
                         lease_token: { type: 'string', description: 'One-time lease capability returned by acquire_lease.' },
                         status: { type: 'string', enum: ['active', 'released', 'expired', 'incomplete', 'complete', 'failed'] },
                         limit: { type: 'number', minimum: 1, maximum: 100 },
-                        parent_agent_id: { type: 'string' },
                         decision_id: { type: 'string' },
                         proof_pack_id: { type: 'string' },
                         summary: { type: 'string', maxLength: 280, description: 'Compact result summary; no raw transcript.' },
@@ -2093,7 +2092,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         const coordinationArgs = { ...args };
                         delete coordinationArgs.agent_id;
                         delete coordinationArgs.source_agent_id;
-                        const result = await (0, index_1.marrowCoordinate)(API_KEY, BASE_URL, coordinationArgs, SESSION_ID, FLEET_AGENT_ID || AGENT_ID);
+                        const result = await (0, index_1.marrowCoordinate)(API_KEY, BASE_URL, coordinationArgs, SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }

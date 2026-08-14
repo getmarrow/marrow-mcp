@@ -1422,9 +1422,11 @@ export async function marrowCoordinate(
   }
   if (action === 'create_proof_packet') {
     const boundAgentId = boundCoordinationAgent(input, agentId);
+    if (input.parent_agent_id != null) {
+      throw new TypeError('parent_agent_id must be assigned by trusted Marrow coordination.');
+    }
     const body = redactSensitiveValue({
       source_agent_id: boundAgentId,
-      parent_agent_id: input.parent_agent_id,
       lease_id: input.lease_id,
       decision_id: input.decision_id,
       workflow_id: input.workflow_id,

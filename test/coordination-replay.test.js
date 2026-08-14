@@ -42,6 +42,18 @@ test('coordination uses the tenant governance routes and bound agent identity', 
     }, 'session-one', 'agent-one'),
     /must match the authenticated Marrow fleet agent id/,
   );
+  await assert.rejects(
+    marrowCoordinate('key', 'https://api.example.test', {
+      action: 'acquire_lease', resource_type: 'file', resource: 'src/unbound.ts',
+    }, 'session-one'),
+    /A bound Marrow fleet agent id is required/,
+  );
+  await assert.rejects(
+    marrowCoordinate('key', 'https://api.example.test', {
+      action: 'create_proof_packet', parent_agent_id: 'agent-victim', summary: 'done',
+    }, 'session-one', 'agent-one'),
+    /parent_agent_id must be assigned by trusted Marrow coordination/,
+  );
   assert.equal(calls.length, 2);
 });
 
@@ -109,5 +121,11 @@ test('coordination and replay reject path traversal and remain advertised MCP to
   const coordinateSchema = cli.slice(cli.indexOf("name: 'marrow_coordinate'"), cli.indexOf("name: 'marrow_replay_compare'"));
   assert.doesNotMatch(coordinateSchema, /^\s*agent_id:/m);
   assert.doesNotMatch(coordinateSchema, /^\s*source_agent_id:/m);
+  assert.doesNotMatch(coordinateSchema, /^\s*parent_agent_id:/m);
+  const coordinateHandler = cli.slice(
+    cli.indexOf("if (toolName === 'marrow_coordinate')"),
+    cli.indexOf("if (toolName === 'marrow_replay_compare')"),
+  );
+  assert.doesNotMatch(coordinateHandler, /FLEET_AGENT_ID \|\| AGENT_ID/);
   assert.match(cli, /additionalProperties: false/);
 });
