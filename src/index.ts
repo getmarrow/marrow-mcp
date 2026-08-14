@@ -45,7 +45,8 @@ import {
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
-import { reliableFetch, requestErrorFromResponse } from './request-reliability';
+import { invalidResponseError, reliableFetch, requestErrorFromResponse } from './request-reliability';
+import { normalizeRuntimeResult } from './runtime-contract';
 
 const fetch = reliableFetch;
 
@@ -215,12 +216,18 @@ async function safeJsonResponse(res: Response): Promise<any> {
   try {
     json = await res.json();
   } catch {
-    throw new Error('Marrow API returned an invalid JSON response');
+    throw invalidResponseError();
   }
-  if (json.error) {
-    throw new Error(String(json.error).slice(0, 240));
+  if (!json || typeof json !== 'object' || Array.isArray(json) || json.error) {
+    throw invalidResponseError();
   }
   return json;
+}
+
+function requireRuntimeResult(value: unknown): MarrowAgentRuntimeResult {
+  const runtime = normalizeRuntimeResult(value);
+  if (!runtime) throw invalidResponseError();
+  return runtime;
 }
 
 type QueuedRequest = {
@@ -1192,7 +1199,7 @@ export async function marrowAgentRuntime(
     signal,
   });
   const json = await safeJsonResponse(res);
-  return json.data;
+  return requireRuntimeResult(json.data);
 }
 
 export async function marrowEnforcement(

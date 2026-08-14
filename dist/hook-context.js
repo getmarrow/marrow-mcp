@@ -468,7 +468,7 @@ function isAuthenticationFailure(error) {
 function compactRuntimeContext(runtime) {
     const intervention = runtime.intervention;
     const lines = ['## Marrow before-action'];
-    const decision = intervention?.decision || runtime.risk_gate?.decision || 'proceed';
+    const decision = intervention?.decision || runtime.risk_gate?.decision || 'review_required';
     lines.push(`- Decision: ${decision}; risk: ${runtime.risk_gate?.risk_level || runtime.decision_brief?.risk?.level || 'unknown'}.`);
     const why = intervention?.before_action || intervention?.headline || runtime.before_you_act || runtime.decision_brief?.summary;
     if (why)

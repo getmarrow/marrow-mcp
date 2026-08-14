@@ -72,7 +72,8 @@ import { localClientUpdate, MarrowRequestError, structuredRequestFailure } from 
 import { MCP_ADAPTER_VERSION } from './hook-contract';
 import { updatePingState } from './ping-state';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
-import type { ThinkResult, MarrowMemory } from './types';
+import { highRiskRuntimeCanClose } from './runtime-contract';
+import type { ThinkResult, MarrowAgentRuntimeResult, MarrowMemory } from './types';
 
 // Parse CLI args
 function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean } {
@@ -547,7 +548,10 @@ async function withControlDeadline<T>(
   options: { highRisk?: boolean; cacheAware?: boolean } = {},
 ): Promise<T> {
   const hasCache = options.cacheAware !== false && Boolean(cachedGuidance());
-  const timeoutMs = options.highRisk ? 2_000 : hasCache ? 400 : 1_200;
+  const configuredCanaryMs = Number(process.env.MARROW_REQUEST_TIMEOUT_MS);
+  const timeoutMs = process.env.MARROW_CONTROL_PATH_CANARY === '1' && Number.isFinite(configuredCanaryMs)
+    ? Math.min(5_000, Math.max(500, Math.floor(configuredCanaryMs)))
+    : options.highRisk ? 2_000 : hasCache ? 400 : 1_200;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
@@ -1763,6 +1767,12 @@ function advertisedTools(): typeof TOOLS {
     : TOOLS.filter((tool) => CORE_TOOL_NAMES.has(tool.name));
 }
 
+function toolAllowedByActiveProfile(toolName: string | undefined): boolean {
+  return process.env.MARROW_TOOL_PROFILE === 'full'
+    ? Boolean(toolName && TOOLS.some((tool) => tool.name === toolName))
+    : Boolean(toolName && CORE_TOOL_NAMES.has(toolName));
+}
+
 // Request handler
 async function handleRequest(req: {
   id: string | number;
@@ -1881,6 +1891,11 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
     if (method === 'tools/call') {
       const toolName = params?.name;
       const args = (params?.arguments || {}) as Record<string, unknown>;
+
+      if (!toolAllowedByActiveProfile(toolName)) {
+        error(id, -32601, 'Tool is not available in the active Marrow tool profile. Set MARROW_TOOL_PROFILE=full and restart MCP for advanced operator tools.');
+        return;
+      }
 
       if (toolName === 'marrow_orient') {
         orientCallCount++;
@@ -2107,7 +2122,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
         const suppliedProof = args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
           ? redactSensitiveValue(args.proof) as Record<string, unknown>
           : undefined;
-        let runtimeGate = null;
+        let runtimeGate: MarrowAgentRuntimeResult | null = null;
         if (highRisk) {
           runtimeGate = await withControlDeadline(
             (signal) => marrowAgentRuntime(API_KEY, BASE_URL, {
@@ -2122,7 +2137,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           );
           storeRuntimeGuidance(runtimeGate);
         }
-        const proofCanClose = !highRisk || Boolean(suppliedProof && Object.keys(suppliedProof).length > 0);
+        const proofCanClose = !highRisk || highRiskRuntimeCanClose(runtimeGate!, suppliedProof, args.gate_receipt_id);
         const acceptedSuccess = proofCanClose ? outcomeSuccess : undefined;
 
         const receipt = await recordLifecycleEvent({
@@ -2130,13 +2145,13 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           baseUrl: BASE_URL,
           deferDelivery: true,
           event: {
-            event_type: acceptedSuccess === false ? 'tool_failed' : acceptedSuccess === true ? 'tool_completed' : 'goal_started',
+            event_type: !highRisk && acceptedSuccess === false ? 'tool_failed' : !highRisk && acceptedSuccess === true ? 'tool_completed' : 'goal_started',
             harness: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || 'mcp',
             agent_id: FLEET_AGENT_ID,
             session_id: SESSION_ID,
             action,
             outcome_state: 'pending',
-            success: acceptedSuccess,
+            success: highRisk ? undefined : acceptedSuccess,
             adapter_version: MCP_ADAPTER_VERSION,
             capability_level: 'mcp',
           },
@@ -2156,7 +2171,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           } : {}),
         };
 
-        void marrowAuto(API_KEY, BASE_URL, {
+        const delivery = () => marrowAuto(API_KEY, BASE_URL, {
           action,
           outcome,
           success: acceptedSuccess,
@@ -2165,13 +2180,30 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           gate_receipt_id: typeof args.gate_receipt_id === 'string'
             ? args.gate_receipt_id
             : runtimeGate?.gate_receipt?.id,
-        }, SESSION_ID, FLEET_AGENT_ID, 1_500).catch((err) => {
-          const failure = structuredRequestFailure(err);
-          const errorCode = failure.error && typeof failure.error === 'object'
-            ? String((failure.error as Record<string, unknown>).code || 'request_failed')
-            : 'request_failed';
-          process.stderr.write(`[marrow] marrow_auto queued; live delivery unavailable (${errorCode})\n`);
-        });
+        }, SESSION_ID, FLEET_AGENT_ID, 1_500);
+
+        if (highRisk && acceptedSuccess !== undefined) {
+          const delivered = await delivery();
+          if (!delivered.committed) {
+            throw new MarrowRequestError({
+              code: 'invalid_response',
+              message: 'Marrow did not confirm the governed outcome commit',
+              retryable: true,
+              exactFix: 'Keep the outcome pending and retry marrow_commit with the fresh gate receipt and required proof.',
+            });
+          }
+          response.logging = 'governed_commit_confirmed';
+          response.completion_state = 'closed_with_proof';
+          response.decision_id = delivered.decision_id;
+        } else if (!highRisk) {
+          void delivery().catch((err) => {
+            const failure = structuredRequestFailure(err);
+            const errorCode = failure.error && typeof failure.error === 'object'
+              ? String((failure.error as Record<string, unknown>).code || 'request_failed')
+              : 'request_failed';
+            process.stderr.write(`[marrow] marrow_auto queued; live delivery unavailable (${errorCode})\n`);
+          });
+        }
 
         success(id, {
           content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
@@ -2830,7 +2862,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
-    error(id, -32602, message.slice(0, 240));
+    error(id, -32602, redactSensitiveText(message).slice(0, 240));
   }
 }
 

@@ -22,6 +22,7 @@ const request_reliability_1 = require("./request-reliability");
 const hook_contract_1 = require("./hook-contract");
 const ping_state_1 = require("./ping-state");
 const redact_1 = require("./redact");
+const runtime_contract_1 = require("./runtime-contract");
 // Parse CLI args
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -486,7 +487,10 @@ if (process.argv[2] !== 'keys') {
         }
         async function withControlDeadline(operation, options = {}) {
             const hasCache = options.cacheAware !== false && Boolean(cachedGuidance());
-            const timeoutMs = options.highRisk ? 2_000 : hasCache ? 400 : 1_200;
+            const configuredCanaryMs = Number(process.env.MARROW_REQUEST_TIMEOUT_MS);
+            const timeoutMs = process.env.MARROW_CONTROL_PATH_CANARY === '1' && Number.isFinite(configuredCanaryMs)
+                ? Math.min(5_000, Math.max(500, Math.floor(configuredCanaryMs)))
+                : options.highRisk ? 2_000 : hasCache ? 400 : 1_200;
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), timeoutMs);
             timer.unref?.();
@@ -1604,6 +1608,11 @@ if (process.argv[2] !== 'keys') {
                 ? TOOLS
                 : TOOLS.filter((tool) => CORE_TOOL_NAMES.has(tool.name));
         }
+        function toolAllowedByActiveProfile(toolName) {
+            return process.env.MARROW_TOOL_PROFILE === 'full'
+                ? Boolean(toolName && TOOLS.some((tool) => tool.name === toolName))
+                : Boolean(toolName && CORE_TOOL_NAMES.has(toolName));
+        }
         // Request handler
         async function handleRequest(req) {
             const { id, method, params } = req;
@@ -1711,6 +1720,10 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                 if (method === 'tools/call') {
                     const toolName = params?.name;
                     const args = (params?.arguments || {});
+                    if (!toolAllowedByActiveProfile(toolName)) {
+                        error(id, -32601, 'Tool is not available in the active Marrow tool profile. Set MARROW_TOOL_PROFILE=full and restart MCP for advanced operator tools.');
+                        return;
+                    }
                     if (toolName === 'marrow_orient') {
                         orientCallCount++;
                         const wantAutoWarn = args.autoWarn ?? true;
@@ -1892,20 +1905,20 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: true });
                             storeRuntimeGuidance(runtimeGate);
                         }
-                        const proofCanClose = !highRisk || Boolean(suppliedProof && Object.keys(suppliedProof).length > 0);
+                        const proofCanClose = !highRisk || (0, runtime_contract_1.highRiskRuntimeCanClose)(runtimeGate, suppliedProof, args.gate_receipt_id);
                         const acceptedSuccess = proofCanClose ? outcomeSuccess : undefined;
                         const receipt = await (0, lifecycle_spool_1.recordLifecycleEvent)({
                             apiKey: API_KEY,
                             baseUrl: BASE_URL,
                             deferDelivery: true,
                             event: {
-                                event_type: acceptedSuccess === false ? 'tool_failed' : acceptedSuccess === true ? 'tool_completed' : 'goal_started',
+                                event_type: !highRisk && acceptedSuccess === false ? 'tool_failed' : !highRisk && acceptedSuccess === true ? 'tool_completed' : 'goal_started',
                                 harness: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || 'mcp',
                                 agent_id: FLEET_AGENT_ID,
                                 session_id: SESSION_ID,
                                 action,
                                 outcome_state: 'pending',
-                                success: acceptedSuccess,
+                                success: highRisk ? undefined : acceptedSuccess,
                                 adapter_version: hook_contract_1.MCP_ADAPTER_VERSION,
                                 capability_level: 'mcp',
                             },
@@ -1923,7 +1936,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 completion_state: proofCanClose ? 'governed_delivery_pending' : 'pending_required_proof',
                             } : {}),
                         };
-                        void (0, index_1.marrowAuto)(API_KEY, BASE_URL, {
+                        const delivery = () => (0, index_1.marrowAuto)(API_KEY, BASE_URL, {
                             action,
                             outcome,
                             success: acceptedSuccess,
@@ -1932,13 +1945,30 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             gate_receipt_id: typeof args.gate_receipt_id === 'string'
                                 ? args.gate_receipt_id
                                 : runtimeGate?.gate_receipt?.id,
-                        }, SESSION_ID, FLEET_AGENT_ID, 1_500).catch((err) => {
-                            const failure = (0, request_reliability_1.structuredRequestFailure)(err);
-                            const errorCode = failure.error && typeof failure.error === 'object'
-                                ? String(failure.error.code || 'request_failed')
-                                : 'request_failed';
-                            process.stderr.write(`[marrow] marrow_auto queued; live delivery unavailable (${errorCode})\n`);
-                        });
+                        }, SESSION_ID, FLEET_AGENT_ID, 1_500);
+                        if (highRisk && acceptedSuccess !== undefined) {
+                            const delivered = await delivery();
+                            if (!delivered.committed) {
+                                throw new request_reliability_1.MarrowRequestError({
+                                    code: 'invalid_response',
+                                    message: 'Marrow did not confirm the governed outcome commit',
+                                    retryable: true,
+                                    exactFix: 'Keep the outcome pending and retry marrow_commit with the fresh gate receipt and required proof.',
+                                });
+                            }
+                            response.logging = 'governed_commit_confirmed';
+                            response.completion_state = 'closed_with_proof';
+                            response.decision_id = delivered.decision_id;
+                        }
+                        else if (!highRisk) {
+                            void delivery().catch((err) => {
+                                const failure = (0, request_reliability_1.structuredRequestFailure)(err);
+                                const errorCode = failure.error && typeof failure.error === 'object'
+                                    ? String(failure.error.code || 'request_failed')
+                                    : 'request_failed';
+                                process.stderr.write(`[marrow] marrow_auto queued; live delivery unavailable (${errorCode})\n`);
+                            });
+                        }
                         success(id, {
                             content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
                         });
@@ -2411,7 +2441,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     return;
                 }
                 const message = err instanceof Error ? err.message : String(err);
-                error(id, -32602, message.slice(0, 240));
+                error(id, -32602, (0, redact_1.redactSensitiveText)(message).slice(0, 240));
             }
         }
         // MCP stdio loop — raw stdin, no readline (readline writes prompts to stdout which breaks MCP)

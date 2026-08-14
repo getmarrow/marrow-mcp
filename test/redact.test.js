@@ -394,7 +394,11 @@ test('marrowArbitrate uses agent runtime and redacts conflicting proposals', asy
   globalThis.fetch = async (url, options) => {
     calls.push({ url: String(url), body: JSON.parse(options.body) });
     return new Response(JSON.stringify({
-      data: { ok: true, arbitration: { receipt_id: 'arb_1', resolution: 'selected' } },
+      data: {
+        ok: true,
+        risk_gate: { allow: true, decision: 'allow', reasons: [] },
+        arbitration: { receipt_id: 'arb_1', resolution: 'selected' },
+      },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 
@@ -432,7 +436,10 @@ test('marrowArbitrate redacts generated and explicit actions and enforces public
   globalThis.fetch = async (url, options) => {
     calls.push({ url: String(url), body: JSON.parse(options.body) });
     return new Response(JSON.stringify({
-      data: { arbitration: { receipt_id: 'arb_safe', decision_id: 'decision_safe', resolution: 'selected' } },
+      data: {
+        risk_gate: { allow: true, decision: 'allow', reasons: [] },
+        arbitration: { receipt_id: 'arb_safe', decision_id: 'decision_safe', resolution: 'selected' },
+      },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 
@@ -496,7 +503,10 @@ test('marrowArbitrate preserves valid opaque identifiers and rejects unsafe alia
   globalThis.fetch = async (url, options) => {
     calls.push({ url: String(url), body: JSON.parse(options.body) });
     return new Response(JSON.stringify({
-      data: { arbitration: { receipt_id: 'arb_opaque', decision_id: 'decision_opaque', resolution: 'selected' } },
+      data: {
+        risk_gate: { allow: true, decision: 'allow', reasons: [] },
+        arbitration: { receipt_id: 'arb_opaque', decision_id: 'decision_opaque', resolution: 'selected' },
+      },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 
@@ -611,7 +621,10 @@ test('marrowCommit auto_gate fails closed when required receipt is missing', asy
   const calls = [];
   globalThis.fetch = async (url, options) => {
     calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
-    return new Response(JSON.stringify({ data: { gate_receipt: { required: true } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ data: {
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      gate_receipt: { required: true },
+    } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   };
 
   try {
