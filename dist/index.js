@@ -58,10 +58,13 @@ exports.marrowDecisionTrace = marrowDecisionTrace;
 exports.marrowAcceptDetected = marrowAcceptDetected;
 exports.marrowListTemplates = marrowListTemplates;
 exports.marrowInstallTemplate = marrowInstallTemplate;
+const node_crypto_1 = require("node:crypto");
 const sdk_1 = require("@getmarrow/sdk");
 const redact_1 = require("./redact");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_contract_1 = require("./hook-contract");
+const request_reliability_1 = require("./request-reliability");
+const fetch = request_reliability_1.reliableFetch;
 const SOURCE_CLIENTS = new Set(['claude-code', 'cursor', 'windsurf', 'openclaw', 'codex', 'gemini', 'grok', 'deepseek', 'qwen', 'kimi', 'minimax', 'cline', 'opencode', 'hermes', 'glm', 'custom', 'unknown']);
 const SAFE_ARBITRATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const SAFE_ARBITRATION_EVIDENCE_KIND = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$/;
@@ -208,16 +211,24 @@ function validateBaseUrl(rawUrl) {
  */
 async function safeJsonResponse(res) {
     if (!res.ok) {
-        let detail = '';
+        let detail;
         try {
-            detail = await res.text();
+            const contentType = res.headers.get('content-type') || '';
+            if (contentType.includes('json'))
+                detail = await res.json();
         }
-        catch { /* ignore */ }
-        throw new Error(`API error ${res.status}: ${detail.slice(0, 200)}`);
+        catch { /* ignore malformed or non-JSON error bodies */ }
+        throw (0, request_reliability_1.requestErrorFromResponse)(res, detail);
     }
-    const json = await res.json();
+    let json;
+    try {
+        json = await res.json();
+    }
+    catch {
+        throw new Error('Marrow API returned an invalid JSON response');
+    }
     if (json.error) {
-        throw new Error(json.error);
+        throw new Error(String(json.error).slice(0, 240));
     }
     return json;
 }
@@ -501,11 +512,14 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
     if (params.outcome === undefined) {
         return { decision_id: decisionId, committed: false };
     }
+    if (typeof params.success !== 'boolean') {
+        return { decision_id: decisionId, committed: false };
+    }
     const commitTimeout = createTimeoutSignal(timeoutMs, startedAt);
     try {
         await marrowCommit(apiKey, baseUrl, {
             decision_id: decisionId,
-            success: params.success ?? true,
+            success: params.success,
             outcome: params.outcome,
             proof: params.proof,
             gate_receipt_id: params.gate_receipt_id,
@@ -543,7 +557,7 @@ async function marrowAgentPatterns(apiKey, baseUrl, params, sessionId, agentId) 
  * The retired orient/pattern routes required broader legacy scopes and could
  * leave otherwise valid agent-bound keys unable to start a session.
  */
-async function marrowOrient(apiKey, baseUrl, params, sessionId, agentId) {
+async function marrowOrient(apiKey, baseUrl, params, sessionId, agentId, signal) {
     const taskType = params?.taskType || 'general';
     const runtime = await marrowAgentRuntime(apiKey, baseUrl, {
         action: `Orient before ${taskType} work`,
@@ -553,7 +567,7 @@ async function marrowOrient(apiKey, baseUrl, params, sessionId, agentId) {
             event_kind: 'session_orientation',
             auto_warn: params?.autoWarn !== false,
         },
-    }, sessionId, agentId);
+    }, sessionId, agentId, signal);
     const intervention = runtime.intervention;
     const interventionDecision = intervention?.decision ? String(intervention.decision) : '';
     const gateDecision = runtime.risk_gate?.decision ? String(runtime.risk_gate.decision) : '';
@@ -644,7 +658,7 @@ async function marrowOrient(apiKey, baseUrl, params, sessionId, agentId) {
 /**
  * Query the collective hive for failure patterns and recommendations.
  */
-async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId) {
+async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId, signal) {
     const res = await fetch(`${baseUrl}/v1/analytics/decision-brief`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
@@ -655,6 +669,7 @@ async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId) {
             agent_id: agentId,
             session_id: sessionId,
         }),
+        signal,
     });
     const json = await safeJsonResponse(res);
     const brief = json.data;
@@ -670,9 +685,10 @@ async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId) {
 /**
  * Get API health status.
  */
-async function marrowStatus(apiKey, baseUrl, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/health`, {
+async function marrowStatus(apiKey, baseUrl, sessionId, agentId, signal) {
+    const res = await fetch(`${baseUrl}/v1/agent/status?fast=1`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+        signal,
     });
     const json = await safeJsonResponse(res);
     return json.data;
@@ -909,9 +925,13 @@ async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId, si
         agent_id: input.agent_id || agentId,
         session_id: input.session_id || sessionId,
     };
+    const idempotencyKey = `mcp-runtime-${(0, node_crypto_1.randomUUID)()}`;
     const res = await fetch(`${baseUrl}/v1/agent/runtime`, {
         method: 'POST',
-        headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+        headers: {
+            ...buildHeaders(apiKey, sessionId, 'application/json', agentId),
+            'Idempotency-Key': idempotencyKey,
+        },
         body: JSON.stringify(body),
         signal,
     });

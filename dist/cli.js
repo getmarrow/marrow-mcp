@@ -17,6 +17,9 @@ const hook_session_1 = require("./hook-session");
 const hook_pre_action_1 = require("./hook-pre-action");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const guidance_cache_1 = require("./guidance-cache");
+const request_reliability_1 = require("./request-reliability");
+const hook_contract_1 = require("./hook-contract");
 const ping_state_1 = require("./ping-state");
 const redact_1 = require("./redact");
 // Parse CLI args
@@ -389,12 +392,6 @@ if (process.argv[2] !== 'keys') {
                 process.stderr.write(`[marrow] Warning: failed to refresh orient warnings: ${msg}\n`);
             }
         }
-        // Initial orient
-        refreshOrientWarnings().then(() => {
-            if (cachedOrientWarnings.some((w) => w.failureRate > 0.4)) {
-                process.stderr.write(`[marrow] ⚠️ High failure rate detected on startup — call marrow_orient for details before acting\n`);
-            }
-        });
         // Auto-commit tracking for session close
         let lastDecisionId = null;
         let lastCommitted = false;
@@ -432,6 +429,35 @@ if (process.argv[2] !== 'keys') {
         function error(id, code, message) {
             send({ jsonrpc: '2.0', id, error: { code, message } });
         }
+        function toolSuccess(id, value, isError = false) {
+            success(id, {
+                content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+                ...(isError ? { isError: true } : {}),
+            });
+        }
+        function toolFailure(toolName, failure) {
+            const result = (0, request_reliability_1.structuredRequestFailure)(failure);
+            const transient = failure.retryable && !['authentication_required', 'permission_denied'].includes(failure.code);
+            const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
+            if (transient && supportsStale) {
+                let cached = null;
+                try {
+                    cached = (0, guidance_cache_1.readGuidanceCache)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
+                }
+                catch { /* owner-only cache is best effort */ }
+                if (cached) {
+                    result.stale_brief = cached.context;
+                    result.stale_ms = cached.stale_ms;
+                }
+                result.disposition = 'review_required';
+                result.allow = false;
+                result.stale_can_authorize_high_risk = false;
+                result.exact_next_action = cached
+                    ? 'Use this last-known brief for low-risk context only. Obtain a fresh Marrow runtime gate before high-risk work.'
+                    : 'Retry once after retry_after_ms. Do not perform high-risk work without a fresh Marrow runtime gate.';
+            }
+            return result;
+        }
         // [FIX #9] Runtime validation helper for required string params
         function requireString(args, name) {
             const val = args[name];
@@ -439,6 +465,48 @@ if (process.argv[2] !== 'keys') {
                 throw new Error(`"${name}" is required and must be a non-empty string`);
             }
             return val;
+        }
+        function requireBoolean(args, name) {
+            const value = args[name];
+            if (typeof value !== 'boolean')
+                throw new Error(`"${name}" is required and must be boolean`);
+            return value;
+        }
+        const HIGH_RISK_ACTION = /\b(?:billing|credential|database|delete|deploy|destructive|financial|key|merge|migrat(?:e|ion)|payment|production|publish|release|remove|rollback|secret|security|token|truncate|wipe)\b/i;
+        function isHighRiskAction(action, type) {
+            return HIGH_RISK_ACTION.test(`${String(type || '')} ${String(action || '')}`);
+        }
+        function cachedGuidance() {
+            try {
+                return (0, guidance_cache_1.readGuidanceCache)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
+            }
+            catch {
+                return null;
+            }
+        }
+        async function withControlDeadline(operation, options = {}) {
+            const hasCache = options.cacheAware !== false && Boolean(cachedGuidance());
+            const timeoutMs = options.highRisk ? 2_000 : hasCache ? 400 : 1_200;
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+            timer.unref?.();
+            try {
+                return await operation(controller.signal);
+            }
+            finally {
+                clearTimeout(timer);
+            }
+        }
+        function storeRuntimeGuidance(runtime) {
+            try {
+                (0, guidance_cache_1.writeGuidanceCache)({
+                    apiKey: API_KEY,
+                    baseUrl: BASE_URL,
+                    agentId: FLEET_AGENT_ID,
+                    context: (0, hook_context_1.compactRuntimeContext)(runtime),
+                });
+            }
+            catch { /* owner-only cache is best effort */ }
         }
         // [FIX #6 & #7] Safe JSON response helper for memory API functions
         async function safeMemoryResponse(res) {
@@ -726,8 +794,7 @@ if (process.argv[2] !== 'keys') {
             },
             {
                 name: 'marrow_run',
-                description: 'Zero-ceremony memory logging. Single call handles orient → think → commit automatically. ' +
-                    'Use this instead of chaining marrow_think + marrow_commit when you want Marrow to just work without managing the loop yourself.',
+                description: 'One-call governed outcome capture. Records intent, obtains a gate for risky work, and closes only with an explicit measured result.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -739,27 +806,28 @@ if (process.argv[2] !== 'keys') {
                             enum: ['implementation', 'security', 'architecture', 'process', 'general'],
                             description: 'Type of action (default: general)',
                         },
+                        proof: { type: 'object', description: 'Measured evidence required to close high-risk work.' },
+                        gate_receipt_id: { type: 'string', description: 'Fresh receipt returned by marrow_agent_runtime.' },
                     },
                     required: ['description', 'success', 'outcome'],
                 },
             },
             {
                 name: 'marrow_auto',
-                description: 'Zero-friction Marrow logging. One call for any action — Marrow handles everything in the background without blocking. ' +
-                    'Pass what you are about to do. Optionally pass outcome if already done. ' +
-                    'Use for ANY action: deploys, file writes, API calls, external sends. ' +
-                    'If you only have time for one call: pass action + outcome + success together — done in one shot.',
+                description: 'Durably capture low-risk activity without blocking. Outcomes remain pending unless success is explicit; risky completion still requires a fresh gate and measured proof.',
                 inputSchema: {
                     type: 'object',
                     properties: {
                         action: { type: 'string', description: 'What you are about to do or just did' },
                         outcome: { type: 'string', description: 'What happened (if already done). Omit to log intent only.' },
-                        success: { type: 'boolean', description: 'Did it succeed (default: true)' },
+                        success: { type: 'boolean', description: 'Measured result. Omit when the outcome is not yet proven.' },
                         type: {
                             type: 'string',
                             enum: ['implementation', 'security', 'architecture', 'process', 'general'],
                             description: 'Type of action (default: general)',
                         },
+                        proof: { type: 'object', description: 'Measured completion evidence for gated work.' },
+                        gate_receipt_id: { type: 'string', description: 'Fresh receipt returned by marrow_agent_runtime.' },
                     },
                     required: ['action'],
                 },
@@ -1523,6 +1591,19 @@ if (process.argv[2] !== 'keys') {
                 },
             },
         ];
+        const CORE_TOOL_NAMES = new Set([
+            'marrow_agent_runtime',
+            'marrow_commit',
+            'marrow_ask',
+            'marrow_status',
+            'marrow_auto',
+            'marrow_handoff_status',
+        ]);
+        function advertisedTools() {
+            return process.env.MARROW_TOOL_PROFILE === 'full'
+                ? TOOLS
+                : TOOLS.filter((tool) => CORE_TOOL_NAMES.has(tool.name));
+        }
         // Request handler
         async function handleRequest(req) {
             const { id, method, params } = req;
@@ -1537,7 +1618,7 @@ if (process.argv[2] !== 'keys') {
                     success(id, {
                         protocolVersion: '2024-11-05',
                         capabilities: { tools: {}, prompts: {} },
-                        serverInfo: { name: 'marrow', version: '3.9.56' },
+                        serverInfo: { name: 'marrow', version: hook_contract_1.MCP_ADAPTER_VERSION },
                     });
                     // Auto-enroll: emit enrollment notification on connection
                     if (AUTO_ENROLL) {
@@ -1551,6 +1632,7 @@ if (process.argv[2] !== 'keys') {
                                     type: 'auto_enroll',
                                     message: 'Marrow auto-enroll active. Call marrow_orient FIRST, then marrow_think before acting, marrow_commit after. Or use marrow_auto / marrow_run for one-call logging.',
                                     agentId: AGENT_ID || 'auto',
+                                    client_update: (0, request_reliability_1.localClientUpdate)(),
                                 },
                             },
                         });
@@ -1623,7 +1705,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     return;
                 }
                 if (method === 'tools/list') {
-                    success(id, { tools: TOOLS });
+                    success(id, { tools: advertisedTools() });
                     return;
                 }
                 if (method === 'tools/call') {
@@ -1631,21 +1713,9 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     const args = (params?.arguments || {});
                     if (toolName === 'marrow_orient') {
                         orientCallCount++;
-                        let result;
                         const wantAutoWarn = args.autoWarn ?? true;
-                        try {
-                            result = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType: args.taskType, autoWarn: wantAutoWarn }, SESSION_ID, FLEET_AGENT_ID);
-                        }
-                        catch (e) {
-                            // autoWarn endpoint may not be deployed yet — fall back to legacy orient
-                            if (wantAutoWarn) {
-                                process.stderr.write(`[marrow] autoWarn orient not available, falling back to legacy\n`);
-                                result = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType: args.taskType, autoWarn: false }, SESSION_ID, FLEET_AGENT_ID);
-                            }
-                            else {
-                                throw e;
-                            }
-                        }
+                        const taskType = args.taskType;
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType, autoWarn: wantAutoWarn }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(`Orient before ${taskType || 'general'} work`, taskType) });
                         if (AUTO_ENROLL && orientCallCount === 1) {
                             const enrollmentText = `\n\n**Marrow control and proof active**\n\n` +
                                 `Marrow applies relevant policy and prior lessons before consequential actions, then records evidence and the real outcome afterward.\n\n` +
@@ -1749,6 +1819,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         // [FIX #9] Validate required params
                         const description = requireString(args, 'description');
                         const outcome = requireString(args, 'outcome');
+                        const measuredSuccess = requireBoolean(args, 'success');
                         // [FIX #16] Handle partial failures — return think result even if commit fails
                         let thinkResult = null;
                         try {
@@ -1766,18 +1837,12 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         try {
                             commitResult = await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
                                 decision_id: thinkResult.decision_id,
-                                success: args.success ?? true,
+                                success: measuredSuccess,
                                 outcome,
-                                proof: {
-                                    summary: description,
-                                    checks: ['marrow_run completed'],
-                                    outcome,
-                                    blockers: (args.success ?? true) ? 'none' : 'see outcome',
-                                    commits_prs_shas: 'not applicable',
-                                    rollback_target: 'not applicable',
-                                    handoff_result_file: 'not applicable',
-                                    deployment_and_smoke: 'not applicable',
-                                },
+                                proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+                                    ? (0, redact_1.redactSensitiveValue)(args.proof)
+                                    : undefined,
+                                gate_receipt_id: typeof args.gate_receipt_id === 'string' ? args.gate_receipt_id : undefined,
                                 action: description,
                                 type: args.type || 'general',
                             }, SESSION_ID, FLEET_AGENT_ID);
@@ -1807,50 +1872,73 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_auto') {
-                        // [FIX #9] Validate required param
                         const action = requireString(args, 'action');
                         const outcome = args.outcome;
-                        const outcomeSuccess = args.success ?? true;
+                        const outcomeSuccess = typeof args.success === 'boolean' ? args.success : undefined;
                         const type = args.type || 'general';
-                        // [FIX #8] Include pending flag so agent knows logging is deferred
+                        const highRisk = isHighRiskAction(action, type);
+                        const suppliedProof = args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+                            ? (0, redact_1.redactSensitiveValue)(args.proof)
+                            : undefined;
+                        let runtimeGate = null;
+                        if (highRisk) {
+                            runtimeGate = await withControlDeadline((signal) => (0, index_1.marrowAgentRuntime)(API_KEY, BASE_URL, {
+                                action: (0, redact_1.redactSensitiveText)(action),
+                                type,
+                                agent_id: FLEET_AGENT_ID,
+                                session_id: SESSION_ID,
+                                proof: suppliedProof,
+                                context: { source: 'mcp_auto_risk_upgrade' },
+                            }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: true });
+                            storeRuntimeGuidance(runtimeGate);
+                        }
+                        const proofCanClose = !highRisk || Boolean(suppliedProof && Object.keys(suppliedProof).length > 0);
+                        const acceptedSuccess = proofCanClose ? outcomeSuccess : undefined;
+                        const receipt = await (0, lifecycle_spool_1.recordLifecycleEvent)({
+                            apiKey: API_KEY,
+                            baseUrl: BASE_URL,
+                            deferDelivery: true,
+                            event: {
+                                event_type: acceptedSuccess === false ? 'tool_failed' : acceptedSuccess === true ? 'tool_completed' : 'goal_started',
+                                harness: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || 'mcp',
+                                agent_id: FLEET_AGENT_ID,
+                                session_id: SESSION_ID,
+                                action,
+                                outcome_state: 'pending',
+                                success: acceptedSuccess,
+                                adapter_version: hook_contract_1.MCP_ADAPTER_VERSION,
+                                capability_level: 'mcp',
+                            },
+                        });
                         const response = {
                             action,
                             outcome: outcome || 'pending',
                             warnings: cachedOrientWarnings.map(formatWarningActionably),
-                            logging: 'deferred',
+                            logging: 'durably_queued',
+                            receipt,
+                            completion_state: outcomeSuccess === undefined ? 'pending_evidence' : 'delivery_pending',
+                            client_update: (0, request_reliability_1.localClientUpdate)(),
+                            ...(runtimeGate ? {
+                                runtime_gate: runtimeGate,
+                                completion_state: proofCanClose ? 'governed_delivery_pending' : 'pending_required_proof',
+                            } : {}),
                         };
-                        // Fire-and-forget the actual API calls
-                        (async () => {
-                            try {
-                                if (!outcome) {
-                                    await (0, index_1.marrowThink)(API_KEY, BASE_URL, { action, type }, SESSION_ID, FLEET_AGENT_ID);
-                                }
-                                else {
-                                    const thinkResult = await (0, index_1.marrowThink)(API_KEY, BASE_URL, { action, type }, SESSION_ID, FLEET_AGENT_ID);
-                                    await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
-                                        decision_id: thinkResult.decision_id,
-                                        success: outcomeSuccess,
-                                        outcome,
-                                        proof: {
-                                            summary: action,
-                                            checks: ['marrow_auto completed'],
-                                            outcome,
-                                            blockers: outcomeSuccess ? 'none' : 'see outcome',
-                                            commits_prs_shas: 'not applicable',
-                                            rollback_target: 'not applicable',
-                                            handoff_result_file: 'not applicable',
-                                            deployment_and_smoke: 'not applicable',
-                                        },
-                                        action,
-                                        type,
-                                    }, SESSION_ID, FLEET_AGENT_ID);
-                                }
-                            }
-                            catch (err) {
-                                const msg = err instanceof Error ? err.message : String(err);
-                                process.stderr.write(`[marrow] marrow_auto background logging failed: ${msg}\n`);
-                            }
-                        })();
+                        void (0, index_1.marrowAuto)(API_KEY, BASE_URL, {
+                            action,
+                            outcome,
+                            success: acceptedSuccess,
+                            type,
+                            proof: suppliedProof,
+                            gate_receipt_id: typeof args.gate_receipt_id === 'string'
+                                ? args.gate_receipt_id
+                                : runtimeGate?.gate_receipt?.id,
+                        }, SESSION_ID, FLEET_AGENT_ID, 1_500).catch((err) => {
+                            const failure = (0, request_reliability_1.structuredRequestFailure)(err);
+                            const errorCode = failure.error && typeof failure.error === 'object'
+                                ? String(failure.error.code || 'request_failed')
+                                : 'request_failed';
+                            process.stderr.write(`[marrow] marrow_auto queued; live delivery unavailable (${errorCode})\n`);
+                        });
                         success(id, {
                             content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
                         });
@@ -1858,17 +1946,25 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     }
                     if (toolName === 'marrow_ask') {
                         const query = requireString(args, 'query');
-                        const result = await (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query }, SESSION_ID, FLEET_AGENT_ID);
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query }, SESSION_ID, FLEET_AGENT_ID, signal));
+                        try {
+                            (0, guidance_cache_1.writeGuidanceCache)({
+                                apiKey: API_KEY,
+                                baseUrl: BASE_URL,
+                                agentId: FLEET_AGENT_ID,
+                                context: `## Marrow answer\n- ${String(result.answer || 'No relevant lesson found.').slice(0, 1200)}`,
+                            });
+                        }
+                        catch { /* owner-only cache is best effort */ }
                         success(id, {
                             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
                         });
                         return;
                     }
                     if (toolName === 'marrow_status') {
-                        const result = await (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, {
-                            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                        });
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false });
+                        const statusRecord = result;
+                        toolSuccess(id, { ...statusRecord, client_update: statusRecord.client_update || (0, request_reliability_1.localClientUpdate)() });
                         return;
                     }
                     if (toolName === 'marrow_create_key') {
@@ -2006,7 +2102,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_runtime_status') {
-                        const result = await (0, index_1.marrowRuntimeStatus)(API_KEY, BASE_URL, args.fast !== false, SESSION_ID, FLEET_AGENT_ID);
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowRuntimeStatus)(API_KEY, BASE_URL, args.fast !== false, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false });
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
@@ -2047,7 +2143,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_agent_runtime') {
-                        const result = await (0, index_1.marrowAgentRuntime)(API_KEY, BASE_URL, {
+                        const runtimeInput = {
                             action: (0, redact_1.redactSensitiveText)(args.action),
                             type: args.type,
                             role: args.role,
@@ -2061,7 +2157,9 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 ? (0, redact_1.redactSensitiveValue)(args.proof)
                                 : undefined,
                             period: args.period,
-                        }, SESSION_ID, FLEET_AGENT_ID);
+                        };
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowAgentRuntime)(API_KEY, BASE_URL, runtimeInput, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(runtimeInput.action, runtimeInput.type) });
+                        storeRuntimeGuidance(result);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
@@ -2308,8 +2406,12 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                 error(id, -32601, `Method not found: ${method}`);
             }
             catch (err) {
+                if (err instanceof request_reliability_1.MarrowRequestError && method === 'tools/call') {
+                    toolSuccess(id, toolFailure(params?.name, err), true);
+                    return;
+                }
                 const message = err instanceof Error ? err.message : String(err);
-                error(id, -32000, message);
+                error(id, -32602, message.slice(0, 240));
             }
         }
         // MCP stdio loop — raw stdin, no readline (readline writes prompts to stdout which breaks MCP)

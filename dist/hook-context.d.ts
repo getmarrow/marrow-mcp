@@ -13,7 +13,7 @@
  * disabled with `MARROW_AUTO_HOOK=false`.
  */
 import type { MarrowAgentRuntimeResult, MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
-export declare const CONTEXT_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.56 context-hook";
+export declare const CONTEXT_HOOK_COMMAND = "npx -y @getmarrow/mcp@3.9.57 context-hook";
 interface InstallResult {
     settingsPath: string;
     installed: boolean;
@@ -30,6 +30,7 @@ interface ContextSignals {
 }
 export declare function extractSignals(thinkResult: unknown): ContextSignals;
 export declare function buildCombinedContextBlock(signals: ContextSignals, brief: MarrowDecisionBriefResult | null, valueReport: MarrowValueReportResult | null, runtime?: MarrowAgentRuntimeResult | null): string;
+export declare function compactRuntimeContext(runtime: MarrowAgentRuntimeResult): string;
 export declare function runContextHookCommand(): Promise<void>;
 /**
  * Idempotent installer. Adds (or upgrades to) the UserPromptSubmit hook entry
