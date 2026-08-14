@@ -104,9 +104,16 @@ npx -y @getmarrow/mcp@latest ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.57
+## What's New in v3.9.58
 
-v3.9.57 makes the agent control path reliable and deliberately small by default:
+v3.9.58 makes latency evidence accurate by reusing one initialized MCP process for the complete control-path canary:
+
+- startup, initialization, and tool discovery are measured separately from authenticated tool calls;
+- hot-path steering and report latency are reported as separate p50, p95, p99, and maximum groups;
+- response IDs, malformed output, RPC failures, timeouts, and incomplete tool contracts fail closed;
+- one bounded process prevents package and process startup time from being mistaken for API latency.
+
+The compact agent control path introduced in v3.9.57 remains the default:
 
 - `marrow_status`, `marrow_ask`, and `marrow_agent_runtime` use authenticated routes with bounded retries and typed failures;
 - transient read failures return an owner-only last-known brief when available, while cached guidance can never authorize high-risk work;
