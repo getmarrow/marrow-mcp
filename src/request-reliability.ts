@@ -20,26 +20,36 @@ export type MarrowFailureCode =
 
 export class MarrowRequestError extends Error {
   readonly code: MarrowFailureCode;
+  readonly backendCode: string | null;
   readonly status: number | null;
   readonly retryable: boolean;
   readonly retryAfterMs: number | null;
   readonly exactFix: string;
+  readonly fixCommand: string | null;
 
   constructor(input: {
     code: MarrowFailureCode;
+    backendCode?: string | null;
     message: string;
     status?: number | null;
     retryable?: boolean;
     retryAfterMs?: number | null;
     exactFix: string;
+    fixCommand?: string | null;
   }) {
     super(redactSensitiveText(input.message).slice(0, 240));
     this.name = 'MarrowRequestError';
     this.code = input.code;
+    this.backendCode = input.backendCode
+      ? redactSensitiveText(input.backendCode).slice(0, 128)
+      : null;
     this.status = input.status ?? null;
     this.retryable = input.retryable ?? false;
     this.retryAfterMs = input.retryAfterMs ?? null;
     this.exactFix = redactSensitiveText(input.exactFix).slice(0, 360);
+    this.fixCommand = input.fixCommand
+      ? redactSensitiveText(input.fixCommand).slice(0, 360)
+      : null;
   }
 }
 
@@ -72,16 +82,29 @@ function exactFixForStatus(status: number): string {
 
 export function requestErrorFromResponse(response: Response, detail?: Record<string, unknown>): MarrowRequestError {
   const status = response.status;
+  const errorObject = detail?.error && typeof detail.error === 'object' && !Array.isArray(detail.error)
+    ? detail.error as Record<string, unknown>
+    : undefined;
+  const nestedDetails = detail?.details && typeof detail.details === 'object' && !Array.isArray(detail.details)
+    ? detail.details as Record<string, unknown>
+    : errorObject?.details && typeof errorObject.details === 'object' && !Array.isArray(errorObject.details)
+      ? errorObject.details as Record<string, unknown>
+      : undefined;
+  const rejectionFields = [nestedDetails, errorObject, detail].filter(Boolean) as Record<string, unknown>[];
+  const firstString = (...fields: string[]): string | undefined => {
+    for (const source of rejectionFields) {
+      for (const field of fields) {
+        if (typeof source[field] === 'string' && String(source[field]).trim()) return String(source[field]);
+      }
+    }
+    return undefined;
+  };
   const apiMessage = typeof detail?.error === 'string'
     ? detail.error
-    : typeof detail?.message === 'string'
-      ? detail.message
-      : `Marrow API returned HTTP ${status}`;
-  const apiFix = typeof detail?.exact_fix === 'string'
-    ? detail.exact_fix
-    : typeof detail?.exact_next_action === 'string'
-      ? detail.exact_next_action
-      : exactFixForStatus(status);
+    : firstString('message', 'error') || `Marrow API returned HTTP ${status}`;
+  const apiFix = firstString('exact_fix', 'exact_next_action', 'fix_command') || exactFixForStatus(status);
+  const fixCommand = firstString('fix_command') || null;
+  const backendCode = firstString('code') || null;
   const code: MarrowFailureCode = status === 401
     ? 'authentication_required'
     : status === 403
@@ -93,11 +116,13 @@ export function requestErrorFromResponse(response: Response, detail?: Record<str
           : 'request_failed';
   return new MarrowRequestError({
     code,
+    backendCode,
     message: `HTTP ${status}: ${apiMessage}`,
     status,
     retryable: RETRYABLE_STATUS.has(status),
     retryAfterMs: retryAfterMs(response),
     exactFix: apiFix,
+    fixCommand,
   });
 }
 
@@ -229,12 +254,14 @@ export function structuredRequestFailure(error: unknown): Record<string, unknown
     ok: false,
     available: false,
     error: {
-      code: normalized.code,
+      code: normalized.backendCode || normalized.code,
+      category: normalized.code,
       status: normalized.status,
       retryable: normalized.retryable,
       retry_after_ms: normalized.retryAfterMs,
       message: normalized.message,
       exact_fix: normalized.exactFix,
+      ...(normalized.fixCommand ? { fix_command: normalized.fixCommand } : {}),
     },
     client_update: localClientUpdate(),
   };

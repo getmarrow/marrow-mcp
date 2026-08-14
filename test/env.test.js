@@ -27,6 +27,19 @@ test('resolveMarrowEnv loads MARROW_KEY alias from project env file', () => {
   assert.match(resolved.source, /\.marrow\/env:MARROW_KEY$/);
 });
 
+test('fleet identity takes precedence over a contradictory local agent identity', () => {
+  const resolved = resolveMarrowEnv({
+    env: {
+      MARROW_API_KEY: 'synthetic-precedence-key',
+      MARROW_FLEET_AGENT_ID: 'fleet-bound-agent',
+      MARROW_AGENT_ID: 'contradictory-local-agent',
+    },
+  });
+
+  assert.equal(resolved.agentId, 'fleet-bound-agent');
+  assert.doesNotMatch(JSON.stringify(resolved), /contradictory-local-agent/);
+});
+
 test('trusted enforcement identity uses owner config and cannot be shadowed by repository env files', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-mcp-env-precedence-'));
   const home = path.join(dir, 'home');
