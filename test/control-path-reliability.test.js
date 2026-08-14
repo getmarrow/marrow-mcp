@@ -316,14 +316,18 @@ test('auto does not invent successful completion when success is absent', async 
 
 test('published canary requires a completed child response for every route', () => {
   const source = readFileSync(join(__dirname, '..', 'scripts', 'control-path-canary.cjs'), 'utf8');
-  assert.match(source, /spawnSync/);
+  assert.match(source, /class PersistentMcpClient/);
+  assert.match(source, /process_count: 1/);
+  assert.match(source, /per_tool_latency_excludes_initialization: true/);
+  assert.match(source, /unexpected response id/);
   assert.match(source, /returned no MCP tool response/);
   assert.match(source, /empty or invalid tool payload/);
-  assert.match(source, /versions\[0\] !== expectedVersion/);
+  assert.match(source, /version !== expectedVersion/);
   assert.match(source, /validatePayload\(name, payload\)/);
   assert.match(source, /\['marrow_value_report', \{ period: '7d' \}\]/);
   assert.doesNotMatch(source, /\['marrow_dashboard', \{\}\]/);
-  assert.match(source, /child\.status !== 0/);
+  assert.match(source, /client\.request\('tools\/call'/);
+  assert.match(source, /latency_groups/);
   assert.match(source, /tools_checked: results\.length/);
   assert.match(source, /process\.exitCode = 1/);
 });

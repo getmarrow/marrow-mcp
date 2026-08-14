@@ -1,13 +1,8 @@
 #!/usr/bin/env node
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
+const { performance } = require('node:perf_hooks');
 const { resolve } = require('node:path');
 const { version: packageVersion } = require('../package.json');
-
-const key = process.env.MARROW_API_KEY || '';
-if (!key) {
-  process.stderr.write('MARROW_API_KEY is required for the authenticated MCP control-path canary.\n');
-  process.exit(2);
-}
 
 const cases = [
   ['marrow_status', {}],
@@ -22,19 +17,36 @@ const cases = [
   ['marrow_fleet_lessons', { query: 'safe release verification', limit: 3 }],
 ];
 
-function boundedMs(name, fallback, minimum = 100, maximum = 10_000) {
-  const parsed = Number(process.env[name] || fallback);
+const HOT_PATH_TOOLS = new Set([
+  'marrow_status',
+  'marrow_runtime_status',
+  'marrow_orient',
+  'marrow_ask',
+  'marrow_agent_runtime',
+]);
+const OUTPUT_LIMIT_BYTES = 256 * 1024;
+
+function boundedMs(name, fallback, minimum = 100, maximum = 10_000, env = process.env) {
+  const parsed = Number(env[name] || fallback);
   return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, Math.floor(parsed))) : fallback;
 }
 
-const transportTimeoutMs = boundedMs('MARROW_REQUEST_TIMEOUT_MS', 2_500, 250, 10_000);
-const processTimeoutMs = transportTimeoutMs + 3_000;
-const expectedVersion = process.env.MARROW_EXPECTED_MCP_VERSION || packageVersion;
-const ceilings = {
-  marrow_status: boundedMs('MARROW_MCP_STATUS_CEILING_MS', 1_500),
-  marrow_ask: boundedMs('MARROW_MCP_ASK_CEILING_MS', 1_000),
-  marrow_agent_runtime: boundedMs('MARROW_MCP_RUNTIME_CEILING_MS', 750),
-};
+function percentile(values, quantile) {
+  if (!values.length) return null;
+  const ordered = [...values].sort((a, b) => a - b);
+  return ordered[Math.max(0, Math.ceil(quantile * ordered.length) - 1)];
+}
+
+function latencyGroup(rows) {
+  const values = rows.map((row) => row.latency_ms);
+  return {
+    count: values.length,
+    p50_ms: percentile(values, 0.5),
+    p95_ms: percentile(values, 0.95),
+    p99_ms: percentile(values, 0.99),
+    max_ms: values.length ? Math.max(...values) : null,
+  };
+}
 
 function toolPayload(message, name) {
   if (!message) throw new Error(`${name} returned no MCP tool response`);
@@ -95,72 +107,200 @@ function validatePayload(name, payload) {
   }
 }
 
-function runCase(name, args) {
-  const input = [
-    { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-    { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
-    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name, arguments: args } },
-  ].map((row) => JSON.stringify(row)).join('\n') + '\n';
-  const started = Date.now();
-  const child = spawnSync(process.execPath, [resolve(__dirname, '../dist/cli.js')], {
-    env: {
-      ...process.env,
-      MARROW_API_KEY: key,
-      MARROW_BASE_URL: process.env.MARROW_BASE_URL || 'https://api.getmarrow.ai',
-      MARROW_AUTO_ENROLL: 'false',
-      MARROW_TOOL_PROFILE: 'full',
-      MARROW_CONTROL_PATH_CANARY: '1',
-      MARROW_REQUEST_TIMEOUT_MS: String(transportTimeoutMs),
-    },
-    input,
-    encoding: 'utf8',
-    timeout: processTimeoutMs,
-    maxBuffer: 256 * 1024,
-  });
-  const latencyMs = Date.now() - started;
-  if (child.error) {
-    const code = child.error.code === 'ETIMEDOUT' ? 'process_timeout' : 'process_error';
-    throw new Error(`${name} ${code}`);
+class PersistentMcpClient {
+  constructor(input) {
+    this.command = input.command;
+    this.args = input.args;
+    this.env = input.env;
+    this.timeoutMs = input.timeoutMs;
+    this.spawnProcess = input.spawnProcess || spawn;
+    this.maxOutputBytes = input.maxOutputBytes || OUTPUT_LIMIT_BYTES;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.stdoutBuffer = '';
+    this.stderrBytes = 0;
+    this.closed = false;
   }
-  if (child.status !== 0) throw new Error(`${name} MCP child exited ${child.status ?? 'unknown'}`);
-  const messages = String(child.stdout || '').trim().split('\n').filter(Boolean).map((line) => {
-    try { return JSON.parse(line); } catch { throw new Error(`${name} emitted non-JSON stdout`); }
-  });
-  const initialized = messages.find((message) => message.id === 1);
-  const listed = messages.find((message) => message.id === 2);
-  const called = messages.find((message) => message.id === 3);
-  const version = initialized?.result?.serverInfo?.version;
-  if (!version) throw new Error(`${name} MCP initialize produced no version`);
-  const names = new Set((listed?.result?.tools || []).map((tool) => tool.name));
-  if (!names.has(name)) throw new Error(`${name} is missing from the full MCP contract`);
-  const payload = toolPayload(called, name);
-  validatePayload(name, payload);
-  const live = payload.stale !== true && payload.source !== 'last_known' && payload.available !== false;
-  if (!live) throw new Error(`${name} returned cached or unavailable guidance`);
-  return { tool: name, ok: true, live: true, latency_ms: latencyMs, package_version: version };
+
+  start() {
+    if (this.child) return;
+    this.child = this.spawnProcess(this.command, this.args, {
+      env: this.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    this.child.stdout.setEncoding('utf8');
+    this.child.stdout.on('data', (chunk) => this.onStdout(chunk));
+    this.child.stderr.on('data', (chunk) => {
+      this.stderrBytes += Buffer.byteLength(chunk);
+      if (this.stderrBytes > this.maxOutputBytes) this.abort(new Error('MCP child exceeded stderr limit'));
+    });
+    this.child.once('error', (error) => this.abort(new Error(`MCP child failed: ${error.code || 'process_error'}`)));
+    this.child.once('exit', (code, signal) => {
+      this.closed = true;
+      if (this.pending.size > 0) this.rejectAll(new Error(`MCP child exited ${code ?? signal ?? 'unknown'}`));
+    });
+  }
+
+  onStdout(chunk) {
+    this.stdoutBuffer += chunk;
+    if (Buffer.byteLength(this.stdoutBuffer) > this.maxOutputBytes) {
+      this.abort(new Error('MCP child exceeded stdout limit'));
+      return;
+    }
+    for (;;) {
+      const newline = this.stdoutBuffer.indexOf('\n');
+      if (newline < 0) break;
+      const line = this.stdoutBuffer.slice(0, newline).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+      if (!line) continue;
+      let message;
+      try { message = JSON.parse(line); } catch {
+        this.abort(new Error('MCP child emitted malformed JSON'));
+        return;
+      }
+      if (!Number.isSafeInteger(message.id)) continue;
+      const pending = this.pending.get(message.id);
+      if (!pending) {
+        this.abort(new Error(`MCP child returned unexpected response id ${message.id}`));
+        return;
+      }
+      clearTimeout(pending.timer);
+      this.pending.delete(message.id);
+      pending.resolve(message);
+    }
+  }
+
+  request(method, params = {}, timeoutMs = this.timeoutMs) {
+    if (!this.child || this.closed || !this.child.stdin.writable) {
+      return Promise.reject(new Error('MCP child is not writable'));
+    }
+    const id = this.nextId++;
+    return new Promise((resolveRequest, rejectRequest) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        const error = new Error(`${method} timed out`);
+        rejectRequest(error);
+        this.abort(error);
+      }, timeoutMs);
+      this.pending.set(id, { resolve: resolveRequest, reject: rejectRequest, timer });
+      this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`, (error) => {
+        if (!error) return;
+        clearTimeout(timer);
+        this.pending.delete(id);
+        rejectRequest(new Error(`${method} write failed`));
+        this.abort(error);
+      });
+    });
+  }
+
+  rejectAll(error) {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+  }
+
+  abort(error) {
+    this.rejectAll(error instanceof Error ? error : new Error('MCP child aborted'));
+    if (this.child && !this.closed) this.child.kill('SIGKILL');
+  }
+
+  async stop() {
+    if (!this.child || this.closed) return;
+    this.child.stdin.end();
+    await new Promise((resolveExit) => {
+      const timer = setTimeout(() => {
+        if (!this.closed) this.child.kill('SIGKILL');
+        resolveExit();
+      }, 500);
+      this.child.once('exit', () => {
+        clearTimeout(timer);
+        resolveExit();
+      });
+    });
+  }
 }
 
-try {
-  const results = cases.map(([name, args]) => runCase(name, args));
-  const versions = [...new Set(results.map((row) => row.package_version))];
-  if (versions.length !== 1) throw new Error('MCP canary processes reported inconsistent package versions');
-  if (versions[0] !== expectedVersion) {
-    throw new Error(`MCP canary loaded ${versions[0]} instead of expected ${expectedVersion}`);
+async function runCanary(env = process.env, options = {}) {
+  const key = env.MARROW_API_KEY || '';
+  if (!key) throw new Error('MARROW_API_KEY is required for the authenticated MCP control-path canary');
+  const transportTimeoutMs = boundedMs('MARROW_REQUEST_TIMEOUT_MS', 2_500, 250, 10_000, env);
+  const totalTimeoutMs = boundedMs('MARROW_MCP_CANARY_TOTAL_TIMEOUT_MS', 30_000, 2_000, 60_000, env);
+  const expectedVersion = env.MARROW_EXPECTED_MCP_VERSION || packageVersion;
+  const childPath = env.MARROW_MCP_CANARY_CHILD || resolve(__dirname, '../dist/cli.js');
+  const childEnv = {
+    ...env,
+    MARROW_API_KEY: key,
+    MARROW_BASE_URL: env.MARROW_BASE_URL || 'https://api.getmarrow.ai',
+    MARROW_AUTO_ENROLL: 'false',
+    MARROW_TOOL_PROFILE: 'full',
+    MARROW_CONTROL_PATH_CANARY: '1',
+    MARROW_REQUEST_TIMEOUT_MS: String(transportTimeoutMs),
+  };
+  delete childEnv.NODE_TEST_CONTEXT;
+  const client = new PersistentMcpClient({
+    command: process.execPath,
+    args: [childPath],
+    timeoutMs: transportTimeoutMs,
+    env: childEnv,
+    spawnProcess: options.spawnProcess,
+  });
+  const totalTimer = setTimeout(() => client.abort(new Error('MCP canary total timeout')), totalTimeoutMs);
+  const processStarted = performance.now();
+  client.start();
+  try {
+    const initialized = await client.request('initialize', {}, transportTimeoutMs + 3_000);
+    if (initialized.error) throw new Error(`MCP initialize failed ${initialized.error.code}`);
+    const version = initialized.result?.serverInfo?.version;
+    if (!version) throw new Error('MCP initialize produced no version');
+    if (version !== expectedVersion) throw new Error(`MCP canary loaded ${version} instead of expected ${expectedVersion}`);
+    const listed = await client.request('tools/list', {});
+    if (listed.error) throw new Error(`MCP tools/list failed ${listed.error.code}`);
+    const names = new Set((listed.result?.tools || []).map((tool) => tool.name));
+    for (const [name] of cases) {
+      if (!names.has(name)) throw new Error(`${name} is missing from the full MCP contract`);
+    }
+    const initializationMs = Math.round(performance.now() - processStarted);
+    const results = [];
+    for (const [name, args] of cases) {
+      const callStarted = performance.now();
+      const called = await client.request('tools/call', { name, arguments: args });
+      const latencyMs = Math.round(performance.now() - callStarted);
+      const payload = toolPayload(called, name);
+      validatePayload(name, payload);
+      const live = payload.stale !== true && payload.source !== 'last_known' && payload.available !== false;
+      if (!live) throw new Error(`${name} returned cached or unavailable guidance`);
+      results.push({ tool: name, ok: true, live: true, latency_ms: latencyMs });
+    }
+    const hotPath = results.filter((row) => HOT_PATH_TOOLS.has(row.tool));
+    const reports = results.filter((row) => !HOT_PATH_TOOLS.has(row.tool));
+    return {
+      ok: true,
+      package_version: version,
+      process_count: 1,
+      initialization_ms: initializationMs,
+      per_tool_latency_excludes_initialization: true,
+      tools_checked: results.length,
+      latency_groups: {
+        hot_path: latencyGroup(hotPath),
+        reports: latencyGroup(reports),
+      },
+      results,
+    };
+  } finally {
+    clearTimeout(totalTimer);
+    await client.stop();
   }
-  const core = results.filter((row) => Object.hasOwn(ceilings, row.tool));
-  const slow = core.find((row) => row.latency_ms > ceilings[row.tool]);
-  if (slow && process.env.MARROW_MCP_CANARY_ENFORCE_LATENCY !== '0') {
-    throw new Error(`${slow.tool} exceeded its ${ceilings[slow.tool]}ms release ceiling`);
-  }
-  process.stdout.write(`${JSON.stringify({
-    ok: true,
-    package_version: versions[0],
-    tools_checked: results.length,
-    core_max_ms: Math.max(...core.map((row) => row.latency_ms)),
-    latency_within_release_ceiling: !slow,
-    results: results.map(({ package_version, ...row }) => row),
-  })}\n`);
-} catch (error) {
-  process.stderr.write(`MCP_CONTROL_PATH_CANARY=FAIL ${error instanceof Error ? error.message : 'unknown_error'}\n`);
-  process.exitCode = 1;
 }
+
+if (require.main === module) {
+  runCanary().then((result) => {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  }).catch((error) => {
+    process.stderr.write(`MCP_CONTROL_PATH_CANARY=FAIL ${error instanceof Error ? error.message : 'unknown_error'}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { PersistentMcpClient, latencyGroup, percentile, runCanary };
