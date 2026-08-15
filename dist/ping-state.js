@@ -1,10 +1,17 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.resolvePingTimeoutMs = resolvePingTimeoutMs;
 exports.updatePingState = updatePingState;
 const crypto_1 = require("crypto");
 const fs_1 = require("fs");
 const os_1 = require("os");
 const path_1 = require("path");
+function resolvePingTimeoutMs(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0)
+        return 2_500;
+    return Math.min(5_000, Math.max(500, Math.floor(parsed)));
+}
 function statePath(apiKey, baseUrl, agentId, home = (0, os_1.homedir)()) {
     const namespace = (0, crypto_1.createHash)('sha256').update(`${baseUrl}|${apiKey}|${agentId || 'account'}`).digest('hex').slice(0, 24);
     const directory = (0, path_1.join)(home, '.marrow', 'health');

@@ -9,6 +9,12 @@ interface PingState {
   samples_ms: number[];
 }
 
+export function resolvePingTimeoutMs(value: string | undefined): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 2_500;
+  return Math.min(5_000, Math.max(500, Math.floor(parsed)));
+}
+
 function statePath(apiKey: string, baseUrl: string, agentId?: string, home = homedir()): string {
   const namespace = createHash('sha256').update(`${baseUrl}|${apiKey}|${agentId || 'account'}`).digest('hex').slice(0, 24);
   const directory = join(home, '.marrow', 'health');

@@ -104,7 +104,15 @@ npx -y @getmarrow/mcp@latest ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.58
+## What's New in v3.9.59
+
+v3.9.59 makes the live `ping` check reliable across ordinary edge and geographic latency:
+
+- the default health deadline is 2.5 seconds instead of an unrealistically narrow 400 ms;
+- `MARROW_PING_TIMEOUT_MS` can tune the probe between 500 ms and 5 seconds;
+- normal runtime and pre-action control deadlines are unchanged.
+
+## Previous: v3.9.58
 
 v3.9.58 makes latency evidence accurate by reusing one initialized MCP process for the complete control-path canary:
 
