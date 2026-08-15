@@ -81,8 +81,9 @@ const MAX_EVENTS = 1000;
 const MAX_RECORD_BYTES = 4096;
 const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
 const MAX_ATTEMPTS = 3;
-const DELIVERY_REQUEST_TIMEOUT_MS = 750;
-const DELIVERY_DRAIN_BUDGET_MS = 900;
+const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
+const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
+const DELIVERY_DRAIN_BUDGET_MS = 8_000;
 const LOCK_WAIT_MS = 20;
 const LOCK_ATTEMPTS = 250;
 const LOCK_STALE_MS = 30_000;
@@ -430,9 +431,9 @@ export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }
     available: Math.max(0, MAX_EVENTS - current.events.length),
     recovered_corruption: current.recoveredCorruption,
     exact_fix: failed.length > 0
-      ? 'Restore authentication or endpoint compatibility, then run npx -y @getmarrow/mcp drain-spool.'
+      ? 'Restore authentication or endpoint compatibility, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
       : queued.length > 0
-        ? 'Keep MCP activity running so a later event can retry, or run npx -y @getmarrow/mcp drain-spool.'
+        ? 'Keep MCP activity running so a later event can retry, or run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
         : null,
   };
 }
@@ -487,7 +488,7 @@ export async function drainLifecycleSpool(input: {
       }).result;
     }
     if (!queued) break;
-    const remainingMs = Math.min(DELIVERY_REQUEST_TIMEOUT_MS, deliveryDeadline - Date.now());
+    const remainingMs = Math.min(DRAIN_REQUEST_TIMEOUT_MS, deliveryDeadline - Date.now());
     if (remainingMs <= 0) break;
     const status = await attemptQueuedDelivery({
       path: location.path,
@@ -534,7 +535,7 @@ export async function recordLifecycleEvent(input: {
     apiKey: input.apiKey,
     baseUrl: input.baseUrl,
     event: queued.result,
-    timeoutMs: DELIVERY_REQUEST_TIMEOUT_MS,
+    timeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
   });
   if (deliveryStatus >= 200 && deliveryStatus < 300) {
     const previous = snapshot(location.path, location.ownsParent).events.find((row) => (
@@ -548,7 +549,7 @@ export async function recordLifecycleEvent(input: {
           apiKey: input.apiKey,
           baseUrl: input.baseUrl,
           event: previous,
-          timeoutMs: DELIVERY_REQUEST_TIMEOUT_MS,
+          timeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
         });
       } catch {
         // An older receipt retry must not turn a successfully accepted current receipt into a failure.

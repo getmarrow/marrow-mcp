@@ -1715,7 +1715,8 @@ export async function marrowHandoffStatus(
   baseUrl: string,
   options: { status?: string; agentId?: string; limit?: number } = {},
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const qs = new URLSearchParams();
   if (options.status) qs.set('status', options.status);
@@ -1723,6 +1724,7 @@ export async function marrowHandoffStatus(
   if (options.limit) qs.set('limit', String(options.limit));
   const res = await fetch(`${baseUrl}/v1/fleet/handoffs/status${qs.toString() ? `?${qs.toString()}` : ''}`, {
     headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    signal,
   });
   const json = await safeJsonResponse(res);
   return json.data;

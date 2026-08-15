@@ -6,7 +6,7 @@ const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const { marrowAgentRuntime, marrowAuto, marrowBuyerProof, marrowStatus } = require('../dist/index.js');
-const { MarrowRequestError, reliableFetch, structuredRequestFailure } = require('../dist/request-reliability.js');
+const { MarrowRequestError, normalizeRequestError, reliableFetch, requestErrorFromResponse, structuredRequestFailure } = require('../dist/request-reliability.js');
 const { highRiskRuntimeCanClose, normalizeRuntimeResult } = require('../dist/runtime-contract.js');
 const { writeGuidanceCache } = require('../dist/guidance-cache.js');
 
@@ -203,6 +203,26 @@ test('scope mismatch code and backend exact repair survive a structured 403', as
   }
 });
 
+test('an unstructured Cloudflare 403 is an infrastructure failure rather than a Marrow policy denial', () => {
+  const failure = requestErrorFromResponse(new Response('<html>edge denial</html>', {
+    status: 403,
+    headers: { 'content-type': 'text/html', 'cf-ray': 'fixture-ray' },
+  }));
+  assert.equal(failure.code, 'edge_access_denied');
+  assert.equal(failure.status, 403);
+  assert.equal(failure.retryable, false);
+  assert.match(failure.exactFix, /Cloudflare Ray ID/);
+});
+
+test('a timeout returns a concrete retry delay rather than an unresolved placeholder', () => {
+  const failure = normalizeRequestError(new DOMException('Timed out', 'AbortError'));
+  const payload = structuredRequestFailure(failure);
+  assert.equal(failure.code, 'request_timeout');
+  assert.equal(payload.error.retry_after_ms, 250);
+  assert.match(payload.error.exact_fix, /250 ms/);
+  assert.doesNotMatch(payload.error.exact_fix, /retry_after_ms/i);
+});
+
 test('caller-supplied abort signals retain one bounded safe retry', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
@@ -241,14 +261,54 @@ test('default MCP surface is compact and transient runtime failure returns struc
     assert.equal(messages[2].result.isError, true);
     assert.equal(result.ok, false);
     assert.equal(result.available, false);
-    assert.equal(result.allow, false);
-    assert.equal(result.disposition, 'review_required');
+    assert.equal(result.failure_kind, 'infrastructure');
+    assert.equal(result.authorization_state, 'unavailable');
+    assert.equal(result.gate_obtained, false);
+    assert.equal('allow' in result, false);
+    assert.equal('disposition' in result, false);
     assert.equal(result.stale_can_authorize_high_risk, false);
     assert.match(result.stale_brief, /verify the deploy proof/);
     assert.match(result.error.exact_fix, /retry|doctor|outbound/i);
-    assert.match(result.client_update.update_command, /@getmarrow\/mcp@latest setup/);
+    assert.equal(result.client_update.installed_version_verified, true);
+    assert.equal(result.client_update.version_status, 'unknown');
+    assert.equal(result.client_update.update_command, 'npx -y --package=@getmarrow/mcp@latest marrow-mcp setup');
+    assert.equal(result.control_path.tool, 'marrow_agent_runtime');
+    assert.equal(result.control_path.sample_count, 1);
+    assert.equal(typeof result.lifecycle_spool.pending, 'number');
+    assert.match(result.lifecycle_spool.drain_command, /marrow-mcp drain-spool$/);
     assert.doesNotMatch(messages[2].result.content[0].text, /fetch failed/i);
     assert.equal('error' in messages[2], false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('a first-session control outage still returns an honest local safety brief', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-control-path-empty-'));
+  try {
+    const child = runMcp(home);
+    assert.equal(child.status, 0, child.stderr);
+    const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const result = JSON.parse(messages[2].result.content[0].text);
+    assert.equal(result.failure_kind, 'infrastructure');
+    assert.equal(result.stale_source, 'local_outage_safety');
+    assert.equal(result.stale_ms, null);
+    assert.match(result.stale_brief, /returned no policy decision/);
+    assert.equal('allow' in result, false);
+    assert.equal('disposition' in result, false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('initialize carries the always-on control loop through the standard MCP instructions field', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-control-path-instructions-'));
+  try {
+    const child = runMcp(home, { MARROW_AUTO_ENROLL: 'true' });
+    assert.equal(child.status, 0, child.stderr);
+    const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    assert.match(messages[0].result.instructions, /marrow_agent_runtime before consequential actions/);
+    assert.match(messages[0].result.instructions, /Infrastructure failures are not policy denials/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

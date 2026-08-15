@@ -266,6 +266,37 @@ test('MCP lifecycle spool reports aggregate backlog health and drains without ad
   }
 });
 
+test('explicit drain tolerates slow edge delivery without lengthening passive hooks', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-slow-drain-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let slowDelivery = false;
+  globalThis.fetch = async () => {
+    if (!slowDelivery) return new Response('{}', { status: 503 });
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    return new Response('{}', { status: 200 });
+  };
+  try {
+    await withSpoolPath(path, async () => {
+      const queued = await recordLifecycleEvent(lifecycleInput({ event_id: 'slow-drain-event' }));
+      assert.equal(queued.queued, true);
+      slowDelivery = true;
+      const started = Date.now();
+      const drained = await drainLifecycleSpool({
+        apiKey: 'test-mcp-spool-key',
+        baseUrl: 'https://api.example.com',
+        agentId: 'agent-one',
+      });
+      assert.ok(Date.now() - started >= 1_000);
+      assert.equal(drained.state, 'clear');
+      assert.equal(drained.pending, 0);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('deferred lifecycle capture writes locally without a network call', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-deferred-'));
   const path = join(directory, 'spool.json');

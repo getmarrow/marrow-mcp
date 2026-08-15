@@ -21,6 +21,7 @@ const guidance_cache_1 = require("./guidance-cache");
 const request_reliability_1 = require("./request-reliability");
 const hook_contract_1 = require("./hook-contract");
 const ping_state_1 = require("./ping-state");
+const control_path_state_1 = require("./control-path-state");
 const redact_1 = require("./redact");
 const runtime_contract_1 = require("./runtime-contract");
 // Parse CLI args
@@ -127,11 +128,13 @@ async function runSpoolCommand(drain) {
         ? await (0, lifecycle_spool_1.drainLifecycleSpool)({ apiKey, baseUrl, agentId: resolved.agentId || undefined })
         : (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey, agentId: resolved.agentId || undefined });
     process.stdout.write(`${JSON.stringify({
-        ok: status.state !== 'attention_required',
+        ok: drain ? status.state === 'clear' : status.state !== 'attention_required',
         lifecycle_spool: status,
     }, null, 2)}\n`);
     if (status.state === 'attention_required')
         process.exitCode = 2;
+    else if (drain && status.state !== 'clear')
+        process.exitCode = 1;
 }
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
 function runSetup() {
@@ -441,26 +444,55 @@ if (process.argv[2] !== 'keys') {
         }
         function toolFailure(toolName, failure) {
             const result = (0, request_reliability_1.structuredRequestFailure)(failure);
-            const transient = failure.retryable && !['authentication_required', 'permission_denied'].includes(failure.code);
-            const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
-            if (transient && supportsStale) {
+            const infrastructureFailure = !['authentication_required', 'permission_denied'].includes(failure.code);
+            const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_handoff_status', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
+            const spool = (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
+            result.failure_kind = infrastructureFailure ? 'infrastructure' : 'authorization';
+            result.control_path = (0, control_path_state_1.controlPathStats)(toolName || 'marrow_control');
+            result.lifecycle_spool = {
+                ...spool,
+                drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
+            };
+            if (infrastructureFailure && supportsStale) {
                 let cached = null;
                 try {
                     cached = (0, guidance_cache_1.readGuidanceCache)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
                 }
                 catch { /* owner-only cache is best effort */ }
-                if (cached) {
-                    result.stale_brief = cached.context;
-                    result.stale_ms = cached.stale_ms;
-                }
-                result.disposition = 'review_required';
-                result.allow = false;
+                result.stale_brief = cached?.context || [
+                    '## Marrow control-path outage brief',
+                    '- This is an infrastructure failure; Marrow returned no policy decision and did not deny the action.',
+                    '- Preserve local evidence and continue only low-risk, reversible work under the owner\'s existing safeguards.',
+                    '- Do not perform high-risk work until a fresh Marrow runtime gate returns allow, warn, review_required, or block.',
+                ].join('\n');
+                result.stale_source = cached ? 'last_known_guidance' : 'local_outage_safety';
+                result.stale_ms = cached?.stale_ms ?? null;
+                result.authorization_state = 'unavailable';
+                result.gate_obtained = false;
                 result.stale_can_authorize_high_risk = false;
+                const retryAfterMs = failure.retryAfterMs;
                 result.exact_next_action = cached
                     ? 'Use this last-known brief for low-risk context only. Obtain a fresh Marrow runtime gate before high-risk work.'
-                    : 'Retry once after retry_after_ms. Do not perform high-risk work without a fresh Marrow runtime gate.';
+                    : retryAfterMs != null
+                        ? `Wait ${retryAfterMs} ms, then retry once. Do not perform high-risk work without a fresh Marrow runtime gate.`
+                        : failure.exactFix;
             }
             return result;
+        }
+        function clientOperationalPayload(toolName, value) {
+            const payload = value && typeof value === 'object' && !Array.isArray(value)
+                ? value
+                : { data: value };
+            const spool = (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
+            return {
+                ...payload,
+                client_update: payload.client_update || (0, request_reliability_1.localClientUpdate)(),
+                control_path: (0, control_path_state_1.controlPathStats)(toolName),
+                lifecycle_spool: {
+                    ...spool,
+                    drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
+                },
+            };
         }
         // [FIX #9] Runtime validation helper for required string params
         function requireString(args, name) {
@@ -489,16 +521,24 @@ if (process.argv[2] !== 'keys') {
             }
         }
         async function withControlDeadline(operation, options = {}) {
+            const toolName = options.toolName || 'marrow_control';
             const hasCache = options.cacheAware !== false && Boolean(cachedGuidance());
-            const configuredCanaryMs = Number(process.env.MARROW_REQUEST_TIMEOUT_MS);
-            const timeoutMs = process.env.MARROW_CONTROL_PATH_CANARY === '1' && Number.isFinite(configuredCanaryMs)
-                ? Math.min(5_000, Math.max(500, Math.floor(configuredCanaryMs)))
-                : options.highRisk ? 2_000 : hasCache ? 400 : 1_200;
+            const configuredTimeoutMs = Number(process.env.MARROW_REQUEST_TIMEOUT_MS);
+            const timeoutMs = Number.isFinite(configuredTimeoutMs)
+                ? Math.min(10_000, Math.max(150, Math.floor(configuredTimeoutMs)))
+                : options.highRisk ? 4_500 : hasCache ? 500 : 4_000;
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), timeoutMs);
             timer.unref?.();
+            const startedAt = Date.now();
             try {
-                return await operation(controller.signal);
+                const result = await operation(controller.signal);
+                (0, control_path_state_1.recordControlPathSample)(toolName, Date.now() - startedAt, true);
+                return result;
+            }
+            catch (error) {
+                (0, control_path_state_1.recordControlPathSample)(toolName, Date.now() - startedAt, false);
+                throw error;
             }
             finally {
                 clearTimeout(timer);
@@ -1631,6 +1671,9 @@ if (process.argv[2] !== 'keys') {
                         protocolVersion: '2024-11-05',
                         capabilities: { tools: {}, prompts: {} },
                         serverInfo: { name: 'marrow', version: hook_contract_1.MCP_ADAPTER_VERSION },
+                        ...(AUTO_ENROLL ? {
+                            instructions: 'Use marrow_agent_runtime before consequential actions, obey fresh allow/warn/review_required/block results, use marrow_ask for relevant prior lessons, and close meaningful outcomes with marrow_commit. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work.',
+                        } : {}),
                     });
                     // Auto-enroll: emit enrollment notification on connection
                     if (AUTO_ENROLL) {
@@ -1731,7 +1774,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         orientCallCount++;
                         const wantAutoWarn = args.autoWarn ?? true;
                         const taskType = args.taskType;
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType, autoWarn: wantAutoWarn }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(`Orient before ${taskType || 'general'} work`, taskType) });
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType, autoWarn: wantAutoWarn }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(`Orient before ${taskType || 'general'} work`, taskType), toolName: 'marrow_orient' });
                         if (AUTO_ENROLL && orientCallCount === 1) {
                             const enrollmentText = `\n\n**Marrow control and proof active**\n\n` +
                                 `Marrow applies relevant policy and prior lessons before consequential actions, then records evidence and the real outcome afterward.\n\n` +
@@ -1905,7 +1948,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 session_id: SESSION_ID,
                                 proof: suppliedProof,
                                 context: { source: 'mcp_auto_risk_upgrade' },
-                            }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: true });
+                            }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: true, toolName: 'marrow_auto.runtime' });
                             storeRuntimeGuidance(runtimeGate);
                         }
                         const proofCanClose = !highRisk || (0, runtime_contract_1.highRiskRuntimeCanClose)(runtimeGate, suppliedProof, args.gate_receipt_id);
@@ -1979,7 +2022,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     }
                     if (toolName === 'marrow_ask') {
                         const query = requireString(args, 'query');
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query }, SESSION_ID, FLEET_AGENT_ID, signal));
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query }, SESSION_ID, FLEET_AGENT_ID, signal), { toolName: 'marrow_ask' });
                         try {
                             (0, guidance_cache_1.writeGuidanceCache)({
                                 apiKey: API_KEY,
@@ -1989,15 +2032,12 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             });
                         }
                         catch { /* owner-only cache is best effort */ }
-                        success(id, {
-                            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                        });
+                        toolSuccess(id, clientOperationalPayload('marrow_ask', result));
                         return;
                     }
                     if (toolName === 'marrow_status') {
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false });
-                        const statusRecord = result;
-                        toolSuccess(id, { ...statusRecord, client_update: statusRecord.client_update || (0, request_reliability_1.localClientUpdate)() });
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_status' });
+                        toolSuccess(id, clientOperationalPayload('marrow_status', result));
                         return;
                     }
                     if (toolName === 'marrow_create_key') {
@@ -2135,7 +2175,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_runtime_status') {
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowRuntimeStatus)(API_KEY, BASE_URL, args.fast !== false, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false });
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowRuntimeStatus)(API_KEY, BASE_URL, args.fast !== false, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_runtime_status' });
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
@@ -2191,9 +2231,9 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 : undefined,
                             period: args.period,
                         };
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowAgentRuntime)(API_KEY, BASE_URL, runtimeInput, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(runtimeInput.action, runtimeInput.type) });
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowAgentRuntime)(API_KEY, BASE_URL, runtimeInput, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(runtimeInput.action, runtimeInput.type), toolName: 'marrow_agent_runtime' });
                         storeRuntimeGuidance(result);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        toolSuccess(id, clientOperationalPayload('marrow_agent_runtime', result));
                         return;
                     }
                     if (toolName === 'marrow_arbitrate') {
@@ -2391,12 +2431,12 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_handoff_status') {
-                        const result = await (0, index_1.marrowHandoffStatus)(API_KEY, BASE_URL, {
+                        const result = await withControlDeadline((signal) => (0, index_1.marrowHandoffStatus)(API_KEY, BASE_URL, {
                             status: args.status,
                             agentId: args.agentId || FLEET_AGENT_ID,
                             limit: args.limit,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        }, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_handoff_status' });
+                        toolSuccess(id, clientOperationalPayload('marrow_handoff_status', result));
                         return;
                     }
                     if (toolName === 'marrow_session_end') {

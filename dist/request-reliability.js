@@ -45,12 +45,12 @@ function boundedTimeout(url) {
     // These are hard transport ceilings. The MCP and passive-hook surfaces use
     // shorter cache-aware deadlines when last-known guidance is available.
     if (RUNTIME_PATH.test(url))
-        return 2_000;
+        return 4_500;
     if (STATUS_CONTEXT_PATH.test(url))
-        return 1_200;
+        return 4_000;
     if (DECISION_READ_PATH.test(url))
-        return 1_500;
-    return 2_000;
+        return 4_000;
+    return 4_000;
 }
 function retryAfterMs(response) {
     const raw = response.headers.get('retry-after');
@@ -73,6 +73,7 @@ function exactFixForStatus(status) {
 }
 function requestErrorFromResponse(response, detail) {
     const status = response.status;
+    const cloudflareEdgeDenial = status === 403 && Boolean(response.headers.get('cf-ray')) && !detail;
     const errorObject = detail?.error && typeof detail.error === 'object' && !Array.isArray(detail.error)
         ? detail.error
         : undefined;
@@ -97,23 +98,27 @@ function requestErrorFromResponse(response, detail) {
     const apiFix = firstString('exact_fix', 'exact_next_action', 'fix_command') || exactFixForStatus(status);
     const fixCommand = firstString('fix_command') || null;
     const backendCode = firstString('code') || null;
-    const code = status === 401
-        ? 'authentication_required'
-        : status === 403
-            ? 'permission_denied'
-            : status === 429
-                ? 'rate_limited'
-                : status >= 500
-                    ? 'service_unavailable'
-                    : 'request_failed';
+    const code = cloudflareEdgeDenial
+        ? 'edge_access_denied'
+        : status === 401
+            ? 'authentication_required'
+            : status === 403
+                ? 'permission_denied'
+                : status === 429
+                    ? 'rate_limited'
+                    : status >= 500
+                        ? 'service_unavailable'
+                        : 'request_failed';
     return new MarrowRequestError({
         code,
         backendCode,
         message: `HTTP ${status}: ${apiMessage}`,
         status,
-        retryable: RETRYABLE_STATUS.has(status),
+        retryable: cloudflareEdgeDenial ? false : RETRYABLE_STATUS.has(status),
         retryAfterMs: retryAfterMs(response),
-        exactFix: apiFix,
+        exactFix: cloudflareEdgeDenial
+            ? 'Marrow was reached, but the Cloudflare edge denied this network client before API authentication. Record the Cloudflare Ray ID, retry from a trusted network, and send the Ray ID to Marrow support; do not rotate the API key.'
+            : apiFix,
         fixCommand,
     });
 }
@@ -135,7 +140,8 @@ function normalizeRequestError(error) {
     if (source.name === 'AbortError' || /abort|timed out|timeout/.test(message)) {
         return new MarrowRequestError({
             code: 'request_timeout', message: 'Marrow control read timed out', retryable: true,
-            exactFix: 'Use the returned last-known guidance for low-risk context only, then retry. High-risk work still requires a fresh gate.',
+            retryAfterMs: 250,
+            exactFix: 'Use the returned outage-safe or last-known brief for low-risk context only, wait 250 ms, then retry once. High-risk work still requires a fresh gate.',
         });
     }
     if (['ENOTFOUND', 'EAI_AGAIN'].includes(causeCode)) {
@@ -237,9 +243,13 @@ function localClientUpdate() {
     return {
         package: '@getmarrow/mcp',
         installed_version: hook_contract_1.MCP_ADAPTER_VERSION,
-        version_status: 'unverified',
-        update_command: 'npx -y @getmarrow/mcp@latest setup',
-        verification_command: 'npx -y @getmarrow/install@latest doctor',
+        installed_version_verified: true,
+        latest_version: null,
+        version_status: 'unknown',
+        metadata_status: 'local_only_control_path_unavailable',
+        update_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp setup',
+        launch_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp',
+        verification_command: 'npx -y @getmarrow/install@latest doctor --self-test',
         operator_approval_required: true,
     };
 }

@@ -217,7 +217,7 @@ export declare function marrowHandoffStatus(apiKey: string, baseUrl: string, opt
     status?: string;
     agentId?: string;
     limit?: number;
-}, sessionId?: string, agentId?: string): Promise<unknown>;
+}, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<unknown>;
 /**
  * Get a periodic improvement nudge when Marrow has something worth surfacing.
  */
