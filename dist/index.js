@@ -1297,7 +1297,7 @@ async function marrowUpdateHandoff(apiKey, baseUrl, handoffId, input, sessionId,
     const json = await safeJsonResponse(res);
     return json.data;
 }
-async function marrowHandoffStatus(apiKey, baseUrl, options = {}, sessionId, agentId) {
+async function marrowHandoffStatus(apiKey, baseUrl, options = {}, sessionId, agentId, signal) {
     const qs = new URLSearchParams();
     if (options.status)
         qs.set('status', options.status);
@@ -1307,6 +1307,7 @@ async function marrowHandoffStatus(apiKey, baseUrl, options = {}, sessionId, age
         qs.set('limit', String(options.limit));
     const res = await fetch(`${baseUrl}/v1/fleet/handoffs/status${qs.toString() ? `?${qs.toString()}` : ''}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+        signal,
     });
     const json = await safeJsonResponse(res);
     return json.data;

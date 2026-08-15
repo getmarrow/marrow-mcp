@@ -57,7 +57,7 @@ Verify current claims through the [public evidence manifest](https://getmarrow.a
 ## Install
 
 ```bash
-npx @getmarrow/mcp setup
+npx -y --package=@getmarrow/mcp@latest marrow-mcp setup
 ```
 
 Set the key through trusted secret storage:
@@ -75,7 +75,7 @@ Then configure the MCP server:
   "mcpServers": {
     "marrow": {
       "command": "npx",
-      "args": ["-y", "@getmarrow/mcp"]
+      "args": ["-y", "--package=@getmarrow/mcp@latest", "marrow-mcp"]
     }
   }
 }
@@ -96,21 +96,28 @@ npx -y @getmarrow/install@latest activate
 npx -y @getmarrow/install@latest doctor
 
 # Manual MCP-only setup
-npx -y @getmarrow/mcp@latest setup
+npx -y --package=@getmarrow/mcp@latest marrow-mcp setup
 
 # Verify live read latency, last success, and local backlog
-npx -y @getmarrow/mcp@latest ping
+npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 ```
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
 ## What's New in v3.9.59
 
-v3.9.59 makes the live `ping` check reliable across ordinary edge and geographic latency:
+v3.9.59 makes the six-tool control path reliable and honest across ordinary edge and geographic latency:
 
 - the default health deadline is 2.5 seconds instead of an unrealistically narrow 400 ms;
 - `MARROW_PING_TIMEOUT_MS` can tune the probe between 500 ms and 5 seconds;
-- normal runtime and pre-action control deadlines are unchanged.
+- authenticated control reads tolerate cold network/TLS paths while cached reads still return quickly;
+- status, ask, runtime, and handoff responses report measured current/p50/p99 latency plus owner-only queue health;
+- a first-session outage returns a clearly labeled local safety brief, and infrastructure failures are never mislabeled as policy denials;
+- timeout errors return a concrete retry delay instead of an unresolved placeholder;
+- Cloudflare edge denials are separated from key-scope or Marrow policy rejections;
+- MCP initialization carries the always-on control/proof instructions even when a client does not request the optional prompt template;
+- update, launch, setup, spool, and ping commands use the unambiguous `npx --package ... marrow-mcp` form;
+- explicit spool drains tolerate slow edge delivery without extending passive hook latency.
 
 ## Previous: v3.9.58
 
@@ -141,7 +148,7 @@ v3.9.56 adds tenant-scoped coordination and evidence-only replay to the existing
 - transient failures can use an owner-only, account/key/agent-scoped last-known brief for at most one hour, clearly labeled with its age;
 - 401 and 403 responses never use cached guidance, and cached runtime guidance cannot authorize high-risk work;
 - `marrow_ask` now maps to the canonical decision brief contract instead of a separate route;
-- `npx -y @getmarrow/mcp@latest ping` reports current latency, rolling measured p50/p99, last success, and lifecycle backlog health;
+- `npx -y --package=@getmarrow/mcp@latest marrow-mcp ping` reports current latency, rolling measured p50/p99, last success, and lifecycle backlog health;
 - `marrow_coordinate` acquires/releases tenant-scoped resource leases and carries compact child proof packets without sharing transcripts;
 - `marrow_replay_compare` compares already-recorded baseline and candidate outcomes with durable proof and never executes either model;
 - both new tools preserve agent-bound key scope, reject unsafe path identifiers, and return unavailable or incomplete evidence rather than manufacturing a winner.
@@ -324,15 +331,15 @@ it does not run models, retain prompts, or infer a winner from labels.
 
 ## Passive Use
 
-`npx @getmarrow/mcp setup` installs supported prompt, tool-result, and session-stop hooks so the agent can receive before-action context, record meaningful tool outcomes, and keep unfinished closure visible without the owner repeatedly prompting it to use Marrow.
+`npx -y --package=@getmarrow/mcp@latest marrow-mcp setup` installs supported prompt, tool-result, and session-stop hooks so the agent can receive before-action context, record meaningful tool outcomes, and keep unfinished closure visible without the owner repeatedly prompting it to use Marrow.
 
 The hooks send compact classifications and lifecycle receipts. They do not need raw prompts, completions, command output, tool output, or credentials. A completed tool or session does not automatically become a successful business outcome; explicit success/failure closure is required.
 
 Transient lifecycle receipts use a bounded owner-only spool and are retried with stable event IDs. Operators can inspect and drain it without exposing event content:
 
 ```bash
-npx @getmarrow/mcp spool-status
-npx @getmarrow/mcp drain-spool
+npx -y --package=@getmarrow/mcp@latest marrow-mcp spool-status
+npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool
 ```
 
 The output contains only state, exact pending/failed counts, oldest receipt timestamps, capacity, and an exact fix. Terminal validation/authentication failures and exhausted retries remain explicit durable failures rather than cycling indefinitely.

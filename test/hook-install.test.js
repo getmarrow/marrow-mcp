@@ -45,7 +45,7 @@ function installAll(directory) {
 }
 
 function commandHandlers(settings, eventName, subcommand) {
-  const pattern = new RegExp(`^npx\\s+(?:-y\\s+)?@getmarrow/mcp(?:@[^\\s]+)?\\s+${subcommand}$`);
+  const pattern = new RegExp(`^npx\\s+(?:-y\\s+)?(?:--package=@getmarrow/mcp(?:@[^\\s]+)?\\s+marrow-mcp|@getmarrow/mcp(?:@[^\\s]+)?)\\s+${subcommand}$`);
   return (settings.hooks?.[eventName] || []).flatMap((entry) =>
     (entry.hooks || [])
       .filter((handler) => handler.type === 'command' && pattern.test(String(handler.command).trim()))
@@ -93,7 +93,7 @@ test('setup upgrades legacy and old pinned hooks to one exact certified handler'
     assert.equal(commandHandlers(settings, 'PostToolUseFailure', 'hook')[0].handler.timeout, 14);
     const activeMarrowHandlers = Object.values(settings.hooks).flatMap((entries) => entries)
       .flatMap((entry) => entry.hooks || [])
-      .filter((handler) => /^npx\s+(?:-y\s+)?@getmarrow\/mcp(?:@[^\s]+)?\s+/.test(handler.command || ''));
+      .filter((handler) => /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+/.test(handler.command || ''));
     assert.equal(activeMarrowHandlers.length, 5);
 
     installAll(directory);

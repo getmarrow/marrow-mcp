@@ -116,15 +116,15 @@ function strictClientUpdateCommand(value) {
     const command = boundedClientCommand(value);
     if (!command)
         return undefined;
-    const match = /^(?:npx @getmarrow\/install@(\S+) --repair|npx @getmarrow\/mcp@(\S+) setup|npm install @getmarrow\/sdk@(\S+))$/.exec(command);
-    const target = match?.[1] || match?.[2] || match?.[3];
+    const match = /^(?:npx @getmarrow\/install@(\S+) --repair|npx @getmarrow\/mcp@(\S+) setup|npx -y --package=@getmarrow\/mcp@(\S+) marrow-mcp setup|npm install @getmarrow\/sdk@(\S+))$/.exec(command);
+    const target = match?.[1] || match?.[2] || match?.[3] || match?.[4];
     return target && validClientCommandTarget(target) ? command : undefined;
 }
 function strictClientVerificationCommand(value) {
     const command = boundedClientCommand(value);
     if (!command)
         return undefined;
-    const match = /^npx @getmarrow\/install@(\S+) doctor$/.exec(command);
+    const match = /^npx(?: -y)? @getmarrow\/install@(\S+) doctor(?: --self-test)?$/.exec(command);
     return match && validClientCommandTarget(match[1]) ? command : undefined;
 }
 async function readStdin() {

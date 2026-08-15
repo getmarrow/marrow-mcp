@@ -1,4 +1,4 @@
-export type MarrowFailureCode = 'authentication_required' | 'permission_denied' | 'rate_limited' | 'request_timeout' | 'dns_unavailable' | 'connection_reset' | 'tls_failure' | 'service_unavailable' | 'invalid_response' | 'request_failed';
+export type MarrowFailureCode = 'authentication_required' | 'permission_denied' | 'rate_limited' | 'request_timeout' | 'dns_unavailable' | 'connection_reset' | 'tls_failure' | 'edge_access_denied' | 'service_unavailable' | 'invalid_response' | 'request_failed';
 export declare class MarrowRequestError extends Error {
     readonly code: MarrowFailureCode;
     readonly backendCode: string | null;

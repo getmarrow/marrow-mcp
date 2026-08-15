@@ -140,6 +140,6 @@ export function resolveMarrowEnv(options: {
     sessionId: env.MARROW_SESSION_ID,
     source: null,
     missing: true,
-    exactFix: 'Create an API key at https://getmarrow.ai, then export MARROW_API_KEY from trusted secret storage or place it in ~/.marrow/env with owner-only permissions before running npx @getmarrow/mcp setup.',
+    exactFix: 'Create an API key at https://getmarrow.ai, then export MARROW_API_KEY from trusted secret storage or place it in ~/.marrow/env with owner-only permissions before running npx -y --package=@getmarrow/mcp@latest marrow-mcp setup.',
   };
 }
