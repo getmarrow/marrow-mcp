@@ -1,3 +1,4 @@
+export declare function resolvePingTimeoutMs(value: string | undefined): number;
 export declare function updatePingState(input: {
     apiKey: string;
     baseUrl: string;

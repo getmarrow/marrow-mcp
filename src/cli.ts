@@ -70,7 +70,7 @@ import { drainLifecycleSpool, lifecycleSpoolStatus, recordLifecycleEvent } from 
 import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
 import { localClientUpdate, MarrowRequestError, structuredRequestFailure } from './request-reliability';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
-import { updatePingState } from './ping-state';
+import { resolvePingTimeoutMs, updatePingState } from './ping-state';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { highRiskRuntimeCanClose } from './runtime-contract';
 import type { ThinkResult, MarrowAgentRuntimeResult, MarrowMemory } from './types';
@@ -126,7 +126,7 @@ async function runPingCommand(): Promise<void> {
   }
   const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 400);
+  const timer = setTimeout(() => controller.abort(), resolvePingTimeoutMs(process.env.MARROW_PING_TIMEOUT_MS));
   timer.unref?.();
   const started = Date.now();
   try {

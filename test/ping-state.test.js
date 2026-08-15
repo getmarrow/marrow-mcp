@@ -4,7 +4,15 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const test = require('node:test');
 
-const { updatePingState } = require('../dist/ping-state.js');
+const { resolvePingTimeoutMs, updatePingState } = require('../dist/ping-state.js');
+
+test('ping timeout tolerates real network latency and remains bounded', () => {
+  assert.equal(resolvePingTimeoutMs(undefined), 2_500);
+  assert.equal(resolvePingTimeoutMs('not-a-number'), 2_500);
+  assert.equal(resolvePingTimeoutMs('200'), 500);
+  assert.equal(resolvePingTimeoutMs('1750.9'), 1_750);
+  assert.equal(resolvePingTimeoutMs('9000'), 5_000);
+});
 
 test('ping history reports measured p50/p99 and preserves last success across failure', () => {
   const home = mkdtempSync(join(tmpdir(), 'marrow-ping-state-'));

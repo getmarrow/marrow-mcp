@@ -73,7 +73,7 @@ async function runPingCommand() {
     }
     const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 400);
+    const timer = setTimeout(() => controller.abort(), (0, ping_state_1.resolvePingTimeoutMs)(process.env.MARROW_PING_TIMEOUT_MS));
     timer.unref?.();
     const started = Date.now();
     try {
