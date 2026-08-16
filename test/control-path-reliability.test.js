@@ -1,11 +1,11 @@
 const assert = require('node:assert/strict');
-const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
-const { marrowAgentRuntime, marrowAuto, marrowBuyerProof, marrowStatus } = require('../dist/index.js');
+const { marrowAgentRuntime, marrowAuto, marrowBuyerProof, marrowCommit, marrowStatus } = require('../dist/index.js');
 const { MarrowRequestError, normalizeRequestError, reliableFetch, requestErrorFromResponse, structuredRequestFailure } = require('../dist/request-reliability.js');
 const { highRiskRuntimeCanClose, normalizeRuntimeResult } = require('../dist/runtime-contract.js');
 const { writeGuidanceCache } = require('../dist/guidance-cache.js');
@@ -22,21 +22,81 @@ function mcpInput(toolName = 'marrow_agent_runtime', args) {
 }
 
 function runMcp(home, extraEnv = {}, input = mcpInput()) {
+  const env = {
+    ...process.env,
+    HOME: home,
+    MARROW_API_KEY: 'fixture-control-path-key',
+    MARROW_BASE_URL: 'https://127.0.0.1:9',
+    MARROW_FLEET_AGENT_ID: 'agent-control-test',
+    MARROW_AUTO_ENROLL: 'false',
+    MARROW_REQUEST_TIMEOUT_MS: '150',
+    ...extraEnv,
+  };
+  if (Object.hasOwn(extraEnv, 'MARROW_REQUEST_TIMEOUT_MS') && extraEnv.MARROW_REQUEST_TIMEOUT_MS == null) {
+    delete env.MARROW_REQUEST_TIMEOUT_MS;
+  }
   return spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js')], {
-    env: {
-      ...process.env,
-      HOME: home,
-      MARROW_API_KEY: 'fixture-control-path-key',
-      MARROW_BASE_URL: 'https://127.0.0.1:9',
-      MARROW_FLEET_AGENT_ID: 'agent-control-test',
-      MARROW_AUTO_ENROLL: 'false',
-      MARROW_REQUEST_TIMEOUT_MS: '150',
-      ...extraEnv,
-    },
+    env,
     input,
     encoding: 'utf8',
     timeout: 3_000,
   });
+}
+
+function installControlFetchMock(home) {
+  const mockPath = join(home, 'mock-control-fetch.cjs');
+  writeFileSync(mockPath, `
+const delay = Number(process.env.MARROW_TEST_FETCH_DELAY_MS || 0);
+function wait(signal) {
+  if (!delay) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, delay);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason || new DOMException('Aborted', 'AbortError'));
+    };
+    if (signal?.aborted) abort();
+    else signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+globalThis.fetch = async (url, init = {}) => {
+  await wait(init.signal);
+  const target = String(url);
+  if (target.includes('/v1/analytics/decision-brief')) {
+    return Response.json({ data: {
+      summary: 'Use current control guidance.', next_actions: ['Verify the live gate.'],
+      risk: { similar_failures: [] }, failure_alerts: [], fleet_reliability: { outcome_coverage: 1 },
+    } });
+  }
+  if (target.includes('/v1/agent/runtime')) {
+    return Response.json({ data: {
+      response_mode: 'slim', decision: 'allow', risk_level: 'low', gate_required: false,
+      proof_required: false, proof_complete: true, gate_receipt_id: 'gate-fixture',
+    } });
+  }
+  if (target.includes('/v1/agent/think')) {
+    return Response.json({ data: { decision_id: 'decision-auto' } });
+  }
+  if (target.includes('/v1/agent/commit')) {
+    const body = JSON.parse(String(init.body || '{}'));
+    if (body.proof?.test !== 'passed') {
+      return Response.json({ error: 'fixture requires forwarded proof' }, { status: 400 });
+    }
+    return Response.json({ data: { success: true } });
+  }
+  if (target.includes('/v1/agent/integrations/events')) {
+    return Response.json({ data: { accepted: true } });
+  }
+  if (target.includes('/v1/fleet/handoffs/status') && process.env.MARROW_TEST_HANDOFF_PLAN === '1') {
+    return Response.json({
+      error: { code: 'FORBIDDEN', message: 'Fleet learning requires the Team plan or above.' },
+      details: { current_plan: 'free', code: 'MARROW_PLAN_UPGRADE_REQUIRED', required_feature: 'fleet_learning' },
+    }, { status: 403 });
+  }
+  return Response.json({ data: { health: 'healthy' } });
+};
+`, { mode: 0o600 });
+  return mockPath;
 }
 
 test('status proves the authenticated agent path rather than public health', async () => {
@@ -218,9 +278,46 @@ test('a timeout returns a concrete retry delay rather than an unresolved placeho
   const failure = normalizeRequestError(new DOMException('Timed out', 'AbortError'));
   const payload = structuredRequestFailure(failure);
   assert.equal(failure.code, 'request_timeout');
-  assert.equal(payload.error.retry_after_ms, 250);
-  assert.match(payload.error.exact_fix, /250 ms/);
+  assert.equal(payload.error.retry_after_ms, 1_000);
+  assert.match(payload.error.exact_fix, /1000 ms/);
   assert.doesNotMatch(payload.error.exact_fix, /retry_after_ms/i);
+});
+
+test('cached guidance never reduces the live MCP control deadline to 500 ms', () => {
+  const source = readFileSync(join(__dirname, '..', 'src', 'cli.ts'), 'utf8');
+  assert.doesNotMatch(source, /hasCache\s*\?\s*500/);
+  assert.match(source, /options\.highRisk\s*\|\|\s*runtimeBudget\s*\?\s*4_500\s*:\s*4_000/);
+});
+
+test('a cached ask does not shorten the next runtime call below the customer default deadline', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-cached-runtime-'));
+  try {
+    const mockPath = installControlFetchMock(home);
+    const env = {
+      MARROW_REQUEST_TIMEOUT_MS: null,
+      MARROW_TEST_FETCH_DELAY_MS: '700',
+      NODE_OPTIONS: `--require=${mockPath}`,
+    };
+    const asked = runMcp(home, env, mcpInput('marrow_ask', { query: 'What should run before this action?' }));
+    assert.equal(asked.status, 0, asked.stderr);
+    const askMessages = asked.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(askMessages[2].result.isError, undefined, asked.stdout);
+    assert.match(JSON.parse(askMessages[2].result.content[0].text).answer, /current control guidance/i);
+
+    const runtime = runMcp(home, env, mcpInput('marrow_agent_runtime', {
+      action: 'Review a local documentation note',
+      type: 'general',
+    }));
+    assert.equal(runtime.status, 0, runtime.stderr);
+    const runtimeMessages = runtime.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(runtimeMessages[2].result.isError, undefined, runtime.stdout);
+    const payload = JSON.parse(runtimeMessages[2].result.content[0].text);
+    assert.equal(payload.risk_gate.allow, true);
+    assert.equal(payload.risk_gate.decision, 'allow');
+    assert.equal(payload.control_path.success_count, 1);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('caller-supplied abort signals retain one bounded safe retry', async () => {
@@ -309,6 +406,7 @@ test('initialize carries the always-on control loop through the standard MCP ins
     const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
     assert.match(messages[0].result.instructions, /marrow_agent_runtime before consequential actions/);
     assert.match(messages[0].result.instructions, /Infrastructure failures are not policy denials/);
+    assert.match(messages[0].result.instructions, /MCP tools are on demand/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -342,7 +440,7 @@ test('compact MCP profile rejects direct calls to hidden advanced tools', () => 
 
 test('high-risk closure requires an allowed fresh receipt and complete proof', () => {
   const runtime = {
-    risk_gate: { allow: true, decision: 'allow' },
+    risk_gate: { allow: true, decision: 'allow', enforced: true, enforcement_decision: 'allow' },
     proof_pack: { complete: true },
     gate_receipt: { id: 'gate-one', decision: 'allow', expires_at: '2030-01-01T00:00:00.000Z' },
   };
@@ -371,6 +469,97 @@ test('auto does not invent successful completion when success is absent', async 
     assert.doesNotMatch(JSON.stringify(calls), /marrow_auto completed|checks/);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('commit propagates a caller abort signal into the live request', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestSignal;
+  globalThis.fetch = async (_url, init = {}) => {
+    requestSignal = init.signal;
+    return new Promise((_resolve, reject) => {
+      const abort = () => reject(requestSignal?.reason || new DOMException('Aborted', 'AbortError'));
+      if (requestSignal?.aborted) abort();
+      else requestSignal?.addEventListener('abort', abort, { once: true });
+    });
+  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25);
+  try {
+    await assert.rejects(
+      () => marrowCommit('fixture-key', 'https://api.example.test', {
+        decision_id: 'decision-signal',
+        success: true,
+        outcome: 'verified outcome',
+        proof: { test: 'passed' },
+        gate_receipt_id: 'gate-signal',
+      }, 'session-signal', 'agent-signal', controller.signal),
+      (error) => error instanceof MarrowRequestError && error.code === 'request_timeout',
+    );
+    assert.equal(requestSignal.aborted, true);
+  } finally {
+    clearTimeout(timer);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrow_auto returns in-band commit confirmation only after forwarding supplied proof', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-auto-proof-'));
+  try {
+    const mockPath = installControlFetchMock(home);
+    const child = runMcp(home, {
+      NODE_OPTIONS: `--require=${mockPath}`,
+      MARROW_TEST_FETCH_DELAY_MS: '0',
+      // Keep the fixture deterministic under full-suite CPU load. The
+      // cache-deadline regression is covered separately with no override.
+      MARROW_REQUEST_TIMEOUT_MS: '1000',
+    }, mcpInput('marrow_auto', {
+      action: 'Update a local documentation note',
+      outcome: 'Documentation check passed',
+      success: true,
+      proof: { test: 'passed' },
+    }));
+    assert.equal(child.status, 0, child.stderr);
+    const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(messages[2].result.isError, undefined, child.stdout);
+    const payload = JSON.parse(messages[2].result.content[0].text);
+    assert.equal(payload.decision_id, 'decision-auto', child.stdout);
+    assert.equal(payload.live_delivery.accepted, true);
+    assert.equal(payload.live_delivery.committed, true);
+    assert.equal(payload.logging, 'governed_commit_confirmed');
+    assert.equal(payload.completion_state, 'closed_with_proof');
+    assert.equal(payload.receipt.accepted, true);
+    assert.equal(payload.receipt.queued, false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('plan-gated handoff status is reported as entitlement rather than an API outage', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-handoff-plan-'));
+  try {
+    const mockPath = installControlFetchMock(home);
+    const child = runMcp(home, {
+      NODE_OPTIONS: `--require=${mockPath}`,
+      MARROW_TEST_HANDOFF_PLAN: '1',
+      MARROW_CLIENT: 'grok',
+    }, mcpInput('marrow_handoff_status', {}));
+    assert.equal(child.status, 0, child.stderr);
+    const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const payload = JSON.parse(messages[2].result.content[0].text);
+    assert.equal(messages[2].result.isError, undefined);
+    assert.equal(payload.state, 'not_entitled');
+    assert.equal(payload.failure_kind, 'entitlement');
+    assert.equal(payload.authorization_state, 'plan_limited');
+    assert.equal(payload.credential_valid, true);
+    assert.equal(payload.current_plan, 'free');
+    assert.equal(payload.required_plan, 'team');
+    assert.equal(payload.required_feature, 'fleet_learning');
+    assert.equal(payload.host_capability.host, 'grok');
+    assert.equal(payload.host_capability.tool_invocation, 'on_demand');
+    assert.equal(payload.host_capability.passive_hooks.provided_by_mcp_transport, false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

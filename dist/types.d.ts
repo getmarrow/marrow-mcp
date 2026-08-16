@@ -165,12 +165,29 @@ export interface MarrowWorkflowGateResult {
         severity: string;
         message: string;
     }>;
+    enforcement_decision?: string;
+    enforced?: boolean;
+    entitled?: boolean;
+    gate_required?: boolean;
     agent_id?: string | null;
     session_id?: string | null;
     gate_event_id?: string | null;
     prior_lessons?: unknown[];
     deployment_playbooks?: unknown[];
     next?: Record<string, unknown>;
+}
+export interface MarrowRuntimePlanCapability {
+    current_plan: string | null;
+    evaluation_active: boolean | null;
+    mode: 'advisory' | 'pilot' | 'enforced' | 'unknown';
+    pre_action_gate_entitled: boolean | null;
+    production_enforcement_entitled: boolean | null;
+    handoff_status_entitled: boolean | null;
+    limits: {
+        agents: number | null;
+        included_decisions_per_month: number | null;
+        decision_overage_behavior: string | null;
+    } | null;
 }
 export interface MarrowAgentRuntimeRequest extends MarrowDecisionBriefRequest {
     risk_tolerance?: 'low' | 'medium' | 'high';
@@ -321,6 +338,12 @@ export interface MarrowAgentRuntimeResult {
     status: Record<string, unknown>;
     decision_brief: MarrowDecisionBriefResult;
     risk_gate: MarrowWorkflowGateResult;
+    plan_access?: Record<string, unknown> | null;
+    plan_capability?: MarrowRuntimePlanCapability | null;
+    fresh_runtime_response?: boolean;
+    guidance_obtained?: boolean;
+    authorization_state?: 'hard_gate' | 'advisory_only' | 'unverified';
+    hard_gate_obtained?: boolean;
     relevant_lessons: unknown[];
     deployment_playbooks: unknown[];
     template_suggestion: Record<string, unknown>;

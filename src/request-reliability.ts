@@ -27,6 +27,8 @@ export class MarrowRequestError extends Error {
   readonly retryAfterMs: number | null;
   readonly exactFix: string;
   readonly fixCommand: string | null;
+  readonly currentPlan: string | null;
+  readonly requiredFeature: string | null;
 
   constructor(input: {
     code: MarrowFailureCode;
@@ -37,6 +39,8 @@ export class MarrowRequestError extends Error {
     retryAfterMs?: number | null;
     exactFix: string;
     fixCommand?: string | null;
+    currentPlan?: string | null;
+    requiredFeature?: string | null;
   }) {
     super(redactSensitiveText(input.message).slice(0, 240));
     this.name = 'MarrowRequestError';
@@ -51,14 +55,21 @@ export class MarrowRequestError extends Error {
     this.fixCommand = input.fixCommand
       ? redactSensitiveText(input.fixCommand).slice(0, 360)
       : null;
+    this.currentPlan = input.currentPlan && /^[a-z][a-z0-9_-]{0,31}$/i.test(input.currentPlan)
+      ? input.currentPlan.toLowerCase()
+      : null;
+    this.requiredFeature = input.requiredFeature && /^[a-z][a-z0-9_-]{0,63}$/i.test(input.requiredFeature)
+      ? input.requiredFeature.toLowerCase()
+      : null;
   }
 }
 
 function boundedTimeout(url: string): number {
   const configured = Number(process.env.MARROW_REQUEST_TIMEOUT_MS);
   if (Number.isFinite(configured)) return Math.min(10_000, Math.max(150, Math.floor(configured)));
-  // These are hard transport ceilings. The MCP and passive-hook surfaces use
-  // shorter cache-aware deadlines when last-known guidance is available.
+  // These are hard transport ceilings. Last-known guidance is an outage fallback;
+  // it must never shorten a live control read and cause a healthy response to be
+  // aborted before it can replace stale guidance.
   if (RUNTIME_PATH.test(url)) return 4_500;
   if (STATUS_CONTEXT_PATH.test(url)) return 4_000;
   if (DECISION_READ_PATH.test(url)) return 4_000;
@@ -107,6 +118,8 @@ export function requestErrorFromResponse(response: Response, detail?: Record<str
   const apiFix = firstString('exact_fix', 'exact_next_action', 'fix_command') || exactFixForStatus(status);
   const fixCommand = firstString('fix_command') || null;
   const backendCode = firstString('code') || null;
+  const currentPlan = firstString('current_plan') || null;
+  const requiredFeature = firstString('required_feature') || null;
   const code: MarrowFailureCode = cloudflareEdgeDenial
     ? 'edge_access_denied'
     : status === 401
@@ -129,6 +142,8 @@ export function requestErrorFromResponse(response: Response, detail?: Record<str
       ? 'Marrow was reached, but the Cloudflare edge denied this network client before API authentication. Record the Cloudflare Ray ID, retry from a trusted network, and send the Ray ID to Marrow support; do not rotate the API key.'
       : apiFix,
     fixCommand,
+    currentPlan,
+    requiredFeature,
   });
 }
 
@@ -150,8 +165,8 @@ export function normalizeRequestError(error: unknown): MarrowRequestError {
   if (source.name === 'AbortError' || /abort|timed out|timeout/.test(message)) {
     return new MarrowRequestError({
       code: 'request_timeout', message: 'Marrow control read timed out', retryable: true,
-      retryAfterMs: 250,
-      exactFix: 'Use the returned outage-safe or last-known brief for low-risk context only, wait 250 ms, then retry once. High-risk work still requires a fresh gate.',
+      retryAfterMs: 1_000,
+      exactFix: 'Use the returned outage-safe or last-known brief for low-risk context only, wait 1000 ms, then retry once. High-risk work still requires a fresh gate.',
     });
   }
   if (['ENOTFOUND', 'EAI_AGAIN'].includes(causeCode)) {

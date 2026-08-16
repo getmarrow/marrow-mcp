@@ -401,7 +401,7 @@ async function marrowThink(apiKey, baseUrl, params, sessionId, agentId, signal) 
 /**
  * Explicitly commit the result of an action to Marrow.
  */
-async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
+async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId, signal) {
     let runtimeGate = null;
     let gateReceiptId = params.gate_receipt_id || params.gate_receipt;
     if (!gateReceiptId && params.auto_gate !== false && params.action) {
@@ -412,9 +412,11 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
                 surfaces: params.surfaces || ['handoff'],
                 context: { mcp_commit_auto_gate: true },
                 proof: params.proof ? (0, redact_1.redactSensitiveValue)(params.proof) : undefined,
-            }, sessionId, agentId);
+            }, sessionId, agentId, signal);
         }
         catch (err) {
+            if (err instanceof request_reliability_1.MarrowRequestError)
+                throw err;
             const msg = err instanceof Error ? err.message : String(err);
             throw new Error(`marrowCommit auto_gate failed before outcome closure: ${msg}`);
         }
@@ -444,6 +446,7 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId) {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
+        signal,
     }, true);
     const json = await safeJsonResponse(res);
     return { ...json.data, runtime_gate: runtimeGate };
@@ -533,7 +536,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             action: params.action_for_gate || params.action,
             type: params.type || 'general',
             surfaces: params.surfaces,
-        }, sessionId, agentId);
+        }, sessionId, agentId, commitTimeout.signal);
     }
     finally {
         commitTimeout.cancel();

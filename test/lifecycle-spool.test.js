@@ -115,11 +115,11 @@ test('native MCP hook receipts carry bounded capability and actual configuration
   mkdirSync(settingsDir, { recursive: true });
   writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({
     hooks: {
-      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.59 context-hook' }] }],
-      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.59 pre-action-hook' }] }],
-      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.59 hook' }] }],
-      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.59 hook' }] }],
-      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.59 session-hook' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.60 context-hook' }] }],
+      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.60 pre-action-hook' }] }],
+      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.60 hook' }] }],
+      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.60 hook' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.60 session-hook' }] }],
     },
   }));
   const originalFetch = globalThis.fetch;
@@ -132,7 +132,7 @@ test('native MCP hook receipts carry bounded capability and actual configuration
       }));
       const [event] = JSON.parse(readFileSync(path, 'utf8'));
       assert.equal(event.capability_level, 'native_hooks');
-      assert.equal(event.adapter_version, '3.9.59');
+      assert.equal(event.adapter_version, '3.9.60');
       assert.match(event.config_fingerprint, /^[a-f0-9]{64}$/);
       assert.deepEqual(event.expected_hooks, ['prompt', 'pre_action', 'action_result', 'session_end']);
       assert.equal(event.observed_hook, 'action_result');
@@ -337,6 +337,11 @@ test('terminal rejection and exhausted retries remain explicit durable dead lett
       const row = JSON.parse(readFileSync(path, 'utf8')).find((event) => event.event_id === 'retry-exhausted');
       assert.equal(row.delivery_state, 'dead_letter');
       assert.equal(row.attempts, 3);
+      assert.equal(row.last_status, 503);
+      assert.match(
+        lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' }).exact_fix,
+        /timed out|unavailable/i,
+      );
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -400,6 +405,89 @@ test('mixed drain does not hide dead letters that were never retried', async () 
     });
   } finally {
     globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('spool status exposes older credential namespaces without replaying them under the current key', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-inventory-'));
+  const home = join(directory, 'home');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  const originalFetch = globalThis.fetch;
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  try {
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'old-key-event', agent_id: 'agent-one' }),
+      apiKey: 'old-key-for-inventory-test',
+      deferDelivery: true,
+    });
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'current-key-event', agent_id: 'agent-one' }),
+      apiKey: 'current-key-for-inventory-test',
+      deferDelivery: true,
+    });
+    const status = lifecycleSpoolStatus({ apiKey: 'current-key-for-inventory-test', agentId: 'agent-one' });
+    assert.equal(status.pending, 1);
+    assert.equal(status.other_namespaces.state, 'attention_required');
+    assert.equal(status.other_namespaces.count, 1);
+    assert.equal(status.other_namespaces.pending, 1);
+    assert.match(status.other_namespaces.exact_fix, /original credential and agent identity/);
+
+    let delivered = 0;
+    globalThis.fetch = async () => {
+      delivered += 1;
+      return new Response('{}', { status: 200 });
+    };
+    const drained = await drainLifecycleSpool({
+      apiKey: 'current-key-for-inventory-test',
+      baseUrl: 'https://api.example.com',
+      agentId: 'agent-one',
+    });
+    assert.equal(delivered, 1);
+    assert.equal(drained.pending, 0);
+    assert.equal(drained.other_namespaces.pending, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('older namespace inventory is bounded and reports truncation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-inventory-bound-'));
+  const home = join(directory, 'home');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  try {
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'current-bound-event', agent_id: 'agent-one' }),
+      apiKey: 'current-key-for-bound-test',
+      deferDelivery: true,
+    });
+    const spoolDirectory = join(home, '.marrow', 'spool');
+    for (let index = 0; index < 129; index += 1) {
+      const suffix = index.toString(16).padStart(20, '0');
+      writeFileSync(join(spoolDirectory, `mcp-${suffix}.json`), '[]', { mode: 0o600 });
+    }
+    const status = lifecycleSpoolStatus({ apiKey: 'current-key-for-bound-test', agentId: 'agent-one' });
+    assert.equal(status.other_namespaces.count >= 129, true);
+    assert.equal(status.other_namespaces.truncated, true);
+    assert.equal(status.other_namespaces.state, 'attention_required');
+    assert.match(status.other_namespaces.exact_fix, /more than 128/i);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
     rmSync(directory, { recursive: true, force: true });
   }
 });

@@ -34,6 +34,15 @@ export type LifecycleSpoolStatus = {
     available: number;
     recovered_corruption: boolean;
     exact_fix: string | null;
+    other_namespaces: {
+        state: 'clear' | 'attention_required';
+        count: number;
+        pending: number;
+        failed: number;
+        unreadable: number;
+        truncated: boolean;
+        exact_fix: string | null;
+    };
 };
 export declare function lifecycleSpoolStatus(input: {
     apiKey: string;

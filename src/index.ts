@@ -45,7 +45,7 @@ import {
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
-import { invalidResponseError, reliableFetch, requestErrorFromResponse } from './request-reliability';
+import { invalidResponseError, MarrowRequestError, reliableFetch, requestErrorFromResponse } from './request-reliability';
 import { normalizeRuntimeResult } from './runtime-contract';
 
 const fetch = reliableFetch;
@@ -494,7 +494,8 @@ export async function marrowCommit(
     modelUsage?: MarrowModelUsageInput;
   },
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<CommitResult & { runtime_gate?: MarrowAgentRuntimeResult | null }> {
   let runtimeGate: MarrowAgentRuntimeResult | null = null;
   let gateReceiptId = params.gate_receipt_id || params.gate_receipt;
@@ -512,9 +513,11 @@ export async function marrowCommit(
           proof: params.proof ? redactSensitiveValue(params.proof) as Record<string, unknown> : undefined,
         },
         sessionId,
-        agentId
+        agentId,
+        signal,
       );
     } catch (err) {
+      if (err instanceof MarrowRequestError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`marrowCommit auto_gate failed before outcome closure: ${msg}`);
     }
@@ -541,6 +544,7 @@ export async function marrowCommit(
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     body: JSON.stringify(body),
+    signal,
   }, true);
 
   const json = await safeJsonResponse(res);
@@ -672,7 +676,8 @@ export async function marrowAuto(
         surfaces: params.surfaces,
       },
       sessionId,
-      agentId
+      agentId,
+      commitTimeout.signal,
     );
   } finally {
     commitTimeout.cancel();
