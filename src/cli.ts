@@ -67,6 +67,7 @@ import { installSessionEndHook, runSessionHookCommand } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
 import { resolveMarrowEnv } from './env';
 import { drainLifecycleSpool, lifecycleSpoolStatus, recordLifecycleEvent } from './lifecycle-spool';
+import { lifecycleSpoolCommandOutcome } from './spool-command';
 import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
 import { localClientUpdate, MarrowRequestError, structuredRequestFailure } from './request-reliability';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
@@ -179,15 +180,9 @@ async function runSpoolCommand(drain: boolean): Promise<void> {
   const status = drain
     ? await drainLifecycleSpool({ apiKey, baseUrl, agentId: resolved.agentId || undefined })
     : lifecycleSpoolStatus({ apiKey, agentId: resolved.agentId || undefined });
-  const namespaceAttention = status.other_namespaces.state === 'attention_required';
-  process.stdout.write(`${JSON.stringify({
-    ok: drain
-      ? status.state === 'clear' && !namespaceAttention
-      : status.state !== 'attention_required' && !namespaceAttention,
-    lifecycle_spool: status,
-  }, null, 2)}\n`);
-  if (status.state === 'attention_required' || namespaceAttention) process.exitCode = 2;
-  else if (drain && status.state !== 'clear') process.exitCode = 1;
+  const outcome = lifecycleSpoolCommandOutcome(status, drain);
+  process.stdout.write(`${JSON.stringify(outcome.output, null, 2)}\n`);
+  if (outcome.exitCode !== 0) process.exitCode = outcome.exitCode;
 }
 
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
