@@ -179,11 +179,14 @@ async function runSpoolCommand(drain: boolean): Promise<void> {
   const status = drain
     ? await drainLifecycleSpool({ apiKey, baseUrl, agentId: resolved.agentId || undefined })
     : lifecycleSpoolStatus({ apiKey, agentId: resolved.agentId || undefined });
+  const namespaceAttention = status.other_namespaces.state === 'attention_required';
   process.stdout.write(`${JSON.stringify({
-    ok: drain ? status.state === 'clear' : status.state !== 'attention_required',
+    ok: drain
+      ? status.state === 'clear' && !namespaceAttention
+      : status.state !== 'attention_required' && !namespaceAttention,
     lifecycle_spool: status,
   }, null, 2)}\n`);
-  if (status.state === 'attention_required') process.exitCode = 2;
+  if (status.state === 'attention_required' || namespaceAttention) process.exitCode = 2;
   else if (drain && status.state !== 'clear') process.exitCode = 1;
 }
 
@@ -507,6 +510,7 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
     ...spool,
     drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
   };
+  result.host_capability = mcpHostCapability();
   if (infrastructureFailure && supportsStale) {
     let cached: { context: string; stale_ms: number } | null = null;
     try {
@@ -533,6 +537,25 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
   return result;
 }
 
+function mcpHostCapability(): Record<string, unknown> {
+  const raw = String(process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || '').trim().toLowerCase();
+  const host = ['grok', 'claude-code', 'codex', 'cursor', 'windsurf', 'gemini', 'kimi', 'qwen', 'deepseek']
+    .includes(raw) ? raw : 'mcp-client';
+  return {
+    transport: 'mcp_stdio',
+    host,
+    tools_available: true,
+    tool_invocation: 'on_demand',
+    passive_hooks: {
+      provided_by_mcp_transport: false,
+      external_host_hook_state: 'unverified',
+      observed_by_this_process: false,
+    },
+    always_on_state: 'host_dependent',
+    exact_next_action: 'Use the Marrow MCP tools on demand. Claim passive coverage only when the host separately configures trusted hooks and Marrow receives their lifecycle receipts.',
+  };
+}
+
 function clientOperationalPayload(toolName: string, value: unknown): Record<string, unknown> {
   const payload = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -540,6 +563,7 @@ function clientOperationalPayload(toolName: string, value: unknown): Record<stri
   const spool = lifecycleSpoolStatus({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
   return {
     ...payload,
+    host_capability: payload.host_capability || mcpHostCapability(),
     client_update: payload.client_update || localClientUpdate(),
     control_path: controlPathStats(toolName),
     lifecycle_spool: {
@@ -570,24 +594,16 @@ function isHighRiskAction(action: unknown, type: unknown): boolean {
   return HIGH_RISK_ACTION.test(`${String(type || '')} ${String(action || '')}`);
 }
 
-function cachedGuidance(): { context: string; stale_ms: number } | null {
-  try {
-    return readGuidanceCache({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
-  } catch {
-    return null;
-  }
-}
-
 async function withControlDeadline<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   options: { highRisk?: boolean; cacheAware?: boolean; toolName?: string } = {},
 ): Promise<T> {
   const toolName = options.toolName || 'marrow_control';
-  const hasCache = options.cacheAware !== false && Boolean(cachedGuidance());
   const configuredTimeoutMs = Number(process.env.MARROW_REQUEST_TIMEOUT_MS);
+  const runtimeBudget = toolName === 'marrow_agent_runtime' || toolName === 'marrow_auto.runtime';
   const timeoutMs = Number.isFinite(configuredTimeoutMs)
     ? Math.min(10_000, Math.max(150, Math.floor(configuredTimeoutMs)))
-    : options.highRisk ? 4_500 : hasCache ? 500 : 4_000;
+    : options.highRisk || runtimeBudget ? 4_500 : 4_000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
@@ -1837,7 +1853,7 @@ async function handleRequest(req: {
         capabilities: { tools: {}, prompts: {} },
         serverInfo: { name: 'marrow', version: MCP_ADAPTER_VERSION },
         ...(AUTO_ENROLL ? {
-          instructions: 'Use marrow_agent_runtime before consequential actions, obey fresh allow/warn/review_required/block results, use marrow_ask for relevant prior lessons, and close meaningful outcomes with marrow_commit. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work.',
+          instructions: 'Use marrow_agent_runtime before consequential actions, obey fresh allow/warn/review_required/block results, use marrow_ask for relevant prior lessons, and close meaningful outcomes with marrow_commit. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work. MCP tools are on demand; do not claim passive or prompt-injection coverage unless the host separately configured trusted hooks and Marrow observed their receipts.',
         } : {}),
       });
 
@@ -2039,30 +2055,32 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
         // [FIX #9] Validate required params
         const decision_id = requireString(args, 'decision_id');
         const outcome = requireString(args, 'outcome');
-        if (typeof args.success !== 'boolean') {
-          throw new Error('"success" is required and must be a boolean');
-        }
+        const commitSuccess = requireBoolean(args, 'success');
 
-        const result = await marrowCommit(
-          API_KEY,
-          BASE_URL,
-          {
-            decision_id,
-            success: args.success,
-            outcome,
-            caused_by: args.caused_by as string,
-            proof: args.proof as Record<string, unknown>,
-            gate_receipt_id: args.gate_receipt_id as string,
-            arbitration_receipt_id: args.arbitration_receipt_id as string,
-            owner_approval_receipt_id: args.owner_approval_receipt_id as string,
-            action: args.action as string,
-            type: args.type as string,
-            surfaces: args.surfaces as string[],
-            auto_gate: args.auto_gate as boolean,
-            model_usage: args.model_usage as any,
-          },
-          SESSION_ID,
-          FLEET_AGENT_ID
+        const result = await withControlDeadline(
+          (signal) => marrowCommit(
+            API_KEY,
+            BASE_URL,
+            {
+              decision_id,
+              success: commitSuccess,
+              outcome,
+              caused_by: args.caused_by as string,
+              proof: args.proof as Record<string, unknown>,
+              gate_receipt_id: args.gate_receipt_id as string,
+              arbitration_receipt_id: args.arbitration_receipt_id as string,
+              owner_approval_receipt_id: args.owner_approval_receipt_id as string,
+              action: args.action as string,
+              type: args.type as string,
+              surfaces: args.surfaces as string[],
+              auto_gate: args.auto_gate as boolean,
+              model_usage: args.model_usage as any,
+            },
+            SESSION_ID,
+            FLEET_AGENT_ID,
+            signal,
+          ),
+          { highRisk: true, cacheAware: false, toolName: 'marrow_commit' },
         );
         const commitResult = { ...result, narrative: result.narrative ?? null };
         lastCommitted = true;
@@ -2185,37 +2203,6 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
         const proofCanClose = !highRisk || highRiskRuntimeCanClose(runtimeGate!, suppliedProof, args.gate_receipt_id);
         const acceptedSuccess = proofCanClose ? outcomeSuccess : undefined;
 
-        const receipt = await recordLifecycleEvent({
-          apiKey: API_KEY,
-          baseUrl: BASE_URL,
-          deferDelivery: true,
-          event: {
-            event_type: !highRisk && acceptedSuccess === false ? 'tool_failed' : !highRisk && acceptedSuccess === true ? 'tool_completed' : 'goal_started',
-            harness: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || 'mcp',
-            agent_id: FLEET_AGENT_ID,
-            session_id: SESSION_ID,
-            action,
-            outcome_state: 'pending',
-            success: highRisk ? undefined : acceptedSuccess,
-            adapter_version: MCP_ADAPTER_VERSION,
-            capability_level: 'mcp',
-          },
-        });
-
-        const response: Record<string, unknown> = {
-          action,
-          outcome: outcome || 'pending',
-          warnings: cachedOrientWarnings.map(formatWarningActionably),
-          logging: 'durably_queued',
-          receipt,
-          completion_state: outcomeSuccess === undefined ? 'pending_evidence' : 'delivery_pending',
-          client_update: localClientUpdate(),
-          ...(runtimeGate ? {
-            runtime_gate: runtimeGate,
-            completion_state: proofCanClose ? 'governed_delivery_pending' : 'pending_required_proof',
-          } : {}),
-        };
-
         const delivery = () => marrowAuto(API_KEY, BASE_URL, {
           action,
           outcome,
@@ -2225,30 +2212,67 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           gate_receipt_id: typeof args.gate_receipt_id === 'string'
             ? args.gate_receipt_id
             : runtimeGate?.gate_receipt?.id,
-        }, SESSION_ID, FLEET_AGENT_ID, 1_500);
+        }, SESSION_ID, FLEET_AGENT_ID, 8_000);
 
-        if (highRisk && acceptedSuccess !== undefined) {
-          const delivered = await delivery();
-          if (!delivered.committed) {
-            throw new MarrowRequestError({
-              code: 'invalid_response',
-              message: 'Marrow did not confirm the governed outcome commit',
-              retryable: true,
-              exactFix: 'Keep the outcome pending and retry marrow_commit with the fresh gate receipt and required proof.',
-            });
-          }
-          response.logging = 'governed_commit_confirmed';
-          response.completion_state = 'closed_with_proof';
-          response.decision_id = delivered.decision_id;
-        } else if (!highRisk) {
-          void delivery().catch((err) => {
-            const failure = structuredRequestFailure(err);
-            const errorCode = failure.error && typeof failure.error === 'object'
-              ? String((failure.error as Record<string, unknown>).code || 'request_failed')
-              : 'request_failed';
-            process.stderr.write(`[marrow] marrow_auto queued; live delivery unavailable (${errorCode})\n`);
-          });
+        let delivered: { decision_id: string; committed: boolean } | null = null;
+        let deliveryFailure: Record<string, unknown> | null = null;
+        try {
+          delivered = await delivery();
+        } catch (err) {
+          deliveryFailure = structuredRequestFailure(err);
         }
+
+        const receipt = await recordLifecycleEvent({
+          apiKey: API_KEY,
+          baseUrl: BASE_URL,
+          deferDelivery: false,
+          event: {
+            event_type: delivered?.committed
+              ? 'outcome_committed'
+              : !highRisk && acceptedSuccess === false
+              ? 'tool_failed'
+              : !highRisk && acceptedSuccess === true
+              ? 'tool_completed'
+              : 'goal_started',
+            harness: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || 'mcp',
+            agent_id: FLEET_AGENT_ID,
+            session_id: SESSION_ID,
+            decision_id: delivered?.decision_id,
+            action,
+            outcome_state: delivered?.committed ? 'closed' : 'pending',
+            success: delivered?.committed ? acceptedSuccess : highRisk ? undefined : acceptedSuccess,
+            adapter_version: MCP_ADAPTER_VERSION,
+            capability_level: 'mcp',
+          },
+        });
+
+        const response: Record<string, unknown> = {
+          action,
+          outcome: outcome || 'pending',
+          warnings: cachedOrientWarnings.map(formatWarningActionably),
+          logging: delivered?.committed
+            ? 'governed_commit_confirmed'
+            : delivered
+            ? 'intent_confirmed'
+            : 'durably_queued',
+          receipt,
+          completion_state: delivered?.committed
+            ? 'closed_with_proof'
+            : !proofCanClose
+            ? 'pending_required_proof'
+            : outcomeSuccess === undefined
+            ? 'pending_evidence'
+            : 'delivery_pending',
+          decision_id: delivered?.decision_id || null,
+          live_delivery: {
+            accepted: Boolean(delivered),
+            committed: Boolean(delivered?.committed),
+            ...(deliveryFailure ? { failure: deliveryFailure } : {}),
+          },
+          host_capability: mcpHostCapability(),
+          client_update: localClientUpdate(),
+          ...(runtimeGate ? { runtime_gate: runtimeGate } : {}),
+        };
 
         success(id, {
           content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
@@ -2847,22 +2871,43 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
       }
 
       if (toolName === 'marrow_handoff_status') {
-        const result = await withControlDeadline(
-          (signal) => marrowHandoffStatus(
-            API_KEY,
-            BASE_URL,
-            {
-              status: args.status as string | undefined,
-              agentId: (args.agentId as string) || FLEET_AGENT_ID,
-              limit: args.limit as number | undefined,
-            },
-            SESSION_ID,
-            FLEET_AGENT_ID,
-            signal,
-          ),
-          { cacheAware: false, toolName: 'marrow_handoff_status' },
-        );
-        toolSuccess(id, clientOperationalPayload('marrow_handoff_status', result));
+        try {
+          const result = await withControlDeadline(
+            (signal) => marrowHandoffStatus(
+              API_KEY,
+              BASE_URL,
+              {
+                status: args.status as string | undefined,
+                agentId: (args.agentId as string) || FLEET_AGENT_ID,
+                limit: args.limit as number | undefined,
+              },
+              SESSION_ID,
+              FLEET_AGENT_ID,
+              signal,
+            ),
+            { cacheAware: false, toolName: 'marrow_handoff_status' },
+          );
+          toolSuccess(id, clientOperationalPayload('marrow_handoff_status', result));
+        } catch (error) {
+          if (error instanceof MarrowRequestError && error.backendCode === 'MARROW_PLAN_UPGRADE_REQUIRED') {
+            toolSuccess(id, clientOperationalPayload('marrow_handoff_status', {
+              ok: true,
+              available: false,
+              state: 'not_entitled',
+              failure_kind: 'entitlement',
+              authorization_state: 'plan_limited',
+              credential_valid: true,
+              feature: 'fleet_handoff_status',
+              current_plan: error.currentPlan,
+              required_plan: 'team',
+              required_feature: error.requiredFeature || 'fleet_learning',
+              service_reachable: true,
+              exact_next_action: 'Use status, ask, runtime, auto, and commit on the current plan. Upgrade to Team before relying on fleet handoff status.',
+            }));
+          } else {
+            throw error;
+          }
+        }
         return;
       }
 

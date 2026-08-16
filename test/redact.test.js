@@ -567,6 +567,7 @@ test('marrowArbitrate preserves valid opaque identifiers and rejects unsafe alia
 
 test('marrowCommit auto_gate fails closed when runtime lookup fails', async () => {
   const { marrowCommit } = require('../dist/index.js');
+  const { MarrowRequestError } = require('../dist/request-reliability.js');
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response('runtime unavailable', { status: 503 });
 
@@ -578,7 +579,10 @@ test('marrowCommit auto_gate fails closed when runtime lookup fails', async () =
         outcome: 'ok',
         action: 'deploy to production',
       }),
-      /auto_gate failed/
+      (error) => error instanceof MarrowRequestError
+        && error.code === 'service_unavailable'
+        && error.status === 503
+        && !/auto_gate failed/i.test(error.message)
     );
   } finally {
     globalThis.fetch = originalFetch;

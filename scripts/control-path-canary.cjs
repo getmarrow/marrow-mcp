@@ -225,7 +225,7 @@ class PersistentMcpClient {
 async function runCanary(env = process.env, options = {}) {
   const key = env.MARROW_API_KEY || '';
   if (!key) throw new Error('MARROW_API_KEY is required for the authenticated MCP control-path canary');
-  const transportTimeoutMs = boundedMs('MARROW_REQUEST_TIMEOUT_MS', 2_500, 250, 10_000, env);
+  const toolTimeoutMs = boundedMs('MARROW_MCP_CANARY_TOOL_TIMEOUT_MS', 5_000, 250, 10_000, env);
   const totalTimeoutMs = boundedMs('MARROW_MCP_CANARY_TOTAL_TIMEOUT_MS', 30_000, 2_000, 60_000, env);
   const expectedVersion = env.MARROW_EXPECTED_MCP_VERSION || packageVersion;
   const childPath = env.MARROW_MCP_CANARY_CHILD || resolve(__dirname, '../dist/cli.js');
@@ -236,13 +236,16 @@ async function runCanary(env = process.env, options = {}) {
     MARROW_AUTO_ENROLL: 'false',
     MARROW_TOOL_PROFILE: 'full',
     MARROW_CONTROL_PATH_CANARY: '1',
-    MARROW_REQUEST_TIMEOUT_MS: String(transportTimeoutMs),
   };
+  // A default canary must exercise the same client deadlines customers receive.
+  // Only preserve MARROW_REQUEST_TIMEOUT_MS when the caller explicitly supplied it.
+  if (env.MARROW_REQUEST_TIMEOUT_MS) childEnv.MARROW_REQUEST_TIMEOUT_MS = env.MARROW_REQUEST_TIMEOUT_MS;
+  else delete childEnv.MARROW_REQUEST_TIMEOUT_MS;
   delete childEnv.NODE_TEST_CONTEXT;
   const client = new PersistentMcpClient({
     command: process.execPath,
     args: [childPath],
-    timeoutMs: transportTimeoutMs,
+    timeoutMs: toolTimeoutMs,
     env: childEnv,
     spawnProcess: options.spawnProcess,
   });
@@ -250,7 +253,7 @@ async function runCanary(env = process.env, options = {}) {
   const processStarted = performance.now();
   client.start();
   try {
-    const initialized = await client.request('initialize', {}, transportTimeoutMs + 3_000);
+    const initialized = await client.request('initialize', {}, toolTimeoutMs + 3_000);
     if (initialized.error) throw new Error(`MCP initialize failed ${initialized.error.code}`);
     const version = initialized.result?.serverInfo?.version;
     if (!version) throw new Error('MCP initialize produced no version');

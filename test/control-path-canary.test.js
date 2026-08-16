@@ -20,9 +20,10 @@ function payload(name) {
 }
 
 function fakeSpawn(mode = 'good') {
-  const state = { processCount: 0, killed: false };
-  const factory = () => {
+  const state = { processCount: 0, killed: false, childEnv: null };
+  const factory = (_command, _args, options = {}) => {
     state.processCount++;
+    state.childEnv = options.env || null;
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -83,6 +84,7 @@ function environment() {
     MARROW_API_KEY: 'test-only-key',
     MARROW_EXPECTED_MCP_VERSION: 'test-version',
     MARROW_REQUEST_TIMEOUT_MS: '250',
+    MARROW_MCP_CANARY_TOOL_TIMEOUT_MS: '250',
     MARROW_MCP_CANARY_TOTAL_TIMEOUT_MS: '5000',
   };
 }
@@ -97,6 +99,17 @@ test('uses one persistent process and excludes startup from per-tool timings', a
   assert.equal(result.results.every((row) => row.latency_ms < 100), true);
   assert.equal(result.latency_groups.hot_path.count, 5);
   assert.equal(result.latency_groups.reports.count, 5);
+});
+
+test('default canary tool timeout does not override the customer MCP request deadline', async () => {
+  const fake = fakeSpawn();
+  const env = environment();
+  delete env.MARROW_REQUEST_TIMEOUT_MS;
+  env.MARROW_MCP_CANARY_TOOL_TIMEOUT_MS = '2750';
+  const result = await runCanary(env, { spawnProcess: fake.factory });
+  assert.equal(result.ok, true);
+  assert.equal(fake.state.childEnv.MARROW_REQUEST_TIMEOUT_MS, undefined);
+  assert.equal(fake.state.childEnv.MARROW_MCP_CANARY_TOOL_TIMEOUT_MS, '2750');
 });
 
 for (const [mode, pattern] of [

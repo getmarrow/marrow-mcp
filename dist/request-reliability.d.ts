@@ -7,6 +7,8 @@ export declare class MarrowRequestError extends Error {
     readonly retryAfterMs: number | null;
     readonly exactFix: string;
     readonly fixCommand: string | null;
+    readonly currentPlan: string | null;
+    readonly requiredFeature: string | null;
     constructor(input: {
         code: MarrowFailureCode;
         backendCode?: string | null;
@@ -16,6 +18,8 @@ export declare class MarrowRequestError extends Error {
         retryAfterMs?: number | null;
         exactFix: string;
         fixCommand?: string | null;
+        currentPlan?: string | null;
+        requiredFeature?: string | null;
     });
 }
 export declare function requestErrorFromResponse(response: Response, detail?: Record<string, unknown>): MarrowRequestError;

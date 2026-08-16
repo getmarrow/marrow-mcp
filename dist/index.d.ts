@@ -60,7 +60,7 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     auto_gate?: boolean;
     model_usage?: MarrowModelUsageInput;
     modelUsage?: MarrowModelUsageInput;
-}, sessionId?: string, agentId?: string): Promise<CommitResult & {
+}, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<CommitResult & {
     runtime_gate?: MarrowAgentRuntimeResult | null;
 }>;
 export declare function marrowModelUsage(apiKey: string, baseUrl: string, input: MarrowModelUsageInput, sessionId?: string, agentId?: string): Promise<MarrowModelUsageResult>;

@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -80,6 +81,7 @@ const INTERVENTION_DISPOSITIONS = new Set(['followed', 'ignored', 'overridden'])
 const MAX_EVENTS = 1000;
 const MAX_RECORD_BYTES = 4096;
 const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
+const MAX_NAMESPACE_FILES = 128;
 const MAX_ATTEMPTS = 3;
 const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
 const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
@@ -414,13 +416,73 @@ export type LifecycleSpoolStatus = {
   available: number;
   recovered_corruption: boolean;
   exact_fix: string | null;
+  other_namespaces: {
+    state: 'clear' | 'attention_required';
+    count: number;
+    pending: number;
+    failed: number;
+    unreadable: number;
+    truncated: boolean;
+    exact_fix: string | null;
+  };
 };
+
+function otherNamespaceStatus(currentPath: string, ownsParent: boolean): LifecycleSpoolStatus['other_namespaces'] {
+  if (!ownsParent) {
+    return { state: 'clear', count: 0, pending: 0, failed: 0, unreadable: 0, truncated: false, exact_fix: null };
+  }
+  const parent = dirname(currentPath);
+  if (!existsSync(parent)) {
+    return { state: 'clear', count: 0, pending: 0, failed: 0, unreadable: 0, truncated: false, exact_fix: null };
+  }
+  const names = readdirSync(parent)
+    .filter((name) => /^mcp-[a-f0-9]{20}\.json$/.test(name))
+    .filter((name) => join(parent, name) !== currentPath)
+    .sort();
+  const truncated = names.length > MAX_NAMESPACE_FILES;
+  let pending = 0;
+  let failed = 0;
+  let unreadable = 0;
+  for (const name of names.slice(0, MAX_NAMESPACE_FILES)) {
+    const path = join(parent, name);
+    try {
+      assertSafeFile(path, 'spool file');
+      if (statSync(path).size > MAX_SPOOL_BYTES) throw new Error('lifecycle spool is too large');
+      const parsed = JSON.parse(readFileSync(path, 'utf8'));
+      if (!Array.isArray(parsed) || parsed.length > MAX_EVENTS) throw new Error('invalid lifecycle spool');
+      for (const event of parsed.map(validateStoredEvent)) {
+        if (event.delivery_state === 'dead_letter') failed += 1;
+        else pending += 1;
+      }
+    } catch {
+      unreadable += 1;
+    }
+  }
+  const attention = pending > 0 || failed > 0 || unreadable > 0 || truncated;
+  return {
+    state: attention ? 'attention_required' : 'clear',
+    count: names.length,
+    pending,
+    failed,
+    unreadable,
+    truncated,
+    exact_fix: attention
+      ? truncated
+        ? 'More than 128 older spool namespaces exist. Inspect owner-only spool inventory before restoring each original credential and agent identity; Marrow will not replay unverified namespaces under the current key.'
+        : 'Older credential or agent spool namespaces exist. Restore each namespace\'s original credential and agent identity to drain it; Marrow will not replay it under the current key because same-tenant ownership cannot be proven.'
+      : null,
+  };
+}
 
 export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }): LifecycleSpoolStatus {
   const location = spoolPath(input.apiKey, input.agentId);
   const current = snapshot(location.path, location.ownsParent);
   const queued = current.events.filter((event) => event.delivery_state === 'queued');
   const failed = current.events.filter((event) => event.delivery_state === 'dead_letter');
+  const otherNamespaces = otherNamespaceStatus(location.path, location.ownsParent);
+  const failureStatuses = failed.map((event) => event.last_status).filter((status): status is number => status != null);
+  const authFailure = failureStatuses.some((status) => status === 401 || status === 403);
+  const transportFailure = failureStatuses.some((status) => status === 0 || status === 408 || status >= 500);
   return {
     state: failed.length > 0 ? 'attention_required' : queued.length > 0 ? 'pending' : 'clear',
     pending: queued.length,
@@ -431,10 +493,15 @@ export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }
     available: Math.max(0, MAX_EVENTS - current.events.length),
     recovered_corruption: current.recoveredCorruption,
     exact_fix: failed.length > 0
-      ? 'Restore authentication or endpoint compatibility, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
+      ? authFailure
+        ? 'The server rejected delivery authentication or authorization. Restore the credential and agent binding, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
+        : transportFailure
+        ? 'Lifecycle delivery timed out or the service was unavailable. Keep the credential unchanged, verify reachability, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
+        : 'Inspect the lifecycle event compatibility error, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
       : queued.length > 0
         ? 'Keep MCP activity running so a later event can retry, or run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
         : null,
+    other_namespaces: otherNamespaces,
   };
 }
 
@@ -460,9 +527,9 @@ async function attemptQueuedDelivery(input: {
       return;
     }
     current.attempts += 1;
+    current.last_status = status;
     if (!retryable(status) || current.attempts >= MAX_ATTEMPTS) {
       current.delivery_state = 'dead_letter';
-      if (status > 0) current.last_status = status;
     }
   });
   return status;
