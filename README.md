@@ -104,7 +104,16 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.60
+## What's New in v3.9.61
+
+v3.9.61 keeps an authoritative proof-pack rejection distinct from a control-path outage:
+
+- backend `MARROW_PROOF_PACK_INCOMPLETE` responses are reported as `validation` / `proof_required`, not infrastructure failures;
+- the exact missing proof fields and backend repair instruction remain visible to the agent;
+- live proof validation does not return a stale outage brief or unavailable authorization state;
+- proof enforcement remains fail-closed, and successful commit behavior is unchanged.
+
+## Previous: v3.9.60
 
 v3.9.60 restores the complete control-and-proof loop for ordinary MCP clients:
 

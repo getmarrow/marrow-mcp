@@ -9,6 +9,7 @@ const DECISION_READ_PATH = /\/(?:v1\/agent\/first-value|v1\/analytics\/decision-
 export type MarrowFailureCode =
   | 'authentication_required'
   | 'permission_denied'
+  | 'proof_required'
   | 'rate_limited'
   | 'request_timeout'
   | 'dns_unavailable'
@@ -29,6 +30,7 @@ export class MarrowRequestError extends Error {
   readonly fixCommand: string | null;
   readonly currentPlan: string | null;
   readonly requiredFeature: string | null;
+  readonly missingFields: string[];
 
   constructor(input: {
     code: MarrowFailureCode;
@@ -41,6 +43,7 @@ export class MarrowRequestError extends Error {
     fixCommand?: string | null;
     currentPlan?: string | null;
     requiredFeature?: string | null;
+    missingFields?: string[];
   }) {
     super(redactSensitiveText(input.message).slice(0, 240));
     this.name = 'MarrowRequestError';
@@ -61,6 +64,12 @@ export class MarrowRequestError extends Error {
     this.requiredFeature = input.requiredFeature && /^[a-z][a-z0-9_-]{0,63}$/i.test(input.requiredFeature)
       ? input.requiredFeature.toLowerCase()
       : null;
+    this.missingFields = Array.isArray(input.missingFields)
+      ? input.missingFields
+        .filter((field): field is string => typeof field === 'string' && field.trim().length > 0)
+        .slice(0, 32)
+        .map((field) => redactSensitiveText(field).slice(0, 128))
+      : [];
   }
 }
 
@@ -112,6 +121,16 @@ export function requestErrorFromResponse(response: Response, detail?: Record<str
     }
     return undefined;
   };
+  const firstStringArray = (...fields: string[]): string[] => {
+    for (const source of rejectionFields) {
+      for (const field of fields) {
+        if (Array.isArray(source[field])) {
+          return (source[field] as unknown[]).filter((value): value is string => typeof value === 'string');
+        }
+      }
+    }
+    return [];
+  };
   const apiMessage = typeof detail?.error === 'string'
     ? detail.error
     : firstString('message', 'error') || `Marrow API returned HTTP ${status}`;
@@ -122,6 +141,8 @@ export function requestErrorFromResponse(response: Response, detail?: Record<str
   const requiredFeature = firstString('required_feature') || null;
   const code: MarrowFailureCode = cloudflareEdgeDenial
     ? 'edge_access_denied'
+    : status === 409 && backendCode === 'MARROW_PROOF_PACK_INCOMPLETE'
+      ? 'proof_required'
     : status === 401
     ? 'authentication_required'
     : status === 403
@@ -144,6 +165,7 @@ export function requestErrorFromResponse(response: Response, detail?: Record<str
     fixCommand,
     currentPlan,
     requiredFeature,
+    missingFields: code === 'proof_required' ? firstStringArray('missing_fields') : [],
   });
 }
 
@@ -276,9 +298,12 @@ export function localClientUpdate(): Record<string, unknown> {
 
 export function structuredRequestFailure(error: unknown): Record<string, unknown> {
   const normalized = normalizeRequestError(error);
+  const proofRequired = normalized.code === 'proof_required';
+  const clientUpdate = localClientUpdate();
+  if (proofRequired) clientUpdate.metadata_status = 'live_control_path_reached_version_unverified';
   return {
     ok: false,
-    available: false,
+    available: proofRequired,
     error: {
       code: normalized.backendCode || normalized.code,
       category: normalized.code,
@@ -288,7 +313,13 @@ export function structuredRequestFailure(error: unknown): Record<string, unknown
       message: normalized.message,
       exact_fix: normalized.exactFix,
       ...(normalized.fixCommand ? { fix_command: normalized.fixCommand } : {}),
+      ...(proofRequired ? { missing_fields: normalized.missingFields } : {}),
     },
-    client_update: localClientUpdate(),
+    ...(proofRequired ? {
+      validation_state: 'proof_required',
+      service_reachable: true,
+      missing_fields: normalized.missingFields,
+    } : {}),
+    client_update: clientUpdate,
   };
 }

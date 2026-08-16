@@ -23,6 +23,7 @@ class MarrowRequestError extends Error {
     fixCommand;
     currentPlan;
     requiredFeature;
+    missingFields;
     constructor(input) {
         super((0, redact_1.redactSensitiveText)(input.message).slice(0, 240));
         this.name = 'MarrowRequestError';
@@ -43,6 +44,12 @@ class MarrowRequestError extends Error {
         this.requiredFeature = input.requiredFeature && /^[a-z][a-z0-9_-]{0,63}$/i.test(input.requiredFeature)
             ? input.requiredFeature.toLowerCase()
             : null;
+        this.missingFields = Array.isArray(input.missingFields)
+            ? input.missingFields
+                .filter((field) => typeof field === 'string' && field.trim().length > 0)
+                .slice(0, 32)
+                .map((field) => (0, redact_1.redactSensitiveText)(field).slice(0, 128))
+            : [];
     }
 }
 exports.MarrowRequestError = MarrowRequestError;
@@ -101,6 +108,16 @@ function requestErrorFromResponse(response, detail) {
         }
         return undefined;
     };
+    const firstStringArray = (...fields) => {
+        for (const source of rejectionFields) {
+            for (const field of fields) {
+                if (Array.isArray(source[field])) {
+                    return source[field].filter((value) => typeof value === 'string');
+                }
+            }
+        }
+        return [];
+    };
     const apiMessage = typeof detail?.error === 'string'
         ? detail.error
         : firstString('message', 'error') || `Marrow API returned HTTP ${status}`;
@@ -111,15 +128,17 @@ function requestErrorFromResponse(response, detail) {
     const requiredFeature = firstString('required_feature') || null;
     const code = cloudflareEdgeDenial
         ? 'edge_access_denied'
-        : status === 401
-            ? 'authentication_required'
-            : status === 403
-                ? 'permission_denied'
-                : status === 429
-                    ? 'rate_limited'
-                    : status >= 500
-                        ? 'service_unavailable'
-                        : 'request_failed';
+        : status === 409 && backendCode === 'MARROW_PROOF_PACK_INCOMPLETE'
+            ? 'proof_required'
+            : status === 401
+                ? 'authentication_required'
+                : status === 403
+                    ? 'permission_denied'
+                    : status === 429
+                        ? 'rate_limited'
+                        : status >= 500
+                            ? 'service_unavailable'
+                            : 'request_failed';
     return new MarrowRequestError({
         code,
         backendCode,
@@ -133,6 +152,7 @@ function requestErrorFromResponse(response, detail) {
         fixCommand,
         currentPlan,
         requiredFeature,
+        missingFields: code === 'proof_required' ? firstStringArray('missing_fields') : [],
     });
 }
 function invalidResponseError() {
@@ -268,9 +288,13 @@ function localClientUpdate() {
 }
 function structuredRequestFailure(error) {
     const normalized = normalizeRequestError(error);
+    const proofRequired = normalized.code === 'proof_required';
+    const clientUpdate = localClientUpdate();
+    if (proofRequired)
+        clientUpdate.metadata_status = 'live_control_path_reached_version_unverified';
     return {
         ok: false,
-        available: false,
+        available: proofRequired,
         error: {
             code: normalized.backendCode || normalized.code,
             category: normalized.code,
@@ -280,8 +304,14 @@ function structuredRequestFailure(error) {
             message: normalized.message,
             exact_fix: normalized.exactFix,
             ...(normalized.fixCommand ? { fix_command: normalized.fixCommand } : {}),
+            ...(proofRequired ? { missing_fields: normalized.missingFields } : {}),
         },
-        client_update: localClientUpdate(),
+        ...(proofRequired ? {
+            validation_state: 'proof_required',
+            service_reachable: true,
+            missing_fields: normalized.missingFields,
+        } : {}),
+        client_update: clientUpdate,
     };
 }
 //# sourceMappingURL=request-reliability.js.map
