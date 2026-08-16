@@ -104,7 +104,18 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.61
+## What's New in v3.9.62
+
+v3.9.62 integrates four model-neutral reliability and capability contracts:
+
+- standalone `marrow_status` uses the bounded compact API contract and can return a fresh, owner-only last-known status projection without treating it as a live gate or authorization;
+- ordinary runtime responses expose typed `runtime_authorization` backed by the authoritative gate receipt and omit `decision_id` unless the server actually created a decision;
+- `spool-status` and `drain-spool` report the active credential namespace separately from isolated legacy debt, and a clear active namespace exits successfully without replaying, merging, editing, or deleting old-key files;
+- initialize, prompt, setup, and tool responses qualify coverage by `host_capability`: MCP tools are on demand, while native hooks, an owned SDK process, a governed runner, or a custom event adapter cover only the scope proved by observed Marrow receipts.
+
+The default surface remains six tools and the prompt remains named `marrow-always-on`. Host and model labels are display-only and never change auth, tenant, plan, policy, proof, schema, or API behavior.
+
+## Previous: v3.9.61
 
 v3.9.61 keeps an authoritative proof-pack rejection distinct from a control-path outage:
 
