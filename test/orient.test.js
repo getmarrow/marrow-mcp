@@ -82,7 +82,7 @@ test('orient uses the canonical runtime contract with the bound agent identity',
   assert.equal(calls[0].url, 'https://api.example.test/v1/agent/runtime');
   assert.equal(calls[0].init.method, 'POST');
   assert.equal(calls[0].init.headers['X-Marrow-Package'], '@getmarrow/mcp');
-  assert.equal(calls[0].init.headers['X-Marrow-Package-Version'], '3.9.61');
+  assert.equal(calls[0].init.headers['X-Marrow-Package-Version'], '3.9.62');
   const payload = JSON.parse(calls[0].init.body);
   assert.equal(payload.type, 'security');
   assert.equal(payload.agent_id, 'jarvis');
