@@ -449,7 +449,13 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId, signal)
         signal,
     }, true);
     const json = await safeJsonResponse(res);
-    return { ...json.data, runtime_gate: runtimeGate };
+    if (!json.data
+        || typeof json.data !== 'object'
+        || Array.isArray(json.data)
+        || typeof json.data.committed !== 'boolean') {
+        throw (0, request_reliability_1.invalidResponseError)();
+    }
+    return { ...json.data, committed: json.data.committed, runtime_gate: runtimeGate };
 }
 async function marrowModelUsage(apiKey, baseUrl, input, sessionId, agentId) {
     const body = normalizeModelUsage({
@@ -526,8 +532,9 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
         return { decision_id: decisionId, committed: false };
     }
     const commitTimeout = createTimeoutSignal(timeoutMs, startedAt);
+    let commitResult;
     try {
-        await marrowCommit(apiKey, baseUrl, {
+        commitResult = await marrowCommit(apiKey, baseUrl, {
             decision_id: decisionId,
             success: params.success,
             outcome: params.outcome,
@@ -541,7 +548,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
     finally {
         commitTimeout.cancel();
     }
-    return { decision_id: decisionId, committed: true };
+    return { decision_id: decisionId, committed: commitResult.committed };
 }
 /**
  * Get agent patterns and failure history.
