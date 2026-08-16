@@ -25,6 +25,7 @@ const ping_state_1 = require("./ping-state");
 const control_path_state_1 = require("./control-path-state");
 const redact_1 = require("./redact");
 const runtime_contract_1 = require("./runtime-contract");
+const status_cache_1 = require("./status-cache");
 // Parse CLI args
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -568,6 +569,23 @@ if (process.argv[2] !== 'keys') {
                 });
             }
             catch { /* owner-only cache is best effort */ }
+        }
+        function storeLastKnownStatus(status, source) {
+            try {
+                (0, status_cache_1.writeStatusCache)({
+                    apiKey: API_KEY,
+                    baseUrl: BASE_URL,
+                    agentId: FLEET_AGENT_ID,
+                    status,
+                    source,
+                });
+            }
+            catch { /* owner-only cache is best effort */ }
+        }
+        function refreshStatusInBackground() {
+            void (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID)
+                .then((status) => storeLastKnownStatus(status, 'status'))
+                .catch(() => undefined);
         }
         // [FIX #6 & #7] Safe JSON response helper for memory API functions
         async function safeMemoryResponse(res) {
@@ -2054,7 +2072,20 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_status') {
+                        let cached = null;
+                        try {
+                            cached = (0, status_cache_1.readStatusCache)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
+                        }
+                        catch { /* owner-only cache is best effort */ }
+                        if (cached) {
+                            const startedAt = Date.now();
+                            refreshStatusInBackground();
+                            (0, control_path_state_1.recordControlPathSample)('marrow_status', Date.now() - startedAt, true);
+                            toolSuccess(id, clientOperationalPayload('marrow_status', (0, status_cache_1.cachedStatusPayload)(cached)));
+                            return;
+                        }
                         const result = await withControlDeadline((signal) => (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_status' });
+                        storeLastKnownStatus(result, 'status');
                         toolSuccess(id, clientOperationalPayload('marrow_status', result));
                         return;
                     }
@@ -2251,6 +2282,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         };
                         const result = await withControlDeadline((signal) => (0, index_1.marrowAgentRuntime)(API_KEY, BASE_URL, runtimeInput, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(runtimeInput.action, runtimeInput.type), toolName: 'marrow_agent_runtime' });
                         storeRuntimeGuidance(result);
+                        storeLastKnownStatus(result.status, 'runtime');
                         toolSuccess(id, clientOperationalPayload('marrow_agent_runtime', result));
                         return;
                     }

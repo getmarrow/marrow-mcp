@@ -75,6 +75,7 @@ import { resolvePingTimeoutMs, updatePingState } from './ping-state';
 import { controlPathStats, recordControlPathSample } from './control-path-state';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { highRiskRuntimeCanClose } from './runtime-contract';
+import { cachedStatusPayload, readStatusCache, writeStatusCache } from './status-cache';
 import type { ThinkResult, MarrowAgentRuntimeResult, MarrowMemory } from './types';
 
 // Parse CLI args
@@ -629,6 +630,24 @@ function storeRuntimeGuidance(runtime: unknown): void {
       context: compactRuntimeContext(runtime as Parameters<typeof compactRuntimeContext>[0]),
     });
   } catch { /* owner-only cache is best effort */ }
+}
+
+function storeLastKnownStatus(status: unknown, source: 'runtime' | 'status'): void {
+  try {
+    writeStatusCache({
+      apiKey: API_KEY,
+      baseUrl: BASE_URL,
+      agentId: FLEET_AGENT_ID,
+      status,
+      source,
+    });
+  } catch { /* owner-only cache is best effort */ }
+}
+
+function refreshStatusInBackground(): void {
+  void marrowStatus(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID)
+    .then((status) => storeLastKnownStatus(status, 'status'))
+    .catch(() => undefined);
 }
 
 // [FIX #6 & #7] Safe JSON response helper for memory API functions
@@ -2299,10 +2318,22 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
       }
 
       if (toolName === 'marrow_status') {
+        let cached: ReturnType<typeof readStatusCache> = null;
+        try {
+          cached = readStatusCache({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
+        } catch { /* owner-only cache is best effort */ }
+        if (cached) {
+          const startedAt = Date.now();
+          refreshStatusInBackground();
+          recordControlPathSample('marrow_status', Date.now() - startedAt, true);
+          toolSuccess(id, clientOperationalPayload('marrow_status', cachedStatusPayload(cached)));
+          return;
+        }
         const result = await withControlDeadline(
           (signal) => marrowStatus(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal),
           { cacheAware: false, toolName: 'marrow_status' },
         );
+        storeLastKnownStatus(result, 'status');
         toolSuccess(id, clientOperationalPayload('marrow_status', result));
         return;
       }
@@ -2584,6 +2615,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           { highRisk: isHighRiskAction(runtimeInput.action, runtimeInput.type), toolName: 'marrow_agent_runtime' },
         );
         storeRuntimeGuidance(result);
+        storeLastKnownStatus(result.status, 'runtime');
         toolSuccess(id, clientOperationalPayload('marrow_agent_runtime', result));
         return;
       }
