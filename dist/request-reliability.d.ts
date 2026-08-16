@@ -1,4 +1,4 @@
-export type MarrowFailureCode = 'authentication_required' | 'permission_denied' | 'rate_limited' | 'request_timeout' | 'dns_unavailable' | 'connection_reset' | 'tls_failure' | 'edge_access_denied' | 'service_unavailable' | 'invalid_response' | 'request_failed';
+export type MarrowFailureCode = 'authentication_required' | 'permission_denied' | 'proof_required' | 'rate_limited' | 'request_timeout' | 'dns_unavailable' | 'connection_reset' | 'tls_failure' | 'edge_access_denied' | 'service_unavailable' | 'invalid_response' | 'request_failed';
 export declare class MarrowRequestError extends Error {
     readonly code: MarrowFailureCode;
     readonly backendCode: string | null;
@@ -9,6 +9,7 @@ export declare class MarrowRequestError extends Error {
     readonly fixCommand: string | null;
     readonly currentPlan: string | null;
     readonly requiredFeature: string | null;
+    readonly missingFields: string[];
     constructor(input: {
         code: MarrowFailureCode;
         backendCode?: string | null;
@@ -20,6 +21,7 @@ export declare class MarrowRequestError extends Error {
         fixCommand?: string | null;
         currentPlan?: string | null;
         requiredFeature?: string | null;
+        missingFields?: string[];
     });
 }
 export declare function requestErrorFromResponse(response: Response, detail?: Record<string, unknown>): MarrowRequestError;

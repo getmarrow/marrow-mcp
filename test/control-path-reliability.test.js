@@ -79,6 +79,18 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (target.includes('/v1/agent/commit')) {
     const body = JSON.parse(String(init.body || '{}'));
+    if (process.env.MARROW_TEST_PROOF_INCOMPLETE === '1') {
+      return Response.json({
+        error: 'Required proof pack is incomplete',
+        details: {
+          code: 'MARROW_PROOF_PACK_INCOMPLETE',
+          missing_fields: ['deployment_and_smoke', 'rollback_target'],
+          exact_fix: 'Add the missing proof fields under proof (deployment_and_smoke, rollback_target) and retry /v1/agent/commit with the same gate_receipt_id.',
+          exact_next_action: 'Retry /v1/agent/commit only after proof includes: deployment_and_smoke, rollback_target.',
+          safe_to_continue: false,
+        },
+      }, { status: 409 });
+    }
     if (body.proof?.test !== 'passed') {
       return Response.json({ error: 'fixture requires forwarded proof' }, { status: 400 });
     }
@@ -405,6 +417,60 @@ test('a first-session control outage still returns an honest local safety brief'
     assert.match(result.stale_brief, /returned no policy decision/);
     assert.equal('allow' in result, false);
     assert.equal('disposition' in result, false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('proof-pack validation remains a reachable proof requirement and never masquerades as an outage', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-proof-validation-'));
+  const exactFix = 'Add the missing proof fields under proof (deployment_and_smoke, rollback_target) and retry /v1/agent/commit with the same gate_receipt_id.';
+  try {
+    const mockPath = installControlFetchMock(home);
+    writeGuidanceCache({
+      apiKey: 'fixture-control-path-key',
+      baseUrl: 'https://127.0.0.1:9',
+      agentId: 'agent-control-test',
+      context: '## Marrow cached outage brief\n- This must not replace live proof validation.',
+      home,
+    });
+    const child = runMcp(home, {
+      NODE_OPTIONS: `--require=${mockPath}`,
+      MARROW_TEST_PROOF_INCOMPLETE: '1',
+      MARROW_CLIENT: 'grok',
+    }, mcpInput('marrow_commit', {
+      decision_id: 'decision-proof-required',
+      success: true,
+      outcome: 'Production deployment completed.',
+      gate_receipt_id: 'gate-proof-required',
+      proof: { summary: 'Deployment attempted.' },
+    }));
+    assert.equal(child.status, 0, child.stderr);
+    const outputLines = child.stdout.trim().split('\n');
+    assert.equal(outputLines.length, 3, JSON.stringify({ stdout: child.stdout, stderr: child.stderr, status: child.status, signal: child.signal }));
+    const messages = outputLines.map((line) => JSON.parse(line));
+    const payload = JSON.parse(messages[2].result.content[0].text);
+    assert.equal(messages[2].result.isError, true);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.available, true);
+    assert.equal(payload.service_reachable, true);
+    assert.equal(payload.failure_kind, 'validation');
+    assert.equal(payload.validation_state, 'proof_required');
+    assert.equal(payload.proof_required, true);
+    assert.equal(payload.error.code, 'MARROW_PROOF_PACK_INCOMPLETE');
+    assert.equal(payload.error.category, 'proof_required');
+    assert.equal(payload.error.status, 409);
+    assert.equal(payload.error.retryable, false);
+    assert.deepEqual(payload.error.missing_fields, ['deployment_and_smoke', 'rollback_target']);
+    assert.deepEqual(payload.missing_fields, ['deployment_and_smoke', 'rollback_target']);
+    assert.equal(payload.error.exact_fix, exactFix);
+    assert.equal(payload.exact_next_action, exactFix);
+    assert.equal(payload.client_update.metadata_status, 'live_control_path_reached_version_unverified');
+    assert.equal('stale_brief' in payload, false);
+    assert.equal('stale_source' in payload, false);
+    assert.equal('authorization_state' in payload, false);
+    assert.equal('gate_obtained' in payload, false);
+    assert.doesNotMatch(messages[2].result.content[0].text, /control-path outage brief|local_outage_safety|local_only_control_path_unavailable|authorization_state.*unavailable/i);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

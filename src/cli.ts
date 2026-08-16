@@ -501,16 +501,21 @@ function toolSuccess(id: string | number, value: unknown, isError = false): void
 
 function toolFailure(toolName: string | undefined, failure: MarrowRequestError): Record<string, unknown> {
   const result = structuredRequestFailure(failure);
-  const infrastructureFailure = !['authentication_required', 'permission_denied'].includes(failure.code);
+  const proofValidation = failure.code === 'proof_required';
+  const infrastructureFailure = !proofValidation && !['authentication_required', 'permission_denied'].includes(failure.code);
   const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_handoff_status', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
   const spool = lifecycleSpoolStatus({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
-  result.failure_kind = infrastructureFailure ? 'infrastructure' : 'authorization';
+  result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
   result.control_path = controlPathStats(toolName || 'marrow_control');
   result.lifecycle_spool = {
     ...spool,
     drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
   };
   result.host_capability = mcpHostCapability();
+  if (proofValidation) {
+    result.proof_required = true;
+    result.exact_next_action = failure.exactFix;
+  }
   if (infrastructureFailure && supportsStale) {
     let cached: { context: string; stale_ms: number } | null = null;
     try {
