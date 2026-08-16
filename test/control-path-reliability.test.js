@@ -668,7 +668,7 @@ test('proof-pack validation remains a reachable proof requirement and never masq
   }
 });
 
-test('initialize carries the always-on control loop through the standard MCP instructions field', () => {
+test('initialize carries the capability-qualified control loop through the standard MCP instructions field', () => {
   const home = mkdtempSync(join(tmpdir(), 'marrow-control-path-instructions-'));
   try {
     const child = runMcp(home, { MARROW_AUTO_ENROLL: 'true' });
@@ -677,6 +677,8 @@ test('initialize carries the always-on control loop through the standard MCP ins
     assert.match(messages[0].result.instructions, /marrow_agent_runtime before consequential actions/);
     assert.match(messages[0].result.instructions, /Infrastructure failures are not policy denials/);
     assert.match(messages[0].result.instructions, /MCP tools are on demand/);
+    assert.match(messages[0].result.instructions, /Only observed Marrow receipts do/);
+    assert.equal(messages[0].result._meta.host_capability.current_mode, 'tools_only_on_demand');
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
