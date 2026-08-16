@@ -125,7 +125,7 @@ v3.9.60 restores the complete control-and-proof loop for ordinary MCP clients:
 - a plan-gated handoff is reported as unavailable for the current plan, not as an API or authentication outage;
 - the release canary runs with the customer's default client deadlines instead of silently overriding them.
 
-MCP-only hosts, including Grok today, receive Marrow's control instructions but cannot expose native always-on lifecycle hooks unless the host implements them. Marrow reports that capability boundary explicitly instead of claiming hook coverage it cannot observe.
+MCP-only hosts receive the same model-neutral control instructions and six-tool default surface, but MCP transport alone is on demand. A host or model label never changes that coverage contract. Marrow reports passive coverage only from observed lifecycle receipts, not from configuration detection.
 
 ## Previous: v3.9.59
 
@@ -138,7 +138,7 @@ v3.9.59 makes the six-tool control path reliable and honest across ordinary edge
 - a first-session outage returns a clearly labeled local safety brief, and infrastructure failures are never mislabeled as policy denials;
 - timeout errors return a concrete retry delay instead of an unresolved placeholder;
 - Cloudflare edge denials are separated from key-scope or Marrow policy rejections;
-- MCP initialization carries the always-on control/proof instructions even when a client does not request the optional prompt template;
+- MCP initialization carries the capability-qualified control/proof instructions even when a client does not request the optional prompt template;
 - update, launch, setup, spool, and ping commands use the unambiguous `npx --package ... marrow-mcp` form;
 - explicit spool drains tolerate slow edge delivery without extending passive hook latency.
 
@@ -356,9 +356,21 @@ it does not run models, retain prompts, or infer a winner from labels.
 
 ## Passive Use
 
-`npx -y --package=@getmarrow/mcp@latest marrow-mcp setup` installs supported prompt, tool-result, and session-stop hooks so the agent can receive before-action context, record meaningful tool outcomes, and keep unfinished closure visible without the owner repeatedly prompting it to use Marrow.
+`npx -y --package=@getmarrow/mcp@latest marrow-mcp setup` configures supported prompt, pre-action, tool-result, and session-stop hooks. Configuration is not proof that the host invoked them. Marrow reports native passive coverage only after it observes the required prompt, pre-action, action-result, and session-end receipts.
 
-The hooks send compact classifications and lifecycle receipts. They do not need raw prompts, completions, command output, tool output, or credentials. A completed tool or session does not automatically become a successful business outcome; explicit success/failure closure is required.
+### Capability and coverage contract
+
+| Integration mode | Coverage Marrow can claim |
+| --- | --- |
+| MCP tools-only | On demand; covers only explicit MCP tool calls |
+| Verified native hooks | Passive only for the lifecycle stages backed by observed hook receipts |
+| `createPassiveRuntime().install()` | Only the owned Node process, and only while that runtime is installed and running |
+| Governed runner | Only the command launched through the wrapper |
+| Custom host | Requires a bounded event adapter; covers only the lifecycle events whose receipts Marrow observes |
+
+This contract is model-neutral. A model name, host header, config file, installed hook entry, or successful MCP handshake does not certify passive coverage. Only observed Marrow receipts do. An unknown MCP host therefore gets the generic `mcp-client` identity and the same on-demand tools, schemas, and API semantics as a named host.
+
+When invoked by a supported host, the configured hooks send compact classifications and lifecycle receipts. They do not need raw prompts, completions, command output, tool output, or credentials. A completed tool or session does not automatically become a successful business outcome; explicit success/failure closure is required.
 
 Transient lifecycle receipts use a bounded owner-only spool and are retried with stable event IDs. Operators can inspect and drain it without exposing event content:
 

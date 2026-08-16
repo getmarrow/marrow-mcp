@@ -76,6 +76,7 @@ import { controlPathStats, recordControlPathSample } from './control-path-state'
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { highRiskRuntimeCanClose } from './runtime-contract';
 import { cachedStatusPayload, readStatusCache, writeStatusCache } from './status-cache';
+import { hostCapabilityInstructions, resolveHostCapability } from './host-capability';
 import type { ThinkResult, MarrowAgentRuntimeResult, MarrowMemory } from './types';
 
 // Parse CLI args
@@ -197,10 +198,10 @@ function runSetup(): void {
   const marrowInstructions = `${MARROW_BLOCK_START}
 ## Marrow — Agent Control and Proof (auto-injected by @getmarrow/mcp setup)
 
-You have Marrow MCP connected. Use it on EVERY session automatically:
+Use Marrow according to the capability evidence returned by the MCP server:
 
-1. **Passive by default:** Marrow hooks record compact lifecycle receipts and inject relevant policy, warnings, lessons, and risky-work decision briefs into your prompt context.
-2. **Before risky actions:** Respect the returned \`allow\`, \`warn\`, \`review_required\`, or \`block\` decision and its proof contract. Call \`marrow_agent_runtime\` explicitly when the passive hook cannot cover the action.
+1. **MCP baseline is on demand:** MCP transport exposes tools; it does not provide passive hooks. Call Marrow tools explicitly unless observed receipts verify another capability mode.
+2. **Before risky actions:** Respect the returned \`allow\`, \`warn\`, \`review_required\`, or \`block\` decision and its proof contract. Call \`marrow_agent_runtime\` explicitly when verified passive coverage cannot cover the action.
 3. **After meaningful work:** Record the real success or failure with \`marrow_commit\` or \`marrow_auto\`. A tool exit or session end is not proof that the business outcome succeeded.
 4. **Unfinished work:** Leave pending outcomes visible. Do not invent success to clear a closure item.
 5. **To explain an intervention:** Use \`marrow_decision_trace\`, then relay its \`intervention_receipt\` in one factual sentence when Marrow blocked, warned, or required review. Stay quiet for routine low-risk work.
@@ -208,6 +209,8 @@ You have Marrow MCP connected. Use it on EVERY session automatically:
 7. **When an update is reported:** Tell the operator and use the returned exact update and verification commands only when local change policy permits. Never silently change packages or configuration.
 
 Do not skip the gate or outcome. Marrow's value comes from controlling the action before execution and preserving evidence afterward.
+
+Capability boundaries: verified native hooks cover only their observed lifecycle; \`createPassiveRuntime().install()\` covers only its owned Node process while installed; a governed runner covers only its wrapped command; and a custom host needs a bounded event adapter. A model name, host label, or installed configuration is not proof of coverage. Only observed Marrow receipts certify it.
 
 For one-shot logging: \`marrow_auto({ action: "did X", outcome: "result Y", success: true })\` — one call, done.
 ${MARROW_BLOCK_END}`;
@@ -255,35 +258,35 @@ ${MARROW_BLOCK_END}`;
 
   const hookInstall = installPostToolUseHook(process.cwd());
   if (hookInstall.installed) {
-    process.stdout.write('Installed PostToolUse hook — your agent\'s tool calls now auto-log to Marrow.\n');
+    process.stdout.write('Configured PostToolUse hook. Coverage remains unverified until Marrow observes action-result receipts.\n');
   } else {
-    process.stdout.write('PostToolUse hook already installed — agent tool calls auto-log to Marrow.\n');
+    process.stdout.write('PostToolUse hook configuration is present. Coverage remains unverified until Marrow observes action-result receipts.\n');
   }
 
   const contextHookInstall = installUserPromptSubmitHook(process.cwd());
   if (contextHookInstall.installed) {
-    process.stdout.write('Installed UserPromptSubmit hook — Marrow will inject relevant context and passive decision briefs into your prompts automatically.\n');
+    process.stdout.write('Configured UserPromptSubmit hook. Passive prompt coverage remains unverified until Marrow observes prompt receipts.\n');
   } else {
-    process.stdout.write('UserPromptSubmit hook already installed — Marrow context and passive decision briefs are injected on matching prompts.\n');
+    process.stdout.write('UserPromptSubmit hook configuration is present. Passive prompt coverage remains unverified until Marrow observes prompt receipts.\n');
   }
   const preActionHookInstall = installPreActionHook(process.cwd());
   if (preActionHookInstall.installed) {
-    process.stdout.write('Installed PreToolUse hook — Marrow now checks each matched action before execution.\n');
+    process.stdout.write('Configured PreToolUse hook. Pre-action coverage remains unverified until Marrow observes pre-action receipts.\n');
   } else {
-    process.stdout.write('PreToolUse hook already installed — matched actions are checked before execution.\n');
+    process.stdout.write('PreToolUse hook configuration is present. Pre-action coverage remains unverified until Marrow observes pre-action receipts.\n');
   }
   const sessionHookInstall = installSessionEndHook(process.cwd());
   if (sessionHookInstall.installed) {
-    process.stdout.write('Installed Stop hook — unfinished outcomes remain visible for reconciliation.\n');
+    process.stdout.write('Configured Stop hook. Session-end coverage remains unverified until Marrow observes session-end receipts.\n');
   } else {
-    process.stdout.write('Stop hook already installed — unfinished outcomes remain visible for reconciliation.\n');
+    process.stdout.write('Stop hook configuration is present. Session-end coverage remains unverified until Marrow observes session-end receipts.\n');
   }
 
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
   process.stdout.write('Set MARROW_AUTO_HOOK=false to disable passive hooks.\n');
   process.stdout.write('Set MARROW_PASSIVE_BRIEF=false to disable automatic decision briefs, or MARROW_PASSIVE_BRIEF=always to brief every prompt.\n');
   process.stdout.write('Set MARROW_HOOK_DEBUG=true for write-side hook diagnostics, or MARROW_CONTEXT_HOOK_DEBUG=true for prompt-context diagnostics.\n');
-  process.stdout.write('Your agent will now use Marrow automatically — both writing decisions AND reading past intelligence — in every session.\n');
+  process.stdout.write('Setup completed. MCP tools remain on demand; passive coverage is reported only after Marrow observes the required hook receipts.\n');
   process.exit(0);
 }
 
@@ -538,23 +541,10 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
   return result;
 }
 
-function mcpHostCapability(): Record<string, unknown> {
-  const raw = String(process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || '').trim().toLowerCase();
-  const host = ['grok', 'claude-code', 'codex', 'cursor', 'windsurf', 'gemini', 'kimi', 'qwen', 'deepseek']
-    .includes(raw) ? raw : 'mcp-client';
-  return {
-    transport: 'mcp_stdio',
-    host,
-    tools_available: true,
-    tool_invocation: 'on_demand',
-    passive_hooks: {
-      provided_by_mcp_transport: false,
-      external_host_hook_state: 'unverified',
-      observed_by_this_process: false,
-    },
-    always_on_state: 'host_dependent',
-    exact_next_action: 'Use the Marrow MCP tools on demand. Claim passive coverage only when the host separately configures trusted hooks and Marrow receives their lifecycle receipts.',
-  };
+function mcpHostCapability() {
+  return resolveHostCapability({
+    hostLabel: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || process.env.MARROW_AGENT_CLIENT,
+  });
 }
 
 function clientOperationalPayload(toolName: string, value: unknown): Record<string, unknown> {
@@ -1869,13 +1859,15 @@ async function handleRequest(req: {
   try {
     if (method === 'initialize') {
       initialized = true;
+      const hostCapability = mcpHostCapability();
       success(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {}, prompts: {} },
         serverInfo: { name: 'marrow', version: MCP_ADAPTER_VERSION },
         ...(AUTO_ENROLL ? {
-          instructions: 'Use marrow_agent_runtime before consequential actions, obey fresh allow/warn/review_required/block results, use marrow_ask for relevant prior lessons, and close meaningful outcomes with marrow_commit. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work. MCP tools are on demand; do not claim passive or prompt-injection coverage unless the host separately configured trusted hooks and Marrow observed their receipts.',
+          instructions: `Use marrow_agent_runtime before consequential actions, obey fresh allow/warn/review_required/block results, use marrow_ask for relevant prior lessons, and close meaningful outcomes with marrow_commit. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work. ${hostCapabilityInstructions(hostCapability)}`,
         } : {}),
+        _meta: { host_capability: hostCapability },
       });
 
       // Auto-enroll: emit enrollment notification on connection
@@ -1888,9 +1880,10 @@ async function handleRequest(req: {
             logger: 'marrow',
             data: {
               type: 'auto_enroll',
-              message: 'Marrow auto-enroll active. Call marrow_orient FIRST, then marrow_think before acting, marrow_commit after. Or use marrow_auto / marrow_run for one-call logging.',
+              message: `Marrow operating contract available. MCP tools are on demand. ${hostCapability.exact_next_action}`,
               agentId: FLEET_AGENT_ID,
               client_update: localClientUpdate(),
+              host_capability: hostCapability,
             },
           },
         });
@@ -1905,8 +1898,9 @@ async function handleRequest(req: {
             {
               name: 'marrow-always-on',
               description:
-                'Always-on Marrow control and proof loop. Applies before-action guidance, records compact lifecycle receipts, and keeps unfinished outcomes visible.',
+                'Marrow control and proof contract, qualified by verified host capability and observed lifecycle receipts.',
               arguments: [],
+              _meta: { host_capability: mcpHostCapability() },
             },
           ],
         });
@@ -1922,8 +1916,10 @@ async function handleRequest(req: {
         error(id, -32602, 'Unknown prompt');
         return;
       }
+      const hostCapability = mcpHostCapability();
       success(id, {
-        description: 'Always-on Marrow control and proof loop — automatic, zero-config',
+        description: 'Marrow control and proof contract — coverage is capability-qualified and receipt-verified',
+        _meta: { host_capability: hostCapability },
         messages: [
           {
             role: 'user',
@@ -1931,14 +1927,16 @@ async function handleRequest(req: {
               type: 'text',
               text: `You have Marrow — the agent control and proof layer around this workflow.
 
-## Passive operating contract
+## Capability-qualified operating contract
 
-Installed hooks handle supported lifecycle capture automatically:
-- UserPromptSubmit requests relevant policy, warnings, lessons, and a decision brief before risky work.
-- PostToolUse records compact tool success or failure receipts.
-- Stop keeps unfinished outcomes visible instead of silently treating session exit as success.
+${hostCapabilityInstructions(hostCapability)}
 
-Hooks never make a blocked action safe. Before a consequential action, respect the returned allow, warn, review_required, or block decision and its required proof. Call marrow_agent_runtime explicitly when the passive hook cannot cover the action.
+When verified by observed receipts, native hooks can cover these bounded lifecycle stages:
+- UserPromptSubmit can request relevant policy, warnings, lessons, and a decision brief before risky work.
+- PostToolUse can record compact tool success or failure receipts.
+- Stop can keep unfinished outcomes visible instead of silently treating session exit as success.
+
+Hooks never make a blocked action safe. Before a consequential action, respect the returned allow, warn, review_required, or block decision and its required proof. Call marrow_agent_runtime explicitly when verified passive coverage cannot cover the action.
 
 When runtime/status returns a client_update notice, tell the operator and use its exact update and verification commands only when local change policy permits. Never silently change packages or configuration.
 
@@ -2002,7 +2000,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
             `2. Use marrow_agent_runtime when a risky action needs an explicit gate.\n` +
             `3. Close meaningful work with marrow_commit; a tool exit alone is not outcome proof.\n` +
             `4. Use marrow_decision_trace to explain the prior failure, lesson, gate, proof, workflow, and outcome path.\n\n` +
-            `Installed hooks cover supported passive lifecycle events. Leave unknown outcomes pending instead of inventing success.\n`;
+            `${hostCapabilityInstructions(mcpHostCapability())}\n\nLeave unknown outcomes pending instead of inventing success.\n`;
 
           const orientText = JSON.stringify(result, null, 2);
           success(id, {
