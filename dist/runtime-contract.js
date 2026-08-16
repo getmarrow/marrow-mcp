@@ -16,6 +16,7 @@ const RUNTIME_GATE_DECISIONS = new Set([
 ]);
 const RUNTIME_RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical']);
 const RUNTIME_PLAN_MODES = new Set(['advisory', 'pilot', 'enforced', 'unknown']);
+const SAFE_RUNTIME_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 function optionalRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -36,6 +37,30 @@ function boundedPlan(value) {
 }
 function boundedLimit(value) {
     return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : null;
+}
+function safeRuntimeIdentifier(value) {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    return normalized && SAFE_RUNTIME_IDENTIFIER.test(normalized) ? normalized : null;
+}
+function canonicalRuntimeReceipt(runtime) {
+    const identifiers = [
+        runtime.runtime_authorization?.id,
+        runtime.gate_receipt?.id,
+        runtime.gate_receipt_id,
+        runtime.risk_gate?.gate_receipt_id,
+    ].map(safeRuntimeIdentifier).filter((id) => Boolean(id));
+    const unique = [...new Set(identifiers)];
+    return {
+        id: unique.length === 1 ? unique[0] : null,
+        conflict: unique.length > 1,
+    };
+}
+function runtimeRequiresReceipt(runtime) {
+    const shape = runtime;
+    return runtime.gate_receipt?.required === true
+        || runtime.risk_gate?.gate_required === true
+        || runtime.risk_gate?.enforced === true
+        || (shape.response_mode === 'slim' && shape.gate_required === true);
 }
 function normalizeRuntimePlanCapability(value, riskGateValue) {
     const runtime = optionalRecord(value);
@@ -109,40 +134,39 @@ function authoritativeHardGate(runtime, planCapability) {
     return explicitEnforcement || serverRequiredSlimGate;
 }
 function withAuthorizationTruth(runtime) {
-    const rawDecisionId = typeof runtime.decision_id === 'string' && runtime.decision_id.trim()
-        ? runtime.decision_id.trim()
-        : null;
-    const receiptId = runtime.runtime_authorization?.id
-        || runtime.gate_receipt?.id
-        || runtime.gate_receipt_id
-        || runtime.risk_gate?.gate_receipt_id
-        || null;
+    const rawDecisionId = safeRuntimeIdentifier(runtime.decision_id);
+    const canonicalReceipt = canonicalRuntimeReceipt(runtime);
+    const receiptId = canonicalReceipt.id;
     const runtimeShape = runtime;
+    if ((!receiptId || canonicalReceipt.conflict)
+        && runtimeRequiresReceipt(runtime)
+        && runtimeShape.response_mode === 'slim')
+        return null;
+    const decisionId = receiptId ? rawDecisionId : null;
     const fastGuidance = runtimeShape.performance?.mode === 'summary_backed_fast_path'
         || (runtimeShape.response_mode === 'slim'
             && runtimeShape.gate_required !== true
             && runtimeShape.risk_level === 'low');
-    const durable = typeof runtime.runtime_authorization?.durable === 'boolean'
-        ? runtime.runtime_authorization.durable
-        : Boolean(receiptId && (runtime.gate_receipt?.required || runtime.risk_gate?.gate_required || !fastGuidance));
-    const existingAuthorization = runtime.runtime_authorization;
+    const durable = Boolean(receiptId
+        && (runtime.gate_receipt?.required || runtime.risk_gate?.gate_required || !fastGuidance));
     const runtimeAuthorization = receiptId ? {
         id: receiptId,
-        kind: existingAuthorization?.kind || (durable ? 'durable_gate_receipt' : 'low_risk_guidance_receipt'),
+        kind: durable ? 'durable_gate_receipt' : 'low_risk_guidance_receipt',
         durable,
-        decision_state: rawDecisionId ? 'created' : 'not_created',
-        decision_creation_required: !rawDecisionId,
-        decision_creation_endpoint: rawDecisionId ? null : '/v1/agent/think',
-        ...(rawDecisionId ? { decision_id: rawDecisionId } : {}),
-    } : existingAuthorization;
-    const { decision_id: _nullableDecisionId, ...runtimeWithoutNullableDecision } = runtime;
+        decision_state: decisionId ? 'created' : 'not_created',
+        decision_creation_required: !decisionId,
+        decision_creation_endpoint: decisionId ? null : '/v1/agent/think',
+        ...(decisionId ? { decision_id: decisionId } : {}),
+    } : undefined;
+    const { decision_id: _nullableDecisionId, runtime_authorization: _untrustedRuntimeAuthorization, ...runtimeWithoutNullableDecision } = runtime;
     const normalizedRuntime = {
         ...runtimeWithoutNullableDecision,
-        ...(rawDecisionId ? { decision_id: rawDecisionId } : {}),
+        ...(decisionId ? { decision_id: decisionId } : {}),
         ...(runtimeAuthorization ? { runtime_authorization: runtimeAuthorization } : {}),
     };
     const planCapability = normalizeRuntimePlanCapability(normalizedRuntime, normalizedRuntime.risk_gate);
-    const hardGate = authoritativeHardGate(normalizedRuntime, planCapability);
+    const hardGate = Boolean(runtimeAuthorization)
+        && authoritativeHardGate(normalizedRuntime, planCapability);
     const advisory = normalizedRuntime.risk_gate.enforced === false
         || planCapability?.production_enforcement_entitled === false
         || planCapability?.mode === 'advisory'
@@ -184,9 +208,7 @@ function normalizeRuntimeResult(value) {
         return null;
     }
     const allow = ['allow', 'proceed', 'warn'].includes(slim.decision);
-    const gateReceiptId = typeof slim.gate_receipt_id === 'string' && slim.gate_receipt_id
-        ? slim.gate_receipt_id
-        : null;
+    const gateReceiptId = safeRuntimeIdentifier(slim.gate_receipt_id);
     const enforced = explicitBoolean(slim, 'risk_gate_enforced', 'enforced');
     const entitled = explicitBoolean(slim, 'risk_gate_entitled', 'entitled');
     const enforcementDecision = typeof slim.enforcement_decision === 'string'
