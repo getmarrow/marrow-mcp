@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -69,6 +69,24 @@ globalThis.fetch = async (url, init = {}) => {
     } });
   }
   if (target.includes('/v1/agent/runtime')) {
+    if (process.env.MARROW_TEST_RUNTIME_WITH_STATUS === '1') {
+      return Response.json({ data: {
+        ok: true,
+        risk_gate: { allow: true, decision: 'allow', risk_level: 'low', gate_required: false },
+        status: {
+          ok: true,
+          health: 'healthy',
+          enabled: true,
+          measurement_availability: {
+            available: true, state: 'measured', exact: false, source: 'shared_runtime_snapshot',
+          },
+          memory: { has_memory: true, decision_count: 20 },
+          has_memory: true,
+          decision_count: 20,
+          outcome_count: 7,
+        },
+      } });
+    }
     return Response.json({ data: {
       response_mode: 'slim', decision: 'allow', risk_level: 'low', gate_required: false,
       proof_required: false, proof_complete: true, gate_receipt_id: 'gate-fixture',
@@ -132,9 +150,31 @@ test('status proves the authenticated agent path rather than public health', asy
   };
   try {
     await marrowStatus('fixture-key', 'https://api.example.test');
-    assert.deepEqual(calls, ['https://api.example.test/v1/agent/status?fast=1']);
+    assert.deepEqual(calls, ['https://api.example.test/v1/agent/status?fast=1&compact=1']);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('status uses one compact contract across representative MCP host identities', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalClient = process.env.MARROW_CLIENT;
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), client: init.headers['X-Marrow-Client'] });
+    return Response.json({ data: { ok: true, health: 'healthy' } });
+  };
+  try {
+    for (const client of ['grok', 'codex', 'claude-code', 'custom']) {
+      process.env.MARROW_CLIENT = client;
+      await marrowStatus('fixture-key', 'https://api.example.test');
+    }
+    assert.deepEqual(seen.map((entry) => entry.url), Array(4).fill('https://api.example.test/v1/agent/status?fast=1&compact=1'));
+    assert.deepEqual(seen.map((entry) => entry.client), ['grok', 'codex', 'claude-code', 'custom']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalClient == null) delete process.env.MARROW_CLIENT;
+    else process.env.MARROW_CLIENT = originalClient;
   }
 });
 
@@ -422,6 +462,69 @@ test('a first-session control outage still returns an honest local safety brief'
   }
 });
 
+test('standalone status immediately reuses a fresh measured runtime status without claiming a live gate', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-control-status-cache-'));
+  try {
+    const mockPath = installControlFetchMock(home);
+    const runtime = runMcp(home, {
+      NODE_OPTIONS: `--require=${mockPath}`,
+      MARROW_TEST_RUNTIME_WITH_STATUS: '1',
+      MARROW_CLIENT: 'codex',
+    });
+    assert.equal(runtime.status, 0, runtime.stderr);
+
+    const status = runMcp(home, { MARROW_CLIENT: 'codex' }, mcpInput('marrow_status', {}));
+    assert.equal(status.status, 0, status.stderr);
+    const messages = status.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const payload = JSON.parse(messages[2].result.content[0].text);
+    assert.equal(messages[2].result.isError, undefined);
+    assert.equal(payload.status_source, 'last_known_runtime_status');
+    assert.equal(payload.status_freshness, 'fresh');
+    assert.equal(payload.has_memory, true);
+    assert.equal(payload.decision_count, 20);
+    assert.equal(payload.authorization_state, 'status_only_non_authorizing');
+    assert.equal(payload.fresh_runtime_gate_required_for_high_risk, true);
+    assert.equal(payload.host_capability.host, 'codex');
+    assert.ok(payload.control_path.current_ms < 100, `cached status handler took ${payload.control_path.current_ms}ms`);
+
+    const cacheDirectory = join(home, '.marrow', 'cache');
+    const statusFile = readdirSync(cacheDirectory).find((name) => name.startsWith('status-'));
+    assert.ok(statusFile);
+    const statusPath = join(cacheDirectory, statusFile);
+    const cacheRecord = JSON.parse(readFileSync(statusPath, 'utf8'));
+    cacheRecord.stored_at = new Date(Date.now() - 31_000).toISOString();
+    writeFileSync(statusPath, JSON.stringify(cacheRecord), { mode: 0o600 });
+    const staleStatus = runMcp(home, { MARROW_CLIENT: 'codex' }, mcpInput('marrow_status', {}));
+    const staleMessages = staleStatus.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const stalePayload = JSON.parse(staleMessages[2].result.content[0].text);
+    assert.equal(stalePayload.status_freshness, 'stale');
+    assert.equal(stalePayload.stale, true);
+    assert.ok(stalePayload.control_path.current_ms < 100, `stale cached status handler took ${stalePayload.control_path.current_ms}ms`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('neutral stdio MCP status reports on-demand capability without host-specific behavior', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-control-status-neutral-'));
+  try {
+    const mockPath = installControlFetchMock(home);
+    const child = runMcp(home, {
+      NODE_OPTIONS: `--require=${mockPath}`,
+      MARROW_CLIENT: '',
+    }, mcpInput('marrow_status', {}));
+    assert.equal(child.status, 0, child.stderr);
+    const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const payload = JSON.parse(messages[2].result.content[0].text);
+    assert.equal(payload.host_capability.transport, 'mcp_stdio');
+    assert.equal(payload.host_capability.host, 'mcp-client');
+    assert.equal(payload.host_capability.tool_invocation, 'on_demand');
+    assert.equal(payload.host_capability.passive_hooks.provided_by_mcp_transport, false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('proof-pack validation remains a reachable proof requirement and never masquerades as an outage', () => {
   const home = mkdtempSync(join(tmpdir(), 'marrow-proof-validation-'));
   const exactFix = 'Add the missing proof fields under proof (deployment_and_smoke, rollback_target) and retry /v1/agent/commit with the same gate_receipt_id.';
@@ -438,6 +541,7 @@ test('proof-pack validation remains a reachable proof requirement and never masq
       NODE_OPTIONS: `--require=${mockPath}`,
       MARROW_TEST_PROOF_INCOMPLETE: '1',
       MARROW_CLIENT: 'grok',
+      MARROW_REQUEST_TIMEOUT_MS: '1000',
     }, mcpInput('marrow_commit', {
       decision_id: 'decision-proof-required',
       success: true,

@@ -703,7 +703,7 @@ async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId, signal) {
  * Get API health status.
  */
 async function marrowStatus(apiKey, baseUrl, sessionId, agentId, signal) {
-    const res = await fetch(`${baseUrl}/v1/agent/status?fast=1`, {
+    const res = await fetch(`${baseUrl}/v1/agent/status?fast=1&compact=1`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
         signal,
     });

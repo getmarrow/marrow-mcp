@@ -890,7 +890,7 @@ export async function marrowStatus(
   agentId?: string,
   signal?: AbortSignal,
 ): Promise<StatusResult> {
-  const res = await fetch(`${baseUrl}/v1/agent/status?fast=1`, {
+  const res = await fetch(`${baseUrl}/v1/agent/status?fast=1&compact=1`, {
     headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     signal,
   });
