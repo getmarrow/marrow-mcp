@@ -2083,8 +2083,8 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           { highRisk: true, cacheAware: false, toolName: 'marrow_commit' },
         );
         const commitResult = { ...result, narrative: result.narrative ?? null };
-        lastCommitted = true;
-        lastDecisionId = null;
+        lastCommitted = result.committed;
+        lastDecisionId = result.committed ? null : decision_id;
         success(id, {
           content: [{ type: 'text', text: JSON.stringify(commitResult, null, 2) }],
         });

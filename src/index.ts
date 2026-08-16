@@ -548,7 +548,13 @@ export async function marrowCommit(
   }, true);
 
   const json = await safeJsonResponse(res);
-  return { ...json.data, runtime_gate: runtimeGate };
+  if (!json.data
+    || typeof json.data !== 'object'
+    || Array.isArray(json.data)
+    || typeof json.data.committed !== 'boolean') {
+    throw invalidResponseError();
+  }
+  return { ...json.data, committed: json.data.committed, runtime_gate: runtimeGate };
 }
 
 export async function marrowModelUsage(
@@ -661,8 +667,9 @@ export async function marrowAuto(
   }
 
   const commitTimeout = createTimeoutSignal(timeoutMs, startedAt);
+  let commitResult: CommitResult & { runtime_gate?: MarrowAgentRuntimeResult | null };
   try {
-    await marrowCommit(
+    commitResult = await marrowCommit(
       apiKey,
       baseUrl,
       {
@@ -683,7 +690,7 @@ export async function marrowAuto(
     commitTimeout.cancel();
   }
 
-  return { decision_id: decisionId, committed: true };
+  return { decision_id: decisionId, committed: commitResult.committed };
 }
 
 /**

@@ -82,9 +82,21 @@ globalThis.fetch = async (url, init = {}) => {
     if (body.proof?.test !== 'passed') {
       return Response.json({ error: 'fixture requires forwarded proof' }, { status: 400 });
     }
-    return Response.json({ data: { success: true } });
+    if (process.env.MARROW_TEST_COMMIT_STATE === 'missing') {
+      return Response.json({ data: { success: true } });
+    }
+    return Response.json({ data: {
+      committed: process.env.MARROW_TEST_COMMIT_STATE !== 'false',
+    } });
   }
   if (target.includes('/v1/agent/integrations/events')) {
+    const body = JSON.parse(String(init.body || '{}'));
+    if (process.env.MARROW_TEST_FORBID_OUTCOME_COMMITTED === '1' && body.event_type === 'outcome_committed') {
+      return Response.json({ error: 'fixture forbids false closure' }, { status: 503 });
+    }
+    if (process.env.MARROW_TEST_LIFECYCLE_FAILURE === '1') {
+      return Response.json({ error: 'fixture lifecycle outage' }, { status: 503 });
+    }
     return Response.json({ data: { accepted: true } });
   }
   if (target.includes('/v1/fleet/handoffs/status') && process.env.MARROW_TEST_HANDOFF_PLAN === '1') {
@@ -530,6 +542,116 @@ test('marrow_auto returns in-band commit confirmation only after forwarding supp
     assert.equal(payload.completion_state, 'closed_with_proof');
     assert.equal(payload.receipt.accepted, true);
     assert.equal(payload.receipt.queued, false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('marrowAuto preserves an explicit HTTP 200 committed false result', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push(String(url));
+    if (String(url).endsWith('/v1/agent/think')) {
+      return Response.json({ data: { decision_id: 'decision-not-closed' } });
+    }
+    return Response.json({ data: { committed: false } });
+  };
+  try {
+    const result = await marrowAuto('fixture-key', 'https://api.example.test', {
+      action: 'Update a local documentation note',
+      outcome: 'Documentation check passed',
+      success: true,
+      proof: { test: 'passed' },
+      gate_receipt_id: 'gate-not-closed',
+    });
+    assert.deepEqual(result, { decision_id: 'decision-not-closed', committed: false });
+    assert.deepEqual(calls, [
+      'https://api.example.test/v1/agent/think',
+      'https://api.example.test/v1/agent/commit',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowCommit rejects an HTTP 200 response missing committed with typed invalid_response', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ data: { success: true } });
+  try {
+    await assert.rejects(
+      () => marrowCommit('fixture-key', 'https://api.example.test', {
+        decision_id: 'decision-missing-commit-state',
+        success: true,
+        outcome: 'Verification passed',
+        proof: { test: 'passed' },
+        gate_receipt_id: 'gate-missing-commit-state',
+      }),
+      (error) => error instanceof MarrowRequestError && error.code === 'invalid_response',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrow_auto never closes or emits outcome_committed when HTTP 200 says committed false', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-auto-not-closed-'));
+  try {
+    const mockPath = installControlFetchMock(home);
+    const child = runMcp(home, {
+      NODE_OPTIONS: `--require=${mockPath}`,
+      MARROW_TEST_COMMIT_STATE: 'false',
+      MARROW_TEST_FORBID_OUTCOME_COMMITTED: '1',
+      MARROW_REQUEST_TIMEOUT_MS: '1000',
+    }, mcpInput('marrow_auto', {
+      action: 'Update a local documentation note',
+      outcome: 'Documentation check passed',
+      success: true,
+      proof: { test: 'passed' },
+    }));
+    assert.equal(child.status, 0, child.stderr);
+    const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(messages[2].result.isError, undefined, child.stdout);
+    const text = messages[2].result.content[0].text;
+    const payload = JSON.parse(text);
+    assert.equal(payload.live_delivery.accepted, true);
+    assert.equal(payload.live_delivery.committed, false);
+    assert.equal(payload.logging, 'intent_confirmed');
+    assert.equal(payload.completion_state, 'delivery_pending');
+    assert.equal(payload.receipt.queued, false, 'fixture accepts only a non-outcome_committed lifecycle event');
+    assert.doesNotMatch(text, /closed_with_proof|outcome_committed/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('marrow_auto treats an HTTP 200 missing committed as invalid and queues only the pending lifecycle receipt', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-auto-invalid-commit-'));
+  try {
+    const mockPath = installControlFetchMock(home);
+    const child = runMcp(home, {
+      NODE_OPTIONS: `--require=${mockPath}`,
+      MARROW_TEST_COMMIT_STATE: 'missing',
+      MARROW_TEST_LIFECYCLE_FAILURE: '1',
+      MARROW_REQUEST_TIMEOUT_MS: '1000',
+    }, mcpInput('marrow_auto', {
+      action: 'Update a local documentation note',
+      outcome: 'Documentation check passed',
+      success: true,
+      proof: { test: 'passed' },
+    }));
+    assert.equal(child.status, 0, child.stderr);
+    const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(messages[2].result.isError, undefined, child.stdout);
+    const text = messages[2].result.content[0].text;
+    const payload = JSON.parse(text);
+    assert.equal(payload.live_delivery.accepted, false);
+    assert.equal(payload.live_delivery.committed, false);
+    assert.equal(payload.live_delivery.failure.error.code, 'invalid_response');
+    assert.equal(payload.logging, 'durably_queued');
+    assert.equal(payload.completion_state, 'delivery_pending');
+    assert.equal(payload.receipt.queued, true);
+    assert.doesNotMatch(text, /closed_with_proof|outcome_committed/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
