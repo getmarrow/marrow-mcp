@@ -109,14 +109,46 @@ function authoritativeHardGate(runtime, planCapability) {
     return explicitEnforcement || serverRequiredSlimGate;
 }
 function withAuthorizationTruth(runtime) {
-    const planCapability = normalizeRuntimePlanCapability(runtime, runtime.risk_gate);
-    const hardGate = authoritativeHardGate(runtime, planCapability);
-    const advisory = runtime.risk_gate.enforced === false
+    const rawDecisionId = typeof runtime.decision_id === 'string' && runtime.decision_id.trim()
+        ? runtime.decision_id.trim()
+        : null;
+    const receiptId = runtime.runtime_authorization?.id
+        || runtime.gate_receipt?.id
+        || runtime.gate_receipt_id
+        || runtime.risk_gate?.gate_receipt_id
+        || null;
+    const runtimeShape = runtime;
+    const fastGuidance = runtimeShape.performance?.mode === 'summary_backed_fast_path'
+        || (runtimeShape.response_mode === 'slim'
+            && runtimeShape.gate_required !== true
+            && runtimeShape.risk_level === 'low');
+    const durable = typeof runtime.runtime_authorization?.durable === 'boolean'
+        ? runtime.runtime_authorization.durable
+        : Boolean(receiptId && (runtime.gate_receipt?.required || runtime.risk_gate?.gate_required || !fastGuidance));
+    const existingAuthorization = runtime.runtime_authorization;
+    const runtimeAuthorization = receiptId ? {
+        id: receiptId,
+        kind: existingAuthorization?.kind || (durable ? 'durable_gate_receipt' : 'low_risk_guidance_receipt'),
+        durable,
+        decision_state: rawDecisionId ? 'created' : 'not_created',
+        decision_creation_required: !rawDecisionId,
+        decision_creation_endpoint: rawDecisionId ? null : '/v1/agent/think',
+        ...(rawDecisionId ? { decision_id: rawDecisionId } : {}),
+    } : existingAuthorization;
+    const { decision_id: _nullableDecisionId, ...runtimeWithoutNullableDecision } = runtime;
+    const normalizedRuntime = {
+        ...runtimeWithoutNullableDecision,
+        ...(rawDecisionId ? { decision_id: rawDecisionId } : {}),
+        ...(runtimeAuthorization ? { runtime_authorization: runtimeAuthorization } : {}),
+    };
+    const planCapability = normalizeRuntimePlanCapability(normalizedRuntime, normalizedRuntime.risk_gate);
+    const hardGate = authoritativeHardGate(normalizedRuntime, planCapability);
+    const advisory = normalizedRuntime.risk_gate.enforced === false
         || planCapability?.production_enforcement_entitled === false
         || planCapability?.mode === 'advisory'
         || planCapability?.mode === 'pilot';
     return {
-        ...runtime,
+        ...normalizedRuntime,
         ...(planCapability ? { plan_capability: planCapability } : {}),
         fresh_runtime_response: true,
         guidance_obtained: true,

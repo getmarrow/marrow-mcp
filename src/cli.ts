@@ -1381,6 +1381,8 @@ const TOOLS = [
     description:
       'One-call agent-native Marrow loop. Returns passive status, decision brief, risk gate, relevant lessons, ' +
       'template suggestion, required proof pack, before-you-act instruction, and exact next action. ' +
+      'Its runtime_authorization is the authoritative gate receipt; it returns decision_id only when runtime actually creates a decision. ' +
+      'Use marrow_auto or marrow_think to create the decision_id required for outcome closure. ' +
       'Use this before meaningful work when you want Marrow to guide the whole action in one call.',
     inputSchema: {
       type: 'object',

@@ -260,6 +260,8 @@ With installed native hooks, protected tool calls follow this automatically. For
 4. Perform the action only when its gate allows it. For a hard external choke point, run the command through `npx @getmarrow/install run`; it verifies the signed action permit immediately before execution.
 5. Call `marrow_commit` with that `decision_id`, the outcome, gate receipt, and required proof.
 
+`marrow_agent_runtime` returns `runtime_authorization` with the authoritative gate receipt. Ordinary runtime checks do not create a decision, so they omit `decision_id`; call `marrow_think` (or use `marrow_auto`) when a decision must be created and closed. An arbitration runtime that actually creates a decision returns that server-created `decision_id`. This contract is identical across MCP-compatible hosts and SDK-owned runtimes.
+
 Example pre-action request:
 
 ```json

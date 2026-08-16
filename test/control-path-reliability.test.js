@@ -220,6 +220,11 @@ test('native slim runtime responses normalize without weakening their decision',
   assert.equal(allowed.risk_gate.allow, true);
   assert.equal(allowed.risk_gate.decision, 'allow');
   assert.equal(allowed.proof_pack.complete, true);
+  assert.equal(allowed.runtime_authorization.id, 'gate-low');
+  assert.equal(allowed.runtime_authorization.kind, 'low_risk_guidance_receipt');
+  assert.equal(allowed.runtime_authorization.durable, false);
+  assert.equal(allowed.runtime_authorization.decision_state, 'not_created');
+  assert.equal(Object.hasOwn(allowed, 'decision_id'), false);
 
   const blocked = normalizeRuntimeResult({
     response_mode: 'slim', decision: 'block', risk_level: 'high', gate_required: true,
@@ -228,7 +233,66 @@ test('native slim runtime responses normalize without weakening their decision',
   assert.equal(blocked.risk_gate.allow, false);
   assert.equal(blocked.risk_gate.decision, 'block');
   assert.equal(blocked.proof_pack.complete, false);
+  assert.equal(blocked.runtime_authorization.kind, 'durable_gate_receipt');
+  assert.equal(blocked.runtime_authorization.durable, true);
   assert.equal(normalizeRuntimeResult({ response_mode: 'slim', decision: 'unknown_policy' }), null);
+});
+
+test('full runtime omits a null decision id and exposes the authoritative durable receipt instead', () => {
+  const runtime = normalizeRuntimeResult({
+    ok: true,
+    action: 'review a patch',
+    agent_id: 'agent-one',
+    session_id: 'session-one',
+    decision_id: null,
+    status: {},
+    decision_brief: {},
+    risk_gate: { allow: true, decision: 'warn', risk_level: 'medium', reasons: [], gate_receipt_id: 'gate-durable' },
+    gate_receipt: { id: 'gate-durable', required: false, decision: 'warn' },
+    relevant_lessons: [],
+    deployment_playbooks: [],
+    template_suggestion: {},
+    proof_pack: { required: false, enforced: false, fields: [], missing: [], complete: true, commit_endpoint: '/v1/agent/commit', rule: 'commit' },
+    before_you_act: null,
+    exact_next_action: 'Create a decision before commit.',
+    auto_outcome_closure: null,
+  });
+  assert.ok(runtime);
+  assert.equal(Object.hasOwn(runtime, 'decision_id'), false);
+  assert.deepEqual(runtime.runtime_authorization, {
+    id: 'gate-durable',
+    kind: 'durable_gate_receipt',
+    durable: true,
+    decision_state: 'not_created',
+    decision_creation_required: true,
+    decision_creation_endpoint: '/v1/agent/think',
+  });
+});
+
+test('full runtime preserves an authoritative decision id only when the server created it', () => {
+  const runtime = normalizeRuntimeResult({
+    ok: true,
+    action: 'resolve agent proposals',
+    agent_id: 'agent-one',
+    session_id: 'session-one',
+    decision_id: 'decision-authoritative',
+    status: {},
+    decision_brief: {},
+    risk_gate: { allow: true, decision: 'allow', risk_level: 'medium', reasons: [], gate_receipt_id: 'gate-arbitrated' },
+    gate_receipt: { id: 'gate-arbitrated', required: true, decision: 'allow' },
+    relevant_lessons: [],
+    deployment_playbooks: [],
+    template_suggestion: {},
+    proof_pack: { required: true, enforced: true, fields: [], missing: [], complete: true, commit_endpoint: '/v1/agent/commit', rule: 'commit' },
+    before_you_act: null,
+    exact_next_action: 'Proceed.',
+    auto_outcome_closure: null,
+  });
+  assert.ok(runtime);
+  assert.equal(runtime.decision_id, 'decision-authoritative');
+  assert.equal(runtime.runtime_authorization.decision_id, 'decision-authoritative');
+  assert.equal(runtime.runtime_authorization.decision_state, 'created');
+  assert.equal(runtime.runtime_authorization.decision_creation_required, false);
 });
 
 test('native slim runtime responses reject unknown risk levels', () => {
@@ -293,6 +357,30 @@ test('fleet-bound identity is identical in agent-scoped headers, bodies, and que
     assert.equal(new URL(calls[1].url).searchParams.get('agent_id'), agentId);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('unknown MCP hosts use model-neutral package and client headers', async () => {
+  const originalFetch = globalThis.fetch;
+  const previousClient = process.env.MARROW_CLIENT;
+  let observed;
+  process.env.MARROW_CLIENT = 'future-model-harness';
+  globalThis.fetch = async (_url, init = {}) => {
+    observed = new Headers(init.headers);
+    return Response.json({ data: {
+      response_mode: 'slim', decision: 'allow', risk_level: 'low', gate_required: false,
+      proof_required: false, proof_complete: true, gate_receipt_id: 'gate-neutral',
+    } });
+  };
+  try {
+    await marrowAgentRuntime('fixture-key', 'https://api.example.test', { action: 'inspect safely' });
+    assert.equal(observed.get('X-Marrow-Client'), 'custom');
+    assert.equal(observed.get('X-Marrow-Package'), '@getmarrow/mcp');
+    assert.match(observed.get('X-Marrow-Package-Version'), /^3\./);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousClient == null) delete process.env.MARROW_CLIENT;
+    else process.env.MARROW_CLIENT = previousClient;
   }
 });
 

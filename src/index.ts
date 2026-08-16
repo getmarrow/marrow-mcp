@@ -98,7 +98,7 @@ function defaultSourceClient(): string {
     'hermes-agent': 'hermes',
     glm: 'glm',
   };
-  return aliases[raw] || (SOURCE_CLIENTS.has(raw) ? raw : 'openclaw');
+  return aliases[raw] || (SOURCE_CLIENTS.has(raw) ? raw : 'custom');
 }
 
 function normalizeModelUsage(input: MarrowModelUsageInput = {}): Record<string, unknown> {
