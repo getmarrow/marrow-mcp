@@ -104,7 +104,7 @@ function defaultSourceClient() {
         'hermes-agent': 'hermes',
         glm: 'glm',
     };
-    return aliases[raw] || (SOURCE_CLIENTS.has(raw) ? raw : 'openclaw');
+    return aliases[raw] || (SOURCE_CLIENTS.has(raw) ? raw : 'custom');
 }
 function normalizeModelUsage(input = {}) {
     const body = {};

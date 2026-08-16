@@ -120,6 +120,7 @@ export interface MarrowWorkflowGateResult {
   agent_id?: string | null;
   session_id?: string | null;
   gate_event_id?: string | null;
+  gate_receipt_id?: string | null;
   prior_lessons?: unknown[];
   deployment_playbooks?: unknown[];
   next?: Record<string, unknown>;
@@ -293,6 +294,15 @@ export interface MarrowBeforeActionIntervention {
 export interface MarrowAgentRuntimeResult {
   ok: boolean;
   decision_id?: string;
+  runtime_authorization?: {
+    id: string;
+    kind: 'durable_gate_receipt' | 'low_risk_guidance_receipt' | string;
+    durable: boolean;
+    decision_state: 'created' | 'not_created' | string;
+    decision_creation_required: boolean;
+    decision_creation_endpoint: string | null;
+    decision_id?: string;
+  };
   action: string;
   agent_id: string | null;
   session_id: string | null;
@@ -339,6 +349,16 @@ export interface MarrowAgentRuntimeResult {
     commit_endpoint?: string;
     idempotency_key_hint?: string;
     fail_open_policy?: string;
+    [key: string]: unknown;
+  };
+  completion_contract?: {
+    must_commit_outcome?: boolean;
+    commit_endpoint?: string;
+    required_commit_fields?: string[];
+    decision_creation_required?: boolean;
+    decision_creation_endpoint?: string | null;
+    decision_state?: 'created' | 'not_created' | string;
+    decision_id?: string;
     [key: string]: unknown;
   };
   risk_gate_event?: {
