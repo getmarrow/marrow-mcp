@@ -39,6 +39,7 @@ const MAX_EVENTS = 1000;
 const MAX_RECORD_BYTES = 4096;
 const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
 const MAX_NAMESPACE_FILES = 128;
+const MAX_NAMESPACE_DIRECTORY_ENTRIES = 1024;
 const MAX_ATTEMPTS = 3;
 const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
 const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
@@ -392,32 +393,92 @@ async function deliver(baseUrl, apiKey, queued, timeoutMs) {
             clearTimeout(timeout);
     }
 }
+function clearOtherNamespaceStatus() {
+    return {
+        state: 'clear',
+        count: 0,
+        count_exact: true,
+        scanned: 0,
+        scan_limit: MAX_NAMESPACE_FILES,
+        directory_entries_scanned: 0,
+        directory_entry_limit: MAX_NAMESPACE_DIRECTORY_ENTRIES,
+        pending: 0,
+        failed: 0,
+        event_counts_exact: true,
+        unreadable: 0,
+        truncated: false,
+        blocks_current_namespace: false,
+        exact_fix: null,
+        safe_recovery_action: null,
+        safe_quarantine_action: null,
+    };
+}
+function readInventoryEvents(path) {
+    assertSafeFile(path, 'spool file');
+    const before = (0, node_fs_1.lstatSync)(path);
+    if (before.size > MAX_SPOOL_BYTES)
+        throw new Error('lifecycle spool is too large');
+    const descriptor = (0, node_fs_1.openSync)(path, node_fs_1.constants.O_RDONLY | node_fs_1.constants.O_NOFOLLOW | node_fs_1.constants.O_NONBLOCK);
+    try {
+        const opened = (0, node_fs_1.fstatSync)(descriptor);
+        const uid = currentUid();
+        if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
+            throw new Error('lifecycle spool changed during inventory');
+        }
+        if (uid !== null && opened.uid !== uid)
+            throw new Error('lifecycle spool file must be owned by the current user');
+        if ((opened.mode & 0o077) !== 0)
+            throw new Error('lifecycle spool file permissions must be 0600 or stricter');
+        if (opened.size > MAX_SPOOL_BYTES)
+            throw new Error('lifecycle spool is too large');
+        const parsed = JSON.parse((0, node_fs_1.readFileSync)(descriptor, 'utf8'));
+        if (!Array.isArray(parsed) || parsed.length > MAX_EVENTS)
+            throw new Error('invalid lifecycle spool');
+        return parsed.map(validateStoredEvent);
+    }
+    finally {
+        (0, node_fs_1.closeSync)(descriptor);
+    }
+}
 function otherNamespaceStatus(currentPath, ownsParent) {
-    if (!ownsParent) {
-        return { state: 'clear', count: 0, pending: 0, failed: 0, unreadable: 0, truncated: false, exact_fix: null };
-    }
+    if (!ownsParent)
+        return clearOtherNamespaceStatus();
     const parent = (0, node_path_1.dirname)(currentPath);
-    if (!(0, node_fs_1.existsSync)(parent)) {
-        return { state: 'clear', count: 0, pending: 0, failed: 0, unreadable: 0, truncated: false, exact_fix: null };
+    if (!(0, node_fs_1.existsSync)(parent))
+        return clearOtherNamespaceStatus();
+    const currentName = (0, node_path_1.basename)(currentPath);
+    const names = [];
+    let directoryEntriesScanned = 0;
+    let directoryEntriesTruncated = false;
+    const directory = (0, node_fs_1.opendirSync)(parent);
+    try {
+        let entry = directory.readSync();
+        while (entry) {
+            if (directoryEntriesScanned >= MAX_NAMESPACE_DIRECTORY_ENTRIES) {
+                directoryEntriesTruncated = true;
+                break;
+            }
+            directoryEntriesScanned += 1;
+            if (entry.name !== currentName && /^mcp-[a-f0-9]{20}\.json$/.test(entry.name)) {
+                names.push(entry.name);
+                if (names.length > MAX_NAMESPACE_FILES)
+                    break;
+            }
+            entry = directory.readSync();
+        }
     }
-    const names = (0, node_fs_1.readdirSync)(parent)
-        .filter((name) => /^mcp-[a-f0-9]{20}\.json$/.test(name))
-        .filter((name) => (0, node_path_1.join)(parent, name) !== currentPath)
-        .sort();
-    const truncated = names.length > MAX_NAMESPACE_FILES;
+    finally {
+        directory.closeSync();
+    }
+    const truncated = names.length > MAX_NAMESPACE_FILES || directoryEntriesTruncated;
+    const inspectedNames = names.slice(0, MAX_NAMESPACE_FILES).sort();
     let pending = 0;
     let failed = 0;
     let unreadable = 0;
-    for (const name of names.slice(0, MAX_NAMESPACE_FILES)) {
+    for (const name of inspectedNames) {
         const path = (0, node_path_1.join)(parent, name);
         try {
-            assertSafeFile(path, 'spool file');
-            if ((0, node_fs_1.statSync)(path).size > MAX_SPOOL_BYTES)
-                throw new Error('lifecycle spool is too large');
-            const parsed = JSON.parse((0, node_fs_1.readFileSync)(path, 'utf8'));
-            if (!Array.isArray(parsed) || parsed.length > MAX_EVENTS)
-                throw new Error('invalid lifecycle spool');
-            for (const event of parsed.map(validateStoredEvent)) {
+            for (const event of readInventoryEvents(path)) {
                 if (event.delivery_state === 'dead_letter')
                     failed += 1;
                 else
@@ -432,14 +493,27 @@ function otherNamespaceStatus(currentPath, ownsParent) {
     return {
         state: attention ? 'attention_required' : 'clear',
         count: names.length,
+        count_exact: !truncated,
+        scanned: inspectedNames.length,
+        scan_limit: MAX_NAMESPACE_FILES,
+        directory_entries_scanned: directoryEntriesScanned,
+        directory_entry_limit: MAX_NAMESPACE_DIRECTORY_ENTRIES,
         pending,
         failed,
+        event_counts_exact: !truncated && unreadable === 0,
         unreadable,
         truncated,
+        blocks_current_namespace: false,
         exact_fix: attention
             ? truncated
-                ? 'More than 128 older spool namespaces exist. Inspect owner-only spool inventory before restoring each original credential and agent identity; Marrow will not replay unverified namespaces under the current key.'
-                : 'Older credential or agent spool namespaces exist. Restore each namespace\'s original credential and agent identity to drain it; Marrow will not replay it under the current key because same-tenant ownership cannot be proven.'
+                ? 'The older spool inventory exceeded a bounded scan limit: at most 128 legacy namespace files and 1024 directory entries are inspected per check. Review the owner-only inventory in bounded batches. Legacy debt never blocks or changes the active credential namespace, and Marrow will not replay unverified namespaces under the current key.'
+                : 'Older credential or agent spool namespaces exist. Legacy debt never blocks or changes the active credential namespace, and Marrow will not replay it under the current key because same-tenant ownership cannot be proven.'
+            : null,
+        safe_recovery_action: attention
+            ? 'For each selected legacy file, restore its original credential from trusted secret storage and its exact original agent identity, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool. Never put the credential on the command line and never drain the file under another key or agent identity.'
+            : null,
+        safe_quarantine_action: attention
+            ? 'If the original identity cannot be restored, move only the selected legacy mcp-<20-hex>.json file from the active owner-only spool directory into a separate owner-only quarantine directory. Preserve it unchanged for later authenticated recovery; do not copy, merge, replay, edit, or delete it, and do not move the active namespace file.'
             : null,
     };
 }

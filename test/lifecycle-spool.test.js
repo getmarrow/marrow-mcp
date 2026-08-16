@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const {
   chmodSync,
   existsSync,
@@ -22,6 +22,7 @@ const {
   lifecycleSpoolStatus,
   recordLifecycleEvent,
 } = require('../dist/lifecycle-spool.js');
+const { lifecycleSpoolCommandOutcome } = require('../dist/spool-command.js');
 const {
   nativeHookConfigurationFingerprint,
   nativeHookEvidence,
@@ -434,7 +435,7 @@ test('spool status exposes older credential namespaces without replaying them un
     assert.equal(status.other_namespaces.state, 'attention_required');
     assert.equal(status.other_namespaces.count, 1);
     assert.equal(status.other_namespaces.pending, 1);
-    assert.match(status.other_namespaces.exact_fix, /original credential and agent identity/);
+    assert.match(status.other_namespaces.exact_fix, /Legacy debt never blocks/);
 
     let delivered = 0;
     globalThis.fetch = async () => {
@@ -449,6 +450,86 @@ test('spool status exposes older credential namespaces without replaying them un
     assert.equal(delivered, 1);
     assert.equal(drained.pending, 0);
     assert.equal(drained.other_namespaces.pending, 1);
+    assert.equal(drained.other_namespaces.event_counts_exact, true);
+    assert.equal(drained.other_namespaces.blocks_current_namespace, false);
+    assert.match(drained.other_namespaces.safe_recovery_action, /exact original agent identity/);
+    assert.match(drained.other_namespaces.safe_quarantine_action, /do not copy, merge, replay, edit, or delete/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('drain and status exit successfully for a clear active namespace while reporting isolated legacy debt', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-cli-scope-'));
+  const home = join(directory, 'home');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  const originalFetch = globalThis.fetch;
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  try {
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'legacy-pending', agent_id: 'agent-one' }),
+      apiKey: 'legacy-cli-key',
+      deferDelivery: true,
+    });
+    globalThis.fetch = async () => new Response('{}', { status: 400 });
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'legacy-failed', agent_id: 'agent-one' }),
+      apiKey: 'legacy-cli-key',
+    });
+
+    const status = lifecycleSpoolStatus({ apiKey: 'current-cli-key', agentId: 'agent-one' });
+    for (const drain of [false, true]) {
+      const outcome = lifecycleSpoolCommandOutcome(status, drain);
+      assert.equal(outcome.exitCode, 0);
+      assert.equal(outcome.output.ok, true);
+      assert.equal(outcome.output.scope, 'current_credential_namespace');
+      assert.equal(outcome.output.legacy_namespace_debt, true);
+      assert.equal(outcome.output.lifecycle_spool.state, 'clear');
+      assert.equal(outcome.output.lifecycle_spool.pending, 0);
+      assert.equal(outcome.output.lifecycle_spool.failed, 0);
+      assert.equal(outcome.output.lifecycle_spool.other_namespaces.pending, 1);
+      assert.equal(outcome.output.lifecycle_spool.other_namespaces.failed, 1);
+      assert.equal(outcome.output.lifecycle_spool.other_namespaces.blocks_current_namespace, false);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('active namespace failures retain a nonzero exit independently of legacy inventory', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-cli-active-fail-'));
+  const home = join(directory, 'home');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  const originalFetch = globalThis.fetch;
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  try {
+    globalThis.fetch = async () => new Response('{}', { status: 400 });
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'current-failed', agent_id: 'agent-one' }),
+      apiKey: 'current-failed-key',
+    });
+    const status = lifecycleSpoolStatus({ apiKey: 'current-failed-key', agentId: 'agent-one' });
+    const outcome = lifecycleSpoolCommandOutcome(status, false);
+    assert.equal(outcome.exitCode, 2);
+    assert.equal(outcome.output.ok, false);
+    assert.equal(outcome.output.lifecycle_spool.state, 'attention_required');
+    assert.equal(outcome.output.lifecycle_spool.failed, 1);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalHome === undefined) delete process.env.HOME;
@@ -479,10 +560,16 @@ test('older namespace inventory is bounded and reports truncation', async () => 
       writeFileSync(join(spoolDirectory, `mcp-${suffix}.json`), '[]', { mode: 0o600 });
     }
     const status = lifecycleSpoolStatus({ apiKey: 'current-key-for-bound-test', agentId: 'agent-one' });
-    assert.equal(status.other_namespaces.count >= 129, true);
+    assert.equal(status.other_namespaces.count, 129);
+    assert.equal(status.other_namespaces.count_exact, false);
+    assert.equal(status.other_namespaces.event_counts_exact, false);
+    assert.equal(status.other_namespaces.scanned, 128);
+    assert.equal(status.other_namespaces.scan_limit, 128);
+    assert.equal(status.other_namespaces.directory_entries_scanned, 130);
+    assert.equal(status.other_namespaces.directory_entry_limit, 1024);
     assert.equal(status.other_namespaces.truncated, true);
     assert.equal(status.other_namespaces.state, 'attention_required');
-    assert.match(status.other_namespaces.exact_fix, /more than 128/i);
+    assert.match(status.other_namespaces.exact_fix, /bounded scan limit/i);
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
@@ -492,14 +579,119 @@ test('older namespace inventory is bounded and reports truncation', async () => 
   }
 });
 
-test('spool commands reject process-list key material', () => {
-  const result = spawnSync(process.execPath, [resolve(__dirname, '../dist/cli.js'), 'spool-status', '--key', 'synthetic-process-list-key'], {
-    encoding: 'utf8',
-    timeout: 5_000,
-  });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /--key is not accepted/);
-  assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /synthetic-process-list-key/);
+test('legacy inventory bounds total directory traversal even when entries do not match spool filenames', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-directory-bound-'));
+  const home = join(directory, 'home');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  const spoolDirectory = join(home, '.marrow', 'spool');
+  mkdirSync(spoolDirectory, { recursive: true, mode: 0o700 });
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  try {
+    for (let index = 0; index < 1025; index += 1) {
+      writeFileSync(join(spoolDirectory, `unrelated-${index}`), '', { mode: 0o600 });
+    }
+    const status = lifecycleSpoolStatus({ apiKey: 'current-directory-bound-key', agentId: 'agent-one' });
+    assert.equal(status.state, 'clear');
+    assert.equal(status.other_namespaces.state, 'attention_required');
+    assert.equal(status.other_namespaces.count_exact, false);
+    assert.equal(status.other_namespaces.directory_entries_scanned, 1024);
+    assert.equal(status.other_namespaces.directory_entry_limit, 1024);
+    assert.equal(status.other_namespaces.truncated, true);
+    assert.equal(status.other_namespaces.blocks_current_namespace, false);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('legacy inventory rejects symlinks, weak permissions, corruption, and oversize files without affecting active state', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-inventory-adversarial-'));
+  const home = join(directory, 'home');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  mkdirSync(join(home, '.marrow', 'spool'), { recursive: true, mode: 0o700 });
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  try {
+    const spoolDirectory = join(home, '.marrow', 'spool');
+    const outside = join(directory, 'outside.json');
+    writeFileSync(outside, '[]', { mode: 0o600 });
+    symlinkSync(outside, join(spoolDirectory, 'mcp-00000000000000000001.json'));
+    writeFileSync(join(spoolDirectory, 'mcp-00000000000000000002.json'), '[]', { mode: 0o644 });
+    writeFileSync(join(spoolDirectory, 'mcp-00000000000000000003.json'), '{bad-json', { mode: 0o600 });
+    writeFileSync(join(spoolDirectory, 'mcp-00000000000000000004.json'), 'x'.repeat(2 * 1024 * 1024 + 1), { mode: 0o600 });
+
+    const status = lifecycleSpoolStatus({ apiKey: 'current-adversarial-key', agentId: 'agent-one' });
+    assert.equal(status.state, 'clear');
+    assert.equal(status.pending, 0);
+    assert.equal(status.failed, 0);
+    assert.equal(status.other_namespaces.state, 'attention_required');
+    assert.equal(status.other_namespaces.unreadable, 4);
+    assert.equal(status.other_namespaces.event_counts_exact, false);
+    assert.equal(status.other_namespaces.blocks_current_namespace, false);
+    assert.equal(readFileSync(outside, 'utf8'), '[]');
+    assert.equal(lstatSync(join(spoolDirectory, 'mcp-00000000000000000001.json')).isSymbolicLink(), true);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('edge spool delivery is host and model neutral for MCP and SDK-owned lifecycle adapters', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-neutral-hosts-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  try {
+    await withSpoolPath(path, async () => {
+      for (const [index, adapter] of [
+        ['grok-mcp', 'mcp'],
+        ['claude-code', 'native_hooks'],
+        ['codex-mcp', 'mcp'],
+        ['owned-node-runtime', 'sdk_passive_runtime'],
+      ].entries()) {
+        await recordLifecycleEvent({
+          ...lifecycleInput({
+            event_id: `neutral-host-${index}`,
+            harness: adapter[0],
+            capability_level: adapter[1],
+          }),
+          deferDelivery: true,
+        });
+      }
+      assert.equal(lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' }).pending, 4);
+      let delivered = 0;
+      globalThis.fetch = async () => {
+        delivered += 1;
+        return new Response('{}', { status: 200 });
+      };
+      const status = await drainLifecycleSpool({
+        apiKey: 'test-mcp-spool-key',
+        baseUrl: 'https://api.example.com',
+        agentId: 'agent-one',
+      });
+      assert.equal(delivered, 4);
+      assert.equal(status.state, 'clear');
+      assert.equal(status.pending, 0);
+      assert.equal(status.failed, 0);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('spool commands reject process-list key material without echoing it', () => {
+  const source = readFileSync(resolve(__dirname, '../src/cli.ts'), 'utf8');
+  assert.match(source, /if \(cliArgs\.apiKey\)[\s\S]{0,400}--key is not accepted/);
+  assert.doesNotMatch(source, /--key is not accepted[^\n]*\$\{cliArgs\.apiKey\}/);
 });
 
 test('runtime validation rejects unrestricted fields and keeps every record byte-bounded', async () => {

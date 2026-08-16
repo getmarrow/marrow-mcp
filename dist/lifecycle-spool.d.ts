@@ -37,11 +37,20 @@ export type LifecycleSpoolStatus = {
     other_namespaces: {
         state: 'clear' | 'attention_required';
         count: number;
+        count_exact: boolean;
+        scanned: number;
+        scan_limit: number;
+        directory_entries_scanned: number;
+        directory_entry_limit: number;
         pending: number;
         failed: number;
+        event_counts_exact: boolean;
         unreadable: number;
         truncated: boolean;
+        blocks_current_namespace: false;
         exact_fix: string | null;
+        safe_recovery_action: string | null;
+        safe_quarantine_action: string | null;
     };
 };
 export declare function lifecycleSpoolStatus(input: {

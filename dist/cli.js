@@ -17,6 +17,7 @@ const hook_session_1 = require("./hook-session");
 const hook_pre_action_1 = require("./hook-pre-action");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const spool_command_1 = require("./spool-command");
 const guidance_cache_1 = require("./guidance-cache");
 const request_reliability_1 = require("./request-reliability");
 const hook_contract_1 = require("./hook-contract");
@@ -127,17 +128,10 @@ async function runSpoolCommand(drain) {
     const status = drain
         ? await (0, lifecycle_spool_1.drainLifecycleSpool)({ apiKey, baseUrl, agentId: resolved.agentId || undefined })
         : (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey, agentId: resolved.agentId || undefined });
-    const namespaceAttention = status.other_namespaces.state === 'attention_required';
-    process.stdout.write(`${JSON.stringify({
-        ok: drain
-            ? status.state === 'clear' && !namespaceAttention
-            : status.state !== 'attention_required' && !namespaceAttention,
-        lifecycle_spool: status,
-    }, null, 2)}\n`);
-    if (status.state === 'attention_required' || namespaceAttention)
-        process.exitCode = 2;
-    else if (drain && status.state !== 'clear')
-        process.exitCode = 1;
+    const outcome = (0, spool_command_1.lifecycleSpoolCommandOutcome)(status, drain);
+    process.stdout.write(`${JSON.stringify(outcome.output, null, 2)}\n`);
+    if (outcome.exitCode !== 0)
+        process.exitCode = outcome.exitCode;
 }
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
 function runSetup() {

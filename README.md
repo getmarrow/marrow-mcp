@@ -365,7 +365,7 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp spool-status
 npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool
 ```
 
-The output contains only state, exact pending/failed counts, oldest receipt timestamps, capacity, and an exact fix. Terminal validation/authentication failures and exhausted retries remain explicit durable failures rather than cycling indefinitely.
+The output contains only state, bounded pending/failed counts, oldest receipt timestamps, capacity, and an exact fix. A drain applies only to the active credential-and-agent namespace: isolated legacy namespace debt is reported separately and never changes a successful active-namespace drain into a failure. Legacy files are never replayed, merged, deleted, or attributed to the active identity. Restore the exact original identity to drain one, or preserve the selected file unchanged in a separate owner-only quarantine directory when that identity is unavailable. Terminal validation/authentication failures and exhausted retries in the active namespace remain explicit durable failures rather than cycling indefinitely.
 
 Check the installed runtime:
 
