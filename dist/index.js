@@ -325,9 +325,13 @@ function createSdkClient(apiKey, baseUrl, sessionId, agentId) {
     return new sdk_1.MarrowClient(apiKey, { baseUrl, sessionId, agentId });
 }
 function runtimeGateReceiptId(runtime) {
-    if (!runtime)
-        return null;
-    return runtime.gate_receipt?.id || runtime.gate_receipt_id || null;
+    return (0, runtime_contract_1.runtimeAuthorizationReceiptId)(runtime);
+}
+function runtimeGateCanAuthorizeCommit(runtime) {
+    if (!runtimeGateReceiptId(runtime) || !runtime)
+        return false;
+    return (runtime.authorization_state === 'hard_gate' && runtime.hard_gate_obtained === true)
+        || (runtime.authorization_state === 'advisory_only' && runtime.hard_gate_obtained === false);
 }
 function clampPeriodDays(value, defaultDays = 7) {
     const parsed = typeof value === 'number' ? value : parseInt(String(value || defaultDays), 10);
@@ -421,8 +425,8 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId, signal)
             throw new Error(`marrowCommit auto_gate failed before outcome closure: ${msg}`);
         }
         gateReceiptId = runtimeGateReceiptId(runtimeGate) || undefined;
-        if (!gateReceiptId && runtimeGate?.gate_receipt?.required) {
-            throw new Error('marrowCommit auto_gate required a gate receipt, but /v1/agent/runtime did not return one');
+        if (!gateReceiptId || !runtimeGateCanAuthorizeCommit(runtimeGate)) {
+            throw new Error('marrowCommit auto_gate required a gate receipt backed by canonical runtime authorization, but /v1/agent/runtime returned missing, conflicting, or unverified receipt state');
         }
     }
     const body = {
@@ -543,6 +547,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             action: params.action_for_gate || params.action,
             type: params.type || 'general',
             surfaces: params.surfaces,
+            auto_gate: params.auto_gate,
         }, sessionId, agentId, commitTimeout.signal);
     }
     finally {

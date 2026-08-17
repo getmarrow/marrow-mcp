@@ -648,6 +648,101 @@ test('marrowCommit auto_gate fails closed when required receipt is missing', asy
   }
 });
 
+test('marrowCommit auto_gate rejects conflicting normalized receipt truth without calling commit', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+    if (String(url).endsWith('/v1/agent/runtime')) {
+      return Response.json({ data: {
+        risk_gate: {
+          allow: true,
+          decision: 'allow',
+          reasons: [],
+          enforced: true,
+          enforcement_decision: 'allow',
+          gate_required: true,
+          gate_receipt_id: 'gate-risk-conflict',
+        },
+        gate_receipt_id: 'gate-top-conflict',
+        gate_receipt: { id: 'gate-object-conflict', required: true, decision: 'allow' },
+        proof_pack: { complete: true },
+      } });
+    }
+    return Response.json({ data: { committed: true } });
+  };
+
+  try {
+    await assert.rejects(
+      () => marrowCommit('mrw_test_key', 'https://api.example.com', {
+        decision_id: 'decision_conflict',
+        success: true,
+        outcome: 'must not commit',
+        action: 'deploy to production',
+        proof: { verification: 'passed' },
+      }),
+      /canonical runtime authorization/,
+    );
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/v1\/agent\/runtime$/);
+    assert.equal(calls.some((call) => /\/v1\/agent\/commit$/.test(call.url)), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowCommit auto_gate preserves a valid canonical no-decision receipt', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: String(url), body });
+    if (String(url).endsWith('/v1/agent/runtime')) {
+      return Response.json({ data: {
+        decision_id: null,
+        risk_gate: {
+          allow: true,
+          decision: 'allow',
+          reasons: [],
+          enforced: true,
+          enforcement_decision: 'allow',
+          gate_required: true,
+          gate_receipt_id: 'gate-canonical-auto',
+        },
+        gate_receipt_id: 'gate-canonical-auto',
+        gate_receipt: { id: 'gate-canonical-auto', required: true, decision: 'allow' },
+        runtime_authorization: {
+          id: 'gate-canonical-auto',
+          decision_state: 'not_created',
+          decision_creation_required: true,
+        },
+        proof_pack: { complete: true },
+      } });
+    }
+    return Response.json({ data: { committed: true } });
+  };
+
+  try {
+    const result = await marrowCommit('mrw_test_key', 'https://api.example.com', {
+      decision_id: 'decision_created_by_think',
+      success: true,
+      outcome: 'canonical close',
+      action: 'deploy to production',
+      proof: { verification: 'passed' },
+    });
+    assert.equal(result.committed, true);
+    assert.equal(calls.length, 2);
+    assert.match(calls[0].url, /\/v1\/agent\/runtime$/);
+    assert.match(calls[1].url, /\/v1\/agent\/commit$/);
+    assert.equal(calls[1].body.gate_receipt_id, 'gate-canonical-auto');
+    assert.equal(calls[1].body.decision_id, 'decision_created_by_think');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('marrowCommit queues transient commit failures and drains on next commit', async () => {
   const { marrowCommit } = require('../dist/index.js');
   const originalFetch = globalThis.fetch;

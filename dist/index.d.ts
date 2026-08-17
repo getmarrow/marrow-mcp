@@ -79,6 +79,7 @@ export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
     gate_receipt_id?: string;
     action_for_gate?: string;
     surfaces?: string[];
+    auto_gate?: boolean;
 }, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<{
     decision_id: string;
     committed: boolean;

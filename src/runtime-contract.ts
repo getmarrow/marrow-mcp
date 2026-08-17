@@ -43,6 +43,12 @@ function safeRuntimeIdentifier(value: unknown): string | null {
   return normalized && SAFE_RUNTIME_IDENTIFIER.test(normalized) ? normalized : null;
 }
 
+export function runtimeAuthorizationReceiptId(
+  runtime: MarrowAgentRuntimeResult | null | undefined,
+): string | null {
+  return safeRuntimeIdentifier(runtime?.runtime_authorization?.id);
+}
+
 function canonicalRuntimeReceipt(runtime: MarrowAgentRuntimeResult): {
   id: string | null;
   conflict: boolean;
@@ -291,9 +297,8 @@ export function highRiskRuntimeCanClose(
 ): boolean {
   const decision = String(runtime.risk_gate?.decision || '').toLowerCase();
   const receiptDecision = String(runtime.gate_receipt?.decision || decision).toLowerCase();
-  const receiptId = typeof explicitReceiptId === 'string' && explicitReceiptId.trim()
-    ? explicitReceiptId.trim()
-    : runtime.gate_receipt?.id || runtime.gate_receipt_id || '';
+  const receiptId = runtimeAuthorizationReceiptId(runtime);
+  const suppliedReceiptId = safeRuntimeIdentifier(explicitReceiptId);
   const receiptExpired = runtime.gate_receipt?.expires_at
     ? Date.parse(runtime.gate_receipt.expires_at) <= now
     : false;
@@ -301,12 +306,16 @@ export function highRiskRuntimeCanClose(
   return Boolean(
     proof
     && Object.keys(proof).length > 0
+    && receiptId
+    && suppliedReceiptId === receiptId
+    && runtime.runtime_authorization?.durable === true
+    && runtime.authorization_state === 'hard_gate'
+    && runtime.hard_gate_obtained === true
     && runtime.risk_gate?.allow === true
     && authoritativeHardGate(runtime, planCapability)
     && ['allow', 'proceed', 'warn'].includes(decision)
     && ['allow', 'proceed', 'warn'].includes(receiptDecision)
     && runtime.proof_pack?.complete === true
-    && receiptId
     && !receiptExpired
     && runtime.gate_receipt?.owner_approval_required !== true
     && runtime.intervention?.must_stop !== true

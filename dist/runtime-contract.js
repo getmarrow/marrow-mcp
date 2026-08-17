@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.runtimeAuthorizationReceiptId = runtimeAuthorizationReceiptId;
 exports.normalizeRuntimePlanCapability = normalizeRuntimePlanCapability;
 exports.isValidRuntimeResult = isValidRuntimeResult;
 exports.normalizeRuntimeResult = normalizeRuntimeResult;
@@ -41,6 +42,9 @@ function boundedLimit(value) {
 function safeRuntimeIdentifier(value) {
     const normalized = typeof value === 'string' ? value.trim() : '';
     return normalized && SAFE_RUNTIME_IDENTIFIER.test(normalized) ? normalized : null;
+}
+function runtimeAuthorizationReceiptId(runtime) {
+    return safeRuntimeIdentifier(runtime?.runtime_authorization?.id);
 }
 function canonicalRuntimeReceipt(runtime) {
     const identifiers = [
@@ -260,21 +264,24 @@ function normalizeRuntimeResult(value) {
 function highRiskRuntimeCanClose(runtime, proof, explicitReceiptId, now = Date.now()) {
     const decision = String(runtime.risk_gate?.decision || '').toLowerCase();
     const receiptDecision = String(runtime.gate_receipt?.decision || decision).toLowerCase();
-    const receiptId = typeof explicitReceiptId === 'string' && explicitReceiptId.trim()
-        ? explicitReceiptId.trim()
-        : runtime.gate_receipt?.id || runtime.gate_receipt_id || '';
+    const receiptId = runtimeAuthorizationReceiptId(runtime);
+    const suppliedReceiptId = safeRuntimeIdentifier(explicitReceiptId);
     const receiptExpired = runtime.gate_receipt?.expires_at
         ? Date.parse(runtime.gate_receipt.expires_at) <= now
         : false;
     const planCapability = runtime.plan_capability || normalizeRuntimePlanCapability(runtime, runtime.risk_gate);
     return Boolean(proof
         && Object.keys(proof).length > 0
+        && receiptId
+        && suppliedReceiptId === receiptId
+        && runtime.runtime_authorization?.durable === true
+        && runtime.authorization_state === 'hard_gate'
+        && runtime.hard_gate_obtained === true
         && runtime.risk_gate?.allow === true
         && authoritativeHardGate(runtime, planCapability)
         && ['allow', 'proceed', 'warn'].includes(decision)
         && ['allow', 'proceed', 'warn'].includes(receiptDecision)
         && runtime.proof_pack?.complete === true
-        && receiptId
         && !receiptExpired
         && runtime.gate_receipt?.owner_approval_required !== true
         && runtime.intervention?.must_stop !== true

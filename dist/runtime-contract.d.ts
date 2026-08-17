@@ -1,4 +1,5 @@
 import type { MarrowAgentRuntimeResult, MarrowRuntimePlanCapability } from './types';
+export declare function runtimeAuthorizationReceiptId(runtime: MarrowAgentRuntimeResult | null | undefined): string | null;
 export declare function normalizeRuntimePlanCapability(value: unknown, riskGateValue?: unknown): MarrowRuntimePlanCapability | null;
 export declare function isValidRuntimeResult(value: unknown): value is MarrowAgentRuntimeResult;
 export declare function normalizeRuntimeResult(value: unknown): MarrowAgentRuntimeResult | null;
