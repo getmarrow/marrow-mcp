@@ -711,15 +711,27 @@ test('compact MCP profile rejects direct calls to hidden advanced tools', () => 
 });
 
 test('high-risk closure requires an allowed fresh receipt and complete proof', () => {
-  const runtime = {
-    risk_gate: { allow: true, decision: 'allow', enforced: true, enforcement_decision: 'allow' },
+  const runtime = normalizeRuntimeResult({
+    risk_gate: {
+      allow: true,
+      decision: 'allow',
+      enforced: true,
+      enforcement_decision: 'allow',
+      gate_required: true,
+      gate_receipt_id: 'gate-one',
+    },
     proof_pack: { complete: true },
+    gate_receipt_id: 'gate-one',
     gate_receipt: { id: 'gate-one', decision: 'allow', expires_at: '2030-01-01T00:00:00.000Z' },
-  };
-  assert.equal(highRiskRuntimeCanClose(runtime, { test: 'passed' }, undefined, Date.parse('2029-01-01T00:00:00.000Z')), true);
+    runtime_authorization: { id: 'gate-one' },
+  });
+  assert.ok(runtime);
+  assert.equal(highRiskRuntimeCanClose(runtime, { test: 'passed' }, 'gate-one', Date.parse('2029-01-01T00:00:00.000Z')), true);
   assert.equal(highRiskRuntimeCanClose({ ...runtime, risk_gate: { allow: false, decision: 'block' } }, { test: 'passed' }, undefined), false);
   assert.equal(highRiskRuntimeCanClose({ ...runtime, proof_pack: { complete: false } }, { test: 'passed' }, undefined), false);
-  assert.equal(highRiskRuntimeCanClose({ ...runtime, gate_receipt: { id: 'gate-one', decision: 'review_required' } }, { test: 'passed' }, undefined), false);
+  assert.equal(highRiskRuntimeCanClose({ ...runtime, gate_receipt: { id: 'gate-one', decision: 'review_required' } }, { test: 'passed' }, 'gate-one'), false);
+  assert.equal(highRiskRuntimeCanClose(runtime, { test: 'passed' }, 'gate-mismatch'), false);
+  assert.equal(highRiskRuntimeCanClose(runtime, { test: 'passed' }, ''), false);
   assert.equal(highRiskRuntimeCanClose(runtime, undefined, undefined), false);
 });
 

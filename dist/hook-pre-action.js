@@ -7,6 +7,7 @@ exports.runPreActionHookCommand = runPreActionHookCommand;
 const index_1 = require("./index");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const runtime_contract_1 = require("./runtime-contract");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 const MAX_INPUT_BYTES = 64 * 1024;
@@ -231,6 +232,7 @@ async function runPreActionHookCommand(input) {
             role: classified.role,
             surfaces: classified.surfaces,
         }, sessionId, agentId, signal);
+        const gateReceiptId = (0, runtime_contract_1.runtimeAuthorizationReceiptId)(runtime);
         const decision = await (0, index_1.marrowThink)(resolved.apiKey, baseUrl, {
             action: classified.action,
             target: classified.target,
@@ -240,7 +242,7 @@ async function runPreActionHookCommand(input) {
             source_meta: {
                 harness: 'claude-code',
                 correlation_id: correlation,
-                gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
+                gate_receipt_id: gateReceiptId,
             },
         }, sessionId, agentId, signal);
         const issued = await (0, index_1.marrowEnforcement)(resolved.apiKey, baseUrl, {
@@ -251,7 +253,7 @@ async function runPreActionHookCommand(input) {
             correlation_id: correlation,
             harness: 'claude-code',
             decision_id: decision.decision_id,
-            gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
+            gate_receipt_id: gateReceiptId,
             proof_requirements: runtime.proof_pack?.fields || [],
             surfaces: classified.surfaces,
         }, sessionId, agentId, signal);

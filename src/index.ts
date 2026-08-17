@@ -46,7 +46,7 @@ import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
 import { invalidResponseError, MarrowRequestError, reliableFetch, requestErrorFromResponse } from './request-reliability';
-import { normalizeRuntimeResult } from './runtime-contract';
+import { normalizeRuntimeResult, runtimeAuthorizationReceiptId } from './runtime-contract';
 
 const fetch = reliableFetch;
 
@@ -328,8 +328,13 @@ function createSdkClient(apiKey: string, baseUrl: string, sessionId?: string, ag
 }
 
 function runtimeGateReceiptId(runtime: MarrowAgentRuntimeResult | null): string | null {
-  if (!runtime) return null;
-  return runtime.gate_receipt?.id || runtime.gate_receipt_id || null;
+  return runtimeAuthorizationReceiptId(runtime);
+}
+
+function runtimeGateCanAuthorizeCommit(runtime: MarrowAgentRuntimeResult | null): boolean {
+  if (!runtimeGateReceiptId(runtime) || !runtime) return false;
+  return (runtime.authorization_state === 'hard_gate' && runtime.hard_gate_obtained === true)
+    || (runtime.authorization_state === 'advisory_only' && runtime.hard_gate_obtained === false);
 }
 
 function clampPeriodDays(value: string | number | undefined, defaultDays: number = 7): number {
@@ -522,8 +527,8 @@ export async function marrowCommit(
       throw new Error(`marrowCommit auto_gate failed before outcome closure: ${msg}`);
     }
     gateReceiptId = runtimeGateReceiptId(runtimeGate) || undefined;
-    if (!gateReceiptId && runtimeGate?.gate_receipt?.required) {
-      throw new Error('marrowCommit auto_gate required a gate receipt, but /v1/agent/runtime did not return one');
+    if (!gateReceiptId || !runtimeGateCanAuthorizeCommit(runtimeGate)) {
+      throw new Error('marrowCommit auto_gate required a gate receipt backed by canonical runtime authorization, but /v1/agent/runtime returned missing, conflicting, or unverified receipt state');
     }
   }
 
@@ -619,6 +624,7 @@ export async function marrowAuto(
     gate_receipt_id?: string;
     action_for_gate?: string;
     surfaces?: string[];
+    auto_gate?: boolean;
   },
   sessionId?: string,
   agentId?: string,
@@ -681,6 +687,7 @@ export async function marrowAuto(
         action: params.action_for_gate || params.action,
         type: params.type || 'general',
         surfaces: params.surfaces,
+        auto_gate: params.auto_gate,
       },
       sessionId,
       agentId,

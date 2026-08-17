@@ -74,7 +74,7 @@ import { MCP_ADAPTER_VERSION } from './hook-contract';
 import { resolvePingTimeoutMs, updatePingState } from './ping-state';
 import { controlPathStats, recordControlPathSample } from './control-path-state';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
-import { highRiskRuntimeCanClose } from './runtime-contract';
+import { highRiskRuntimeCanClose, runtimeAuthorizationReceiptId } from './runtime-contract';
 import { cachedStatusPayload, readStatusCache, writeStatusCache } from './status-cache';
 import { hostCapabilityInstructions, resolveHostCapability } from './host-capability';
 import type { ThinkResult, MarrowAgentRuntimeResult, MarrowMemory } from './types';
@@ -945,7 +945,7 @@ const TOOLS = [
           type: 'object',
           description: 'Optional required proof pack for gated work: summary, checks, outcome, blockers, commits_prs_shas, rollback_target, handoff_result_file, deployment_and_smoke.',
         },
-        gate_receipt_id: { type: 'string', description: 'Receipt id from marrow_agent_runtime.gate_receipt.id for risky work.' },
+        gate_receipt_id: { type: 'string', description: 'Canonical receipt id from marrow_agent_runtime.runtime_authorization.id for risky work.' },
         arbitration_receipt_id: { type: 'string', description: 'Required for arbitrated work: use marrow_arbitrate.arbitration.receipt_id from the same runtime response.' },
         owner_approval_receipt_id: { type: 'string', description: 'Single-use owner approval receipt issued by authenticated dashboard review for review_required arbitration.' },
         action: { type: 'string', description: 'Optional original action. If provided and gate_receipt_id is omitted, MCP can fetch a matching runtime gate receipt before commit.' },
@@ -2219,7 +2219,12 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           );
           storeRuntimeGuidance(runtimeGate);
         }
-        const proofCanClose = !highRisk || highRiskRuntimeCanClose(runtimeGate!, suppliedProof, args.gate_receipt_id);
+        const canonicalRuntimeReceiptId = runtimeAuthorizationReceiptId(runtimeGate);
+        const suppliedRuntimeReceiptId = typeof args.gate_receipt_id === 'string'
+          ? args.gate_receipt_id
+          : canonicalRuntimeReceiptId;
+        const proofCanClose = !highRisk
+          || highRiskRuntimeCanClose(runtimeGate!, suppliedProof, suppliedRuntimeReceiptId);
         const acceptedSuccess = proofCanClose ? outcomeSuccess : undefined;
 
         const delivery = () => marrowAuto(API_KEY, BASE_URL, {
@@ -2228,9 +2233,10 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           success: acceptedSuccess,
           type,
           proof: suppliedProof,
-          gate_receipt_id: typeof args.gate_receipt_id === 'string'
-            ? args.gate_receipt_id
-            : runtimeGate?.gate_receipt?.id,
+          gate_receipt_id: suppliedRuntimeReceiptId || undefined,
+          // Low-risk one-shot capture does not need a policy gate. Consequential
+          // work already obtained and validated canonical runtime authorization.
+          auto_gate: highRisk,
         }, SESSION_ID, FLEET_AGENT_ID, 8_000);
 
         let delivered: { decision_id: string; committed: boolean } | null = null;

@@ -168,6 +168,98 @@ test('required full and slim gates fail closed on absent, invalid, or conflictin
   })), null);
 });
 
+test('proof closure consumes only canonical normalized authorization for full and slim runtime', () => {
+  const conflicting = normalizeRuntimeResult(full({
+    gate_receipt_id: 'gate-top-level',
+    gate_receipt: {
+      id: 'gate-structured',
+      required: true,
+      decision: 'allow',
+      expires_at: '2030-01-01T00:00:00.000Z',
+    },
+    risk_gate: {
+      enforced: true,
+      enforcement_decision: 'allow',
+      gate_required: true,
+      gate_receipt_id: 'gate-risk',
+    },
+    proof_pack: {
+      required: true,
+      enforced: true,
+      fields: [],
+      missing: [],
+      complete: true,
+      commit_endpoint: '/v1/agent/commit',
+      rule: 'proof_required_before_complete',
+    },
+  }));
+  assert.ok(conflicting);
+  assert.equal(Object.hasOwn(conflicting, 'runtime_authorization'), false);
+  assert.equal(conflicting.authorization_state, 'unverified');
+  assert.equal(conflicting.hard_gate_obtained, false);
+  for (const rawReceipt of ['gate-top-level', 'gate-structured', 'gate-risk']) {
+    assert.equal(highRiskRuntimeCanClose(
+      conflicting,
+      { verification: 'passed' },
+      rawReceipt,
+      Date.parse('2029-01-01T00:00:00.000Z'),
+    ), false);
+  }
+
+  const validFull = normalizeRuntimeResult(full({
+    gate_receipt_id: 'gate-full-canonical',
+    gate_receipt: {
+      id: 'gate-full-canonical',
+      required: true,
+      decision: 'allow',
+      expires_at: '2030-01-01T00:00:00.000Z',
+    },
+    risk_gate: {
+      enforced: true,
+      enforcement_decision: 'allow',
+      gate_required: true,
+      gate_receipt_id: 'gate-full-canonical',
+    },
+    runtime_authorization: { id: 'gate-full-canonical' },
+    proof_pack: {
+      required: true,
+      enforced: true,
+      fields: [],
+      missing: [],
+      complete: true,
+      commit_endpoint: '/v1/agent/commit',
+      rule: 'proof_required_before_complete',
+    },
+  }));
+  assert.ok(validFull);
+  assert.equal(highRiskRuntimeCanClose(
+    validFull,
+    { verification: 'passed' },
+    'gate-full-canonical',
+    Date.parse('2029-01-01T00:00:00.000Z'),
+  ), true);
+  assert.equal(highRiskRuntimeCanClose(validFull, { verification: 'passed' }, undefined), false);
+  assert.equal(highRiskRuntimeCanClose(validFull, { verification: 'passed' }, 'gate-other'), false);
+
+  const validSlim = normalizeRuntimeResult(slim({
+    gate_receipt_id: 'gate-slim-canonical',
+    risk_gate_enforced: true,
+    risk_gate_entitled: true,
+    enforcement_decision: 'allow',
+  }));
+  assert.ok(validSlim);
+  assert.equal(highRiskRuntimeCanClose(
+    validSlim,
+    { verification: 'passed' },
+    'gate-slim-canonical',
+  ), true);
+  assert.equal(highRiskRuntimeCanClose(validSlim, { verification: 'passed' }, 'gate-other'), false);
+  assert.deepEqual(
+    highRiskRuntimeCanClose(structuredClone(validSlim), { verification: 'passed' }, 'gate-slim-canonical'),
+    highRiskRuntimeCanClose(validSlim, { verification: 'passed' }, 'gate-slim-canonical'),
+  );
+});
+
 test('optional slim guidance omits invalid authorization and rebuilds from valid top-level receipt truth', () => {
   const missing = normalizeRuntimeResult(slim({
     gate_required: false,

@@ -1,6 +1,7 @@
 import { marrowAgentRuntime, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
+import { runtimeAuthorizationReceiptId } from './runtime-contract';
 import { hookToolCommand, isOfficialMarrowMcpTool, isProtectedShellMutation, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   findHookSettingsPath,
@@ -262,6 +263,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       role: classified.role,
       surfaces: classified.surfaces,
     }, sessionId, agentId, signal);
+    const gateReceiptId = runtimeAuthorizationReceiptId(runtime);
     const decision = await marrowThink(resolved.apiKey, baseUrl, {
       action: classified.action,
       target: classified.target,
@@ -271,7 +273,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       source_meta: {
         harness: 'claude-code',
         correlation_id: correlation,
-        gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
+        gate_receipt_id: gateReceiptId,
       },
     }, sessionId, agentId, signal);
     const issued = await marrowEnforcement(resolved.apiKey, baseUrl, {
@@ -282,7 +284,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       correlation_id: correlation,
       harness: 'claude-code',
       decision_id: decision.decision_id,
-      gate_receipt_id: runtime.gate_receipt?.id || runtime.gate_receipt_id || null,
+      gate_receipt_id: gateReceiptId,
       proof_requirements: runtime.proof_pack?.fields || [],
       surfaces: classified.surfaces,
     }, sessionId, agentId, signal);
