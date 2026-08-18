@@ -443,6 +443,18 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId, signal)
         body.arbitration_receipt_id = params.arbitration_receipt_id;
     if (params.owner_approval_receipt_id)
         body.owner_approval_receipt_id = params.owner_approval_receipt_id;
+    const identifiedWorkflowId = typeof params.identified_workflow_id === 'string' && params.identified_workflow_id.trim()
+        ? params.identified_workflow_id.trim().slice(0, 128)
+        : typeof params.identified_workflow?.id === 'string' && params.identified_workflow.id.trim()
+            ? params.identified_workflow.id.trim().slice(0, 128)
+            : typeof runtimeGate?.identified_workflow?.id === 'string' && runtimeGate.identified_workflow.id.trim()
+                ? runtimeGate.identified_workflow.id.trim().slice(0, 128)
+                : undefined;
+    if (identifiedWorkflowId)
+        body.identified_workflow_id = identifiedWorkflowId;
+    if (params.reused_identified_workflow === true || identifiedWorkflowId) {
+        body.reused_identified_workflow = true;
+    }
     const modelUsage = params.model_usage || params.modelUsage;
     if (modelUsage)
         body.model_usage = normalizeModelUsage(modelUsage);

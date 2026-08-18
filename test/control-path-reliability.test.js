@@ -866,6 +866,78 @@ test('marrowCommit rejects an HTTP 200 response missing committed with typed inv
   }
 });
 
+test('marrowCommit sends identified_workflow_id from auto_gate runtime', async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    bodies.push({
+      target,
+      body: init.body ? JSON.parse(String(init.body)) : null,
+    });
+    if (target.endsWith('/v1/agent/runtime')) {
+      return Response.json({
+        data: {
+          ok: true,
+          action: 'deploy safely',
+          agent_id: 'agent-one',
+          session_id: 'session-one',
+          status: {},
+          decision_brief: {},
+          risk_gate: {
+            allow: true,
+            decision: 'allow',
+            risk_level: 'medium',
+            reasons: [],
+            gate_receipt_id: 'gate-reuse',
+            enforced: false,
+          },
+          gate_receipt: { id: 'gate-reuse', required: false, decision: 'allow' },
+          relevant_lessons: [],
+          deployment_playbooks: [],
+          template_suggestion: {},
+          proof_pack: {
+            required: false,
+            enforced: false,
+            fields: [],
+            missing: [],
+            complete: true,
+            commit_endpoint: '/v1/agent/commit',
+            rule: 'commit',
+          },
+          before_you_act: null,
+          exact_next_action: 'Reuse the identified workflow.',
+          auto_outcome_closure: null,
+          identified_workflow: {
+            contract: 'marrow.identified-workflow.v1',
+            matched: true,
+            skip_rediscovery: true,
+            id: 'wf-deploy',
+            name: 'Production deploy',
+          },
+        },
+      });
+    }
+    return Response.json({ data: { committed: true } });
+  };
+  try {
+    await marrowCommit('fixture-key', 'https://api.example.test', {
+      decision_id: 'decision-reuse',
+      success: true,
+      outcome: 'Deployed with identified workflow',
+      action: 'deploy safely',
+      type: 'deploy',
+    });
+    const commit = bodies.find((row) => row.target.endsWith('/v1/agent/commit'));
+    assert.ok(commit);
+    assert.equal(commit.body.identified_workflow_id, 'wf-deploy');
+    assert.equal(commit.body.reused_identified_workflow, true);
+    assert.equal(commit.body.gate_receipt_id, 'gate-reuse');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('marrow_auto never closes or emits outcome_committed when HTTP 200 says committed false', () => {
   const home = mkdtempSync(join(tmpdir(), 'marrow-auto-not-closed-'));
   try {
