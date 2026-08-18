@@ -104,7 +104,15 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.62
+## What's New in v3.9.63
+
+v3.9.63 closes identified-workflow reuse on the MCP control path:
+
+- `marrow_commit` sends `identified_workflow_id` from auto-gate runtime when Marrow already identified the path;
+- hook context tells the agent not to rediscover a matched workflow and only mentions token savings when evidence exists;
+- the live API still attributes reuse from the gate receipt if a client omits the id.
+
+## Previous: v3.9.62
 
 v3.9.62 integrates four model-neutral reliability and capability contracts:
 
