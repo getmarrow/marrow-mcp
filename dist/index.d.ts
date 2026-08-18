@@ -58,6 +58,11 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     type?: string;
     surfaces?: string[];
     auto_gate?: boolean;
+    identified_workflow_id?: string;
+    identified_workflow?: {
+        id?: string | null;
+    } | null;
+    reused_identified_workflow?: boolean;
     model_usage?: MarrowModelUsageInput;
     modelUsage?: MarrowModelUsageInput;
 }, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<CommitResult & {

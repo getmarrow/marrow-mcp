@@ -409,6 +409,18 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
   if (runtime.exact_next_action) {
     lines.push(`- Next: ${runtime.exact_next_action}`);
   }
+  const identified = asRecord(runtime.identified_workflow);
+  if (identified?.skip_rediscovery === true || identified?.matched === true) {
+    lines.push(`- Identified workflow: ${asString(identified.name) || asString(identified.id) || 'reuse the known path'}`);
+    if (asString(identified.reuse_instruction)) {
+      lines.push(`- Do not rediscover: ${asString(identified.reuse_instruction)}`);
+    }
+    const savings = asRecord(identified.token_savings);
+    const savedTokens = Number(savings?.expected_tokens_saved);
+    if (Number.isFinite(savedTokens) && savedTokens > 0) {
+      lines.push(`- Expected token savings if reused: ${Math.floor(savedTokens)}`);
+    }
+  }
   if (runtime.risk_gate) {
     lines.push(`- Risk gate: ${runtime.risk_gate.decision} (${runtime.risk_gate.risk_level})`);
     if (runtime.risk_gate.allow === false) {

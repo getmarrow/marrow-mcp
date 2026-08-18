@@ -495,6 +495,9 @@ export async function marrowCommit(
     type?: string;
     surfaces?: string[];
     auto_gate?: boolean;
+    identified_workflow_id?: string;
+    identified_workflow?: { id?: string | null } | null;
+    reused_identified_workflow?: boolean;
     model_usage?: MarrowModelUsageInput;
     modelUsage?: MarrowModelUsageInput;
   },
@@ -542,6 +545,17 @@ export async function marrowCommit(
   if (gateReceiptId) body.gate_receipt_id = gateReceiptId;
   if (params.arbitration_receipt_id) body.arbitration_receipt_id = params.arbitration_receipt_id;
   if (params.owner_approval_receipt_id) body.owner_approval_receipt_id = params.owner_approval_receipt_id;
+  const identifiedWorkflowId = typeof params.identified_workflow_id === 'string' && params.identified_workflow_id.trim()
+    ? params.identified_workflow_id.trim().slice(0, 128)
+    : typeof params.identified_workflow?.id === 'string' && params.identified_workflow.id.trim()
+    ? params.identified_workflow.id.trim().slice(0, 128)
+    : typeof runtimeGate?.identified_workflow?.id === 'string' && runtimeGate.identified_workflow.id.trim()
+    ? runtimeGate.identified_workflow.id.trim().slice(0, 128)
+    : undefined;
+  if (identifiedWorkflowId) body.identified_workflow_id = identifiedWorkflowId;
+  if (params.reused_identified_workflow === true || identifiedWorkflowId) {
+    body.reused_identified_workflow = true;
+  }
   const modelUsage = params.model_usage || params.modelUsage;
   if (modelUsage) body.model_usage = normalizeModelUsage(modelUsage);
 

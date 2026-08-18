@@ -19,6 +19,7 @@ export interface CommitContribution {
     pattern_reused: boolean;
     linked_to_prior_decision: boolean;
     warning_avoided: boolean;
+    identified_workflow_reused?: boolean;
     has_signal: boolean;
 }
 export type MarrowMemory = SdkMarrowMemory;
@@ -446,6 +447,22 @@ export interface MarrowAgentRuntimeResult {
     exact_next_action: string | null;
     auto_outcome_closure: Record<string, unknown> | null;
     client_update?: Record<string, unknown> | null;
+    identified_workflow?: {
+        contract?: string;
+        matched?: boolean;
+        skip_rediscovery?: boolean;
+        id?: string | null;
+        name?: string | null;
+        reuse_instruction?: string;
+        exact_next_action?: string;
+        token_savings?: {
+            expected_tokens_saved?: number;
+            method?: string;
+            basis?: string;
+            confidence?: string;
+        };
+        [key: string]: unknown;
+    } | null;
 }
 export interface MarrowAgentStatusResult {
     period: {
