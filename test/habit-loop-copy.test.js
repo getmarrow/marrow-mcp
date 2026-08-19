@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { extractModelUsageFromUnknown, formatHabitLoopCopy } = require('../dist/habit-loop-copy.js');
+const { buildCombinedContextBlock } = require('../dist/hook-context.js');
 
 test('pretty-prints nested habit-loop copy for MCP tool payloads', () => {
   const copy = formatHabitLoopCopy({
@@ -28,6 +29,29 @@ test('does not invent savings when evidence is still empty', () => {
   });
   assert.match(copy.savings, /Empty savings are honest/);
   assert.doesNotMatch(copy.text, /[1-9]\d* tokens saved/);
+});
+
+test('context block prints first-hour copy without inventing savings', () => {
+  const text = buildCombinedContextBlock({
+    warnings: [],
+    loopWarnings: [],
+    similarCount: 0,
+    patternsCount: 0,
+    templatesAvailable: 0,
+    primaryInsight: null,
+    collectiveInsight: null,
+    hasSignal: false,
+  }, null, null, {
+    habit_loop: {
+      interrupt: true,
+      headline: 'Marrow is on. The first win is one real action plus a commit.',
+      exact_next_action: 'Tell the owner Marrow is on. Empty savings are healthy. Run the next deploy, merge, or publish through Marrow, then POST /v1/agent/commit.',
+      session_savings: { evidence_backed: false, message: 'No reuse yet. Empty savings are honest.' },
+    },
+  });
+  assert.match(text, /first win is one real action/);
+  assert.match(text, /Empty savings are healthy/);
+  assert.doesNotMatch(text, /[1-9]\d* tokens saved/);
 });
 
 test('extracts observed usage and ignores empty objects', () => {

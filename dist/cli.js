@@ -1621,7 +1621,7 @@ if (process.argv[2] !== 'keys') {
                 inputSchema: {
                     type: 'object',
                     properties: {
-                        autoCommitOpen: { type: 'boolean', description: 'Whether to auto-commit any open decision (default: false)' },
+                        autoCommitOpen: { type: 'boolean', description: 'Whether to auto-commit any open decision (default: true)' },
                     },
                     required: [],
                 },
@@ -2522,7 +2522,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_session_end') {
-                        const result = await (0, index_1.marrowSessionEnd)(API_KEY, BASE_URL, Boolean(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);
+                        const result = await (0, index_1.marrowSessionEnd)(API_KEY, BASE_URL, (0, hook_session_1.sessionEndAutoCommitOpen)(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);
                         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
                         return;
                     }
