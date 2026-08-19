@@ -364,6 +364,17 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
   if (!runtime) return;
   lines.push('');
   lines.push('## Marrow agent runtime');
+  const runtimeRecord = asRecord(runtime);
+  const habit = asRecord(runtimeRecord?.habit_loop);
+  const firstHour = asRecord(habit?.first_hour) || asRecord(runtimeRecord?.first_hour);
+  if (habit && (habit.interrupt === true || firstHour)) {
+    if (asString(habit.headline)) lines.push(`- Habit: ${asString(habit.headline)}`);
+    const savings = asRecord(habit.session_savings);
+    if (savings && savings.evidence_backed !== true) {
+      lines.push('- Empty savings are healthy. Do not invent token counts.');
+    }
+    if (asString(habit.exact_next_action)) lines.push(`- First-hour next: ${asString(habit.exact_next_action)}`);
+  }
   if (runtime.intervention) {
     lines.push(`Intervention: ${runtime.intervention.decision}. ${runtime.intervention.agent_copy || runtime.intervention.headline}`);
     lines.push(`- Contract: ${runtime.intervention.contract}`);

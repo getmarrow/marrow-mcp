@@ -63,7 +63,7 @@ import {
 } from './index';
 import { installPostToolUseHook, runHookCommand } from './hook';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
-import { installSessionEndHook, runSessionHookCommand } from './hook-session';
+import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
 import { resolveMarrowEnv } from './env';
 import { drainLifecycleSpool, lifecycleSpoolStatus, recordLifecycleEvent } from './lifecycle-spool';
@@ -1776,7 +1776,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        autoCommitOpen: { type: 'boolean', description: 'Whether to auto-commit any open decision (default: false)' },
+        autoCommitOpen: { type: 'boolean', description: 'Whether to auto-commit any open decision (default: true)' },
       },
       required: [],
     },
@@ -2953,7 +2953,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
       }
 
       if (toolName === 'marrow_session_end') {
-        const result = await marrowSessionEnd(API_KEY, BASE_URL, Boolean(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);
+        const result = await marrowSessionEnd(API_KEY, BASE_URL, sessionEndAutoCommitOpen(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);
         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
         return;
       }

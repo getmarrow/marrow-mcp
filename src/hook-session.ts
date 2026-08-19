@@ -1,6 +1,7 @@
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
-import { marrowSessionEnd, validateBaseUrl } from './index';
+import { marrowModelUsage, marrowSessionEnd, validateBaseUrl } from './index';
+import { extractModelUsageFromUnknown } from './habit-loop-copy';
 import { readFileSync } from 'node:fs';
 import {
   findHookSettingsPath,
@@ -56,7 +57,7 @@ async function boundedSessionEnd(
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      marrowSessionEnd(apiKey, baseUrl, false, sessionId, agentId, controller.signal),
+      marrowSessionEnd(apiKey, baseUrl, true, sessionId, agentId, controller.signal),
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           controller.abort();
@@ -82,6 +83,12 @@ export function installSessionEndHook(startDir = process.cwd()): { settingsPath:
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, JSON.stringify(settings, null, 2) + '\n');
   return { settingsPath: target, installed: reconciled.changed };
+}
+
+export function sessionEndAutoCommitOpen(value?: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (value === false || value === 0 || value === '0' || value === 'false') return false;
+  return Boolean(value);
 }
 
 export async function runSessionHookCommand(input?: unknown): Promise<void> {
@@ -114,5 +121,17 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     await boundedSessionEnd(resolved.apiKey, baseUrl, sessionId, agentId);
   } catch {
     // The pending lifecycle receipt remains durable for later reconciliation.
+  }
+
+  if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+    const usage = extractModelUsageFromUnknown(input);
+    if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
+      await marrowModelUsage(resolved.apiKey, baseUrl, {
+        ...usage,
+        source: 'mcp_session_end',
+        marrow_intervention: 'passive_model_usage_capture',
+        action_type: 'session',
+      }, sessionId, agentId).catch(() => undefined);
+    }
   }
 }

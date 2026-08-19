@@ -2,10 +2,12 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SESSION_HOOK_COMMAND = void 0;
 exports.installSessionEndHook = installSessionEndHook;
+exports.sessionEndAutoCommitOpen = sessionEndAutoCommitOpen;
 exports.runSessionHookCommand = runSessionHookCommand;
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const index_1 = require("./index");
+const habit_loop_copy_1 = require("./habit-loop-copy");
 const node_fs_1 = require("node:fs");
 const hook_contract_1 = require("./hook-contract");
 exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
@@ -41,7 +43,7 @@ async function boundedSessionEnd(apiKey, baseUrl, sessionId, agentId) {
     let timeout;
     try {
         await Promise.race([
-            (0, index_1.marrowSessionEnd)(apiKey, baseUrl, false, sessionId, agentId, controller.signal),
+            (0, index_1.marrowSessionEnd)(apiKey, baseUrl, true, sessionId, agentId, controller.signal),
             new Promise((_resolve, reject) => {
                 timeout = setTimeout(() => {
                     controller.abort();
@@ -68,6 +70,13 @@ function installSessionEndHook(startDir = process.cwd()) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, JSON.stringify(settings, null, 2) + '\n');
     return { settingsPath: target, installed: reconciled.changed };
+}
+function sessionEndAutoCommitOpen(value) {
+    if (value === undefined || value === null)
+        return true;
+    if (value === false || value === 0 || value === '0' || value === 'false')
+        return false;
+    return Boolean(value);
 }
 async function runSessionHookCommand(input) {
     if (process.env.MARROW_AUTO_HOOK === 'false')
@@ -102,6 +111,17 @@ async function runSessionHookCommand(input) {
     }
     catch {
         // The pending lifecycle receipt remains durable for later reconciliation.
+    }
+    if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+        const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(input);
+        if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
+            await (0, index_1.marrowModelUsage)(resolved.apiKey, baseUrl, {
+                ...usage,
+                source: 'mcp_session_end',
+                marrow_intervention: 'passive_model_usage_capture',
+                action_type: 'session',
+            }, sessionId, agentId).catch(() => undefined);
+        }
     }
 }
 //# sourceMappingURL=hook-session.js.map
