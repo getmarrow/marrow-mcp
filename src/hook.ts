@@ -1,4 +1,5 @@
-import { validateBaseUrl } from './index';
+import { marrowModelUsage, validateBaseUrl } from './index';
+import { extractModelUsageFromUnknown } from './habit-loop-copy';
 import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
@@ -188,6 +189,21 @@ export async function runHookCommand(): Promise<void> {
         outcome_state: 'pending',
       },
     });
+
+    if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+      const usage = extractModelUsageFromUnknown(event.tool_response)
+        || extractModelUsageFromUnknown(event.tool_result)
+        || extractModelUsageFromUnknown(event);
+      if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
+        await marrowModelUsage(apiKey, baseUrl, {
+          ...usage,
+          source: 'mcp_post_tool_use',
+          marrow_intervention: 'passive_model_usage_capture',
+          success,
+          action_type: classified.type || 'tool',
+        }, sessionId, agentId).catch(() => undefined);
+      }
+    }
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

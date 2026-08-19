@@ -104,7 +104,15 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.63
+## What's New in v3.9.64
+
+v3.9.64 prints the live habit loop and records observed model usage without inventing savings:
+
+- `marrow_status` and other control tools include `habit_loop_copy` from `marrow.habit-loop.v1`;
+- PostToolUse hooks send compact token counts only when the tool result actually includes usage;
+- empty savings stay honest until those observed counts land.
+
+## Previous: v3.9.63
 
 v3.9.63 closes identified-workflow reuse on the MCP control path:
 

@@ -6,6 +6,7 @@ exports.deriveAction = deriveAction;
 exports.installPostToolUseHook = installPostToolUseHook;
 exports.runHookCommand = runHookCommand;
 const index_1 = require("./index");
+const habit_loop_copy_1 = require("./habit-loop-copy");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_pre_action_1 = require("./hook-pre-action");
@@ -148,6 +149,20 @@ async function runHookCommand() {
                 outcome_state: 'pending',
             },
         });
+        if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+            const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_response)
+                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_result)
+                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event);
+            if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
+                await (0, index_1.marrowModelUsage)(apiKey, baseUrl, {
+                    ...usage,
+                    source: 'mcp_post_tool_use',
+                    marrow_intervention: 'passive_model_usage_capture',
+                    success,
+                    action_type: classified.type || 'tool',
+                }, sessionId, agentId).catch(() => undefined);
+            }
+        }
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
