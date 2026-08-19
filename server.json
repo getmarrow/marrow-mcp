@@ -6,12 +6,12 @@
     "url": "https://github.com/getmarrow/marrow-mcp",
     "source": "github"
   },
-  "version": "3.9.63",
+  "version": "3.9.64",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@getmarrow/mcp",
-      "version": "3.9.63",
+      "version": "3.9.64",
       "transport": {
         "type": "stdio"
       },

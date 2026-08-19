@@ -76,6 +76,7 @@ import { controlPathStats, recordControlPathSample } from './control-path-state'
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { highRiskRuntimeCanClose, runtimeAuthorizationReceiptId } from './runtime-contract';
 import { cachedStatusPayload, readStatusCache, writeStatusCache } from './status-cache';
+import { formatHabitLoopCopy } from './habit-loop-copy';
 import { hostCapabilityInstructions, resolveHostCapability } from './host-capability';
 import type { ThinkResult, MarrowAgentRuntimeResult, MarrowMemory } from './types';
 
@@ -552,8 +553,10 @@ function clientOperationalPayload(toolName: string, value: unknown): Record<stri
     ? value as Record<string, unknown>
     : { data: value };
   const spool = lifecycleSpoolStatus({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
+  const habitLoopCopy = formatHabitLoopCopy(payload) || formatHabitLoopCopy(payload.data);
   return {
     ...payload,
+    ...(habitLoopCopy ? { habit_loop_copy: habitLoopCopy } : {}),
     host_capability: payload.host_capability || mcpHostCapability(),
     client_update: payload.client_update || localClientUpdate(),
     control_path: controlPathStats(toolName),

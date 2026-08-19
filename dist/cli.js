@@ -26,6 +26,7 @@ const control_path_state_1 = require("./control-path-state");
 const redact_1 = require("./redact");
 const runtime_contract_1 = require("./runtime-contract");
 const status_cache_1 = require("./status-cache");
+const habit_loop_copy_1 = require("./habit-loop-copy");
 const host_capability_1 = require("./host-capability");
 // Parse CLI args
 function parseArgs() {
@@ -496,8 +497,10 @@ if (process.argv[2] !== 'keys') {
                 ? value
                 : { data: value };
             const spool = (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
+            const habitLoopCopy = (0, habit_loop_copy_1.formatHabitLoopCopy)(payload) || (0, habit_loop_copy_1.formatHabitLoopCopy)(payload.data);
             return {
                 ...payload,
+                ...(habitLoopCopy ? { habit_loop_copy: habitLoopCopy } : {}),
                 host_capability: payload.host_capability || mcpHostCapability(),
                 client_update: payload.client_update || (0, request_reliability_1.localClientUpdate)(),
                 control_path: (0, control_path_state_1.controlPathStats)(toolName),
