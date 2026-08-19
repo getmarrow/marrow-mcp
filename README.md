@@ -104,7 +104,15 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.64
+## What's New in v3.9.65
+
+v3.9.65 makes the first hour useful and closes the session honestly:
+
+- prompt context prints first-hour copy: the gate is live, empty savings are healthy, and the next deploy, merge, or publish goes through Marrow;
+- Stop hooks and `marrow_session_end` auto-commit open work;
+- session usage is recorded only when the host emits counts.
+
+## Previous: v3.9.64
 
 v3.9.64 prints the live habit loop and records observed model usage without inventing savings:
 
