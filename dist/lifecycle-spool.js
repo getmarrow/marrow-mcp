@@ -2,6 +2,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LIFECYCLE_EVENT_TYPES = void 0;
 exports.lifecycleSpoolStatus = lifecycleSpoolStatus;
+exports.quarantineLegacyNamespaces = quarantineLegacyNamespaces;
+exports.nudgeLifecycleSpool = nudgeLifecycleSpool;
 exports.drainLifecycleSpool = drainLifecycleSpool;
 exports.recordLifecycleEvent = recordLifecycleEvent;
 const node_crypto_1 = require("node:crypto");
@@ -44,6 +46,8 @@ const MAX_ATTEMPTS = 3;
 const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
 const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
 const DELIVERY_DRAIN_BUDGET_MS = 8_000;
+const NUDGE_DRAIN_BUDGET_MS = 2_500;
+const NUDGE_MAX_EVENTS = 4;
 const LOCK_WAIT_MS = 20;
 const LOCK_ATTEMPTS = 250;
 const LOCK_STALE_MS = 30_000;
@@ -571,12 +575,85 @@ async function attemptQueuedDelivery(input) {
     });
     return status;
 }
+function quarantineLegacyNamespaces(input) {
+    const location = spoolPath(input.apiKey, input.agentId);
+    if (!location.ownsParent)
+        return { moved: 0, destination: null };
+    const parent = (0, node_path_1.dirname)(location.path);
+    if (!(0, node_fs_1.existsSync)(parent))
+        return { moved: 0, destination: null };
+    const currentName = (0, node_path_1.basename)(location.path);
+    const names = [];
+    const directory = (0, node_fs_1.opendirSync)(parent);
+    try {
+        let entry = directory.readSync();
+        while (entry) {
+            if (names.length >= MAX_NAMESPACE_FILES)
+                break;
+            if (entry.name !== currentName && /^mcp-[a-f0-9]{20}\.json$/.test(entry.name)) {
+                names.push(entry.name);
+            }
+            entry = directory.readSync();
+        }
+    }
+    finally {
+        directory.closeSync();
+    }
+    if (names.length === 0)
+        return { moved: 0, destination: null };
+    const quarantineDir = (0, node_path_1.join)(parent, 'quarantine');
+    ensureParent((0, node_path_1.join)(quarantineDir, 'mcp-placeholder.json'), true);
+    let moved = 0;
+    for (const name of names) {
+        const source = (0, node_path_1.join)(parent, name);
+        const destination = (0, node_path_1.join)(quarantineDir, name);
+        try {
+            assertSafeFile(source, 'legacy spool');
+            if ((0, node_fs_1.existsSync)(destination))
+                continue;
+            withLock(source, true, () => {
+                assertSafeFile(source, 'legacy spool');
+                (0, node_fs_1.renameSync)(source, destination);
+                (0, node_fs_1.chmodSync)(destination, 0o600);
+            });
+            moved += 1;
+        }
+        catch {
+            // Leave unsafe or contested files in place; never replay them under the current key.
+        }
+    }
+    return { moved, destination: moved > 0 ? quarantineDir : null };
+}
+let nudgeInFlight = false;
+function nudgeLifecycleSpool(input) {
+    if (nudgeInFlight)
+        return Promise.resolve();
+    nudgeInFlight = true;
+    return drainLifecycleSpool({
+        ...input,
+        maxEvents: NUDGE_MAX_EVENTS,
+        budgetMs: NUDGE_DRAIN_BUDGET_MS,
+        requestTimeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+        retryDeadLetters: false,
+    })
+        .then(() => undefined)
+        .catch(() => undefined)
+        .finally(() => {
+        nudgeInFlight = false;
+    });
+}
 async function drainLifecycleSpool(input) {
     const location = spoolPath(input.apiKey, input.agentId);
-    const deliveryDeadline = Date.now() + DELIVERY_DRAIN_BUDGET_MS;
-    for (let delivered = 0; delivered < 10; delivered += 1) {
+    const maxEvents = Number.isInteger(input.maxEvents) ? Math.max(1, Math.min(10, Number(input.maxEvents))) : 10;
+    const budgetMs = Number.isInteger(input.budgetMs) ? Math.max(1, Number(input.budgetMs)) : DELIVERY_DRAIN_BUDGET_MS;
+    const requestTimeoutMs = Number.isInteger(input.requestTimeoutMs)
+        ? Math.max(1, Number(input.requestTimeoutMs))
+        : DRAIN_REQUEST_TIMEOUT_MS;
+    const retryDeadLetters = input.retryDeadLetters !== false;
+    const deliveryDeadline = Date.now() + budgetMs;
+    for (let delivered = 0; delivered < maxEvents; delivered += 1) {
         let queued = snapshot(location.path, location.ownsParent).events.find((row) => row.delivery_state === 'queued');
-        if (!queued) {
+        if (!queued && retryDeadLetters) {
             queued = mutate(location.path, location.ownsParent, (events) => {
                 const failed = events.find((row) => row.delivery_state === 'dead_letter');
                 if (!failed)
@@ -589,7 +666,7 @@ async function drainLifecycleSpool(input) {
         }
         if (!queued)
             break;
-        const remainingMs = Math.min(DRAIN_REQUEST_TIMEOUT_MS, deliveryDeadline - Date.now());
+        const remainingMs = Math.min(requestTimeoutMs, deliveryDeadline - Date.now());
         if (remainingMs <= 0)
             break;
         const status = await attemptQueuedDelivery({

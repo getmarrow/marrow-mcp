@@ -14,7 +14,7 @@ exports.stableSessionWorkflowId = stableSessionWorkflowId;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
-exports.MCP_ADAPTER_VERSION = '3.9.68';
+exports.MCP_ADAPTER_VERSION = '3.9.69';
 exports.NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*';
 exports.MCP_PACKAGE_SPEC = `@getmarrow/mcp@${exports.MCP_ADAPTER_VERSION}`;
 exports.CONTEXT_HOOK_COMMAND = `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp context-hook`;

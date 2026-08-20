@@ -104,7 +104,15 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.68
+## What's New in v3.9.69
+
+v3.9.69 keeps the always-on spool from growing into a nag queue:
+
+- status, runtime, and ask quarantine leftover credential-namespace files instead of replaying them;
+- pending current-namespace events are nudged in the background so 8 queued receipts are not a healthy idle state;
+- explicit `drain-spool` still retries failed current-namespace events.
+
+## Previous: v3.9.68
 
 v3.9.68 stops Ask from fighting a real lesson:
 

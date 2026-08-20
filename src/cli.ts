@@ -66,7 +66,13 @@ import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookComma
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
 import { resolveMarrowEnv } from './env';
-import { drainLifecycleSpool, lifecycleSpoolStatus, recordLifecycleEvent } from './lifecycle-spool';
+import {
+  drainLifecycleSpool,
+  lifecycleSpoolStatus,
+  nudgeLifecycleSpool,
+  quarantineLegacyNamespaces,
+  recordLifecycleEvent,
+} from './lifecycle-spool';
 import { lifecycleSpoolCommandOutcome } from './spool-command';
 import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
 import { localClientUpdate, MarrowRequestError, structuredRequestFailure } from './request-reliability';
@@ -117,6 +123,17 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
   return result;
 }
 
+function reportLifecycleSpool(input: { apiKey: string; baseUrl?: string; agentId?: string }) {
+  try {
+    quarantineLegacyNamespaces({ apiKey: input.apiKey, agentId: input.agentId });
+  } catch { /* owner-only quarantine is best effort */ }
+  const spool = lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
+  if (input.baseUrl && spool.pending > 0) {
+    void nudgeLifecycleSpool({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.agentId });
+  }
+  return spool;
+}
+
 async function runPingCommand(): Promise<void> {
   if (cliArgs.apiKey) {
     process.stderr.write('Error: ping requires MARROW_API_KEY from trusted environment or owner configuration; --key is not accepted.\n');
@@ -146,7 +163,7 @@ async function runPingCommand(): Promise<void> {
       p99_ms: history.p99_ms,
       sample_count: history.sample_count,
       last_success_at: history.last_success_at,
-      lifecycle_spool: lifecycleSpoolStatus({ apiKey: resolved.apiKey, agentId: resolved.agentId }),
+      lifecycle_spool: reportLifecycleSpool({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId }),
     }, null, 2) + '\n');
   } catch (error) {
     const history = updatePingState({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId, success: false });
@@ -158,7 +175,7 @@ async function runPingCommand(): Promise<void> {
       p99_ms: history.p99_ms,
       sample_count: history.sample_count,
       last_success_at: history.last_success_at,
-      lifecycle_spool: lifecycleSpoolStatus({ apiKey: resolved.apiKey, agentId: resolved.agentId }),
+      lifecycle_spool: reportLifecycleSpool({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId }),
     }, null, 2) + '\n');
     process.exitCode = 1;
   } finally {
@@ -180,6 +197,9 @@ async function runSpoolCommand(drain: boolean): Promise<void> {
     return;
   }
   const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
+  try {
+    quarantineLegacyNamespaces({ apiKey, agentId: resolved.agentId || undefined });
+  } catch { /* owner-only quarantine is best effort */ }
   const status = drain
     ? await drainLifecycleSpool({ apiKey, baseUrl, agentId: resolved.agentId || undefined })
     : lifecycleSpoolStatus({ apiKey, agentId: resolved.agentId || undefined });
@@ -504,7 +524,7 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
   const proofValidation = failure.code === 'proof_required';
   const infrastructureFailure = !proofValidation && !['authentication_required', 'permission_denied'].includes(failure.code);
   const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_handoff_status', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
-  const spool = lifecycleSpoolStatus({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
+  const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
   result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
   result.control_path = controlPathStats(toolName || 'marrow_control');
   result.lifecycle_spool = {
@@ -556,7 +576,7 @@ function clientOperationalPayload(toolName: string, value: unknown): Record<stri
   const payload = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : { data: value };
-  const spool = lifecycleSpoolStatus({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
+  const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
   const habitLoopCopy = formatHabitLoopCopy(payload) || formatHabitLoopCopy(payload.data);
   return {
     ...payload,

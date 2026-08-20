@@ -20,6 +20,8 @@ const test = require('node:test');
 const {
   drainLifecycleSpool,
   lifecycleSpoolStatus,
+  nudgeLifecycleSpool,
+  quarantineLegacyNamespaces,
   recordLifecycleEvent,
 } = require('../dist/lifecycle-spool.js');
 const { lifecycleSpoolCommandOutcome } = require('../dist/spool-command.js');
@@ -116,11 +118,11 @@ test('native MCP hook receipts carry bounded capability and actual configuration
   mkdirSync(settingsDir, { recursive: true });
   writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({
     hooks: {
-      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.68 context-hook' }] }],
-      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.68 pre-action-hook' }] }],
-      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.68 hook' }] }],
-      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.68 hook' }] }],
-      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.68 session-hook' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 context-hook' }] }],
+      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 pre-action-hook' }] }],
+      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 hook' }] }],
+      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 hook' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 session-hook' }] }],
     },
   }));
   const originalFetch = globalThis.fetch;
@@ -133,7 +135,7 @@ test('native MCP hook receipts carry bounded capability and actual configuration
       }));
       const [event] = JSON.parse(readFileSync(path, 'utf8'));
       assert.equal(event.capability_level, 'native_hooks');
-      assert.equal(event.adapter_version, '3.9.68');
+      assert.equal(event.adapter_version, '3.9.69');
       assert.match(event.config_fingerprint, /^[a-f0-9]{64}$/);
       assert.deepEqual(event.expected_hooks, ['prompt', 'pre_action', 'action_result', 'session_end']);
       assert.equal(event.observed_hook, 'action_result');
@@ -454,6 +456,97 @@ test('spool status exposes older credential namespaces without replaying them un
     assert.equal(drained.other_namespaces.blocks_current_namespace, false);
     assert.match(drained.other_namespaces.safe_recovery_action, /exact original agent identity/);
     assert.match(drained.other_namespaces.safe_quarantine_action, /do not copy, merge, replay, edit, or delete/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('quarantine moves leftover namespace files without replaying them under the current key', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-quarantine-'));
+  const home = join(directory, 'home');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  const originalFetch = globalThis.fetch;
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  try {
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'legacy-quarantine-event', agent_id: 'agent-one' }),
+      apiKey: 'legacy-key-for-quarantine-test',
+      deferDelivery: true,
+    });
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'current-quarantine-event', agent_id: 'agent-one' }),
+      apiKey: 'current-key-for-quarantine-test',
+      deferDelivery: true,
+    });
+    const before = lifecycleSpoolStatus({ apiKey: 'current-key-for-quarantine-test', agentId: 'agent-one' });
+    assert.equal(before.pending, 1);
+    assert.equal(before.other_namespaces.count, 1);
+
+    let delivered = 0;
+    globalThis.fetch = async () => {
+      delivered += 1;
+      return new Response('{}', { status: 200 });
+    };
+    const quarantined = quarantineLegacyNamespaces({
+      apiKey: 'current-key-for-quarantine-test',
+      agentId: 'agent-one',
+    });
+    assert.equal(quarantined.moved, 1);
+    assert.match(String(quarantined.destination), /quarantine/);
+    const after = lifecycleSpoolStatus({ apiKey: 'current-key-for-quarantine-test', agentId: 'agent-one' });
+    assert.equal(after.pending, 1);
+    assert.equal(after.other_namespaces.count, 0);
+    assert.equal(after.other_namespaces.state, 'clear');
+    assert.equal(existsSync(join(home, '.marrow', 'spool', 'quarantine')), true);
+    assert.equal(delivered, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('nudge drains current pending events without waiting on the caller', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-nudge-'));
+  const home = join(directory, 'home');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  const originalFetch = globalThis.fetch;
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  try {
+    for (const eventId of ['nudge-one', 'nudge-two', 'nudge-three']) {
+      await recordLifecycleEvent({
+        ...lifecycleInput({ event_id: eventId, agent_id: 'agent-one' }),
+        apiKey: 'current-key-for-nudge-test',
+        deferDelivery: true,
+      });
+    }
+    assert.equal(lifecycleSpoolStatus({ apiKey: 'current-key-for-nudge-test', agentId: 'agent-one' }).pending, 3);
+    let delivered = 0;
+    globalThis.fetch = async () => {
+      delivered += 1;
+      return new Response('{}', { status: 200 });
+    };
+    await nudgeLifecycleSpool({
+      apiKey: 'current-key-for-nudge-test',
+      baseUrl: 'https://api.example.com',
+      agentId: 'agent-one',
+    });
+    assert.equal(delivered, 3);
+    assert.equal(lifecycleSpoolStatus({ apiKey: 'current-key-for-nudge-test', agentId: 'agent-one' }).pending, 0);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalHome === undefined) delete process.env.HOME;
