@@ -607,9 +607,10 @@ async function withControlDeadline<T>(
   const toolName = options.toolName || 'marrow_control';
   const configuredTimeoutMs = Number(process.env.MARROW_REQUEST_TIMEOUT_MS);
   const runtimeBudget = toolName === 'marrow_agent_runtime' || toolName === 'marrow_auto.runtime';
+  const commitBudget = toolName === 'marrow_commit';
   const timeoutMs = Number.isFinite(configuredTimeoutMs)
     ? Math.min(10_000, Math.max(150, Math.floor(configuredTimeoutMs)))
-    : options.highRisk || runtimeBudget ? 4_500 : 4_000;
+    : commitBudget ? 8_000 : options.highRisk || runtimeBudget ? 4_500 : 4_000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();

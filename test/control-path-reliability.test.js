@@ -438,7 +438,13 @@ test('a timeout returns a concrete retry delay rather than an unresolved placeho
 test('cached guidance never reduces the live MCP control deadline to 500 ms', () => {
   const source = readFileSync(join(__dirname, '..', 'src', 'cli.ts'), 'utf8');
   assert.doesNotMatch(source, /hasCache\s*\?\s*500/);
-  assert.match(source, /options\.highRisk\s*\|\|\s*runtimeBudget\s*\?\s*4_500\s*:\s*4_000/);
+  assert.match(source, /commitBudget \? 8_000 : options\.highRisk \|\| runtimeBudget \? 4_500 : 4_000/);
+});
+
+test('commit writes get an 8s transport ceiling instead of the 4s read cliff', () => {
+  const source = readFileSync(join(__dirname, '..', 'src', 'request-reliability.ts'), 'utf8');
+  assert.match(source, /COMMIT_PATH\.test\(url\)\) return 8_000/);
+  assert.match(source, /if \(RUNTIME_PATH\.test\(url\)\) return 4_500/);
 });
 
 test('a cached ask does not shorten the next runtime call below the customer default deadline', () => {
