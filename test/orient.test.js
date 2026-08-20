@@ -11,6 +11,12 @@ test('ask maps to the canonical decision brief contract', async (t) => {
     return new Response(JSON.stringify({ data: {
       summary: 'Apply the verified deployment playbook.',
       next_actions: ['Run the release checks.'],
+      lesson: 'failed: deploy: 3 failures, verify before retry',
+      top_outcomes: ['failed: deploy: 3 failures, verify before retry'],
+      has_memory: true,
+      decision_count: 12,
+      decisions_matched: 12,
+      low_history: false,
       risk: { similar_failures: [{ decision_type: 'deploy', failures: 3, failure_rate: 0.5 }] },
       failure_alerts: [{ message: 'Prior deploy proof was incomplete.' }],
       fleet_reliability: { outcome_coverage: 0.8 },
@@ -21,8 +27,35 @@ test('ask maps to the canonical decision brief contract', async (t) => {
   const result = await marrowAsk('test-key', 'https://api.example.test', { query: 'How should I deploy?' }, 'session-one', 'agent-one');
   assert.equal(captured.url, 'https://api.example.test/v1/analytics/decision-brief');
   assert.equal(JSON.parse(captured.init.body).action, 'How should I deploy?');
-  assert.equal(result.decisions_matched, 3);
+  assert.equal(result.decisions_matched, 12);
+  assert.equal(result.low_history, false);
   assert.match(result.answer, /verified deployment playbook/);
+  assert.match(result.answer, /verify before retry/);
+});
+
+test('ask drops warming copy when a lesson is already present', async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({ data: {
+    summary: 'Historical guidance is warming. Low-risk work may continue while Marrow refreshes the measured brief.',
+    next_actions: ['Proceed with low-risk work and commit the outcome after meaningful state changes.'],
+    lesson: 'failed: process: 1 failure, verify before retry',
+    top_outcomes: ['failed: process: 1 failure, verify before retry'],
+    has_memory: true,
+    decision_count: 53,
+    decisions_matched: 0,
+    low_history: true,
+    risk: { similar_failures: [] },
+    fleet_reliability: { outcome_coverage: 0 },
+  } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  t.after(() => { global.fetch = originalFetch; });
+
+  const result = await marrowAsk('test-key', 'https://api.example.test', { query: 'what failed' });
+  assert.equal(result.lesson, 'failed: process: 1 failure, verify before retry');
+  assert.equal(result.has_memory, true);
+  assert.equal(result.low_history, false);
+  assert.equal(result.decisions_matched, 53);
+  assert.equal(result.answer, 'failed: process: 1 failure, verify before retry');
+  assert.doesNotMatch(result.answer, /guidance is warming/i);
 });
 
 test('orient uses the canonical runtime contract with the bound agent identity', async (t) => {
@@ -82,7 +115,7 @@ test('orient uses the canonical runtime contract with the bound agent identity',
   assert.equal(calls[0].url, 'https://api.example.test/v1/agent/runtime');
   assert.equal(calls[0].init.method, 'POST');
   assert.equal(calls[0].init.headers['X-Marrow-Package'], '@getmarrow/mcp');
-  assert.equal(calls[0].init.headers['X-Marrow-Package-Version'], '3.9.67');
+  assert.equal(calls[0].init.headers['X-Marrow-Package-Version'], '3.9.68');
   const payload = JSON.parse(calls[0].init.body);
   assert.equal(payload.type, 'security');
   assert.equal(payload.agent_id, 'jarvis');

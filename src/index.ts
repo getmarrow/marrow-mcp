@@ -895,22 +895,33 @@ export async function marrowAsk(
     lesson?: string | null;
     client_update?: Record<string, unknown>;
     has_memory?: boolean;
+    low_history?: boolean;
     decision_count?: number;
+    decisions_matched?: number;
   };
-  const similarFailures = Array.isArray(brief.risk?.similar_failures) ? brief.risk.similar_failures : [];
   const topOutcomes = Array.isArray(brief.top_outcomes) && brief.top_outcomes.length
     ? brief.top_outcomes
     : Array.isArray(brief.failure_alerts) ? brief.failure_alerts.map((item) => item.message).slice(0, 5) : [];
   const lesson = brief.lesson || topOutcomes[0] || null;
+  const decisionCount = Number(brief.decision_count || 0);
+  const hasMemory = brief.has_memory === true || decisionCount > 0 || Boolean(lesson);
+  const summary = typeof brief.summary === 'string' ? brief.summary.trim() : '';
+  const warmingSummary = /guidance is warming/i.test(summary);
+  const nextAction = typeof brief.next_actions?.[0] === 'string' ? brief.next_actions[0].trim() : '';
+  const answer = [
+    summary && !warmingSummary ? summary : null,
+    lesson,
+    !lesson && nextAction && !/warming|historical guidance/i.test(nextAction) ? nextAction : null,
+  ].filter(Boolean).join(' ');
   return {
-    answer: [brief.summary, lesson, brief.next_actions?.[0]].filter(Boolean).join(' '),
+    answer,
     stats: null,
     top_outcomes: topOutcomes,
     lesson,
-    has_memory: brief.has_memory === true,
-    decision_count: Number(brief.decision_count || 0),
-    decisions_matched: similarFailures.reduce((total, item) => total + Number(item.failures || 0), 0),
-    low_history: Number(brief.fleet_reliability?.outcome_coverage || 0) === 0,
+    has_memory: hasMemory,
+    decision_count: decisionCount,
+    decisions_matched: Number(brief.decisions_matched || 0) || (lesson ? Math.max(decisionCount, topOutcomes.length, 1) : decisionCount),
+    low_history: lesson || hasMemory ? false : brief.low_history === true,
     client_update: brief.client_update,
   } as MarrowAskResult;
 }
