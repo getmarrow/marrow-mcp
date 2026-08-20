@@ -104,7 +104,15 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.67
+## What's New in v3.9.68
+
+v3.9.68 stops Ask from fighting a real lesson:
+
+- `marrow_ask` does not concatenate "Historical guidance is warming" onto a lesson;
+- `decisions_matched` follows the server count, not a similar-failure sum that can be 0;
+- `low_history` is false when hive memory or a lesson is already present.
+
+## Previous: v3.9.67
 
 v3.9.67 gives writes room to finish:
 
