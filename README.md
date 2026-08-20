@@ -104,7 +104,14 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.66
+## What's New in v3.9.67
+
+v3.9.67 gives writes room to finish:
+
+- `marrow_commit` uses an 8s transport ceiling instead of aborting on the 4s read cliff;
+- the MCP tool deadline for commit matches that write ceiling.
+
+## Previous: v3.9.66
 
 v3.9.66 keeps the slim runtime honest for live sessions:
 
