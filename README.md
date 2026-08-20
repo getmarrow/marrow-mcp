@@ -104,7 +104,16 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.65
+## What's New in v3.9.66
+
+v3.9.66 keeps the slim runtime honest for live sessions:
+
+- slim `marrow_agent_runtime` echoes the requested action instead of an empty string;
+- `marrow_ask` returns a real lesson/`top_outcomes` line when hive memory exists;
+- local `client_update` no longer reports `latest_version: null` when the adapter version is known;
+- tool payloads only ask for a spool drain when the current namespace has pending or failed events.
+
+## Previous: v3.9.65
 
 v3.9.65 makes the first hour useful and closes the session honestly:
 

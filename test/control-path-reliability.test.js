@@ -519,7 +519,7 @@ test('default MCP surface is compact and transient runtime failure returns struc
     assert.match(result.stale_brief, /verify the deploy proof/);
     assert.match(result.error.exact_fix, /retry|doctor|outbound/i);
     assert.equal(result.client_update.installed_version_verified, true);
-    assert.equal(result.client_update.version_status, 'unknown');
+    assert.equal(result.client_update.version_status, 'current');
     assert.equal(result.client_update.update_command, 'npx -y --package=@getmarrow/mcp@latest marrow-mcp setup');
     assert.equal(result.control_path.tool, 'marrow_agent_runtime');
     assert.equal(result.control_path.sample_count, 1);

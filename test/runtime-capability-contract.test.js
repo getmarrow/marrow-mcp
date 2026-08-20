@@ -16,6 +16,7 @@ function slim(overrides = {}) {
     proof_required: true,
     proof_complete: true,
     gate_receipt_id: 'gate-fixture',
+    action: 'retest Marrow ask runtime and commit',
     ...overrides,
   };
 }
@@ -83,6 +84,15 @@ test('deployed slim contract preserves safe closure when the server explicitly r
   assert.equal(runtime.authorization_state, 'hard_gate');
   assert.equal(runtime.hard_gate_obtained, true);
   assert.equal(canClose(runtime), true);
+});
+
+test('slim runtime keeps the requested action instead of echoing an empty string', () => {
+  const runtime = normalizeRuntimeResult(slim({
+    gate_required: false,
+    action: 'retest Marrow ask runtime and commit after restore',
+  }));
+  assert.ok(runtime);
+  assert.equal(runtime.action, 'retest Marrow ask runtime and commit after restore');
 });
 
 test('full runtime never preserves malformed authorization without a canonical receipt', () => {

@@ -508,8 +508,12 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
   result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
   result.control_path = controlPathStats(toolName || 'marrow_control');
   result.lifecycle_spool = {
-    ...spool,
+    state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
+    pending: spool.pending,
+    failed: spool.failed,
+    exact_fix: spool.failed > 0 || spool.pending > 0 ? spool.exact_fix : null,
     drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
+    legacy_namespaces: spool.other_namespaces?.count || 0,
   };
   result.host_capability = mcpHostCapability();
   if (proofValidation) {
@@ -558,11 +562,19 @@ function clientOperationalPayload(toolName: string, value: unknown): Record<stri
     ...payload,
     ...(habitLoopCopy ? { habit_loop_copy: habitLoopCopy } : {}),
     host_capability: payload.host_capability || mcpHostCapability(),
-    client_update: payload.client_update || localClientUpdate(),
+    client_update: payload.client_update
+      || (payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+        ? (payload.data as Record<string, unknown>).client_update
+        : null)
+      || localClientUpdate(),
     control_path: controlPathStats(toolName),
     lifecycle_spool: {
-      ...spool,
+      state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
+      pending: spool.pending,
+      failed: spool.failed,
+      exact_fix: spool.failed > 0 || spool.pending > 0 ? spool.exact_fix : null,
       drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
+      legacy_namespaces: spool.other_namespaces?.count || 0,
     },
   };
 }

@@ -890,15 +890,29 @@ export async function marrowAsk(
   });
 
   const json = await safeJsonResponse(res);
-  const brief = json.data as MarrowDecisionBriefResult;
+  const brief = json.data as MarrowDecisionBriefResult & {
+    top_outcomes?: string[];
+    lesson?: string | null;
+    client_update?: Record<string, unknown>;
+    has_memory?: boolean;
+    decision_count?: number;
+  };
   const similarFailures = Array.isArray(brief.risk?.similar_failures) ? brief.risk.similar_failures : [];
+  const topOutcomes = Array.isArray(brief.top_outcomes) && brief.top_outcomes.length
+    ? brief.top_outcomes
+    : Array.isArray(brief.failure_alerts) ? brief.failure_alerts.map((item) => item.message).slice(0, 5) : [];
+  const lesson = brief.lesson || topOutcomes[0] || null;
   return {
-    answer: [brief.summary, brief.next_actions?.[0]].filter(Boolean).join(' '),
+    answer: [brief.summary, lesson, brief.next_actions?.[0]].filter(Boolean).join(' '),
     stats: null,
-    top_outcomes: Array.isArray(brief.failure_alerts) ? brief.failure_alerts.map((item) => item.message).slice(0, 5) : [],
+    top_outcomes: topOutcomes,
+    lesson,
+    has_memory: brief.has_memory === true,
+    decision_count: Number(brief.decision_count || 0),
     decisions_matched: similarFailures.reduce((total, item) => total + Number(item.failures || 0), 0),
     low_history: Number(brief.fleet_reliability?.outcome_coverage || 0) === 0,
-  };
+    client_update: brief.client_update,
+  } as MarrowAskResult;
 }
 
 /**
@@ -1232,7 +1246,11 @@ export async function marrowAgentRuntime(
     signal,
   });
   const json = await safeJsonResponse(res);
-  return requireRuntimeResult(json.data);
+  const runtime = requireRuntimeResult(json.data);
+  if (!runtime.action && typeof input.action === 'string' && input.action.trim()) {
+    runtime.action = input.action;
+  }
+  return runtime;
 }
 
 export async function marrowEnforcement(

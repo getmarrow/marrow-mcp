@@ -248,7 +248,11 @@ export function normalizeRuntimeResult(value: unknown): MarrowAgentRuntimeResult
   const normalized = {
     ...slim,
     ok: slim.ok !== false,
-    action: '',
+    action: typeof slim.action === 'string' && slim.action.trim()
+      ? slim.action
+      : typeof slim.requested_action === 'string' && slim.requested_action.trim()
+        ? slim.requested_action
+        : '',
     agent_id: typeof slim.agent_id === 'string' ? slim.agent_id : null,
     session_id: typeof slim.session_id === 'string' ? slim.session_id : null,
     status: { health: slim.health || null, missed_hooks: slim.missed_hooks || [] },
