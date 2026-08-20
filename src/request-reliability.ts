@@ -3,6 +3,7 @@ import { redactSensitiveText } from './redact';
 
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const RUNTIME_PATH = /\/v1\/agent\/runtime(?:[/?]|$)/;
+const COMMIT_PATH = /\/v1\/agent\/commit(?:[/?]|$)/;
 const STATUS_CONTEXT_PATH = /\/v1\/agent\/(?:status|context)(?:[/?]|$)/;
 const DECISION_READ_PATH = /\/(?:v1\/agent\/first-value|v1\/analytics\/decision-brief)(?:[/?]|$)/;
 
@@ -79,6 +80,7 @@ function boundedTimeout(url: string): number {
   // These are hard transport ceilings. Last-known guidance is an outage fallback;
   // it must never shorten a live control read and cause a healthy response to be
   // aborted before it can replace stale guidance.
+  if (COMMIT_PATH.test(url)) return 8_000;
   if (RUNTIME_PATH.test(url)) return 4_500;
   if (STATUS_CONTEXT_PATH.test(url)) return 4_000;
   if (DECISION_READ_PATH.test(url)) return 4_000;
