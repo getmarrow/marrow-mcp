@@ -57,10 +57,26 @@ export declare function lifecycleSpoolStatus(input: {
     apiKey: string;
     agentId?: string;
 }): LifecycleSpoolStatus;
+export declare function quarantineLegacyNamespaces(input: {
+    apiKey: string;
+    agentId?: string;
+}): {
+    moved: number;
+    destination: string | null;
+};
+export declare function nudgeLifecycleSpool(input: {
+    apiKey: string;
+    baseUrl: string;
+    agentId?: string;
+}): Promise<void>;
 export declare function drainLifecycleSpool(input: {
     apiKey: string;
     baseUrl: string;
     agentId?: string;
+    maxEvents?: number;
+    budgetMs?: number;
+    requestTimeoutMs?: number;
+    retryDeadLetters?: boolean;
 }): Promise<LifecycleSpoolStatus>;
 export declare function recordLifecycleEvent(input: {
     apiKey: string;

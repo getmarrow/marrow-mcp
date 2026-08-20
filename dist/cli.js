@@ -64,6 +64,17 @@ function parseArgs() {
     }
     return result;
 }
+function reportLifecycleSpool(input) {
+    try {
+        (0, lifecycle_spool_1.quarantineLegacyNamespaces)({ apiKey: input.apiKey, agentId: input.agentId });
+    }
+    catch { /* owner-only quarantine is best effort */ }
+    const spool = (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: input.apiKey, agentId: input.agentId });
+    if (input.baseUrl && spool.pending > 0) {
+        void (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.agentId });
+    }
+    return spool;
+}
 async function runPingCommand() {
     if (cliArgs.apiKey) {
         process.stderr.write('Error: ping requires MARROW_API_KEY from trusted environment or owner configuration; --key is not accepted.\n');
@@ -93,7 +104,7 @@ async function runPingCommand() {
             p99_ms: history.p99_ms,
             sample_count: history.sample_count,
             last_success_at: history.last_success_at,
-            lifecycle_spool: (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: resolved.apiKey, agentId: resolved.agentId }),
+            lifecycle_spool: reportLifecycleSpool({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId }),
         }, null, 2) + '\n');
     }
     catch (error) {
@@ -106,7 +117,7 @@ async function runPingCommand() {
             p99_ms: history.p99_ms,
             sample_count: history.sample_count,
             last_success_at: history.last_success_at,
-            lifecycle_spool: (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: resolved.apiKey, agentId: resolved.agentId }),
+            lifecycle_spool: reportLifecycleSpool({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId }),
         }, null, 2) + '\n');
         process.exitCode = 1;
     }
@@ -128,6 +139,10 @@ async function runSpoolCommand(drain) {
         return;
     }
     const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
+    try {
+        (0, lifecycle_spool_1.quarantineLegacyNamespaces)({ apiKey, agentId: resolved.agentId || undefined });
+    }
+    catch { /* owner-only quarantine is best effort */ }
     const status = drain
         ? await (0, lifecycle_spool_1.drainLifecycleSpool)({ apiKey, baseUrl, agentId: resolved.agentId || undefined })
         : (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey, agentId: resolved.agentId || undefined });
@@ -449,7 +464,7 @@ if (process.argv[2] !== 'keys') {
             const proofValidation = failure.code === 'proof_required';
             const infrastructureFailure = !proofValidation && !['authentication_required', 'permission_denied'].includes(failure.code);
             const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_handoff_status', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
-            const spool = (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
+            const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
             result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
             result.control_path = (0, control_path_state_1.controlPathStats)(toolName || 'marrow_control');
             result.lifecycle_spool = {
@@ -500,7 +515,7 @@ if (process.argv[2] !== 'keys') {
             const payload = value && typeof value === 'object' && !Array.isArray(value)
                 ? value
                 : { data: value };
-            const spool = (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: API_KEY, agentId: FLEET_AGENT_ID });
+            const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
             const habitLoopCopy = (0, habit_loop_copy_1.formatHabitLoopCopy)(payload) || (0, habit_loop_copy_1.formatHabitLoopCopy)(payload.data);
             return {
                 ...payload,
