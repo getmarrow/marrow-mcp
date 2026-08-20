@@ -453,8 +453,12 @@ if (process.argv[2] !== 'keys') {
             result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
             result.control_path = (0, control_path_state_1.controlPathStats)(toolName || 'marrow_control');
             result.lifecycle_spool = {
-                ...spool,
+                state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
+                pending: spool.pending,
+                failed: spool.failed,
+                exact_fix: spool.failed > 0 || spool.pending > 0 ? spool.exact_fix : null,
                 drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
+                legacy_namespaces: spool.other_namespaces?.count || 0,
             };
             result.host_capability = mcpHostCapability();
             if (proofValidation) {
@@ -502,11 +506,19 @@ if (process.argv[2] !== 'keys') {
                 ...payload,
                 ...(habitLoopCopy ? { habit_loop_copy: habitLoopCopy } : {}),
                 host_capability: payload.host_capability || mcpHostCapability(),
-                client_update: payload.client_update || (0, request_reliability_1.localClientUpdate)(),
+                client_update: payload.client_update
+                    || (payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+                        ? payload.data.client_update
+                        : null)
+                    || (0, request_reliability_1.localClientUpdate)(),
                 control_path: (0, control_path_state_1.controlPathStats)(toolName),
                 lifecycle_spool: {
-                    ...spool,
+                    state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
+                    pending: spool.pending,
+                    failed: spool.failed,
+                    exact_fix: spool.failed > 0 || spool.pending > 0 ? spool.exact_fix : null,
                     drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
+                    legacy_namespaces: spool.other_namespaces?.count || 0,
                 },
             };
         }
