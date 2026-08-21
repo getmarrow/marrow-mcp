@@ -588,12 +588,21 @@ test('standalone status immediately reuses a fresh measured runtime status witho
     const cacheRecord = JSON.parse(readFileSync(statusPath, 'utf8'));
     cacheRecord.stored_at = new Date(Date.now() - 31_000).toISOString();
     writeFileSync(statusPath, JSON.stringify(cacheRecord), { mode: 0o600 });
+    const staleLive = runMcp(home, {
+      NODE_OPTIONS: `--require=${mockPath}`,
+      MARROW_CLIENT: 'codex',
+    }, mcpInput('marrow_status', {}));
+    const staleLiveMessages = staleLive.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const staleLivePayload = JSON.parse(staleLiveMessages[2].result.content[0].text);
+    assert.notEqual(staleLivePayload.status_source, 'last_known_runtime_status');
+    assert.equal(staleLivePayload.cached, undefined);
+
     const staleStatus = runMcp(home, { MARROW_CLIENT: 'codex' }, mcpInput('marrow_status', {}));
     const staleMessages = staleStatus.stdout.trim().split('\n').map((line) => JSON.parse(line));
     const stalePayload = JSON.parse(staleMessages[2].result.content[0].text);
     assert.equal(stalePayload.status_freshness, 'stale');
     assert.equal(stalePayload.stale, true);
-    assert.ok(stalePayload.control_path.current_ms < 100, `stale cached status handler took ${stalePayload.control_path.current_ms}ms`);
+    assert.equal(stalePayload.cached, true);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

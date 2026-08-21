@@ -88,9 +88,11 @@ const MAX_NAMESPACE_DIRECTORY_ENTRIES = 1024;
 const MAX_ATTEMPTS = 3;
 const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
 const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
-const DELIVERY_DRAIN_BUDGET_MS = 8_000;
-const NUDGE_DRAIN_BUDGET_MS = 2_500;
-const NUDGE_MAX_EVENTS = 4;
+const DELIVERY_DRAIN_BUDGET_MS = 30_000;
+const NUDGE_DRAIN_BUDGET_MS = 8_000;
+const NUDGE_MAX_EVENTS = 10;
+const NAMESPACE_JSON_RE = /^mcp-[a-f0-9]{20}\.json$/;
+const NAMESPACE_LOCK_RE = /^mcp-[a-f0-9]{20}\.json\.lock$/;
 const LOCK_WAIT_MS = 20;
 const LOCK_ATTEMPTS = 250;
 const LOCK_STALE_MS = 30_000;
@@ -201,6 +203,10 @@ function ensureParent(path: string, ownsParent: boolean): void {
 function sleep(milliseconds: number): void {
   const lock = new Int32Array(new SharedArrayBuffer(4));
   Atomics.wait(lock, 0, 0, milliseconds);
+}
+
+function unlinkQuiet(path: string): void {
+  try { unlinkSync(path); } catch { /* already gone */ }
 }
 
 function withLock<T>(path: string, ownsParent: boolean, operation: () => T): T {
@@ -501,7 +507,7 @@ function otherNamespaceStatus(currentPath: string, ownsParent: boolean): Lifecyc
         break;
       }
       directoryEntriesScanned += 1;
-      if (entry.name !== currentName && /^mcp-[a-f0-9]{20}\.json$/.test(entry.name)) {
+      if (entry.name !== currentName && NAMESPACE_JSON_RE.test(entry.name)) {
         names.push(entry.name);
         if (names.length > MAX_NAMESPACE_FILES) break;
       }
@@ -626,20 +632,23 @@ export function quarantineLegacyNamespaces(input: { apiKey: string; agentId?: st
   if (!existsSync(parent)) return { moved: 0, destination: null };
   const currentName = basename(location.path);
   const names: string[] = [];
+  const leftoverLocks: string[] = [];
   const directory = opendirSync(parent);
   try {
     let entry = directory.readSync();
     while (entry) {
-      if (names.length >= MAX_NAMESPACE_FILES) break;
-      if (entry.name !== currentName && /^mcp-[a-f0-9]{20}\.json$/.test(entry.name)) {
+      if (names.length >= MAX_NAMESPACE_FILES && leftoverLocks.length >= MAX_NAMESPACE_FILES) break;
+      if (entry.name !== currentName && NAMESPACE_JSON_RE.test(entry.name)) {
         names.push(entry.name);
+      } else if (entry.name !== `${currentName}.lock` && NAMESPACE_LOCK_RE.test(entry.name)) {
+        leftoverLocks.push(entry.name);
       }
       entry = directory.readSync();
     }
   } finally {
     directory.closeSync();
   }
-  if (names.length === 0) return { moved: 0, destination: null };
+  if (names.length === 0 && leftoverLocks.length === 0) return { moved: 0, destination: null };
   const quarantineDir = join(parent, 'quarantine');
   ensureParent(join(quarantineDir, 'mcp-placeholder.json'), true);
   let moved = 0;
@@ -654,10 +663,19 @@ export function quarantineLegacyNamespaces(input: { apiKey: string; agentId?: st
         renameSync(source, destination);
         chmodSync(destination, 0o600);
       });
+      unlinkQuiet(`${source}.lock`);
+      unlinkQuiet(`${destination}.lock`);
       moved += 1;
     } catch {
       // Leave unsafe or contested files in place; never replay them under the current key.
+      unlinkQuiet(`${source}.lock`);
     }
+  }
+  for (const name of leftoverLocks) {
+    const source = join(parent, name);
+    const jsonName = name.slice(0, -'.lock'.length);
+    if (jsonName === currentName || existsSync(join(parent, jsonName))) continue;
+    unlinkQuiet(source);
   }
   return { moved, destination: moved > 0 ? quarantineDir : null };
 }
@@ -695,18 +713,25 @@ export async function drainLifecycleSpool(input: {
   retryDeadLetters?: boolean;
 }): Promise<LifecycleSpoolStatus> {
   const location = spoolPath(input.apiKey, input.agentId);
-  const maxEvents = Number.isInteger(input.maxEvents) ? Math.max(1, Math.min(10, Number(input.maxEvents))) : 10;
-  const budgetMs = Number.isInteger(input.budgetMs) ? Math.max(1, Number(input.budgetMs)) : DELIVERY_DRAIN_BUDGET_MS;
+  const retryDeadLetters = input.retryDeadLetters !== false;
+  const maxEvents = Number.isInteger(input.maxEvents)
+    ? Math.max(1, Math.min(MAX_EVENTS, Number(input.maxEvents)))
+    : retryDeadLetters ? MAX_EVENTS : NUDGE_MAX_EVENTS;
+  const budgetMs = Number.isInteger(input.budgetMs)
+    ? Math.max(1, Number(input.budgetMs))
+    : retryDeadLetters ? DELIVERY_DRAIN_BUDGET_MS : NUDGE_DRAIN_BUDGET_MS;
   const requestTimeoutMs = Number.isInteger(input.requestTimeoutMs)
     ? Math.max(1, Number(input.requestTimeoutMs))
     : DRAIN_REQUEST_TIMEOUT_MS;
-  const retryDeadLetters = input.retryDeadLetters !== false;
   const deliveryDeadline = Date.now() + budgetMs;
+  const attempted = new Set<string>();
   for (let delivered = 0; delivered < maxEvents; delivered += 1) {
-    let queued = snapshot(location.path, location.ownsParent).events.find((row) => row.delivery_state === 'queued');
+    let queued = snapshot(location.path, location.ownsParent).events.find((row) => (
+      row.delivery_state === 'queued' && !attempted.has(row.event_id)
+    ));
     if (!queued && retryDeadLetters) {
       queued = mutate(location.path, location.ownsParent, (events) => {
-        const failed = events.find((row) => row.delivery_state === 'dead_letter');
+        const failed = events.find((row) => row.delivery_state === 'dead_letter' && !attempted.has(row.event_id));
         if (!failed) return undefined;
         failed.delivery_state = 'queued';
         failed.attempts = 0;
@@ -715,9 +740,10 @@ export async function drainLifecycleSpool(input: {
       }).result;
     }
     if (!queued) break;
+    attempted.add(queued.event_id);
     const remainingMs = Math.min(requestTimeoutMs, deliveryDeadline - Date.now());
     if (remainingMs <= 0) break;
-    const status = await attemptQueuedDelivery({
+    await attemptQueuedDelivery({
       path: location.path,
       ownsParent: location.ownsParent,
       apiKey: input.apiKey,
@@ -725,7 +751,16 @@ export async function drainLifecycleSpool(input: {
       event: queued,
       timeoutMs: remainingMs,
     });
-    if (!(status >= 200 && status < 300)) break;
+  }
+  if (retryDeadLetters) {
+    mutate(location.path, location.ownsParent, (events) => {
+      for (const event of events) {
+        if (event.delivery_state === 'queued') {
+          event.delivery_state = 'dead_letter';
+          event.last_status = event.last_status ?? 0;
+        }
+      }
+    });
   }
   return lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
 }

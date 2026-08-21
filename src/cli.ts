@@ -2364,19 +2364,29 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
         try {
           cached = readStatusCache({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
         } catch { /* owner-only cache is best effort */ }
-        if (cached) {
+        if (cached?.freshness === 'fresh') {
           const startedAt = Date.now();
           refreshStatusInBackground();
           recordControlPathSample('marrow_status', Date.now() - startedAt, true);
           toolSuccess(id, clientOperationalPayload('marrow_status', cachedStatusPayload(cached)));
           return;
         }
-        const result = await withControlDeadline(
-          (signal) => marrowStatus(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal),
-          { cacheAware: false, toolName: 'marrow_status' },
-        );
-        storeLastKnownStatus(result, 'status');
-        toolSuccess(id, clientOperationalPayload('marrow_status', result));
+        try {
+          const result = await withControlDeadline(
+            (signal) => marrowStatus(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal),
+            { cacheAware: false, toolName: 'marrow_status' },
+          );
+          storeLastKnownStatus(result, 'status');
+          toolSuccess(id, clientOperationalPayload('marrow_status', result));
+        } catch (error) {
+          if (cached) {
+            const startedAt = Date.now();
+            recordControlPathSample('marrow_status', Date.now() - startedAt, false);
+            toolSuccess(id, clientOperationalPayload('marrow_status', cachedStatusPayload(cached)));
+            return;
+          }
+          throw error;
+        }
         return;
       }
 

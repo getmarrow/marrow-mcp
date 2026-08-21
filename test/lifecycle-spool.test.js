@@ -118,11 +118,11 @@ test('native MCP hook receipts carry bounded capability and actual configuration
   mkdirSync(settingsDir, { recursive: true });
   writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({
     hooks: {
-      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 context-hook' }] }],
-      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 pre-action-hook' }] }],
-      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 hook' }] }],
-      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 hook' }] }],
-      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.69 session-hook' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.70 context-hook' }] }],
+      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.70 pre-action-hook' }] }],
+      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.70 hook' }] }],
+      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.70 hook' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.70 session-hook' }] }],
     },
   }));
   const originalFetch = globalThis.fetch;
@@ -135,7 +135,7 @@ test('native MCP hook receipts carry bounded capability and actual configuration
       }));
       const [event] = JSON.parse(readFileSync(path, 'utf8'));
       assert.equal(event.capability_level, 'native_hooks');
-      assert.equal(event.adapter_version, '3.9.69');
+      assert.equal(event.adapter_version, '3.9.70');
       assert.match(event.config_fingerprint, /^[a-f0-9]{64}$/);
       assert.deepEqual(event.expected_hooks, ['prompt', 'pre_action', 'action_result', 'session_end']);
       assert.equal(event.observed_hook, 'action_result');
@@ -403,8 +403,8 @@ test('mixed drain does not hide dead letters that were never retried', async () 
         agentId: 'agent-one',
       });
       assert.equal(status.state, 'attention_required');
-      assert.equal(status.failed, 1);
-      assert.equal(status.pending, 1);
+      assert.equal(status.pending, 0);
+      assert.equal(status.failed, 2);
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -507,8 +507,84 @@ test('quarantine moves leftover namespace files without replaying them under the
     assert.equal(after.other_namespaces.state, 'clear');
     assert.equal(existsSync(join(home, '.marrow', 'spool', 'quarantine')), true);
     assert.equal(delivered, 0);
+    const leftover = readdirSync(join(home, '.marrow', 'spool')).filter((name) => name.endsWith('.lock'));
+    assert.deepEqual(leftover, []);
+    const quarantinedLocks = readdirSync(join(home, '.marrow', 'spool', 'quarantine')).filter((name) => name.endsWith('.lock'));
+    assert.deepEqual(quarantinedLocks, []);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
+    else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('explicit drain continues after a failed current-namespace event', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-drain-continue-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  try {
+    await withSpoolPath(path, async () => {
+      await recordLifecycleEvent({ ...lifecycleInput({ event_id: 'drain-fail-first' }), deferDelivery: true });
+      await recordLifecycleEvent({ ...lifecycleInput({ event_id: 'drain-succeed-second' }), deferDelivery: true });
+      let calls = 0;
+      globalThis.fetch = async () => {
+        calls += 1;
+        if (calls === 1) return new Response('{}', { status: 400 });
+        return new Response('{}', { status: 200 });
+      };
+      const drained = await drainLifecycleSpool({
+        apiKey: 'test-mcp-spool-key',
+        baseUrl: 'https://api.example.com',
+        agentId: 'agent-one',
+      });
+      assert.equal(calls, 2);
+      assert.equal(drained.pending, 0);
+      assert.equal(drained.failed, 1);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('quarantine unlinks leftover namespace lock files for moved json', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-lock-'));
+  const home = join(directory, 'home');
+  const originalHome = process.env.HOME;
+  const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  process.env.HOME = home;
+  delete process.env.MARROW_EVENT_SPOOL_PATH;
+  try {
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'legacy-lock-event', agent_id: 'agent-one' }),
+      apiKey: 'legacy-key-for-lock-test',
+      deferDelivery: true,
+    });
+    await recordLifecycleEvent({
+      ...lifecycleInput({ event_id: 'current-lock-event', agent_id: 'agent-one' }),
+      apiKey: 'current-key-for-lock-test',
+      deferDelivery: true,
+    });
+    const spoolDir = join(home, '.marrow', 'spool');
+    const first = quarantineLegacyNamespaces({
+      apiKey: 'current-key-for-lock-test',
+      agentId: 'agent-one',
+    });
+    assert.equal(first.moved, 1);
+    const movedJson = readdirSync(join(spoolDir, 'quarantine')).find((name) => name.endsWith('.json'));
+    assert.ok(movedJson);
+    writeFileSync(join(spoolDir, `${movedJson}.lock`), '', { encoding: 'utf8', mode: 0o600 });
+    quarantineLegacyNamespaces({
+      apiKey: 'current-key-for-lock-test',
+      agentId: 'agent-one',
+    });
+    assert.equal(existsSync(join(spoolDir, `${movedJson}.lock`)), false);
+    assert.equal(readdirSync(join(spoolDir, 'quarantine')).some((name) => name.endsWith('.lock')), false);
+  } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
     if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH;
