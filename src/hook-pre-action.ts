@@ -8,6 +8,7 @@ import {
   nativeHookEvidence,
   NATIVE_HOOK_MATCHER,
   PRE_ACTION_HOOK_COMMAND,
+  normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
   stableSessionWorkflowId,
@@ -194,7 +195,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   if (event === undefined) {
     try {
       const raw = (await readStdin()).trim();
-      event = raw ? JSON.parse(raw) : {};
+      event = raw ? normalizeHookEventPayload(JSON.parse(raw)) : {};
     } catch {
       emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow rejected malformed or oversized pre-action input.' });
       return;

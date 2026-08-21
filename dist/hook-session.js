@@ -26,7 +26,7 @@ function readStopHookSource(input) {
     }
     if (!value || typeof value !== 'object' || Array.isArray(value))
         return {};
-    const source = value;
+    const source = (0, hook_contract_1.normalizeHookEventPayload)(value);
     const take = (field) => {
         const candidate = typeof source[field] === 'string' ? String(source[field]).trim().slice(0, 1024) : '';
         return candidate || undefined;

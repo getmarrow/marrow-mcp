@@ -7,9 +7,11 @@ exports.hookToolCommand = hookToolCommand;
 exports.isReadOnlyToolEvent = isReadOnlyToolEvent;
 const READ_ONLY_TOOLS = new Set([
     'read',
+    'read_file',
     'grep',
     'glob',
     'ls',
+    'list_dir',
     'notebookread',
     'todoread',
     'tasklist',
@@ -17,6 +19,10 @@ const READ_ONLY_TOOLS = new Set([
     'sessions_list',
     'sessions_history',
     'session_status',
+    'search_tool',
+    'web_search',
+    'open_page',
+    'get_command_or_subagent_output',
     'marrow_list_memories',
     'marrow_retrieve_memories',
     'marrow_get_memory',
@@ -130,12 +136,14 @@ function isReadOnlyToolEvent(event) {
         return false;
     if (READ_ONLY_TOOLS.has(tool))
         return true;
+    if (['edit', 'write', 'multiedit', 'search_replace', 'run_terminal_command', 'spawn_subagent'].includes(tool))
+        return false;
     if (MUTATION_TOOL_VERB.test(tool))
         return false;
     if (READ_ONLY_TOOL_VERB.test(tool))
         return true;
     const command = hookToolCommand(event).replace(/\s+/g, ' ').trim();
-    if (tool === 'bash' && command && !hasCompoundShellSyntax(command) && !hasWriteLikeShellSyntax(command)) {
+    if ((tool === 'bash' || tool === 'run_terminal_command') && command && !hasCompoundShellSyntax(command) && !hasWriteLikeShellSyntax(command)) {
         if (/^(?:node|npm)\s+(?:-v|--version)$/i.test(command))
             return true;
         if (/^git\s+(?:status|diff|show|log|branch|rev-parse|ls-files|ls-remote)(?:\s|$)/i.test(command))
@@ -144,6 +152,6 @@ function isReadOnlyToolEvent(event) {
         if (firstToken && READ_ONLY_BASH_COMMANDS.has(firstToken))
             return true;
     }
-    return !['edit', 'write', 'multiedit'].includes(tool) && pathOnlyInput(event.tool_input);
+    return !['edit', 'write', 'multiedit', 'search_replace'].includes(tool) && pathOnlyInput(event.tool_input);
 }
 //# sourceMappingURL=hook-tool-policy.js.map

@@ -27,6 +27,22 @@ test('resolveMarrowEnv loads MARROW_KEY alias from project env file', () => {
   assert.match(resolved.source, /\.marrow\/env:MARROW_KEY$/);
 });
 
+test('matching MARROW_KEY_<ROLE> wins over a mismatched MARROW_API_KEY', () => {
+  const resolved = resolveMarrowEnv({
+    env: {
+      MARROW_API_KEY: 'synthetic-jarvis-key',
+      MARROW_KEY_BOB: 'synthetic-bob-key',
+      MARROW_AGENT_ID_BOB: 'codex-bob',
+      MARROW_AGENT_ID: 'codex-bob',
+      MARROW_FLEET_AGENT_ID: 'codex-bob',
+    },
+  });
+
+  assert.equal(resolved.apiKey, 'synthetic-bob-key');
+  assert.equal(resolved.agentId, 'codex-bob');
+  assert.equal(resolved.source, 'MARROW_KEY_BOB');
+});
+
 test('fleet identity takes precedence over a contradictory local agent identity', () => {
   const resolved = resolveMarrowEnv({
     env: {

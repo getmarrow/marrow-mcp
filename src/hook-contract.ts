@@ -1,15 +1,38 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-export const MCP_ADAPTER_VERSION = '3.9.70';
+export const MCP_ADAPTER_VERSION = '3.9.71';
 export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*';
+export const GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
 export const CONTEXT_HOOK_COMMAND = `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp context-hook`;
 export const PRE_ACTION_HOOK_COMMAND = `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp pre-action-hook`;
 export const ACTION_RESULT_HOOK_COMMAND = `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp hook`;
 export const SESSION_END_HOOK_COMMAND = `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp session-hook`;
 export const NATIVE_EXPECTED_HOOKS = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
+
+const HOOK_CAMEL_TO_SNAKE: Record<string, string> = {
+  hookEventName: 'hook_event_name',
+  sessionId: 'session_id',
+  toolName: 'tool_name',
+  toolInput: 'tool_input',
+  toolResponse: 'tool_response',
+  toolResult: 'tool_result',
+  toolUseId: 'tool_use_id',
+  transcriptPath: 'transcript_path',
+};
+
+export function normalizeHookEventPayload(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const source = value as Record<string, unknown>;
+  const normalized: Record<string, unknown> = { ...source };
+  for (const [camel, snake] of Object.entries(HOOK_CAMEL_TO_SNAKE)) {
+    if (normalized[snake] == null && normalized[camel] != null) normalized[snake] = normalized[camel];
+  }
+  return normalized;
+}
 
 type HookSettings = Record<string, unknown>;
 
@@ -267,4 +290,41 @@ export function stablePromptCorrelation(event: {
 
 export function stableSessionWorkflowId(sessionId?: string, fallback?: unknown): string {
   return `session-${stableHash([sessionId || '', sessionId ? null : fallback ?? null])}`;
+}
+
+export function grokHookSettingsPath(home = process.env.HOME || homedir()): string {
+  return join(home, '.grok', 'hooks', 'marrow.json');
+}
+
+export function installGrokNativeHooks(home = process.env.HOME || homedir()): { settingsPath: string; installed: boolean } {
+  const settingsPath = grokHookSettingsPath(home);
+  const command = (subcommand: MarrowHookSubcommand) => (
+    subcommand === 'context-hook' ? CONTEXT_HOOK_COMMAND
+      : subcommand === 'pre-action-hook' ? PRE_ACTION_HOOK_COMMAND
+      : subcommand === 'session-hook' ? SESSION_END_HOOK_COMMAND
+      : ACTION_RESULT_HOOK_COMMAND
+  );
+  const handler = (subcommand: MarrowHookSubcommand) => ({
+    type: 'command',
+    command: command(subcommand),
+    timeout: 15,
+  });
+  const next = {
+    hooks: {
+      UserPromptSubmit: [{ hooks: [handler('context-hook')] }],
+      PreToolUse: [{ matcher: GROK_NATIVE_HOOK_MATCHER, hooks: [handler('pre-action-hook')] }],
+      PostToolUse: [{ matcher: GROK_NATIVE_HOOK_MATCHER, hooks: [handler('hook')] }],
+      PostToolUseFailure: [{ matcher: GROK_NATIVE_HOOK_MATCHER, hooks: [handler('hook')] }],
+      Stop: [{ hooks: [handler('session-hook')] }],
+      SessionEnd: [{ hooks: [handler('session-hook')] }],
+    },
+  };
+  let previous = '';
+  if (existsSync(settingsPath)) {
+    try { previous = readFileSync(settingsPath, 'utf8'); } catch { previous = ''; }
+  }
+  const serialized = `${JSON.stringify(next, null, 2)}\n`;
+  mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 });
+  writeFileSync(settingsPath, serialized, { mode: 0o600 });
+  return { settingsPath, installed: previous !== serialized };
 }

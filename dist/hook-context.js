@@ -544,7 +544,7 @@ async function runContextHookCommand() {
         }
         let event;
         try {
-            event = JSON.parse(raw);
+            event = (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw));
         }
         catch {
             debug('[marrow-context-hook] invalid JSON');

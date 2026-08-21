@@ -95,7 +95,7 @@ async function runHookCommand() {
         }
         let event;
         try {
-            event = JSON.parse(raw);
+            event = (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw));
         }
         catch {
             debug('[marrow-hook] skipped invalid JSON');

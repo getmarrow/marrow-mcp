@@ -104,14 +104,16 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.70
+## What's New in v3.9.71
 
-v3.9.70 finishes the control-path honesty work for every MCP host:
+v3.9.71 makes the advertised Grok control loop true:
 
-- `marrow_status` does not return a 4-minute last-known snapshot when a live read is still possible;
-- explicit `drain-spool` continues past the first failed event and dead-letters leftover current-namespace receipts instead of leaving a pending queue;
-- quarantine removes leftover `.json.lock` files for moved namespaces;
-- idle nudge tries up to 10 current-namespace events instead of stopping after one failure.
+- default tools include `marrow_think` so the official loop can create a `decision_id` without `MARROW_TOOL_PROFILE=full`;
+- process identity prefers `MARROW_KEY_<ROLE>` when it matches `MARROW_AGENT_ID`, so a leaked fleet env cannot 403 every status call;
+- Grok native hooks are installed under `~/.grok/hooks/marrow.json` and hook parsers accept Grok camelCase envelopes;
+- idle spool nudge drains up to 40 current-namespace events so the queue does not sit as a nag;
+- if `risk_gate.enforced` is false, the gate is advisory — do not describe it as a live block;
+- `marrow_commit.decision_id` may come from `marrow_think`, `marrow_auto`, or `marrow_agent_runtime.runtime_authorization.id`.
 
 ## Previous: v3.9.69
 
@@ -178,7 +180,7 @@ v3.9.62 integrates four model-neutral reliability and capability contracts:
 - `spool-status` and `drain-spool` report the active credential namespace separately from isolated legacy debt, and a clear active namespace exits successfully without replaying, merging, editing, or deleting old-key files;
 - initialize, prompt, setup, and tool responses qualify coverage by `host_capability`: MCP tools are on demand, while native hooks, an owned SDK process, a governed runner, or a custom event adapter cover only the scope proved by observed Marrow receipts.
 
-The default surface remains six tools and the prompt remains named `marrow-always-on`. Host and model labels are display-only and never change auth, tenant, plan, policy, proof, schema, or API behavior.
+The default surface is seven tools (runtime, think, commit, ask, status, auto, handoff status) and the prompt remains named `marrow-always-on`. Host and model labels are display-only and never change auth, tenant, plan, policy, proof, schema, or API behavior. Grok always-on coverage is native hooks plus MCP; it is verified only from observed receipts.
 
 ## Previous: v3.9.61
 
@@ -232,7 +234,7 @@ The compact agent control path introduced in v3.9.57 remains the default:
 - `marrow_status`, `marrow_ask`, and `marrow_agent_runtime` use authenticated routes with bounded retries and typed failures;
 - transient read failures return an owner-only last-known brief when available, while cached guidance can never authorize high-risk work;
 - normal tool errors return structured `ok`, `error_code`, `exact_fix`, `stale_brief`, and `client_update` data instead of raw MCP `fetch failed` errors;
-- the default agent surface is six tools: runtime, commit, ask, status, auto, and handoff status; set `MARROW_TOOL_PROFILE=full` only for legacy or advanced integrations;
+- the default agent surface is seven tools: runtime, think, commit, ask, status, auto, and handoff status; set `MARROW_TOOL_PROFILE=full` only for legacy or advanced integrations;
 - risky `marrow_auto` calls obtain a fresh runtime gate automatically and cannot self-close as successful without required proof;
 - `marrow_run` requires an explicit outcome and never invents proof or a successful result;
 - the package includes an exact-version control-path canary covering every route reported in the production incident.
@@ -332,7 +334,7 @@ With installed native hooks, protected tool calls follow this automatically. For
 
 1. Call `marrow_agent_runtime` or `marrow_decision_brief`.
 2. Stop when the returned decision is `block` or `review_required`; otherwise follow its prior lesson and proof contract.
-3. Call `marrow_think` to record intent and obtain the `decision_id` that will be closed.
+3. Call `marrow_think` or `marrow_auto` to record intent and obtain the `decision_id` that will be closed. `marrow_agent_runtime.runtime_authorization.id` is also accepted.
 4. Perform the action only when its gate allows it. For a hard external choke point, run the command through `npx @getmarrow/install run`; it verifies the signed action permit immediately before execution.
 5. Call `marrow_commit` with that `decision_id`, the outcome, gate receipt, and required proof.
 

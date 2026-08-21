@@ -510,7 +510,7 @@ test('default MCP surface is compact and transient runtime failure returns struc
     const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
     assert.equal(messages.length, 3, child.stdout);
     assert.deepEqual(messages[1].result.tools.map((tool) => tool.name).sort(), [
-      'marrow_agent_runtime', 'marrow_ask', 'marrow_auto', 'marrow_commit', 'marrow_handoff_status', 'marrow_status',
+      'marrow_agent_runtime', 'marrow_ask', 'marrow_auto', 'marrow_commit', 'marrow_handoff_status', 'marrow_status', 'marrow_think',
     ].sort());
     const result = JSON.parse(messages[2].result.content[0].text);
     assert.equal(messages[2].result.isError, true);
