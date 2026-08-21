@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NATIVE_EXPECTED_HOOKS = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.NATIVE_EXPECTED_HOOKS = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.normalizeHookEventPayload = normalizeHookEventPayload;
 exports.findHookSettingsPath = findHookSettingsPath;
 exports.readHookSettings = readHookSettings;
 exports.readHookSettingsForInstall = readHookSettingsForInstall;
@@ -11,17 +12,42 @@ exports.nativeHookEvidence = nativeHookEvidence;
 exports.stableToolCorrelation = stableToolCorrelation;
 exports.stablePromptCorrelation = stablePromptCorrelation;
 exports.stableSessionWorkflowId = stableSessionWorkflowId;
+exports.grokHookSettingsPath = grokHookSettingsPath;
+exports.installGrokNativeHooks = installGrokNativeHooks;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
+const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
-exports.MCP_ADAPTER_VERSION = '3.9.70';
+exports.MCP_ADAPTER_VERSION = '3.9.71';
 exports.NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*';
+exports.GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 exports.MCP_PACKAGE_SPEC = `@getmarrow/mcp@${exports.MCP_ADAPTER_VERSION}`;
 exports.CONTEXT_HOOK_COMMAND = `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp context-hook`;
 exports.PRE_ACTION_HOOK_COMMAND = `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp pre-action-hook`;
 exports.ACTION_RESULT_HOOK_COMMAND = `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp hook`;
 exports.SESSION_END_HOOK_COMMAND = `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp session-hook`;
 exports.NATIVE_EXPECTED_HOOKS = ['prompt', 'pre_action', 'action_result', 'session_end'];
+const HOOK_CAMEL_TO_SNAKE = {
+    hookEventName: 'hook_event_name',
+    sessionId: 'session_id',
+    toolName: 'tool_name',
+    toolInput: 'tool_input',
+    toolResponse: 'tool_response',
+    toolResult: 'tool_result',
+    toolUseId: 'tool_use_id',
+    transcriptPath: 'transcript_path',
+};
+function normalizeHookEventPayload(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        return {};
+    const source = value;
+    const normalized = { ...source };
+    for (const [camel, snake] of Object.entries(HOOK_CAMEL_TO_SNAKE)) {
+        if (normalized[snake] == null && normalized[camel] != null)
+            normalized[snake] = normalized[camel];
+    }
+    return normalized;
+}
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -236,5 +262,43 @@ function stablePromptCorrelation(event) {
 }
 function stableSessionWorkflowId(sessionId, fallback) {
     return `session-${stableHash([sessionId || '', sessionId ? null : fallback ?? null])}`;
+}
+function grokHookSettingsPath(home = process.env.HOME || (0, node_os_1.homedir)()) {
+    return (0, node_path_1.join)(home, '.grok', 'hooks', 'marrow.json');
+}
+function installGrokNativeHooks(home = process.env.HOME || (0, node_os_1.homedir)()) {
+    const settingsPath = grokHookSettingsPath(home);
+    const command = (subcommand) => (subcommand === 'context-hook' ? exports.CONTEXT_HOOK_COMMAND
+        : subcommand === 'pre-action-hook' ? exports.PRE_ACTION_HOOK_COMMAND
+            : subcommand === 'session-hook' ? exports.SESSION_END_HOOK_COMMAND
+                : exports.ACTION_RESULT_HOOK_COMMAND);
+    const handler = (subcommand) => ({
+        type: 'command',
+        command: command(subcommand),
+        timeout: 15,
+    });
+    const next = {
+        hooks: {
+            UserPromptSubmit: [{ hooks: [handler('context-hook')] }],
+            PreToolUse: [{ matcher: exports.GROK_NATIVE_HOOK_MATCHER, hooks: [handler('pre-action-hook')] }],
+            PostToolUse: [{ matcher: exports.GROK_NATIVE_HOOK_MATCHER, hooks: [handler('hook')] }],
+            PostToolUseFailure: [{ matcher: exports.GROK_NATIVE_HOOK_MATCHER, hooks: [handler('hook')] }],
+            Stop: [{ hooks: [handler('session-hook')] }],
+            SessionEnd: [{ hooks: [handler('session-hook')] }],
+        },
+    };
+    let previous = '';
+    if ((0, node_fs_1.existsSync)(settingsPath)) {
+        try {
+            previous = (0, node_fs_1.readFileSync)(settingsPath, 'utf8');
+        }
+        catch {
+            previous = '';
+        }
+    }
+    const serialized = `${JSON.stringify(next, null, 2)}\n`;
+    (0, node_fs_1.mkdirSync)((0, node_path_1.dirname)(settingsPath), { recursive: true, mode: 0o700 });
+    (0, node_fs_1.writeFileSync)(settingsPath, serialized, { mode: 0o600 });
+    return { settingsPath, installed: previous !== serialized };
 }
 //# sourceMappingURL=hook-contract.js.map

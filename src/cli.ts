@@ -62,6 +62,7 @@ import {
   validateBaseUrl,
 } from './index';
 import { installPostToolUseHook, runHookCommand } from './hook';
+import { installGrokNativeHooks } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
@@ -301,6 +302,13 @@ ${MARROW_BLOCK_END}`;
     process.stdout.write('Configured Stop hook. Session-end coverage remains unverified until Marrow observes session-end receipts.\n');
   } else {
     process.stdout.write('Stop hook configuration is present. Session-end coverage remains unverified until Marrow observes session-end receipts.\n');
+  }
+
+  const grokHookInstall = installGrokNativeHooks();
+  if (grokHookInstall.installed) {
+    process.stdout.write(`Configured Grok native hooks at ${grokHookInstall.settingsPath}. Coverage remains unverified until Marrow observes Grok lifecycle receipts.\n`);
+  } else {
+    process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Coverage remains unverified until Marrow observes Grok lifecycle receipts.\n`);
   }
 
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
@@ -968,12 +976,13 @@ const TOOLS = [
     name: 'marrow_commit',
     description:
       'Close a recorded action with success/failure, a specific outcome, and required proof. ' +
-      'Use the decision_id from marrow_think and the gate receipt from marrow_agent_runtime for consequential work. ' +
+      'decision_id may come from marrow_think, marrow_auto, or marrow_agent_runtime.runtime_authorization.id. ' +
+      'Use the gate receipt from marrow_agent_runtime for consequential work. ' +
       'Outcome closure is required for accountable fleet learning.',
     inputSchema: {
       type: 'object',
       properties: {
-        decision_id: { type: 'string', description: 'decision_id from the marrow_think call' },
+        decision_id: { type: 'string', description: 'decision_id from marrow_think, marrow_auto, or marrow_agent_runtime.runtime_authorization.id' },
         success: { type: 'boolean', description: 'Did the action succeed?' },
         outcome: { type: 'string', description: 'What happened — be specific, this trains the hive' },
         caused_by: { type: 'string', description: 'Optional: what caused this action' },
@@ -1859,6 +1868,7 @@ const TOOLS = [
 
 const CORE_TOOL_NAMES = new Set([
   'marrow_agent_runtime',
+  'marrow_think',
   'marrow_commit',
   'marrow_ask',
   'marrow_status',
@@ -1901,7 +1911,7 @@ async function handleRequest(req: {
         capabilities: { tools: {}, prompts: {} },
         serverInfo: { name: 'marrow', version: MCP_ADAPTER_VERSION },
         ...(AUTO_ENROLL ? {
-          instructions: `Use marrow_agent_runtime before consequential actions, obey fresh allow/warn/review_required/block results, use marrow_ask for relevant prior lessons, and close meaningful outcomes with marrow_commit. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work. ${hostCapabilityInstructions(hostCapability)}`,
+          instructions: `Call marrow_think before meaningful work to create the decision_id. Use marrow_agent_runtime before consequential actions and obey fresh allow/warn/review_required/block only when risk_gate.enforced is true; if enforced is false the gate is advisory, not a live block. Use marrow_ask for relevant prior lessons, and close outcomes with marrow_commit using that decision_id. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work. ${hostCapabilityInstructions(hostCapability)}`,
         } : {}),
         _meta: { host_capability: hostCapability },
       });

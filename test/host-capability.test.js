@@ -142,7 +142,7 @@ test('canonical instructions state every capability boundary without claiming se
   assert.match(instructions, /Only observed Marrow receipts do/);
 });
 
-test('neutral and representative MCP hosts expose one contract, six tools, and the retained prompt name', () => {
+test('neutral and representative MCP hosts expose one contract, seven tools, and the retained prompt name', () => {
   let baselineTools;
   let baselinePromptText;
   const hostCases = [
@@ -162,9 +162,10 @@ test('neutral and representative MCP hosts expose one contract, six tools, and t
       const promptList = messages.get(3).result.prompts;
       const prompt = messages.get(4).result;
 
-      assert.equal(tools.length, 6);
+      assert.equal(tools.length, 7);
       assert.deepEqual(new Set(tools.map((tool) => tool.name)), new Set([
         'marrow_agent_runtime',
+        'marrow_think',
         'marrow_commit',
         'marrow_ask',
         'marrow_status',

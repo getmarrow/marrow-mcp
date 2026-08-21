@@ -7,6 +7,25 @@ const test = require('node:test');
 
 const { classifyTool, runPreActionHookCommand } = require('../dist/hook-pre-action.js');
 const { deriveAction } = require('../dist/hook.js');
+const { normalizeHookEventPayload } = require('../dist/hook-contract.js');
+const { isReadOnlyToolEvent } = require('../dist/hook-tool-policy.js');
+
+test('Grok camelCase envelopes classify the same as Claude snake_case', () => {
+  const grok = normalizeHookEventPayload({
+    hookEventName: 'PreToolUse',
+    toolName: 'run_terminal_command',
+    toolInput: { command: 'wrangler deploy production' },
+  });
+  assert.equal(grok.hook_event_name, 'PreToolUse');
+  assert.equal(grok.tool_name, 'run_terminal_command');
+  assert.equal(classifyTool(grok).protected, true);
+  assert.equal(isReadOnlyToolEvent(grok), false);
+  assert.equal(isReadOnlyToolEvent({
+    tool_name: 'search_replace',
+    tool_input: { file_path: 'src/index.ts', old_string: 'a', new_string: 'b' },
+  }), false);
+  assert.equal(isReadOnlyToolEvent({ tool_name: 'read_file', tool_input: { target_file: 'src/index.ts' } }), true);
+});
 
 test('pre-action and result hooks use the same privacy-safe action binding', () => {
   const event = {

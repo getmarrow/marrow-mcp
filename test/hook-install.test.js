@@ -11,9 +11,11 @@ const { installSessionEndHook } = require('../dist/hook-session.js');
 const {
   ACTION_RESULT_HOOK_COMMAND,
   CONTEXT_HOOK_COMMAND,
+  GROK_NATIVE_HOOK_MATCHER,
   NATIVE_HOOK_MATCHER,
   PRE_ACTION_HOOK_COMMAND,
   SESSION_END_HOOK_COMMAND,
+  installGrokNativeHooks,
   nativeHookConfigurationFingerprint,
 } = require('../dist/hook-contract.js');
 
@@ -135,4 +137,20 @@ test('fingerprint includes unexpected active legacy and duplicate Marrow handler
     writeFileSync(settingsPath, JSON.stringify(repaired, null, 2));
     assert.notEqual(nativeHookConfigurationFingerprint(directory), expectedOnly);
   });
+});
+
+test('Grok native hooks install under ~/.grok/hooks with Grok tool matchers', () => {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-grok-hooks-'));
+  try {
+    const result = installGrokNativeHooks(home);
+    const settings = JSON.parse(readFileSync(result.settingsPath, 'utf8'));
+    assert.equal(result.settingsPath, join(home, '.grok', 'hooks', 'marrow.json'));
+    assert.equal(settings.hooks.UserPromptSubmit[0].hooks[0].command, CONTEXT_HOOK_COMMAND);
+    assert.equal(settings.hooks.PreToolUse[0].matcher, GROK_NATIVE_HOOK_MATCHER);
+    assert.equal(settings.hooks.PostToolUse[0].matcher, GROK_NATIVE_HOOK_MATCHER);
+    assert.ok(settings.hooks.SessionEnd);
+    assert.equal(settings.hooks.Stop[0].hooks[0].command, SESSION_END_HOOK_COMMAND);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });

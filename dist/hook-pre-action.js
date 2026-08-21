@@ -161,7 +161,7 @@ async function runPreActionHookCommand(input) {
     if (event === undefined) {
         try {
             const raw = (await readStdin()).trim();
-            event = raw ? JSON.parse(raw) : {};
+            event = raw ? (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw)) : {};
         }
         catch {
             emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow rejected malformed or oversized pre-action input.' });

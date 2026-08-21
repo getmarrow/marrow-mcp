@@ -124,16 +124,45 @@ function pickKey(env) {
         return { key: env.MARROW_KEY, source: 'MARROW_KEY' };
     return { key: '', source: null };
 }
+function matchingFleetIdentity(env, agentId) {
+    const want = String(agentId || '').trim();
+    if (!want)
+        return null;
+    for (const [name, boundAgent] of Object.entries(env)) {
+        const match = /^MARROW_AGENT_ID_([A-Z0-9]+)$/.exec(name);
+        if (!match || String(boundAgent || '').trim() !== want)
+            continue;
+        const keyName = `MARROW_KEY_${match[1]}`;
+        const key = String(env[keyName] || '').trim();
+        if (!key)
+            continue;
+        return { key, agentId: want, source: keyName };
+    }
+    return null;
+}
 function resolveMarrowEnv(options = {}) {
     const env = options.env || process.env;
     const cwd = options.cwd || process.cwd();
     const home = options.home || env.HOME || env.USERPROFILE || os.homedir();
+    const requestedAgentId = env.MARROW_FLEET_AGENT_ID || env.MARROW_AGENT_ID;
+    const matchedIdentity = matchingFleetIdentity(env, requestedAgentId);
     const direct = pickKey(env);
+    if (direct.key && matchedIdentity && matchedIdentity.key !== direct.key) {
+        return {
+            apiKey: matchedIdentity.key,
+            baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
+            agentId: matchedIdentity.agentId,
+            sessionId: env.MARROW_SESSION_ID,
+            source: matchedIdentity.source,
+            missing: false,
+            exactFix: 'Marrow key is matched to the configured agent identity from the process environment.',
+        };
+    }
     if (direct.key) {
         return {
             apiKey: direct.key,
             baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
-            agentId: env.MARROW_FLEET_AGENT_ID || env.MARROW_AGENT_ID,
+            agentId: requestedAgentId,
             sessionId: env.MARROW_SESSION_ID,
             source: direct.source,
             missing: false,

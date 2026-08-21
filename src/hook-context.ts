@@ -22,6 +22,7 @@ import {
   CONTEXT_HOOK_COMMAND as CONTRACT_CONTEXT_HOOK_COMMAND,
   findHookSettingsPath,
   nativeHookEvidence,
+  normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
   stablePromptCorrelation,
@@ -615,7 +616,7 @@ export async function runContextHookCommand(): Promise<void> {
 
     let event: UserPromptSubmitEvent;
     try {
-      event = JSON.parse(raw) as UserPromptSubmitEvent;
+      event = normalizeHookEventPayload(JSON.parse(raw)) as UserPromptSubmitEvent;
     } catch {
       debug('[marrow-context-hook] invalid JSON');
       emitNoContext();

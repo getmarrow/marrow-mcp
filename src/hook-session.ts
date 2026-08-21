@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import {
   findHookSettingsPath,
   nativeHookEvidence,
+  normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
   SESSION_END_HOOK_COMMAND,
@@ -34,7 +35,7 @@ function readStopHookSource(input?: unknown): StopHookSource {
     }
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const source = value as Record<string, unknown>;
+  const source = normalizeHookEventPayload(value);
   const take = (field: string): string | undefined => {
     const candidate = typeof source[field] === 'string' ? String(source[field]).trim().slice(0, 1024) : '';
     return candidate || undefined;

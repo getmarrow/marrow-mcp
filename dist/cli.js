@@ -12,6 +12,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const index_1 = require("./index");
 const hook_1 = require("./hook");
+const hook_contract_1 = require("./hook-contract");
 const hook_context_1 = require("./hook-context");
 const hook_session_1 = require("./hook-session");
 const hook_pre_action_1 = require("./hook-pre-action");
@@ -20,7 +21,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const spool_command_1 = require("./spool-command");
 const guidance_cache_1 = require("./guidance-cache");
 const request_reliability_1 = require("./request-reliability");
-const hook_contract_1 = require("./hook-contract");
+const hook_contract_2 = require("./hook-contract");
 const ping_state_1 = require("./ping-state");
 const control_path_state_1 = require("./control-path-state");
 const redact_1 = require("./redact");
@@ -242,6 +243,13 @@ ${MARROW_BLOCK_END}`;
     }
     else {
         process.stdout.write('Stop hook configuration is present. Session-end coverage remains unverified until Marrow observes session-end receipts.\n');
+    }
+    const grokHookInstall = (0, hook_contract_1.installGrokNativeHooks)();
+    if (grokHookInstall.installed) {
+        process.stdout.write(`Configured Grok native hooks at ${grokHookInstall.settingsPath}. Coverage remains unverified until Marrow observes Grok lifecycle receipts.\n`);
+    }
+    else {
+        process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Coverage remains unverified until Marrow observes Grok lifecycle receipts.\n`);
     }
     process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
     process.stdout.write('Set MARROW_AUTO_HOOK=false to disable passive hooks.\n');
@@ -840,12 +848,13 @@ if (process.argv[2] !== 'keys') {
             {
                 name: 'marrow_commit',
                 description: 'Close a recorded action with success/failure, a specific outcome, and required proof. ' +
-                    'Use the decision_id from marrow_think and the gate receipt from marrow_agent_runtime for consequential work. ' +
+                    'decision_id may come from marrow_think, marrow_auto, or marrow_agent_runtime.runtime_authorization.id. ' +
+                    'Use the gate receipt from marrow_agent_runtime for consequential work. ' +
                     'Outcome closure is required for accountable fleet learning.',
                 inputSchema: {
                     type: 'object',
                     properties: {
-                        decision_id: { type: 'string', description: 'decision_id from the marrow_think call' },
+                        decision_id: { type: 'string', description: 'decision_id from marrow_think, marrow_auto, or marrow_agent_runtime.runtime_authorization.id' },
                         success: { type: 'boolean', description: 'Did the action succeed?' },
                         outcome: { type: 'string', description: 'What happened — be specific, this trains the hive' },
                         caused_by: { type: 'string', description: 'Optional: what caused this action' },
@@ -1695,6 +1704,7 @@ if (process.argv[2] !== 'keys') {
         ];
         const CORE_TOOL_NAMES = new Set([
             'marrow_agent_runtime',
+            'marrow_think',
             'marrow_commit',
             'marrow_ask',
             'marrow_status',
@@ -1726,9 +1736,9 @@ if (process.argv[2] !== 'keys') {
                     success(id, {
                         protocolVersion: '2024-11-05',
                         capabilities: { tools: {}, prompts: {} },
-                        serverInfo: { name: 'marrow', version: hook_contract_1.MCP_ADAPTER_VERSION },
+                        serverInfo: { name: 'marrow', version: hook_contract_2.MCP_ADAPTER_VERSION },
                         ...(AUTO_ENROLL ? {
-                            instructions: `Use marrow_agent_runtime before consequential actions, obey fresh allow/warn/review_required/block results, use marrow_ask for relevant prior lessons, and close meaningful outcomes with marrow_commit. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work. ${(0, host_capability_1.hostCapabilityInstructions)(hostCapability)}`,
+                            instructions: `Call marrow_think before meaningful work to create the decision_id. Use marrow_agent_runtime before consequential actions and obey fresh allow/warn/review_required/block only when risk_gate.enforced is true; if enforced is false the gate is advisory, not a live block. Use marrow_ask for relevant prior lessons, and close outcomes with marrow_commit using that decision_id. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work. ${(0, host_capability_1.hostCapabilityInstructions)(hostCapability)}`,
                         } : {}),
                         _meta: { host_capability: hostCapability },
                     });
@@ -2057,7 +2067,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 action,
                                 outcome_state: delivered?.committed ? 'closed' : 'pending',
                                 success: delivered?.committed ? acceptedSuccess : highRisk ? undefined : acceptedSuccess,
-                                adapter_version: hook_contract_1.MCP_ADAPTER_VERSION,
+                                adapter_version: hook_contract_2.MCP_ADAPTER_VERSION,
                                 capability_level: 'mcp',
                             },
                         });

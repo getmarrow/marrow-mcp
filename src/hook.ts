@@ -9,6 +9,7 @@ import {
   findHookSettingsPath,
   nativeHookEvidence,
   NATIVE_HOOK_MATCHER,
+  normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
   stableSessionWorkflowId,
@@ -131,7 +132,7 @@ export async function runHookCommand(): Promise<void> {
 
     let event: HookEvent;
     try {
-      event = JSON.parse(raw) as HookEvent;
+      event = normalizeHookEventPayload(JSON.parse(raw)) as HookEvent;
     } catch {
       debug('[marrow-hook] skipped invalid JSON');
       process.exit(0);
