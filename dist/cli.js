@@ -2114,16 +2114,27 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             cached = (0, status_cache_1.readStatusCache)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
                         }
                         catch { /* owner-only cache is best effort */ }
-                        if (cached) {
+                        if (cached?.freshness === 'fresh') {
                             const startedAt = Date.now();
                             refreshStatusInBackground();
                             (0, control_path_state_1.recordControlPathSample)('marrow_status', Date.now() - startedAt, true);
                             toolSuccess(id, clientOperationalPayload('marrow_status', (0, status_cache_1.cachedStatusPayload)(cached)));
                             return;
                         }
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_status' });
-                        storeLastKnownStatus(result, 'status');
-                        toolSuccess(id, clientOperationalPayload('marrow_status', result));
+                        try {
+                            const result = await withControlDeadline((signal) => (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_status' });
+                            storeLastKnownStatus(result, 'status');
+                            toolSuccess(id, clientOperationalPayload('marrow_status', result));
+                        }
+                        catch (error) {
+                            if (cached) {
+                                const startedAt = Date.now();
+                                (0, control_path_state_1.recordControlPathSample)('marrow_status', Date.now() - startedAt, false);
+                                toolSuccess(id, clientOperationalPayload('marrow_status', (0, status_cache_1.cachedStatusPayload)(cached)));
+                                return;
+                            }
+                            throw error;
+                        }
                         return;
                     }
                     if (toolName === 'marrow_create_key') {
