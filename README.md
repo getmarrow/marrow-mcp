@@ -104,7 +104,11 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.71
+## What's New in v3.9.72
+
+v3.9.72 requires SDK `3.7.61` so MCP installations cannot resolve to an SDK that recursively intercepts its own Marrow control-plane traffic. The MCP tool contract is unchanged; this release aligns the tested package chain.
+
+## Previous: v3.9.71
 
 v3.9.71 makes the advertised Grok control loop true:
 
