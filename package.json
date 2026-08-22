@@ -1,6 +1,6 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.71",
+  "version": "3.9.72",
   "mcpName": "io.github.getmarrow/marrow",
   "description": "Runtime control, proof, and fleet intelligence for MCP-compatible AI agents.",
   "bin": {
@@ -74,7 +74,7 @@
     "scripts/control-path-canary.cjs"
   ],
   "dependencies": {
-    "@getmarrow/sdk": "^3.7.54"
+    "@getmarrow/sdk": "^3.7.61"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
