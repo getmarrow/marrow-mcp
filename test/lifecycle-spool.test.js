@@ -791,7 +791,9 @@ test('legacy inventory rejects symlinks, weak permissions, corruption, and overs
     const outside = join(directory, 'outside.json');
     writeFileSync(outside, '[]', { mode: 0o600 });
     symlinkSync(outside, join(spoolDirectory, 'mcp-00000000000000000001.json'));
-    writeFileSync(join(spoolDirectory, 'mcp-00000000000000000002.json'), '[]', { mode: 0o644 });
+    const weakPermissionsFile = join(spoolDirectory, 'mcp-00000000000000000002.json');
+    writeFileSync(weakPermissionsFile, '[]', { mode: 0o644 });
+    chmodSync(weakPermissionsFile, 0o644);
     writeFileSync(join(spoolDirectory, 'mcp-00000000000000000003.json'), '{bad-json', { mode: 0o600 });
     writeFileSync(join(spoolDirectory, 'mcp-00000000000000000004.json'), 'x'.repeat(2 * 1024 * 1024 + 1), { mode: 0o600 });
 
