@@ -117,7 +117,7 @@ v3.9.71 makes the advertised Grok control loop true:
 - Grok native hooks are installed under `~/.grok/hooks/marrow.json` and hook parsers accept Grok camelCase envelopes;
 - idle spool nudge drains up to 40 current-namespace events so the queue does not sit as a nag;
 - if `risk_gate.enforced` is false, the gate is advisory — do not describe it as a live block;
-- `marrow_commit.decision_id` may come from `marrow_think`, `marrow_auto`, or `marrow_agent_runtime.runtime_authorization.id`.
+- `marrow_commit.decision_id` comes from `marrow_think`, `marrow_auto`, or an arbitration runtime that actually created a decision. A normal runtime authorization is a gate receipt, not a decision.
 
 ## Previous: v3.9.69
 
@@ -338,11 +338,13 @@ With installed native hooks, protected tool calls follow this automatically. For
 
 1. Call `marrow_agent_runtime` or `marrow_decision_brief`.
 2. Stop when the returned decision is `block` or `review_required`; otherwise follow its prior lesson and proof contract.
-3. Call `marrow_think` or `marrow_auto` to record intent and obtain the `decision_id` that will be closed. `marrow_agent_runtime.runtime_authorization.id` is also accepted.
+3. Call `marrow_think` or `marrow_auto` to record intent and obtain the `decision_id` that will be closed. Keep `marrow_agent_runtime.runtime_authorization.id` separate as the gate receipt for consequential work.
 4. Perform the action only when its gate allows it. For a hard external choke point, run the command through `npx @getmarrow/install run`; it verifies the signed action permit immediately before execution.
 5. Call `marrow_commit` with that `decision_id`, the outcome, gate receipt, and required proof.
 
 `marrow_agent_runtime` returns `runtime_authorization` with the authoritative gate receipt. Ordinary runtime checks do not create a decision, so they omit `decision_id`; call `marrow_think` (or use `marrow_auto`) when a decision must be created and closed. An arbitration runtime that actually creates a decision returns that server-created `decision_id`. This contract is identical across MCP-compatible hosts and SDK-owned runtimes.
+
+`marrow_auto` returns an `operation_id`, phase, and resumable state. If a client deadline is reached before closure, retry with the same `operation_id`; Marrow reuses the same tenant-scoped think and commit idempotency keys instead of opening another decision. A closed response reports `phase: "closed"`, `committed: true`, and `resumable: false`.
 
 Example pre-action request:
 

@@ -40,7 +40,10 @@ export declare function marrowThink(apiKey: string, baseUrl: string, params: {
     instruction?: string;
     instruction_hash?: string;
     source_meta?: Record<string, unknown>;
-}, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<ThinkResult>;
+}, sessionId?: string, agentId?: string, signal?: AbortSignal, options?: {
+    idempotencyKey?: string;
+    responseMode?: 'ack';
+}): Promise<ThinkResult>;
 /**
  * Explicitly commit the result of an action to Marrow.
  */
@@ -65,10 +68,25 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     reused_identified_workflow?: boolean;
     model_usage?: MarrowModelUsageInput;
     modelUsage?: MarrowModelUsageInput;
-}, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<CommitResult & {
+}, sessionId?: string, agentId?: string, signal?: AbortSignal, idempotencyKey?: string): Promise<CommitResult & {
     runtime_gate?: MarrowAgentRuntimeResult | null;
 }>;
 export declare function marrowModelUsage(apiKey: string, baseUrl: string, input: MarrowModelUsageInput, sessionId?: string, agentId?: string): Promise<MarrowModelUsageResult>;
+export type MarrowAutoResult = {
+    operation_id: string;
+    decision_id: string | null;
+    committed: boolean;
+    phase: 'runtime_pending' | 'think_pending' | 'decision_created' | 'proof_required' | 'commit_pending' | 'closed';
+    resumable: boolean;
+    retry_after_ms: number | null;
+    runtime_gate?: MarrowAgentRuntimeResult | null;
+    phase_timings_ms: {
+        runtime: number | null;
+        think: number | null;
+        commit: number | null;
+        total: number;
+    };
+};
 /**
  * Fire-and-forget style logging helper for tool hooks and simple integrations.
  * Logs intent, and when outcome is supplied, immediately commits it.
@@ -85,10 +103,8 @@ export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
     action_for_gate?: string;
     surfaces?: string[];
     auto_gate?: boolean;
-}, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<{
-    decision_id: string;
-    committed: boolean;
-}>;
+    operation_id?: string;
+}, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<MarrowAutoResult>;
 /**
  * Get agent patterns and failure history.
  */
@@ -166,7 +182,7 @@ export declare function marrowValueReport(apiKey: string, baseUrl: string, perio
  */
 export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
 export declare function marrowWorkflowGate(apiKey: string, baseUrl: string, input: MarrowWorkflowGateRequest, sessionId?: string, agentId?: string): Promise<MarrowWorkflowGateResult>;
-export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowAgentRuntimeResult>;
+export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string, signal?: AbortSignal, idempotencyKeyOverride?: string): Promise<MarrowAgentRuntimeResult>;
 export declare function marrowEnforcement(apiKey: string, baseUrl: string, input: MarrowEnforcementRequest, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowEnforcementResult>;
 /**
  * Resolve conflicting agent proposals through the existing runtime control
