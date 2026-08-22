@@ -2,7 +2,7 @@
  * @getmarrow/mcp — API Functions
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type {
   ThinkResult,
@@ -46,7 +46,7 @@ import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
 import { invalidResponseError, MarrowRequestError, normalizeRequestError, reliableFetch, requestErrorFromResponse } from './request-reliability';
-import { highRiskRuntimeCanClose, normalizeRuntimeResult, runtimeAuthorizationReceiptId } from './runtime-contract';
+import { highRiskRuntimeCanClose, highRiskRuntimeCanContinueWithProof, normalizeRuntimeResult, runtimeAuthorizationReceiptId } from './runtime-contract';
 
 const fetch = reliableFetch;
 
@@ -636,6 +636,81 @@ function createTimeoutSignal(timeoutMs?: number, startedAt?: number): {
 }
 
 const SAFE_AUTO_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$/;
+const AUTO_OPERATION_BINDING_TTL_MS = 30 * 60 * 1_000;
+const AUTO_OPERATION_BINDING_LIMIT = 256;
+
+type AutoOperationBinding = {
+  signature: string;
+  expiresAt: number;
+  runtimeGate?: MarrowAgentRuntimeResult;
+};
+
+const autoOperationBindings = new Map<string, AutoOperationBinding>();
+
+function canonicalAutoBindingValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalAutoBindingValue);
+  if (value && typeof value === 'object') {
+    return Object.keys(value as Record<string, unknown>).sort().reduce<Record<string, unknown>>((result, key) => {
+      result[key] = canonicalAutoBindingValue((value as Record<string, unknown>)[key]);
+      return result;
+    }, {});
+  }
+  return value;
+}
+
+function autoOperationSignature(input: {
+  apiKey: string;
+  baseUrl: string;
+  agentId?: string;
+  sessionId?: string;
+  action: string;
+  gateAction: string;
+  type: string;
+  surfaces?: string[];
+  context?: Record<string, unknown>;
+}): string {
+  return createHash('sha256').update(JSON.stringify(canonicalAutoBindingValue({
+    api_key: input.apiKey,
+    base_url: input.baseUrl.replace(/\/$/, ''),
+    agent_id: input.agentId || null,
+    session_id: input.sessionId || null,
+    action: redactSensitiveText(input.action),
+    gate_action: redactSensitiveText(input.gateAction),
+    type: input.type,
+    surfaces: input.surfaces || [],
+    context: input.context ? redactSensitiveValue(input.context) : null,
+  }))).digest('hex');
+}
+
+function boundAutoOperation(operationId: string, signature: string): AutoOperationBinding {
+  const now = Date.now();
+  for (const [id, binding] of autoOperationBindings) {
+    if (binding.expiresAt <= now) autoOperationBindings.delete(id);
+  }
+  const existing = autoOperationBindings.get(operationId);
+  if (existing) {
+    if (existing.signature !== signature) {
+      throw new MarrowRequestError({
+        code: 'request_failed',
+        backendCode: 'MARROW_AUTO_OPERATION_BINDING_CONFLICT',
+        message: 'marrow_auto operation_id is already bound to another tenant or action scope.',
+        status: 409,
+        retryable: false,
+        exactFix: 'Retry the original tenant, action, context, and surfaces, or start an intentionally different action with a new operation_id.',
+      });
+    }
+    existing.expiresAt = now + AUTO_OPERATION_BINDING_TTL_MS;
+    return existing;
+  }
+  while (autoOperationBindings.size >= AUTO_OPERATION_BINDING_LIMIT) {
+    const oldest = autoOperationBindings.keys().next().value;
+    if (typeof oldest !== 'string') break;
+    autoOperationBindings.delete(oldest);
+  }
+  const created = { signature, expiresAt: now + AUTO_OPERATION_BINDING_TTL_MS };
+  autoOperationBindings.set(operationId, created);
+  return created;
+}
 
 function resolveAutoOperationId(value: unknown): string {
   const supplied = typeof value === 'string' ? value.trim() : '';
@@ -720,6 +795,17 @@ export async function marrowAuto(
   const startedAt = Date.now();
   const responseBudgetMs = Math.min(3_200, Math.max(500, Math.floor(timeoutMs || 3_200)));
   const operationId = resolveAutoOperationId(params.operation_id);
+  const operationBinding = boundAutoOperation(operationId, autoOperationSignature({
+    apiKey,
+    baseUrl,
+    agentId,
+    sessionId,
+    action: params.action,
+    gateAction: params.action_for_gate || params.action,
+    type: params.type || 'general',
+    surfaces: params.surfaces,
+    context: params.context,
+  }));
   const timings: Omit<MarrowAutoResult['phase_timings_ms'], 'total'> = {
     runtime: null,
     think: null,
@@ -731,44 +817,53 @@ export async function marrowAuto(
 
   if (params.auto_gate === true) {
     const phaseStarted = Date.now();
-    const runtimeTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
-    try {
-      runtimeGate = await marrowAgentRuntime(
-        apiKey,
-        baseUrl,
-        {
-          action: redactSensitiveText(params.action_for_gate || params.action),
-          type: params.type || 'general',
-          agent_id: agentId,
-          session_id: sessionId,
-          proof: params.proof ? redactSensitiveValue(params.proof) as Record<string, unknown> : undefined,
-          context: { source: 'mcp_auto_risk_upgrade', operation_id: operationId },
-        },
-        sessionId,
-        agentId,
-        runtimeTimeout.signal,
-        autoIdempotencyKey(operationId, 'runtime'),
-      );
-      timings.runtime = Date.now() - phaseStarted;
-    } catch (error) {
-      timings.runtime = Date.now() - phaseStarted;
-      if (normalizeRequestError(error).code === 'request_timeout') {
-        return autoPartial({
-          operationId,
-          phase: 'runtime_pending',
-          timings,
-          startedAt,
-        });
+    if (operationBinding.runtimeGate) {
+      runtimeGate = operationBinding.runtimeGate;
+      timings.runtime = 0;
+    } else {
+      const runtimeTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
+      try {
+        runtimeGate = await marrowAgentRuntime(
+          apiKey,
+          baseUrl,
+          {
+            action: redactSensitiveText(params.action_for_gate || params.action),
+            type: params.type || 'general',
+            agent_id: agentId,
+            session_id: sessionId,
+            surfaces: params.surfaces,
+            // Proof is commit evidence, not part of immutable runtime authorization.
+            // Keeping it out makes missing -> supplied proof a monotonic continuation.
+            context: { source: 'mcp_auto_risk_upgrade', operation_id: operationId },
+          },
+          sessionId,
+          agentId,
+          runtimeTimeout.signal,
+          autoIdempotencyKey(operationId, 'runtime'),
+        );
+        operationBinding.runtimeGate = runtimeGate;
+        timings.runtime = Date.now() - phaseStarted;
+      } catch (error) {
+        timings.runtime = Date.now() - phaseStarted;
+        if (normalizeRequestError(error).code === 'request_timeout') {
+          return autoPartial({
+            operationId,
+            phase: 'runtime_pending',
+            timings,
+            startedAt,
+          });
+        }
+        throw error;
+      } finally {
+        runtimeTimeout.cancel();
       }
-      throw error;
-    } finally {
-      runtimeTimeout.cancel();
     }
     gateReceiptId = runtimeAuthorizationReceiptId(runtimeGate) || gateReceiptId;
     if (!gateReceiptId) {
       throw new Error('marrowAuto runtime phase did not return canonical runtime authorization');
     }
-    proofCanClose = highRiskRuntimeCanClose(runtimeGate, params.proof, gateReceiptId);
+    proofCanClose = highRiskRuntimeCanClose(runtimeGate, params.proof, gateReceiptId)
+      || highRiskRuntimeCanContinueWithProof(runtimeGate, params.proof, gateReceiptId);
   }
 
   const thinkStarted = Date.now();
