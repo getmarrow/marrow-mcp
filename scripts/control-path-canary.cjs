@@ -1,21 +1,32 @@
 #!/usr/bin/env node
 const { spawn } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { resolve } = require('node:path');
 const { version: packageVersion } = require('../package.json');
 
-const cases = [
+function canaryCases(operationId) {
+  return [
   ['marrow_status', {}],
   ['marrow_runtime_status', { fast: true }],
   ['marrow_orient', { autoWarn: true }],
   ['marrow_ask', { query: 'What should this agent verify before a safe release?' }],
   ['marrow_agent_runtime', { action: 'Review a local documentation note', type: 'general', surfaces: ['workspace'] }],
+  ['marrow_auto', {
+    action: 'Record one bounded MCP control-path canary outcome',
+    outcome: 'The MCP auto canary reached one committed outcome.',
+    success: true,
+    type: 'process',
+    proof: { checks: ['mcp_auto_committed'] },
+    operation_id: operationId,
+  }],
   ['marrow_first_value', { action: 'Verify Marrow control-path availability', type: 'review', surfaces: ['api'] }],
   ['marrow_buyer_proof', { periodDays: 7 }],
   ['marrow_governance_control_plane', {}],
   ['marrow_value_report', { period: '7d' }],
   ['marrow_fleet_lessons', { query: 'safe release verification', limit: 3 }],
-];
+  ];
+}
 
 const HOT_PATH_TOOLS = new Set([
   'marrow_status',
@@ -23,6 +34,7 @@ const HOT_PATH_TOOLS = new Set([
   'marrow_orient',
   'marrow_ask',
   'marrow_agent_runtime',
+  'marrow_auto',
 ]);
 const OUTPUT_LIMIT_BYTES = 256 * 1024;
 
@@ -91,6 +103,18 @@ function validatePayload(name, payload) {
         && payload.proof_pack
         && typeof payload.proof_pack.complete === 'boolean',
       'runtime gate',
+    );
+  } else if (name === 'marrow_auto') {
+    requireField(
+      payload.live_delivery
+        && payload.live_delivery.accepted === true
+        && payload.live_delivery.committed === true
+        && payload.completion_state === 'closed_with_proof'
+        && payload.phase === 'closed'
+        && payload.resumable === false
+        && typeof payload.decision_id === 'string'
+        && payload.decision_id.length > 0,
+      'committed auto loop',
     );
   } else if (name === 'marrow_first_value') {
     requireField(typeof payload.active === 'boolean' && typeof payload.headline === 'string', 'first-value');
@@ -251,6 +275,7 @@ async function runCanary(env = process.env, options = {}) {
   });
   const totalTimer = setTimeout(() => client.abort(new Error('MCP canary total timeout')), totalTimeoutMs);
   const processStarted = performance.now();
+  const cases = canaryCases(`canary_${randomUUID()}`);
   client.start();
   try {
     const initialized = await client.request('initialize', {}, toolTimeoutMs + 3_000);
@@ -268,9 +293,19 @@ async function runCanary(env = process.env, options = {}) {
     const results = [];
     for (const [name, args] of cases) {
       const callStarted = performance.now();
-      const called = await client.request('tools/call', { name, arguments: args });
+      let called;
+      let payload;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        called = await client.request('tools/call', { name, arguments: args });
+        payload = toolPayload(called, name);
+        if (name !== 'marrow_auto' || payload.live_delivery?.committed === true || payload.resumable !== true) break;
+        if (attempt < 2) {
+          const retryAfterMs = Number(payload.retry_after_ms);
+          const delayMs = Number.isFinite(retryAfterMs) ? Math.max(0, Math.min(1_000, retryAfterMs)) : 250;
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+        }
+      }
       const latencyMs = Math.round(performance.now() - callStarted);
-      const payload = toolPayload(called, name);
       validatePayload(name, payload);
       const live = payload.stale !== true && payload.source !== 'last_known' && payload.available !== false;
       if (!live) throw new Error(`${name} returned cached or unavailable guidance`);

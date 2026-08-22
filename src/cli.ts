@@ -81,11 +81,11 @@ import { MCP_ADAPTER_VERSION } from './hook-contract';
 import { resolvePingTimeoutMs, updatePingState } from './ping-state';
 import { controlPathStats, recordControlPathSample } from './control-path-state';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
-import { highRiskRuntimeCanClose, runtimeAuthorizationReceiptId } from './runtime-contract';
 import { cachedStatusPayload, readStatusCache, writeStatusCache } from './status-cache';
 import { formatHabitLoopCopy } from './habit-loop-copy';
 import { hostCapabilityInstructions, resolveHostCapability } from './host-capability';
-import type { ThinkResult, MarrowAgentRuntimeResult, MarrowMemory } from './types';
+import type { MarrowAutoResult } from './index';
+import type { ThinkResult, MarrowMemory } from './types';
 
 // Parse CLI args
 function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean } {
@@ -976,13 +976,13 @@ const TOOLS = [
     name: 'marrow_commit',
     description:
       'Close a recorded action with success/failure, a specific outcome, and required proof. ' +
-      'decision_id may come from marrow_think, marrow_auto, or marrow_agent_runtime.runtime_authorization.id. ' +
+      'decision_id comes from marrow_think, marrow_auto, or an arbitration runtime that actually created a decision. ' +
       'Use the gate receipt from marrow_agent_runtime for consequential work. ' +
       'Outcome closure is required for accountable fleet learning.',
     inputSchema: {
       type: 'object',
       properties: {
-        decision_id: { type: 'string', description: 'decision_id from marrow_think, marrow_auto, or marrow_agent_runtime.runtime_authorization.id' },
+        decision_id: { type: 'string', description: 'decision_id from marrow_think, marrow_auto, or an arbitration runtime that created a decision' },
         success: { type: 'boolean', description: 'Did the action succeed?' },
         outcome: { type: 'string', description: 'What happened — be specific, this trains the hive' },
         caused_by: { type: 'string', description: 'Optional: what caused this action' },
@@ -1068,6 +1068,10 @@ const TOOLS = [
         },
         proof: { type: 'object', description: 'Measured completion evidence for gated work.' },
         gate_receipt_id: { type: 'string', description: 'Fresh receipt returned by marrow_agent_runtime.' },
+        operation_id: {
+          type: 'string',
+          description: 'Opaque 8-80 character resume token. Reuse the returned operation_id after a resumable response.',
+        },
       },
       required: ['action'],
     },
@@ -2250,48 +2254,32 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
         const suppliedProof = args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
           ? redactSensitiveValue(args.proof) as Record<string, unknown>
           : undefined;
-        let runtimeGate: MarrowAgentRuntimeResult | null = null;
-        if (highRisk) {
-          runtimeGate = await withControlDeadline(
-            (signal) => marrowAgentRuntime(API_KEY, BASE_URL, {
-              action: redactSensitiveText(action),
-              type,
-              agent_id: FLEET_AGENT_ID,
-              session_id: SESSION_ID,
-              proof: suppliedProof,
-              context: { source: 'mcp_auto_risk_upgrade' },
-            }, SESSION_ID, FLEET_AGENT_ID, signal),
-            { highRisk: true, toolName: 'marrow_auto.runtime' },
-          );
-          storeRuntimeGuidance(runtimeGate);
-        }
-        const canonicalRuntimeReceiptId = runtimeAuthorizationReceiptId(runtimeGate);
         const suppliedRuntimeReceiptId = typeof args.gate_receipt_id === 'string'
           ? args.gate_receipt_id
-          : canonicalRuntimeReceiptId;
-        const proofCanClose = !highRisk
-          || highRiskRuntimeCanClose(runtimeGate!, suppliedProof, suppliedRuntimeReceiptId);
-        const acceptedSuccess = proofCanClose ? outcomeSuccess : undefined;
+          : undefined;
 
         const delivery = () => marrowAuto(API_KEY, BASE_URL, {
           action,
           outcome,
-          success: acceptedSuccess,
+          success: outcomeSuccess,
           type,
           proof: suppliedProof,
           gate_receipt_id: suppliedRuntimeReceiptId || undefined,
           // Low-risk one-shot capture does not need a policy gate. Consequential
-          // work already obtained and validated canonical runtime authorization.
+          // work obtains exactly one canonical runtime authorization inside auto.
           auto_gate: highRisk,
+          operation_id: typeof args.operation_id === 'string' ? args.operation_id : undefined,
         }, SESSION_ID, FLEET_AGENT_ID, 8_000);
 
-        let delivered: { decision_id: string; committed: boolean } | null = null;
+        let delivered: MarrowAutoResult | null = null;
         let deliveryFailure: Record<string, unknown> | null = null;
         try {
           delivered = await delivery();
         } catch (err) {
           deliveryFailure = structuredRequestFailure(err);
         }
+        const runtimeGate = delivered?.runtime_gate || null;
+        if (runtimeGate) storeRuntimeGuidance(runtimeGate);
 
         const receipt = await recordLifecycleEvent({
           apiKey: API_KEY,
@@ -2300,18 +2288,18 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           event: {
             event_type: delivered?.committed
               ? 'outcome_committed'
-              : !highRisk && acceptedSuccess === false
+              : !highRisk && outcomeSuccess === false
               ? 'tool_failed'
-              : !highRisk && acceptedSuccess === true
+              : !highRisk && outcomeSuccess === true
               ? 'tool_completed'
               : 'goal_started',
             harness: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || 'mcp',
             agent_id: FLEET_AGENT_ID,
             session_id: SESSION_ID,
-            decision_id: delivered?.decision_id,
+            decision_id: delivered?.decision_id || undefined,
             action,
             outcome_state: delivered?.committed ? 'closed' : 'pending',
-            success: delivered?.committed ? acceptedSuccess : highRisk ? undefined : acceptedSuccess,
+            success: delivered?.committed ? outcomeSuccess : highRisk ? undefined : outcomeSuccess,
             adapter_version: MCP_ADAPTER_VERSION,
             capability_level: 'mcp',
           },
@@ -2323,20 +2311,34 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           warnings: cachedOrientWarnings.map(formatWarningActionably),
           logging: delivered?.committed
             ? 'governed_commit_confirmed'
+            : delivered?.resumable
+            ? 'resume_required'
             : delivered
             ? 'intent_confirmed'
             : 'durably_queued',
           receipt,
           completion_state: delivered?.committed
             ? 'closed_with_proof'
-            : !proofCanClose
+            : delivered?.phase === 'proof_required'
             ? 'pending_required_proof'
-            : outcomeSuccess === undefined
+            : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
             ? 'pending_evidence'
             : 'delivery_pending',
           decision_id: delivered?.decision_id || null,
+          operation_id: delivered?.operation_id || (typeof args.operation_id === 'string' ? args.operation_id : null),
+          phase: delivered?.phase || null,
+          resumable: delivered?.resumable || false,
+          retry_after_ms: delivered?.retry_after_ms ?? null,
+          phase_timings_ms: delivered?.phase_timings_ms || null,
+          exact_next_action: delivered?.committed
+            ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
+            : delivered?.phase === 'proof_required'
+            ? 'Attach the required measured proof and retry marrow_auto with this same operation_id.'
+            : delivered?.resumable
+            ? 'Retry marrow_auto with this same operation_id. Do not start a new auto operation.'
+            : 'Close this decision after the real outcome is known.',
           live_delivery: {
-            accepted: Boolean(delivered),
+            accepted: Boolean(delivered?.decision_id),
             committed: Boolean(delivered?.committed),
             ...(deliveryFailure ? { failure: deliveryFailure } : {}),
           },

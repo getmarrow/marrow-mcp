@@ -45,8 +45,8 @@ import {
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
-import { invalidResponseError, MarrowRequestError, reliableFetch, requestErrorFromResponse } from './request-reliability';
-import { normalizeRuntimeResult, runtimeAuthorizationReceiptId } from './runtime-contract';
+import { invalidResponseError, MarrowRequestError, normalizeRequestError, reliableFetch, requestErrorFromResponse } from './request-reliability';
+import { highRiskRuntimeCanClose, normalizeRuntimeResult, runtimeAuthorizationReceiptId } from './runtime-contract';
 
 const fetch = reliableFetch;
 
@@ -429,6 +429,7 @@ export async function marrowThink(
   sessionId?: string,
   agentId?: string,
   signal?: AbortSignal,
+  options?: { idempotencyKey?: string; responseMode?: 'ack' },
 ): Promise<ThinkResult> {
   const body: Record<string, unknown> = {
     action: redactSensitiveText(params.action),
@@ -464,12 +465,19 @@ export async function marrowThink(
     body.previous_outcome = redactSensitiveText(params.previous_outcome ?? '');
   }
 
-  const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/think`, {
+  const thinkUrl = `${baseUrl}/v1/agent/think${options?.responseMode === 'ack' ? '?response=ack' : ''}`;
+  const thinkInit = {
     method: 'POST',
-    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    headers: {
+      ...buildHeaders(apiKey, sessionId, 'application/json', agentId),
+      ...(options?.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
+    },
     body: JSON.stringify(body),
     signal,
-  }, true);
+  } satisfies RequestInit;
+  const res = options?.idempotencyKey
+    ? await fetch(thinkUrl, thinkInit)
+    : await fetchWithRetryQueue(thinkUrl, thinkInit, true);
 
   const json = await safeJsonResponse(res);
   return json.data;
@@ -504,6 +512,7 @@ export async function marrowCommit(
   sessionId?: string,
   agentId?: string,
   signal?: AbortSignal,
+  idempotencyKey?: string,
 ): Promise<CommitResult & { runtime_gate?: MarrowAgentRuntimeResult | null }> {
   let runtimeGate: MarrowAgentRuntimeResult | null = null;
   let gateReceiptId = params.gate_receipt_id || params.gate_receipt;
@@ -559,12 +568,18 @@ export async function marrowCommit(
   const modelUsage = params.model_usage || params.modelUsage;
   if (modelUsage) body.model_usage = normalizeModelUsage(modelUsage);
 
-  const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/commit`, {
+  const commitInit = {
     method: 'POST',
-    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    headers: {
+      ...buildHeaders(apiKey, sessionId, 'application/json', agentId),
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+    },
     body: JSON.stringify(body),
     signal,
-  }, true);
+  } satisfies RequestInit;
+  const res = idempotencyKey
+    ? await fetch(`${baseUrl}/v1/agent/commit`, commitInit)
+    : await fetchWithRetryQueue(`${baseUrl}/v1/agent/commit`, commitInit, true);
 
   const json = await safeJsonResponse(res);
   if (!json.data
@@ -620,6 +635,63 @@ function createTimeoutSignal(timeoutMs?: number, startedAt?: number): {
   };
 }
 
+const SAFE_AUTO_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$/;
+
+function resolveAutoOperationId(value: unknown): string {
+  const supplied = typeof value === 'string' ? value.trim() : '';
+  if (supplied) {
+    if (!SAFE_AUTO_OPERATION_ID.test(supplied)) {
+      throw new TypeError('marrow_auto operation_id must be an 8-80 character opaque identifier.');
+    }
+    return supplied;
+  }
+  return `auto_${randomUUID()}`;
+}
+
+function autoIdempotencyKey(operationId: string, phase: 'runtime' | 'think' | 'commit'): string {
+  return `mcp-auto:${operationId}:${phase}`;
+}
+
+export type MarrowAutoResult = {
+  operation_id: string;
+  decision_id: string | null;
+  committed: boolean;
+  phase: 'runtime_pending' | 'think_pending' | 'decision_created' | 'proof_required' | 'commit_pending' | 'closed';
+  resumable: boolean;
+  retry_after_ms: number | null;
+  runtime_gate?: MarrowAgentRuntimeResult | null;
+  phase_timings_ms: {
+    runtime: number | null;
+    think: number | null;
+    commit: number | null;
+    total: number;
+  };
+};
+
+function autoPartial(input: {
+  operationId: string;
+  decisionId?: string | null;
+  phase: MarrowAutoResult['phase'];
+  runtimeGate?: MarrowAgentRuntimeResult | null;
+  timings: Omit<MarrowAutoResult['phase_timings_ms'], 'total'>;
+  startedAt: number;
+  retryAfterMs?: number | null;
+}): MarrowAutoResult {
+  return {
+    operation_id: input.operationId,
+    decision_id: input.decisionId || null,
+    committed: false,
+    phase: input.phase,
+    resumable: true,
+    retry_after_ms: input.retryAfterMs === undefined ? 1_000 : input.retryAfterMs,
+    ...(input.runtimeGate ? { runtime_gate: input.runtimeGate } : {}),
+    phase_timings_ms: {
+      ...input.timings,
+      total: Date.now() - input.startedAt,
+    },
+  };
+}
+
 /**
  * Fire-and-forget style logging helper for tool hooks and simple integrations.
  * Logs intent, and when outcome is supplied, immediately commits it.
@@ -639,54 +711,162 @@ export async function marrowAuto(
     action_for_gate?: string;
     surfaces?: string[];
     auto_gate?: boolean;
+    operation_id?: string;
   },
   sessionId?: string,
   agentId?: string,
   timeoutMs?: number
-): Promise<{ decision_id: string; committed: boolean }> {
+): Promise<MarrowAutoResult> {
   const startedAt = Date.now();
+  const responseBudgetMs = Math.min(3_200, Math.max(500, Math.floor(timeoutMs || 3_200)));
+  const operationId = resolveAutoOperationId(params.operation_id);
+  const timings: Omit<MarrowAutoResult['phase_timings_ms'], 'total'> = {
+    runtime: null,
+    think: null,
+    commit: null,
+  };
+  let runtimeGate: MarrowAgentRuntimeResult | null = null;
+  let gateReceiptId = params.gate_receipt_id;
+  let proofCanClose = params.auto_gate !== true;
 
-  const thinkTimeout = createTimeoutSignal(timeoutMs, startedAt);
-  let thinkJson: any;
+  if (params.auto_gate === true) {
+    const phaseStarted = Date.now();
+    const runtimeTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
+    try {
+      runtimeGate = await marrowAgentRuntime(
+        apiKey,
+        baseUrl,
+        {
+          action: redactSensitiveText(params.action_for_gate || params.action),
+          type: params.type || 'general',
+          agent_id: agentId,
+          session_id: sessionId,
+          proof: params.proof ? redactSensitiveValue(params.proof) as Record<string, unknown> : undefined,
+          context: { source: 'mcp_auto_risk_upgrade', operation_id: operationId },
+        },
+        sessionId,
+        agentId,
+        runtimeTimeout.signal,
+        autoIdempotencyKey(operationId, 'runtime'),
+      );
+      timings.runtime = Date.now() - phaseStarted;
+    } catch (error) {
+      timings.runtime = Date.now() - phaseStarted;
+      if (normalizeRequestError(error).code === 'request_timeout') {
+        return autoPartial({
+          operationId,
+          phase: 'runtime_pending',
+          timings,
+          startedAt,
+        });
+      }
+      throw error;
+    } finally {
+      runtimeTimeout.cancel();
+    }
+    gateReceiptId = runtimeAuthorizationReceiptId(runtimeGate) || gateReceiptId;
+    if (!gateReceiptId) {
+      throw new Error('marrowAuto runtime phase did not return canonical runtime authorization');
+    }
+    proofCanClose = highRiskRuntimeCanClose(runtimeGate, params.proof, gateReceiptId);
+  }
+
+  const thinkStarted = Date.now();
+  const thinkTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
+  let thinkResult: ThinkResult;
   try {
-    const thinkRes = await fetchWithRetryQueue(`${baseUrl}/v1/agent/think`, {
-      method: 'POST',
-      headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
-      body: JSON.stringify({
-        action: redactSensitiveText(params.action),
+    thinkResult = await marrowThink(
+      apiKey,
+      baseUrl,
+      {
+        action: params.action,
         type: params.type || 'general',
-        context: params.context ? redactSensitiveValue(params.context) as Record<string, unknown> : undefined,
+        context: params.context,
         source_kind: 'agent_autonomous',
         source_confidence: 0.9,
         human_directed: false,
-        source_meta: redactSensitiveValue({
+        source_meta: {
           channel: 'mcp',
           client: defaultSourceClient(),
           user_intent: 'operate',
           ...(params.source_meta || {}),
-        }) as Record<string, unknown>,
-      }),
-      signal: thinkTimeout.signal,
-    }, true);
-    thinkJson = await safeJsonResponse(thinkRes);
+        },
+      },
+      sessionId,
+      agentId,
+      thinkTimeout.signal,
+      {
+        idempotencyKey: autoIdempotencyKey(operationId, 'think'),
+        responseMode: 'ack',
+      },
+    );
+    timings.think = Date.now() - thinkStarted;
+  } catch (error) {
+    timings.think = Date.now() - thinkStarted;
+    if (normalizeRequestError(error).code === 'request_timeout') {
+      return autoPartial({
+        operationId,
+        phase: 'think_pending',
+        runtimeGate,
+        timings,
+        startedAt,
+      });
+    }
+    throw error;
   } finally {
     thinkTimeout.cancel();
   }
 
-  const decisionId = thinkJson.data?.decision_id;
-  if (!decisionId || typeof decisionId !== 'string') {
-    throw new Error('marrowAuto did not receive a decision_id');
+  const decisionId = typeof thinkResult.decision_id === 'string' && thinkResult.decision_id.trim()
+    ? thinkResult.decision_id.trim()
+    : null;
+  if (!decisionId) {
+    return autoPartial({
+      operationId,
+      phase: 'think_pending',
+      runtimeGate,
+      timings,
+      startedAt,
+    });
   }
 
-  if (params.outcome === undefined) {
-    return { decision_id: decisionId, committed: false };
+  if (params.outcome === undefined || typeof params.success !== 'boolean') {
+    return autoPartial({
+      operationId,
+      decisionId,
+      phase: 'decision_created',
+      runtimeGate,
+      timings,
+      startedAt,
+      retryAfterMs: null,
+    });
   }
 
-  if (typeof params.success !== 'boolean') {
-    return { decision_id: decisionId, committed: false };
+  if (!proofCanClose) {
+    return autoPartial({
+      operationId,
+      decisionId,
+      phase: 'proof_required',
+      runtimeGate,
+      timings,
+      startedAt,
+      retryAfterMs: null,
+    });
   }
 
-  const commitTimeout = createTimeoutSignal(timeoutMs, startedAt);
+  if (Date.now() - startedAt >= responseBudgetMs - 100) {
+    return autoPartial({
+      operationId,
+      decisionId,
+      phase: 'commit_pending',
+      runtimeGate,
+      timings,
+      startedAt,
+    });
+  }
+
+  const commitStarted = Date.now();
+  const commitTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
   let commitResult: CommitResult & { runtime_gate?: MarrowAgentRuntimeResult | null };
   try {
     commitResult = await marrowCommit(
@@ -697,21 +877,59 @@ export async function marrowAuto(
         success: params.success,
         outcome: params.outcome,
         proof: params.proof,
-        gate_receipt_id: params.gate_receipt_id,
+        gate_receipt_id: gateReceiptId,
         action: params.action_for_gate || params.action,
         type: params.type || 'general',
         surfaces: params.surfaces,
-        auto_gate: params.auto_gate,
+        auto_gate: false,
       },
       sessionId,
       agentId,
       commitTimeout.signal,
+      autoIdempotencyKey(operationId, 'commit'),
     );
+    timings.commit = Date.now() - commitStarted;
+  } catch (error) {
+    timings.commit = Date.now() - commitStarted;
+    if (normalizeRequestError(error).code === 'request_timeout') {
+      return autoPartial({
+        operationId,
+        decisionId,
+        phase: 'commit_pending',
+        runtimeGate,
+        timings,
+        startedAt,
+      });
+    }
+    throw error;
   } finally {
     commitTimeout.cancel();
   }
 
-  return { decision_id: decisionId, committed: commitResult.committed };
+  if (!commitResult.committed) {
+    return autoPartial({
+      operationId,
+      decisionId,
+      phase: 'commit_pending',
+      runtimeGate,
+      timings,
+      startedAt,
+    });
+  }
+
+  return {
+    operation_id: operationId,
+    decision_id: decisionId,
+    committed: true,
+    phase: 'closed',
+    resumable: false,
+    retry_after_ms: null,
+    ...(runtimeGate ? { runtime_gate: runtimeGate } : {}),
+    phase_timings_ms: {
+      ...timings,
+      total: Date.now() - startedAt,
+    },
+  };
 }
 
 /**
@@ -1240,13 +1458,14 @@ export async function marrowAgentRuntime(
   sessionId?: string,
   agentId?: string,
   signal?: AbortSignal,
+  idempotencyKeyOverride?: string,
 ): Promise<MarrowAgentRuntimeResult> {
   const body = {
     ...input,
     agent_id: input.agent_id || agentId,
     session_id: input.session_id || sessionId,
   };
-  const idempotencyKey = `mcp-runtime-${randomUUID()}`;
+  const idempotencyKey = idempotencyKeyOverride || `mcp-runtime-${randomUUID()}`;
   const res = await fetch(`${baseUrl}/v1/agent/runtime`, {
     method: 'POST',
     headers: {
