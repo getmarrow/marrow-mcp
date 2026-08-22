@@ -518,6 +518,64 @@ function createTimeoutSignal(timeoutMs, startedAt) {
     };
 }
 const SAFE_AUTO_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$/;
+const AUTO_OPERATION_BINDING_TTL_MS = 30 * 60 * 1_000;
+const AUTO_OPERATION_BINDING_LIMIT = 256;
+const autoOperationBindings = new Map();
+function canonicalAutoBindingValue(value) {
+    if (Array.isArray(value))
+        return value.map(canonicalAutoBindingValue);
+    if (value && typeof value === 'object') {
+        return Object.keys(value).sort().reduce((result, key) => {
+            result[key] = canonicalAutoBindingValue(value[key]);
+            return result;
+        }, {});
+    }
+    return value;
+}
+function autoOperationSignature(input) {
+    return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(canonicalAutoBindingValue({
+        api_key: input.apiKey,
+        base_url: input.baseUrl.replace(/\/$/, ''),
+        agent_id: input.agentId || null,
+        session_id: input.sessionId || null,
+        action: (0, redact_1.redactSensitiveText)(input.action),
+        gate_action: (0, redact_1.redactSensitiveText)(input.gateAction),
+        type: input.type,
+        surfaces: input.surfaces || [],
+        context: input.context ? (0, redact_1.redactSensitiveValue)(input.context) : null,
+    }))).digest('hex');
+}
+function boundAutoOperation(operationId, signature) {
+    const now = Date.now();
+    for (const [id, binding] of autoOperationBindings) {
+        if (binding.expiresAt <= now)
+            autoOperationBindings.delete(id);
+    }
+    const existing = autoOperationBindings.get(operationId);
+    if (existing) {
+        if (existing.signature !== signature) {
+            throw new request_reliability_1.MarrowRequestError({
+                code: 'request_failed',
+                backendCode: 'MARROW_AUTO_OPERATION_BINDING_CONFLICT',
+                message: 'marrow_auto operation_id is already bound to another tenant or action scope.',
+                status: 409,
+                retryable: false,
+                exactFix: 'Retry the original tenant, action, context, and surfaces, or start an intentionally different action with a new operation_id.',
+            });
+        }
+        existing.expiresAt = now + AUTO_OPERATION_BINDING_TTL_MS;
+        return existing;
+    }
+    while (autoOperationBindings.size >= AUTO_OPERATION_BINDING_LIMIT) {
+        const oldest = autoOperationBindings.keys().next().value;
+        if (typeof oldest !== 'string')
+            break;
+        autoOperationBindings.delete(oldest);
+    }
+    const created = { signature, expiresAt: now + AUTO_OPERATION_BINDING_TTL_MS };
+    autoOperationBindings.set(operationId, created);
+    return created;
+}
 function resolveAutoOperationId(value) {
     const supplied = typeof value === 'string' ? value.trim() : '';
     if (supplied) {
@@ -554,6 +612,17 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
     const startedAt = Date.now();
     const responseBudgetMs = Math.min(3_200, Math.max(500, Math.floor(timeoutMs || 3_200)));
     const operationId = resolveAutoOperationId(params.operation_id);
+    const operationBinding = boundAutoOperation(operationId, autoOperationSignature({
+        apiKey,
+        baseUrl,
+        agentId,
+        sessionId,
+        action: params.action,
+        gateAction: params.action_for_gate || params.action,
+        type: params.type || 'general',
+        surfaces: params.surfaces,
+        context: params.context,
+    }));
     const timings = {
         runtime: null,
         think: null,
@@ -564,38 +633,48 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
     let proofCanClose = params.auto_gate !== true;
     if (params.auto_gate === true) {
         const phaseStarted = Date.now();
-        const runtimeTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
-        try {
-            runtimeGate = await marrowAgentRuntime(apiKey, baseUrl, {
-                action: (0, redact_1.redactSensitiveText)(params.action_for_gate || params.action),
-                type: params.type || 'general',
-                agent_id: agentId,
-                session_id: sessionId,
-                proof: params.proof ? (0, redact_1.redactSensitiveValue)(params.proof) : undefined,
-                context: { source: 'mcp_auto_risk_upgrade', operation_id: operationId },
-            }, sessionId, agentId, runtimeTimeout.signal, autoIdempotencyKey(operationId, 'runtime'));
-            timings.runtime = Date.now() - phaseStarted;
+        if (operationBinding.runtimeGate) {
+            runtimeGate = operationBinding.runtimeGate;
+            timings.runtime = 0;
         }
-        catch (error) {
-            timings.runtime = Date.now() - phaseStarted;
-            if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
-                return autoPartial({
-                    operationId,
-                    phase: 'runtime_pending',
-                    timings,
-                    startedAt,
-                });
+        else {
+            const runtimeTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
+            try {
+                runtimeGate = await marrowAgentRuntime(apiKey, baseUrl, {
+                    action: (0, redact_1.redactSensitiveText)(params.action_for_gate || params.action),
+                    type: params.type || 'general',
+                    agent_id: agentId,
+                    session_id: sessionId,
+                    surfaces: params.surfaces,
+                    // Proof is commit evidence, not part of immutable runtime authorization.
+                    // Keeping it out makes missing -> supplied proof a monotonic continuation.
+                    context: { source: 'mcp_auto_risk_upgrade', operation_id: operationId },
+                }, sessionId, agentId, runtimeTimeout.signal, autoIdempotencyKey(operationId, 'runtime'));
+                operationBinding.runtimeGate = runtimeGate;
+                timings.runtime = Date.now() - phaseStarted;
             }
-            throw error;
-        }
-        finally {
-            runtimeTimeout.cancel();
+            catch (error) {
+                timings.runtime = Date.now() - phaseStarted;
+                if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
+                    return autoPartial({
+                        operationId,
+                        phase: 'runtime_pending',
+                        timings,
+                        startedAt,
+                    });
+                }
+                throw error;
+            }
+            finally {
+                runtimeTimeout.cancel();
+            }
         }
         gateReceiptId = (0, runtime_contract_1.runtimeAuthorizationReceiptId)(runtimeGate) || gateReceiptId;
         if (!gateReceiptId) {
             throw new Error('marrowAuto runtime phase did not return canonical runtime authorization');
         }
-        proofCanClose = (0, runtime_contract_1.highRiskRuntimeCanClose)(runtimeGate, params.proof, gateReceiptId);
+        proofCanClose = (0, runtime_contract_1.highRiskRuntimeCanClose)(runtimeGate, params.proof, gateReceiptId)
+            || (0, runtime_contract_1.highRiskRuntimeCanContinueWithProof)(runtimeGate, params.proof, gateReceiptId);
     }
     const thinkStarted = Date.now();
     const thinkTimeout = createTimeoutSignal(responseBudgetMs, startedAt);

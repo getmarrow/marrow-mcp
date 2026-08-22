@@ -344,7 +344,7 @@ With installed native hooks, protected tool calls follow this automatically. For
 
 `marrow_agent_runtime` returns `runtime_authorization` with the authoritative gate receipt. Ordinary runtime checks do not create a decision, so they omit `decision_id`; call `marrow_think` (or use `marrow_auto`) when a decision must be created and closed. An arbitration runtime that actually creates a decision returns that server-created `decision_id`. This contract is identical across MCP-compatible hosts and SDK-owned runtimes.
 
-`marrow_auto` returns an `operation_id`, phase, and resumable state. If a client deadline is reached before closure, retry with the same `operation_id`; Marrow reuses the same tenant-scoped think and commit idempotency keys instead of opening another decision. A closed response reports `phase: "closed"`, `committed: true`, and `resumable: false`.
+`marrow_auto` returns an `operation_id`, phase, and resumable state. If a client deadline is reached before closure, retry with the same `operation_id`; Marrow reuses the same tenant-scoped runtime authorization, think decision, and commit idempotency keys instead of opening another decision. When the phase is `proof_required`, add the requested proof and retry with that same operation ID and unchanged action/context/surfaces. Proof is validated and bound at commit; changing the tenant or action scope is rejected. A closed response reports `phase: "closed"`, `committed: true`, and `resumable: false`.
 
 Example pre-action request:
 

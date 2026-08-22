@@ -5,6 +5,7 @@ exports.normalizeRuntimePlanCapability = normalizeRuntimePlanCapability;
 exports.isValidRuntimeResult = isValidRuntimeResult;
 exports.normalizeRuntimeResult = normalizeRuntimeResult;
 exports.highRiskRuntimeCanClose = highRiskRuntimeCanClose;
+exports.highRiskRuntimeCanContinueWithProof = highRiskRuntimeCanContinueWithProof;
 const RUNTIME_GATE_DECISIONS = new Set([
     'allow',
     'proceed',
@@ -265,7 +266,7 @@ function normalizeRuntimeResult(value) {
     };
     return withAuthorizationTruth(normalized);
 }
-function highRiskRuntimeCanClose(runtime, proof, explicitReceiptId, now = Date.now()) {
+function highRiskRuntimeCanAttemptClosure(runtime, proof, explicitReceiptId, now, requireServerProofComplete) {
     const decision = String(runtime.risk_gate?.decision || '').toLowerCase();
     const receiptDecision = String(runtime.gate_receipt?.decision || decision).toLowerCase();
     const receiptId = runtimeAuthorizationReceiptId(runtime);
@@ -285,10 +286,21 @@ function highRiskRuntimeCanClose(runtime, proof, explicitReceiptId, now = Date.n
         && authoritativeHardGate(runtime, planCapability)
         && ['allow', 'proceed', 'warn'].includes(decision)
         && ['allow', 'proceed', 'warn'].includes(receiptDecision)
-        && runtime.proof_pack?.complete === true
+        && (!requireServerProofComplete || runtime.proof_pack?.complete === true)
         && !receiptExpired
         && runtime.gate_receipt?.owner_approval_required !== true
         && runtime.intervention?.must_stop !== true
         && runtime.intervention?.allow !== false);
+}
+function highRiskRuntimeCanClose(runtime, proof, explicitReceiptId, now = Date.now()) {
+    return highRiskRuntimeCanAttemptClosure(runtime, proof, explicitReceiptId, now, true);
+}
+/**
+ * A runtime receipt is immutable authorization, while proof is commit evidence.
+ * This permits one missing-to-supplied proof continuation without weakening the
+ * gate; the backend still validates and binds the exact proof on commit.
+ */
+function highRiskRuntimeCanContinueWithProof(runtime, proof, explicitReceiptId, now = Date.now()) {
+    return highRiskRuntimeCanAttemptClosure(runtime, proof, explicitReceiptId, now, false);
 }
 //# sourceMappingURL=runtime-contract.js.map

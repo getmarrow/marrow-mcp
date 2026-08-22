@@ -1019,6 +1019,155 @@ test('high-risk marrowAuto obtains one runtime gate and one decision before comm
   }
 });
 
+test('high-risk marrowAuto upgrades missing proof on the same bound operation and rejects tampering', async () => {
+  const originalFetch = globalThis.fetch;
+  const operationId = 'proof_upgrade_operation_123';
+  const calls = [];
+  const decisionIds = new Set();
+  const openDecisions = new Set();
+  let committedProof = null;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    const headers = new Headers(init.headers);
+    const body = init.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ target, body, authorization: headers.get('Authorization'), idempotencyKey: headers.get('Idempotency-Key') });
+    if (target.includes('/v1/agent/runtime')) {
+      return Response.json({ data: {
+        ok: true,
+        action: 'deploy one proof-bound candidate',
+        agent_id: 'agent-proof-upgrade',
+        session_id: 'session-proof-upgrade',
+        status: {},
+        decision_brief: {},
+        risk_gate: {
+          allow: true,
+          decision: 'allow',
+          risk_level: 'high',
+          enforced: true,
+          enforcement_decision: 'allow',
+          gate_required: true,
+          gate_receipt_id: 'gate-proof-upgrade',
+        },
+        gate_receipt: {
+          id: 'gate-proof-upgrade',
+          required: true,
+          decision: 'allow',
+          owner_approval_required: false,
+          expires_at: '2030-01-01T00:00:00.000Z',
+        },
+        runtime_authorization: { id: 'gate-proof-upgrade' },
+        proof_pack: { required: true, complete: false, missing: ['checks'] },
+        relevant_lessons: [],
+      } });
+    }
+    if (target.includes('/v1/agent/think')) {
+      if (!decisionIds.has('decision-proof-upgrade')) openDecisions.add('decision-proof-upgrade');
+      decisionIds.add('decision-proof-upgrade');
+      return Response.json({ data: { decision_id: 'decision-proof-upgrade' } });
+    }
+    if (target.includes('/v1/agent/commit')) {
+      if (committedProof && JSON.stringify(committedProof) !== JSON.stringify(body.proof)) {
+        return Response.json({
+          error: 'Idempotency key conflict',
+          details: { code: 'MARROW_IDEMPOTENCY_CONFLICT', exact_fix: 'Reuse the exact committed proof.' },
+        }, { status: 409 });
+      }
+      committedProof = body.proof;
+      openDecisions.delete(body.decision_id);
+      return Response.json({ data: { committed: true, decision_id: body.decision_id } });
+    }
+    throw new Error(`unexpected URL ${target}`);
+  };
+
+  const baseParams = {
+    action: 'deploy one proof-bound candidate',
+    outcome: 'candidate verification passed',
+    success: true,
+    type: 'deploy',
+    surfaces: ['backend', 'mcp'],
+    auto_gate: true,
+    operation_id: operationId,
+  };
+  try {
+    const missing = await marrowAuto(
+      'tenant-one-key',
+      'https://api.example.test',
+      baseParams,
+      'session-proof-upgrade',
+      'agent-proof-upgrade',
+      3_200,
+    );
+    assert.equal(missing.phase, 'proof_required');
+    assert.equal(missing.decision_id, 'decision-proof-upgrade');
+    assert.equal(missing.resumable, true);
+
+    const proof = { checks: ['focused'], outcome: 'pass' };
+    const closed = await marrowAuto(
+      'tenant-one-key',
+      'https://api.example.test',
+      { ...baseParams, proof },
+      'session-proof-upgrade',
+      'agent-proof-upgrade',
+      3_200,
+    );
+    assert.equal(closed.phase, 'closed');
+    assert.equal(closed.decision_id, missing.decision_id);
+    assert.equal(closed.committed, true);
+    assert.equal(closed.resumable, false);
+
+    const runtimeCalls = calls.filter((call) => call.target.includes('/v1/agent/runtime'));
+    assert.equal(runtimeCalls.length, 1);
+    assert.equal(Object.hasOwn(runtimeCalls[0].body, 'proof'), false);
+    assert.deepEqual(runtimeCalls[0].body.surfaces, ['backend', 'mcp']);
+    const thinkCalls = calls.filter((call) => call.target.includes('/v1/agent/think'));
+    assert.equal(thinkCalls.length, 2);
+    assert.deepEqual([...new Set(thinkCalls.map((call) => call.idempotencyKey))], [
+      `mcp-auto:${operationId}:think`,
+    ]);
+    assert.equal(decisionIds.size, 1);
+    assert.equal(openDecisions.size, 0);
+
+    for (const [label, key, change] of [
+      ['tenant', 'tenant-two-key', {}],
+      ['action', 'tenant-one-key', { action: 'deploy a changed candidate' }],
+      ['surfaces', 'tenant-one-key', { surfaces: ['backend', 'website'] }],
+    ]) {
+      await assert.rejects(
+        () => marrowAuto(
+          key,
+          'https://api.example.test',
+          { ...baseParams, ...change, proof },
+          'session-proof-upgrade',
+          'agent-proof-upgrade',
+          3_200,
+        ),
+        (error) => error instanceof MarrowRequestError
+          && error.backendCode === 'MARROW_AUTO_OPERATION_BINDING_CONFLICT'
+          && error.status === 409,
+        `${label} binding change should be rejected`,
+      );
+    }
+
+    await assert.rejects(
+      () => marrowAuto(
+        'tenant-one-key',
+        'https://api.example.test',
+        { ...baseParams, proof: { checks: ['tampered'], outcome: 'pass' } },
+        'session-proof-upgrade',
+        'agent-proof-upgrade',
+        3_200,
+      ),
+      (error) => error instanceof MarrowRequestError
+        && error.backendCode === 'MARROW_IDEMPOTENCY_CONFLICT'
+        && error.status === 409,
+    );
+    assert.equal(decisionIds.size, 1);
+    assert.equal(openDecisions.size, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('marrowCommit rejects an HTTP 200 response missing committed with typed invalid_response', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => Response.json({ data: { success: true } });

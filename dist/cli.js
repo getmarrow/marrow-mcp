@@ -938,7 +938,7 @@ if (process.argv[2] !== 'keys') {
                         gate_receipt_id: { type: 'string', description: 'Fresh receipt returned by marrow_agent_runtime.' },
                         operation_id: {
                             type: 'string',
-                            description: 'Opaque 8-80 character resume token. Reuse the returned operation_id after a resumable response.',
+                            description: 'Opaque 8-80 character resume token. Reuse it only with the original tenant, action, context, and surfaces; proof may be added after proof_required.',
                         },
                     },
                     required: ['action'],
@@ -2090,7 +2090,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             exact_next_action: delivered?.committed
                                 ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
                                 : delivered?.phase === 'proof_required'
-                                    ? 'Attach the required measured proof and retry marrow_auto with this same operation_id.'
+                                    ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
                                     : delivered?.resumable
                                         ? 'Retry marrow_auto with this same operation_id. Do not start a new auto operation.'
                                         : 'Close this decision after the real outcome is known.',

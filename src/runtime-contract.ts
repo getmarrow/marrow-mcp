@@ -293,11 +293,12 @@ export function normalizeRuntimeResult(value: unknown): MarrowAgentRuntimeResult
   return withAuthorizationTruth(normalized);
 }
 
-export function highRiskRuntimeCanClose(
+function highRiskRuntimeCanAttemptClosure(
   runtime: MarrowAgentRuntimeResult,
   proof: Record<string, unknown> | undefined,
   explicitReceiptId: unknown,
-  now: number = Date.now(),
+  now: number,
+  requireServerProofComplete: boolean,
 ): boolean {
   const decision = String(runtime.risk_gate?.decision || '').toLowerCase();
   const receiptDecision = String(runtime.gate_receipt?.decision || decision).toLowerCase();
@@ -319,10 +320,33 @@ export function highRiskRuntimeCanClose(
     && authoritativeHardGate(runtime, planCapability)
     && ['allow', 'proceed', 'warn'].includes(decision)
     && ['allow', 'proceed', 'warn'].includes(receiptDecision)
-    && runtime.proof_pack?.complete === true
+    && (!requireServerProofComplete || runtime.proof_pack?.complete === true)
     && !receiptExpired
     && runtime.gate_receipt?.owner_approval_required !== true
     && runtime.intervention?.must_stop !== true
     && runtime.intervention?.allow !== false
   );
+}
+
+export function highRiskRuntimeCanClose(
+  runtime: MarrowAgentRuntimeResult,
+  proof: Record<string, unknown> | undefined,
+  explicitReceiptId: unknown,
+  now: number = Date.now(),
+): boolean {
+  return highRiskRuntimeCanAttemptClosure(runtime, proof, explicitReceiptId, now, true);
+}
+
+/**
+ * A runtime receipt is immutable authorization, while proof is commit evidence.
+ * This permits one missing-to-supplied proof continuation without weakening the
+ * gate; the backend still validates and binds the exact proof on commit.
+ */
+export function highRiskRuntimeCanContinueWithProof(
+  runtime: MarrowAgentRuntimeResult,
+  proof: Record<string, unknown> | undefined,
+  explicitReceiptId: unknown,
+  now: number = Date.now(),
+): boolean {
+  return highRiskRuntimeCanAttemptClosure(runtime, proof, explicitReceiptId, now, false);
 }
