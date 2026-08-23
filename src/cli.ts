@@ -234,7 +234,7 @@ Do not skip the gate or outcome. Marrow's value comes from controlling the actio
 
 Capability boundaries: configured native hooks provide cooperative telemetry or context only; \`createPassiveRuntime().install()\` covers only its owned Node process while installed; a governed wrapper covers only its wrapped command; and a custom host needs a bounded event adapter. A model name, host label, API key, public hook entrypoint, installed configuration, or client-self-reported callback is not proof of coverage or enforcement. For Codex, Grok, Gemini, and similar CLI harnesses, run consequential commands through \`npx @getmarrow/install run --agent <agent-id> -- -- <command>\`.
 
-For one-shot logging: \`marrow_auto({ action: "did X", outcome: "result Y", success: true })\` — one call, done.
+For bounded outcome capture: \`marrow_auto({ action: "did X", outcome: "result Y", success: true })\`. One outer invocation normally completes think and commit in-band within its bounded client budget. If the host or network deadline is reached, retry with the returned \`operation_id\`; Marrow continues the same operation and never opens a second decision.
 ${MARROW_BLOCK_END}`;
 
   let dir = process.cwd();
@@ -1033,7 +1033,7 @@ const TOOLS = [
   {
     name: 'marrow_run',
     description:
-      'One-call governed outcome capture. Records intent, obtains a gate for risky work, and closes only with an explicit measured result.',
+      'Governed outcome capture. Records intent, obtains a gate for risky work, and closes only with an explicit measured result.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1054,7 +1054,7 @@ const TOOLS = [
   {
     name: 'marrow_auto',
     description:
-      'Durably capture low-risk activity in one bounded call. Outcomes remain pending unless success is explicit; risky completion still requires a fresh gate and measured proof.',
+      'Durably capture low-risk activity. One outer invocation normally completes in-band within the bounded client budget; a deadline continuation reuses the same operation_id and never opens a second decision. Outcomes remain pending unless success is explicit; risky completion still requires a fresh gate and measured proof.',
     inputSchema: {
       type: 'object',
       properties: {
