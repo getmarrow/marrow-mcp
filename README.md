@@ -104,9 +104,9 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.73
+## What's New in v3.9.74
 
-v3.9.73 keeps one automatic operation bound to its original runtime authorization and decision across timeout and proof-required retries, then closes that exact decision once verified proof is supplied.
+v3.9.74 keeps one automatic operation bound to its original runtime authorization and decision across timeout and proof-required retries, then closes that exact decision once verified proof is supplied.
 
 ## Previous: v3.9.72
 
