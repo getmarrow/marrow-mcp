@@ -1054,7 +1054,7 @@ const TOOLS = [
   {
     name: 'marrow_auto',
     description:
-      'Durably capture low-risk activity without blocking. Outcomes remain pending unless success is explicit; risky completion still requires a fresh gate and measured proof.',
+      'Durably capture low-risk activity in one bounded call. Outcomes remain pending unless success is explicit; risky completion still requires a fresh gate and measured proof.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2286,6 +2286,9 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           baseUrl: BASE_URL,
           deferDelivery: false,
           event: {
+            ...(delivered?.operation_id ? {
+              event_id: `auto_${delivered.committed ? 'closed' : 'pending'}_${delivered.operation_id}`,
+            } : {}),
             event_type: delivered?.committed
               ? 'outcome_committed'
               : !highRisk && outcomeSuccess === false

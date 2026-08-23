@@ -88,8 +88,9 @@ export type MarrowAutoResult = {
     };
 };
 /**
- * Fire-and-forget style logging helper for tool hooks and simple integrations.
- * Logs intent, and when outcome is supplied, immediately commits it.
+ * Bounded one-call logging helper for tool hooks and simple integrations.
+ * Logs intent and, when an outcome is supplied, continues resumable server
+ * phases within the caller's deadline so the outcome normally closes in-band.
  */
 export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
     action: string;

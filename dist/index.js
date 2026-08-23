@@ -407,7 +407,7 @@ async function marrowThink(apiKey, baseUrl, params, sessionId, agentId, signal, 
         ? await fetch(thinkUrl, thinkInit)
         : await fetchWithRetryQueue(thinkUrl, thinkInit, true);
     const json = await safeJsonResponse(res);
-    return json.data;
+    return markAutoResponseStatus(json.data, res.status);
 }
 /**
  * Explicitly commit the result of an action to Marrow.
@@ -478,13 +478,20 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId, signal,
         ? await fetch(`${baseUrl}/v1/agent/commit`, commitInit)
         : await fetchWithRetryQueue(`${baseUrl}/v1/agent/commit`, commitInit, true);
     const json = await safeJsonResponse(res);
+    if (res.status === 202
+        && json.data
+        && typeof json.data === 'object'
+        && !Array.isArray(json.data)
+        && (json.data.phase === undefined || json.data.phase === 'commit_pending' || json.data.resumable === true)) {
+        return markAutoResponseStatus({ ...json.data, committed: false }, res.status);
+    }
     if (!json.data
         || typeof json.data !== 'object'
         || Array.isArray(json.data)
         || typeof json.data.committed !== 'boolean') {
         throw (0, request_reliability_1.invalidResponseError)();
     }
-    return { ...json.data, committed: json.data.committed, runtime_gate: runtimeGate };
+    return markAutoResponseStatus({ ...json.data, committed: json.data.committed, runtime_gate: runtimeGate }, res.status);
 }
 async function marrowModelUsage(apiKey, baseUrl, input, sessionId, agentId) {
     const body = normalizeModelUsage({
@@ -520,6 +527,10 @@ function createTimeoutSignal(timeoutMs, startedAt) {
 const SAFE_AUTO_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$/;
 const AUTO_OPERATION_BINDING_TTL_MS = 30 * 60 * 1_000;
 const AUTO_OPERATION_BINDING_LIMIT = 256;
+const AUTO_RESPONSE_BUDGET_DEFAULT_MS = 8_000;
+const AUTO_RESPONSE_BUDGET_MAX_MS = 8_000;
+const AUTO_RESPONSE_DEADLINE_MARGIN_MS = 75;
+const AUTO_RESPONSE_STATUS = Symbol('marrowAutoResponseStatus');
 const autoOperationBindings = new Map();
 function canonicalAutoBindingValue(value) {
     if (Array.isArray(value))
@@ -589,6 +600,36 @@ function resolveAutoOperationId(value) {
 function autoIdempotencyKey(operationId, phase) {
     return `mcp-auto:${operationId}:${phase}`;
 }
+function autoResponseBudget(timeoutMs) {
+    const requested = Number(timeoutMs);
+    return Number.isFinite(requested) && requested > 0
+        ? Math.min(AUTO_RESPONSE_BUDGET_MAX_MS, Math.max(500, Math.floor(requested)))
+        : AUTO_RESPONSE_BUDGET_DEFAULT_MS;
+}
+function markAutoResponseStatus(value, status) {
+    if (value && typeof value === 'object') {
+        Object.defineProperty(value, AUTO_RESPONSE_STATUS, { value: status });
+    }
+    return value;
+}
+function isAutoPendingResponse(value, phase) {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        return false;
+    const pending = value;
+    return pending[AUTO_RESPONSE_STATUS] === 202
+        && (pending.phase === phase || (pending.phase === undefined && pending.resumable === true));
+}
+async function waitForAutoContinuation(pending, startedAt, responseBudgetMs) {
+    const remaining = responseBudgetMs - (Date.now() - startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS;
+    if (remaining <= 0)
+        return false;
+    const requestedDelay = Number(pending.retry_after_ms);
+    const delayMs = Number.isFinite(requestedDelay)
+        ? Math.min(500, Math.max(25, Math.floor(requestedDelay)))
+        : 50;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, remaining)));
+    return responseBudgetMs - (Date.now() - startedAt) > AUTO_RESPONSE_DEADLINE_MARGIN_MS;
+}
 function autoPartial(input) {
     return {
         operation_id: input.operationId,
@@ -605,12 +646,13 @@ function autoPartial(input) {
     };
 }
 /**
- * Fire-and-forget style logging helper for tool hooks and simple integrations.
- * Logs intent, and when outcome is supplied, immediately commits it.
+ * Bounded one-call logging helper for tool hooks and simple integrations.
+ * Logs intent and, when an outcome is supplied, continues resumable server
+ * phases within the caller's deadline so the outcome normally closes in-band.
  */
 async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs) {
     const startedAt = Date.now();
-    const responseBudgetMs = Math.min(3_200, Math.max(500, Math.floor(timeoutMs || 3_200)));
+    const responseBudgetMs = autoResponseBudget(timeoutMs);
     const operationId = resolveAutoOperationId(params.operation_id);
     const operationBinding = boundAutoOperation(operationId, autoOperationSignature({
         apiKey,
@@ -638,36 +680,36 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             timings.runtime = 0;
         }
         else {
-            const runtimeTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
-            try {
-                runtimeGate = await marrowAgentRuntime(apiKey, baseUrl, {
-                    action: (0, redact_1.redactSensitiveText)(params.action_for_gate || params.action),
-                    type: params.type || 'general',
-                    agent_id: agentId,
-                    session_id: sessionId,
-                    surfaces: params.surfaces,
-                    // Proof is commit evidence, not part of immutable runtime authorization.
-                    // Keeping it out makes missing -> supplied proof a monotonic continuation.
-                    context: { source: 'mcp_auto_risk_upgrade', operation_id: operationId },
-                }, sessionId, agentId, runtimeTimeout.signal, autoIdempotencyKey(operationId, 'runtime'));
-                operationBinding.runtimeGate = runtimeGate;
-                timings.runtime = Date.now() - phaseStarted;
-            }
-            catch (error) {
-                timings.runtime = Date.now() - phaseStarted;
-                if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
-                    return autoPartial({
-                        operationId,
-                        phase: 'runtime_pending',
-                        timings,
-                        startedAt,
-                    });
+            while (!runtimeGate) {
+                const runtimeTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
+                try {
+                    runtimeGate = await marrowAgentRuntime(apiKey, baseUrl, {
+                        action: (0, redact_1.redactSensitiveText)(params.action_for_gate || params.action),
+                        type: params.type || 'general',
+                        agent_id: agentId,
+                        session_id: sessionId,
+                        surfaces: params.surfaces,
+                        // Proof is commit evidence, not part of immutable runtime authorization.
+                        // Keeping it out makes missing -> supplied proof a monotonic continuation.
+                        context: { source: 'mcp_auto_risk_upgrade', operation_id: operationId },
+                    }, sessionId, agentId, runtimeTimeout.signal, autoIdempotencyKey(operationId, 'runtime'));
+                    operationBinding.runtimeGate = runtimeGate;
                 }
-                throw error;
+                catch (error) {
+                    if ((0, request_reliability_1.normalizeRequestError)(error).code !== 'request_timeout'
+                        || !await waitForAutoContinuation({}, startedAt, responseBudgetMs)) {
+                        timings.runtime = Date.now() - phaseStarted;
+                        if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
+                            return autoPartial({ operationId, phase: 'runtime_pending', timings, startedAt });
+                        }
+                        throw error;
+                    }
+                }
+                finally {
+                    runtimeTimeout.cancel();
+                }
             }
-            finally {
-                runtimeTimeout.cancel();
-            }
+            timings.runtime = Date.now() - phaseStarted;
         }
         gateReceiptId = (0, runtime_contract_1.runtimeAuthorizationReceiptId)(runtimeGate) || gateReceiptId;
         if (!gateReceiptId) {
@@ -677,56 +719,59 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             || (0, runtime_contract_1.highRiskRuntimeCanContinueWithProof)(runtimeGate, params.proof, gateReceiptId);
     }
     const thinkStarted = Date.now();
-    const thinkTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
-    let thinkResult;
-    try {
-        thinkResult = await marrowThink(apiKey, baseUrl, {
-            action: params.action,
-            type: params.type || 'general',
-            context: params.context,
-            source_kind: 'agent_autonomous',
-            source_confidence: 0.9,
-            human_directed: false,
-            source_meta: {
-                channel: 'mcp',
-                client: defaultSourceClient(),
-                user_intent: 'operate',
-                ...(params.source_meta || {}),
-            },
-        }, sessionId, agentId, thinkTimeout.signal, {
-            idempotencyKey: autoIdempotencyKey(operationId, 'think'),
-            responseMode: 'ack',
-        });
-        timings.think = Date.now() - thinkStarted;
-    }
-    catch (error) {
-        timings.think = Date.now() - thinkStarted;
-        if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
-            return autoPartial({
-                operationId,
-                phase: 'think_pending',
-                runtimeGate,
-                timings,
-                startedAt,
+    let decisionId = operationBinding.decisionId || null;
+    const reusedDecision = Boolean(decisionId);
+    while (!decisionId) {
+        const thinkTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
+        let thinkResult;
+        try {
+            thinkResult = await marrowThink(apiKey, baseUrl, {
+                action: params.action,
+                type: params.type || 'general',
+                context: params.context,
+                source_kind: 'agent_autonomous',
+                source_confidence: 0.9,
+                human_directed: false,
+                source_meta: {
+                    channel: 'mcp',
+                    client: defaultSourceClient(),
+                    user_intent: 'operate',
+                    ...(params.source_meta || {}),
+                },
+            }, sessionId, agentId, thinkTimeout.signal, {
+                idempotencyKey: autoIdempotencyKey(operationId, 'think'),
+                responseMode: 'ack',
             });
         }
-        throw error;
+        catch (error) {
+            if ((0, request_reliability_1.normalizeRequestError)(error).code !== 'request_timeout'
+                || !await waitForAutoContinuation({}, startedAt, responseBudgetMs)) {
+                timings.think = Date.now() - thinkStarted;
+                if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
+                    return autoPartial({ operationId, phase: 'think_pending', runtimeGate, timings, startedAt });
+                }
+                throw error;
+            }
+            continue;
+        }
+        finally {
+            thinkTimeout.cancel();
+        }
+        decisionId = typeof thinkResult.decision_id === 'string' && thinkResult.decision_id.trim()
+            ? thinkResult.decision_id.trim()
+            : null;
+        if (decisionId) {
+            operationBinding.decisionId = decisionId;
+            break;
+        }
+        if (!isAutoPendingResponse(thinkResult, 'think_pending'))
+            throw (0, request_reliability_1.invalidResponseError)();
+        if (!await waitForAutoContinuation(thinkResult, startedAt, responseBudgetMs)) {
+            timings.think = Date.now() - thinkStarted;
+            return autoPartial({ operationId, phase: 'think_pending', runtimeGate, timings, startedAt });
+        }
     }
-    finally {
-        thinkTimeout.cancel();
-    }
-    const decisionId = typeof thinkResult.decision_id === 'string' && thinkResult.decision_id.trim()
-        ? thinkResult.decision_id.trim()
-        : null;
-    if (!decisionId) {
-        return autoPartial({
-            operationId,
-            phase: 'think_pending',
-            runtimeGate,
-            timings,
-            startedAt,
-        });
-    }
+    timings.think = reusedDecision ? 0 : Date.now() - thinkStarted;
     if (params.outcome === undefined || typeof params.success !== 'boolean') {
         return autoPartial({
             operationId,
@@ -760,49 +805,48 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
         });
     }
     const commitStarted = Date.now();
-    const commitTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
     let commitResult;
-    try {
-        commitResult = await marrowCommit(apiKey, baseUrl, {
-            decision_id: decisionId,
-            success: params.success,
-            outcome: params.outcome,
-            proof: params.proof,
-            gate_receipt_id: gateReceiptId,
-            action: params.action_for_gate || params.action,
-            type: params.type || 'general',
-            surfaces: params.surfaces,
-            auto_gate: false,
-        }, sessionId, agentId, commitTimeout.signal, autoIdempotencyKey(operationId, 'commit'));
-        timings.commit = Date.now() - commitStarted;
-    }
-    catch (error) {
-        timings.commit = Date.now() - commitStarted;
-        if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
-            return autoPartial({
-                operationId,
-                decisionId,
-                phase: 'commit_pending',
-                runtimeGate,
-                timings,
-                startedAt,
-            });
+    while (true) {
+        const commitTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
+        try {
+            commitResult = await marrowCommit(apiKey, baseUrl, {
+                decision_id: decisionId,
+                success: params.success,
+                outcome: params.outcome,
+                proof: params.proof,
+                gate_receipt_id: gateReceiptId,
+                action: params.action_for_gate || params.action,
+                type: params.type || 'general',
+                surfaces: params.surfaces,
+                auto_gate: false,
+            }, sessionId, agentId, commitTimeout.signal, autoIdempotencyKey(operationId, 'commit'));
         }
-        throw error;
+        catch (error) {
+            if ((0, request_reliability_1.normalizeRequestError)(error).code !== 'request_timeout'
+                || !await waitForAutoContinuation({}, startedAt, responseBudgetMs)) {
+                timings.commit = Date.now() - commitStarted;
+                if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
+                    return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt });
+                }
+                throw error;
+            }
+            continue;
+        }
+        finally {
+            commitTimeout.cancel();
+        }
+        if (commitResult.committed)
+            break;
+        if (!isAutoPendingResponse(commitResult, 'commit_pending')) {
+            timings.commit = Date.now() - commitStarted;
+            return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt });
+        }
+        if (!await waitForAutoContinuation(commitResult, startedAt, responseBudgetMs)) {
+            timings.commit = Date.now() - commitStarted;
+            return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt });
+        }
     }
-    finally {
-        commitTimeout.cancel();
-    }
-    if (!commitResult.committed) {
-        return autoPartial({
-            operationId,
-            decisionId,
-            phase: 'commit_pending',
-            runtimeGate,
-            timings,
-            startedAt,
-        });
-    }
+    timings.commit = Date.now() - commitStarted;
     return {
         operation_id: operationId,
         decision_id: decisionId,
