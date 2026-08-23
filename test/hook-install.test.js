@@ -11,7 +11,11 @@ const { installSessionEndHook } = require('../dist/hook-session.js');
 const {
   ACTION_RESULT_HOOK_COMMAND,
   CONTEXT_HOOK_COMMAND,
+  GROK_ACTION_RESULT_HOOK_COMMAND,
+  GROK_CONTEXT_HOOK_COMMAND,
   GROK_NATIVE_HOOK_MATCHER,
+  GROK_PRE_ACTION_HOOK_COMMAND,
+  GROK_SESSION_END_HOOK_COMMAND,
   NATIVE_HOOK_MATCHER,
   PRE_ACTION_HOOK_COMMAND,
   SESSION_END_HOOK_COMMAND,
@@ -47,7 +51,7 @@ function installAll(directory) {
 }
 
 function commandHandlers(settings, eventName, subcommand) {
-  const pattern = new RegExp(`^npx\\s+(?:-y\\s+)?(?:--package=@getmarrow/mcp(?:@[^\\s]+)?\\s+marrow-mcp|@getmarrow/mcp(?:@[^\\s]+)?)\\s+${subcommand}$`);
+  const pattern = new RegExp(`^npx\\s+(?:-y\\s+)?(?:--package=@getmarrow/mcp(?:@[^\\s]+)?\\s+marrow-mcp|@getmarrow/mcp(?:@[^\\s]+)?)\\s+(?:claude-)?${subcommand}$`);
   return (settings.hooks?.[eventName] || []).flatMap((entry) =>
     (entry.hooks || [])
       .filter((handler) => handler.type === 'command' && pattern.test(String(handler.command).trim()))
@@ -145,11 +149,13 @@ test('Grok native hooks install under ~/.grok/hooks with Grok tool matchers', ()
     const result = installGrokNativeHooks(home);
     const settings = JSON.parse(readFileSync(result.settingsPath, 'utf8'));
     assert.equal(result.settingsPath, join(home, '.grok', 'hooks', 'marrow.json'));
-    assert.equal(settings.hooks.UserPromptSubmit[0].hooks[0].command, CONTEXT_HOOK_COMMAND);
+    assert.equal(settings.hooks.UserPromptSubmit[0].hooks[0].command, GROK_CONTEXT_HOOK_COMMAND);
     assert.equal(settings.hooks.PreToolUse[0].matcher, GROK_NATIVE_HOOK_MATCHER);
+    assert.equal(settings.hooks.PreToolUse[0].hooks[0].command, GROK_PRE_ACTION_HOOK_COMMAND);
     assert.equal(settings.hooks.PostToolUse[0].matcher, GROK_NATIVE_HOOK_MATCHER);
+    assert.equal(settings.hooks.PostToolUse[0].hooks[0].command, GROK_ACTION_RESULT_HOOK_COMMAND);
     assert.ok(settings.hooks.SessionEnd);
-    assert.equal(settings.hooks.Stop[0].hooks[0].command, SESSION_END_HOOK_COMMAND);
+    assert.equal(settings.hooks.Stop[0].hooks[0].command, GROK_SESSION_END_HOOK_COMMAND);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

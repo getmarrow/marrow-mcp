@@ -1,17 +1,17 @@
 import { marrowModelUsage, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown } from './habit-loop-copy';
-import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
 import { isOfficialMarrowMcpTool, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   ACTION_RESULT_HOOK_COMMAND,
   findHookSettingsPath,
-  nativeHookEvidence,
+  nativeHookLifecycleIdentity,
   NATIVE_HOOK_MATCHER,
   normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
+  resolveNativeHookIdentity,
   stableSessionWorkflowId,
   stableToolCorrelation,
 } from './hook-contract';
@@ -152,7 +152,8 @@ export async function runHookCommand(): Promise<void> {
       return;
     }
 
-    const resolvedEnv = resolveMarrowEnv();
+    const identity = resolveNativeHookIdentity(process.argv[2]);
+    const resolvedEnv = identity.environment;
     const apiKey = resolvedEnv.apiKey || '';
     if (!apiKey) {
       debug(`[marrow-hook] skipped missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
@@ -162,7 +163,7 @@ export async function runHookCommand(): Promise<void> {
 
     const baseUrl = validateBaseUrl(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
     const sessionId = resolvedEnv.sessionId || getString(event.session_id);
-    const agentId = resolvedEnv.agentId || undefined;
+    const agentId = identity.agent_id;
     const success = deriveToolSuccess(event);
 
     const toolName = normalizeToolName(getString(event.tool_name) || 'tool');
@@ -176,12 +177,10 @@ export async function runHookCommand(): Promise<void> {
       event: {
         event_id: `posttool-${lifecycleCorrelation}`,
         event_type: eventType,
-        harness: 'claude-code',
-        agent_id: agentId,
+        ...nativeHookLifecycleIdentity(identity, 'action_result'),
         session_id: sessionId,
         workflow_id: stableSessionWorkflowId(sessionId, event.tool_use_id),
         correlation_id: lifecycleCorrelation,
-        ...nativeHookEvidence('action_result'),
         action,
         target: classified.target,
         surfaces: classified.surfaces,

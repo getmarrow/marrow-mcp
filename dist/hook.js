@@ -7,7 +7,6 @@ exports.installPostToolUseHook = installPostToolUseHook;
 exports.runHookCommand = runHookCommand;
 const index_1 = require("./index");
 const habit_loop_copy_1 = require("./habit-loop-copy");
-const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_pre_action_1 = require("./hook-pre-action");
 const hook_tool_policy_1 = require("./hook-tool-policy");
@@ -113,7 +112,8 @@ async function runHookCommand() {
             process.exit(0);
             return;
         }
-        const resolvedEnv = (0, env_1.resolveMarrowEnv)();
+        const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+        const resolvedEnv = identity.environment;
         const apiKey = resolvedEnv.apiKey || '';
         if (!apiKey) {
             debug(`[marrow-hook] skipped missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
@@ -122,7 +122,7 @@ async function runHookCommand() {
         }
         const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
         const sessionId = resolvedEnv.sessionId || getString(event.session_id);
-        const agentId = resolvedEnv.agentId || undefined;
+        const agentId = identity.agent_id;
         const success = deriveToolSuccess(event);
         const toolName = normalizeToolName(getString(event.tool_name) || 'tool');
         const eventType = toolName === 'bash'
@@ -135,12 +135,10 @@ async function runHookCommand() {
             event: {
                 event_id: `posttool-${lifecycleCorrelation}`,
                 event_type: eventType,
-                harness: 'claude-code',
-                agent_id: agentId,
+                ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'action_result'),
                 session_id: sessionId,
                 workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, event.tool_use_id),
                 correlation_id: lifecycleCorrelation,
-                ...(0, hook_contract_1.nativeHookEvidence)('action_result'),
                 action,
                 target: classified.target,
                 surfaces: classified.surfaces,

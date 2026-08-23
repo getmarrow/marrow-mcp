@@ -4,7 +4,6 @@ exports.SESSION_HOOK_COMMAND = void 0;
 exports.installSessionEndHook = installSessionEndHook;
 exports.sessionEndAutoCommitOpen = sessionEndAutoCommitOpen;
 exports.runSessionHookCommand = runSessionHookCommand;
-const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const index_1 = require("./index");
 const habit_loop_copy_1 = require("./habit-loop-copy");
@@ -81,13 +80,14 @@ function sessionEndAutoCommitOpen(value) {
 async function runSessionHookCommand(input) {
     if (process.env.MARROW_AUTO_HOOK === 'false')
         return;
-    const resolved = (0, env_1.resolveMarrowEnv)();
+    const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+    const resolved = identity.environment;
     if (!resolved.apiKey)
         return;
     const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
     const source = readStopHookSource(input);
     const sessionId = resolved.sessionId || source.session_id || undefined;
-    const agentId = resolved.agentId || undefined;
+    const agentId = identity.agent_id;
     const workflowId = (0, hook_contract_1.stableSessionWorkflowId)(sessionId, [source.transcript_path, source.cwd]);
     const correlation = workflowId.slice('session-'.length);
     await (0, lifecycle_spool_1.recordLifecycleEvent)({
@@ -96,12 +96,10 @@ async function runSessionHookCommand(input) {
         event: {
             event_id: `session-stop-${correlation}`,
             event_type: 'session_completed',
-            harness: 'claude-code',
-            agent_id: agentId,
+            ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'session_end'),
             session_id: sessionId,
             workflow_id: workflowId,
             correlation_id: correlation,
-            ...(0, hook_contract_1.nativeHookEvidence)('session_end'),
             action: 'agent session ended',
             outcome_state: 'pending',
         },

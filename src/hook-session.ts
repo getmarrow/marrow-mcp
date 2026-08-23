@@ -1,14 +1,14 @@
-import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { marrowModelUsage, marrowSessionEnd, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown } from './habit-loop-copy';
 import { readFileSync } from 'node:fs';
 import {
   findHookSettingsPath,
-  nativeHookEvidence,
+  nativeHookLifecycleIdentity,
   normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
+  resolveNativeHookIdentity,
   SESSION_END_HOOK_COMMAND,
   stableSessionWorkflowId,
 } from './hook-contract';
@@ -94,12 +94,13 @@ export function sessionEndAutoCommitOpen(value?: unknown): boolean {
 
 export async function runSessionHookCommand(input?: unknown): Promise<void> {
   if (process.env.MARROW_AUTO_HOOK === 'false') return;
-  const resolved = resolveMarrowEnv();
+  const identity = resolveNativeHookIdentity(process.argv[2]);
+  const resolved = identity.environment;
   if (!resolved.apiKey) return;
   const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
   const source = readStopHookSource(input);
   const sessionId = resolved.sessionId || source.session_id || undefined;
-  const agentId = resolved.agentId || undefined;
+  const agentId = identity.agent_id;
   const workflowId = stableSessionWorkflowId(sessionId, [source.transcript_path, source.cwd]);
   const correlation = workflowId.slice('session-'.length);
   await recordLifecycleEvent({
@@ -108,12 +109,10 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     event: {
       event_id: `session-stop-${correlation}`,
       event_type: 'session_completed',
-      harness: 'claude-code',
-      agent_id: agentId,
+      ...nativeHookLifecycleIdentity(identity, 'session_end'),
       session_id: sessionId,
       workflow_id: workflowId,
       correlation_id: correlation,
-      ...nativeHookEvidence('session_end'),
       action: 'agent session ended',
       outcome_state: 'pending',
     },

@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NATIVE_EXPECTED_HOOKS = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.NATIVE_EXPECTED_HOOKS = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.resolveNativeHookIdentity = resolveNativeHookIdentity;
+exports.nativeHookLifecycleIdentity = nativeHookLifecycleIdentity;
 exports.normalizeHookEventPayload = normalizeHookEventPayload;
 exports.findHookSettingsPath = findHookSettingsPath;
 exports.readHookSettings = readHookSettings;
@@ -18,15 +20,55 @@ const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
+const env_1 = require("./env");
 exports.MCP_ADAPTER_VERSION = '3.9.73';
 exports.NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*';
 exports.GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 exports.MCP_PACKAGE_SPEC = `@getmarrow/mcp@${exports.MCP_ADAPTER_VERSION}`;
-exports.CONTEXT_HOOK_COMMAND = `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp context-hook`;
-exports.PRE_ACTION_HOOK_COMMAND = `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp pre-action-hook`;
-exports.ACTION_RESULT_HOOK_COMMAND = `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp hook`;
-exports.SESSION_END_HOOK_COMMAND = `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp session-hook`;
+const hookCommand = (entrypoint) => `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp ${entrypoint}`;
+exports.CONTEXT_HOOK_COMMAND = hookCommand('claude-context-hook');
+exports.PRE_ACTION_HOOK_COMMAND = hookCommand('claude-pre-action-hook');
+exports.ACTION_RESULT_HOOK_COMMAND = hookCommand('claude-hook');
+exports.SESSION_END_HOOK_COMMAND = hookCommand('claude-session-hook');
+exports.GROK_CONTEXT_HOOK_COMMAND = hookCommand('grok-context-hook');
+exports.GROK_PRE_ACTION_HOOK_COMMAND = hookCommand('grok-pre-action-hook');
+exports.GROK_ACTION_RESULT_HOOK_COMMAND = hookCommand('grok-hook');
+exports.GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
 exports.NATIVE_EXPECTED_HOOKS = ['prompt', 'pre_action', 'action_result', 'session_end'];
+const TRUSTED_NATIVE_ENTRYPOINTS = {
+    'claude-context-hook': 'claude-code',
+    'claude-pre-action-hook': 'claude-code',
+    'claude-hook': 'claude-code',
+    'claude-session-hook': 'claude-code',
+    'grok-context-hook': 'grok',
+    'grok-pre-action-hook': 'grok',
+    'grok-hook': 'grok',
+    'grok-session-hook': 'grok',
+};
+/**
+ * Resolve native-hook identity only from the setup-owned CLI entrypoint and
+ * trusted Marrow configuration. Hook JSON is deliberately not an input.
+ */
+function resolveNativeHookIdentity(entrypoint, options = {}) {
+    const trustedHarness = TRUSTED_NATIVE_ENTRYPOINTS[String(entrypoint || '').trim()];
+    const harness = trustedHarness || 'mcp-client';
+    const environment = (0, env_1.resolveMarrowEnv)({ ...options, trustedOnly: true });
+    const candidateAgentId = String(environment.agentId || '').trim();
+    const agentId = /^[A-Za-z0-9._:-]{1,128}$/.test(candidateAgentId) ? candidateAgentId : undefined;
+    return {
+        harness,
+        trusted_native_adapter: harness !== 'mcp-client',
+        ...(agentId ? { agent_id: agentId } : {}),
+        environment: { ...environment, agentId },
+    };
+}
+function nativeHookLifecycleIdentity(identity, observedHook, startDir = process.cwd()) {
+    return {
+        harness: identity.harness,
+        ...(identity.agent_id ? { agent_id: identity.agent_id } : {}),
+        ...(identity.trusted_native_adapter ? nativeHookEvidence(observedHook, startDir) : {}),
+    };
+}
 const HOOK_CAMEL_TO_SNAKE = {
     hookEventName: 'hook_event_name',
     sessionId: 'session_id',
@@ -101,7 +143,7 @@ function readHookSettingsForInstall(startDir = process.cwd()) {
 function marrowHookSubcommand(command) {
     if (typeof command !== 'string')
         return null;
-    const match = command.trim().match(/^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(context-hook|pre-action-hook|hook|session-hook)$/);
+    const match = command.trim().match(/^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/);
     return match?.[1] || null;
 }
 function reconcileMarrowCommandHook(settings, eventName, subcommand, command, matcher) {
@@ -268,10 +310,10 @@ function grokHookSettingsPath(home = process.env.HOME || (0, node_os_1.homedir)(
 }
 function installGrokNativeHooks(home = process.env.HOME || (0, node_os_1.homedir)()) {
     const settingsPath = grokHookSettingsPath(home);
-    const command = (subcommand) => (subcommand === 'context-hook' ? exports.CONTEXT_HOOK_COMMAND
-        : subcommand === 'pre-action-hook' ? exports.PRE_ACTION_HOOK_COMMAND
-            : subcommand === 'session-hook' ? exports.SESSION_END_HOOK_COMMAND
-                : exports.ACTION_RESULT_HOOK_COMMAND);
+    const command = (subcommand) => (subcommand === 'context-hook' ? exports.GROK_CONTEXT_HOOK_COMMAND
+        : subcommand === 'pre-action-hook' ? exports.GROK_PRE_ACTION_HOOK_COMMAND
+            : subcommand === 'session-hook' ? exports.GROK_SESSION_END_HOOK_COMMAND
+                : exports.GROK_ACTION_RESULT_HOOK_COMMAND);
     const handler = (subcommand) => ({
         type: 'command',
         command: command(subcommand),

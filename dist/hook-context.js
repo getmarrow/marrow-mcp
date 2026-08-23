@@ -21,7 +21,6 @@ exports.compactRuntimeContext = compactRuntimeContext;
 exports.runContextHookCommand = runContextHookCommand;
 exports.installUserPromptSubmitHook = installUserPromptSubmitHook;
 const index_1 = require("./index");
-const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const guidance_cache_1 = require("./guidance-cache");
 const hook_contract_1 = require("./hook-contract");
@@ -559,7 +558,8 @@ async function runContextHookCommand() {
             process.exit(0);
             return;
         }
-        const resolvedEnv = (0, env_1.resolveMarrowEnv)();
+        const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+        const resolvedEnv = identity.environment;
         const apiKey = resolvedEnv.apiKey || '';
         if (!apiKey) {
             debug(`[marrow-context-hook] missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
@@ -569,7 +569,7 @@ async function runContextHookCommand() {
         }
         const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
         const sessionId = resolvedEnv.sessionId || asString(event.session_id);
-        const agentId = resolvedEnv.agentId || undefined;
+        const agentId = identity.agent_id;
         const passiveBriefInput = inferPassiveBriefInput(prompt);
         const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
         const requestCorrelation = (0, hook_contract_1.stablePromptCorrelation)({ session_id: sessionId, prompt });
@@ -581,12 +581,10 @@ async function runContextHookCommand() {
             event: {
                 event_id: `prompt-${requestCorrelation}`,
                 event_type: 'prompt_submitted',
-                harness: 'claude-code',
-                agent_id: agentId,
+                ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'prompt'),
                 session_id: sessionId,
                 workflow_id: workflowId,
                 correlation_id: requestCorrelation,
-                ...(0, hook_contract_1.nativeHookEvidence)('prompt'),
                 action: `user prompt submitted: ${passiveBriefInput?.type || 'general'}`,
                 risk_level: passiveBriefInput ? 'medium' : 'low',
                 outcome_state: 'pending',
@@ -634,12 +632,10 @@ async function runContextHookCommand() {
                 event: {
                     event_id: `preaction-${requestCorrelation}`,
                     event_type: 'pre_action_checked',
-                    harness: 'claude-code',
-                    agent_id: agentId,
+                    ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'prompt'),
                     session_id: sessionId,
                     workflow_id: workflowId,
                     correlation_id: requestCorrelation,
-                    ...(0, hook_contract_1.nativeHookEvidence)('prompt'),
                     action: `pre-action check: ${passiveBriefInput?.type || 'general'}`,
                     risk_level: live.value.risk_gate?.risk_level,
                     outcome_state: 'pending',

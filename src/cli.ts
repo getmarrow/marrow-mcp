@@ -99,16 +99,16 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     if (args[i] === 'setup' || args[i] === '--setup') {
       result.setup = true;
     }
-    if (args[i] === 'hook' || args[i] === '--hook') {
+    if (['hook', '--hook', 'claude-hook', 'grok-hook'].includes(args[i])) {
       result.hook = true;
     }
-    if (args[i] === 'context-hook' || args[i] === '--context-hook') {
+    if (['context-hook', '--context-hook', 'claude-context-hook', 'grok-context-hook'].includes(args[i])) {
       result.contextHook = true;
     }
-    if (args[i] === 'pre-action-hook' || args[i] === '--pre-action-hook') {
+    if (['pre-action-hook', '--pre-action-hook', 'claude-pre-action-hook', 'grok-pre-action-hook'].includes(args[i])) {
       result.preActionHook = true;
     }
-    if (args[i] === 'session-hook' || args[i] === '--session-hook') {
+    if (['session-hook', '--session-hook', 'claude-session-hook', 'grok-session-hook'].includes(args[i])) {
       result.sessionHook = true;
     }
     if (args[i] === 'spool-status' || args[i] === '--spool-status') {
