@@ -1948,7 +1948,7 @@ async function handleRequest(req: {
             {
               name: 'marrow-always-on',
               description:
-                'Marrow control and proof contract, qualified by verified host capability and observed lifecycle receipts.',
+                'Marrow control and proof contract. MCP tools are on demand; host activity is client-self-reported and coverage remains unverified without independent authority.',
               arguments: [],
               _meta: { host_capability: mcpHostCapability() },
             },
@@ -1968,7 +1968,7 @@ async function handleRequest(req: {
       }
       const hostCapability = mcpHostCapability();
       success(id, {
-        description: 'Marrow control and proof contract — coverage is capability-qualified and receipt-verified',
+        description: 'Marrow control and proof contract — MCP tools are on demand, host activity is client-self-reported, and coverage is unverified without independent authority',
         _meta: { host_capability: hostCapability },
         messages: [
           {

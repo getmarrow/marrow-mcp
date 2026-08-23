@@ -212,7 +212,7 @@ v3.9.60 restores the complete control-and-proof loop for ordinary MCP clients:
 - a plan-gated handoff is reported as unavailable for the current plan, not as an API or authentication outage;
 - the release canary runs with the customer's default client deadlines instead of silently overriding them.
 
-MCP-only hosts receive the same model-neutral control instructions and six-tool default surface, but MCP transport alone is on demand. A host or model label never changes that coverage contract. Marrow reports passive coverage only from observed lifecycle receipts, not from configuration detection.
+The current package gives MCP-only hosts the same model-neutral control instructions and seven-tool default surface, but MCP transport alone remains on demand. A host or model label never changes that coverage contract. Public lifecycle callbacks and hook activity are client-self-reported and cannot verify or certify passive coverage; independent authority is required. Codex, Grok, Gemini, and similar CLI harnesses must use `npx @getmarrow/install run --agent <agent-id> -- -- <command>` for consequential commands.
 
 ## Previous: v3.9.59
 
