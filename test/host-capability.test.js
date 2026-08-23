@@ -181,6 +181,13 @@ test('neutral and representative MCP hosts expose one contract, seven tools, and
       ]));
       assert.equal(promptList.length, 1);
       assert.equal(promptList[0].name, 'marrow-always-on');
+      assert.match(promptList[0].description, /MCP tools are on demand/);
+      assert.match(promptList[0].description, /client-self-reported/);
+      assert.match(promptList[0].description, /coverage remains unverified without independent authority/);
+      assert.match(prompt.description, /MCP tools are on demand/);
+      assert.match(prompt.description, /client-self-reported/);
+      assert.match(prompt.description, /coverage is unverified without independent authority/);
+      assert.doesNotMatch(`${promptList[0].description} ${prompt.description}`, /verified host capability|receipt-verified|observed lifecycle receipts/);
       assert.equal(initialize._meta.host_capability.host, hostCase.expectedHost);
       assert.equal(initialize._meta.host_capability.current_mode, 'tools_only_on_demand');
       assert.equal(promptList[0]._meta.host_capability.current_mode, 'tools_only_on_demand');
@@ -236,5 +243,9 @@ test('README documents the model-neutral capability matrix and independent certi
   assert.match(readme, /\| Custom host \| Requires a bounded event adapter/);
   assert.match(readme, /model-neutral/);
   assert.match(readme, /client-self-reported lifecycle callback does not certify passive coverage or enforcement/);
+  assert.match(readme, /seven-tool default surface/);
+  assert.match(readme, /Public lifecycle callbacks and hook activity are client-self-reported and cannot verify or certify passive coverage/);
   assert.match(readme, /npx @getmarrow\/install run --agent <agent-id> -- -- <command>/);
+  assert.doesNotMatch(readme, /MCP-only hosts receive the same model-neutral control instructions and six-tool default surface/);
+  assert.doesNotMatch(readme, /Marrow reports passive coverage only from observed lifecycle receipts/);
 });
