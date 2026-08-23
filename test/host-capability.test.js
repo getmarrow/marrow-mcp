@@ -6,7 +6,7 @@ const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const {
-  NATIVE_HOOK_RECEIPTS,
+  NATIVE_HOOK_ACTIVITY,
   hostCapabilityInstructions,
   resolveHostCapability,
 } = require('../dist/host-capability.js');
@@ -85,61 +85,68 @@ test('representative host labels are display-only and never infer coverage', () 
 
   const forgedDetection = resolveHostCapability({
     hostLabel: 'claude-code',
-    observedReceipts: ['model:grok', 'config:native-hooks-installed'],
+    clientSelfReportedActivity: ['model:grok', 'config:native-hooks-installed'],
   });
   assert.equal(forgedDetection.coverage_verified, false);
-  assert.deepEqual(forgedDetection.certification.observed_receipts, []);
+  assert.deepEqual(forgedDetection.activity.reported, []);
+  assert.deepEqual(forgedDetection.certification.certified_receipts, []);
 });
 
-test('native passive coverage requires the complete observed hook receipt set', () => {
+test('complete client-reported hook activity remains observable but uncertified', () => {
   const partial = resolveHostCapability({
     hostLabel: 'claude-code',
-    observedReceipts: NATIVE_HOOK_RECEIPTS.slice(0, 3),
+    clientSelfReportedActivity: NATIVE_HOOK_ACTIVITY.slice(0, 3),
   });
   assert.equal(partial.current_mode, 'tools_only_on_demand');
   assert.equal(partial.passive_hooks.external_host_hook_state, 'unverified');
   assert.equal(partial.coverage_verified, false);
 
-  const verified = resolveHostCapability({
+  const reported = resolveHostCapability({
     hostLabel: 'claude-code',
-    observedReceipts: NATIVE_HOOK_RECEIPTS,
+    clientSelfReportedActivity: NATIVE_HOOK_ACTIVITY,
   });
-  assert.equal(verified.current_mode, 'verified_native_hooks');
-  assert.equal(verified.coverage_scope, 'observed_hook_lifecycle_only');
-  assert.equal(verified.passive_hooks.external_host_hook_state, 'verified');
-  assert.equal(verified.passive_hooks.observed_by_this_process, false);
-  assert.equal(verified.passive_hooks.observed_by_marrow, true);
-  assert.equal(verified.coverage_verified, true);
-  assert.equal(verified.always_on_state, 'verified_passive');
+  assert.equal(reported.current_mode, 'tools_only_on_demand');
+  assert.equal(reported.coverage_scope, 'explicit_mcp_tool_calls');
+  assert.equal(reported.passive_hooks.external_host_hook_state, 'client_activity_reported');
+  assert.equal(reported.passive_hooks.observed_by_this_process, false);
+  assert.equal(reported.passive_hooks.certified_by_marrow, false);
+  assert.equal(reported.activity.complete_native_hook_lifecycle_reported, true);
+  assert.equal(reported.activity.certifies_control, false);
+  assert.equal(reported.coverage_verified, false);
+  assert.equal(reported.always_on_state, 'not_verified');
 });
 
-test('SDK, runner, and custom adapter evidence retain bounded scopes', () => {
-  const sdk = resolveHostCapability({ observedReceipts: ['sdk_passive_runtime:active'] });
-  assert.equal(sdk.current_mode, 'owned_sdk_process');
-  assert.equal(sdk.coverage_scope, 'owned_node_process_while_installed');
+test('self-reported SDK, runner, and custom adapter activity cannot certify their bounded scopes', () => {
+  const sdk = resolveHostCapability({ clientSelfReportedActivity: ['sdk_passive_runtime:active'] });
+  assert.equal(sdk.current_mode, 'tools_only_on_demand');
+  assert.equal(sdk.coverage_verified, false);
+  assert.equal(sdk.capability_modes.sdk_passive_runtime.state, 'activity_reported');
   assert.equal(sdk.capability_modes.native_hooks.state, 'unverified');
 
-  const runner = resolveHostCapability({ observedReceipts: ['governed_runner:wrapped_command'] });
-  assert.equal(runner.current_mode, 'governed_wrapped_command');
-  assert.equal(runner.coverage_scope, 'wrapped_command_only');
+  const runner = resolveHostCapability({ clientSelfReportedActivity: ['governed_runner:wrapped_command'] });
+  assert.equal(runner.current_mode, 'tools_only_on_demand');
+  assert.equal(runner.coverage_verified, false);
+  assert.equal(runner.capability_modes.governed_runner.state, 'activity_reported');
   assert.equal(runner.capability_modes.sdk_passive_runtime.state, 'unverified');
 
-  const adapter = resolveHostCapability({ observedReceipts: ['event_adapter:lifecycle'] });
-  assert.equal(adapter.current_mode, 'custom_event_adapter');
-  assert.equal(adapter.coverage_scope, 'observed_event_adapter_lifecycle_only');
-  assert.equal(adapter.capability_modes.custom_host.state, 'verified');
+  const adapter = resolveHostCapability({ clientSelfReportedActivity: ['event_adapter:lifecycle'] });
+  assert.equal(adapter.current_mode, 'tools_only_on_demand');
+  assert.equal(adapter.coverage_verified, false);
+  assert.equal(adapter.capability_modes.custom_host.state, 'activity_reported');
   assert.equal(resolveHostCapability().capability_modes.custom_host.state, 'adapter_required');
 });
 
 test('canonical instructions state every capability boundary without claiming setup as proof', () => {
   const instructions = hostCapabilityInstructions(resolveHostCapability({ hostLabel: 'grok' }));
-  assert.match(instructions, /MCP tools-only is on demand/);
-  assert.match(instructions, /verified native hooks are passive only for observed hook lifecycle receipts/);
-  assert.match(instructions, /owned Node process while installed/);
-  assert.match(instructions, /governed runner covers only its wrapped command/);
+  assert.match(instructions, /MCP tools are on demand/);
+  assert.match(instructions, /Configured native hooks provide cooperative telemetry or context only/);
+  assert.match(instructions, /limited to its owned Node process/);
+  assert.match(instructions, /governed wrapper is limited to its wrapped command/);
   assert.match(instructions, /custom host needs a bounded event adapter/);
-  assert.match(instructions, /model name, host label, installed configuration, or detected hook file never certifies coverage/);
-  assert.match(instructions, /Only observed Marrow receipts do/);
+  assert.match(instructions, /public hook entrypoint/);
+  assert.match(instructions, /client-self-reported lifecycle activity never certifies coverage or enforcement/);
+  assert.match(instructions, /For Codex, Grok, Gemini, and similar CLI harnesses/);
+  assert.match(instructions, /npx @getmarrow\/install run --agent <agent-id> -- -- <command>/);
 });
 
 test('neutral and representative MCP hosts expose one contract, seven tools, and the retained prompt name', () => {
@@ -208,11 +215,11 @@ test('setup configures hooks without claiming automatic coverage', () => {
     assert.equal(child.status, 0, child.stderr);
     const instructions = readFileSync(join(directory, 'CLAUDE.md'), 'utf8');
     assert.match(instructions, /MCP baseline is on demand/);
-    assert.match(instructions, /Only observed Marrow receipts certify it/);
+    assert.match(instructions, /client-self-reported callback is not proof of coverage or enforcement/);
     assert.doesNotMatch(instructions, /Use it on EVERY session automatically|Passive by default/);
 
     const cliSource = readFileSync(join(__dirname, '..', 'src', 'cli.ts'), 'utf8');
-    assert.match(cliSource, /Coverage remains unverified until Marrow observes action-result receipts/);
+    assert.match(cliSource, /configured hook activity is client-self-reported/);
     assert.match(cliSource, /MCP tools remain on demand/);
     assert.doesNotMatch(cliSource, /Your agent will now use Marrow automatically|tool calls now auto-log to Marrow|Installed hooks handle supported lifecycle capture automatically/);
   } finally {
@@ -220,13 +227,14 @@ test('setup configures hooks without claiming automatic coverage', () => {
   }
 });
 
-test('README documents the model-neutral capability matrix and receipt-only certification', () => {
+test('README documents the model-neutral capability matrix and independent certification boundary', () => {
   const readme = readFileSync(join(__dirname, '..', 'README.md'), 'utf8');
   assert.match(readme, /\| MCP tools-only \| On demand/);
-  assert.match(readme, /\| Verified native hooks \| Passive only/);
+  assert.match(readme, /\| Configured native hooks \| Cooperative telemetry\/context only/);
   assert.match(readme, /createPassiveRuntime\(\)\.install\(\)/);
   assert.match(readme, /\| Governed runner \| Only the command launched through the wrapper/);
   assert.match(readme, /\| Custom host \| Requires a bounded event adapter/);
   assert.match(readme, /model-neutral/);
-  assert.match(readme, /Only observed Marrow receipts do/);
+  assert.match(readme, /client-self-reported lifecycle callback does not certify passive coverage or enforcement/);
+  assert.match(readme, /npx @getmarrow\/install run --agent <agent-id> -- -- <command>/);
 });

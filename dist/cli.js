@@ -162,7 +162,7 @@ function runSetup() {
 
 Use Marrow according to the capability evidence returned by the MCP server:
 
-1. **MCP baseline is on demand:** MCP transport exposes tools; it does not provide passive hooks. Call Marrow tools explicitly unless observed receipts verify another capability mode.
+1. **MCP baseline is on demand:** MCP transport exposes tools; it does not provide passive hooks. Public hook callbacks and local configuration are client-self-reported activity, not certified coverage.
 2. **Before risky actions:** Respect the returned \`allow\`, \`warn\`, \`review_required\`, or \`block\` decision and its proof contract. Call \`marrow_agent_runtime\` explicitly when verified passive coverage cannot cover the action.
 3. **After meaningful work:** Record the real success or failure with \`marrow_commit\` or \`marrow_auto\`. A tool exit or session end is not proof that the business outcome succeeded.
 4. **Unfinished work:** Leave pending outcomes visible. Do not invent success to clear a closure item.
@@ -172,7 +172,7 @@ Use Marrow according to the capability evidence returned by the MCP server:
 
 Do not skip the gate or outcome. Marrow's value comes from controlling the action before execution and preserving evidence afterward.
 
-Capability boundaries: verified native hooks cover only their observed lifecycle; \`createPassiveRuntime().install()\` covers only its owned Node process while installed; a governed runner covers only its wrapped command; and a custom host needs a bounded event adapter. A model name, host label, or installed configuration is not proof of coverage. Only observed Marrow receipts certify it.
+Capability boundaries: configured native hooks provide cooperative telemetry or context only; \`createPassiveRuntime().install()\` covers only its owned Node process while installed; a governed wrapper covers only its wrapped command; and a custom host needs a bounded event adapter. A model name, host label, API key, public hook entrypoint, installed configuration, or client-self-reported callback is not proof of coverage or enforcement. For Codex, Grok, Gemini, and similar CLI harnesses, run consequential commands through \`npx @getmarrow/install run --agent <agent-id> -- -- <command>\`.
 
 For one-shot logging: \`marrow_auto({ action: "did X", outcome: "result Y", success: true })\` — one call, done.
 ${MARROW_BLOCK_END}`;
@@ -217,44 +217,44 @@ ${MARROW_BLOCK_END}`;
     }
     const hookInstall = (0, hook_1.installPostToolUseHook)(process.cwd());
     if (hookInstall.installed) {
-        process.stdout.write('Configured PostToolUse hook. Coverage remains unverified until Marrow observes action-result receipts.\n');
+        process.stdout.write('Configured PostToolUse hook. Activity is client-self-reported and does not certify action-result coverage.\n');
     }
     else {
-        process.stdout.write('PostToolUse hook configuration is present. Coverage remains unverified until Marrow observes action-result receipts.\n');
+        process.stdout.write('PostToolUse hook configuration is present. Activity is client-self-reported and does not certify action-result coverage.\n');
     }
     const contextHookInstall = (0, hook_context_1.installUserPromptSubmitHook)(process.cwd());
     if (contextHookInstall.installed) {
-        process.stdout.write('Configured UserPromptSubmit hook. Passive prompt coverage remains unverified until Marrow observes prompt receipts.\n');
+        process.stdout.write('Configured UserPromptSubmit hook. Activity is client-self-reported and does not certify passive prompt coverage.\n');
     }
     else {
-        process.stdout.write('UserPromptSubmit hook configuration is present. Passive prompt coverage remains unverified until Marrow observes prompt receipts.\n');
+        process.stdout.write('UserPromptSubmit hook configuration is present. Activity is client-self-reported and does not certify passive prompt coverage.\n');
     }
     const preActionHookInstall = (0, hook_pre_action_1.installPreActionHook)(process.cwd());
     if (preActionHookInstall.installed) {
-        process.stdout.write('Configured PreToolUse hook. Pre-action coverage remains unverified until Marrow observes pre-action receipts.\n');
+        process.stdout.write('Configured PreToolUse hook. Activity is client-self-reported and does not certify pre-action control.\n');
     }
     else {
-        process.stdout.write('PreToolUse hook configuration is present. Pre-action coverage remains unverified until Marrow observes pre-action receipts.\n');
+        process.stdout.write('PreToolUse hook configuration is present. Activity is client-self-reported and does not certify pre-action control.\n');
     }
     const sessionHookInstall = (0, hook_session_1.installSessionEndHook)(process.cwd());
     if (sessionHookInstall.installed) {
-        process.stdout.write('Configured Stop hook. Session-end coverage remains unverified until Marrow observes session-end receipts.\n');
+        process.stdout.write('Configured Stop hook. Activity is client-self-reported and does not certify session-end coverage.\n');
     }
     else {
-        process.stdout.write('Stop hook configuration is present. Session-end coverage remains unverified until Marrow observes session-end receipts.\n');
+        process.stdout.write('Stop hook configuration is present. Activity is client-self-reported and does not certify session-end coverage.\n');
     }
     const grokHookInstall = (0, hook_contract_1.installGrokNativeHooks)();
     if (grokHookInstall.installed) {
-        process.stdout.write(`Configured Grok native hooks at ${grokHookInstall.settingsPath}. Coverage remains unverified until Marrow observes Grok lifecycle receipts.\n`);
+        process.stdout.write(`Configured Grok advisory hooks at ${grokHookInstall.settingsPath}. Their activity is client-self-reported and never certifies coverage or enforcement; consequential commands require npx @getmarrow/install run --agent <agent-id> -- -- <command>.\n`);
     }
     else {
-        process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Coverage remains unverified until Marrow observes Grok lifecycle receipts.\n`);
+        process.stdout.write(`Grok advisory hook configuration is present at ${grokHookInstall.settingsPath}. Its activity is client-self-reported and never certifies coverage or enforcement; consequential commands require npx @getmarrow/install run --agent <agent-id> -- -- <command>.\n`);
     }
     process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
     process.stdout.write('Set MARROW_AUTO_HOOK=false to disable passive hooks.\n');
     process.stdout.write('Set MARROW_PASSIVE_BRIEF=false to disable automatic decision briefs, or MARROW_PASSIVE_BRIEF=always to brief every prompt.\n');
     process.stdout.write('Set MARROW_HOOK_DEBUG=true for write-side hook diagnostics, or MARROW_CONTEXT_HOOK_DEBUG=true for prompt-context diagnostics.\n');
-    process.stdout.write('Setup completed. MCP tools remain on demand; passive coverage is reported only after Marrow observes the required hook receipts.\n');
+    process.stdout.write('Setup completed. MCP tools remain on demand; configured hook activity is client-self-reported and does not certify passive coverage or enforcement.\n');
     process.exit(0);
 }
 const cliArgs = parseArgs();
@@ -1804,12 +1804,12 @@ if (process.argv[2] !== 'keys') {
 
 ${(0, host_capability_1.hostCapabilityInstructions)(hostCapability)}
 
-When verified by observed receipts, native hooks can cover these bounded lifecycle stages:
+Configured native hooks can cooperatively report or inject context for these bounded lifecycle stages, but their callbacks are client-self-reported activity and do not certify control:
 - UserPromptSubmit can request relevant policy, warnings, lessons, and a decision brief before risky work.
 - PostToolUse can record compact tool success or failure receipts.
 - Stop can keep unfinished outcomes visible instead of silently treating session exit as success.
 
-Hooks never make a blocked action safe. Before a consequential action, respect the returned allow, warn, review_required, or block decision and its required proof. Call marrow_agent_runtime explicitly when verified passive coverage cannot cover the action.
+Hooks never make a blocked action safe and are not an external execution choke point. Before a consequential action, respect the returned allow, warn, review_required, or block decision and its required proof. For Codex, Grok, Gemini, and similar CLI harnesses, use npx @getmarrow/install run --agent <agent-id> -- -- <command>.
 
 When runtime/status returns a client_update notice, tell the operator and use its exact update and verification commands only when local change policy permits. Never silently change packages or configuration.
 
@@ -2061,8 +2061,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 action,
                                 outcome_state: delivered?.committed ? 'closed' : 'pending',
                                 success: delivered?.committed ? outcomeSuccess : highRisk ? undefined : outcomeSuccess,
-                                adapter_version: hook_contract_2.MCP_ADAPTER_VERSION,
-                                capability_level: 'mcp',
+                                source: 'client_self_reported',
                             },
                         });
                         const response = {

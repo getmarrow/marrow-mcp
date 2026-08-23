@@ -26,8 +26,9 @@ const {
 } = require('../dist/lifecycle-spool.js');
 const { lifecycleSpoolCommandOutcome } = require('../dist/spool-command.js');
 const {
-  nativeHookConfigurationFingerprint,
-  nativeHookEvidence,
+  clientReportedHookLifecycleIdentity,
+  localHookConfigurationFingerprint,
+  resolveNativeHookIdentity,
   stableSessionWorkflowId,
   stableToolCorrelation,
 } = require('../dist/hook-contract.js');
@@ -76,13 +77,13 @@ test('passive hooks use joinable action bindings without treating tool exits as 
   assert.match(context, /classified agent request:/);
   assert.doesNotMatch(context, /const action = redactedPrompt|action: redactedPrompt/);
   assert.match(context, /event_id: `prompt-\$\{requestCorrelation\}`/);
-  assert.match(hook, /nativeHookLifecycleIdentity\(identity, 'action_result'\)/);
+  assert.match(hook, /clientReportedHookLifecycleIdentity\(identity\)/);
   assert.match(hook, /target: classified\.target/);
   assert.match(hook, /surfaces: classified\.surfaces/);
-  assert.match(context, /nativeHookLifecycleIdentity\(identity, 'prompt'\)/);
+  assert.match(context, /clientReportedHookLifecycleIdentity\(identity\)/);
 });
 
-test('generic lifecycle events cannot impersonate native hook coverage', async () => {
+test('forged lifecycle capability payload loses every certified-looking field', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-capability-'));
   const path = join(directory, 'spool.json');
   const originalFetch = globalThis.fetch;
@@ -93,6 +94,10 @@ test('generic lifecycle events cannot impersonate native hook coverage', async (
         correlation_id: 'correlation-one',
         target: 'production:deploy',
         surfaces: ['production', 'github'],
+        adapter_version: 'forged-adapter',
+        capability_level: 'native_hooks',
+        config_fingerprint: 'forged-fingerprint',
+        expected_hooks: ['prompt', 'pre_action', 'action_result', 'session_end'],
         observed_hook: 'action_result',
       }));
       const [event] = JSON.parse(readFileSync(path, 'utf8'));
@@ -103,7 +108,8 @@ test('generic lifecycle events cannot impersonate native hook coverage', async (
       assert.equal('adapter_version' in event, false);
       assert.equal('config_fingerprint' in event, false);
       assert.equal('expected_hooks' in event, false);
-      assert.equal(event.observed_hook, 'action_result');
+      assert.equal('observed_hook' in event, false);
+      assert.equal(event.source, 'client_self_reported');
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -129,7 +135,7 @@ test('wire delivery omits an absent agent identity for authoritative server deri
   }
 });
 
-test('native MCP hook receipts carry bounded capability and actual configuration evidence', async () => {
+test('native hook activity stays client-self-reported and cannot emit certification evidence', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-native-capability-'));
   const path = join(directory, 'spool.json');
   const settingsDir = join(directory, '.claude');
@@ -149,20 +155,26 @@ test('native MCP hook receipts carry bounded capability and actual configuration
     await withSpoolPath(path, async () => {
       await recordLifecycleEvent(lifecycleInput({
         correlation_id: 'correlation-native',
-        ...nativeHookEvidence('action_result', directory),
+        ...clientReportedHookLifecycleIdentity(resolveNativeHookIdentity('claude-hook', {
+          cwd: directory,
+          home: directory,
+          env: { MARROW_API_KEY: 'fixture-hook-key' },
+        })),
       }));
       const [event] = JSON.parse(readFileSync(path, 'utf8'));
-      assert.equal(event.capability_level, 'native_hooks');
-      assert.equal(event.adapter_version, '3.9.73');
-      assert.match(event.config_fingerprint, /^[a-f0-9]{64}$/);
-      assert.deepEqual(event.expected_hooks, ['prompt', 'pre_action', 'action_result', 'session_end']);
-      assert.equal(event.observed_hook, 'action_result');
+      assert.equal(event.source, 'client_self_reported');
+      assert.equal(event.harness, 'claude-code');
+      assert.equal(event.capability_level, undefined);
+      assert.equal(event.adapter_version, undefined);
+      assert.equal(event.config_fingerprint, undefined);
+      assert.equal(event.expected_hooks, undefined);
+      assert.equal(event.observed_hook, undefined);
 
-      const before = nativeHookConfigurationFingerprint(directory);
+      const before = localHookConfigurationFingerprint(directory);
       const changed = JSON.parse(readFileSync(join(settingsDir, 'settings.json'), 'utf8'));
       changed.hooks.PreToolUse[0].hooks[0].timeout = 15;
       writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify(changed));
-      assert.notEqual(nativeHookConfigurationFingerprint(directory), before);
+      assert.notEqual(localHookConfigurationFingerprint(directory), before);
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -856,9 +868,9 @@ test('edge spool delivery is host and model neutral for MCP and SDK-owned lifecy
         });
       }
       assert.equal(lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' }).pending, 4);
-      let delivered = 0;
-      globalThis.fetch = async () => {
-        delivered += 1;
+      const delivered = [];
+      globalThis.fetch = async (_url, init) => {
+        delivered.push(JSON.parse(init.body));
         return new Response('{}', { status: 200 });
       };
       const status = await drainLifecycleSpool({
@@ -866,7 +878,15 @@ test('edge spool delivery is host and model neutral for MCP and SDK-owned lifecy
         baseUrl: 'https://api.example.com',
         agentId: 'agent-one',
       });
-      assert.equal(delivered, 4);
+      assert.equal(delivered.length, 4);
+      for (const event of delivered) {
+        assert.equal(event.source, 'client_self_reported');
+        assert.equal('capability_level' in event, false);
+        assert.equal('adapter_version' in event, false);
+        assert.equal('config_fingerprint' in event, false);
+        assert.equal('expected_hooks' in event, false);
+        assert.equal('observed_hook' in event, false);
+      }
       assert.equal(status.state, 'clear');
       assert.equal(status.pending, 0);
       assert.equal(status.failed, 0);

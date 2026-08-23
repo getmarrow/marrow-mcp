@@ -1,7 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.GOVERNED_WRAPPER_COMMAND = void 0;
 exports.classifyTool = classifyTool;
 exports.preActionHookOutput = preActionHookOutput;
+exports.grokPreActionAdvisoryOutput = grokPreActionAdvisoryOutput;
 exports.installPreActionHook = installPreActionHook;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const index_1 = require("./index");
@@ -11,6 +13,7 @@ const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 const MAX_INPUT_BYTES = 64 * 1024;
 const RUNTIME_TIMEOUT_MS = 3000;
+exports.GOVERNED_WRAPPER_COMMAND = 'npx @getmarrow/install run --agent <agent-id> -- -- <command>';
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -120,6 +123,17 @@ function preActionHookOutput(result) {
 function emitDecision(result) {
     process.stdout.write(JSON.stringify(preActionHookOutput(result)));
 }
+function grokPreActionAdvisoryOutput() {
+    return {
+        hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            additionalContext: [
+                'This Grok hook is client-self-reported advisory context, not certified control or an enforcement boundary.',
+                `Run consequential commands through the governed wrapper: ${exports.GOVERNED_WRAPPER_COMMAND}`,
+            ].join('\n'),
+        },
+    };
+}
 async function withTimeout(operation) {
     const controller = new AbortController();
     let timer;
@@ -179,6 +193,38 @@ async function runPreActionHookCommand(input) {
     }
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     let resolved = identity.environment;
+    const sessionId = resolved.sessionId || source.session_id;
+    const agentId = identity.agent_id;
+    const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
+    if (identity.harness === 'grok') {
+        if (resolved.apiKey) {
+            try {
+                const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
+                await (0, lifecycle_spool_1.recordLifecycleEvent)({
+                    apiKey: resolved.apiKey,
+                    baseUrl,
+                    event: {
+                        event_id: `pretool-${correlation}`,
+                        event_type: 'pre_action_checked',
+                        ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
+                        session_id: sessionId,
+                        workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.tool_use_id),
+                        correlation_id: correlation,
+                        action: classified.action,
+                        target: classified.target,
+                        surfaces: classified.surfaces,
+                        risk_level: classified.risk,
+                        outcome_state: 'pending',
+                    },
+                }).catch(() => undefined);
+            }
+            catch {
+                // Advisory output remains available when self-reported telemetry cannot be delivered.
+            }
+        }
+        process.stdout.write(JSON.stringify(grokPreActionAdvisoryOutput()));
+        return;
+    }
     let baseUrl;
     try {
         baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
@@ -201,16 +247,13 @@ async function runPreActionHookCommand(input) {
         });
         return;
     }
-    const sessionId = resolved.sessionId || source.session_id;
-    const agentId = identity.agent_id;
-    const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
     const lifecycle = (0, lifecycle_spool_1.recordLifecycleEvent)({
         apiKey: resolved.apiKey,
         baseUrl,
         event: {
             event_id: `pretool-${correlation}`,
             event_type: 'pre_action_checked',
-            ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'pre_action'),
+            ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
             session_id: sessionId,
             workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.tool_use_id),
             correlation_id: correlation,

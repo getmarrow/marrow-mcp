@@ -692,7 +692,7 @@ test('initialize carries the capability-qualified control loop through the stand
     assert.match(messages[0].result.instructions, /marrow_agent_runtime before consequential actions/);
     assert.match(messages[0].result.instructions, /Infrastructure failures are not policy denials/);
     assert.match(messages[0].result.instructions, /MCP tools are on demand/);
-    assert.match(messages[0].result.instructions, /Only observed Marrow receipts do/);
+    assert.match(messages[0].result.instructions, /client-self-reported lifecycle activity never certifies coverage or enforcement/);
     assert.equal(messages[0].result._meta.host_capability.current_mode, 'tools_only_on_demand');
   } finally {
     rmSync(home, { recursive: true, force: true });

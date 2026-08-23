@@ -17,18 +17,19 @@ export const GROK_CONTEXT_HOOK_COMMAND = hookCommand('grok-context-hook');
 export const GROK_PRE_ACTION_HOOK_COMMAND = hookCommand('grok-pre-action-hook');
 export const GROK_ACTION_RESULT_HOOK_COMMAND = hookCommand('grok-hook');
 export const GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
-export const NATIVE_EXPECTED_HOOKS = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
+const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
 
 export type NativeHookHarness = 'claude-code' | 'grok' | 'mcp-client';
 
 export interface NativeHookIdentity {
   harness: NativeHookHarness;
-  trusted_native_adapter: boolean;
+  identity_source: 'public_cli_entrypoint' | 'generic_fallback';
+  client_self_reported: true;
   agent_id?: string;
   environment: ResolvedMarrowEnv;
 }
 
-const TRUSTED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, 'mcp-client'>> = {
+const RECOGNIZED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, 'mcp-client'>> = {
   'claude-context-hook': 'claude-code',
   'claude-pre-action-hook': 'claude-code',
   'claude-hook': 'claude-code',
@@ -40,35 +41,36 @@ const TRUSTED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, 'mcp
 };
 
 /**
- * Resolve native-hook identity only from the setup-owned CLI entrypoint and
- * trusted Marrow configuration. Hook JSON is deliberately not an input.
+ * Label client-reported hook activity from the public CLI entrypoint. The
+ * entrypoint is not host provenance and cannot certify coverage. Hook JSON is
+ * deliberately not an identity input, and the authenticated service remains
+ * authoritative for the credential-bound agent identity.
  */
 export function resolveNativeHookIdentity(
   entrypoint: unknown,
   options: Parameters<typeof resolveMarrowEnv>[0] = {},
 ): NativeHookIdentity {
-  const trustedHarness = TRUSTED_NATIVE_ENTRYPOINTS[String(entrypoint || '').trim()] as Exclude<NativeHookHarness, 'mcp-client'> | undefined;
-  const harness: NativeHookHarness = trustedHarness || 'mcp-client';
+  const recognizedHarness = RECOGNIZED_NATIVE_ENTRYPOINTS[String(entrypoint || '').trim()] as Exclude<NativeHookHarness, 'mcp-client'> | undefined;
+  const harness: NativeHookHarness = recognizedHarness || 'mcp-client';
   const environment = resolveMarrowEnv({ ...options, trustedOnly: true });
   const candidateAgentId = String(environment.agentId || '').trim();
   const agentId = /^[A-Za-z0-9._:-]{1,128}$/.test(candidateAgentId) ? candidateAgentId : undefined;
   return {
     harness,
-    trusted_native_adapter: harness !== 'mcp-client',
+    identity_source: recognizedHarness ? 'public_cli_entrypoint' : 'generic_fallback',
+    client_self_reported: true,
     ...(agentId ? { agent_id: agentId } : {}),
     environment: { ...environment, agentId },
   };
 }
 
-export function nativeHookLifecycleIdentity(
+export function clientReportedHookLifecycleIdentity(
   identity: NativeHookIdentity,
-  observedHook: typeof NATIVE_EXPECTED_HOOKS[number],
-  startDir = process.cwd(),
-): Pick<import('./lifecycle-spool').LifecycleEvent, 'harness' | 'agent_id' | 'adapter_version' | 'capability_level' | 'config_fingerprint' | 'expected_hooks' | 'observed_hook'> {
+): Pick<import('./lifecycle-spool').LifecycleEvent, 'harness' | 'agent_id' | 'source'> {
   return {
     harness: identity.harness,
     ...(identity.agent_id ? { agent_id: identity.agent_id } : {}),
-    ...(identity.trusted_native_adapter ? nativeHookEvidence(observedHook, startDir) : {}),
+    source: 'client_self_reported',
   };
 }
 
@@ -272,12 +274,12 @@ function exactHookDescriptors(
   });
 }
 
-export function nativeHookConfigurationFingerprint(startDir = process.cwd()): string {
+export function localHookConfigurationFingerprint(startDir = process.cwd()): string {
   const settings = readHookSettings(startDir);
   const contract = {
     schema: 'marrow-claude-native-hooks.v3',
     adapter_version: MCP_ADAPTER_VERSION,
-    expected_hooks: NATIVE_EXPECTED_HOOKS,
+    configured_stages: LOCAL_CONFIGURED_HOOK_STAGES,
     configured: {
       prompt: hasExactCommandHook(settings, 'UserPromptSubmit', CONTEXT_HOOK_COMMAND),
       pre_action: hasExactCommandHook(settings, 'PreToolUse', PRE_ACTION_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
@@ -301,25 +303,6 @@ export function nativeHookConfigurationFingerprint(startDir = process.cwd()): st
     },
   };
   return createHash('sha256').update(JSON.stringify(contract)).digest('hex');
-}
-
-export function nativeHookEvidence(
-  observedHook: typeof NATIVE_EXPECTED_HOOKS[number],
-  startDir = process.cwd(),
-): {
-  adapter_version: string;
-  capability_level: 'native_hooks';
-  config_fingerprint: string;
-  expected_hooks: string[];
-  observed_hook: typeof observedHook;
-} {
-  return {
-    adapter_version: MCP_ADAPTER_VERSION,
-    capability_level: 'native_hooks',
-    config_fingerprint: nativeHookConfigurationFingerprint(startDir),
-    expected_hooks: [...NATIVE_EXPECTED_HOOKS],
-    observed_hook: observedHook,
-  };
 }
 
 function stableHash(value: unknown): string {

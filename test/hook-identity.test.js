@@ -5,7 +5,7 @@ const { join } = require('node:path');
 const test = require('node:test');
 
 const {
-  nativeHookLifecycleIdentity,
+  clientReportedHookLifecycleIdentity,
   resolveNativeHookIdentity,
 } = require('../dist/hook-contract.js');
 
@@ -26,45 +26,58 @@ function resolve(entrypoint, extraEnv = {}) {
   }
 }
 
-test('setup-owned Claude and Grok entrypoints resolve distinct trusted harnesses', () => {
+test('public Claude and Grok entrypoints provide display labels, not trusted provenance', () => {
   for (const entrypoint of ['claude-context-hook', 'claude-pre-action-hook', 'claude-hook', 'claude-session-hook']) {
     const identity = resolve(entrypoint, { MARROW_FLEET_AGENT_ID: 'bound-agent' });
     assert.equal(identity.harness, 'claude-code');
-    assert.equal(identity.trusted_native_adapter, true);
+    assert.equal(identity.identity_source, 'public_cli_entrypoint');
+    assert.equal(identity.client_self_reported, true);
     assert.equal(identity.agent_id, 'bound-agent');
   }
   for (const entrypoint of ['grok-context-hook', 'grok-pre-action-hook', 'grok-hook', 'grok-session-hook']) {
     const identity = resolve(entrypoint, { MARROW_FLEET_AGENT_ID: 'bound-agent' });
     assert.equal(identity.harness, 'grok');
-    assert.equal(identity.trusted_native_adapter, true);
+    assert.equal(identity.identity_source, 'public_cli_entrypoint');
+    assert.equal(identity.client_self_reported, true);
     assert.equal(identity.agent_id, 'bound-agent');
   }
 });
 
-test('legacy, unknown, and custom entrypoints cannot claim native-hook coverage', () => {
-  for (const entrypoint of ['hook', 'context-hook', 'custom-hook', '', 'grok-lookalike-hook']) {
-    const fields = nativeHookLifecycleIdentity(resolve(entrypoint), 'action_result');
-    assert.equal(fields.harness, 'mcp-client');
+test('manual public, legacy, unknown, and custom entrypoints cannot emit certified coverage fields', () => {
+  for (const entrypoint of [
+    'claude-context-hook', 'claude-pre-action-hook', 'claude-hook', 'claude-session-hook',
+    'grok-context-hook', 'grok-pre-action-hook', 'grok-hook', 'grok-session-hook',
+    'hook', 'context-hook', 'custom-hook', '', 'grok-lookalike-hook',
+  ]) {
+    const identity = resolve(entrypoint);
+    const fields = clientReportedHookLifecycleIdentity(identity);
+    assert.equal(fields.harness, identity.harness);
+    assert.equal(fields.source, 'client_self_reported');
     assert.equal(fields.capability_level, undefined);
     assert.equal(fields.adapter_version, undefined);
+    assert.equal(fields.config_fingerprint, undefined);
+    assert.equal(fields.expected_hooks, undefined);
     assert.equal(fields.observed_hook, undefined);
   }
 });
 
-test('caller payload identity cannot override the trusted adapter or bound agent', () => {
+test('forged hook payload evidence is not copied into the lifecycle identity', () => {
   const callerPayload = { harness: 'claude-code', agent_id: 'caller-owned-agent', capability_level: 'native_hooks' };
-  const trusted = nativeHookLifecycleIdentity(
+  const lifecycle = clientReportedHookLifecycleIdentity(
     resolve('grok-hook', { MARROW_FLEET_AGENT_ID: 'credential-bound-agent' }),
-    'action_result',
   );
-  const event = { ...callerPayload, ...trusted };
-  assert.equal(event.harness, 'grok');
-  assert.equal(event.agent_id, 'credential-bound-agent');
-  assert.equal(event.capability_level, 'native_hooks');
+  assert.equal(lifecycle.harness, 'grok');
+  assert.equal(lifecycle.agent_id, 'credential-bound-agent');
+  assert.equal(lifecycle.source, 'client_self_reported');
+  assert.equal(lifecycle.capability_level, undefined);
+  assert.equal(lifecycle.config_fingerprint, undefined);
+  assert.equal(lifecycle.expected_hooks, undefined);
+  assert.equal(lifecycle.observed_hook, undefined);
+  assert.equal(callerPayload.capability_level, 'native_hooks');
 });
 
 test('missing agent identity stays absent for server derivation instead of being invented', () => {
   const missing = resolve('claude-hook');
   assert.equal(missing.agent_id, undefined);
-  assert.equal(nativeHookLifecycleIdentity(missing, 'action_result').agent_id, undefined);
+  assert.equal(clientReportedHookLifecycleIdentity(missing).agent_id, undefined);
 });

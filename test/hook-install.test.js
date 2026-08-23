@@ -20,7 +20,7 @@ const {
   PRE_ACTION_HOOK_COMMAND,
   SESSION_END_HOOK_COMMAND,
   installGrokNativeHooks,
-  nativeHookConfigurationFingerprint,
+  localHookConfigurationFingerprint,
 } = require('../dist/hook-contract.js');
 
 test('native matcher exempts only the exact official Marrow MCP namespace', () => {
@@ -59,7 +59,7 @@ function commandHandlers(settings, eventName, subcommand) {
   );
 }
 
-test('setup upgrades legacy and old pinned hooks to one exact certified handler', () => {
+test('setup upgrades legacy and old pinned hooks to one exact configured handler', () => {
   withSettings({
     permissions: { allow: ['Read'] },
     hooks: {
@@ -117,29 +117,29 @@ test('setup fails closed and preserves malformed or non-object settings', () => 
   }
 });
 
-test('fingerprint includes unexpected active legacy and duplicate Marrow handlers', () => {
+test('local diagnostic fingerprint includes unexpected active legacy and duplicate Marrow handlers', () => {
   withSettings({ hooks: {} }, ({ directory, settingsPath }) => {
     installAll(directory);
-    const certified = nativeHookConfigurationFingerprint(directory);
+    const configured = localHookConfigurationFingerprint(directory);
     const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
     settings.hooks.PreToolUse.push({
       matcher: NATIVE_HOOK_MATCHER,
       hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp pre-action-hook', timeout: 99 }],
     });
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    assert.notEqual(nativeHookConfigurationFingerprint(directory), certified);
+    assert.notEqual(localHookConfigurationFingerprint(directory), configured);
 
     const repaired = JSON.parse(readFileSync(settingsPath, 'utf8'));
     repaired.hooks.PreToolUse = repaired.hooks.PreToolUse.filter((entry) =>
       !entry.hooks?.some((handler) => handler.command === 'npx -y @getmarrow/mcp pre-action-hook'));
     writeFileSync(settingsPath, JSON.stringify(repaired, null, 2));
-    const expectedOnly = nativeHookConfigurationFingerprint(directory);
+    const expectedOnly = localHookConfigurationFingerprint(directory);
     repaired.hooks.PreToolUse.push({
       matcher: NATIVE_HOOK_MATCHER,
       hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.49 hook', timeout: 77 }],
     });
     writeFileSync(settingsPath, JSON.stringify(repaired, null, 2));
-    assert.notEqual(nativeHookConfigurationFingerprint(directory), expectedOnly);
+    assert.notEqual(localHookConfigurationFingerprint(directory), expectedOnly);
   });
 });
 

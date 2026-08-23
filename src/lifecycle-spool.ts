@@ -57,11 +57,7 @@ export type LifecycleEvent = {
   session_id?: string;
   decision_id?: string;
   correlation_id?: string;
-  adapter_version?: string;
-  capability_level?: 'native_hooks' | 'mcp' | 'sdk_passive_runtime' | 'governed_wrapper' | 'event_contract';
-  config_fingerprint?: string;
-  expected_hooks?: string[];
-  observed_hook?: string;
+  source?: 'client_self_reported';
   intervention_disposition?: 'followed' | 'ignored' | 'overridden';
   action_changed?: boolean;
   risk_level?: 'low' | 'medium' | 'high';
@@ -78,8 +74,8 @@ type StoredEvent = Required<Pick<LifecycleEvent, 'event_id' | 'event_type' | 'ha
 const EVENT_TYPES = new Set<string>(LIFECYCLE_EVENT_TYPES);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
 const OUTCOME_STATES = new Set(['pending', 'closed', 'unknown', 'timed_out']);
-const CAPABILITY_LEVELS = new Set(['native_hooks', 'mcp', 'sdk_passive_runtime', 'governed_wrapper', 'event_contract']);
 const INTERVENTION_DISPOSITIONS = new Set(['followed', 'ignored', 'overridden']);
+const LIFECYCLE_SOURCES = new Set(['client_self_reported']);
 const MAX_EVENTS = 1000;
 const MAX_RECORD_BYTES = 4096;
 const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
@@ -120,14 +116,6 @@ function compactAction(value: unknown): string {
     .slice(0, 180);
   if (!safe) throw new Error('invalid lifecycle action');
   return safe;
-}
-
-function hookList(value: unknown): string[] | undefined {
-  if (value == null) return undefined;
-  if (!Array.isArray(value) || value.length > 12) throw new Error('invalid lifecycle expected_hooks');
-  const hooks = value.map((hook) => optionalId(hook, 'expected_hooks'));
-  if (hooks.some((hook) => !hook)) throw new Error('invalid lifecycle expected_hooks');
-  return [...new Set(hooks as string[])];
 }
 
 function surfaceList(value: unknown): string[] | undefined {
@@ -247,10 +235,9 @@ function validateStoredEvent(value: unknown): StoredEvent {
   if (!EVENT_TYPES.has(String(event.event_type))) throw new Error('invalid lifecycle event_type');
   if (event.risk_level != null && !RISK_LEVELS.has(String(event.risk_level))) throw new Error('invalid lifecycle risk_level');
   if (event.outcome_state != null && !OUTCOME_STATES.has(String(event.outcome_state))) throw new Error('invalid lifecycle outcome_state');
-  if (event.capability_level != null && !CAPABILITY_LEVELS.has(String(event.capability_level))) throw new Error('invalid lifecycle capability_level');
   if (event.intervention_disposition != null && !INTERVENTION_DISPOSITIONS.has(String(event.intervention_disposition))) throw new Error('invalid lifecycle intervention_disposition');
+  if (event.source != null && !LIFECYCLE_SOURCES.has(String(event.source))) throw new Error('invalid lifecycle source');
   if (event.action_changed != null && typeof event.action_changed !== 'boolean') throw new Error('invalid lifecycle action_changed');
-  const expectedHooks = hookList(event.expected_hooks);
   const surfaces = surfaceList(event.surfaces);
   const stored: StoredEvent = {
     event_id: safeId(event.event_id) || (() => { throw new Error('invalid lifecycle event_id'); })(),
@@ -264,11 +251,7 @@ function validateStoredEvent(value: unknown): StoredEvent {
     ...(safeId(event.session_id) ? { session_id: safeId(event.session_id) } : {}),
     ...(safeId(event.decision_id) ? { decision_id: safeId(event.decision_id) } : {}),
     ...(safeId(event.correlation_id) ? { correlation_id: safeId(event.correlation_id) } : {}),
-    ...(safeId(event.adapter_version) ? { adapter_version: safeId(event.adapter_version) } : {}),
-    ...(event.capability_level ? { capability_level: String(event.capability_level) as LifecycleEvent['capability_level'] } : {}),
-    ...(safeId(event.config_fingerprint) ? { config_fingerprint: safeId(event.config_fingerprint) } : {}),
-    ...(expectedHooks ? { expected_hooks: expectedHooks } : {}),
-    ...(safeId(event.observed_hook) ? { observed_hook: safeId(event.observed_hook) } : {}),
+    source: 'client_self_reported',
     ...(event.intervention_disposition ? { intervention_disposition: String(event.intervention_disposition) as LifecycleEvent['intervention_disposition'] } : {}),
     ...(typeof event.action_changed === 'boolean' ? { action_changed: event.action_changed } : {}),
     ...(event.risk_level ? { risk_level: String(event.risk_level) as LifecycleEvent['risk_level'] } : {}),
@@ -290,8 +273,8 @@ function compact(input: LifecycleEvent): StoredEvent {
   if (!EVENT_TYPES.has(String(input.event_type))) throw new Error('invalid lifecycle event_type');
   if (input.risk_level != null && !RISK_LEVELS.has(input.risk_level)) throw new Error('invalid lifecycle risk_level');
   if (input.outcome_state != null && !OUTCOME_STATES.has(input.outcome_state)) throw new Error('invalid lifecycle outcome_state');
-  if (input.capability_level != null && !CAPABILITY_LEVELS.has(input.capability_level)) throw new Error('invalid lifecycle capability_level');
   if (input.intervention_disposition != null && !INTERVENTION_DISPOSITIONS.has(input.intervention_disposition)) throw new Error('invalid lifecycle intervention_disposition');
+  if (input.source != null && !LIFECYCLE_SOURCES.has(input.source)) throw new Error('invalid lifecycle source');
   if (input.action_changed != null && typeof input.action_changed !== 'boolean') throw new Error('invalid lifecycle action_changed');
   const eventId = optionalId(input.event_id, 'event_id') || randomUUID();
   const harness = optionalId(input.harness, 'harness') || 'custom';
@@ -304,7 +287,6 @@ function compact(input: LifecycleEvent): StoredEvent {
     || workflowId
     || sessionId
     || eventId;
-  const expectedHooks = hookList(input.expected_hooks);
   const surfaces = surfaceList(input.surfaces);
   return validateStoredEvent({
     event_id: eventId,
@@ -318,11 +300,7 @@ function compact(input: LifecycleEvent): StoredEvent {
     ...(sessionId ? { session_id: sessionId } : {}),
     ...(decisionId ? { decision_id: decisionId } : {}),
     correlation_id: correlationId,
-    ...(optionalId(input.adapter_version, 'adapter_version') ? { adapter_version: optionalId(input.adapter_version, 'adapter_version') } : {}),
-    ...(input.capability_level ? { capability_level: input.capability_level } : {}),
-    ...(optionalId(input.config_fingerprint, 'config_fingerprint') ? { config_fingerprint: optionalId(input.config_fingerprint, 'config_fingerprint') } : {}),
-    ...(expectedHooks ? { expected_hooks: expectedHooks } : {}),
-    ...(optionalId(input.observed_hook, 'observed_hook') ? { observed_hook: optionalId(input.observed_hook, 'observed_hook') } : {}),
+    source: 'client_self_reported',
     ...(input.intervention_disposition ? { intervention_disposition: input.intervention_disposition } : {}),
     ...(typeof input.action_changed === 'boolean' ? { action_changed: input.action_changed } : {}),
     ...(input.risk_level ? { risk_level: input.risk_level } : {}),

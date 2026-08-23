@@ -1,16 +1,15 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NATIVE_EXPECTED_HOOKS = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
 exports.resolveNativeHookIdentity = resolveNativeHookIdentity;
-exports.nativeHookLifecycleIdentity = nativeHookLifecycleIdentity;
+exports.clientReportedHookLifecycleIdentity = clientReportedHookLifecycleIdentity;
 exports.normalizeHookEventPayload = normalizeHookEventPayload;
 exports.findHookSettingsPath = findHookSettingsPath;
 exports.readHookSettings = readHookSettings;
 exports.readHookSettingsForInstall = readHookSettingsForInstall;
 exports.reconcileMarrowCommandHook = reconcileMarrowCommandHook;
 exports.hasExactCommandHook = hasExactCommandHook;
-exports.nativeHookConfigurationFingerprint = nativeHookConfigurationFingerprint;
-exports.nativeHookEvidence = nativeHookEvidence;
+exports.localHookConfigurationFingerprint = localHookConfigurationFingerprint;
 exports.stableToolCorrelation = stableToolCorrelation;
 exports.stablePromptCorrelation = stablePromptCorrelation;
 exports.stableSessionWorkflowId = stableSessionWorkflowId;
@@ -34,8 +33,8 @@ exports.GROK_CONTEXT_HOOK_COMMAND = hookCommand('grok-context-hook');
 exports.GROK_PRE_ACTION_HOOK_COMMAND = hookCommand('grok-pre-action-hook');
 exports.GROK_ACTION_RESULT_HOOK_COMMAND = hookCommand('grok-hook');
 exports.GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
-exports.NATIVE_EXPECTED_HOOKS = ['prompt', 'pre_action', 'action_result', 'session_end'];
-const TRUSTED_NATIVE_ENTRYPOINTS = {
+const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end'];
+const RECOGNIZED_NATIVE_ENTRYPOINTS = {
     'claude-context-hook': 'claude-code',
     'claude-pre-action-hook': 'claude-code',
     'claude-hook': 'claude-code',
@@ -46,27 +45,30 @@ const TRUSTED_NATIVE_ENTRYPOINTS = {
     'grok-session-hook': 'grok',
 };
 /**
- * Resolve native-hook identity only from the setup-owned CLI entrypoint and
- * trusted Marrow configuration. Hook JSON is deliberately not an input.
+ * Label client-reported hook activity from the public CLI entrypoint. The
+ * entrypoint is not host provenance and cannot certify coverage. Hook JSON is
+ * deliberately not an identity input, and the authenticated service remains
+ * authoritative for the credential-bound agent identity.
  */
 function resolveNativeHookIdentity(entrypoint, options = {}) {
-    const trustedHarness = TRUSTED_NATIVE_ENTRYPOINTS[String(entrypoint || '').trim()];
-    const harness = trustedHarness || 'mcp-client';
+    const recognizedHarness = RECOGNIZED_NATIVE_ENTRYPOINTS[String(entrypoint || '').trim()];
+    const harness = recognizedHarness || 'mcp-client';
     const environment = (0, env_1.resolveMarrowEnv)({ ...options, trustedOnly: true });
     const candidateAgentId = String(environment.agentId || '').trim();
     const agentId = /^[A-Za-z0-9._:-]{1,128}$/.test(candidateAgentId) ? candidateAgentId : undefined;
     return {
         harness,
-        trusted_native_adapter: harness !== 'mcp-client',
+        identity_source: recognizedHarness ? 'public_cli_entrypoint' : 'generic_fallback',
+        client_self_reported: true,
         ...(agentId ? { agent_id: agentId } : {}),
         environment: { ...environment, agentId },
     };
 }
-function nativeHookLifecycleIdentity(identity, observedHook, startDir = process.cwd()) {
+function clientReportedHookLifecycleIdentity(identity) {
     return {
         harness: identity.harness,
         ...(identity.agent_id ? { agent_id: identity.agent_id } : {}),
-        ...(identity.trusted_native_adapter ? nativeHookEvidence(observedHook, startDir) : {}),
+        source: 'client_self_reported',
     };
 }
 const HOOK_CAMEL_TO_SNAKE = {
@@ -249,12 +251,12 @@ function exactHookDescriptors(settings, eventName, command, matcher) {
         });
     });
 }
-function nativeHookConfigurationFingerprint(startDir = process.cwd()) {
+function localHookConfigurationFingerprint(startDir = process.cwd()) {
     const settings = readHookSettings(startDir);
     const contract = {
         schema: 'marrow-claude-native-hooks.v3',
         adapter_version: exports.MCP_ADAPTER_VERSION,
-        expected_hooks: exports.NATIVE_EXPECTED_HOOKS,
+        configured_stages: LOCAL_CONFIGURED_HOOK_STAGES,
         configured: {
             prompt: hasExactCommandHook(settings, 'UserPromptSubmit', exports.CONTEXT_HOOK_COMMAND),
             pre_action: hasExactCommandHook(settings, 'PreToolUse', exports.PRE_ACTION_HOOK_COMMAND, exports.NATIVE_HOOK_MATCHER),
@@ -278,15 +280,6 @@ function nativeHookConfigurationFingerprint(startDir = process.cwd()) {
         },
     };
     return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(contract)).digest('hex');
-}
-function nativeHookEvidence(observedHook, startDir = process.cwd()) {
-    return {
-        adapter_version: exports.MCP_ADAPTER_VERSION,
-        capability_level: 'native_hooks',
-        config_fingerprint: nativeHookConfigurationFingerprint(startDir),
-        expected_hooks: [...exports.NATIVE_EXPECTED_HOOKS],
-        observed_hook: observedHook,
-    };
 }
 function stableHash(value) {
     return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32);
