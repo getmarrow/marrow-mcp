@@ -839,6 +839,7 @@ test('marrow_auto returns in-band commit confirmation only after forwarding supp
     assert.equal(payload.phase, 'closed');
     assert.equal(payload.resumable, false);
     assert.match(payload.operation_id, /^auto_[0-9a-f-]{36}$/);
+    assert.equal(payload.receipt.event_id, `auto_closed_${payload.operation_id}`);
     assert.equal(payload.receipt.accepted, true);
     assert.equal(payload.receipt.queued, false);
   } finally {
@@ -871,6 +872,128 @@ test('marrowAuto preserves an explicit HTTP 200 committed false result', async (
     assert.deepEqual(calls, [
       'https://api.example.test/v1/agent/think?response=ack',
       'https://api.example.test/v1/agent/commit',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowAuto honors the normal 8s outer budget for a 3.4s think and closes in one call', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    calls.push({ target, idempotencyKey: new Headers(init.headers).get('Idempotency-Key') });
+    if (target.includes('/v1/agent/think')) {
+      await new Promise((resolve) => setTimeout(resolve, 3_400));
+      return Response.json({ data: { decision_id: 'decision-after-normal-latency' } });
+    }
+    return Response.json({ data: { committed: true } });
+  };
+  try {
+    const started = Date.now();
+    const result = await marrowAuto('fixture-key', 'https://api.example.test', {
+      action: 'record one normally delayed operation',
+      outcome: 'the delayed operation closed',
+      success: true,
+      operation_id: 'normal_latency_operation_123',
+    }, 'session-normal-latency', 'agent-normal-latency', 8_000);
+    const elapsed = Date.now() - started;
+    assert.equal(result.phase, 'closed');
+    assert.equal(result.committed, true);
+    assert.equal(result.resumable, false);
+    assert.equal(elapsed >= 3_300, true, `one-call closure returned too early after ${elapsed}ms`);
+    assert.equal(elapsed < 8_000, true, `one-call closure exceeded its outer budget after ${elapsed}ms`);
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/think')).length, 1);
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/commit')).length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowAuto internally continues 202 pending phases with one operation and no duplicate phase keys', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let thinkCalls = 0;
+  let commitCalls = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    const idempotencyKey = new Headers(init.headers).get('Idempotency-Key');
+    calls.push({ target, idempotencyKey, body: init.body ? JSON.parse(String(init.body)) : null });
+    if (target.includes('/v1/agent/think')) {
+      thinkCalls += 1;
+      if (thinkCalls === 1) {
+        return Response.json({ data: {
+          phase: 'think_pending', resumable: true, retry_after_ms: 0,
+        } }, { status: 202 });
+      }
+      return Response.json({ data: { decision_id: 'decision-one-call-pending' } });
+    }
+    commitCalls += 1;
+    if (commitCalls === 1) {
+      return Response.json({ data: {
+        phase: 'commit_pending', resumable: true, retry_after_ms: 0,
+      } }, { status: 202 });
+    }
+    return Response.json({ data: { committed: true } });
+  };
+  try {
+    const operationId = 'pending_one_call_operation_123';
+    const result = await marrowAuto('fixture-key', 'https://api.example.test', {
+      action: 'record one pending operation',
+      outcome: 'the pending operation closed',
+      success: true,
+      proof: { test: 'passed' },
+      operation_id: operationId,
+    }, 'session-one-call', 'agent-one-call', 8_000);
+    assert.equal(result.phase, 'closed');
+    assert.equal(result.committed, true);
+    assert.equal(result.resumable, false);
+    assert.equal(result.decision_id, 'decision-one-call-pending');
+    assert.equal(thinkCalls, 2);
+    assert.equal(commitCalls, 2);
+    assert.deepEqual([...new Set(calls.filter((call) => call.target.includes('/think')).map((call) => call.idempotencyKey))], [
+      `mcp-auto:${operationId}:think`,
+    ]);
+    assert.deepEqual([...new Set(calls.filter((call) => call.target.includes('/commit')).map((call) => call.idempotencyKey))], [
+      `mcp-auto:${operationId}:commit`,
+    ]);
+    assert.equal(new Set(calls.filter((call) => call.target.includes('/commit')).map((call) => JSON.stringify(call.body.proof))).size, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowAuto exposes a 202 continuation only when the hard outer deadline is reached', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({
+      target: String(url),
+      idempotencyKey: new Headers(init.headers).get('Idempotency-Key'),
+    });
+    return Response.json({ data: {
+      phase: 'think_pending', resumable: true, retry_after_ms: 25,
+    } }, { status: 202 });
+  };
+  try {
+    const operationId = 'hard_deadline_operation_123';
+    const started = Date.now();
+    const result = await marrowAuto('fixture-key', 'https://api.example.test', {
+      action: 'record an operation beyond the hard deadline',
+      outcome: 'the operation remains pending',
+      success: true,
+      operation_id: operationId,
+    }, 'session-hard-deadline', 'agent-hard-deadline', 500);
+    const elapsed = Date.now() - started;
+    assert.equal(result.phase, 'think_pending');
+    assert.equal(result.resumable, true);
+    assert.equal(result.committed, false);
+    assert.equal(elapsed >= 400, true, `resume escaped before the hard deadline after ${elapsed}ms`);
+    assert.equal(elapsed < 1_000, true, `hard deadline was not bounded after ${elapsed}ms`);
+    assert.equal(calls.length > 1, true);
+    assert.deepEqual([...new Set(calls.map((call) => call.idempotencyKey))], [
+      `mcp-auto:${operationId}:think`,
     ]);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1120,7 +1243,7 @@ test('high-risk marrowAuto upgrades missing proof on the same bound operation an
     assert.equal(Object.hasOwn(runtimeCalls[0].body, 'proof'), false);
     assert.deepEqual(runtimeCalls[0].body.surfaces, ['backend', 'mcp']);
     const thinkCalls = calls.filter((call) => call.target.includes('/v1/agent/think'));
-    assert.equal(thinkCalls.length, 2);
+    assert.equal(thinkCalls.length, 1);
     assert.deepEqual([...new Set(thinkCalls.map((call) => call.idempotencyKey))], [
       `mcp-auto:${operationId}:think`,
     ]);
@@ -1285,6 +1408,7 @@ test('marrow_auto never closes or emits outcome_committed when HTTP 200 says com
     assert.equal(payload.completion_state, 'delivery_pending');
     assert.equal(payload.phase, 'commit_pending');
     assert.equal(payload.resumable, true);
+    assert.equal(payload.receipt.event_id, `auto_pending_${payload.operation_id}`);
     assert.equal(payload.receipt.queued, false, 'fixture accepts only a non-outcome_committed lifecycle event');
     assert.doesNotMatch(text, /closed_with_proof|outcome_committed/);
   } finally {
