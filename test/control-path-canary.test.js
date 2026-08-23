@@ -1,7 +1,12 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
-const { runCanary } = require('../scripts/control-path-canary.cjs');
+const {
+  CANARY_DEFAULT_TOOL_TIMEOUT_MS,
+  CANARY_TOOL_TIMEOUT_MARGIN_MS,
+  MARROW_AUTO_RESPONSE_BUDGET_MAX_MS,
+  runCanary,
+} = require('../scripts/control-path-canary.cjs');
 
 const tools = [
   'marrow_status', 'marrow_runtime_status', 'marrow_orient', 'marrow_ask',
@@ -26,11 +31,11 @@ function payload(name) {
   return { result: 'available' };
 }
 
-function fakeSpawn(mode = 'good') {
+function fakeSpawn(mode = 'good', timing = {}) {
   const state = { processCount: 0, killed: false, childEnv: null, calls: [], autoCalls: 0 };
-  const factory = (_command, _args, options = {}) => {
+  const factory = (_command, _args, spawnOptions = {}) => {
     state.processCount++;
-    state.childEnv = options.env || null;
+    state.childEnv = spawnOptions.env || null;
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -86,7 +91,13 @@ function fakeSpawn(mode = 'good') {
             result: { content: [{ type: 'text', text: JSON.stringify(toolPayload) }] },
           };
         }
-        const delay = request.method === 'initialize' ? 220 : request.method === 'tools/call' ? 10 : 0;
+        const delay = request.method === 'initialize'
+          ? 220
+          : request.method === 'tools/call' && request.params?.name === 'marrow_auto'
+          ? timing.autoDelayMs ?? 10
+          : request.method === 'tools/call'
+          ? 10
+          : 0;
         setTimeout(() => child.stdout.emit('data', `${JSON.stringify(response)}\n`), delay);
         if (callback) callback();
       },
@@ -142,6 +153,29 @@ test('default canary tool timeout does not override the customer MCP request dea
   assert.equal(result.ok, true);
   assert.equal(fake.state.childEnv.MARROW_REQUEST_TIMEOUT_MS, undefined);
   assert.equal(fake.state.childEnv.MARROW_MCP_CANARY_TOOL_TIMEOUT_MS, '2750');
+});
+
+test('default canary tool ceiling contains the maximum auto budget plus response margin', () => {
+  assert.equal(MARROW_AUTO_RESPONSE_BUDGET_MAX_MS, 8_000);
+  assert.equal(CANARY_TOOL_TIMEOUT_MARGIN_MS, 2_000);
+  assert.equal(CANARY_DEFAULT_TOOL_TIMEOUT_MS, 10_000);
+  assert.ok(
+    CANARY_DEFAULT_TOOL_TIMEOUT_MS
+      >= MARROW_AUTO_RESPONSE_BUDGET_MAX_MS + CANARY_TOOL_TIMEOUT_MARGIN_MS,
+  );
+});
+
+test('default canary accepts one 6-8s auto invocation without a timeout override', async () => {
+  const fake = fakeSpawn('good', { autoDelayMs: 6_100 });
+  const env = environment();
+  delete env.MARROW_REQUEST_TIMEOUT_MS;
+  delete env.MARROW_MCP_CANARY_TOOL_TIMEOUT_MS;
+  delete env.MARROW_MCP_CANARY_TOTAL_TIMEOUT_MS;
+  const result = await runCanary(env, { spawnProcess: fake.factory });
+  const auto = result.results.find((row) => row.tool === 'marrow_auto');
+  assert.equal(result.ok, true);
+  assert.equal(fake.state.autoCalls, 1);
+  assert.ok(auto.latency_ms >= 6_000 && auto.latency_ms < 8_000, `unexpected auto latency ${auto.latency_ms}ms`);
 });
 
 for (const [mode, pattern] of [

@@ -4,6 +4,18 @@ const { randomUUID } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { resolve } = require('node:path');
 const { version: packageVersion } = require('../package.json');
+const { MARROW_AUTO_RESPONSE_BUDGET_MAX_MS } = require('../dist/index.js');
+
+const CANARY_TOOL_TIMEOUT_MARGIN_MS = 2_000;
+const CANARY_TOOL_TIMEOUT_MAX_MS = 10_000;
+const CANARY_DEFAULT_TOOL_TIMEOUT_MS = Math.min(
+  CANARY_TOOL_TIMEOUT_MAX_MS,
+  MARROW_AUTO_RESPONSE_BUDGET_MAX_MS + CANARY_TOOL_TIMEOUT_MARGIN_MS,
+);
+
+if (CANARY_DEFAULT_TOOL_TIMEOUT_MS < MARROW_AUTO_RESPONSE_BUDGET_MAX_MS + CANARY_TOOL_TIMEOUT_MARGIN_MS) {
+  throw new Error('MCP canary timeout ceiling cannot contain the bounded marrow_auto budget');
+}
 
 function canaryCases(operationId) {
   return [
@@ -249,7 +261,13 @@ class PersistentMcpClient {
 async function runCanary(env = process.env, options = {}) {
   const key = env.MARROW_API_KEY || '';
   if (!key) throw new Error('MARROW_API_KEY is required for the authenticated MCP control-path canary');
-  const toolTimeoutMs = boundedMs('MARROW_MCP_CANARY_TOOL_TIMEOUT_MS', 5_000, 250, 10_000, env);
+  const toolTimeoutMs = boundedMs(
+    'MARROW_MCP_CANARY_TOOL_TIMEOUT_MS',
+    CANARY_DEFAULT_TOOL_TIMEOUT_MS,
+    250,
+    CANARY_TOOL_TIMEOUT_MAX_MS,
+    env,
+  );
   const totalTimeoutMs = boundedMs('MARROW_MCP_CANARY_TOTAL_TIMEOUT_MS', 30_000, 2_000, 60_000, env);
   const expectedVersion = env.MARROW_EXPECTED_MCP_VERSION || packageVersion;
   const childPath = env.MARROW_MCP_CANARY_CHILD || resolve(__dirname, '../dist/cli.js');
@@ -341,4 +359,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { PersistentMcpClient, latencyGroup, percentile, runCanary };
+module.exports = {
+  CANARY_DEFAULT_TOOL_TIMEOUT_MS,
+  CANARY_TOOL_TIMEOUT_MARGIN_MS,
+  MARROW_AUTO_RESPONSE_BUDGET_MAX_MS,
+  PersistentMcpClient,
+  latencyGroup,
+  percentile,
+  runCanary,
+};

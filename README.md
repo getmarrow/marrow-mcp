@@ -106,7 +106,7 @@ Detection and notification are automatic. After explicit installer activation, t
 
 ## What's New in v3.9.74
 
-v3.9.74 keeps one automatic operation bound to its original runtime authorization and decision across timeout and proof-required retries, then closes that exact decision once verified proof is supplied.
+v3.9.74 keeps one automatic operation bound to its original runtime authorization and decision across timeout and proof-required retries, then closes that exact decision once verified proof is supplied. One outer `marrow_auto` invocation normally completes think and commit in-band within its bounded eight-second client budget. The release canary allows that complete client budget plus bounded response overhead rather than cutting the operation off at five seconds.
 
 ## Previous: v3.9.72
 
@@ -205,7 +205,7 @@ v3.9.61 keeps an authoritative proof-pack rejection distinct from a control-path
 v3.9.60 restores the complete control-and-proof loop for ordinary MCP clients:
 
 - cached guidance no longer cuts live status, ask, runtime, or handoff reads down to an impossible 500 ms deadline;
-- `marrow_auto` waits for the bounded think-and-commit path and reports the live decision and proof result in-band;
+- `marrow_auto` normally waits for the bounded think-and-commit path and reports the live decision and proof result in-band; if the client deadline is reached, the returned operation ID continues that same decision;
 - `marrow_commit` now shares the same abort and deadline contract as the other control calls;
 - transient retries use a one-second delay so a slow edge path is not immediately hit again;
 - spool status surfaces backlogs under older credential namespaces without replaying them across an unverified tenant boundary;

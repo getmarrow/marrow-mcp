@@ -72,6 +72,7 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     runtime_gate?: MarrowAgentRuntimeResult | null;
 }>;
 export declare function marrowModelUsage(apiKey: string, baseUrl: string, input: MarrowModelUsageInput, sessionId?: string, agentId?: string): Promise<MarrowModelUsageResult>;
+export declare const MARROW_AUTO_RESPONSE_BUDGET_MAX_MS = 8000;
 export type MarrowAutoResult = {
     operation_id: string;
     decision_id: string | null;
@@ -88,9 +89,11 @@ export type MarrowAutoResult = {
     };
 };
 /**
- * Bounded one-call logging helper for tool hooks and simple integrations.
- * Logs intent and, when an outcome is supplied, continues resumable server
- * phases within the caller's deadline so the outcome normally closes in-band.
+ * Bounded outcome logging helper for tool hooks and simple integrations.
+ * One outer invocation logs intent and, when an outcome is supplied, continues
+ * resumable server phases so the outcome normally closes in-band. If the
+ * caller's deadline is reached, the same operation ID resumes without opening
+ * another decision.
  */
 export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
     action: string;

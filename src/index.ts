@@ -649,7 +649,7 @@ const SAFE_AUTO_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,79}$/;
 const AUTO_OPERATION_BINDING_TTL_MS = 30 * 60 * 1_000;
 const AUTO_OPERATION_BINDING_LIMIT = 256;
 const AUTO_RESPONSE_BUDGET_DEFAULT_MS = 8_000;
-const AUTO_RESPONSE_BUDGET_MAX_MS = 8_000;
+export const MARROW_AUTO_RESPONSE_BUDGET_MAX_MS = 8_000;
 const AUTO_RESPONSE_DEADLINE_MARGIN_MS = 75;
 const AUTO_RESPONSE_STATUS = Symbol('marrowAutoResponseStatus');
 
@@ -752,7 +752,7 @@ type AutoPendingResponse = {
 function autoResponseBudget(timeoutMs?: number): number {
   const requested = Number(timeoutMs);
   return Number.isFinite(requested) && requested > 0
-    ? Math.min(AUTO_RESPONSE_BUDGET_MAX_MS, Math.max(500, Math.floor(requested)))
+    ? Math.min(MARROW_AUTO_RESPONSE_BUDGET_MAX_MS, Math.max(500, Math.floor(requested)))
     : AUTO_RESPONSE_BUDGET_DEFAULT_MS;
 }
 
@@ -826,9 +826,11 @@ function autoPartial(input: {
 }
 
 /**
- * Bounded one-call logging helper for tool hooks and simple integrations.
- * Logs intent and, when an outcome is supplied, continues resumable server
- * phases within the caller's deadline so the outcome normally closes in-band.
+ * Bounded outcome logging helper for tool hooks and simple integrations.
+ * One outer invocation logs intent and, when an outcome is supplied, continues
+ * resumable server phases so the outcome normally closes in-band. If the
+ * caller's deadline is reached, the same operation ID resumes without opening
+ * another decision.
  */
 export async function marrowAuto(
   apiKey: string,
