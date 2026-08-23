@@ -20,7 +20,7 @@ import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
 import {
   CONTEXT_HOOK_COMMAND as CONTRACT_CONTEXT_HOOK_COMMAND,
   findHookSettingsPath,
-  nativeHookLifecycleIdentity,
+  clientReportedHookLifecycleIdentity,
   normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
@@ -657,7 +657,7 @@ export async function runContextHookCommand(): Promise<void> {
       event: {
         event_id: `prompt-${requestCorrelation}`,
         event_type: 'prompt_submitted',
-        ...nativeHookLifecycleIdentity(identity, 'prompt'),
+        ...clientReportedHookLifecycleIdentity(identity),
         session_id: sessionId,
         workflow_id: workflowId,
         correlation_id: requestCorrelation,
@@ -710,7 +710,7 @@ export async function runContextHookCommand(): Promise<void> {
         event: {
           event_id: `preaction-${requestCorrelation}`,
           event_type: 'pre_action_checked',
-          ...nativeHookLifecycleIdentity(identity, 'prompt'),
+          ...clientReportedHookLifecycleIdentity(identity),
           session_id: sessionId,
           workflow_id: workflowId,
           correlation_id: requestCorrelation,

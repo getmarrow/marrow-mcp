@@ -4,7 +4,7 @@ import { extractModelUsageFromUnknown } from './habit-loop-copy';
 import { readFileSync } from 'node:fs';
 import {
   findHookSettingsPath,
-  nativeHookLifecycleIdentity,
+  clientReportedHookLifecycleIdentity,
   normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
@@ -109,7 +109,7 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     event: {
       event_id: `session-stop-${correlation}`,
       event_type: 'session_completed',
-      ...nativeHookLifecycleIdentity(identity, 'session_end'),
+      ...clientReportedHookLifecycleIdentity(identity),
       session_id: sessionId,
       workflow_id: workflowId,
       correlation_id: correlation,

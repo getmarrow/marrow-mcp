@@ -1,10 +1,10 @@
-export declare const NATIVE_HOOK_RECEIPTS: readonly ["native_hooks:prompt", "native_hooks:pre_action", "native_hooks:action_result", "native_hooks:session_end"];
-export type MarrowCoverageMode = 'tools_only_on_demand' | 'verified_native_hooks' | 'owned_sdk_process' | 'governed_wrapped_command' | 'custom_event_adapter';
+export declare const NATIVE_HOOK_ACTIVITY: readonly ["native_hooks:prompt", "native_hooks:pre_action", "native_hooks:action_result", "native_hooks:session_end"];
+export type MarrowCoverageMode = 'tools_only_on_demand';
 export interface HostCapabilityInput {
     /** Display-only hint supplied at the adapter edge. It never grants coverage. */
     hostLabel?: string;
-    /** Trusted receipts observed by Marrow. Configuration or model detection is not evidence. */
-    observedReceipts?: readonly string[];
+    /** Unattested client activity. It is useful telemetry and never grants coverage. */
+    clientSelfReportedActivity?: readonly string[];
 }
 export interface MarrowHostCapability {
     contract_version: '2026-08-16';
@@ -18,17 +18,24 @@ export interface MarrowHostCapability {
     coverage_verified: boolean;
     coverage_scope: string;
     certification: {
-        source: 'observed_receipts_only';
+        source: 'independent_authority_required';
         model_name_is_evidence: false;
         configuration_detection_is_evidence: false;
-        observed_receipts: string[];
+        client_self_reports_certify_control: false;
+        certified_receipts: string[];
+    };
+    activity: {
+        source: 'client_self_reported';
+        reported: string[];
+        complete_native_hook_lifecycle_reported: boolean;
+        certifies_control: false;
     };
     passive_hooks: {
         provided_by_mcp_transport: false;
-        external_host_hook_state: 'unverified' | 'verified';
+        external_host_hook_state: 'unverified' | 'client_activity_reported';
         observed_by_this_process: false;
-        observed_by_marrow: boolean;
-        required_receipts: string[];
+        certified_by_marrow: false;
+        client_activity_stages: string[];
     };
     capability_modes: {
         tools_only: {
@@ -36,23 +43,23 @@ export interface MarrowHostCapability {
             scope: 'explicit_mcp_tool_calls';
         };
         native_hooks: {
-            state: 'unverified' | 'verified';
-            scope: 'observed_hook_lifecycle_only';
+            state: 'unverified' | 'activity_reported';
+            scope: 'client_self_reported_lifecycle_only';
         };
         sdk_passive_runtime: {
-            state: 'unverified' | 'verified';
+            state: 'unverified' | 'activity_reported';
             scope: 'owned_node_process_while_installed';
         };
         governed_runner: {
-            state: 'unverified' | 'verified';
+            state: 'unverified' | 'activity_reported';
             scope: 'wrapped_command_only';
         };
         custom_host: {
-            state: 'adapter_required' | 'verified';
-            scope: 'observed_event_adapter_lifecycle_only';
+            state: 'adapter_required' | 'activity_reported';
+            scope: 'client_self_reported_event_lifecycle_only';
         };
     };
-    always_on_state: 'not_verified' | 'verified_passive' | 'bounded_process' | 'bounded_command' | 'bounded_event_adapter';
+    always_on_state: 'not_verified';
     exact_next_action: string;
 }
 export declare function resolveHostCapability(input?: HostCapabilityInput): MarrowHostCapability;

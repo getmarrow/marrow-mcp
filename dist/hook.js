@@ -135,7 +135,7 @@ async function runHookCommand() {
             event: {
                 event_id: `posttool-${lifecycleCorrelation}`,
                 event_type: eventType,
-                ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'action_result'),
+                ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                 session_id: sessionId,
                 workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, event.tool_use_id),
                 correlation_id: lifecycleCorrelation,

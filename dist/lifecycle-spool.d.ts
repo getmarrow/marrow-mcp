@@ -12,11 +12,7 @@ export type LifecycleEvent = {
     session_id?: string;
     decision_id?: string;
     correlation_id?: string;
-    adapter_version?: string;
-    capability_level?: 'native_hooks' | 'mcp' | 'sdk_passive_runtime' | 'governed_wrapper' | 'event_contract';
-    config_fingerprint?: string;
-    expected_hooks?: string[];
-    observed_hook?: string;
+    source?: 'client_self_reported';
     intervention_disposition?: 'followed' | 'ignored' | 'overridden';
     action_changed?: boolean;
     risk_level?: 'low' | 'medium' | 'high';

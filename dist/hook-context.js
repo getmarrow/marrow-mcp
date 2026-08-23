@@ -581,7 +581,7 @@ async function runContextHookCommand() {
             event: {
                 event_id: `prompt-${requestCorrelation}`,
                 event_type: 'prompt_submitted',
-                ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'prompt'),
+                ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                 session_id: sessionId,
                 workflow_id: workflowId,
                 correlation_id: requestCorrelation,
@@ -632,7 +632,7 @@ async function runContextHookCommand() {
                 event: {
                     event_id: `preaction-${requestCorrelation}`,
                     event_type: 'pre_action_checked',
-                    ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'prompt'),
+                    ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                     session_id: sessionId,
                     workflow_id: workflowId,
                     correlation_id: requestCorrelation,

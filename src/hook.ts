@@ -6,7 +6,7 @@ import { isOfficialMarrowMcpTool, isReadOnlyToolEvent, normalizeHookToolName } f
 import {
   ACTION_RESULT_HOOK_COMMAND,
   findHookSettingsPath,
-  nativeHookLifecycleIdentity,
+  clientReportedHookLifecycleIdentity,
   NATIVE_HOOK_MATCHER,
   normalizeHookEventPayload,
   readHookSettingsForInstall,
@@ -177,7 +177,7 @@ export async function runHookCommand(): Promise<void> {
       event: {
         event_id: `posttool-${lifecycleCorrelation}`,
         event_type: eventType,
-        ...nativeHookLifecycleIdentity(identity, 'action_result'),
+        ...clientReportedHookLifecycleIdentity(identity),
         session_id: sessionId,
         workflow_id: stableSessionWorkflowId(sessionId, event.tool_use_id),
         correlation_id: lifecycleCorrelation,

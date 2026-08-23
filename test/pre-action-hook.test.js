@@ -5,7 +5,7 @@ const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
-const { classifyTool, runPreActionHookCommand } = require('../dist/hook-pre-action.js');
+const { GOVERNED_WRAPPER_COMMAND, classifyTool, runPreActionHookCommand } = require('../dist/hook-pre-action.js');
 const { deriveAction } = require('../dist/hook.js');
 const { normalizeHookEventPayload } = require('../dist/hook-contract.js');
 const { isReadOnlyToolEvent } = require('../dist/hook-tool-policy.js');
@@ -25,6 +25,61 @@ test('Grok camelCase envelopes classify the same as Claude snake_case', () => {
     tool_input: { file_path: 'src/index.ts', old_string: 'a', new_string: 'b' },
   }), false);
   assert.equal(isReadOnlyToolEvent({ tool_name: 'read_file', tool_input: { target_file: 'src/index.ts' } }), true);
+});
+
+test('Grok pre-action is advisory telemetry and directs consequential work to the governed wrapper', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWrite = process.stdout.write;
+  const originalArg = process.argv[2];
+  const previous = {
+    HOME: process.env.HOME,
+    MARROW_API_KEY: process.env.MARROW_API_KEY,
+    MARROW_BASE_URL: process.env.MARROW_BASE_URL,
+    MARROW_AGENT_ID: process.env.MARROW_AGENT_ID,
+    MARROW_EVENT_SPOOL_PATH: process.env.MARROW_EVENT_SPOOL_PATH,
+  };
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-grok-advisory-'));
+  const calls = [];
+  let output = '';
+  process.argv[2] = 'grok-pre-action-hook';
+  process.env.HOME = directory;
+  process.env.MARROW_API_KEY = 'fixture-grok-key';
+  process.env.MARROW_BASE_URL = 'https://api.example.test';
+  process.env.MARROW_AGENT_ID = 'grok-agent';
+  process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
+  process.stdout.write = (chunk) => { output += String(chunk); return true; };
+  globalThis.fetch = async (url, init = {}) => {
+    const pathname = new URL(String(url)).pathname;
+    calls.push({ pathname, body: init.body ? JSON.parse(String(init.body)) : null });
+    return Response.json({ data: { accepted: true } });
+  };
+  try {
+    await runPreActionHookCommand({
+      session_id: 'grok-session',
+      tool_use_id: 'grok-tool',
+      tool_name: 'run_terminal_command',
+      tool_input: { command: 'wrangler deploy production' },
+    });
+    assert.deepEqual(calls.map((call) => call.pathname), ['/v1/agent/integrations/events']);
+    assert.equal(calls[0].body.source, 'client_self_reported');
+    for (const field of ['adapter_version', 'capability_level', 'config_fingerprint', 'expected_hooks', 'observed_hook']) {
+      assert.equal(field in calls[0].body, false, `${field} must not be emitted`);
+    }
+    const result = JSON.parse(output);
+    assert.equal('permissionDecision' in result.hookSpecificOutput, false);
+    assert.match(result.hookSpecificOutput.additionalContext, /advisory context, not certified control or an enforcement boundary/);
+    assert.match(result.hookSpecificOutput.additionalContext, new RegExp(GOVERNED_WRAPPER_COMMAND.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(GOVERNED_WRAPPER_COMMAND, 'npx @getmarrow/install run --agent <agent-id> -- -- <command>');
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.stdout.write = originalWrite;
+    process.argv[2] = originalArg;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('pre-action and result hooks use the same privacy-safe action binding', () => {

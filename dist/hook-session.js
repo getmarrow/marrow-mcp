@@ -96,7 +96,7 @@ async function runSessionHookCommand(input) {
         event: {
             event_id: `session-stop-${correlation}`,
             event_type: 'session_completed',
-            ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'session_end'),
+            ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
             session_id: sessionId,
             workflow_id: workflowId,
             correlation_id: correlation,

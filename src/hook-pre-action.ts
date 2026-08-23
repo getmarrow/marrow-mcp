@@ -3,8 +3,8 @@ import { recordLifecycleEvent } from './lifecycle-spool';
 import { runtimeAuthorizationReceiptId } from './runtime-contract';
 import { hookToolCommand, isOfficialMarrowMcpTool, isProtectedShellMutation, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
+  clientReportedHookLifecycleIdentity,
   findHookSettingsPath,
-  nativeHookLifecycleIdentity,
   NATIVE_HOOK_MATCHER,
   PRE_ACTION_HOOK_COMMAND,
   normalizeHookEventPayload,
@@ -17,6 +17,7 @@ import {
 
 const MAX_INPUT_BYTES = 64 * 1024;
 const RUNTIME_TIMEOUT_MS = 3000;
+export const GOVERNED_WRAPPER_COMMAND = 'npx @getmarrow/install run --agent <agent-id> -- -- <command>';
 
 export type PreToolUseEvent = {
   session_id?: string;
@@ -151,6 +152,18 @@ function emitDecision(result: PreActionControlResult): void {
   process.stdout.write(JSON.stringify(preActionHookOutput(result)));
 }
 
+export function grokPreActionAdvisoryOutput(): Record<string, unknown> {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      additionalContext: [
+        'This Grok hook is client-self-reported advisory context, not certified control or an enforcement boundary.',
+        `Run consequential commands through the governed wrapper: ${GOVERNED_WRAPPER_COMMAND}`,
+      ].join('\n'),
+    },
+  };
+}
+
 async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -213,6 +226,39 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   }
   const identity = resolveNativeHookIdentity(process.argv[2]);
   let resolved = identity.environment;
+  const sessionId = resolved.sessionId || source.session_id;
+  const agentId = identity.agent_id;
+  const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
+
+  if (identity.harness === 'grok') {
+    if (resolved.apiKey) {
+      try {
+        const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
+        await recordLifecycleEvent({
+          apiKey: resolved.apiKey,
+          baseUrl,
+          event: {
+            event_id: `pretool-${correlation}`,
+            event_type: 'pre_action_checked',
+            ...clientReportedHookLifecycleIdentity(identity),
+            session_id: sessionId,
+            workflow_id: stableSessionWorkflowId(sessionId, source.tool_use_id),
+            correlation_id: correlation,
+            action: classified.action,
+            target: classified.target,
+            surfaces: classified.surfaces,
+            risk_level: classified.risk,
+            outcome_state: 'pending',
+          },
+        }).catch(() => undefined);
+      } catch {
+        // Advisory output remains available when self-reported telemetry cannot be delivered.
+      }
+    }
+    process.stdout.write(JSON.stringify(grokPreActionAdvisoryOutput()));
+    return;
+  }
+
   let baseUrl: string;
   try {
     baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
@@ -234,16 +280,13 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     });
     return;
   }
-  const sessionId = resolved.sessionId || source.session_id;
-  const agentId = identity.agent_id;
-  const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
   const lifecycle = recordLifecycleEvent({
     apiKey: resolved.apiKey,
     baseUrl,
     event: {
       event_id: `pretool-${correlation}`,
       event_type: 'pre_action_checked',
-      ...nativeHookLifecycleIdentity(identity, 'pre_action'),
+      ...clientReportedHookLifecycleIdentity(identity),
       session_id: sessionId,
       workflow_id: stableSessionWorkflowId(sessionId, source.tool_use_id),
       correlation_id: correlation,

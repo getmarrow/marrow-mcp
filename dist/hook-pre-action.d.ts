@@ -1,4 +1,5 @@
 import { marrowAgentRuntime, marrowEnforcement } from './index';
+export declare const GOVERNED_WRAPPER_COMMAND = "npx @getmarrow/install run --agent <agent-id> -- -- <command>";
 export type PreToolUseEvent = {
     session_id?: string;
     hook_event_name?: string;
@@ -23,6 +24,7 @@ export declare function classifyTool(event: PreToolUseEvent): {
     readOnly: boolean;
 };
 export declare function preActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
+export declare function grokPreActionAdvisoryOutput(): Record<string, unknown>;
 export declare function installPreActionHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;

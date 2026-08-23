@@ -11,20 +11,22 @@ export declare const GROK_CONTEXT_HOOK_COMMAND: string;
 export declare const GROK_PRE_ACTION_HOOK_COMMAND: string;
 export declare const GROK_ACTION_RESULT_HOOK_COMMAND: string;
 export declare const GROK_SESSION_END_HOOK_COMMAND: string;
-export declare const NATIVE_EXPECTED_HOOKS: readonly ["prompt", "pre_action", "action_result", "session_end"];
 export type NativeHookHarness = 'claude-code' | 'grok' | 'mcp-client';
 export interface NativeHookIdentity {
     harness: NativeHookHarness;
-    trusted_native_adapter: boolean;
+    identity_source: 'public_cli_entrypoint' | 'generic_fallback';
+    client_self_reported: true;
     agent_id?: string;
     environment: ResolvedMarrowEnv;
 }
 /**
- * Resolve native-hook identity only from the setup-owned CLI entrypoint and
- * trusted Marrow configuration. Hook JSON is deliberately not an input.
+ * Label client-reported hook activity from the public CLI entrypoint. The
+ * entrypoint is not host provenance and cannot certify coverage. Hook JSON is
+ * deliberately not an identity input, and the authenticated service remains
+ * authoritative for the credential-bound agent identity.
  */
 export declare function resolveNativeHookIdentity(entrypoint: unknown, options?: Parameters<typeof resolveMarrowEnv>[0]): NativeHookIdentity;
-export declare function nativeHookLifecycleIdentity(identity: NativeHookIdentity, observedHook: typeof NATIVE_EXPECTED_HOOKS[number], startDir?: string): Pick<import('./lifecycle-spool').LifecycleEvent, 'harness' | 'agent_id' | 'adapter_version' | 'capability_level' | 'config_fingerprint' | 'expected_hooks' | 'observed_hook'>;
+export declare function clientReportedHookLifecycleIdentity(identity: NativeHookIdentity): Pick<import('./lifecycle-spool').LifecycleEvent, 'harness' | 'agent_id' | 'source'>;
 export declare function normalizeHookEventPayload(value: unknown): Record<string, unknown>;
 type HookSettings = Record<string, unknown>;
 export declare function findHookSettingsPath(startDir?: string): string;
@@ -36,14 +38,7 @@ export declare function reconcileMarrowCommandHook(settings: HookSettings, event
     changed: boolean;
 };
 export declare function hasExactCommandHook(settings: HookSettings, eventName: string, command: string, matcher?: string): boolean;
-export declare function nativeHookConfigurationFingerprint(startDir?: string): string;
-export declare function nativeHookEvidence(observedHook: typeof NATIVE_EXPECTED_HOOKS[number], startDir?: string): {
-    adapter_version: string;
-    capability_level: 'native_hooks';
-    config_fingerprint: string;
-    expected_hooks: string[];
-    observed_hook: typeof observedHook;
-};
+export declare function localHookConfigurationFingerprint(startDir?: string): string;
 export declare function stableToolCorrelation(event: {
     session_id?: string;
     tool_use_id?: string;

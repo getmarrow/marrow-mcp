@@ -66,7 +66,7 @@ Set the key through trusted secret storage:
 export MARROW_API_KEY=mrw_live_...
 ```
 
-For native pre-action enforcement, Marrow accepts the process environment or an owner-controlled `~/.marrow/env` file with owner-only permissions. Repository-local `.env` files are intentionally ignored for enforcement identity so project content cannot replace the account, agent, or API endpoint used to authorize a protected action.
+For Claude Code's cooperative pre-action hook, Marrow accepts the process environment or an owner-controlled `~/.marrow/env` file with owner-only permissions. Repository-local `.env` files are intentionally ignored so project content cannot replace the account, agent, or API endpoint used for guidance. The public hook callback is still a client self-report, not certified host provenance or an external enforcement boundary.
 
 Then configure the MCP server:
 
@@ -119,6 +119,7 @@ v3.9.71 makes the advertised Grok control loop true:
 - default tools include `marrow_think` so the official loop can create a `decision_id` without `MARROW_TOOL_PROFILE=full`;
 - process identity prefers `MARROW_KEY_<ROLE>` when it matches `MARROW_AGENT_ID`, so a leaked fleet env cannot 403 every status call;
 - Grok native hooks are installed under `~/.grok/hooks/marrow.json` and hook parsers accept Grok camelCase envelopes;
+- Grok hooks are advisory telemetry/context only. Consequential execution requires `npx @getmarrow/install run --agent <agent-id> -- -- <command>`;
 - idle spool nudge drains up to 40 current-namespace events so the queue does not sit as a nag;
 - if `risk_gate.enforced` is false, the gate is advisory — do not describe it as a live block;
 - `marrow_commit.decision_id` comes from `marrow_think`, `marrow_auto`, or an arbitration runtime that actually created a decision. A normal runtime authorization is a gate receipt, not a decision.
@@ -186,9 +187,9 @@ v3.9.62 integrates four model-neutral reliability and capability contracts:
 - standalone `marrow_status` uses the bounded compact API contract and can return a fresh, owner-only last-known status projection without treating it as a live gate or authorization;
 - ordinary runtime responses expose typed `runtime_authorization` backed by the authoritative gate receipt and omit `decision_id` unless the server actually created a decision;
 - `spool-status` and `drain-spool` report the active credential namespace separately from isolated legacy debt, and a clear active namespace exits successfully without replaying, merging, editing, or deleting old-key files;
-- initialize, prompt, setup, and tool responses qualify coverage by `host_capability`: MCP tools are on demand, while native hooks, an owned SDK process, a governed runner, or a custom event adapter cover only the scope proved by observed Marrow receipts.
+- initialize, prompt, setup, and tool responses qualify coverage by `host_capability`: MCP tools are on demand, while client-self-reported hook activity remains visible but never certifies coverage or control.
 
-The default surface is seven tools (runtime, think, commit, ask, status, auto, handoff status) and the prompt remains named `marrow-always-on`. Host and model labels are display-only and never change auth, tenant, plan, policy, proof, schema, or API behavior. Grok always-on coverage is native hooks plus MCP; it is verified only from observed receipts.
+The default surface is seven tools (runtime, think, commit, ask, status, auto, handoff status) and the prompt remains named `marrow-always-on`. Host and model labels are display-only and never change auth, tenant, plan, policy, proof, schema, or API behavior. Grok hook activity is advisory and client-self-reported; the governed wrapper is the consequential-action boundary.
 
 ## Previous: v3.9.61
 
@@ -290,7 +291,7 @@ It preserves the signed action-permit and update controls introduced in v3.9.52.
 
 ## Previous: v3.9.52
 
-v3.9.52 combines operator-controlled client update notices with signed, action-bound permit verification in native hooks. Official MCP requests identify the installed package version, and passive context renders a request-specific server advisory with exact update and verification commands:
+v3.9.52 combines operator-controlled client update notices with signed, action-bound permit verification in the cooperative Claude Code hook path. That permit flow does not authenticate hook provenance or certify always-on coverage. Official MCP requests identify the installed package version, and passive context renders a request-specific server advisory with exact update and verification commands:
 
 - update availability or unrecognized version metadata appears during normal authenticated runtime/status activity;
 - messaging clearly states that hosted Marrow services are already current and that no local change was applied;
@@ -298,7 +299,7 @@ v3.9.52 combines operator-controlled client update notices with signed, action-b
 - unknown versions do not imply a vulnerability, while server-designated security requirements remain distinct;
 - existing MCP tools and older server responses remain compatible when no advisory is returned.
 
-The native `PreToolUse` hook verifies the permit before protected work can execute. It obtains the runtime gate, records the exact governed decision, requests a permit bound to that gate, decision, target, and canonical action surfaces, and consumes it immediately before returning control to the harness:
+The Claude Code `PreToolUse` hook cooperatively verifies the permit before returning control to that harness. It obtains the runtime gate, records the exact governed decision, requests a permit bound to that gate, decision, target, and canonical action surfaces, and consumes it before returning. The callback itself remains client-self-reported and is not a certified external choke point:
 
 - protected deploy, publish, merge, migration, credential, and production actions fail closed on timeout or permit failure;
 - the permit is bound to the authenticated account, key, agent, session, action, target, canonical action surfaces, decision, and runtime gate;
@@ -307,13 +308,13 @@ The native `PreToolUse` hook verifies the permit before protected work can execu
 - the bounded hook timeout prevents a control-plane wait from hanging the agent indefinitely;
 - low-risk work retains passive/advisory behavior unless account policy requires stronger enforcement.
 
-It preserves the verifiable native-hook coverage introduced in v3.9.50:
+It preserves native-hook activity diagnostics introduced in v3.9.50, with the current trust boundary applied:
 
-- agents and owners can distinguish “MCP configured” from “pre-action, result, and session hooks actually observed”;
+- agents and owners can distinguish “MCP configured” from client-reported pre-action, result, and session activity without treating either as certification;
 - `PreToolUse` requests the Marrow runtime gate before matched actions and maps `block` to deny and `review_required` to operator review;
 - matching `PreToolUse` and result hooks share Claude Code's tool-use correlation while the session shares one workflow identity;
-- generic integration events cannot claim native-hook coverage unless the native adapter supplies that evidence;
-- retries preserve correlation and capability evidence in the owner-only durable spool;
+- generic integration events and public hook entrypoints cannot claim certified native-hook coverage;
+- retries preserve correlation and explicitly `client_self_reported` activity in the owner-only durable spool;
 - configuration drift can be diagnosed without sending configuration contents;
 - missing outcome closure remains visible rather than treating tool or session exit as business success;
 - existing MCP tools and lifecycle inputs remain compatible.
@@ -334,16 +335,16 @@ It preserves `marrow_arbitrate` from v3.9.49, the session-orientation hardening 
 
 Existing MCP tools and stable context API names remain compatible. Authentication, policy, proof, and validation failures are surfaced rather than retried as network failures.
 
-Coverage percentages are produced only when Marrow has exact observed receipts. An installed config without observed hooks is shown as warming up or degraded, with `npx @getmarrow/install --repair` as the bounded repair path.
+Client hook activity alone never produces certified coverage percentages. An installed config or API-key-authenticated callback is shown as client-self-reported activity; certification requires an independent authority not supplied by the public MCP hook entrypoints.
 
 ## Governed Action Flow
 
-With installed native hooks, protected tool calls follow this automatically. For explicit/custom MCP flows before deploys, merges, publishes, migrations, credential changes, financial operations, or customer-impacting work:
+Configured hooks can provide cooperative telemetry and context, but they are not a certified execution boundary. Before deploys, merges, publishes, migrations, credential changes, financial operations, or customer-impacting work:
 
 1. Call `marrow_agent_runtime` or `marrow_decision_brief`.
 2. Stop when the returned decision is `block` or `review_required`; otherwise follow its prior lesson and proof contract.
 3. Call `marrow_think` or `marrow_auto` to record intent and obtain the `decision_id` that will be closed. Keep `marrow_agent_runtime.runtime_authorization.id` separate as the gate receipt for consequential work.
-4. Perform the action only when its gate allows it. For a hard external choke point, run the command through `npx @getmarrow/install run`; it verifies the signed action permit immediately before execution.
+4. Perform the action only when its gate allows it. For Codex, Grok, Gemini, and similar CLI harnesses, use the governed wrapper: `npx @getmarrow/install run --agent <agent-id> -- -- <command>`.
 5. Call `marrow_commit` with that `decision_id`, the outcome, gate receipt, and required proof.
 
 `marrow_agent_runtime` returns `runtime_authorization` with the authoritative gate receipt. Ordinary runtime checks do not create a decision, so they omit `decision_id`; call `marrow_think` (or use `marrow_auto`) when a decision must be created and closed. An arbitration runtime that actually creates a decision returns that server-created `decision_id`. This contract is identical across MCP-compatible hosts and SDK-owned runtimes.
@@ -444,23 +445,25 @@ it does not run models, retain prompts, or infer a winner from labels.
 
 ## Passive Use
 
-`npx -y --package=@getmarrow/mcp@latest marrow-mcp setup` configures supported prompt, pre-action, tool-result, and session-stop hooks. Configuration is not proof that the host invoked them. Marrow reports native passive coverage only after it observes the required prompt, pre-action, action-result, and session-end receipts.
+`npx -y --package=@getmarrow/mcp@latest marrow-mcp setup` configures supported prompt, pre-action, tool-result, and session-stop hooks. Configuration, public hook argv, and API-key-authenticated callbacks are client self-reports. They preserve raw lifecycle activity but do not prove that the host invoked a hook or certify passive control.
 
 ### Capability and coverage contract
 
 | Integration mode | Coverage Marrow can claim |
 | --- | --- |
 | MCP tools-only | On demand; covers only explicit MCP tool calls |
-| Verified native hooks | Passive only for the lifecycle stages backed by observed hook receipts |
+| Configured native hooks | Cooperative telemetry/context only; activity is client-self-reported and coverage remains unverified |
 | `createPassiveRuntime().install()` | Only the owned Node process, and only while that runtime is installed and running |
 | Governed runner | Only the command launched through the wrapper |
 | Custom host | Requires a bounded event adapter; covers only the lifecycle events whose receipts Marrow observes |
 
-This contract is model-neutral. A model name, host header, config file, installed hook entry, or successful MCP handshake does not certify passive coverage. Only observed Marrow receipts do. An unknown MCP host therefore gets the generic `mcp-client` identity and the same on-demand tools, schemas, and API semantics as a named host.
+This contract is model-neutral. A model name, host header, API key, public hook entrypoint, config file, installed hook entry, successful MCP handshake, or client-self-reported lifecycle callback does not certify passive coverage or enforcement. An unknown MCP host therefore gets the generic `mcp-client` identity and the same on-demand tools, schemas, and API semantics as a named host.
 
 When invoked by a supported host, the configured hooks send compact classifications and lifecycle receipts. They do not need raw prompts, completions, command output, tool output, or credentials. A completed tool or session does not automatically become a successful business outcome; explicit success/failure closure is required.
 
-Setup installs distinct Claude Code and Grok hook entrypoints. The entrypoint supplies the trusted harness identity; hook event JSON cannot select the harness or agent. Agent identity comes only from trusted Marrow environment/owner configuration when present, otherwise the request omits it so the authenticated service can derive the credential-bound identity. Legacy, unknown, and custom entrypoints stay generic and cannot emit native-hook capability evidence.
+Setup installs distinct Claude Code and Grok hook entrypoints. The public entrypoint supplies only a client-reported display label; it is not host provenance. Hook event JSON cannot select the lifecycle harness or agent. Agent identity comes only from owner configuration when present, otherwise the request omits it so the authenticated service can derive the credential-bound identity. Every hook lifecycle event is marked `source: client_self_reported` and omits `capability_level: native_hooks`, adapter certification, configuration fingerprints, expected hooks, and observed-hook certification fields. Legacy, unknown, and custom entrypoints stay generic.
+
+Claude Code hooks may cooperatively request guidance and apply the harness permission response, but that does not certify always-on control. Grok hooks are advisory telemetry/context only: `grok-pre-action-hook` never issues, verifies, or consumes an action permit and never claims enforcement. Codex, Grok, Gemini, and similar CLI harnesses must run consequential commands through `npx @getmarrow/install run --agent <agent-id> -- -- <command>`. Unknown and custom hosts remain on demand unless they provide a bounded event adapter, whose activity is still not certification without an independent authority.
 
 Transient lifecycle receipts use a bounded owner-only spool and are retried with stable event IDs. Operators can inspect and drain it without exposing event content:
 
