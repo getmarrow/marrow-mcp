@@ -5,7 +5,6 @@ exports.preActionHookOutput = preActionHookOutput;
 exports.installPreActionHook = installPreActionHook;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const index_1 = require("./index");
-const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const runtime_contract_1 = require("./runtime-contract");
 const hook_tool_policy_1 = require("./hook-tool-policy");
@@ -178,10 +177,10 @@ async function runPreActionHookCommand(input) {
         process.stdout.write('{}');
         return;
     }
-    let resolved;
+    const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+    let resolved = identity.environment;
     let baseUrl;
     try {
-        resolved = (0, env_1.resolveMarrowEnv)({ trustedOnly: true });
         baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
     }
     catch {
@@ -203,7 +202,7 @@ async function runPreActionHookCommand(input) {
         return;
     }
     const sessionId = resolved.sessionId || source.session_id;
-    const agentId = resolved.agentId || undefined;
+    const agentId = identity.agent_id;
     const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
     const lifecycle = (0, lifecycle_spool_1.recordLifecycleEvent)({
         apiKey: resolved.apiKey,
@@ -211,12 +210,10 @@ async function runPreActionHookCommand(input) {
         event: {
             event_id: `pretool-${correlation}`,
             event_type: 'pre_action_checked',
-            harness: 'claude-code',
-            agent_id: agentId,
+            ...(0, hook_contract_1.nativeHookLifecycleIdentity)(identity, 'pre_action'),
             session_id: sessionId,
             workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.tool_use_id),
             correlation_id: correlation,
-            ...(0, hook_contract_1.nativeHookEvidence)('pre_action'),
             action: classified.action,
             target: classified.target,
             surfaces: classified.surfaces,
@@ -240,7 +237,7 @@ async function runPreActionHookCommand(input) {
             type: classified.type,
             source_kind: 'integration',
             source_meta: {
-                harness: 'claude-code',
+                harness: identity.harness,
                 correlation_id: correlation,
                 gate_receipt_id: gateReceiptId,
             },
@@ -251,7 +248,7 @@ async function runPreActionHookCommand(input) {
             action_type: classified.type,
             target: classified.target,
             correlation_id: correlation,
-            harness: 'claude-code',
+            harness: identity.harness,
             decision_id: decision.decision_id,
             gate_receipt_id: gateReceiptId,
             proof_requirements: runtime.proof_pack?.fields || [],
@@ -269,7 +266,7 @@ async function runPreActionHookCommand(input) {
             target: classified.target,
             surfaces: classified.surfaces,
             correlation_id: correlation,
-            harness: 'claude-code',
+            harness: identity.harness,
         }, sessionId, agentId, signal);
         const verifiedPermitId = typeof verified.permit_id === 'string' ? verified.permit_id.trim() : '';
         const verifiedExactly = verified.verified === true && verifiedPermitId === issuedPermitId;

@@ -1,4 +1,4 @@
-export declare const SESSION_HOOK_COMMAND = "npx -y --package=@getmarrow/mcp@3.9.73 marrow-mcp session-hook";
+export declare const SESSION_HOOK_COMMAND: string;
 export declare function installSessionEndHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;

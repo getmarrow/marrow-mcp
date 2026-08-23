@@ -390,6 +390,8 @@ function retryable(status: number): boolean {
 async function deliver(baseUrl: string, apiKey: string, queued: StoredEvent, timeoutMs: number): Promise<number> {
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  const wireEvent: Record<string, unknown> = { ...queued };
+  if (queued.agent_id === 'unknown') delete wireEvent.agent_id;
   try {
     const response = await Promise.race([
       fetch(`${baseUrl}/v1/agent/integrations/events`, {
@@ -401,7 +403,7 @@ async function deliver(baseUrl: string, apiKey: string, queued: StoredEvent, tim
           ...(queued.session_id ? { 'X-Marrow-Session-Id': queued.session_id } : {}),
           ...(queued.agent_id !== 'unknown' ? { 'X-Marrow-Agent-Id': queued.agent_id } : {}),
         },
-        body: JSON.stringify(queued),
+        body: JSON.stringify(wireEvent),
         signal: controller.signal,
       }),
       new Promise<never>((_resolve, reject) => {

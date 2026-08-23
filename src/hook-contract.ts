@@ -2,16 +2,75 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 
 export const MCP_ADAPTER_VERSION = '3.9.73';
 export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*';
 export const GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
-export const CONTEXT_HOOK_COMMAND = `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp context-hook`;
-export const PRE_ACTION_HOOK_COMMAND = `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp pre-action-hook`;
-export const ACTION_RESULT_HOOK_COMMAND = `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp hook`;
-export const SESSION_END_HOOK_COMMAND = `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp session-hook`;
+const hookCommand = (entrypoint: string) => `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp ${entrypoint}`;
+export const CONTEXT_HOOK_COMMAND = hookCommand('claude-context-hook');
+export const PRE_ACTION_HOOK_COMMAND = hookCommand('claude-pre-action-hook');
+export const ACTION_RESULT_HOOK_COMMAND = hookCommand('claude-hook');
+export const SESSION_END_HOOK_COMMAND = hookCommand('claude-session-hook');
+export const GROK_CONTEXT_HOOK_COMMAND = hookCommand('grok-context-hook');
+export const GROK_PRE_ACTION_HOOK_COMMAND = hookCommand('grok-pre-action-hook');
+export const GROK_ACTION_RESULT_HOOK_COMMAND = hookCommand('grok-hook');
+export const GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
 export const NATIVE_EXPECTED_HOOKS = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
+
+export type NativeHookHarness = 'claude-code' | 'grok' | 'mcp-client';
+
+export interface NativeHookIdentity {
+  harness: NativeHookHarness;
+  trusted_native_adapter: boolean;
+  agent_id?: string;
+  environment: ResolvedMarrowEnv;
+}
+
+const TRUSTED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, 'mcp-client'>> = {
+  'claude-context-hook': 'claude-code',
+  'claude-pre-action-hook': 'claude-code',
+  'claude-hook': 'claude-code',
+  'claude-session-hook': 'claude-code',
+  'grok-context-hook': 'grok',
+  'grok-pre-action-hook': 'grok',
+  'grok-hook': 'grok',
+  'grok-session-hook': 'grok',
+};
+
+/**
+ * Resolve native-hook identity only from the setup-owned CLI entrypoint and
+ * trusted Marrow configuration. Hook JSON is deliberately not an input.
+ */
+export function resolveNativeHookIdentity(
+  entrypoint: unknown,
+  options: Parameters<typeof resolveMarrowEnv>[0] = {},
+): NativeHookIdentity {
+  const trustedHarness = TRUSTED_NATIVE_ENTRYPOINTS[String(entrypoint || '').trim()] as Exclude<NativeHookHarness, 'mcp-client'> | undefined;
+  const harness: NativeHookHarness = trustedHarness || 'mcp-client';
+  const environment = resolveMarrowEnv({ ...options, trustedOnly: true });
+  const candidateAgentId = String(environment.agentId || '').trim();
+  const agentId = /^[A-Za-z0-9._:-]{1,128}$/.test(candidateAgentId) ? candidateAgentId : undefined;
+  return {
+    harness,
+    trusted_native_adapter: harness !== 'mcp-client',
+    ...(agentId ? { agent_id: agentId } : {}),
+    environment: { ...environment, agentId },
+  };
+}
+
+export function nativeHookLifecycleIdentity(
+  identity: NativeHookIdentity,
+  observedHook: typeof NATIVE_EXPECTED_HOOKS[number],
+  startDir = process.cwd(),
+): Pick<import('./lifecycle-spool').LifecycleEvent, 'harness' | 'agent_id' | 'adapter_version' | 'capability_level' | 'config_fingerprint' | 'expected_hooks' | 'observed_hook'> {
+  return {
+    harness: identity.harness,
+    ...(identity.agent_id ? { agent_id: identity.agent_id } : {}),
+    ...(identity.trusted_native_adapter ? nativeHookEvidence(observedHook, startDir) : {}),
+  };
+}
 
 const HOOK_CAMEL_TO_SNAKE: Record<string, string> = {
   hookEventName: 'hook_event_name',
@@ -88,7 +147,7 @@ export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' |
 function marrowHookSubcommand(command: unknown): MarrowHookSubcommand | null {
   if (typeof command !== 'string') return null;
   const match = command.trim().match(
-    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(context-hook|pre-action-hook|hook|session-hook)$/,
+    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/,
   );
   return match?.[1] as MarrowHookSubcommand | undefined || null;
 }
@@ -299,10 +358,10 @@ export function grokHookSettingsPath(home = process.env.HOME || homedir()): stri
 export function installGrokNativeHooks(home = process.env.HOME || homedir()): { settingsPath: string; installed: boolean } {
   const settingsPath = grokHookSettingsPath(home);
   const command = (subcommand: MarrowHookSubcommand) => (
-    subcommand === 'context-hook' ? CONTEXT_HOOK_COMMAND
-      : subcommand === 'pre-action-hook' ? PRE_ACTION_HOOK_COMMAND
-      : subcommand === 'session-hook' ? SESSION_END_HOOK_COMMAND
-      : ACTION_RESULT_HOOK_COMMAND
+    subcommand === 'context-hook' ? GROK_CONTEXT_HOOK_COMMAND
+      : subcommand === 'pre-action-hook' ? GROK_PRE_ACTION_HOOK_COMMAND
+      : subcommand === 'session-hook' ? GROK_SESSION_END_HOOK_COMMAND
+      : GROK_ACTION_RESULT_HOOK_COMMAND
   );
   const handler = (subcommand: MarrowHookSubcommand) => ({
     type: 'command',

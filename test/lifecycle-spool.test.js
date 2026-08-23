@@ -76,10 +76,10 @@ test('passive hooks use joinable action bindings without treating tool exits as 
   assert.match(context, /classified agent request:/);
   assert.doesNotMatch(context, /const action = redactedPrompt|action: redactedPrompt/);
   assert.match(context, /event_id: `prompt-\$\{requestCorrelation\}`/);
-  assert.match(hook, /nativeHookEvidence\('action_result'\)/);
+  assert.match(hook, /nativeHookLifecycleIdentity\(identity, 'action_result'\)/);
   assert.match(hook, /target: classified\.target/);
   assert.match(hook, /surfaces: classified\.surfaces/);
-  assert.match(context, /nativeHookEvidence\('prompt'\)/);
+  assert.match(context, /nativeHookLifecycleIdentity\(identity, 'prompt'\)/);
 });
 
 test('generic lifecycle events cannot impersonate native hook coverage', async () => {
@@ -105,6 +105,24 @@ test('generic lifecycle events cannot impersonate native hook coverage', async (
       assert.equal('expected_hooks' in event, false);
       assert.equal(event.observed_hook, 'action_result');
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('wire delivery omits an absent agent identity for authoritative server derivation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-server-agent-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let delivered;
+  globalThis.fetch = async (_url, init) => {
+    delivered = JSON.parse(init.body);
+    return new Response(JSON.stringify({ data: { accepted: true, agent_id: 'server-bound-agent' } }), { status: 200 });
+  };
+  try {
+    await withSpoolPath(path, () => recordLifecycleEvent(lifecycleInput({ agent_id: undefined })));
+    assert.equal(Object.hasOwn(delivered, 'agent_id'), false);
   } finally {
     globalThis.fetch = originalFetch;
     rmSync(directory, { recursive: true, force: true });

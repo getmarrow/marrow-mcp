@@ -1,16 +1,16 @@
 import { marrowAgentRuntime, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
-import { resolveMarrowEnv } from './env';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { runtimeAuthorizationReceiptId } from './runtime-contract';
 import { hookToolCommand, isOfficialMarrowMcpTool, isProtectedShellMutation, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   findHookSettingsPath,
-  nativeHookEvidence,
+  nativeHookLifecycleIdentity,
   NATIVE_HOOK_MATCHER,
   PRE_ACTION_HOOK_COMMAND,
   normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
+  resolveNativeHookIdentity,
   stableSessionWorkflowId,
   stableToolCorrelation,
 } from './hook-contract';
@@ -211,10 +211,10 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     process.stdout.write('{}');
     return;
   }
-  let resolved: ReturnType<typeof resolveMarrowEnv>;
+  const identity = resolveNativeHookIdentity(process.argv[2]);
+  let resolved = identity.environment;
   let baseUrl: string;
   try {
-    resolved = resolveMarrowEnv({ trustedOnly: true });
     baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
   } catch {
     emitDecision({
@@ -235,7 +235,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     return;
   }
   const sessionId = resolved.sessionId || source.session_id;
-  const agentId = resolved.agentId || undefined;
+  const agentId = identity.agent_id;
   const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
   const lifecycle = recordLifecycleEvent({
     apiKey: resolved.apiKey,
@@ -243,12 +243,10 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     event: {
       event_id: `pretool-${correlation}`,
       event_type: 'pre_action_checked',
-      harness: 'claude-code',
-      agent_id: agentId,
+      ...nativeHookLifecycleIdentity(identity, 'pre_action'),
       session_id: sessionId,
       workflow_id: stableSessionWorkflowId(sessionId, source.tool_use_id),
       correlation_id: correlation,
-      ...nativeHookEvidence('pre_action'),
       action: classified.action,
       target: classified.target,
       surfaces: classified.surfaces,
@@ -272,7 +270,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       type: classified.type,
       source_kind: 'integration',
       source_meta: {
-        harness: 'claude-code',
+        harness: identity.harness,
         correlation_id: correlation,
         gate_receipt_id: gateReceiptId,
       },
@@ -283,7 +281,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       action_type: classified.type,
       target: classified.target,
       correlation_id: correlation,
-      harness: 'claude-code',
+      harness: identity.harness,
       decision_id: decision.decision_id,
       gate_receipt_id: gateReceiptId,
       proof_requirements: runtime.proof_pack?.fields || [],
@@ -301,7 +299,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       target: classified.target,
       surfaces: classified.surfaces,
       correlation_id: correlation,
-      harness: 'claude-code',
+      harness: identity.harness,
     }, sessionId, agentId, signal);
     const verifiedPermitId = typeof verified.permit_id === 'string' ? verified.permit_id.trim() : '';
     const verifiedExactly = verified.verified === true && verifiedPermitId === issuedPermitId;

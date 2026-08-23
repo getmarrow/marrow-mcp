@@ -460,6 +460,8 @@ This contract is model-neutral. A model name, host header, config file, installe
 
 When invoked by a supported host, the configured hooks send compact classifications and lifecycle receipts. They do not need raw prompts, completions, command output, tool output, or credentials. A completed tool or session does not automatically become a successful business outcome; explicit success/failure closure is required.
 
+Setup installs distinct Claude Code and Grok hook entrypoints. The entrypoint supplies the trusted harness identity; hook event JSON cannot select the harness or agent. Agent identity comes only from trusted Marrow environment/owner configuration when present, otherwise the request omits it so the authenticated service can derive the credential-bound identity. Legacy, unknown, and custom entrypoints stay generic and cannot emit native-hook capability evidence.
+
 Transient lifecycle receipts use a bounded owner-only spool and are retried with stable event IDs. Operators can inspect and drain it without exposing event content:
 
 ```bash

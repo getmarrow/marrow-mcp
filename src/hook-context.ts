@@ -14,17 +14,17 @@
  */
 
 import { marrowAgentContext, marrowAgentRuntime, validateBaseUrl } from './index';
-import { resolveMarrowEnv } from './env';
 import type { MarrowAgentRuntimeResult, MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
 import {
   CONTEXT_HOOK_COMMAND as CONTRACT_CONTEXT_HOOK_COMMAND,
   findHookSettingsPath,
-  nativeHookEvidence,
+  nativeHookLifecycleIdentity,
   normalizeHookEventPayload,
   readHookSettingsForInstall,
   reconcileMarrowCommandHook,
+  resolveNativeHookIdentity,
   stablePromptCorrelation,
   stableSessionWorkflowId,
 } from './hook-contract';
@@ -632,7 +632,8 @@ export async function runContextHookCommand(): Promise<void> {
       return;
     }
 
-    const resolvedEnv = resolveMarrowEnv();
+    const identity = resolveNativeHookIdentity(process.argv[2]);
+    const resolvedEnv = identity.environment;
     const apiKey = resolvedEnv.apiKey || '';
     if (!apiKey) {
       debug(`[marrow-context-hook] missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
@@ -643,7 +644,7 @@ export async function runContextHookCommand(): Promise<void> {
 
     const baseUrl = validateBaseUrl(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
     const sessionId = resolvedEnv.sessionId || asString(event.session_id);
-    const agentId = resolvedEnv.agentId || undefined;
+    const agentId = identity.agent_id;
 
     const passiveBriefInput = inferPassiveBriefInput(prompt);
     const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
@@ -656,12 +657,10 @@ export async function runContextHookCommand(): Promise<void> {
       event: {
         event_id: `prompt-${requestCorrelation}`,
         event_type: 'prompt_submitted',
-        harness: 'claude-code',
-        agent_id: agentId,
+        ...nativeHookLifecycleIdentity(identity, 'prompt'),
         session_id: sessionId,
         workflow_id: workflowId,
         correlation_id: requestCorrelation,
-        ...nativeHookEvidence('prompt'),
         action: `user prompt submitted: ${passiveBriefInput?.type || 'general'}`,
         risk_level: passiveBriefInput ? 'medium' : 'low',
         outcome_state: 'pending',
@@ -711,12 +710,10 @@ export async function runContextHookCommand(): Promise<void> {
         event: {
           event_id: `preaction-${requestCorrelation}`,
           event_type: 'pre_action_checked',
-          harness: 'claude-code',
-          agent_id: agentId,
+          ...nativeHookLifecycleIdentity(identity, 'prompt'),
           session_id: sessionId,
           workflow_id: workflowId,
           correlation_id: requestCorrelation,
-          ...nativeHookEvidence('prompt'),
           action: `pre-action check: ${passiveBriefInput?.type || 'general'}`,
           risk_level: (live.value as MarrowAgentRuntimeResult).risk_gate?.risk_level,
           outcome_state: 'pending',
