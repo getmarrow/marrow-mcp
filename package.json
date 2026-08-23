@@ -1,6 +1,6 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.73",
+  "version": "3.9.74",
   "mcpName": "io.github.getmarrow/marrow",
   "description": "Runtime control, proof, and fleet intelligence for MCP-compatible AI agents.",
   "bin": {

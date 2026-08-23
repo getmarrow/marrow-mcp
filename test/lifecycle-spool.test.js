@@ -142,11 +142,11 @@ test('native hook activity stays client-self-reported and cannot emit certificat
   mkdirSync(settingsDir, { recursive: true });
   writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({
     hooks: {
-      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.73 context-hook' }] }],
-      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.73 pre-action-hook' }] }],
-      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.73 hook' }] }],
-      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.73 hook' }] }],
-      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.73 session-hook' }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.74 context-hook' }] }],
+      PreToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.74 pre-action-hook' }] }],
+      PostToolUse: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.74 hook' }] }],
+      PostToolUseFailure: [{ matcher: 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*', hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.74 hook' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'npx -y @getmarrow/mcp@3.9.74 session-hook' }] }],
     },
   }));
   const originalFetch = globalThis.fetch;
