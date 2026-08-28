@@ -14,7 +14,6 @@ const {
   GROK_ACTION_RESULT_HOOK_COMMAND,
   GROK_CONTEXT_HOOK_COMMAND,
   GROK_NATIVE_HOOK_MATCHER,
-  GROK_PRE_ACTION_HOOK_COMMAND,
   GROK_PRE_ACTION_GUARD_COMMAND,
   GROK_SESSION_END_HOOK_COMMAND,
   NATIVE_HOOK_MATCHER,
@@ -168,7 +167,9 @@ test('Grok native hooks install under ~/.grok/hooks with Grok tool matchers', ()
     assert.equal(settings.hooks.UserPromptSubmit[0].hooks[0].command, GROK_CONTEXT_HOOK_COMMAND);
     assert.equal(settings.hooks.PreToolUse[0].matcher, GROK_NATIVE_HOOK_MATCHER);
     assert.equal(settings.hooks.PreToolUse[0].hooks[0].command, GROK_PRE_ACTION_GUARD_COMMAND);
-    assert.match(GROK_PRE_ACTION_GUARD_COMMAND, new RegExp(GROK_PRE_ACTION_HOOK_COMMAND.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /^node -e /);
+    assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /grok-pre-action-hook/);
+    assert.doesNotMatch(GROK_PRE_ACTION_GUARD_COMMAND, /\btimeout\b/);
     assert.equal(settings.hooks.PreToolUse[0].hooks[0].timeout, 7);
     assert.equal(settings.hooks.PostToolUse[0].matcher, GROK_NATIVE_HOOK_MATCHER);
     assert.equal(settings.hooks.PostToolUse[0].hooks[0].command, GROK_ACTION_RESULT_HOOK_COMMAND);
@@ -184,23 +185,35 @@ test('Grok native hooks install under ~/.grok/hooks with Grok tool matchers', ()
   }
 });
 
-test('Grok native hook install rejects invalid and symlinked global targets without rewriting them', () => {
-  for (const unsafe of ['invalid', 'symlink']) {
+test('Grok native hook install rejects invalid and symlinked target components without rewriting outside its global path', () => {
+  for (const unsafe of ['invalid', 'target-symlink', 'grok-parent-symlink', 'hooks-parent-symlink']) {
     const home = mkdtempSync(join(tmpdir(), `marrow-grok-${unsafe}-`));
     const outside = mkdtempSync(join(tmpdir(), 'marrow-grok-outside-'));
     try {
-      const hooksDir = join(home, '.grok', 'hooks');
+      const grokDir = join(home, '.grok');
+      const hooksDir = join(grokDir, 'hooks');
       const target = join(hooksDir, 'marrow.json');
-      mkdirSync(hooksDir, { recursive: true });
+      if (unsafe === 'grok-parent-symlink') {
+        symlinkSync(outside, grokDir);
+      } else if (unsafe === 'hooks-parent-symlink') {
+        mkdirSync(grokDir);
+        symlinkSync(outside, hooksDir);
+      } else {
+        mkdirSync(hooksDir, { recursive: true });
+      }
       if (unsafe === 'invalid') writeFileSync(target, '{broken');
-      else {
+      if (unsafe === 'target-symlink') {
         const outsideFile = join(outside, 'marrow.json');
         writeFileSync(outsideFile, '{"owner":true}\n');
         symlinkSync(outsideFile, target);
       }
       assert.throws(() => installGrokNativeHooks(home), /Cannot update Grok hook settings/);
       if (unsafe === 'invalid') assert.equal(readFileSync(target, 'utf8'), '{broken');
-      else assert.equal(readFileSync(join(outside, 'marrow.json'), 'utf8'), '{"owner":true}\n');
+      else if (unsafe === 'target-symlink') assert.equal(readFileSync(join(outside, 'marrow.json'), 'utf8'), '{"owner":true}\n');
+      else {
+        assert.equal(require('node:fs').existsSync(join(outside, 'hooks', 'marrow.json')), false);
+        assert.equal(require('node:fs').existsSync(join(outside, 'marrow.json')), false);
+      }
     } finally {
       rmSync(home, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { mkdtempSync, rmSync } = require('node:fs');
+const { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -9,7 +9,6 @@ const {
   GROK_FIXED_DENIAL,
   GROK_LAUNCH_FAILURE,
   GROK_PRE_ACTION_GUARD_COMMAND,
-  GROK_PRE_ACTION_HOOK_COMMAND,
   normalizeHookEventPayload,
   resolveNativeHookIdentity,
 } = require('../dist/hook-contract.js');
@@ -50,9 +49,23 @@ async function withGrokEnvironment(entrypoint, env, callback) {
   }
 }
 
-function runGuard(childCommand) {
-  const command = GROK_PRE_ACTION_GUARD_COMMAND.replace(GROK_PRE_ACTION_HOOK_COMMAND, childCommand);
-  return spawnSync(command, { shell: true, encoding: 'utf8', input: '{"private":"synthetic-private-input"}' });
+function runGuard(mode) {
+  const home = mkdtempSync(join(tmpdir(), 'marrow-grok-guard-'));
+  try {
+    const fakeBin = join(home, 'bin');
+    mkdirSync(fakeBin);
+    const fakeNpx = join(fakeBin, 'npx');
+    writeFileSync(fakeNpx, '#!/bin/sh\ncat >/dev/null\ncase "$FAKE_NPX_MODE" in allow) printf "%s" \'{"decision":"allow"}\' ;; polluted) printf "%s\\n" \'{"decision":"allow"}\' ;; *) printf "%s\\n" "synthetic-private-launch-error" >&2; exit 7 ;; esac\n');
+    chmodSync(fakeNpx, 0o755);
+    return spawnSync(GROK_PRE_ACTION_GUARD_COMMAND, {
+      shell: true,
+      encoding: 'utf8',
+      input: '{"private":"synthetic-private-input"}',
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, FAKE_NPX_MODE: mode },
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 }
 
 test('Grok entrypoints and camelCase envelopes normalize to bounded native classifications', () => {
@@ -171,21 +184,23 @@ test('Grok native pre-action emits only exact fixed allow or private deny JSON',
 });
 
 test('Grok installed pre-action guard rejects launcher failure and stdout pollution with exit 2', () => {
-  const allow = runGuard('printf "{\\"decision\\":\\"allow\\"}"');
+  const allow = runGuard('allow');
   assert.equal(allow.status, 0);
   assert.equal(allow.stdout, '{"decision":"allow"}');
   assert.equal(allow.stderr, '');
 
-  const polluted = runGuard('printf "{\\"decision\\":\\"allow\\"}\\n"');
+  const polluted = runGuard('polluted');
   assert.equal(polluted.status, 2);
   assert.equal(polluted.stdout, '');
   assert.equal(polluted.stderr, `${GROK_LAUNCH_FAILURE}\n`);
 
-  const failed = runGuard('/synthetic/missing-grok-adapter');
+  const failed = runGuard('fail');
   assert.equal(failed.status, 2);
   assert.equal(failed.stdout, '');
   assert.equal(failed.stderr, `${GROK_LAUNCH_FAILURE}\n`);
-  assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /timeout 5s/);
+  assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /setTimeout\(fail,5000\)/);
+  assert.doesNotMatch(GROK_PRE_ACTION_GUARD_COMMAND, /\btimeout\b/);
+  assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /grok-pre-action-hook/);
 });
 
 test('Grok post hooks record compact success and failure without changing results or retaining raw values', async () => {

@@ -35,7 +35,22 @@ exports.GROK_ACTION_RESULT_HOOK_COMMAND = hookCommand('grok-hook');
 exports.GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
 exports.GROK_FIXED_DENIAL = 'Marrow blocked this protected action.';
 exports.GROK_LAUNCH_FAILURE = 'Marrow governance adapter was unavailable; this action is blocked.';
-exports.GROK_PRE_ACTION_GUARD_COMMAND = `sh -c 'output="$( ( timeout 5s ${exports.GROK_PRE_ACTION_HOOK_COMMAND} 2>/dev/null; status=$?; printf "\\001"; exit "$status" ) )"; status=$?; output="${'${output%?}'}"; if [ "$status" -eq 0 ]; then case "$output" in "{\\"decision\\":\\"allow\\"}"|"{\\"decision\\":\\"deny\\",\\"reason\\":\\"${exports.GROK_FIXED_DENIAL}\\"}") printf "%s" "$output"; exit 0 ;; esac; fi; printf "%s\\n" "${exports.GROK_LAUNCH_FAILURE}" >&2; exit 2'`;
+const GROK_PRE_ACTION_GUARD_SOURCE = [
+    'const {spawn}=require("node:child_process");',
+    `const valid=new Set([${JSON.stringify('{"decision":"allow"}')},${JSON.stringify(`{"decision":"deny","reason":"${exports.GROK_FIXED_DENIAL}"}`)}]);`,
+    'let child=null,timer=null,done=false,input=[],inputBytes=0,output="",outputBytes=0;',
+    `const fail=()=>{if(done)return;done=true;if(timer)clearTimeout(timer);if(child&&!child.killed)child.kill("SIGKILL");process.stderr.write(${JSON.stringify(`${exports.GROK_LAUNCH_FAILURE}\n`)});process.exitCode=2;process.stdin.destroy();};`,
+    'process.stdin.on("error",fail);',
+    'process.stdin.on("data",chunk=>{const value=Buffer.from(chunk);inputBytes+=value.length;if(inputBytes>65536){fail();return;}input.push(value);});',
+    'process.stdin.on("end",()=>{if(done)return;try{',
+    `child=spawn(process.platform==="win32"?"npx.cmd":"npx",${JSON.stringify(['-y', `--package=${exports.MCP_PACKAGE_SPEC}`, 'marrow-mcp', 'grok-pre-action-hook'])},{stdio:["pipe","pipe","ignore"]});`,
+    'timer=setTimeout(fail,5000);',
+    'child.stdout.on("data",chunk=>{if(done)return;outputBytes+=chunk.length;if(outputBytes>512){fail();return;}output+=chunk.toString("utf8");});',
+    'child.on("error",fail);child.stdin.on("error",fail);',
+    'child.on("close",code=>{if(done)return;if(code!==0||!valid.has(output)){fail();return;}done=true;if(timer)clearTimeout(timer);process.stdout.write(output);});',
+    'child.stdin.end(Buffer.concat(input));}catch{fail();}});',
+].join('');
+exports.GROK_PRE_ACTION_GUARD_COMMAND = `node -e '${GROK_PRE_ACTION_GUARD_SOURCE}'`;
 exports.CURSOR_PRE_ACTION_HOOK_COMMAND = hookCommand('cursor-pre-action-hook');
 exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = hookCommand('cursor-hook');
 exports.CURSOR_SESSION_END_HOOK_COMMAND = hookCommand('cursor-session-hook');
@@ -529,12 +544,14 @@ function grokHookSettingsPath(home = process.env.HOME || (0, node_os_1.homedir)(
 }
 function installGrokNativeHooks(home = process.env.HOME || (0, node_os_1.homedir)()) {
     const settingsPath = grokHookSettingsPath(home);
+    for (const component of [(0, node_path_1.join)(home, '.grok'), (0, node_path_1.join)(home, '.grok', 'hooks'), settingsPath]) {
+        if ((0, node_fs_1.existsSync)(component) && (0, node_fs_1.lstatSync)(component).isSymbolicLink()) {
+            throw new Error(`Cannot update Grok hook settings at ${settingsPath}: symbolic path components are not allowed`);
+        }
+    }
     let previous = '';
     let settings = {};
     if ((0, node_fs_1.existsSync)(settingsPath)) {
-        if ((0, node_fs_1.lstatSync)(settingsPath).isSymbolicLink()) {
-            throw new Error(`Cannot update Grok hook settings at ${settingsPath}: symbolic links are not allowed`);
-        }
         previous = (0, node_fs_1.readFileSync)(settingsPath, 'utf8');
         let parsed;
         try {
@@ -556,7 +573,8 @@ function installGrokNativeHooks(home = process.env.HOME || (0, node_os_1.homedir
             return direct;
         if (typeof command !== 'string')
             return null;
-        const match = command.match(/marrow-mcp\s+grok-(context-hook|pre-action-hook|hook|session-hook)(?:\s|['"]|$)/);
+        const match = command.match(/marrow-mcp\s+grok-(context-hook|pre-action-hook|hook|session-hook)(?:\s|['"]|$)/)
+            || command.match(/["']marrow-mcp["']\s*,\s*["']grok-(context-hook|pre-action-hook|hook|session-hook)["']/);
         return match?.[1] || null;
     };
     const reconcile = (eventName, subcommand, canonical) => {
