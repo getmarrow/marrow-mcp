@@ -829,6 +829,10 @@ test('marrow_auto returns in-band commit confirmation only after forwarding supp
     }));
     assert.equal(child.status, 0, child.stderr);
     const messages = child.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    const autoTool = messages[1].result.tools.find((tool) => tool.name === 'marrow_auto');
+    assert.ok(autoTool, child.stdout);
+    assert.ok(autoTool.inputSchema.properties.arbitration_receipt_id, child.stdout);
+    assert.ok(autoTool.inputSchema.properties.owner_approval_receipt_id, child.stdout);
     assert.equal(messages[2].result.isError, undefined, child.stdout);
     const payload = JSON.parse(messages[2].result.content[0].text);
     assert.equal(payload.decision_id, 'decision-auto', child.stdout);
@@ -1137,6 +1141,142 @@ test('high-risk marrowAuto obtains one runtime gate and one decision before comm
     assert.equal(calls[2].idempotencyKey, `mcp-auto:${operationId}:commit`);
     assert.equal(calls[2].body.decision_id, 'decision-high-risk');
     assert.equal(calls[2].body.gate_receipt_id, 'gate-high-risk');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('review-required marrowAuto waits for dashboard approval then forwards server receipts once', async () => {
+  const originalFetch = globalThis.fetch;
+  const operationId = 'owner_approval_operation_123';
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    const body = init.body ? JSON.parse(String(init.body)) : null;
+    calls.push({
+      target,
+      body,
+      idempotencyKey: new Headers(init.headers).get('Idempotency-Key'),
+    });
+    if (target.includes('/v1/agent/runtime')) {
+      return Response.json({ data: {
+        ok: true,
+        action: 'release an owner-approved production candidate',
+        agent_id: 'agent-owner-approval',
+        session_id: 'session-owner-approval',
+        status: {},
+        decision_brief: {},
+        risk_gate: {
+          allow: false,
+          decision: 'review_required',
+          risk_level: 'high',
+          enforced: true,
+          enforcement_decision: 'review_required',
+          gate_required: true,
+          gate_receipt_id: 'gate-owner-approval',
+        },
+        gate_receipt: {
+          id: 'gate-owner-approval',
+          required: true,
+          decision: 'review_required',
+          owner_approval_required: true,
+          expires_at: '2030-01-01T00:00:00.000Z',
+        },
+        arbitration: {
+          receipt_id: 'arbitration-owner-approval',
+          decision_id: 'arbitration-decision-owner-approval',
+          status: 'open',
+          resolution: 'review_required',
+          conflict_type: 'authority_conflict',
+          selected_proposal_id: null,
+          synthesized_action: null,
+          proposal_count: 1,
+          dissent_count: 0,
+          risk_level: 'high',
+          confidence: 1,
+          owner_approval_required: true,
+          score_components: [],
+          policy_basis: {},
+          exact_next_action: 'Approve from the authenticated dashboard.',
+          created_at: '2029-01-01T00:00:00.000Z',
+          updated_at: '2029-01-01T00:00:00.000Z',
+        },
+        relevant_lessons: [],
+        proof_pack: { required: true, complete: true, missing: [] },
+      } });
+    }
+    if (target.includes('/v1/agent/think')) {
+      return Response.json({ data: { decision_id: 'decision-owner-approval' } });
+    }
+    if (target.includes('/v1/agent/commit')) {
+      assert.equal(body.gate_receipt_id, 'gate-owner-approval');
+      assert.equal(body.arbitration_receipt_id, 'arbitration-owner-approval');
+      assert.equal(body.owner_approval_receipt_id, 'dashboard-owner-approval');
+      assert.deepEqual(body.proof, { checks: ['build', 'security'], owner_approval: 'chat text is not a receipt' });
+      return Response.json({ data: { committed: true, decision_id: body.decision_id } });
+    }
+    throw new Error(`unexpected URL ${target}`);
+  };
+
+  const baseParams = {
+    action: 'release an owner-approved production candidate',
+    outcome: 'candidate verification passed',
+    success: true,
+    type: 'deploy',
+    proof: { checks: ['build', 'security'], owner_approval: 'chat text is not a receipt' },
+    auto_gate: true,
+    operation_id: operationId,
+  };
+  try {
+    const waiting = await marrowAuto(
+      'fixture-key',
+      'https://api.example.test',
+      baseParams,
+      'session-owner-approval',
+      'agent-owner-approval',
+      3_200,
+    );
+    assert.equal(waiting.phase, 'owner_approval_required');
+    assert.equal(waiting.committed, false);
+    assert.equal(waiting.resumable, false);
+    assert.equal(waiting.retry_after_ms, null);
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/commit')).length, 0);
+
+    const stillWaiting = await marrowAuto(
+      'fixture-key',
+      'https://api.example.test',
+      {
+        ...baseParams,
+        owner_approval_receipt_id: 'dashboard-owner-approval',
+      },
+      'session-owner-approval',
+      'agent-owner-approval',
+      3_200,
+    );
+    assert.equal(stillWaiting.phase, 'owner_approval_required');
+    assert.equal(stillWaiting.committed, false);
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/commit')).length, 0);
+
+    const closed = await marrowAuto(
+      'fixture-key',
+      'https://api.example.test',
+      {
+        ...baseParams,
+        arbitration_receipt_id: 'arbitration-owner-approval',
+        owner_approval_receipt_id: 'dashboard-owner-approval',
+      },
+      'session-owner-approval',
+      'agent-owner-approval',
+      3_200,
+    );
+    assert.equal(closed.phase, 'closed');
+    assert.equal(closed.committed, true);
+    assert.equal(closed.resumable, false);
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/runtime')).length, 1);
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/think')).length, 1);
+    const commitCalls = calls.filter((call) => call.target.includes('/v1/agent/commit'));
+    assert.equal(commitCalls.length, 1);
+    assert.equal(commitCalls[0].idempotencyKey, `mcp-auto:${operationId}:commit`);
   } finally {
     globalThis.fetch = originalFetch;
   }
