@@ -12,6 +12,7 @@ import {
   SESSION_END_HOOK_COMMAND,
   stableSessionWorkflowId,
 } from './hook-contract';
+import { readLocalControlState } from './control-state';
 
 export const SESSION_HOOK_COMMAND = SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
@@ -105,6 +106,7 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
   const identity = resolveNativeHookIdentity(process.argv[2]);
   try {
     if (process.env.MARROW_AUTO_HOOK === 'false') return;
+    try { if (!readLocalControlState().enabled) return; } catch { return; }
     const resolved = identity.environment;
     if (!resolved.apiKey) return;
     const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');

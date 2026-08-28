@@ -9,6 +9,7 @@ const index_1 = require("./index");
 const habit_loop_copy_1 = require("./habit-loop-copy");
 const node_fs_1 = require("node:fs");
 const hook_contract_1 = require("./hook-contract");
+const control_state_1 = require("./control-state");
 exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const SESSION_END_TIMEOUT_MS = 900;
@@ -87,6 +88,13 @@ async function runSessionHookCommand(input) {
     try {
         if (process.env.MARROW_AUTO_HOOK === 'false')
             return;
+        try {
+            if (!(0, control_state_1.readLocalControlState)().enabled)
+                return;
+        }
+        catch {
+            return;
+        }
         const resolved = identity.environment;
         if (!resolved.apiKey)
             return;

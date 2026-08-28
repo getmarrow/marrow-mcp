@@ -24,6 +24,7 @@ const index_1 = require("./index");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const guidance_cache_1 = require("./guidance-cache");
 const hook_contract_1 = require("./hook-contract");
+const control_state_1 = require("./control-state");
 exports.CONTEXT_HOOK_COMMAND = hook_contract_1.CONTEXT_HOOK_COMMAND;
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 400;
@@ -529,6 +530,18 @@ function compactAgentContext(context) {
 async function runContextHookCommand() {
     // Kill switch — same flag as PostToolUse
     if (process.env.MARROW_AUTO_HOOK === 'false') {
+        emitNoContext();
+        process.exit(0);
+        return;
+    }
+    try {
+        if (!(0, control_state_1.readLocalControlState)().enabled) {
+            emitNoContext();
+            process.exit(0);
+            return;
+        }
+    }
+    catch {
         emitNoContext();
         process.exit(0);
         return;
