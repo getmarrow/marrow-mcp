@@ -1209,6 +1209,13 @@ test('review-required marrowAuto waits for dashboard approval then forwards serv
       return Response.json({ data: { decision_id: 'decision-owner-approval' } });
     }
     if (target.includes('/v1/agent/commit')) {
+      if (body.decision_id !== 'arbitration-decision-owner-approval') {
+        return Response.json({
+          error: 'Arbitration decision mismatch',
+          details: { code: 'MARROW_ARBITRATION_DECISION_MISMATCH' },
+        }, { status: 409 });
+      }
+      assert.equal(body.decision_id, 'arbitration-decision-owner-approval');
       assert.equal(body.gate_receipt_id, 'gate-owner-approval');
       assert.equal(body.arbitration_receipt_id, 'arbitration-owner-approval');
       assert.equal(body.owner_approval_receipt_id, 'dashboard-owner-approval');
@@ -1237,6 +1244,7 @@ test('review-required marrowAuto waits for dashboard approval then forwards serv
       3_200,
     );
     assert.equal(waiting.phase, 'owner_approval_required');
+    assert.equal(waiting.decision_id, 'arbitration-decision-owner-approval');
     assert.equal(waiting.committed, false);
     assert.equal(waiting.resumable, false);
     assert.equal(waiting.retry_after_ms, null);
@@ -1270,13 +1278,200 @@ test('review-required marrowAuto waits for dashboard approval then forwards serv
       3_200,
     );
     assert.equal(closed.phase, 'closed');
+    assert.equal(closed.decision_id, 'arbitration-decision-owner-approval');
     assert.equal(closed.committed, true);
     assert.equal(closed.resumable, false);
     assert.equal(calls.filter((call) => call.target.includes('/v1/agent/runtime')).length, 1);
-    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/think')).length, 1);
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/think')).length, 0);
     const commitCalls = calls.filter((call) => call.target.includes('/v1/agent/commit'));
     assert.equal(commitCalls.length, 1);
+    assert.equal(commitCalls[0].body.decision_id, 'arbitration-decision-owner-approval');
     assert.equal(commitCalls[0].idempotencyKey, `mcp-auto:${operationId}:commit`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('arbitrated marrowAuto rejects an operation already bound to a different decision', async () => {
+  const originalFetch = globalThis.fetch;
+  const operationId = 'arbitration_mismatch_operation_123';
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    calls.push({ target, body: init.body ? JSON.parse(String(init.body)) : null });
+    if (target.includes('/v1/agent/think')) {
+      return Response.json({ data: { decision_id: 'different-think-decision' } });
+    }
+    if (target.includes('/v1/agent/runtime')) {
+      return Response.json({ data: {
+        ok: true,
+        action: 'release an arbitrated candidate',
+        agent_id: 'agent-arbitration-mismatch',
+        session_id: 'session-arbitration-mismatch',
+        status: {},
+        decision_brief: {},
+        risk_gate: {
+          allow: false,
+          decision: 'review_required',
+          risk_level: 'high',
+          enforced: true,
+          enforcement_decision: 'review_required',
+          gate_required: true,
+          gate_receipt_id: 'gate-arbitration-mismatch',
+        },
+        gate_receipt: {
+          id: 'gate-arbitration-mismatch',
+          required: true,
+          decision: 'review_required',
+          owner_approval_required: true,
+          expires_at: '2030-01-01T00:00:00.000Z',
+        },
+        arbitration: {
+          receipt_id: 'arbitration-mismatch-receipt',
+          decision_id: 'approved-arbitration-decision',
+          status: 'open',
+          resolution: 'review_required',
+          conflict_type: 'authority_conflict',
+          selected_proposal_id: null,
+          synthesized_action: null,
+          proposal_count: 1,
+          dissent_count: 0,
+          risk_level: 'high',
+          confidence: 1,
+          owner_approval_required: true,
+          score_components: [],
+          policy_basis: {},
+          exact_next_action: 'Approve the arbitration decision.',
+          created_at: '2029-01-01T00:00:00.000Z',
+          updated_at: '2029-01-01T00:00:00.000Z',
+        },
+        relevant_lessons: [],
+        proof_pack: { required: true, complete: true, missing: [] },
+      } });
+    }
+    if (target.includes('/v1/agent/commit')) {
+      throw new Error('mismatched operation must not reach commit');
+    }
+    throw new Error(`unexpected URL ${target}`);
+  };
+
+  const baseParams = {
+    action: 'release an arbitrated candidate',
+    type: 'deploy',
+    operation_id: operationId,
+  };
+  try {
+    const initial = await marrowAuto(
+      'fixture-key',
+      'https://api.example.test',
+      { ...baseParams, auto_gate: false },
+      'session-arbitration-mismatch',
+      'agent-arbitration-mismatch',
+      3_200,
+    );
+    assert.equal(initial.phase, 'decision_created');
+    assert.equal(initial.decision_id, 'different-think-decision');
+
+    await assert.rejects(
+      () => marrowAuto(
+        'fixture-key',
+        'https://api.example.test',
+        {
+          ...baseParams,
+          outcome: 'candidate passed',
+          success: true,
+          proof: { checks: ['build', 'security'] },
+          arbitration_receipt_id: 'arbitration-mismatch-receipt',
+          owner_approval_receipt_id: 'dashboard-approval-receipt',
+          auto_gate: true,
+        },
+        'session-arbitration-mismatch',
+        'agent-arbitration-mismatch',
+        3_200,
+      ),
+      (error) => error instanceof MarrowRequestError
+        && error.backendCode === 'MARROW_ARBITRATION_DECISION_MISMATCH'
+        && error.status === 409
+        && error.retryable === false,
+    );
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/think')).length, 1);
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/runtime')).length, 1);
+    assert.equal(calls.filter((call) => call.target.includes('/v1/agent/commit')).length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('generic review-required marrowAuto is terminal and does not advertise an impossible approval receipt', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    calls.push(target);
+    if (target.includes('/v1/agent/runtime')) {
+      return Response.json({ data: {
+        ok: true,
+        action: 'perform generic review-required work',
+        agent_id: 'agent-generic-review',
+        session_id: 'session-generic-review',
+        status: {},
+        decision_brief: {},
+        risk_gate: {
+          allow: false,
+          decision: 'review_required',
+          risk_level: 'high',
+          enforced: true,
+          enforcement_decision: 'review_required',
+          gate_required: true,
+          gate_receipt_id: 'gate-generic-review',
+        },
+        gate_receipt: {
+          id: 'gate-generic-review',
+          required: true,
+          decision: 'review_required',
+          owner_approval_required: true,
+          expires_at: '2030-01-01T00:00:00.000Z',
+        },
+        relevant_lessons: [],
+        proof_pack: { required: true, complete: true, missing: [] },
+      } });
+    }
+    if (target.includes('/v1/agent/think')) {
+      return Response.json({ data: { decision_id: 'generic-review-decision' } });
+    }
+    if (target.includes('/v1/agent/commit')) {
+      throw new Error('generic review-required work must not reach commit');
+    }
+    throw new Error(`unexpected URL ${target}`);
+  };
+
+  try {
+    const result = await marrowAuto(
+      'fixture-key',
+      'https://api.example.test',
+      {
+        action: 'perform generic review-required work',
+        outcome: 'chat said this was approved',
+        success: true,
+        type: 'deploy',
+        proof: { checks: ['build'], owner_approval: 'approved in chat' },
+        owner_approval_receipt_id: 'chat-is-not-a-server-receipt',
+        auto_gate: true,
+        operation_id: 'generic_review_operation_123',
+      },
+      'session-generic-review',
+      'agent-generic-review',
+      3_200,
+    );
+    assert.equal(result.phase, 'review_required');
+    assert.equal(result.decision_id, 'generic-review-decision');
+    assert.equal(result.committed, false);
+    assert.equal(result.resumable, false);
+    assert.equal(result.retry_after_ms, null);
+    assert.match(result.exact_next_action, /non-arbitrated review_required gate cannot issue/i);
+    assert.match(result.exact_next_action, /marrow_arbitrate/);
+    assert.match(result.exact_next_action, /Do not retry/i);
+    assert.equal(calls.filter((target) => target.includes('/v1/agent/commit')).length, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

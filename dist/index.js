@@ -642,6 +642,7 @@ function autoPartial(input) {
         retry_after_ms: resumable
             ? input.retryAfterMs === undefined ? 1_000 : input.retryAfterMs
             : null,
+        ...(input.exactNextAction ? { exact_next_action: input.exactNextAction } : {}),
         ...(input.runtimeGate ? { runtime_gate: input.runtimeGate } : {}),
         phase_timings_ms: {
             ...input.timings,
@@ -726,6 +727,27 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
     }
     const thinkStarted = Date.now();
     let decisionId = operationBinding.decisionId || null;
+    const arbitrationDecisionId = typeof runtimeGate?.arbitration?.decision_id === 'string'
+        && runtimeGate.arbitration.decision_id.trim()
+        ? runtimeGate.arbitration.decision_id.trim()
+        : null;
+    if (runtimeGate?.arbitration && !arbitrationDecisionId) {
+        throw (0, request_reliability_1.invalidResponseError)();
+    }
+    if (arbitrationDecisionId) {
+        if (decisionId && decisionId !== arbitrationDecisionId) {
+            throw new request_reliability_1.MarrowRequestError({
+                code: 'request_failed',
+                backendCode: 'MARROW_ARBITRATION_DECISION_MISMATCH',
+                message: 'marrow_auto operation is already bound to a different decision than the runtime arbitration receipt.',
+                status: 409,
+                retryable: false,
+                exactFix: 'Stop this operation. Start a new arbitrated marrow_auto operation and preserve the arbitration decision_id, gate receipt, arbitration receipt, and dashboard approval receipt together.',
+            });
+        }
+        decisionId = arbitrationDecisionId;
+        operationBinding.decisionId = arbitrationDecisionId;
+    }
     const reusedDecision = Boolean(decisionId);
     while (!decisionId) {
         const thinkTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
@@ -789,7 +811,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             retryAfterMs: null,
         });
     }
-    const runtimeRequiresOwnerApproval = Boolean(runtimeGate && (runtimeGate.risk_gate?.decision === 'review_required'
+    const runtimeReviewRequired = Boolean(runtimeGate && (runtimeGate.risk_gate?.decision === 'review_required'
         || runtimeGate.gate_receipt?.decision === 'review_required'
         || runtimeGate.gate_receipt?.decision === 'owner_approval_required'
         || runtimeGate.gate_receipt?.owner_approval_required === true
@@ -797,11 +819,28 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
         || runtimeGate.intervention?.enforcement?.owner_approval_required === true
         || runtimeGate.arbitration?.resolution === 'review_required'
         || runtimeGate.arbitration?.owner_approval_required === true));
+    const arbitrationRequiresOwnerApproval = Boolean(runtimeGate?.arbitration
+        && runtimeReviewRequired
+        && (runtimeGate.arbitration.resolution === 'review_required'
+            || runtimeGate.arbitration.owner_approval_required === true));
+    const genericReviewRequired = runtimeReviewRequired && !runtimeGate?.arbitration;
     const runtimeArbitrationReceiptId = runtimeGate?.arbitration?.receipt_id;
     const matchingRequiredApprovalReceipts = Boolean(params.owner_approval_receipt_id
         && (!runtimeArbitrationReceiptId
             || params.arbitration_receipt_id === runtimeArbitrationReceiptId));
-    if (runtimeRequiresOwnerApproval && !matchingRequiredApprovalReceipts) {
+    if (genericReviewRequired) {
+        return autoPartial({
+            operationId,
+            decisionId,
+            phase: 'review_required',
+            runtimeGate,
+            timings,
+            startedAt,
+            resumable: false,
+            exactNextAction: 'Stop this operation. A non-arbitrated review_required gate cannot issue a commit-compatible dashboard approval receipt. Start a new review with marrow_arbitrate, then use that arbitration response\'s exact decision_id, gate receipt, arbitration receipt, and dashboard-issued owner approval receipt. Do not retry this operation or use chat/proof text as approval.',
+        });
+    }
+    if (arbitrationRequiresOwnerApproval && !matchingRequiredApprovalReceipts) {
         return autoPartial({
             operationId,
             decisionId,
@@ -817,7 +856,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
         // commit only after the caller supplies measured proof and the explicit
         // server-issued approval receipt. The backend remains authoritative for
         // receipt ownership, scope, expiry, single use, and arbitration matching.
-        const ownerApprovedCommitAttempt = Boolean(runtimeRequiresOwnerApproval
+        const ownerApprovedCommitAttempt = Boolean(arbitrationRequiresOwnerApproval
             && params.proof
             && Object.keys(params.proof).length > 0
             && gateReceiptId
