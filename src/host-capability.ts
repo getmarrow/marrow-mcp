@@ -141,9 +141,9 @@ export function resolveHostCapability(input: HostCapabilityInput = {}): MarrowHo
 export function hostCapabilityInstructions(capability: MarrowHostCapability): string {
   return [
     `Current coverage: ${capability.current_mode} (${capability.coverage_scope}).`,
-    'MCP tools are on demand. Configured native hooks provide cooperative telemetry or context only; createPassiveRuntime().install() is limited to its owned Node process; the governed wrapper is limited to its wrapped command; a custom host needs a bounded event adapter.',
+    'MCP tools are on demand. Configured native hooks provide cooperative client-reported control and lifecycle evidence only; createPassiveRuntime().install() is limited to its owned Node process; the governed wrapper is limited to its wrapped command; a custom host needs a bounded event adapter.',
     'A model name, host label, API key, public hook entrypoint, installed configuration, detected hook file, or client-self-reported lifecycle activity never certifies coverage or enforcement.',
-    'Codex uses configured native hooks after restart and /hooks trust review. For Grok, Gemini, and similar CLI harnesses, run consequential commands through: npx @getmarrow/install run --agent <agent-id> -- -- <command>.',
+    'Codex, Grok, and Gemini use configured native hooks only after restart and host hook review. The governed wrapper remains an explicit bounded fallback: npx @getmarrow/install run --agent <agent-id> -- -- <command>.',
     capability.exact_next_action,
   ].join(' ');
 }

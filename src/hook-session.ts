@@ -16,6 +16,7 @@ import {
 export const SESSION_HOOK_COMMAND = SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const SESSION_END_TIMEOUT_MS = 900;
+const completedGrokTurns = new Set<string>();
 
 type StopHookSource = {
   session_id?: string;
@@ -116,11 +117,19 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
         ? [source.conversation_id, source.generation_id, source.tool_use_id]
         : identity.harness === 'cline'
         ? [source.task_id, source.hook_event_name]
-        : identity.harness === 'windsurf' || identity.harness === 'gemini'
+        : ['windsurf', 'gemini', 'grok'].includes(identity.harness)
         ? [source.session_id, source.tool_use_id]
         : [source.transcript_path, source.cwd],
     );
     const correlation = workflowId.slice('session-'.length);
+    if (identity.harness === 'grok') {
+      if (completedGrokTurns.has(correlation)) return;
+      completedGrokTurns.add(correlation);
+      if (completedGrokTurns.size > 1024) {
+        const oldest = completedGrokTurns.values().next().value;
+        if (oldest) completedGrokTurns.delete(oldest);
+      }
+    }
     await recordLifecycleEvent({
       apiKey: resolved.apiKey,
       baseUrl,
@@ -137,6 +146,8 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
           ? 'cascade response completed'
           : identity.harness === 'gemini'
           ? 'agent turn completed'
+          : identity.harness === 'grok'
+          ? 'agent turn completed'
           : 'agent session ended',
         outcome_state: 'pending',
       },
@@ -147,7 +158,7 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
       // The pending lifecycle receipt remains durable for later reconciliation.
     }
 
-    if (!['windsurf', 'gemini'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+    if (!['windsurf', 'gemini', 'grok'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
       const usage = extractModelUsageFromUnknown(input);
       if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
         await marrowModelUsage(resolved.apiKey, baseUrl, {
@@ -159,7 +170,7 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
       }
     }
   } catch (error) {
-    if (identity.harness !== 'gemini') throw error;
+    if (!['gemini', 'grok'].includes(identity.harness)) throw error;
   } finally {
     if (identity.harness === 'gemini') process.stdout.write('{}');
   }

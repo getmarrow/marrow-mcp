@@ -1,13 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.GOVERNED_WRAPPER_COMMAND = void 0;
 exports.classifyTool = classifyTool;
 exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
 exports.clinePreActionHookOutput = clinePreActionHookOutput;
 exports.windsurfPreActionDecision = windsurfPreActionDecision;
 exports.geminiPreActionHookOutput = geminiPreActionHookOutput;
+exports.grokPreActionHookOutput = grokPreActionHookOutput;
 exports.preActionHookOutput = preActionHookOutput;
-exports.grokPreActionAdvisoryOutput = grokPreActionAdvisoryOutput;
 exports.installPreActionHook = installPreActionHook;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const index_1 = require("./index");
@@ -17,7 +16,6 @@ const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 const MAX_INPUT_BYTES = 64 * 1024;
 const RUNTIME_TIMEOUT_MS = 3000;
-exports.GOVERNED_WRAPPER_COMMAND = 'npx @getmarrow/install run --agent <agent-id> -- -- <command>';
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -69,7 +67,7 @@ function classifyTool(event) {
     const protectedAction = !readOnly && (/\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
         || protectedShellCommand
         || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name))
-        || (normalizedTool === 'use_mcp_tool' && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
+        || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
     const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
     const target = surfaces.includes('npm') ? `npm:${type}`
         : surfaces.includes('github') ? `github:${type}`
@@ -167,6 +165,17 @@ function geminiPreActionHookOutput(result) {
         }
         : { decision: 'allow' };
 }
+function grokPreActionHookOutput(result) {
+    const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
+    const gate = result.runtime?.risk_gate;
+    const denied = unavailable
+        || gate?.decision === 'review_required'
+        || gate?.decision === 'block'
+        || gate?.allow === false;
+    return denied
+        ? { decision: 'deny', reason: 'Marrow blocked this protected action.' }
+        : { decision: 'allow' };
+}
 function preActionHookOutput(result, harness = 'claude-code') {
     if (harness === 'cursor')
         return cursorPreActionHookOutput(result);
@@ -174,6 +183,8 @@ function preActionHookOutput(result, harness = 'claude-code') {
         return clinePreActionHookOutput(result);
     if (harness === 'gemini')
         return geminiPreActionHookOutput(result);
+    if (harness === 'grok')
+        return grokPreActionHookOutput(result);
     const { runtime, permit, protectedRisk } = result;
     if (protectedRisk && (!runtime || !permit?.verified)) {
         return {
@@ -218,17 +229,6 @@ function emitDecision(result, harness = 'claude-code') {
         return;
     }
     process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
-}
-function grokPreActionAdvisoryOutput() {
-    return {
-        hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            additionalContext: [
-                'This Grok hook is client-self-reported advisory context, not certified control or an enforcement boundary.',
-                `Run consequential commands through the governed wrapper: ${exports.GOVERNED_WRAPPER_COMMAND}`,
-            ].join('\n'),
-        },
-    };
 }
 async function withTimeout(operation) {
     const controller = new AbortController();
@@ -290,7 +290,7 @@ async function runPreActionHookCommand(input) {
         }
         process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' }
             : identity.harness === 'cline' ? { cancel: false }
-                : identity.harness === 'gemini' ? { decision: 'allow' }
+                : ['gemini', 'grok'].includes(identity.harness) ? { decision: 'allow' }
                     : {}));
         return;
     }
@@ -302,44 +302,15 @@ async function runPreActionHookCommand(input) {
         }
         process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' }
             : identity.harness === 'cline' ? { cancel: false }
-                : identity.harness === 'gemini' ? { decision: 'allow' }
+                : ['gemini', 'grok'].includes(identity.harness) ? { decision: 'allow' }
                     : {}));
         return;
     }
     let resolved = identity.environment;
-    const enforcementRequired = classified.protected || identity.harness === 'windsurf' || identity.harness === 'gemini';
+    const enforcementRequired = classified.protected || ['windsurf', 'gemini', 'grok'].includes(identity.harness);
     const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
     const agentId = identity.agent_id;
     const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
-    if (identity.harness === 'grok') {
-        if (resolved.apiKey) {
-            try {
-                const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
-                await (0, lifecycle_spool_1.recordLifecycleEvent)({
-                    apiKey: resolved.apiKey,
-                    baseUrl,
-                    event: {
-                        event_id: `pretool-${correlation}`,
-                        event_type: 'pre_action_checked',
-                        ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
-                        session_id: sessionId,
-                        workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.generation_id || source.tool_use_id || source.task_id),
-                        correlation_id: correlation,
-                        action: classified.action,
-                        target: classified.target,
-                        surfaces: classified.surfaces,
-                        risk_level: classified.risk,
-                        outcome_state: 'pending',
-                    },
-                }).catch(() => undefined);
-            }
-            catch {
-                // Advisory output remains available when self-reported telemetry cannot be delivered.
-            }
-        }
-        process.stdout.write(JSON.stringify(grokPreActionAdvisoryOutput()));
-        return;
-    }
     let baseUrl;
     try {
         baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');

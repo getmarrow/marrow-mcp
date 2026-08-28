@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.GEMINI_SESSION_END_HOOK_COMMAND = exports.GEMINI_ACTION_RESULT_HOOK_COMMAND = exports.GEMINI_PRE_ACTION_HOOK_COMMAND = exports.WINDSURF_SESSION_END_HOOK_COMMAND = exports.WINDSURF_ACTION_RESULT_HOOK_COMMAND = exports.WINDSURF_PRE_ACTION_HOOK_COMMAND = exports.CLINE_SESSION_END_HOOK_COMMAND = exports.CLINE_ACTION_RESULT_HOOK_COMMAND = exports.CLINE_PRE_ACTION_HOOK_COMMAND = exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.GEMINI_SESSION_END_HOOK_COMMAND = exports.GEMINI_ACTION_RESULT_HOOK_COMMAND = exports.GEMINI_PRE_ACTION_HOOK_COMMAND = exports.WINDSURF_SESSION_END_HOOK_COMMAND = exports.WINDSURF_ACTION_RESULT_HOOK_COMMAND = exports.WINDSURF_PRE_ACTION_HOOK_COMMAND = exports.CLINE_SESSION_END_HOOK_COMMAND = exports.CLINE_ACTION_RESULT_HOOK_COMMAND = exports.CLINE_PRE_ACTION_HOOK_COMMAND = exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_PRE_ACTION_GUARD_COMMAND = exports.GROK_LAUNCH_FAILURE = exports.GROK_FIXED_DENIAL = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
 exports.resolveNativeHookIdentity = resolveNativeHookIdentity;
 exports.clientReportedHookLifecycleIdentity = clientReportedHookLifecycleIdentity;
 exports.normalizeHookEventPayload = normalizeHookEventPayload;
@@ -33,6 +33,9 @@ exports.GROK_CONTEXT_HOOK_COMMAND = hookCommand('grok-context-hook');
 exports.GROK_PRE_ACTION_HOOK_COMMAND = hookCommand('grok-pre-action-hook');
 exports.GROK_ACTION_RESULT_HOOK_COMMAND = hookCommand('grok-hook');
 exports.GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
+exports.GROK_FIXED_DENIAL = 'Marrow blocked this protected action.';
+exports.GROK_LAUNCH_FAILURE = 'Marrow governance adapter was unavailable; this action is blocked.';
+exports.GROK_PRE_ACTION_GUARD_COMMAND = `sh -c 'output="$( ( timeout 5s ${exports.GROK_PRE_ACTION_HOOK_COMMAND} 2>/dev/null; status=$?; printf "\\001"; exit "$status" ) )"; status=$?; output="${'${output%?}'}"; if [ "$status" -eq 0 ]; then case "$output" in "{\\"decision\\":\\"allow\\"}"|"{\\"decision\\":\\"deny\\",\\"reason\\":\\"${exports.GROK_FIXED_DENIAL}\\"}") printf "%s" "$output"; exit 0 ;; esac; fi; printf "%s\\n" "${exports.GROK_LAUNCH_FAILURE}" >&2; exit 2'`;
 exports.CURSOR_PRE_ACTION_HOOK_COMMAND = hookCommand('cursor-pre-action-hook');
 exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = hookCommand('cursor-hook');
 exports.CURSOR_SESSION_END_HOOK_COMMAND = hookCommand('cursor-session-hook');
@@ -210,12 +213,67 @@ function normalizeGeminiHookEvent(source) {
         normalized.duration_ms = duration;
     return normalized;
 }
+function normalizeGrokHookEvent(source) {
+    const hookEventName = typeof source.hookEventName === 'string' ? source.hookEventName.trim() : '';
+    if (!['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop'].includes(hookEventName))
+        return {};
+    const normalized = { hook_event_name: hookEventName };
+    const sessionId = boundedCorrelationId(source.sessionId);
+    const toolUseId = boundedCorrelationId(source.toolUseId);
+    if (sessionId)
+        normalized.session_id = sessionId;
+    if (toolUseId)
+        normalized.tool_use_id = toolUseId;
+    if (hookEventName === 'Stop')
+        return normalized;
+    const toolName = typeof source.toolName === 'string' ? source.toolName.trim().slice(0, 256) : '';
+    const toolInput = source.toolInput && typeof source.toolInput === 'object' && !Array.isArray(source.toolInput)
+        ? source.toolInput
+        : null;
+    const server = boundedWindsurfName(toolInput?.serverName ?? toolInput?.server_name);
+    const nestedTool = boundedWindsurfName(toolInput?.toolName ?? toolInput?.tool_name);
+    const boundedToolName = toolName === 'use_tool' && server && nestedTool
+        ? server.toLowerCase() === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(nestedTool)
+            ? `mcp__marrow__${nestedTool}`
+            : `MCP:${server}:${nestedTool}`
+        : toolName;
+    if (boundedToolName && /^[A-Za-z0-9._:-]+$/.test(boundedToolName))
+        normalized.tool_name = boundedToolName;
+    if (hookEventName === 'PreToolUse') {
+        normalized.tool_input = source.toolInput;
+        return normalized;
+    }
+    normalized.tool_input = {};
+    const result = source.toolResult && typeof source.toolResult === 'object' && !Array.isArray(source.toolResult)
+        ? source.toolResult
+        : null;
+    normalized.success = hookEventName === 'PostToolUseFailure'
+        || source.success === false
+        || result?.success === false
+        || result?.error != null
+        || result?.isError === true
+        || result?.is_error === true
+        || typeof result?.exitCode === 'number' && result.exitCode !== 0
+        || typeof result?.exit_code === 'number' && result.exit_code !== 0
+        || /^(?:failed|error|blocked)$/i.test(String(result?.status || ''))
+        ? false
+        : true;
+    const duration = typeof source.durationMs === 'number' && Number.isFinite(source.durationMs)
+        ? Math.max(0, Math.min(300_000, Math.round(source.durationMs)))
+        : undefined;
+    if (duration !== undefined)
+        normalized.duration_ms = duration;
+    return normalized;
+}
 function normalizeHookEventPayload(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
         return {};
     const source = value;
     if (typeof source.agent_action_name === 'string')
         return normalizeWindsurfHookEvent(source);
+    if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop'].includes(String(source.hookEventName || ''))) {
+        return normalizeGrokHookEvent(source);
+    }
     if (['BeforeTool', 'AfterTool', 'AfterAgent'].includes(String(source.hook_event_name || ''))) {
         return normalizeGeminiHookEvent(source);
     }
@@ -471,35 +529,70 @@ function grokHookSettingsPath(home = process.env.HOME || (0, node_os_1.homedir)(
 }
 function installGrokNativeHooks(home = process.env.HOME || (0, node_os_1.homedir)()) {
     const settingsPath = grokHookSettingsPath(home);
-    const command = (subcommand) => (subcommand === 'context-hook' ? exports.GROK_CONTEXT_HOOK_COMMAND
-        : subcommand === 'pre-action-hook' ? exports.GROK_PRE_ACTION_HOOK_COMMAND
-            : subcommand === 'session-hook' ? exports.GROK_SESSION_END_HOOK_COMMAND
-                : exports.GROK_ACTION_RESULT_HOOK_COMMAND);
-    const handler = (subcommand) => ({
-        type: 'command',
-        command: command(subcommand),
-        timeout: 15,
-    });
-    const next = {
-        hooks: {
-            UserPromptSubmit: [{ hooks: [handler('context-hook')] }],
-            PreToolUse: [{ matcher: exports.GROK_NATIVE_HOOK_MATCHER, hooks: [handler('pre-action-hook')] }],
-            PostToolUse: [{ matcher: exports.GROK_NATIVE_HOOK_MATCHER, hooks: [handler('hook')] }],
-            PostToolUseFailure: [{ matcher: exports.GROK_NATIVE_HOOK_MATCHER, hooks: [handler('hook')] }],
-            Stop: [{ hooks: [handler('session-hook')] }],
-            SessionEnd: [{ hooks: [handler('session-hook')] }],
-        },
-    };
     let previous = '';
+    let settings = {};
     if ((0, node_fs_1.existsSync)(settingsPath)) {
+        if ((0, node_fs_1.lstatSync)(settingsPath).isSymbolicLink()) {
+            throw new Error(`Cannot update Grok hook settings at ${settingsPath}: symbolic links are not allowed`);
+        }
+        previous = (0, node_fs_1.readFileSync)(settingsPath, 'utf8');
+        let parsed;
         try {
-            previous = (0, node_fs_1.readFileSync)(settingsPath, 'utf8');
+            parsed = JSON.parse(previous);
         }
-        catch {
-            previous = '';
+        catch (error) {
+            const detail = error instanceof Error ? error.message : 'invalid JSON';
+            throw new Error(`Cannot update Grok hook settings at ${settingsPath}: ${detail}`);
         }
+        const record = asRecord(parsed);
+        if (!record)
+            throw new Error(`Cannot update Grok hook settings at ${settingsPath}: root must be a JSON object`);
+        settings = record;
     }
-    const serialized = `${JSON.stringify(next, null, 2)}\n`;
+    const hooks = asRecord(settings.hooks) || {};
+    const grokSubcommand = (command) => {
+        const direct = marrowHookSubcommand(command);
+        if (direct)
+            return direct;
+        if (typeof command !== 'string')
+            return null;
+        const match = command.match(/marrow-mcp\s+grok-(context-hook|pre-action-hook|hook|session-hook)(?:\s|['"]|$)/);
+        return match?.[1] || null;
+    };
+    const reconcile = (eventName, subcommand, canonical) => {
+        const original = Array.isArray(hooks[eventName]) ? hooks[eventName] : [];
+        const retained = [];
+        for (const entry of original) {
+            const record = asRecord(entry);
+            if (!record || !Array.isArray(record.hooks)) {
+                retained.push(entry);
+                continue;
+            }
+            const remaining = record.hooks.filter((hook) => grokSubcommand(asRecord(hook)?.command) !== subcommand);
+            if (remaining.length > 0)
+                retained.push({ ...record, hooks: remaining });
+        }
+        return canonical ? [...retained, canonical] : retained;
+    };
+    const context = { hooks: [{ type: 'command', command: exports.GROK_CONTEXT_HOOK_COMMAND, timeout: 5 }] };
+    const pre = { matcher: exports.GROK_NATIVE_HOOK_MATCHER, hooks: [{ type: 'command', command: exports.GROK_PRE_ACTION_GUARD_COMMAND, timeout: 7 }] };
+    const result = { matcher: exports.GROK_NATIVE_HOOK_MATCHER, hooks: [{ type: 'command', command: exports.GROK_ACTION_RESULT_HOOK_COMMAND, timeout: 5 }] };
+    const stop = { hooks: [{ type: 'command', command: exports.GROK_SESSION_END_HOOK_COMMAND, timeout: 3 }] };
+    const nextHooks = {
+        ...hooks,
+        UserPromptSubmit: reconcile('UserPromptSubmit', 'context-hook', context),
+        PreToolUse: reconcile('PreToolUse', 'pre-action-hook', pre),
+        PostToolUse: reconcile('PostToolUse', 'hook', result),
+        PostToolUseFailure: reconcile('PostToolUseFailure', 'hook', result),
+        Stop: reconcile('Stop', 'session-hook', stop),
+    };
+    const sessionEnd = reconcile('SessionEnd', 'session-hook');
+    if (sessionEnd.length > 0)
+        nextHooks.SessionEnd = sessionEnd;
+    else
+        delete nextHooks.SessionEnd;
+    settings.hooks = nextHooks;
+    const serialized = `${JSON.stringify(settings, null, 2)}\n`;
     (0, node_fs_1.mkdirSync)((0, node_path_1.dirname)(settingsPath), { recursive: true, mode: 0o700 });
     (0, node_fs_1.writeFileSync)(settingsPath, serialized, { mode: 0o600 });
     return { settingsPath, installed: previous !== serialized };

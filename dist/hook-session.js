@@ -12,6 +12,7 @@ const hook_contract_1 = require("./hook-contract");
 exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const SESSION_END_TIMEOUT_MS = 900;
+const completedGrokTurns = new Set();
 function readStopHookSource(input) {
     let value = input;
     if (value === undefined) {
@@ -97,10 +98,20 @@ async function runSessionHookCommand(input) {
             ? [source.conversation_id, source.generation_id, source.tool_use_id]
             : identity.harness === 'cline'
                 ? [source.task_id, source.hook_event_name]
-                : identity.harness === 'windsurf' || identity.harness === 'gemini'
+                : ['windsurf', 'gemini', 'grok'].includes(identity.harness)
                     ? [source.session_id, source.tool_use_id]
                     : [source.transcript_path, source.cwd]);
         const correlation = workflowId.slice('session-'.length);
+        if (identity.harness === 'grok') {
+            if (completedGrokTurns.has(correlation))
+                return;
+            completedGrokTurns.add(correlation);
+            if (completedGrokTurns.size > 1024) {
+                const oldest = completedGrokTurns.values().next().value;
+                if (oldest)
+                    completedGrokTurns.delete(oldest);
+            }
+        }
         await (0, lifecycle_spool_1.recordLifecycleEvent)({
             apiKey: resolved.apiKey,
             baseUrl,
@@ -117,7 +128,9 @@ async function runSessionHookCommand(input) {
                         ? 'cascade response completed'
                         : identity.harness === 'gemini'
                             ? 'agent turn completed'
-                            : 'agent session ended',
+                            : identity.harness === 'grok'
+                                ? 'agent turn completed'
+                                : 'agent session ended',
                 outcome_state: 'pending',
             },
         });
@@ -127,7 +140,7 @@ async function runSessionHookCommand(input) {
         catch {
             // The pending lifecycle receipt remains durable for later reconciliation.
         }
-        if (!['windsurf', 'gemini'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+        if (!['windsurf', 'gemini', 'grok'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
             const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(input);
             if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
                 await (0, index_1.marrowModelUsage)(resolved.apiKey, baseUrl, {
@@ -140,7 +153,7 @@ async function runSessionHookCommand(input) {
         }
     }
     catch (error) {
-        if (identity.harness !== 'gemini')
+        if (!['gemini', 'grok'].includes(identity.harness))
             throw error;
     }
     finally {

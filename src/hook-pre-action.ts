@@ -17,7 +17,6 @@ import {
 
 const MAX_INPUT_BYTES = 64 * 1024;
 const RUNTIME_TIMEOUT_MS = 3000;
-export const GOVERNED_WRAPPER_COMMAND = 'npx @getmarrow/install run --agent <agent-id> -- -- <command>';
 
 export type PreToolUseEvent = {
   session_id?: string;
@@ -93,7 +92,7 @@ export function classifyTool(event: PreToolUseEvent): {
     /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
     || protectedShellCommand
     || (isMcpHookTool(event.tool_name) && !isOfficialMarrowMcpTool(event.tool_name))
-    || (normalizedTool === 'use_mcp_tool' && !isOfficialMarrowMcpEvent(event))
+    || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
   );
   const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
   const target = surfaces.includes('npm') ? `npm:${type}`
@@ -195,10 +194,23 @@ export function geminiPreActionHookOutput(result: PreActionControlResult): { dec
     : { decision: 'allow' };
 }
 
+export function grokPreActionHookOutput(result: PreActionControlResult): { decision: 'allow' | 'deny'; reason?: string } {
+  const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
+  const gate = result.runtime?.risk_gate;
+  const denied = unavailable
+    || gate?.decision === 'review_required'
+    || gate?.decision === 'block'
+    || gate?.allow === false;
+  return denied
+    ? { decision: 'deny', reason: 'Marrow blocked this protected action.' }
+    : { decision: 'allow' };
+}
+
 export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
   if (harness === 'cursor') return cursorPreActionHookOutput(result);
   if (harness === 'cline') return clinePreActionHookOutput(result);
   if (harness === 'gemini') return geminiPreActionHookOutput(result);
+  if (harness === 'grok') return grokPreActionHookOutput(result);
   const { runtime, permit, protectedRisk } = result;
   if (protectedRisk && (!runtime || !permit?.verified)) {
     return {
@@ -243,18 +255,6 @@ function emitDecision(result: PreActionControlResult, harness: 'claude-code' | '
     return;
   }
   process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
-}
-
-export function grokPreActionAdvisoryOutput(): Record<string, unknown> {
-  return {
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      additionalContext: [
-        'This Grok hook is client-self-reported advisory context, not certified control or an enforcement boundary.',
-        `Run consequential commands through the governed wrapper: ${GOVERNED_WRAPPER_COMMAND}`,
-      ].join('\n'),
-    },
-  };
 }
 
 async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
@@ -321,7 +321,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     process.stdout.write(JSON.stringify(
       identity.harness === 'cursor' ? { permission: 'allow' }
         : identity.harness === 'cline' ? { cancel: false }
-        : identity.harness === 'gemini' ? { decision: 'allow' }
+        : ['gemini', 'grok'].includes(identity.harness) ? { decision: 'allow' }
         : {},
     ));
     return;
@@ -335,45 +335,16 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     process.stdout.write(JSON.stringify(
       identity.harness === 'cursor' ? { permission: 'allow' }
         : identity.harness === 'cline' ? { cancel: false }
-        : identity.harness === 'gemini' ? { decision: 'allow' }
+        : ['gemini', 'grok'].includes(identity.harness) ? { decision: 'allow' }
         : {},
     ));
     return;
   }
   let resolved = identity.environment;
-  const enforcementRequired = classified.protected || identity.harness === 'windsurf' || identity.harness === 'gemini';
+  const enforcementRequired = classified.protected || ['windsurf', 'gemini', 'grok'].includes(identity.harness);
   const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
   const agentId = identity.agent_id;
   const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
-
-  if (identity.harness === 'grok') {
-    if (resolved.apiKey) {
-      try {
-        const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
-        await recordLifecycleEvent({
-          apiKey: resolved.apiKey,
-          baseUrl,
-          event: {
-            event_id: `pretool-${correlation}`,
-            event_type: 'pre_action_checked',
-            ...clientReportedHookLifecycleIdentity(identity),
-            session_id: sessionId,
-            workflow_id: stableSessionWorkflowId(sessionId, source.generation_id || source.tool_use_id || source.task_id),
-            correlation_id: correlation,
-            action: classified.action,
-            target: classified.target,
-            surfaces: classified.surfaces,
-            risk_level: classified.risk,
-            outcome_state: 'pending',
-          },
-        }).catch(() => undefined);
-      } catch {
-        // Advisory output remains available when self-reported telemetry cannot be delivered.
-      }
-    }
-    process.stdout.write(JSON.stringify(grokPreActionAdvisoryOutput()));
-    return;
-  }
 
   let baseUrl: string;
   try {

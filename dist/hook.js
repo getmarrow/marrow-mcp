@@ -154,7 +154,7 @@ async function runHookCommand(input) {
                 outcome_state: 'pending',
             },
         });
-        if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+        if (identity.harness !== 'grok' && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
             const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_response)
                 || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_result)
                 || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_output)

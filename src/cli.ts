@@ -232,7 +232,7 @@ Use Marrow according to the capability evidence returned by the MCP server:
 
 Do not skip the gate or outcome. Marrow's value comes from controlling the action before execution and preserving evidence afterward.
 
-Capability boundaries: configured native hooks provide cooperative telemetry or context only; \`createPassiveRuntime().install()\` covers only its owned Node process while installed; a governed wrapper covers only its wrapped command; and a custom host needs a bounded event adapter. A model name, host label, API key, public hook entrypoint, installed configuration, or client-self-reported callback is not proof of coverage or enforcement. Codex uses its configured native hooks after restart and owner trust review; Grok, Gemini, and similar CLI harnesses run consequential commands through \`npx @getmarrow/install run --agent <agent-id> -- -- <command>\`.
+Capability boundaries: configured native hooks provide cooperative client-reported control and lifecycle evidence only; \`createPassiveRuntime().install()\` covers only its owned Node process while installed; a governed wrapper covers only its wrapped command; and a custom host needs a bounded event adapter. A model name, host label, API key, public hook entrypoint, installed configuration, or client-self-reported callback is not proof of coverage or enforcement. Codex, Grok, and Gemini use configured native hooks only after restart and the host's hook review; the governed wrapper remains an explicit bounded fallback.
 
 For bounded outcome capture: \`marrow_auto({ action: "did X", outcome: "result Y", success: true })\`. One outer invocation normally completes think and commit in-band within its bounded client budget. If the host or network deadline is reached, retry with the returned \`operation_id\`; Marrow continues the same operation and never opens a second decision.
 ${MARROW_BLOCK_END}`;
@@ -306,9 +306,9 @@ ${MARROW_BLOCK_END}`;
 
   const grokHookInstall = installGrokNativeHooks();
   if (grokHookInstall.installed) {
-    process.stdout.write(`Configured Grok advisory hooks at ${grokHookInstall.settingsPath}. Their activity is client-self-reported and never certifies coverage or enforcement; consequential commands require npx @getmarrow/install run --agent <agent-id> -- -- <command>.\n`);
+    process.stdout.write(`Configured Grok native pre-action, result, and nonblocking turn-closeout hooks at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on them. Activity remains client-self-reported and does not certify observed coverage.\n`);
   } else {
-    process.stdout.write(`Grok advisory hook configuration is present at ${grokHookInstall.settingsPath}. Its activity is client-self-reported and never certifies coverage or enforcement; consequential commands require npx @getmarrow/install run --agent <agent-id> -- -- <command>.\n`);
+    process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on it. Activity remains client-self-reported and does not certify observed coverage.\n`);
   }
 
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
@@ -1986,7 +1986,7 @@ Configured native hooks can cooperatively report or inject context for these bou
 - PostToolUse can record compact tool success or failure receipts.
 - Stop can keep unfinished outcomes visible instead of silently treating session exit as success.
 
-Hooks never make a blocked action safe and are not an external execution choke point. Before a consequential action, respect the returned allow, warn, review_required, or block decision and its required proof. Codex uses its configured native hooks after restart and /hooks trust review; Grok, Gemini, and similar CLI harnesses use npx @getmarrow/install run --agent <agent-id> -- -- <command>.
+Hooks never make a blocked action safe and are not an external execution choke point. Before a consequential action, respect the returned allow, warn, review_required, or block decision and its required proof. Codex, Grok, and Gemini use configured native hooks only after restart and host hook review; the governed wrapper remains an explicit bounded fallback.
 
 When runtime/status returns a client_update notice, tell the operator and use its exact update and verification commands only when local change policy permits. Never silently change packages or configuration.
 
