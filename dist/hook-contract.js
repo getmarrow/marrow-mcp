@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.WINDSURF_SESSION_END_HOOK_COMMAND = exports.WINDSURF_ACTION_RESULT_HOOK_COMMAND = exports.WINDSURF_PRE_ACTION_HOOK_COMMAND = exports.CLINE_SESSION_END_HOOK_COMMAND = exports.CLINE_ACTION_RESULT_HOOK_COMMAND = exports.CLINE_PRE_ACTION_HOOK_COMMAND = exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.GEMINI_SESSION_END_HOOK_COMMAND = exports.GEMINI_ACTION_RESULT_HOOK_COMMAND = exports.GEMINI_PRE_ACTION_HOOK_COMMAND = exports.WINDSURF_SESSION_END_HOOK_COMMAND = exports.WINDSURF_ACTION_RESULT_HOOK_COMMAND = exports.WINDSURF_PRE_ACTION_HOOK_COMMAND = exports.CLINE_SESSION_END_HOOK_COMMAND = exports.CLINE_ACTION_RESULT_HOOK_COMMAND = exports.CLINE_PRE_ACTION_HOOK_COMMAND = exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
 exports.resolveNativeHookIdentity = resolveNativeHookIdentity;
 exports.clientReportedHookLifecycleIdentity = clientReportedHookLifecycleIdentity;
 exports.normalizeHookEventPayload = normalizeHookEventPayload;
@@ -42,6 +42,9 @@ exports.CLINE_SESSION_END_HOOK_COMMAND = hookCommand('cline-session-hook');
 exports.WINDSURF_PRE_ACTION_HOOK_COMMAND = hookCommand('windsurf-pre-action-hook');
 exports.WINDSURF_ACTION_RESULT_HOOK_COMMAND = hookCommand('windsurf-hook');
 exports.WINDSURF_SESSION_END_HOOK_COMMAND = hookCommand('windsurf-session-hook');
+exports.GEMINI_PRE_ACTION_HOOK_COMMAND = hookCommand('gemini-pre-action-hook');
+exports.GEMINI_ACTION_RESULT_HOOK_COMMAND = hookCommand('gemini-hook');
+exports.GEMINI_SESSION_END_HOOK_COMMAND = hookCommand('gemini-session-hook');
 const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end'];
 const RECOGNIZED_NATIVE_ENTRYPOINTS = {
     'claude-context-hook': 'claude-code',
@@ -65,6 +68,9 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS = {
     'windsurf-pre-action-hook': 'windsurf',
     'windsurf-hook': 'windsurf',
     'windsurf-session-hook': 'windsurf',
+    'gemini-pre-action-hook': 'gemini',
+    'gemini-hook': 'gemini',
+    'gemini-session-hook': 'gemini',
 };
 /**
  * Label client-reported hook activity from the public CLI entrypoint. The
@@ -166,12 +172,53 @@ function normalizeWindsurfHookEvent(source) {
         normalized.success = true;
     return normalized;
 }
+function normalizeGeminiHookEvent(source) {
+    const hookEventName = typeof source.hook_event_name === 'string' ? source.hook_event_name.trim() : '';
+    if (!['BeforeTool', 'AfterTool', 'AfterAgent'].includes(hookEventName))
+        return {};
+    const normalized = { hook_event_name: hookEventName };
+    const sessionId = boundedCorrelationId(source.session_id);
+    if (sessionId)
+        normalized.session_id = sessionId;
+    if (hookEventName === 'AfterAgent')
+        return normalized;
+    const toolName = typeof source.tool_name === 'string' ? source.tool_name.trim().slice(0, 256) : '';
+    if (toolName && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
+        normalized.tool_name = toolName === 'run_shell_command' ? 'Bash'
+            : toolName === 'write_file' ? 'Write'
+                : ['replace', 'edit_file'].includes(toolName) ? 'Edit'
+                    : toolName;
+    }
+    if (hookEventName === 'BeforeTool') {
+        normalized.tool_input = source.tool_input;
+        return normalized;
+    }
+    normalized.tool_input = {};
+    const response = source.tool_response && typeof source.tool_response === 'object' && !Array.isArray(source.tool_response)
+        ? source.tool_response
+        : null;
+    normalized.success = source.success === false
+        || response?.success === false
+        || response?.error != null
+        || /^(?:failed|error|blocked)$/i.test(String(response?.status || ''))
+        ? false
+        : true;
+    const duration = typeof source.duration_ms === 'number' && Number.isFinite(source.duration_ms)
+        ? Math.max(0, Math.min(300_000, Math.round(source.duration_ms)))
+        : undefined;
+    if (duration !== undefined)
+        normalized.duration_ms = duration;
+    return normalized;
+}
 function normalizeHookEventPayload(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
         return {};
     const source = value;
     if (typeof source.agent_action_name === 'string')
         return normalizeWindsurfHookEvent(source);
+    if (['BeforeTool', 'AfterTool', 'AfterAgent'].includes(String(source.hook_event_name || ''))) {
+        return normalizeGeminiHookEvent(source);
+    }
     const normalized = { ...source };
     for (const [camel, snake] of Object.entries(HOOK_CAMEL_TO_SNAKE)) {
         if (normalized[snake] == null && normalized[camel] != null)
@@ -266,7 +313,7 @@ function readHookSettingsForInstall(startDir = process.cwd()) {
 function marrowHookSubcommand(command) {
     if (typeof command !== 'string')
         return null;
-    const match = command.trim().match(/^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|cline|codex|cursor|grok|windsurf)-)?(context-hook|pre-action-hook|hook|session-hook)$/);
+    const match = command.trim().match(/^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|cline|codex|cursor|gemini|grok|windsurf)-)?(context-hook|pre-action-hook|hook|session-hook)$/);
     return match?.[1] || null;
 }
 function reconcileMarrowCommandHook(settings, eventName, subcommand, command, matcher) {

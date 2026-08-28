@@ -180,9 +180,25 @@ export function windsurfPreActionDecision(result: PreActionControlResult): { exi
     : { exitCode: 0, stderr: '' };
 }
 
-export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'windsurf' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
+export function geminiPreActionHookOutput(result: PreActionControlResult): { decision: 'allow' | 'deny'; reason?: string } {
+  const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
+  const gate = result.runtime?.risk_gate;
+  const denied = unavailable
+    || gate?.decision === 'review_required'
+    || gate?.decision === 'block'
+    || gate?.allow === false;
+  return denied
+    ? {
+      decision: 'deny',
+      reason: 'Marrow blocked this action because required governance approval or proof is unavailable.',
+    }
+    : { decision: 'allow' };
+}
+
+export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
   if (harness === 'cursor') return cursorPreActionHookOutput(result);
   if (harness === 'cline') return clinePreActionHookOutput(result);
+  if (harness === 'gemini') return geminiPreActionHookOutput(result);
   const { runtime, permit, protectedRisk } = result;
   if (protectedRisk && (!runtime || !permit?.verified)) {
     return {
@@ -219,7 +235,7 @@ export function preActionHookOutput(result: PreActionControlResult, harness: 'cl
   };
 }
 
-function emitDecision(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'windsurf' | 'mcp-client' = 'claude-code'): void {
+function emitDecision(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client' = 'claude-code'): void {
   if (harness === 'windsurf') {
     const decision = windsurfPreActionDecision(result);
     process.exitCode = decision.exitCode;
@@ -305,6 +321,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     process.stdout.write(JSON.stringify(
       identity.harness === 'cursor' ? { permission: 'allow' }
         : identity.harness === 'cline' ? { cancel: false }
+        : identity.harness === 'gemini' ? { decision: 'allow' }
         : {},
     ));
     return;
@@ -318,12 +335,13 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     process.stdout.write(JSON.stringify(
       identity.harness === 'cursor' ? { permission: 'allow' }
         : identity.harness === 'cline' ? { cancel: false }
+        : identity.harness === 'gemini' ? { decision: 'allow' }
         : {},
     ));
     return;
   }
   let resolved = identity.environment;
-  const enforcementRequired = classified.protected || identity.harness === 'windsurf';
+  const enforcementRequired = classified.protected || identity.harness === 'windsurf' || identity.harness === 'gemini';
   const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
   const agentId = identity.agent_id;
   const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
