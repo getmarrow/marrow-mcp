@@ -17,7 +17,10 @@ export declare const CURSOR_SESSION_END_HOOK_COMMAND: string;
 export declare const CLINE_PRE_ACTION_HOOK_COMMAND: string;
 export declare const CLINE_ACTION_RESULT_HOOK_COMMAND: string;
 export declare const CLINE_SESSION_END_HOOK_COMMAND: string;
-export type NativeHookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'mcp-client';
+export declare const WINDSURF_PRE_ACTION_HOOK_COMMAND: string;
+export declare const WINDSURF_ACTION_RESULT_HOOK_COMMAND: string;
+export declare const WINDSURF_SESSION_END_HOOK_COMMAND: string;
+export type NativeHookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'windsurf' | 'mcp-client';
 export interface NativeHookIdentity {
     harness: NativeHookHarness;
     identity_source: 'public_cli_entrypoint' | 'generic_fallback';

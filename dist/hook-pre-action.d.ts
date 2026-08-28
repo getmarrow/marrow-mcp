@@ -28,7 +28,11 @@ export declare function classifyTool(event: PreToolUseEvent): {
 };
 export declare function cursorPreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function clinePreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
-export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'mcp-client'): Record<string, unknown>;
+export declare function windsurfPreActionDecision(result: PreActionControlResult): {
+    exitCode: 0 | 2;
+    stderr: string;
+};
+export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown>;
 export declare function grokPreActionAdvisoryOutput(): Record<string, unknown>;
 export declare function installPreActionHook(startDir?: string): {
     settingsPath: string;
