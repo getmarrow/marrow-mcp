@@ -111,7 +111,7 @@ export function classifyTool(event: PreToolUseEvent): {
   };
 }
 
-export function preActionHookOutput(result: PreActionControlResult): Record<string, unknown> {
+export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'codex' | 'grok' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
   const { runtime, permit, protectedRisk } = result;
   if (protectedRisk && (!runtime || !permit?.verified)) {
     return {
@@ -130,7 +130,7 @@ export function preActionHookOutput(result: PreActionControlResult): Record<stri
     || gate.reasons?.[0]?.message
     || 'Marrow requires additional proof or operator review before this action.';
   const permissionDecision = gate.decision === 'review_required'
-    ? 'ask'
+    ? harness === 'codex' ? 'deny' : 'ask'
     : gate.decision === 'block' || gate.allow === false
     ? 'deny'
     : null;
@@ -148,8 +148,8 @@ export function preActionHookOutput(result: PreActionControlResult): Record<stri
   };
 }
 
-function emitDecision(result: PreActionControlResult): void {
-  process.stdout.write(JSON.stringify(preActionHookOutput(result)));
+function emitDecision(result: PreActionControlResult, harness: 'claude-code' | 'codex' | 'grok' | 'mcp-client' = 'claude-code'): void {
+  process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
 }
 
 export function grokPreActionAdvisoryOutput(): Record<string, unknown> {
@@ -204,19 +204,20 @@ export function installPreActionHook(startDir = process.cwd()): { settingsPath: 
 
 export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   if (process.env.MARROW_AUTO_HOOK === 'false') return;
+  const identity = resolveNativeHookIdentity(process.argv[2]);
   let event = input;
   if (event === undefined) {
     try {
       const raw = (await readStdin()).trim();
       event = raw ? normalizeHookEventPayload(JSON.parse(raw)) : {};
     } catch {
-      emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow rejected malformed or oversized pre-action input.' });
+      emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow rejected malformed or oversized pre-action input.' }, identity.harness);
       return;
     }
   }
   const source = asRecord(event) as PreToolUseEvent | null;
   if (!source?.tool_name) {
-    emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' });
+    emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' }, identity.harness);
     return;
   }
   const classified = classifyTool(source);
@@ -224,7 +225,6 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     process.stdout.write('{}');
     return;
   }
-  const identity = resolveNativeHookIdentity(process.argv[2]);
   let resolved = identity.environment;
   const sessionId = resolved.sessionId || source.session_id;
   const agentId = identity.agent_id;
@@ -268,7 +268,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       permit: null,
       protectedRisk: classified.protected,
       enforcementError: 'Marrow enforcement configuration is unavailable. Restore the trusted configuration before retrying this protected action.',
-    });
+    }, identity.harness);
     return;
   }
   if (!resolved.apiKey) {
@@ -277,7 +277,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       permit: null,
       protectedRisk: classified.protected,
       enforcementError: 'Marrow credentials are unavailable for this protected action. Restore the configured agent key before retrying.',
-    });
+    }, identity.harness);
     return;
   }
   const lifecycle = recordLifecycleEvent({
@@ -359,5 +359,5 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     permit: null,
     protectedRisk: classified.protected,
     enforcementError: 'Marrow governance timed out before this protected action. Retry instead of bypassing the gate.',
-  });
+  }, identity.harness);
 }

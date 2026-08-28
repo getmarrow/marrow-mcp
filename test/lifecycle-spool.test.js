@@ -210,6 +210,14 @@ test('pre-action policy maps block to deny, review to ask, and allow to native p
   });
   assert.equal(review.hookSpecificOutput.permissionDecision, 'ask');
 
+  const codexReview = preActionHookOutput({
+    runtime: { risk_gate: { allow: false, decision: 'review_required', reasons: [] }, exact_next_action: 'ask owner' },
+    permit: { verified: true, permit_id: 'permit-review' },
+    protectedRisk: true,
+  }, 'codex');
+  assert.equal(codexReview.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(codexReview.hookSpecificOutput.permissionDecisionReason, 'ask owner');
+
   const allow = preActionHookOutput({
     runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] }, before_you_act: 'reuse the prior lesson' },
     permit: { verified: true, permit_id: 'permit-allow' },

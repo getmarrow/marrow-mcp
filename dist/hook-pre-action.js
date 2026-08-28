@@ -84,7 +84,7 @@ function classifyTool(event) {
         readOnly,
     };
 }
-function preActionHookOutput(result) {
+function preActionHookOutput(result, harness = 'claude-code') {
     const { runtime, permit, protectedRisk } = result;
     if (protectedRisk && (!runtime || !permit?.verified)) {
         return {
@@ -103,7 +103,7 @@ function preActionHookOutput(result) {
         || gate.reasons?.[0]?.message
         || 'Marrow requires additional proof or operator review before this action.';
     const permissionDecision = gate.decision === 'review_required'
-        ? 'ask'
+        ? harness === 'codex' ? 'deny' : 'ask'
         : gate.decision === 'block' || gate.allow === false
             ? 'deny'
             : null;
@@ -120,8 +120,8 @@ function preActionHookOutput(result) {
         },
     };
 }
-function emitDecision(result) {
-    process.stdout.write(JSON.stringify(preActionHookOutput(result)));
+function emitDecision(result, harness = 'claude-code') {
+    process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
 }
 function grokPreActionAdvisoryOutput() {
     return {
@@ -170,6 +170,7 @@ function installPreActionHook(startDir = process.cwd()) {
 async function runPreActionHookCommand(input) {
     if (process.env.MARROW_AUTO_HOOK === 'false')
         return;
+    const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     let event = input;
     if (event === undefined) {
         try {
@@ -177,13 +178,13 @@ async function runPreActionHookCommand(input) {
             event = raw ? (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw)) : {};
         }
         catch {
-            emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow rejected malformed or oversized pre-action input.' });
+            emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow rejected malformed or oversized pre-action input.' }, identity.harness);
             return;
         }
     }
     const source = asRecord(event);
     if (!source?.tool_name) {
-        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' });
+        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' }, identity.harness);
         return;
     }
     const classified = classifyTool(source);
@@ -191,7 +192,6 @@ async function runPreActionHookCommand(input) {
         process.stdout.write('{}');
         return;
     }
-    const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     let resolved = identity.environment;
     const sessionId = resolved.sessionId || source.session_id;
     const agentId = identity.agent_id;
@@ -235,7 +235,7 @@ async function runPreActionHookCommand(input) {
             permit: null,
             protectedRisk: classified.protected,
             enforcementError: 'Marrow enforcement configuration is unavailable. Restore the trusted configuration before retrying this protected action.',
-        });
+        }, identity.harness);
         return;
     }
     if (!resolved.apiKey) {
@@ -244,7 +244,7 @@ async function runPreActionHookCommand(input) {
             permit: null,
             protectedRisk: classified.protected,
             enforcementError: 'Marrow credentials are unavailable for this protected action. Restore the configured agent key before retrying.',
-        });
+        }, identity.harness);
         return;
     }
     const lifecycle = (0, lifecycle_spool_1.recordLifecycleEvent)({
@@ -326,6 +326,6 @@ async function runPreActionHookCommand(input) {
         permit: null,
         protectedRisk: classified.protected,
         enforcementError: 'Marrow governance timed out before this protected action. Retry instead of bypassing the gate.',
-    });
+    }, identity.harness);
 }
 //# sourceMappingURL=hook-pre-action.js.map

@@ -20,7 +20,7 @@ const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const env_1 = require("./env");
-exports.MCP_ADAPTER_VERSION = '3.9.74';
+exports.MCP_ADAPTER_VERSION = '3.9.75';
 exports.NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*';
 exports.GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 exports.MCP_PACKAGE_SPEC = `@getmarrow/mcp@${exports.MCP_ADAPTER_VERSION}`;
@@ -39,6 +39,10 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS = {
     'claude-pre-action-hook': 'claude-code',
     'claude-hook': 'claude-code',
     'claude-session-hook': 'claude-code',
+    'codex-context-hook': 'codex',
+    'codex-pre-action-hook': 'codex',
+    'codex-hook': 'codex',
+    'codex-session-hook': 'codex',
     'grok-context-hook': 'grok',
     'grok-pre-action-hook': 'grok',
     'grok-hook': 'grok',
@@ -145,7 +149,7 @@ function readHookSettingsForInstall(startDir = process.cwd()) {
 function marrowHookSubcommand(command) {
     if (typeof command !== 'string')
         return null;
-    const match = command.trim().match(/^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/);
+    const match = command.trim().match(/^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|codex|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/);
     return match?.[1] || null;
 }
 function reconcileMarrowCommandHook(settings, eventName, subcommand, command, matcher) {
