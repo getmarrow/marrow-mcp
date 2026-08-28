@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AUTO_HOOK_MATCHER = exports.AUTO_HOOK_COMMAND = void 0;
 exports.shouldSkipAutoLog = shouldSkipAutoLog;
 exports.deriveAction = deriveAction;
+exports.deriveToolOutcome = deriveToolOutcome;
 exports.installPostToolUseHook = installPostToolUseHook;
 exports.runHookCommand = runHookCommand;
 const index_1 = require("./index");
@@ -40,18 +41,23 @@ function deriveAction(event) {
         return null;
     return (0, hook_pre_action_1.classifyTool)(event).action;
 }
-function deriveToolSuccess(event) {
-    const response = event.tool_response ?? event.tool_result;
+function deriveToolOutcome(event) {
+    const response = event.tool_output ?? event.tool_response ?? event.tool_result;
     const responseRecord = asRecord(response);
     const errorValue = responseRecord?.error;
     const failed = event.hook_event_name === 'PostToolUseFailure'
         || event.error != null
+        || event.error_message != null
+        || event.failure_type != null
         || errorValue !== undefined && errorValue !== null
         || responseRecord?.is_error === true
         || responseRecord?.success === false
         || (typeof responseRecord?.exit_code === 'number' && responseRecord.exit_code !== 0)
         || /^(?:failed|error|blocked)$/i.test(String(responseRecord?.status || ''));
-    return !failed;
+    const duration = typeof event.duration_ms === 'number' && Number.isFinite(event.duration_ms)
+        ? Math.max(0, Math.min(300_000, Math.round(event.duration_ms)))
+        : undefined;
+    return { success: !failed, ...(duration === undefined ? {} : { duration_ms: duration }) };
 }
 async function readStdin() {
     const chunks = [];
@@ -81,35 +87,34 @@ function installPostToolUseHook(startDir = process.cwd()) {
         installed: success.changed || failure.changed,
     };
 }
-async function runHookCommand() {
+async function runHookCommand(input) {
     if (process.env.MARROW_AUTO_HOOK === 'false') {
-        process.exit(0);
         return;
     }
     try {
-        const raw = (await readStdin()).trim();
-        if (!raw) {
-            process.exit(0);
-            return;
-        }
         let event;
-        try {
-            event = (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw));
+        if (input === undefined) {
+            const raw = (await readStdin()).trim();
+            if (!raw)
+                return;
+            try {
+                event = (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw));
+            }
+            catch {
+                debug('[marrow-hook] skipped invalid JSON');
+                return;
+            }
         }
-        catch {
-            debug('[marrow-hook] skipped invalid JSON');
-            process.exit(0);
-            return;
+        else {
+            event = (0, hook_contract_1.normalizeHookEventPayload)(input);
         }
         if (shouldSkipAutoLog(event)) {
             debug('[marrow-hook] skipped read-only tool');
-            process.exit(0);
             return;
         }
         const classified = (0, hook_pre_action_1.classifyTool)(event);
         const action = deriveAction(event);
         if (!action) {
-            process.exit(0);
             return;
         }
         const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
@@ -117,13 +122,12 @@ async function runHookCommand() {
         const apiKey = resolvedEnv.apiKey || '';
         if (!apiKey) {
             debug(`[marrow-hook] skipped missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
-            process.exit(0);
             return;
         }
         const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
-        const sessionId = resolvedEnv.sessionId || getString(event.session_id);
+        const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id);
         const agentId = identity.agent_id;
-        const success = deriveToolSuccess(event);
+        const { success } = deriveToolOutcome(event);
         const toolName = normalizeToolName(getString(event.tool_name) || 'tool');
         const eventType = toolName === 'bash'
             ? success ? 'command_completed' : 'command_failed'
@@ -137,7 +141,7 @@ async function runHookCommand() {
                 event_type: eventType,
                 ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                 session_id: sessionId,
-                workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, event.tool_use_id),
+                workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, event.generation_id || event.tool_use_id),
                 correlation_id: lifecycleCorrelation,
                 action,
                 target: classified.target,
@@ -150,6 +154,7 @@ async function runHookCommand() {
         if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
             const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_response)
                 || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_result)
+                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_output)
                 || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event);
             if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
                 await (0, index_1.marrowModelUsage)(apiKey, baseUrl, {
@@ -166,6 +171,5 @@ async function runHookCommand() {
         const message = err instanceof Error ? err.message : String(err);
         debug(`[marrow-hook] ${message}`);
     }
-    process.exit(0);
 }
 //# sourceMappingURL=hook.js.map

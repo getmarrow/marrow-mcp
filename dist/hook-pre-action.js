@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GOVERNED_WRAPPER_COMMAND = void 0;
 exports.classifyTool = classifyTool;
+exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
 exports.preActionHookOutput = preActionHookOutput;
 exports.grokPreActionAdvisoryOutput = grokPreActionAdvisoryOutput;
 exports.installPreActionHook = installPreActionHook;
@@ -64,7 +65,7 @@ function classifyTool(event) {
     ].filter(Boolean);
     const protectedAction = !readOnly && (/\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
         || protectedShellCommand
-        || (String(event.tool_name || '').startsWith('mcp__') && !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name)));
+        || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name)));
     const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
     const target = surfaces.includes('npm') ? `npm:${type}`
         : surfaces.includes('github') ? `github:${type}`
@@ -84,7 +85,36 @@ function classifyTool(event) {
         readOnly,
     };
 }
+function cursorPreActionHookOutput(result) {
+    const { runtime, permit, protectedRisk } = result;
+    const message = (value) => String(value || 'Marrow denied this action.')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 500);
+    if (protectedRisk && (!runtime || !permit?.verified)) {
+        const denial = message(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.');
+        return {
+            permission: 'deny',
+            user_message: denial,
+            agent_message: denial,
+        };
+    }
+    const gate = runtime?.risk_gate;
+    if (!gate)
+        return { permission: 'allow' };
+    const reason = runtime?.exact_next_action
+        || gate.reasons?.[0]?.message
+        || 'Marrow requires additional proof or operator review before this action.';
+    if (gate.decision === 'review_required' || gate.decision === 'block' || gate.allow === false) {
+        const denial = message(reason);
+        return { permission: 'deny', user_message: denial, agent_message: denial };
+    }
+    return { permission: 'allow' };
+}
 function preActionHookOutput(result, harness = 'claude-code') {
+    if (harness === 'cursor')
+        return cursorPreActionHookOutput(result);
     const { runtime, permit, protectedRisk } = result;
     if (protectedRisk && (!runtime || !permit?.verified)) {
         return {
@@ -182,18 +212,22 @@ async function runPreActionHookCommand(input) {
             return;
         }
     }
-    const source = asRecord(event);
+    const source = asRecord((0, hook_contract_1.normalizeHookEventPayload)(event));
     if (!source?.tool_name) {
         emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' }, identity.harness);
         return;
     }
+    if ((0, hook_tool_policy_1.isOfficialMarrowMcpTool)(source.tool_name)) {
+        process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' } : {}));
+        return;
+    }
     const classified = classifyTool(source);
     if (classified.readOnly) {
-        process.stdout.write('{}');
+        process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' } : {}));
         return;
     }
     let resolved = identity.environment;
-    const sessionId = resolved.sessionId || source.session_id;
+    const sessionId = resolved.sessionId || source.session_id || source.conversation_id;
     const agentId = identity.agent_id;
     const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
     if (identity.harness === 'grok') {
@@ -208,7 +242,7 @@ async function runPreActionHookCommand(input) {
                         event_type: 'pre_action_checked',
                         ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                         session_id: sessionId,
-                        workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.tool_use_id),
+                        workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.generation_id || source.tool_use_id),
                         correlation_id: correlation,
                         action: classified.action,
                         target: classified.target,
@@ -255,7 +289,7 @@ async function runPreActionHookCommand(input) {
             event_type: 'pre_action_checked',
             ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
             session_id: sessionId,
-            workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.tool_use_id),
+            workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.generation_id || source.tool_use_id),
             correlation_id: correlation,
             action: classified.action,
             target: classified.target,

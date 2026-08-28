@@ -26,13 +26,19 @@ function debug(msg: string): void {
 
 interface HookEvent {
   session_id?: string;
+  conversation_id?: string;
+  generation_id?: string;
   hook_event_name?: string;
   tool_use_id?: string;
   tool_name?: string;
   tool_input?: unknown;
   tool_response?: unknown;
   tool_result?: unknown;
+  tool_output?: unknown;
   error?: unknown;
+  error_message?: unknown;
+  failure_type?: unknown;
+  duration_ms?: unknown;
   is_interrupt?: boolean;
 }
 
@@ -66,20 +72,25 @@ export function deriveAction(event: HookEvent): string | null {
   return classifyTool(event).action;
 }
 
-function deriveToolSuccess(event: HookEvent): boolean {
-  const response = event.tool_response ?? event.tool_result;
+export function deriveToolOutcome(event: HookEvent): { success: boolean; duration_ms?: number } {
+  const response = event.tool_output ?? event.tool_response ?? event.tool_result;
   const responseRecord = asRecord(response);
   const errorValue = responseRecord?.error;
 
   const failed = event.hook_event_name === 'PostToolUseFailure'
     || event.error != null
+    || event.error_message != null
+    || event.failure_type != null
     || errorValue !== undefined && errorValue !== null
     || responseRecord?.is_error === true
     || responseRecord?.success === false
     || (typeof responseRecord?.exit_code === 'number' && responseRecord.exit_code !== 0)
     || /^(?:failed|error|blocked)$/i.test(String(responseRecord?.status || ''));
 
-  return !failed;
+  const duration = typeof event.duration_ms === 'number' && Number.isFinite(event.duration_ms)
+    ? Math.max(0, Math.min(300_000, Math.round(event.duration_ms)))
+    : undefined;
+  return { success: !failed, ...(duration === undefined ? {} : { duration_ms: duration }) };
 }
 
 async function readStdin(): Promise<string> {
@@ -117,38 +128,34 @@ export function installPostToolUseHook(startDir: string = process.cwd()): HookIn
   };
 }
 
-export async function runHookCommand(): Promise<void> {
+export async function runHookCommand(input?: unknown): Promise<void> {
   if (process.env.MARROW_AUTO_HOOK === 'false') {
-    process.exit(0);
     return;
   }
 
   try {
-    const raw = (await readStdin()).trim();
-    if (!raw) {
-      process.exit(0);
-      return;
-    }
-
     let event: HookEvent;
-    try {
-      event = normalizeHookEventPayload(JSON.parse(raw)) as HookEvent;
-    } catch {
-      debug('[marrow-hook] skipped invalid JSON');
-      process.exit(0);
-      return;
+    if (input === undefined) {
+      const raw = (await readStdin()).trim();
+      if (!raw) return;
+      try {
+        event = normalizeHookEventPayload(JSON.parse(raw)) as HookEvent;
+      } catch {
+        debug('[marrow-hook] skipped invalid JSON');
+        return;
+      }
+    } else {
+      event = normalizeHookEventPayload(input) as HookEvent;
     }
 
     if (shouldSkipAutoLog(event)) {
       debug('[marrow-hook] skipped read-only tool');
-      process.exit(0);
       return;
     }
 
     const classified = classifyTool(event);
     const action = deriveAction(event);
     if (!action) {
-      process.exit(0);
       return;
     }
 
@@ -157,14 +164,13 @@ export async function runHookCommand(): Promise<void> {
     const apiKey = resolvedEnv.apiKey || '';
     if (!apiKey) {
       debug(`[marrow-hook] skipped missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
-      process.exit(0);
       return;
     }
 
     const baseUrl = validateBaseUrl(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
-    const sessionId = resolvedEnv.sessionId || getString(event.session_id);
+    const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id);
     const agentId = identity.agent_id;
-    const success = deriveToolSuccess(event);
+    const { success } = deriveToolOutcome(event);
 
     const toolName = normalizeToolName(getString(event.tool_name) || 'tool');
     const eventType = toolName === 'bash'
@@ -179,7 +185,7 @@ export async function runHookCommand(): Promise<void> {
         event_type: eventType,
         ...clientReportedHookLifecycleIdentity(identity),
         session_id: sessionId,
-        workflow_id: stableSessionWorkflowId(sessionId, event.tool_use_id),
+        workflow_id: stableSessionWorkflowId(sessionId, event.generation_id || event.tool_use_id),
         correlation_id: lifecycleCorrelation,
         action,
         target: classified.target,
@@ -193,6 +199,7 @@ export async function runHookCommand(): Promise<void> {
     if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
       const usage = extractModelUsageFromUnknown(event.tool_response)
         || extractModelUsageFromUnknown(event.tool_result)
+        || extractModelUsageFromUnknown(event.tool_output)
         || extractModelUsageFromUnknown(event);
       if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
         await marrowModelUsage(apiKey, baseUrl, {
@@ -209,6 +216,4 @@ export async function runHookCommand(): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     debug(`[marrow-hook] ${message}`);
   }
-
-  process.exit(0);
 }

@@ -1,7 +1,7 @@
 import { marrowAgentRuntime, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { runtimeAuthorizationReceiptId } from './runtime-contract';
-import { hookToolCommand, isOfficialMarrowMcpTool, isProtectedShellMutation, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
+import { hookToolCommand, isMcpHookTool, isOfficialMarrowMcpTool, isProtectedShellMutation, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   clientReportedHookLifecycleIdentity,
   findHookSettingsPath,
@@ -21,6 +21,8 @@ export const GOVERNED_WRAPPER_COMMAND = 'npx @getmarrow/install run --agent <age
 
 export type PreToolUseEvent = {
   session_id?: string;
+  conversation_id?: string;
+  generation_id?: string;
   hook_event_name?: string;
   tool_use_id?: string;
   tool_name?: string;
@@ -89,7 +91,7 @@ export function classifyTool(event: PreToolUseEvent): {
   const protectedAction = !readOnly && (
     /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
     || protectedShellCommand
-    || (String(event.tool_name || '').startsWith('mcp__') && !isOfficialMarrowMcpTool(event.tool_name))
+    || (isMcpHookTool(event.tool_name) && !isOfficialMarrowMcpTool(event.tool_name))
   );
   const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
   const target = surfaces.includes('npm') ? `npm:${type}`
@@ -111,7 +113,35 @@ export function classifyTool(event: PreToolUseEvent): {
   };
 }
 
-export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'codex' | 'grok' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
+export function cursorPreActionHookOutput(result: PreActionControlResult): Record<string, unknown> {
+  const { runtime, permit, protectedRisk } = result;
+  const message = (value: unknown): string => String(value || 'Marrow denied this action.')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+  if (protectedRisk && (!runtime || !permit?.verified)) {
+    const denial = message(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.');
+    return {
+      permission: 'deny',
+      user_message: denial,
+      agent_message: denial,
+    };
+  }
+  const gate = runtime?.risk_gate;
+  if (!gate) return { permission: 'allow' };
+  const reason = runtime?.exact_next_action
+    || gate.reasons?.[0]?.message
+    || 'Marrow requires additional proof or operator review before this action.';
+  if (gate.decision === 'review_required' || gate.decision === 'block' || gate.allow === false) {
+    const denial = message(reason);
+    return { permission: 'deny', user_message: denial, agent_message: denial };
+  }
+  return { permission: 'allow' };
+}
+
+export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'codex' | 'cursor' | 'grok' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
+  if (harness === 'cursor') return cursorPreActionHookOutput(result);
   const { runtime, permit, protectedRisk } = result;
   if (protectedRisk && (!runtime || !permit?.verified)) {
     return {
@@ -148,7 +178,7 @@ export function preActionHookOutput(result: PreActionControlResult, harness: 'cl
   };
 }
 
-function emitDecision(result: PreActionControlResult, harness: 'claude-code' | 'codex' | 'grok' | 'mcp-client' = 'claude-code'): void {
+function emitDecision(result: PreActionControlResult, harness: 'claude-code' | 'codex' | 'cursor' | 'grok' | 'mcp-client' = 'claude-code'): void {
   process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
 }
 
@@ -215,18 +245,22 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       return;
     }
   }
-  const source = asRecord(event) as PreToolUseEvent | null;
+  const source = asRecord(normalizeHookEventPayload(event)) as PreToolUseEvent | null;
   if (!source?.tool_name) {
     emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' }, identity.harness);
     return;
   }
+  if (isOfficialMarrowMcpTool(source.tool_name)) {
+    process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' } : {}));
+    return;
+  }
   const classified = classifyTool(source);
   if (classified.readOnly) {
-    process.stdout.write('{}');
+    process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' } : {}));
     return;
   }
   let resolved = identity.environment;
-  const sessionId = resolved.sessionId || source.session_id;
+  const sessionId = resolved.sessionId || source.session_id || source.conversation_id;
   const agentId = identity.agent_id;
   const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
 
@@ -242,7 +276,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
             event_type: 'pre_action_checked',
             ...clientReportedHookLifecycleIdentity(identity),
             session_id: sessionId,
-            workflow_id: stableSessionWorkflowId(sessionId, source.tool_use_id),
+            workflow_id: stableSessionWorkflowId(sessionId, source.generation_id || source.tool_use_id),
             correlation_id: correlation,
             action: classified.action,
             target: classified.target,
@@ -288,7 +322,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       event_type: 'pre_action_checked',
       ...clientReportedHookLifecycleIdentity(identity),
       session_id: sessionId,
-      workflow_id: stableSessionWorkflowId(sessionId, source.tool_use_id),
+      workflow_id: stableSessionWorkflowId(sessionId, source.generation_id || source.tool_use_id),
       correlation_id: correlation,
       action: classified.action,
       target: classified.target,

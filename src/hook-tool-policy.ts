@@ -86,11 +86,17 @@ function stringValue(value: unknown): string | undefined {
 }
 
 export function normalizeHookToolName(value: unknown): string {
-  return String(value || '').replace(/^mcp__/, '').trim().toLowerCase();
+  return String(value || '').replace(/^mcp__/, '').replace(/^MCP:/i, '').trim().toLowerCase();
 }
 
 export function isOfficialMarrowMcpTool(value: unknown): boolean {
-  return /^mcp__marrow__marrow_[a-z0-9_]+$/i.test(String(value || '').trim());
+  const tool = String(value || '').trim();
+  return /^mcp__marrow__marrow_[a-z0-9_]+$/i.test(tool)
+    || /^MCP:(?:marrow:)?marrow_[a-z0-9_]+$/i.test(tool);
+}
+
+export function isMcpHookTool(value: unknown): boolean {
+  return /^(?:mcp__|MCP:)/i.test(String(value || '').trim());
 }
 
 export function isProtectedShellMutation(command: string): boolean {
