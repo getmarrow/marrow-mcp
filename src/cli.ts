@@ -99,16 +99,16 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     if (args[i] === 'setup' || args[i] === '--setup') {
       result.setup = true;
     }
-    if (['hook', '--hook', 'claude-hook', 'cline-hook', 'codex-hook', 'cursor-hook', 'grok-hook', 'windsurf-hook'].includes(args[i])) {
+    if (['hook', '--hook', 'claude-hook', 'cline-hook', 'codex-hook', 'cursor-hook', 'gemini-hook', 'grok-hook', 'windsurf-hook'].includes(args[i])) {
       result.hook = true;
     }
     if (['context-hook', '--context-hook', 'claude-context-hook', 'codex-context-hook', 'grok-context-hook'].includes(args[i])) {
       result.contextHook = true;
     }
-    if (['pre-action-hook', '--pre-action-hook', 'claude-pre-action-hook', 'cline-pre-action-hook', 'codex-pre-action-hook', 'cursor-pre-action-hook', 'grok-pre-action-hook', 'windsurf-pre-action-hook'].includes(args[i])) {
+    if (['pre-action-hook', '--pre-action-hook', 'claude-pre-action-hook', 'cline-pre-action-hook', 'codex-pre-action-hook', 'cursor-pre-action-hook', 'gemini-pre-action-hook', 'grok-pre-action-hook', 'windsurf-pre-action-hook'].includes(args[i])) {
       result.preActionHook = true;
     }
-    if (['session-hook', '--session-hook', 'claude-session-hook', 'cline-session-hook', 'codex-session-hook', 'cursor-session-hook', 'grok-session-hook', 'windsurf-session-hook'].includes(args[i])) {
+    if (['session-hook', '--session-hook', 'claude-session-hook', 'cline-session-hook', 'codex-session-hook', 'cursor-session-hook', 'gemini-session-hook', 'grok-session-hook', 'windsurf-session-hook'].includes(args[i])) {
       result.sessionHook = true;
     }
     if (args[i] === 'spool-status' || args[i] === '--spool-status') {

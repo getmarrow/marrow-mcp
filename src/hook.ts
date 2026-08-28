@@ -132,7 +132,9 @@ export function installPostToolUseHook(startDir: string = process.cwd()): HookIn
 }
 
 export async function runHookCommand(input?: unknown): Promise<void> {
+  const identity = resolveNativeHookIdentity(process.argv[2]);
   if (process.env.MARROW_AUTO_HOOK === 'false') {
+    if (identity.harness === 'gemini') process.stdout.write('{}');
     return;
   }
 
@@ -162,7 +164,6 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       return;
     }
 
-    const identity = resolveNativeHookIdentity(process.argv[2]);
     const resolvedEnv = identity.environment;
     const apiKey = resolvedEnv.apiKey || '';
     if (!apiKey) {
@@ -218,5 +219,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     debug(`[marrow-hook] ${message}`);
+  } finally {
+    if (identity.harness === 'gemini') process.stdout.write('{}');
   }
 }

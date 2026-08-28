@@ -82,58 +82,70 @@ function sessionEndAutoCommitOpen(value) {
     return Boolean(value);
 }
 async function runSessionHookCommand(input) {
-    if (process.env.MARROW_AUTO_HOOK === 'false')
-        return;
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
-    const resolved = identity.environment;
-    if (!resolved.apiKey)
-        return;
-    const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
-    const source = readStopHookSource(input);
-    const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id || undefined;
-    const agentId = identity.agent_id;
-    const workflowId = (0, hook_contract_1.stableSessionWorkflowId)(sessionId, identity.harness === 'cursor'
-        ? [source.conversation_id, source.generation_id, source.tool_use_id]
-        : identity.harness === 'cline'
-            ? [source.task_id, source.hook_event_name]
-            : identity.harness === 'windsurf'
-                ? [source.session_id, source.tool_use_id]
-                : [source.transcript_path, source.cwd]);
-    const correlation = workflowId.slice('session-'.length);
-    await (0, lifecycle_spool_1.recordLifecycleEvent)({
-        apiKey: resolved.apiKey,
-        baseUrl,
-        event: {
-            event_id: `session-stop-${correlation}`,
-            event_type: 'session_completed',
-            ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
-            session_id: sessionId,
-            workflow_id: workflowId,
-            correlation_id: correlation,
-            action: identity.harness === 'cline' && source.hook_event_name === 'TaskCancel'
-                ? 'agent task cancelled'
-                : identity.harness === 'windsurf'
-                    ? 'cascade response completed'
-                    : 'agent session ended',
-            outcome_state: 'pending',
-        },
-    });
     try {
-        await boundedSessionEnd(resolved.apiKey, baseUrl, sessionId, agentId);
-    }
-    catch {
-        // The pending lifecycle receipt remains durable for later reconciliation.
-    }
-    if (identity.harness !== 'windsurf' && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
-        const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(input);
-        if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
-            await (0, index_1.marrowModelUsage)(resolved.apiKey, baseUrl, {
-                ...usage,
-                source: 'mcp_session_end',
-                marrow_intervention: 'passive_model_usage_capture',
-                action_type: 'session',
-            }, sessionId, agentId).catch(() => undefined);
+        if (process.env.MARROW_AUTO_HOOK === 'false')
+            return;
+        const resolved = identity.environment;
+        if (!resolved.apiKey)
+            return;
+        const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
+        const source = readStopHookSource(input);
+        const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id || undefined;
+        const agentId = identity.agent_id;
+        const workflowId = (0, hook_contract_1.stableSessionWorkflowId)(sessionId, identity.harness === 'cursor'
+            ? [source.conversation_id, source.generation_id, source.tool_use_id]
+            : identity.harness === 'cline'
+                ? [source.task_id, source.hook_event_name]
+                : identity.harness === 'windsurf' || identity.harness === 'gemini'
+                    ? [source.session_id, source.tool_use_id]
+                    : [source.transcript_path, source.cwd]);
+        const correlation = workflowId.slice('session-'.length);
+        await (0, lifecycle_spool_1.recordLifecycleEvent)({
+            apiKey: resolved.apiKey,
+            baseUrl,
+            event: {
+                event_id: `session-stop-${correlation}`,
+                event_type: 'session_completed',
+                ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
+                session_id: sessionId,
+                workflow_id: workflowId,
+                correlation_id: correlation,
+                action: identity.harness === 'cline' && source.hook_event_name === 'TaskCancel'
+                    ? 'agent task cancelled'
+                    : identity.harness === 'windsurf'
+                        ? 'cascade response completed'
+                        : identity.harness === 'gemini'
+                            ? 'agent turn completed'
+                            : 'agent session ended',
+                outcome_state: 'pending',
+            },
+        });
+        try {
+            await boundedSessionEnd(resolved.apiKey, baseUrl, sessionId, agentId);
         }
+        catch {
+            // The pending lifecycle receipt remains durable for later reconciliation.
+        }
+        if (!['windsurf', 'gemini'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+            const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(input);
+            if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
+                await (0, index_1.marrowModelUsage)(resolved.apiKey, baseUrl, {
+                    ...usage,
+                    source: 'mcp_session_end',
+                    marrow_intervention: 'passive_model_usage_capture',
+                    action_type: 'session',
+                }, sessionId, agentId).catch(() => undefined);
+            }
+        }
+    }
+    catch (error) {
+        if (identity.harness !== 'gemini')
+            throw error;
+    }
+    finally {
+        if (identity.harness === 'gemini')
+            process.stdout.write('{}');
     }
 }
 //# sourceMappingURL=hook-session.js.map

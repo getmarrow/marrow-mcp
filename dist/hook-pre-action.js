@@ -5,6 +5,7 @@ exports.classifyTool = classifyTool;
 exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
 exports.clinePreActionHookOutput = clinePreActionHookOutput;
 exports.windsurfPreActionDecision = windsurfPreActionDecision;
+exports.geminiPreActionHookOutput = geminiPreActionHookOutput;
 exports.preActionHookOutput = preActionHookOutput;
 exports.grokPreActionAdvisoryOutput = grokPreActionAdvisoryOutput;
 exports.installPreActionHook = installPreActionHook;
@@ -152,11 +153,27 @@ function windsurfPreActionDecision(result) {
         }
         : { exitCode: 0, stderr: '' };
 }
+function geminiPreActionHookOutput(result) {
+    const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
+    const gate = result.runtime?.risk_gate;
+    const denied = unavailable
+        || gate?.decision === 'review_required'
+        || gate?.decision === 'block'
+        || gate?.allow === false;
+    return denied
+        ? {
+            decision: 'deny',
+            reason: 'Marrow blocked this action because required governance approval or proof is unavailable.',
+        }
+        : { decision: 'allow' };
+}
 function preActionHookOutput(result, harness = 'claude-code') {
     if (harness === 'cursor')
         return cursorPreActionHookOutput(result);
     if (harness === 'cline')
         return clinePreActionHookOutput(result);
+    if (harness === 'gemini')
+        return geminiPreActionHookOutput(result);
     const { runtime, permit, protectedRisk } = result;
     if (protectedRisk && (!runtime || !permit?.verified)) {
         return {
@@ -273,7 +290,8 @@ async function runPreActionHookCommand(input) {
         }
         process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' }
             : identity.harness === 'cline' ? { cancel: false }
-                : {}));
+                : identity.harness === 'gemini' ? { decision: 'allow' }
+                    : {}));
         return;
     }
     const classified = classifyTool(source);
@@ -284,11 +302,12 @@ async function runPreActionHookCommand(input) {
         }
         process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' }
             : identity.harness === 'cline' ? { cancel: false }
-                : {}));
+                : identity.harness === 'gemini' ? { decision: 'allow' }
+                    : {}));
         return;
     }
     let resolved = identity.environment;
-    const enforcementRequired = classified.protected || identity.harness === 'windsurf';
+    const enforcementRequired = classified.protected || identity.harness === 'windsurf' || identity.harness === 'gemini';
     const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
     const agentId = identity.agent_id;
     const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });

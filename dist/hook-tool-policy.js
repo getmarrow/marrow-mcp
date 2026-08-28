@@ -89,7 +89,8 @@ function normalizeHookToolName(value) {
 function isOfficialMarrowMcpTool(value) {
     const tool = String(value || '').trim();
     return /^mcp__marrow__marrow_[a-z0-9_]+$/i.test(tool)
-        || /^MCP:(?:marrow:)?marrow_[a-z0-9_]+$/i.test(tool);
+        || /^MCP:(?:marrow:)?marrow_[a-z0-9_]+$/i.test(tool)
+        || /^mcp_marrow_marrow_[a-z0-9_]+$/i.test(tool);
 }
 function isOfficialMarrowMcpEvent(event) {
     if (isOfficialMarrowMcpTool(event.tool_name))
@@ -105,7 +106,7 @@ function isOfficialMarrowMcpEvent(event) {
     return server === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(name);
 }
 function isMcpHookTool(value) {
-    return /^(?:mcp__|MCP:)/i.test(String(value || '').trim());
+    return /^(?:mcp__|mcp_|MCP:)/i.test(String(value || '').trim());
 }
 function isProtectedShellMutation(command) {
     const raw = String(command || '');

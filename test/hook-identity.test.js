@@ -26,7 +26,7 @@ function resolve(entrypoint, extraEnv = {}) {
   }
 }
 
-test('public Claude, Cline, Codex, Cursor, Grok, and Windsurf entrypoints provide display labels, not trusted provenance', () => {
+test('public Claude, Cline, Codex, Cursor, Gemini, Grok, and Windsurf entrypoints provide display labels, not trusted provenance', () => {
   for (const entrypoint of ['claude-context-hook', 'claude-pre-action-hook', 'claude-hook', 'claude-session-hook']) {
     const identity = resolve(entrypoint, { MARROW_FLEET_AGENT_ID: 'bound-agent' });
     assert.equal(identity.harness, 'claude-code');
@@ -69,6 +69,13 @@ test('public Claude, Cline, Codex, Cursor, Grok, and Windsurf entrypoints provid
     assert.equal(identity.client_self_reported, true);
     assert.equal(identity.agent_id, 'bound-agent');
   }
+  for (const entrypoint of ['gemini-pre-action-hook', 'gemini-hook', 'gemini-session-hook']) {
+    const identity = resolve(entrypoint, { MARROW_FLEET_AGENT_ID: 'bound-agent' });
+    assert.equal(identity.harness, 'gemini');
+    assert.equal(identity.identity_source, 'public_cli_entrypoint');
+    assert.equal(identity.client_self_reported, true);
+    assert.equal(identity.agent_id, 'bound-agent');
+  }
 });
 
 test('manual public, legacy, unknown, and custom entrypoints cannot emit certified coverage fields', () => {
@@ -79,6 +86,7 @@ test('manual public, legacy, unknown, and custom entrypoints cannot emit certifi
     'cursor-pre-action-hook', 'cursor-hook', 'cursor-session-hook',
     'cline-pre-action-hook', 'cline-hook', 'cline-session-hook',
     'windsurf-pre-action-hook', 'windsurf-hook', 'windsurf-session-hook',
+    'gemini-pre-action-hook', 'gemini-hook', 'gemini-session-hook',
     'hook', 'context-hook', 'custom-hook', '', 'grok-lookalike-hook',
   ]) {
     const identity = resolve(entrypoint);

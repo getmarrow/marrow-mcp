@@ -89,7 +89,10 @@ function installPostToolUseHook(startDir = process.cwd()) {
     };
 }
 async function runHookCommand(input) {
+    const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     if (process.env.MARROW_AUTO_HOOK === 'false') {
+        if (identity.harness === 'gemini')
+            process.stdout.write('{}');
         return;
     }
     try {
@@ -118,7 +121,6 @@ async function runHookCommand(input) {
         if (!action) {
             return;
         }
-        const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
         const resolvedEnv = identity.environment;
         const apiKey = resolvedEnv.apiKey || '';
         if (!apiKey) {
@@ -171,6 +173,10 @@ async function runHookCommand(input) {
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         debug(`[marrow-hook] ${message}`);
+    }
+    finally {
+        if (identity.harness === 'gemini')
+            process.stdout.write('{}');
     }
 }
 //# sourceMappingURL=hook.js.map
