@@ -267,6 +267,42 @@ test('pre-action CLI fails closed without leaking malformed trusted endpoint con
   }
 });
 
+test('Codex pre-action CLI denies protected input without credentials and keeps tool input private', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-codex-no-key-'));
+  const privateCommand = 'npm publish --otp synthetic-private-proof';
+  try {
+    const env = {
+      ...process.env,
+      HOME: join(directory, 'home'),
+      MARROW_API_KEY: '',
+      MARROW_KEY: '',
+      MARROW_AUTO_HOOK: 'true',
+    };
+    const result = spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js'), 'codex-pre-action-hook'], {
+      cwd: directory,
+      env,
+      input: JSON.stringify({
+        hookEventName: 'PreToolUse',
+        sessionId: 'codex-session',
+        toolUseId: 'codex-tool',
+        toolName: 'Bash',
+        toolInput: { command: privateCommand },
+      }),
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.hookEventName, 'PreToolUse');
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /credentials are unavailable/i);
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /synthetic-private-proof|npm publish/);
+    assert.equal('additionalContext' in output.hookSpecificOutput, false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('look-alike Marrow MCP namespaces remain governed', () => {
   const official = classifyTool({ tool_name: 'mcp__marrow__marrow_commit', tool_input: { decision_id: 'decision-1' } });
   const lookalike = classifyTool({ tool_name: 'mcp__marrow_evil__delete', tool_input: { id: 'record-1' } });

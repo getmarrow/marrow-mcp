@@ -104,7 +104,11 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.74
+## What's New in v3.9.75
+
+v3.9.75 adds explicit Codex native hook entrypoints. Codex `PreToolUse` maps both blocked and review-required protected actions to the supported deny response, fails closed when runtime or permit proof is unavailable, and keeps hook activity client-self-reported rather than claiming certified coverage.
+
+## Previous: v3.9.74
 
 v3.9.74 keeps one automatic operation bound to its original runtime authorization and decision across timeout and proof-required retries, then closes that exact decision once verified proof is supplied. One outer `marrow_auto` invocation normally completes think and commit in-band within its bounded eight-second client budget. The release canary allows that complete client budget plus bounded response overhead rather than cutting the operation off at five seconds.
 
@@ -212,7 +216,7 @@ v3.9.60 restores the complete control-and-proof loop for ordinary MCP clients:
 - a plan-gated handoff is reported as unavailable for the current plan, not as an API or authentication outage;
 - the release canary runs with the customer's default client deadlines instead of silently overriding them.
 
-The current package gives MCP-only hosts the same model-neutral control instructions and seven-tool default surface, but MCP transport alone remains on demand. A host or model label never changes that coverage contract. Public lifecycle callbacks and hook activity are client-self-reported and cannot verify or certify passive coverage; independent authority is required. Codex, Grok, Gemini, and similar CLI harnesses must use `npx @getmarrow/install run --agent <agent-id> -- -- <command>` for consequential commands.
+The current package gives MCP-only hosts the same model-neutral control instructions and seven-tool default surface, but MCP transport alone remains on demand. A host or model label never changes that coverage contract. Public lifecycle callbacks and hook activity are client-self-reported and cannot verify or certify passive coverage; independent authority is required. Codex can use configured native hooks after restart and owner `/hooks` trust review; Grok, Gemini, and similar CLI harnesses must use `npx @getmarrow/install run --agent <agent-id> -- -- <command>` for consequential commands.
 
 ## Previous: v3.9.59
 
@@ -344,7 +348,7 @@ Configured hooks can provide cooperative telemetry and context, but they are not
 1. Call `marrow_agent_runtime` or `marrow_decision_brief`.
 2. Stop when the returned decision is `block` or `review_required`; otherwise follow its prior lesson and proof contract.
 3. Call `marrow_think` or `marrow_auto` to record intent and obtain the `decision_id` that will be closed. Keep `marrow_agent_runtime.runtime_authorization.id` separate as the gate receipt for consequential work.
-4. Perform the action only when its gate allows it. For Codex, Grok, Gemini, and similar CLI harnesses, use the governed wrapper: `npx @getmarrow/install run --agent <agent-id> -- -- <command>`.
+4. Perform the action only when its gate allows it. Codex uses configured native hooks after restart and `/hooks` trust review. For Grok, Gemini, and similar CLI harnesses, use the governed wrapper: `npx @getmarrow/install run --agent <agent-id> -- -- <command>`.
 5. Call `marrow_commit` with that `decision_id`, the outcome, gate receipt, and required proof.
 
 `marrow_agent_runtime` returns `runtime_authorization` with the authoritative gate receipt. Ordinary runtime checks do not create a decision, so they omit `decision_id`; call `marrow_think` (or use `marrow_auto`) when a decision must be created and closed. An arbitration runtime that actually creates a decision returns that server-created `decision_id`. This contract is identical across MCP-compatible hosts and SDK-owned runtimes.
@@ -463,7 +467,7 @@ When invoked by a supported host, the configured hooks send compact classificati
 
 Setup installs distinct Claude Code and Grok hook entrypoints. The public entrypoint supplies only a client-reported display label; it is not host provenance. Hook event JSON cannot select the lifecycle harness or agent. Agent identity comes only from owner configuration when present, otherwise the request omits it so the authenticated service can derive the credential-bound identity. Every hook lifecycle event is marked `source: client_self_reported` and omits `capability_level: native_hooks`, adapter certification, configuration fingerprints, expected hooks, and observed-hook certification fields. Legacy, unknown, and custom entrypoints stay generic.
 
-Claude Code hooks may cooperatively request guidance and apply the harness permission response, but that does not certify always-on control. Grok hooks are advisory telemetry/context only: `grok-pre-action-hook` never issues, verifies, or consumes an action permit and never claims enforcement. Codex, Grok, Gemini, and similar CLI harnesses must run consequential commands through `npx @getmarrow/install run --agent <agent-id> -- -- <command>`. Unknown and custom hosts remain on demand unless they provide a bounded event adapter, whose activity is still not certification without an independent authority.
+Claude Code hooks may cooperatively request guidance and apply the harness permission response, but that does not certify always-on control. Codex native hooks map both block and review-required gates to the supported synchronous deny response, while their activity remains client-self-reported rather than certified coverage. Grok hooks are advisory telemetry/context only: `grok-pre-action-hook` never issues, verifies, or consumes an action permit and never claims enforcement. Grok, Gemini, and similar CLI harnesses must run consequential commands through `npx @getmarrow/install run --agent <agent-id> -- -- <command>`. Unknown and custom hosts remain on demand unless they provide a bounded event adapter, whose activity is still not certification without an independent authority.
 
 Transient lifecycle receipts use a bounded owner-only spool and are retried with stable event IDs. Operators can inspect and drain it without exposing event content:
 

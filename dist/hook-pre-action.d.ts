@@ -23,7 +23,7 @@ export declare function classifyTool(event: PreToolUseEvent): {
     protected: boolean;
     readOnly: boolean;
 };
-export declare function preActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
+export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'codex' | 'grok' | 'mcp-client'): Record<string, unknown>;
 export declare function grokPreActionAdvisoryOutput(): Record<string, unknown>;
 export declare function installPreActionHook(startDir?: string): {
     settingsPath: string;

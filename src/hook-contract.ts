@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 
-export const MCP_ADAPTER_VERSION = '3.9.74';
+export const MCP_ADAPTER_VERSION = '3.9.75';
 export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*';
 export const GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
@@ -19,7 +19,7 @@ export const GROK_ACTION_RESULT_HOOK_COMMAND = hookCommand('grok-hook');
 export const GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
 const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
 
-export type NativeHookHarness = 'claude-code' | 'grok' | 'mcp-client';
+export type NativeHookHarness = 'claude-code' | 'codex' | 'grok' | 'mcp-client';
 
 export interface NativeHookIdentity {
   harness: NativeHookHarness;
@@ -34,6 +34,10 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, '
   'claude-pre-action-hook': 'claude-code',
   'claude-hook': 'claude-code',
   'claude-session-hook': 'claude-code',
+  'codex-context-hook': 'codex',
+  'codex-pre-action-hook': 'codex',
+  'codex-hook': 'codex',
+  'codex-session-hook': 'codex',
   'grok-context-hook': 'grok',
   'grok-pre-action-hook': 'grok',
   'grok-hook': 'grok',
@@ -149,7 +153,7 @@ export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' |
 function marrowHookSubcommand(command: unknown): MarrowHookSubcommand | null {
   if (typeof command !== 'string') return null;
   const match = command.trim().match(
-    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/,
+    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|codex|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/,
   );
   return match?.[1] as MarrowHookSubcommand | undefined || null;
 }

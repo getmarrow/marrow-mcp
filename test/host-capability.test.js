@@ -145,7 +145,8 @@ test('canonical instructions state every capability boundary without claiming se
   assert.match(instructions, /custom host needs a bounded event adapter/);
   assert.match(instructions, /public hook entrypoint/);
   assert.match(instructions, /client-self-reported lifecycle activity never certifies coverage or enforcement/);
-  assert.match(instructions, /For Codex, Grok, Gemini, and similar CLI harnesses/);
+  assert.match(instructions, /Codex uses configured native hooks after restart and \/hooks trust review/);
+  assert.match(instructions, /For Grok, Gemini, and similar CLI harnesses/);
   assert.match(instructions, /npx @getmarrow\/install run --agent <agent-id> -- -- <command>/);
 });
 

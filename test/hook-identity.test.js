@@ -26,10 +26,17 @@ function resolve(entrypoint, extraEnv = {}) {
   }
 }
 
-test('public Claude and Grok entrypoints provide display labels, not trusted provenance', () => {
+test('public Claude, Codex, and Grok entrypoints provide display labels, not trusted provenance', () => {
   for (const entrypoint of ['claude-context-hook', 'claude-pre-action-hook', 'claude-hook', 'claude-session-hook']) {
     const identity = resolve(entrypoint, { MARROW_FLEET_AGENT_ID: 'bound-agent' });
     assert.equal(identity.harness, 'claude-code');
+    assert.equal(identity.identity_source, 'public_cli_entrypoint');
+    assert.equal(identity.client_self_reported, true);
+    assert.equal(identity.agent_id, 'bound-agent');
+  }
+  for (const entrypoint of ['codex-context-hook', 'codex-pre-action-hook', 'codex-hook', 'codex-session-hook']) {
+    const identity = resolve(entrypoint, { MARROW_FLEET_AGENT_ID: 'bound-agent' });
+    assert.equal(identity.harness, 'codex');
     assert.equal(identity.identity_source, 'public_cli_entrypoint');
     assert.equal(identity.client_self_reported, true);
     assert.equal(identity.agent_id, 'bound-agent');
@@ -46,6 +53,7 @@ test('public Claude and Grok entrypoints provide display labels, not trusted pro
 test('manual public, legacy, unknown, and custom entrypoints cannot emit certified coverage fields', () => {
   for (const entrypoint of [
     'claude-context-hook', 'claude-pre-action-hook', 'claude-hook', 'claude-session-hook',
+    'codex-context-hook', 'codex-pre-action-hook', 'codex-hook', 'codex-session-hook',
     'grok-context-hook', 'grok-pre-action-hook', 'grok-hook', 'grok-session-hook',
     'hook', 'context-hook', 'custom-hook', '', 'grok-lookalike-hook',
   ]) {
