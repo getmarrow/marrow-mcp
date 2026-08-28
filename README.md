@@ -104,7 +104,11 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.75
+## What's New in v3.9.76
+
+v3.9.76 fixes owner-approved `marrow_auto` closeout by binding an arbitrated operation to the exact server-created arbitration decision, rejecting decision mismatches before commit, and returning an honest terminal action for non-arbitrated `review_required` gates. Chat and proof text cannot substitute for a dashboard-issued approval receipt, and only a backend `committed: true` response closes the operation.
+
+## Previous: v3.9.75
 
 v3.9.75 adds explicit Codex, Cursor/Composer, Cline, Windsurf, and Gemini CLI native hook entrypoints. Gemini BeforeTool returns strict fixed allow/deny JSON, AfterTool returns neutral JSON after compact outcome capture, and AfterAgent closes one turn without reading prompt/response content or requesting a retry. Project hook trust and enablement remain user-controlled, and configuration stays client-self-reported rather than certified coverage.
 
