@@ -22,6 +22,7 @@ type StopHookSource = {
   conversation_id?: string;
   generation_id?: string;
   tool_use_id?: string;
+  task_id?: string;
   transcript_path?: string;
   cwd?: string;
   hook_event_name?: string;
@@ -48,6 +49,7 @@ function readStopHookSource(input?: unknown): StopHookSource {
     conversation_id: take('conversation_id'),
     generation_id: take('generation_id'),
     tool_use_id: take('tool_use_id'),
+    task_id: take('task_id'),
     transcript_path: take('transcript_path'),
     cwd: take('cwd'),
     hook_event_name: take('hook_event_name'),
@@ -105,12 +107,14 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
   if (!resolved.apiKey) return;
   const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
   const source = readStopHookSource(input);
-  const sessionId = resolved.sessionId || source.session_id || source.conversation_id || undefined;
+  const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id || undefined;
   const agentId = identity.agent_id;
   const workflowId = stableSessionWorkflowId(
     sessionId,
     identity.harness === 'cursor'
       ? [source.conversation_id, source.generation_id, source.tool_use_id]
+      : identity.harness === 'cline'
+      ? [source.task_id, source.hook_event_name]
       : [source.transcript_path, source.cwd],
   );
   const correlation = workflowId.slice('session-'.length);
@@ -124,7 +128,9 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
       session_id: sessionId,
       workflow_id: workflowId,
       correlation_id: correlation,
-      action: 'agent session ended',
+      action: identity.harness === 'cline' && source.hook_event_name === 'TaskCancel'
+        ? 'agent task cancelled'
+        : 'agent session ended',
       outcome_state: 'pending',
     },
   });

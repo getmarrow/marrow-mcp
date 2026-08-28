@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeHookToolName = normalizeHookToolName;
 exports.isOfficialMarrowMcpTool = isOfficialMarrowMcpTool;
+exports.isOfficialMarrowMcpEvent = isOfficialMarrowMcpEvent;
 exports.isMcpHookTool = isMcpHookTool;
 exports.isProtectedShellMutation = isProtectedShellMutation;
 exports.hookToolCommand = hookToolCommand;
@@ -89,6 +90,19 @@ function isOfficialMarrowMcpTool(value) {
     const tool = String(value || '').trim();
     return /^mcp__marrow__marrow_[a-z0-9_]+$/i.test(tool)
         || /^MCP:(?:marrow:)?marrow_[a-z0-9_]+$/i.test(tool);
+}
+function isOfficialMarrowMcpEvent(event) {
+    if (isOfficialMarrowMcpTool(event.tool_name))
+        return true;
+    const tool = String(event.tool_name || '').trim().toLowerCase();
+    if (!['use_mcp_tool', 'mcp', 'mcp_tool'].includes(tool))
+        return false;
+    const input = asRecord(event.tool_input);
+    if (!input)
+        return false;
+    const server = String(input.serverName ?? input.server_name ?? '').trim().toLowerCase();
+    const name = String(input.toolName ?? input.tool_name ?? '').trim();
+    return server === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(name);
 }
 function isMcpHookTool(value) {
     return /^(?:mcp__|MCP:)/i.test(String(value || '').trim());

@@ -1,7 +1,7 @@
 import { marrowAgentRuntime, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { runtimeAuthorizationReceiptId } from './runtime-contract';
-import { hookToolCommand, isMcpHookTool, isOfficialMarrowMcpTool, isProtectedShellMutation, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
+import { hookToolCommand, isMcpHookTool, isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool, isProtectedShellMutation, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   clientReportedHookLifecycleIdentity,
   findHookSettingsPath,
@@ -23,6 +23,7 @@ export type PreToolUseEvent = {
   session_id?: string;
   conversation_id?: string;
   generation_id?: string;
+  task_id?: string;
   hook_event_name?: string;
   tool_use_id?: string;
   tool_name?: string;
@@ -92,6 +93,7 @@ export function classifyTool(event: PreToolUseEvent): {
     /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
     || protectedShellCommand
     || (isMcpHookTool(event.tool_name) && !isOfficialMarrowMcpTool(event.tool_name))
+    || (normalizedTool === 'use_mcp_tool' && !isOfficialMarrowMcpEvent(event))
   );
   const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
   const target = surfaces.includes('npm') ? `npm:${type}`
@@ -140,8 +142,32 @@ export function cursorPreActionHookOutput(result: PreActionControlResult): Recor
   return { permission: 'allow' };
 }
 
-export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'codex' | 'cursor' | 'grok' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
+export function clinePreActionHookOutput(result: PreActionControlResult): Record<string, unknown> {
+  if (result.protectedRisk && (!result.runtime || !result.permit?.verified)) {
+    const credentialsUnavailable = /credentials are unavailable/i.test(String(result.enforcementError || ''));
+    return {
+      cancel: true,
+      errorMessage: credentialsUnavailable
+        ? 'Marrow credentials are unavailable for this protected action. Restore the configured agent key and retry.'
+        : 'Marrow could not verify the required action permit. Restore trusted governance and retry.',
+    };
+  }
+  const gate = result.runtime?.risk_gate;
+  if (!gate) return { cancel: false };
+  if (gate.decision === 'review_required' || gate.decision === 'block' || gate.allow === false) {
+    return {
+      cancel: true,
+      errorMessage: gate.decision === 'review_required'
+        ? 'Marrow requires operator review before this protected action.'
+        : 'Marrow blocked this protected action under the current policy.',
+    };
+  }
+  return { cancel: false };
+}
+
+export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
   if (harness === 'cursor') return cursorPreActionHookOutput(result);
+  if (harness === 'cline') return clinePreActionHookOutput(result);
   const { runtime, permit, protectedRisk } = result;
   if (protectedRisk && (!runtime || !permit?.verified)) {
     return {
@@ -178,7 +204,7 @@ export function preActionHookOutput(result: PreActionControlResult, harness: 'cl
   };
 }
 
-function emitDecision(result: PreActionControlResult, harness: 'claude-code' | 'codex' | 'cursor' | 'grok' | 'mcp-client' = 'claude-code'): void {
+function emitDecision(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'mcp-client' = 'claude-code'): void {
   process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
 }
 
@@ -250,17 +276,25 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' }, identity.harness);
     return;
   }
-  if (isOfficialMarrowMcpTool(source.tool_name)) {
-    process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' } : {}));
+  if (isOfficialMarrowMcpEvent(source)) {
+    process.stdout.write(JSON.stringify(
+      identity.harness === 'cursor' ? { permission: 'allow' }
+        : identity.harness === 'cline' ? { cancel: false }
+        : {},
+    ));
     return;
   }
   const classified = classifyTool(source);
   if (classified.readOnly) {
-    process.stdout.write(JSON.stringify(identity.harness === 'cursor' ? { permission: 'allow' } : {}));
+    process.stdout.write(JSON.stringify(
+      identity.harness === 'cursor' ? { permission: 'allow' }
+        : identity.harness === 'cline' ? { cancel: false }
+        : {},
+    ));
     return;
   }
   let resolved = identity.environment;
-  const sessionId = resolved.sessionId || source.session_id || source.conversation_id;
+  const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
   const agentId = identity.agent_id;
   const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
 
@@ -276,7 +310,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
             event_type: 'pre_action_checked',
             ...clientReportedHookLifecycleIdentity(identity),
             session_id: sessionId,
-            workflow_id: stableSessionWorkflowId(sessionId, source.generation_id || source.tool_use_id),
+            workflow_id: stableSessionWorkflowId(sessionId, source.generation_id || source.tool_use_id || source.task_id),
             correlation_id: correlation,
             action: classified.action,
             target: classified.target,
@@ -322,7 +356,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       event_type: 'pre_action_checked',
       ...clientReportedHookLifecycleIdentity(identity),
       session_id: sessionId,
-      workflow_id: stableSessionWorkflowId(sessionId, source.generation_id || source.tool_use_id),
+      workflow_id: stableSessionWorkflowId(sessionId, source.generation_id || source.tool_use_id || source.task_id),
       correlation_id: correlation,
       action: classified.action,
       target: classified.target,

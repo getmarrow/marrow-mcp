@@ -37,7 +37,7 @@ function deriveAction(event) {
     const toolName = getString(event.tool_name);
     if (!toolName || shouldSkipAutoLog(event))
         return null;
-    if ((0, hook_tool_policy_1.isOfficialMarrowMcpTool)(toolName))
+    if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event))
         return null;
     return (0, hook_pre_action_1.classifyTool)(event).action;
 }
@@ -49,6 +49,7 @@ function deriveToolOutcome(event) {
         || event.error != null
         || event.error_message != null
         || event.failure_type != null
+        || event.success === false
         || errorValue !== undefined && errorValue !== null
         || responseRecord?.is_error === true
         || responseRecord?.success === false
@@ -125,7 +126,7 @@ async function runHookCommand(input) {
             return;
         }
         const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
-        const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id);
+        const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id);
         const agentId = identity.agent_id;
         const { success } = deriveToolOutcome(event);
         const toolName = normalizeToolName(getString(event.tool_name) || 'tool');
@@ -141,7 +142,7 @@ async function runHookCommand(input) {
                 event_type: eventType,
                 ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                 session_id: sessionId,
-                workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, event.generation_id || event.tool_use_id),
+                workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, event.generation_id || event.tool_use_id || event.task_id),
                 correlation_id: lifecycleCorrelation,
                 action,
                 target: classified.target,

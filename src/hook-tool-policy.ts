@@ -95,6 +95,17 @@ export function isOfficialMarrowMcpTool(value: unknown): boolean {
     || /^MCP:(?:marrow:)?marrow_[a-z0-9_]+$/i.test(tool);
 }
 
+export function isOfficialMarrowMcpEvent(event: ToolPolicyEvent): boolean {
+  if (isOfficialMarrowMcpTool(event.tool_name)) return true;
+  const tool = String(event.tool_name || '').trim().toLowerCase();
+  if (!['use_mcp_tool', 'mcp', 'mcp_tool'].includes(tool)) return false;
+  const input = asRecord(event.tool_input);
+  if (!input) return false;
+  const server = String(input.serverName ?? input.server_name ?? '').trim().toLowerCase();
+  const name = String(input.toolName ?? input.tool_name ?? '').trim();
+  return server === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(name);
+}
+
 export function isMcpHookTool(value: unknown): boolean {
   return /^(?:mcp__|MCP:)/i.test(String(value || '').trim());
 }
