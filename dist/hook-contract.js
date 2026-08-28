@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.CLINE_SESSION_END_HOOK_COMMAND = exports.CLINE_ACTION_RESULT_HOOK_COMMAND = exports.CLINE_PRE_ACTION_HOOK_COMMAND = exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
 exports.resolveNativeHookIdentity = resolveNativeHookIdentity;
 exports.clientReportedHookLifecycleIdentity = clientReportedHookLifecycleIdentity;
 exports.normalizeHookEventPayload = normalizeHookEventPayload;
@@ -36,6 +36,9 @@ exports.GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
 exports.CURSOR_PRE_ACTION_HOOK_COMMAND = hookCommand('cursor-pre-action-hook');
 exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = hookCommand('cursor-hook');
 exports.CURSOR_SESSION_END_HOOK_COMMAND = hookCommand('cursor-session-hook');
+exports.CLINE_PRE_ACTION_HOOK_COMMAND = hookCommand('cline-pre-action-hook');
+exports.CLINE_ACTION_RESULT_HOOK_COMMAND = hookCommand('cline-hook');
+exports.CLINE_SESSION_END_HOOK_COMMAND = hookCommand('cline-session-hook');
 const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end'];
 const RECOGNIZED_NATIVE_ENTRYPOINTS = {
     'claude-context-hook': 'claude-code',
@@ -53,6 +56,9 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS = {
     'cursor-pre-action-hook': 'cursor',
     'cursor-hook': 'cursor',
     'cursor-session-hook': 'cursor',
+    'cline-pre-action-hook': 'cline',
+    'cline-hook': 'cline',
+    'cline-session-hook': 'cline',
 };
 /**
  * Label client-reported hook activity from the public CLI entrypoint. The
@@ -97,6 +103,8 @@ const HOOK_CAMEL_TO_SNAKE = {
     durationMs: 'duration_ms',
     eventName: 'hook_event_name',
     transcriptPath: 'transcript_path',
+    taskId: 'task_id',
+    hookName: 'hook_event_name',
 };
 const CURSOR_EVENT_NAMES = {
     preToolUse: 'PreToolUse',
@@ -117,13 +125,34 @@ function normalizeHookEventPayload(value) {
         if (normalized[snake] == null && normalized[camel] != null)
             normalized[snake] = normalized[camel];
     }
+    const clinePre = source.preToolUse && typeof source.preToolUse === 'object' && !Array.isArray(source.preToolUse)
+        ? source.preToolUse
+        : null;
+    const clinePost = source.postToolUse && typeof source.postToolUse === 'object' && !Array.isArray(source.postToolUse)
+        ? source.postToolUse
+        : null;
+    const clineTool = clinePre || clinePost;
+    if (clineTool) {
+        if (normalized.tool_name == null)
+            normalized.tool_name = clineTool.toolName ?? clineTool.tool_name;
+        if (normalized.tool_input == null)
+            normalized.tool_input = clineTool.parameters;
+        if (normalized.tool_result == null)
+            normalized.tool_result = clineTool.result;
+        if (normalized.success == null)
+            normalized.success = clineTool.success;
+        if (normalized.duration_ms == null)
+            normalized.duration_ms = clineTool.durationMs ?? clineTool.duration_ms;
+        if (normalized.hook_event_name == null)
+            normalized.hook_event_name = clinePre ? 'PreToolUse' : 'PostToolUse';
+    }
     if (normalized.hook_event_name == null && typeof normalized.event === 'string') {
         normalized.hook_event_name = normalized.event;
     }
     if (typeof normalized.hook_event_name === 'string') {
         normalized.hook_event_name = CURSOR_EVENT_NAMES[normalized.hook_event_name] || normalized.hook_event_name;
     }
-    for (const field of ['session_id', 'tool_use_id', 'conversation_id', 'generation_id']) {
+    for (const field of ['session_id', 'tool_use_id', 'conversation_id', 'generation_id', 'task_id']) {
         const bounded = boundedCorrelationId(normalized[field]);
         if (bounded)
             normalized[field] = bounded;
@@ -185,7 +214,7 @@ function readHookSettingsForInstall(startDir = process.cwd()) {
 function marrowHookSubcommand(command) {
     if (typeof command !== 'string')
         return null;
-    const match = command.trim().match(/^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|codex|cursor|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/);
+    const match = command.trim().match(/^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|cline|codex|cursor|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/);
     return match?.[1] || null;
 }
 function reconcileMarrowCommandHook(settings, eventName, subcommand, command, matcher) {

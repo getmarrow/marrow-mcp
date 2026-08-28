@@ -2,7 +2,7 @@ import { marrowModelUsage, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown } from './habit-loop-copy';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
-import { isOfficialMarrowMcpTool, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
+import { isOfficialMarrowMcpEvent, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   ACTION_RESULT_HOOK_COMMAND,
   findHookSettingsPath,
@@ -28,6 +28,7 @@ interface HookEvent {
   session_id?: string;
   conversation_id?: string;
   generation_id?: string;
+  task_id?: string;
   hook_event_name?: string;
   tool_use_id?: string;
   tool_name?: string;
@@ -39,6 +40,7 @@ interface HookEvent {
   error_message?: unknown;
   failure_type?: unknown;
   duration_ms?: unknown;
+  success?: unknown;
   is_interrupt?: boolean;
 }
 
@@ -68,7 +70,7 @@ export function shouldSkipAutoLog(event: HookEvent): boolean {
 export function deriveAction(event: HookEvent): string | null {
   const toolName = getString(event.tool_name);
   if (!toolName || shouldSkipAutoLog(event)) return null;
-  if (isOfficialMarrowMcpTool(toolName)) return null;
+  if (isOfficialMarrowMcpEvent(event)) return null;
   return classifyTool(event).action;
 }
 
@@ -81,6 +83,7 @@ export function deriveToolOutcome(event: HookEvent): { success: boolean; duratio
     || event.error != null
     || event.error_message != null
     || event.failure_type != null
+    || event.success === false
     || errorValue !== undefined && errorValue !== null
     || responseRecord?.is_error === true
     || responseRecord?.success === false
@@ -168,7 +171,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
     }
 
     const baseUrl = validateBaseUrl(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
-    const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id);
+    const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id);
     const agentId = identity.agent_id;
     const { success } = deriveToolOutcome(event);
 
@@ -185,7 +188,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
         event_type: eventType,
         ...clientReportedHookLifecycleIdentity(identity),
         session_id: sessionId,
-        workflow_id: stableSessionWorkflowId(sessionId, event.generation_id || event.tool_use_id),
+        workflow_id: stableSessionWorkflowId(sessionId, event.generation_id || event.tool_use_id || event.task_id),
         correlation_id: lifecycleCorrelation,
         action,
         target: classified.target,

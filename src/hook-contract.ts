@@ -20,9 +20,12 @@ export const GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
 export const CURSOR_PRE_ACTION_HOOK_COMMAND = hookCommand('cursor-pre-action-hook');
 export const CURSOR_ACTION_RESULT_HOOK_COMMAND = hookCommand('cursor-hook');
 export const CURSOR_SESSION_END_HOOK_COMMAND = hookCommand('cursor-session-hook');
+export const CLINE_PRE_ACTION_HOOK_COMMAND = hookCommand('cline-pre-action-hook');
+export const CLINE_ACTION_RESULT_HOOK_COMMAND = hookCommand('cline-hook');
+export const CLINE_SESSION_END_HOOK_COMMAND = hookCommand('cline-session-hook');
 const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
 
-export type NativeHookHarness = 'claude-code' | 'codex' | 'cursor' | 'grok' | 'mcp-client';
+export type NativeHookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'mcp-client';
 
 export interface NativeHookIdentity {
   harness: NativeHookHarness;
@@ -48,6 +51,9 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, '
   'cursor-pre-action-hook': 'cursor',
   'cursor-hook': 'cursor',
   'cursor-session-hook': 'cursor',
+  'cline-pre-action-hook': 'cline',
+  'cline-hook': 'cline',
+  'cline-session-hook': 'cline',
 };
 
 /**
@@ -100,6 +106,8 @@ const HOOK_CAMEL_TO_SNAKE: Record<string, string> = {
   durationMs: 'duration_ms',
   eventName: 'hook_event_name',
   transcriptPath: 'transcript_path',
+  taskId: 'task_id',
+  hookName: 'hook_event_name',
 };
 
 const CURSOR_EVENT_NAMES: Record<string, string> = {
@@ -121,13 +129,28 @@ export function normalizeHookEventPayload(value: unknown): Record<string, unknow
   for (const [camel, snake] of Object.entries(HOOK_CAMEL_TO_SNAKE)) {
     if (normalized[snake] == null && normalized[camel] != null) normalized[snake] = normalized[camel];
   }
+  const clinePre = source.preToolUse && typeof source.preToolUse === 'object' && !Array.isArray(source.preToolUse)
+    ? source.preToolUse as Record<string, unknown>
+    : null;
+  const clinePost = source.postToolUse && typeof source.postToolUse === 'object' && !Array.isArray(source.postToolUse)
+    ? source.postToolUse as Record<string, unknown>
+    : null;
+  const clineTool = clinePre || clinePost;
+  if (clineTool) {
+    if (normalized.tool_name == null) normalized.tool_name = clineTool.toolName ?? clineTool.tool_name;
+    if (normalized.tool_input == null) normalized.tool_input = clineTool.parameters;
+    if (normalized.tool_result == null) normalized.tool_result = clineTool.result;
+    if (normalized.success == null) normalized.success = clineTool.success;
+    if (normalized.duration_ms == null) normalized.duration_ms = clineTool.durationMs ?? clineTool.duration_ms;
+    if (normalized.hook_event_name == null) normalized.hook_event_name = clinePre ? 'PreToolUse' : 'PostToolUse';
+  }
   if (normalized.hook_event_name == null && typeof normalized.event === 'string') {
     normalized.hook_event_name = normalized.event;
   }
   if (typeof normalized.hook_event_name === 'string') {
     normalized.hook_event_name = CURSOR_EVENT_NAMES[normalized.hook_event_name] || normalized.hook_event_name;
   }
-  for (const field of ['session_id', 'tool_use_id', 'conversation_id', 'generation_id']) {
+  for (const field of ['session_id', 'tool_use_id', 'conversation_id', 'generation_id', 'task_id']) {
     const bounded = boundedCorrelationId(normalized[field]);
     if (bounded) normalized[field] = bounded;
     else delete normalized[field];
@@ -189,7 +212,7 @@ export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' |
 function marrowHookSubcommand(command: unknown): MarrowHookSubcommand | null {
   if (typeof command !== 'string') return null;
   const match = command.trim().match(
-    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|codex|cursor|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/,
+    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|cline|codex|cursor|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/,
   );
   return match?.[1] as MarrowHookSubcommand | undefined || null;
 }
