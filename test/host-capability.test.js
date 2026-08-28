@@ -139,14 +139,14 @@ test('self-reported SDK, runner, and custom adapter activity cannot certify thei
 test('canonical instructions state every capability boundary without claiming setup as proof', () => {
   const instructions = hostCapabilityInstructions(resolveHostCapability({ hostLabel: 'grok' }));
   assert.match(instructions, /MCP tools are on demand/);
-  assert.match(instructions, /Configured native hooks provide cooperative telemetry or context only/);
+  assert.match(instructions, /Configured native hooks provide cooperative client-reported control and lifecycle evidence only/);
   assert.match(instructions, /limited to its owned Node process/);
   assert.match(instructions, /governed wrapper is limited to its wrapped command/);
   assert.match(instructions, /custom host needs a bounded event adapter/);
   assert.match(instructions, /public hook entrypoint/);
   assert.match(instructions, /client-self-reported lifecycle activity never certifies coverage or enforcement/);
-  assert.match(instructions, /Codex uses configured native hooks after restart and \/hooks trust review/);
-  assert.match(instructions, /For Grok, Gemini, and similar CLI harnesses/);
+  assert.match(instructions, /Codex, Grok, and Gemini use configured native hooks only after restart and host hook review/);
+  assert.match(instructions, /governed wrapper remains an explicit bounded fallback/);
   assert.match(instructions, /npx @getmarrow\/install run --agent <agent-id> -- -- <command>/);
 });
 

@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const test = require('node:test');
@@ -15,6 +15,7 @@ const {
   GROK_CONTEXT_HOOK_COMMAND,
   GROK_NATIVE_HOOK_MATCHER,
   GROK_PRE_ACTION_HOOK_COMMAND,
+  GROK_PRE_ACTION_GUARD_COMMAND,
   GROK_SESSION_END_HOOK_COMMAND,
   NATIVE_HOOK_MATCHER,
   PRE_ACTION_HOOK_COMMAND,
@@ -146,17 +147,63 @@ test('local diagnostic fingerprint includes unexpected active legacy and duplica
 test('Grok native hooks install under ~/.grok/hooks with Grok tool matchers', () => {
   const home = mkdtempSync(join(tmpdir(), 'marrow-grok-hooks-'));
   try {
+    const hooksDir = join(home, '.grok', 'hooks');
+    mkdirSync(hooksDir, { recursive: true });
+    writeFileSync(join(hooksDir, 'marrow.json'), JSON.stringify({
+      owner: true,
+      hooks: {
+        OwnerEvent: [{ hooks: [{ type: 'command', command: 'printf owner' }] }],
+        SessionEnd: [{ hooks: [
+          { type: 'command', command: 'printf owner-session' },
+          { type: 'command', command: GROK_SESSION_END_HOOK_COMMAND },
+        ] }],
+      },
+    }, null, 2));
     const result = installGrokNativeHooks(home);
     const settings = JSON.parse(readFileSync(result.settingsPath, 'utf8'));
+    const first = readFileSync(result.settingsPath, 'utf8');
     assert.equal(result.settingsPath, join(home, '.grok', 'hooks', 'marrow.json'));
+    assert.equal(settings.owner, true);
+    assert.equal(settings.hooks.OwnerEvent[0].hooks[0].command, 'printf owner');
     assert.equal(settings.hooks.UserPromptSubmit[0].hooks[0].command, GROK_CONTEXT_HOOK_COMMAND);
     assert.equal(settings.hooks.PreToolUse[0].matcher, GROK_NATIVE_HOOK_MATCHER);
-    assert.equal(settings.hooks.PreToolUse[0].hooks[0].command, GROK_PRE_ACTION_HOOK_COMMAND);
+    assert.equal(settings.hooks.PreToolUse[0].hooks[0].command, GROK_PRE_ACTION_GUARD_COMMAND);
+    assert.match(GROK_PRE_ACTION_GUARD_COMMAND, new RegExp(GROK_PRE_ACTION_HOOK_COMMAND.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(settings.hooks.PreToolUse[0].hooks[0].timeout, 7);
     assert.equal(settings.hooks.PostToolUse[0].matcher, GROK_NATIVE_HOOK_MATCHER);
     assert.equal(settings.hooks.PostToolUse[0].hooks[0].command, GROK_ACTION_RESULT_HOOK_COMMAND);
-    assert.ok(settings.hooks.SessionEnd);
+    assert.equal(settings.hooks.PostToolUse[0].hooks[0].timeout, 5);
+    assert.equal(settings.hooks.PostToolUseFailure[0].hooks[0].command, GROK_ACTION_RESULT_HOOK_COMMAND);
+    assert.deepEqual(settings.hooks.SessionEnd, [{ hooks: [{ type: 'command', command: 'printf owner-session' }] }]);
     assert.equal(settings.hooks.Stop[0].hooks[0].command, GROK_SESSION_END_HOOK_COMMAND);
+    assert.equal(settings.hooks.Stop[0].hooks[0].timeout, 3);
+    assert.equal(installGrokNativeHooks(home).installed, false);
+    assert.equal(readFileSync(result.settingsPath, 'utf8'), first);
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('Grok native hook install rejects invalid and symlinked global targets without rewriting them', () => {
+  for (const unsafe of ['invalid', 'symlink']) {
+    const home = mkdtempSync(join(tmpdir(), `marrow-grok-${unsafe}-`));
+    const outside = mkdtempSync(join(tmpdir(), 'marrow-grok-outside-'));
+    try {
+      const hooksDir = join(home, '.grok', 'hooks');
+      const target = join(hooksDir, 'marrow.json');
+      mkdirSync(hooksDir, { recursive: true });
+      if (unsafe === 'invalid') writeFileSync(target, '{broken');
+      else {
+        const outsideFile = join(outside, 'marrow.json');
+        writeFileSync(outsideFile, '{"owner":true}\n');
+        symlinkSync(outsideFile, target);
+      }
+      assert.throws(() => installGrokNativeHooks(home), /Cannot update Grok hook settings/);
+      if (unsafe === 'invalid') assert.equal(readFileSync(target, 'utf8'), '{broken');
+      else assert.equal(readFileSync(join(outside, 'marrow.json'), 'utf8'), '{"owner":true}\n');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   }
 });

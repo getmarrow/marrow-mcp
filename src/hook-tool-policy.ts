@@ -99,7 +99,7 @@ export function isOfficialMarrowMcpTool(value: unknown): boolean {
 export function isOfficialMarrowMcpEvent(event: ToolPolicyEvent): boolean {
   if (isOfficialMarrowMcpTool(event.tool_name)) return true;
   const tool = String(event.tool_name || '').trim().toLowerCase();
-  if (!['use_mcp_tool', 'mcp', 'mcp_tool'].includes(tool)) return false;
+  if (!['use_mcp_tool', 'use_tool', 'mcp', 'mcp_tool'].includes(tool)) return false;
   const input = asRecord(event.tool_input);
   if (!input) return false;
   const server = String(input.serverName ?? input.server_name ?? '').trim().toLowerCase();

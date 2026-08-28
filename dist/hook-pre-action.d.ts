@@ -1,5 +1,4 @@
 import { marrowAgentRuntime, marrowEnforcement } from './index';
-export declare const GOVERNED_WRAPPER_COMMAND = "npx @getmarrow/install run --agent <agent-id> -- -- <command>";
 export type PreToolUseEvent = {
     session_id?: string;
     conversation_id?: string;
@@ -36,8 +35,11 @@ export declare function geminiPreActionHookOutput(result: PreActionControlResult
     decision: 'allow' | 'deny';
     reason?: string;
 };
+export declare function grokPreActionHookOutput(result: PreActionControlResult): {
+    decision: 'allow' | 'deny';
+    reason?: string;
+};
 export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown>;
-export declare function grokPreActionAdvisoryOutput(): Record<string, unknown>;
 export declare function installPreActionHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;

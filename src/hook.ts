@@ -200,7 +200,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       },
     });
 
-    if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+    if (identity.harness !== 'grok' && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
       const usage = extractModelUsageFromUnknown(event.tool_response)
         || extractModelUsageFromUnknown(event.tool_result)
         || extractModelUsageFromUnknown(event.tool_output)
