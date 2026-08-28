@@ -2090,13 +2090,15 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             receipt,
                             completion_state: delivered?.committed
                                 ? 'closed_with_proof'
-                                : delivered?.phase === 'owner_approval_required'
-                                    ? 'pending_owner_approval'
-                                    : delivered?.phase === 'proof_required'
-                                        ? 'pending_required_proof'
-                                        : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
-                                            ? 'pending_evidence'
-                                            : 'delivery_pending',
+                                : delivered?.phase === 'review_required'
+                                    ? 'review_required_terminal'
+                                    : delivered?.phase === 'owner_approval_required'
+                                        ? 'pending_owner_approval'
+                                        : delivered?.phase === 'proof_required'
+                                            ? 'pending_required_proof'
+                                            : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
+                                                ? 'pending_evidence'
+                                                : 'delivery_pending',
                             decision_id: delivered?.decision_id || null,
                             operation_id: delivered?.operation_id || (typeof args.operation_id === 'string' ? args.operation_id : null),
                             phase: delivered?.phase || null,
@@ -2105,13 +2107,15 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             phase_timings_ms: delivered?.phase_timings_ms || null,
                             exact_next_action: delivered?.committed
                                 ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
-                                : delivered?.phase === 'owner_approval_required'
-                                    ? 'Approve this exact decision in the authenticated Marrow dashboard, then call marrow_auto once with this same operation_id and the server-issued owner_approval_receipt_id (plus arbitration_receipt_id for arbitrated work). Do not retry proof or use chat approval text.'
-                                    : delivered?.phase === 'proof_required'
-                                        ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
-                                        : delivered?.resumable
-                                            ? 'Retry marrow_auto with this same operation_id. Do not start a new auto operation.'
-                                            : 'Close this decision after the real outcome is known.',
+                                : delivered?.exact_next_action
+                                    ? delivered.exact_next_action
+                                    : delivered?.phase === 'owner_approval_required'
+                                        ? 'Approve this exact arbitration decision in the authenticated Marrow dashboard, then call marrow_auto once with this same operation_id, arbitration_receipt_id, and the server-issued owner_approval_receipt_id. Do not retry proof or use chat approval text.'
+                                        : delivered?.phase === 'proof_required'
+                                            ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
+                                            : delivered?.resumable
+                                                ? 'Retry marrow_auto with this same operation_id. Do not start a new auto operation.'
+                                                : 'Close this decision after the real outcome is known.',
                             live_delivery: {
                                 accepted: Boolean(delivered?.decision_id),
                                 committed: Boolean(delivered?.committed),

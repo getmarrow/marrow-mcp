@@ -2333,6 +2333,8 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           receipt,
           completion_state: delivered?.committed
             ? 'closed_with_proof'
+            : delivered?.phase === 'review_required'
+            ? 'review_required_terminal'
             : delivered?.phase === 'owner_approval_required'
             ? 'pending_owner_approval'
             : delivered?.phase === 'proof_required'
@@ -2348,8 +2350,10 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           phase_timings_ms: delivered?.phase_timings_ms || null,
           exact_next_action: delivered?.committed
             ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
+            : delivered?.exact_next_action
+            ? delivered.exact_next_action
             : delivered?.phase === 'owner_approval_required'
-            ? 'Approve this exact decision in the authenticated Marrow dashboard, then call marrow_auto once with this same operation_id and the server-issued owner_approval_receipt_id (plus arbitration_receipt_id for arbitrated work). Do not retry proof or use chat approval text.'
+            ? 'Approve this exact arbitration decision in the authenticated Marrow dashboard, then call marrow_auto once with this same operation_id, arbitration_receipt_id, and the server-issued owner_approval_receipt_id. Do not retry proof or use chat approval text.'
             : delivered?.phase === 'proof_required'
             ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
             : delivered?.resumable
