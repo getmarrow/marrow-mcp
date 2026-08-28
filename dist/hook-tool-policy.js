@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeHookToolName = normalizeHookToolName;
 exports.isOfficialMarrowMcpTool = isOfficialMarrowMcpTool;
+exports.isMcpHookTool = isMcpHookTool;
 exports.isProtectedShellMutation = isProtectedShellMutation;
 exports.hookToolCommand = hookToolCommand;
 exports.isReadOnlyToolEvent = isReadOnlyToolEvent;
@@ -82,10 +83,15 @@ function stringValue(value) {
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 function normalizeHookToolName(value) {
-    return String(value || '').replace(/^mcp__/, '').trim().toLowerCase();
+    return String(value || '').replace(/^mcp__/, '').replace(/^MCP:/i, '').trim().toLowerCase();
 }
 function isOfficialMarrowMcpTool(value) {
-    return /^mcp__marrow__marrow_[a-z0-9_]+$/i.test(String(value || '').trim());
+    const tool = String(value || '').trim();
+    return /^mcp__marrow__marrow_[a-z0-9_]+$/i.test(tool)
+        || /^MCP:(?:marrow:)?marrow_[a-z0-9_]+$/i.test(tool);
+}
+function isMcpHookTool(value) {
+    return /^(?:mcp__|MCP:)/i.test(String(value || '').trim());
 }
 function isProtectedShellMutation(command) {
     const raw = String(command || '');

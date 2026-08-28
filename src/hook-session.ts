@@ -19,6 +19,9 @@ const SESSION_END_TIMEOUT_MS = 900;
 
 type StopHookSource = {
   session_id?: string;
+  conversation_id?: string;
+  generation_id?: string;
+  tool_use_id?: string;
   transcript_path?: string;
   cwd?: string;
   hook_event_name?: string;
@@ -42,6 +45,9 @@ function readStopHookSource(input?: unknown): StopHookSource {
   };
   return {
     session_id: take('session_id'),
+    conversation_id: take('conversation_id'),
+    generation_id: take('generation_id'),
+    tool_use_id: take('tool_use_id'),
     transcript_path: take('transcript_path'),
     cwd: take('cwd'),
     hook_event_name: take('hook_event_name'),
@@ -99,9 +105,14 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
   if (!resolved.apiKey) return;
   const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
   const source = readStopHookSource(input);
-  const sessionId = resolved.sessionId || source.session_id || undefined;
+  const sessionId = resolved.sessionId || source.session_id || source.conversation_id || undefined;
   const agentId = identity.agent_id;
-  const workflowId = stableSessionWorkflowId(sessionId, [source.transcript_path, source.cwd]);
+  const workflowId = stableSessionWorkflowId(
+    sessionId,
+    identity.harness === 'cursor'
+      ? [source.conversation_id, source.generation_id, source.tool_use_id]
+      : [source.transcript_path, source.cwd],
+  );
   const correlation = workflowId.slice('session-'.length);
   await recordLifecycleEvent({
     apiKey: resolved.apiKey,
