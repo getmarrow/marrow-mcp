@@ -96,7 +96,9 @@ async function runSessionHookCommand(input) {
         ? [source.conversation_id, source.generation_id, source.tool_use_id]
         : identity.harness === 'cline'
             ? [source.task_id, source.hook_event_name]
-            : [source.transcript_path, source.cwd]);
+            : identity.harness === 'windsurf'
+                ? [source.session_id, source.tool_use_id]
+                : [source.transcript_path, source.cwd]);
     const correlation = workflowId.slice('session-'.length);
     await (0, lifecycle_spool_1.recordLifecycleEvent)({
         apiKey: resolved.apiKey,
@@ -110,7 +112,9 @@ async function runSessionHookCommand(input) {
             correlation_id: correlation,
             action: identity.harness === 'cline' && source.hook_event_name === 'TaskCancel'
                 ? 'agent task cancelled'
-                : 'agent session ended',
+                : identity.harness === 'windsurf'
+                    ? 'cascade response completed'
+                    : 'agent session ended',
             outcome_state: 'pending',
         },
     });
@@ -120,7 +124,7 @@ async function runSessionHookCommand(input) {
     catch {
         // The pending lifecycle receipt remains durable for later reconciliation.
     }
-    if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+    if (identity.harness !== 'windsurf' && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
         const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(input);
         if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
             await (0, index_1.marrowModelUsage)(resolved.apiKey, baseUrl, {

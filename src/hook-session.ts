@@ -115,6 +115,8 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
       ? [source.conversation_id, source.generation_id, source.tool_use_id]
       : identity.harness === 'cline'
       ? [source.task_id, source.hook_event_name]
+      : identity.harness === 'windsurf'
+      ? [source.session_id, source.tool_use_id]
       : [source.transcript_path, source.cwd],
   );
   const correlation = workflowId.slice('session-'.length);
@@ -130,6 +132,8 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
       correlation_id: correlation,
       action: identity.harness === 'cline' && source.hook_event_name === 'TaskCancel'
         ? 'agent task cancelled'
+        : identity.harness === 'windsurf'
+        ? 'cascade response completed'
         : 'agent session ended',
       outcome_state: 'pending',
     },
@@ -140,7 +144,7 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     // The pending lifecycle receipt remains durable for later reconciliation.
   }
 
-  if (process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+  if (identity.harness !== 'windsurf' && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
     const usage = extractModelUsageFromUnknown(input);
     if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
       await marrowModelUsage(resolved.apiKey, baseUrl, {

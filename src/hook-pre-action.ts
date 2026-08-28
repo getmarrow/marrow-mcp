@@ -165,7 +165,22 @@ export function clinePreActionHookOutput(result: PreActionControlResult): Record
   return { cancel: false };
 }
 
-export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
+export function windsurfPreActionDecision(result: PreActionControlResult): { exitCode: 0 | 2; stderr: string } {
+  const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
+  const gate = result.runtime?.risk_gate;
+  const denied = unavailable
+    || gate?.decision === 'review_required'
+    || gate?.decision === 'block'
+    || gate?.allow === false;
+  return denied
+    ? {
+      exitCode: 2,
+      stderr: 'Marrow blocked this action because required governance approval or proof is unavailable.\n',
+    }
+    : { exitCode: 0, stderr: '' };
+}
+
+export function preActionHookOutput(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'windsurf' | 'mcp-client' = 'claude-code'): Record<string, unknown> {
   if (harness === 'cursor') return cursorPreActionHookOutput(result);
   if (harness === 'cline') return clinePreActionHookOutput(result);
   const { runtime, permit, protectedRisk } = result;
@@ -204,7 +219,13 @@ export function preActionHookOutput(result: PreActionControlResult, harness: 'cl
   };
 }
 
-function emitDecision(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'mcp-client' = 'claude-code'): void {
+function emitDecision(result: PreActionControlResult, harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'windsurf' | 'mcp-client' = 'claude-code'): void {
+  if (harness === 'windsurf') {
+    const decision = windsurfPreActionDecision(result);
+    process.exitCode = decision.exitCode;
+    if (decision.stderr) process.stderr.write(decision.stderr);
+    return;
+  }
   process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
 }
 
@@ -277,6 +298,10 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     return;
   }
   if (isOfficialMarrowMcpEvent(source)) {
+    if (identity.harness === 'windsurf') {
+      process.exitCode = 0;
+      return;
+    }
     process.stdout.write(JSON.stringify(
       identity.harness === 'cursor' ? { permission: 'allow' }
         : identity.harness === 'cline' ? { cancel: false }
@@ -286,6 +311,10 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   }
   const classified = classifyTool(source);
   if (classified.readOnly) {
+    if (identity.harness === 'windsurf') {
+      process.exitCode = 0;
+      return;
+    }
     process.stdout.write(JSON.stringify(
       identity.harness === 'cursor' ? { permission: 'allow' }
         : identity.harness === 'cline' ? { cancel: false }
@@ -294,6 +323,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     return;
   }
   let resolved = identity.environment;
+  const enforcementRequired = classified.protected || identity.harness === 'windsurf';
   const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
   const agentId = identity.agent_id;
   const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
@@ -334,7 +364,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     emitDecision({
       runtime: null,
       permit: null,
-      protectedRisk: classified.protected,
+      protectedRisk: enforcementRequired,
       enforcementError: 'Marrow enforcement configuration is unavailable. Restore the trusted configuration before retrying this protected action.',
     }, identity.harness);
     return;
@@ -343,7 +373,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     emitDecision({
       runtime: null,
       permit: null,
-      protectedRisk: classified.protected,
+      protectedRisk: enforcementRequired,
       enforcementError: 'Marrow credentials are unavailable for this protected action. Restore the configured agent key before retrying.',
     }, identity.harness);
     return;
@@ -400,7 +430,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     }, sessionId, agentId, signal);
     const issuedPermitId = typeof issued.permit_id === 'string' ? issued.permit_id.trim() : '';
     if (!issued.permit || !issuedPermitId) {
-      return { runtime, permit: { ...issued, verified: false }, protectedRisk: classified.protected, enforcementError: 'Marrow did not issue a complete action permit.' };
+      return { runtime, permit: { ...issued, verified: false }, protectedRisk: enforcementRequired, enforcementError: 'Marrow did not issue a complete action permit.' };
     }
     const verified = await marrowEnforcement(resolved.apiKey, baseUrl, {
       operation: 'verify',
@@ -417,7 +447,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     return {
       runtime,
       permit: { ...issued, ...verified, permit_id: issuedPermitId, permit: undefined, verified: verifiedExactly },
-      protectedRisk: classified.protected,
+      protectedRisk: enforcementRequired,
       ...(verifiedExactly ? {} : { enforcementError: 'Marrow permit verification did not match the issued permit.' }),
     };
   };
@@ -425,7 +455,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   emitDecision(result || {
     runtime: null,
     permit: null,
-    protectedRisk: classified.protected,
+    protectedRisk: enforcementRequired,
     enforcementError: 'Marrow governance timed out before this protected action. Retry instead of bypassing the gate.',
   }, identity.harness);
 }

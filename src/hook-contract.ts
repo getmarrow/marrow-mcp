@@ -23,9 +23,12 @@ export const CURSOR_SESSION_END_HOOK_COMMAND = hookCommand('cursor-session-hook'
 export const CLINE_PRE_ACTION_HOOK_COMMAND = hookCommand('cline-pre-action-hook');
 export const CLINE_ACTION_RESULT_HOOK_COMMAND = hookCommand('cline-hook');
 export const CLINE_SESSION_END_HOOK_COMMAND = hookCommand('cline-session-hook');
+export const WINDSURF_PRE_ACTION_HOOK_COMMAND = hookCommand('windsurf-pre-action-hook');
+export const WINDSURF_ACTION_RESULT_HOOK_COMMAND = hookCommand('windsurf-hook');
+export const WINDSURF_SESSION_END_HOOK_COMMAND = hookCommand('windsurf-session-hook');
 const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
 
-export type NativeHookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'mcp-client';
+export type NativeHookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'grok' | 'windsurf' | 'mcp-client';
 
 export interface NativeHookIdentity {
   harness: NativeHookHarness;
@@ -54,6 +57,9 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, '
   'cline-pre-action-hook': 'cline',
   'cline-hook': 'cline',
   'cline-session-hook': 'cline',
+  'windsurf-pre-action-hook': 'windsurf',
+  'windsurf-hook': 'windsurf',
+  'windsurf-session-hook': 'windsurf',
 };
 
 /**
@@ -122,9 +128,50 @@ function boundedCorrelationId(value: unknown): string | undefined {
   return candidate && /^[A-Za-z0-9._:-]+$/.test(candidate) ? candidate : undefined;
 }
 
+function boundedWindsurfName(value: unknown): string | undefined {
+  const candidate = typeof value === 'string' ? value.trim().slice(0, 128) : '';
+  return candidate && /^[A-Za-z0-9._:-]+$/.test(candidate) ? candidate : undefined;
+}
+
+function normalizeWindsurfHookEvent(source: Record<string, unknown>): Record<string, unknown> {
+  const action = typeof source.agent_action_name === 'string' ? source.agent_action_name.trim() : '';
+  const supported = new Set([
+    'pre_write_code', 'pre_run_command', 'pre_mcp_tool_use',
+    'post_write_code', 'post_run_command', 'post_mcp_tool_use',
+    'post_cascade_response',
+  ]);
+  if (!supported.has(action)) return {};
+  const info = source.tool_info && typeof source.tool_info === 'object' && !Array.isArray(source.tool_info)
+    ? source.tool_info as Record<string, unknown>
+    : {};
+  const normalized: Record<string, unknown> = { hook_event_name: action };
+  const trajectoryId = boundedCorrelationId(source.trajectory_id);
+  const executionId = boundedCorrelationId(source.execution_id);
+  if (trajectoryId) normalized.session_id = trajectoryId;
+  if (executionId) normalized.tool_use_id = executionId;
+  if (action.endsWith('_run_command')) {
+    normalized.tool_name = 'Bash';
+    const command = typeof info.command_line === 'string' ? info.command_line.slice(0, 8192) : '';
+    normalized.tool_input = { command };
+  } else if (action.endsWith('_write_code')) {
+    normalized.tool_name = 'Write';
+    normalized.tool_input = {};
+  } else if (action.endsWith('_mcp_tool_use')) {
+    const server = boundedWindsurfName(info.mcp_server_name) || 'unknown';
+    const tool = boundedWindsurfName(info.mcp_tool_name) || 'unknown';
+    normalized.tool_name = server.toLowerCase() === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(tool)
+      ? `mcp__marrow__${tool}`
+      : `MCP:${server}:${tool}`;
+    normalized.tool_input = {};
+  }
+  if (action.startsWith('post_') && action !== 'post_cascade_response') normalized.success = true;
+  return normalized;
+}
+
 export function normalizeHookEventPayload(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const source = value as Record<string, unknown>;
+  if (typeof source.agent_action_name === 'string') return normalizeWindsurfHookEvent(source);
   const normalized: Record<string, unknown> = { ...source };
   for (const [camel, snake] of Object.entries(HOOK_CAMEL_TO_SNAKE)) {
     if (normalized[snake] == null && normalized[camel] != null) normalized[snake] = normalized[camel];
@@ -212,7 +259,7 @@ export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' |
 function marrowHookSubcommand(command: unknown): MarrowHookSubcommand | null {
   if (typeof command !== 'string') return null;
   const match = command.trim().match(
-    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|cline|codex|cursor|grok)-)?(context-hook|pre-action-hook|hook|session-hook)$/,
+    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|cline|codex|cursor|grok|windsurf)-)?(context-hook|pre-action-hook|hook|session-hook)$/,
   );
   return match?.[1] as MarrowHookSubcommand | undefined || null;
 }
