@@ -632,13 +632,16 @@ async function waitForAutoContinuation(pending, startedAt, responseBudgetMs) {
     return responseBudgetMs - (Date.now() - startedAt) > AUTO_RESPONSE_DEADLINE_MARGIN_MS;
 }
 function autoPartial(input) {
+    const resumable = input.resumable !== false;
     return {
         operation_id: input.operationId,
         decision_id: input.decisionId || null,
         committed: false,
         phase: input.phase,
-        resumable: true,
-        retry_after_ms: input.retryAfterMs === undefined ? 1_000 : input.retryAfterMs,
+        resumable,
+        retry_after_ms: resumable
+            ? input.retryAfterMs === undefined ? 1_000 : input.retryAfterMs
+            : null,
         ...(input.runtimeGate ? { runtime_gate: input.runtimeGate } : {}),
         phase_timings_ms: {
             ...input.timings,
@@ -786,6 +789,42 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             retryAfterMs: null,
         });
     }
+    const runtimeRequiresOwnerApproval = Boolean(runtimeGate && (runtimeGate.risk_gate?.decision === 'review_required'
+        || runtimeGate.gate_receipt?.decision === 'review_required'
+        || runtimeGate.gate_receipt?.decision === 'owner_approval_required'
+        || runtimeGate.gate_receipt?.owner_approval_required === true
+        || runtimeGate.intervention?.decision === 'owner_approval_required'
+        || runtimeGate.intervention?.enforcement?.owner_approval_required === true
+        || runtimeGate.arbitration?.resolution === 'review_required'
+        || runtimeGate.arbitration?.owner_approval_required === true));
+    const runtimeArbitrationReceiptId = runtimeGate?.arbitration?.receipt_id;
+    const matchingRequiredApprovalReceipts = Boolean(params.owner_approval_receipt_id
+        && (!runtimeArbitrationReceiptId
+            || params.arbitration_receipt_id === runtimeArbitrationReceiptId));
+    if (runtimeRequiresOwnerApproval && !matchingRequiredApprovalReceipts) {
+        return autoPartial({
+            operationId,
+            decisionId,
+            phase: 'owner_approval_required',
+            runtimeGate,
+            timings,
+            startedAt,
+            resumable: false,
+        });
+    }
+    if (!proofCanClose) {
+        // A review-required gate becomes eligible for exactly one backend-verified
+        // commit only after the caller supplies measured proof and the explicit
+        // server-issued approval receipt. The backend remains authoritative for
+        // receipt ownership, scope, expiry, single use, and arbitration matching.
+        const ownerApprovedCommitAttempt = Boolean(runtimeRequiresOwnerApproval
+            && params.proof
+            && Object.keys(params.proof).length > 0
+            && gateReceiptId
+            && matchingRequiredApprovalReceipts);
+        if (ownerApprovedCommitAttempt)
+            proofCanClose = true;
+    }
     if (!proofCanClose) {
         return autoPartial({
             operationId,
@@ -818,6 +857,8 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
                 outcome: params.outcome,
                 proof: params.proof,
                 gate_receipt_id: gateReceiptId,
+                arbitration_receipt_id: params.arbitration_receipt_id,
+                owner_approval_receipt_id: params.owner_approval_receipt_id,
                 action: params.action_for_gate || params.action,
                 type: params.type || 'general',
                 surfaces: params.surfaces,

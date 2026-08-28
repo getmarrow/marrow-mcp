@@ -77,7 +77,7 @@ export type MarrowAutoResult = {
     operation_id: string;
     decision_id: string | null;
     committed: boolean;
-    phase: 'runtime_pending' | 'think_pending' | 'decision_created' | 'proof_required' | 'commit_pending' | 'closed';
+    phase: 'runtime_pending' | 'think_pending' | 'decision_created' | 'proof_required' | 'owner_approval_required' | 'commit_pending' | 'closed';
     resumable: boolean;
     retry_after_ms: number | null;
     runtime_gate?: MarrowAgentRuntimeResult | null;
@@ -104,6 +104,8 @@ export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
     source_meta?: Record<string, unknown>;
     proof?: Record<string, unknown>;
     gate_receipt_id?: string;
+    arbitration_receipt_id?: string;
+    owner_approval_receipt_id?: string;
     action_for_gate?: string;
     surfaces?: string[];
     auto_gate?: boolean;

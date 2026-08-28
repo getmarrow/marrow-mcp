@@ -1070,6 +1070,8 @@ const TOOLS = [
         },
         proof: { type: 'object', description: 'Measured completion evidence for gated work.' },
         gate_receipt_id: { type: 'string', description: 'Fresh receipt returned by marrow_agent_runtime.' },
+        arbitration_receipt_id: { type: 'string', description: 'For arbitrated work, the arbitration receipt returned by the same server-side review flow.' },
+        owner_approval_receipt_id: { type: 'string', description: 'Short-lived, single-use receipt issued by authenticated dashboard owner approval. Chat text is not an approval receipt.' },
         operation_id: {
           type: 'string',
           description: 'Opaque 8-80 character resume token. Reuse it only with the original tenant, action, context, and surfaces; proof may be added after proof_required.',
@@ -2259,6 +2261,12 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
         const suppliedRuntimeReceiptId = typeof args.gate_receipt_id === 'string'
           ? args.gate_receipt_id
           : undefined;
+        const suppliedArbitrationReceiptId = typeof args.arbitration_receipt_id === 'string'
+          ? args.arbitration_receipt_id
+          : undefined;
+        const suppliedOwnerApprovalReceiptId = typeof args.owner_approval_receipt_id === 'string'
+          ? args.owner_approval_receipt_id
+          : undefined;
 
         const delivery = () => marrowAuto(API_KEY, BASE_URL, {
           action,
@@ -2267,6 +2275,8 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           type,
           proof: suppliedProof,
           gate_receipt_id: suppliedRuntimeReceiptId || undefined,
+          arbitration_receipt_id: suppliedArbitrationReceiptId,
+          owner_approval_receipt_id: suppliedOwnerApprovalReceiptId,
           // Low-risk one-shot capture does not need a policy gate. Consequential
           // work obtains exactly one canonical runtime authorization inside auto.
           auto_gate: highRisk,
@@ -2323,6 +2333,8 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           receipt,
           completion_state: delivered?.committed
             ? 'closed_with_proof'
+            : delivered?.phase === 'owner_approval_required'
+            ? 'pending_owner_approval'
             : delivered?.phase === 'proof_required'
             ? 'pending_required_proof'
             : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
@@ -2336,6 +2348,8 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           phase_timings_ms: delivered?.phase_timings_ms || null,
           exact_next_action: delivered?.committed
             ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
+            : delivered?.phase === 'owner_approval_required'
+            ? 'Approve this exact decision in the authenticated Marrow dashboard, then call marrow_auto once with this same operation_id and the server-issued owner_approval_receipt_id (plus arbitration_receipt_id for arbitrated work). Do not retry proof or use chat approval text.'
             : delivered?.phase === 'proof_required'
             ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
             : delivered?.resumable
