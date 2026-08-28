@@ -11,6 +11,7 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const index_1 = require("./index");
+const control_state_1 = require("./control-state");
 const hook_1 = require("./hook");
 const hook_contract_1 = require("./hook-contract");
 const hook_context_1 = require("./hook-context");
@@ -534,6 +535,7 @@ if (process.argv[2] !== 'keys') {
                         : null)
                     || (0, request_reliability_1.localClientUpdate)(),
                 control_path: (0, control_path_state_1.controlPathStats)(toolName),
+                local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)),
                 lifecycle_spool: {
                     state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
                     pending: spool.pending,
@@ -2285,7 +2287,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     }
                     if (toolName === 'marrow_agent_status') {
                         const result = await (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        success(id, { content: [{ type: 'text', text: JSON.stringify({ ...result, local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)) }, null, 2) }] });
                         return;
                     }
                     if (toolName === 'marrow_runtime_status') {

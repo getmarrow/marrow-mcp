@@ -15,6 +15,7 @@ type PreActionControlResult = {
     protectedRisk: boolean;
     enforcementError?: string;
 };
+export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
 export declare function classifyTool(event: PreToolUseEvent): {
     action: string;
     target: string;

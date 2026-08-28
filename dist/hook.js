@@ -10,6 +10,7 @@ const index_1 = require("./index");
 const habit_loop_copy_1 = require("./habit-loop-copy");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_pre_action_1 = require("./hook-pre-action");
+const control_state_1 = require("./control-state");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 exports.AUTO_HOOK_COMMAND = hook_contract_1.ACTION_RESULT_HOOK_COMMAND;
@@ -91,6 +92,18 @@ function installPostToolUseHook(startDir = process.cwd()) {
 async function runHookCommand(input) {
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     if (process.env.MARROW_AUTO_HOOK === 'false') {
+        if (identity.harness === 'gemini')
+            process.stdout.write('{}');
+        return;
+    }
+    try {
+        if (!(0, control_state_1.readLocalControlState)().enabled) {
+            if (identity.harness === 'gemini')
+                process.stdout.write('{}');
+            return;
+        }
+    }
+    catch {
         if (identity.harness === 'gemini')
             process.stdout.write('{}');
         return;

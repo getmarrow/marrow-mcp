@@ -61,6 +61,7 @@ import {
   validatePathParam,
   validateBaseUrl,
 } from './index';
+import { localControlEvidence } from './control-state';
 import { installPostToolUseHook, runHookCommand } from './hook';
 import { installGrokNativeHooks } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
@@ -596,6 +597,7 @@ function clientOperationalPayload(toolName: string, value: unknown): Record<stri
         : null)
       || localClientUpdate(),
     control_path: controlPathStats(toolName),
+    local_control: localControlEvidence(Boolean(API_KEY)),
     lifecycle_spool: {
       state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
       pending: spool.pending,
@@ -2575,7 +2577,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           SESSION_ID,
           FLEET_AGENT_ID
         );
-        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        success(id, { content: [{ type: 'text', text: JSON.stringify({ ...result, local_control: localControlEvidence(Boolean(API_KEY)) }, null, 2) }] });
         return;
       }
 

@@ -2,6 +2,7 @@ import { marrowModelUsage, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown } from './habit-loop-copy';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
+import { readLocalControlState } from './control-state';
 import { isOfficialMarrowMcpEvent, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   ACTION_RESULT_HOOK_COMMAND,
@@ -137,6 +138,9 @@ export async function runHookCommand(input?: unknown): Promise<void> {
     if (identity.harness === 'gemini') process.stdout.write('{}');
     return;
   }
+
+  try { if (!readLocalControlState().enabled) { if (identity.harness === 'gemini') process.stdout.write('{}'); return; } }
+  catch { if (identity.harness === 'gemini') process.stdout.write('{}'); return; }
 
   try {
     let event: HookEvent;

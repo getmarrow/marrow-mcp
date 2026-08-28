@@ -28,6 +28,7 @@ import {
   stablePromptCorrelation,
   stableSessionWorkflowId,
 } from './hook-contract';
+import { readLocalControlState } from './control-state';
 
 export const CONTEXT_HOOK_COMMAND = CONTRACT_CONTEXT_HOOK_COMMAND;
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
@@ -604,6 +605,10 @@ export async function runContextHookCommand(): Promise<void> {
     process.exit(0);
     return;
   }
+
+  try {
+    if (!readLocalControlState().enabled) { emitNoContext(); process.exit(0); return; }
+  } catch { emitNoContext(); process.exit(0); return; }
 
   try {
     const raw = (await readStdin()).trim();

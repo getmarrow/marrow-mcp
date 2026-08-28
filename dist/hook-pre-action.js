@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.localControlAllowOutput = localControlAllowOutput;
 exports.classifyTool = classifyTool;
 exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
 exports.clinePreActionHookOutput = clinePreActionHookOutput;
@@ -11,11 +12,23 @@ exports.installPreActionHook = installPreActionHook;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const index_1 = require("./index");
 const lifecycle_spool_1 = require("./lifecycle-spool");
+const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 const MAX_INPUT_BYTES = 64 * 1024;
 const RUNTIME_TIMEOUT_MS = 3000;
+function localControlAllowOutput(harness) {
+    if (harness === 'windsurf')
+        return null;
+    if (harness === 'cursor')
+        return { permission: 'allow' };
+    if (harness === 'cline')
+        return { cancel: false };
+    if (harness === 'gemini' || harness === 'grok')
+        return { decision: 'allow' };
+    return {};
+}
 function asRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -304,6 +317,45 @@ async function runPreActionHookCommand(input) {
             : identity.harness === 'cline' ? { cancel: false }
                 : ['gemini', 'grok'].includes(identity.harness) ? { decision: 'allow' }
                     : {}));
+        return;
+    }
+    let localControl;
+    try {
+        localControl = (0, control_state_1.readLocalControlState)();
+    }
+    catch {
+        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.' }, identity.harness);
+        return;
+    }
+    if (!localControl.enabled) {
+        const resolved = identity.environment;
+        const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
+        const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
+        if (resolved.apiKey) {
+            try {
+                const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
+                await (0, lifecycle_spool_1.recordLifecycleEvent)({ apiKey: resolved.apiKey, baseUrl, event: {
+                        event_id: `owner-bypass-${correlation}`,
+                        event_type: 'pre_action_checked',
+                        ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
+                        session_id: sessionId,
+                        workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.generation_id || source.tool_use_id || source.task_id),
+                        correlation_id: correlation,
+                        action: control_state_1.CONTROL_BYPASS_ACTION,
+                        surfaces: classified.surfaces.slice(0, 6),
+                        risk_level: classified.risk,
+                        outcome_state: 'pending',
+                        intervention_disposition: 'overridden',
+                        action_changed: false,
+                    } }).catch(() => null);
+            }
+            catch { /* owner bypass is not trapped by telemetry configuration */ }
+        }
+        const allow = localControlAllowOutput(identity.harness);
+        if (allow === null)
+            process.exitCode = 0;
+        else
+            process.stdout.write(JSON.stringify(allow));
         return;
     }
     let resolved = identity.environment;
