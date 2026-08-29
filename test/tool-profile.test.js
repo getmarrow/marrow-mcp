@@ -55,7 +55,13 @@ function runMcp(extraEnv = {}, toolName, backendData = { health: 'healthy' }) {
     const fetchMock = join(home, 'profile-fetch.cjs');
     writeFileSync(fetchMock, `
 const backendData = ${JSON.stringify(backendData)};
-globalThis.fetch = async () => Response.json({ data: backendData });
+globalThis.fetch = async (input) => {
+  const path = new URL(String(input)).pathname;
+  const data = path === '/v1/agent/context'
+    ? (backendData.context || {})
+    : (backendData.analytics || backendData);
+  return Response.json({ data });
+};
 `);
     const env = {
       ...process.env,
@@ -79,6 +85,45 @@ globalThis.fetch = async () => Response.json({ data: backendData });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+}
+
+function primaryToolProjection(evidenceState = 'available') {
+  const gatedFeatures = new Map([
+    ['marrow_workflow_gate', 'pre_action_risk_gates'],
+    ['marrow_fleet_lessons', 'fleet_learning'],
+  ]);
+  const tools = PRIMARY_TOOLS.map((name) => {
+    const planFeature = gatedFeatures.get(name) || null;
+    const state = evidenceState === 'available'
+      ? planFeature ? 'upgrade_required' : 'entitled'
+      : 'unavailable';
+    return {
+      name,
+      state,
+      always_available: planFeature === null,
+      plan_feature: planFeature,
+      minimum_plan: planFeature ? 'team' : null,
+      owner_management_url: 'https://getmarrow.ai/account/#billing',
+    };
+  });
+  return {
+    profile: 'primary',
+    current_plan: evidenceState === 'available' ? 'free' : null,
+    owner_management_url: 'https://getmarrow.ai/account/#billing',
+    entitlement_evidence: {
+      state: evidenceState,
+      source: evidenceState === 'available' ? 'plan_entitlement_service' : 'entitlement_read_unavailable',
+      authoritative: evidenceState === 'available',
+      authorizing: false,
+    },
+    counts: {
+      total: tools.length,
+      entitled: tools.filter((tool) => tool.state === 'entitled').length,
+      upgrade_required: tools.filter((tool) => tool.state === 'upgrade_required').length,
+      unavailable: tools.filter((tool) => tool.state === 'unavailable').length,
+    },
+    tools,
+  };
 }
 
 function messages(child) {
@@ -135,17 +180,19 @@ test('invalid MCP profiles fail with one bounded repair and never broaden visibi
 });
 
 test('primary agent status reports effective visibility and a fresh backend entitlement projection', () => {
-  const availability = PRIMARY_TOOLS.map((name, index) => ({
-    name,
-    state: index === 0 ? 'entitled' : 'upgrade_required',
-    ...(index === 0 ? {} : { feature: 'fleet_learning' }),
-    account_management_url: 'https://getmarrow.ai/account/#billing',
-  }));
+  const availability = primaryToolProjection();
   const output = messages(runMcp({}, 'marrow_agent_status', {
-    health: 'healthy',
-    primary_tool_availability: availability,
+    analytics: {
+      health: 'healthy',
+      summary: 'analytics status retained',
+      authorization_state: 'status_only_non_authorizing',
+    },
+    context: { primary_tool_availability: availability },
   }));
   const payload = JSON.parse(output.get(3).result.content[0].text);
+  assert.equal(payload.health, 'healthy');
+  assert.equal(payload.summary, 'analytics status retained');
+  assert.equal(payload.authorization_state, 'status_only_non_authorizing');
   assert.equal(payload.mcp_tool_profile.configured_profile, 'unset');
   assert.equal(payload.mcp_tool_profile.effective_profile, 'primary');
   assert.equal(payload.mcp_tool_profile.visible_tool_count, 17);
@@ -157,10 +204,54 @@ test('primary agent status reports effective visibility and a fresh backend enti
 });
 
 test('status labels missing backend entitlement evidence unavailable and non-authorizing', () => {
-  const output = messages(runMcp({}, 'marrow_agent_status', { health: 'healthy' }));
+  const output = messages(runMcp({}, 'marrow_agent_status', {
+    analytics: { health: 'healthy' },
+    context: {},
+  }));
   const payload = JSON.parse(output.get(3).result.content[0].text);
   assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.evidence_state, 'unavailable');
   assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.source, 'backend_projection_not_provided');
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.authorizes_calls, false);
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.primary_tool_availability, null);
+});
+
+test('status keeps authenticated unavailable entitlement evidence unavailable and non-authorizing', () => {
+  const output = messages(runMcp({}, 'marrow_agent_status', {
+    analytics: {
+      health: 'healthy',
+      authorization_state: 'status_only_non_authorizing',
+    },
+    context: { primary_tool_availability: primaryToolProjection('unavailable') },
+  }));
+  const payload = JSON.parse(output.get(3).result.content[0].text);
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.evidence_state, 'unavailable');
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.source, 'authenticated_backend');
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.authorizes_calls, false);
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.primary_tool_availability, null);
+});
+
+test('status rejects projection-shaped objects without the exact nested evidence schema', () => {
+  const malformed = primaryToolProjection();
+  delete malformed.entitlement_evidence.state;
+  const output = messages(runMcp({}, 'marrow_agent_status', {
+    analytics: { health: 'healthy' },
+    context: { primary_tool_availability: malformed },
+  }));
+  const payload = JSON.parse(output.get(3).result.content[0].text);
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.evidence_state, 'unavailable');
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.source, 'backend_projection_not_provided');
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.authorizes_calls, false);
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.primary_tool_availability, null);
+});
+
+test('cached analytics status cannot make a fresh context projection available', () => {
+  const output = messages(runMcp({}, 'marrow_agent_status', {
+    analytics: { health: 'healthy', cached: true },
+    context: { primary_tool_availability: primaryToolProjection() },
+  }));
+  const payload = JSON.parse(output.get(3).result.content[0].text);
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.evidence_state, 'unavailable');
+  assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.source, 'cached_or_stale_status');
   assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.authorizes_calls, false);
   assert.equal(payload.mcp_tool_profile.backend_entitlement_projection.primary_tool_availability, null);
 });
