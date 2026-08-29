@@ -29,6 +29,7 @@ function runMcp(home, extraEnv = {}, input = mcpInput()) {
     MARROW_BASE_URL: 'https://127.0.0.1:9',
     MARROW_FLEET_AGENT_ID: 'agent-control-test',
     MARROW_AUTO_ENROLL: 'false',
+    MARROW_TOOL_PROFILE: 'core',
     MARROW_REQUEST_TIMEOUT_MS: '150',
     ...extraEnv,
   };
@@ -495,7 +496,7 @@ test('caller-supplied abort signals retain one bounded safe retry', async () => 
   }
 });
 
-test('default MCP surface is compact and transient runtime failure returns structured stale-safe guidance', () => {
+test('explicit core MCP surface is compact and transient runtime failure returns structured stale-safe guidance', () => {
   const home = mkdtempSync(join(tmpdir(), 'marrow-control-path-'));
   try {
     writeGuidanceCache({

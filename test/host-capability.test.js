@@ -17,7 +17,7 @@ function protocolInput() {
     { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
     { jsonrpc: '2.0', id: 3, method: 'prompts/list', params: {} },
     { jsonrpc: '2.0', id: 4, method: 'prompts/get', params: { name: 'marrow-always-on' } },
-    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'marrow_status', arguments: {} } },
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'marrow_agent_status', arguments: {} } },
   ].map((row) => JSON.stringify(row)).join('\n') + '\n';
 }
 
@@ -150,7 +150,7 @@ test('canonical instructions state every capability boundary without claiming se
   assert.match(instructions, /npx @getmarrow\/install run --agent <agent-id> -- -- <command>/);
 });
 
-test('neutral and representative MCP hosts expose one contract, seven tools, and the retained prompt name', () => {
+test('neutral and representative MCP hosts expose one primary contract, 17 tools, and the retained prompt name', () => {
   let baselineTools;
   let baselinePromptText;
   const hostCases = [
@@ -170,15 +170,25 @@ test('neutral and representative MCP hosts expose one contract, seven tools, and
       const promptList = messages.get(3).result.prompts;
       const prompt = messages.get(4).result;
 
-      assert.equal(tools.length, 7);
+      assert.equal(tools.length, 17);
       assert.deepEqual(new Set(tools.map((tool) => tool.name)), new Set([
         'marrow_agent_runtime',
+        'marrow_arbitrate',
+        'marrow_coordinate',
+        'marrow_replay_compare',
+        'marrow_decision_brief',
         'marrow_think',
         'marrow_commit',
-        'marrow_ask',
-        'marrow_status',
-        'marrow_auto',
-        'marrow_handoff_status',
+        'marrow_workflow_gate',
+        'marrow_completion_contracts',
+        'marrow_evaluate_completion_contract',
+        'marrow_agent_status',
+        'marrow_value_report',
+        'marrow_buyer_proof',
+        'marrow_governance_timeline',
+        'marrow_decision_trace',
+        'marrow_fleet_lessons',
+        'marrow_model_usage',
       ]));
       assert.equal(promptList.length, 1);
       assert.equal(promptList[0].name, 'marrow-always-on');
