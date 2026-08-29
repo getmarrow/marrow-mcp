@@ -1588,13 +1588,15 @@ export async function marrowAgentStatus(
   period: string = '7d',
   agentIdFilter?: string,
   sessionId?: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<MarrowAgentStatusResult> {
   const days = parseInt(period) || 7;
   const qs = new URLSearchParams({ period: String(days) });
   if (agentIdFilter) qs.set('agent_id', agentIdFilter);
   const res = await fetch(`${baseUrl}/v1/analytics/agent-status?${qs.toString()}`, {
     headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    signal,
   });
   const json = await safeJsonResponse(res);
   return json.data;

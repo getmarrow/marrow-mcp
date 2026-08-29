@@ -171,7 +171,7 @@ export declare function marrowDigest(apiKey: string, baseUrl: string, period?: s
 /**
  * Get agent-native proof that Marrow is active and collecting useful signal.
  */
-export declare function marrowAgentStatus(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string): Promise<MarrowAgentStatusResult>;
+export declare function marrowAgentStatus(apiKey: string, baseUrl: string, period?: string, agentIdFilter?: string, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowAgentStatusResult>;
 /**
  * Get live runtime hook diagnostics from /v1/agent/status.
  */

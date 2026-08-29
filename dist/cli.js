@@ -1764,6 +1764,64 @@ if (process.argv[2] !== 'keys') {
                 ? value
                 : null;
         }
+        function nonNegativeInteger(value) {
+            return Number.isInteger(value) && Number(value) >= 0;
+        }
+        function validatedPrimaryToolAvailability(value) {
+            const projection = recordValue(value);
+            const evidence = recordValue(projection?.entitlement_evidence);
+            const counts = recordValue(projection?.counts);
+            const tools = projection?.tools;
+            const expectedNames = [...PRIMARY_TOOL_NAMES];
+            if (!projection
+                || projection.profile !== 'primary'
+                || (projection.current_plan !== null && typeof projection.current_plan !== 'string')
+                || typeof projection.owner_management_url !== 'string'
+                || !evidence
+                || (evidence.state !== 'available' && evidence.state !== 'unavailable')
+                || typeof evidence.source !== 'string'
+                || typeof evidence.authoritative !== 'boolean'
+                || evidence.authorizing !== false
+                || !counts
+                || !nonNegativeInteger(counts.total)
+                || !nonNegativeInteger(counts.entitled)
+                || !nonNegativeInteger(counts.upgrade_required)
+                || !nonNegativeInteger(counts.unavailable)
+                || counts.total !== expectedNames.length
+                || counts.entitled + counts.upgrade_required + counts.unavailable !== counts.total
+                || !Array.isArray(tools)
+                || tools.length !== expectedNames.length) {
+                return null;
+            }
+            if ((evidence.state === 'available' && evidence.authoritative !== true)
+                || (evidence.state === 'unavailable' && evidence.authoritative !== false)) {
+                return null;
+            }
+            const derivedCounts = { entitled: 0, upgrade_required: 0, unavailable: 0 };
+            for (let index = 0; index < tools.length; index++) {
+                const tool = recordValue(tools[index]);
+                const state = tool?.state;
+                if (!tool
+                    || tool.name !== expectedNames[index]
+                    || (state !== 'entitled' && state !== 'upgrade_required' && state !== 'unavailable')
+                    || typeof tool.always_available !== 'boolean'
+                    || (tool.plan_feature !== null && typeof tool.plan_feature !== 'string')
+                    || (tool.minimum_plan !== null && typeof tool.minimum_plan !== 'string')
+                    || typeof tool.owner_management_url !== 'string') {
+                    return null;
+                }
+                derivedCounts[state]++;
+            }
+            if (derivedCounts.entitled !== counts.entitled
+                || derivedCounts.upgrade_required !== counts.upgrade_required
+                || derivedCounts.unavailable !== counts.unavailable) {
+                return null;
+            }
+            return {
+                projection,
+                evidenceState: evidence.state,
+            };
+        }
         function backendPrimaryToolAvailability(value) {
             const payload = recordValue(value);
             if (!payload)
@@ -1783,7 +1841,12 @@ if (process.argv[2] !== 'keys') {
                 statusEntitlements?.primary_tool_availability,
                 statusProjection?.primary_tool_availability,
             ];
-            return candidates.find((candidate) => Array.isArray(candidate) || recordValue(candidate)) || null;
+            for (const candidate of candidates) {
+                const validated = validatedPrimaryToolAvailability(candidate);
+                if (validated)
+                    return validated;
+            }
+            return null;
         }
         function mcpToolProfileStatus(value) {
             const profile = activeToolProfile();
@@ -1791,25 +1854,24 @@ if (process.argv[2] !== 'keys') {
             const payload = recordValue(value);
             const cachedOrStale = payload?.cached === true
                 || payload?.stale === true
-                || payload?.status_freshness === 'stale'
-                || payload?.authorization_state === 'status_only_non_authorizing';
+                || payload?.status_freshness === 'stale';
             const backendProjection = cachedOrStale ? null : backendPrimaryToolAvailability(payload);
+            const backendProjectionAvailable = backendProjection?.evidenceState === 'available';
             return {
                 configured_profile: process.env.MARROW_TOOL_PROFILE ?? 'unset',
                 effective_profile: profile,
                 visible_tool_count: visibleToolNames.length,
                 visible_tool_names: visibleToolNames,
                 local_visibility_grants_entitlement: false,
-                backend_entitlement_projection: backendProjection ? {
-                    evidence_state: 'available',
-                    source: 'authenticated_backend',
+                backend_entitlement_projection: {
+                    evidence_state: backendProjectionAvailable ? 'available' : 'unavailable',
+                    source: cachedOrStale
+                        ? 'cached_or_stale_status'
+                        : backendProjection
+                            ? 'authenticated_backend'
+                            : 'backend_projection_not_provided',
                     authorizes_calls: false,
-                    primary_tool_availability: backendProjection,
-                } : {
-                    evidence_state: 'unavailable',
-                    source: cachedOrStale ? 'cached_or_stale_status' : 'backend_projection_not_provided',
-                    authorizes_calls: false,
-                    primary_tool_availability: null,
+                    primary_tool_availability: backendProjectionAvailable ? backendProjection.projection : null,
                 },
             };
         }
@@ -2399,7 +2461,18 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         return;
                     }
                     if (toolName === 'marrow_agent_status') {
-                        const result = await (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
+                        const result = await withControlDeadline(async (signal) => {
+                            const [analyticsStatus, context] = await Promise.all([
+                                (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID, signal),
+                                (0, index_1.marrowAgentContext)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal)
+                                    .catch(() => null),
+                            ]);
+                            const contextProjection = recordValue(context)?.primary_tool_availability;
+                            return {
+                                ...analyticsStatus,
+                                ...(contextProjection === undefined ? {} : { primary_tool_availability: contextProjection }),
+                            };
+                        }, { cacheAware: false, toolName: 'marrow_agent_status' });
                         success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus({ ...result, local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)) }), null, 2) }] });
                         return;
                     }

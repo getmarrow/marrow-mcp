@@ -1270,13 +1270,14 @@ async function marrowDigest(apiKey, baseUrl, period = '7d', sessionId, agentId) 
 /**
  * Get agent-native proof that Marrow is active and collecting useful signal.
  */
-async function marrowAgentStatus(apiKey, baseUrl, period = '7d', agentIdFilter, sessionId, agentId) {
+async function marrowAgentStatus(apiKey, baseUrl, period = '7d', agentIdFilter, sessionId, agentId, signal) {
     const days = parseInt(period) || 7;
     const qs = new URLSearchParams({ period: String(days) });
     if (agentIdFilter)
         qs.set('agent_id', agentIdFilter);
     const res = await fetch(`${baseUrl}/v1/analytics/agent-status?${qs.toString()}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+        signal,
     });
     const json = await safeJsonResponse(res);
     return json.data;
