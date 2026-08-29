@@ -87,6 +87,18 @@ For most new installations, start with the universal installer instead:
 npx @getmarrow/install activate
 ```
 
+## Tool Profiles
+
+Ordinary setup does not require `MARROW_TOOL_PROFILE`. When the variable is unset, Marrow uses the `primary` profile and exposes exactly the 17 tools in [Primary MCP Tools](#primary-mcp-tools).
+
+- `MARROW_TOOL_PROFILE=primary` explicitly selects the same 17-tool primary surface.
+- `MARROW_TOOL_PROFILE=core` preserves the seven-tool runtime, think, commit, ask, status, auto, and handoff-status surface.
+- `MARROW_TOOL_PROFILE=full` exposes the complete advanced and legacy catalog for integrations that require it.
+
+An invalid value returns a bounded configuration error with the exact allowed values; it never falls back to `full`. Restart the MCP process after changing the profile.
+
+Local visibility does not grant paid access. Every tool call continues through Marrow's backend authentication, tenant, key-permission, plan, proof, and policy enforcement. MCP status responses include `mcp_tool_profile` with the configured and effective profile, visible tool names/count, and a backend primary-tool entitlement projection when fresh authenticated evidence is provided. Missing or cached entitlement evidence is labeled unavailable and cannot authorize a call.
+
 ## Keeping MCP Current
 
 Marrow's hosted API, website, and dashboard update automatically; local MCP hooks, configuration, and pinned package commands do not silently rewrite themselves. Keeping them current delivers new client-side features, compatibility improvements, and any published security fixes. During authenticated status/runtime activity, Marrow returns a `client_update` notice when the package is behind or unknown, and passive context shows the agent the exact update and verification commands.
@@ -104,7 +116,11 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.76
+## What's New in v3.9.77
+
+v3.9.77 makes `primary` the ordinary MCP profile when `MARROW_TOOL_PROFILE` is unset. The default surface now matches the 17 documented Primary MCP Tools, while explicit `core` preserves the seven-tool control loop and explicit `full` preserves the complete catalog. Invalid values fail with an exact bounded repair instead of broadening visibility. Status responses report the effective profile, visible names/count, and fresh backend-projected entitlement states when provided; local visibility and cached evidence never authorize access. The exact-version 11-tool control-path canary remains pinned to `full`.
+
+## Previous: v3.9.76
 
 v3.9.76 fixes owner-approved `marrow_auto` closeout by binding an arbitrated operation to the exact server-created arbitration decision, rejecting decision mismatches before commit, and returning an honest terminal action for non-arbitrated `review_required` gates. Chat and proof text cannot substitute for a dashboard-issued approval receipt, and only a backend `committed: true` response closes the operation.
 
@@ -197,7 +213,7 @@ v3.9.62 integrates four model-neutral reliability and capability contracts:
 - `spool-status` and `drain-spool` report the active credential namespace separately from isolated legacy debt, and a clear active namespace exits successfully without replaying, merging, editing, or deleting old-key files;
 - initialize, prompt, setup, and tool responses qualify coverage by `host_capability`: MCP tools are on demand, while client-self-reported hook activity remains visible but never certifies coverage or control.
 
-The default surface is seven tools (runtime, think, commit, ask, status, auto, handoff status) and the prompt remains named `marrow-always-on`. Host and model labels are display-only and never change auth, tenant, plan, policy, proof, schema, or API behavior. Grok hook activity is client-self-reported and does not certify observed coverage; the governed wrapper remains an explicit bounded fallback.
+In v3.9.62, the default surface was seven tools (runtime, think, commit, ask, status, auto, handoff status) and the prompt remained named `marrow-always-on`. Host and model labels are display-only and never change auth, tenant, plan, policy, proof, schema, or API behavior. Grok hook activity is client-self-reported and does not certify observed coverage; the governed wrapper remains an explicit bounded fallback.
 
 ## Previous: v3.9.61
 
@@ -251,7 +267,7 @@ The compact agent control path introduced in v3.9.57 remains the default:
 - `marrow_status`, `marrow_ask`, and `marrow_agent_runtime` use authenticated routes with bounded retries and typed failures;
 - transient read failures return an owner-only last-known brief when available, while cached guidance can never authorize high-risk work;
 - normal tool errors return structured `ok`, `error_code`, `exact_fix`, `stale_brief`, and `client_update` data instead of raw MCP `fetch failed` errors;
-- the default agent surface is seven tools: runtime, think, commit, ask, status, auto, and handoff status; set `MARROW_TOOL_PROFILE=full` only for legacy or advanced integrations;
+- the v3.9.58 default agent surface was seven tools: runtime, think, commit, ask, status, auto, and handoff status; `MARROW_TOOL_PROFILE=full` selected legacy or advanced integrations;
 - risky `marrow_auto` calls obtain a fresh runtime gate automatically and cannot self-close as successful without required proof;
 - `marrow_run` requires an explicit outcome and never invents proof or a successful result;
 - the package includes an exact-version control-path canary covering every route reported in the production incident.

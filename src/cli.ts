@@ -606,6 +606,7 @@ function clientOperationalPayload(toolName: string, value: unknown): Record<stri
       drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
       legacy_namespaces: spool.other_namespaces?.count || 0,
     },
+    mcp_tool_profile: mcpToolProfileStatus(payload),
   };
 }
 
@@ -1884,16 +1885,114 @@ const CORE_TOOL_NAMES = new Set([
   'marrow_handoff_status',
 ]);
 
+const PRIMARY_TOOL_NAMES = new Set([
+  'marrow_agent_runtime',
+  'marrow_arbitrate',
+  'marrow_coordinate',
+  'marrow_replay_compare',
+  'marrow_decision_brief',
+  'marrow_think',
+  'marrow_commit',
+  'marrow_workflow_gate',
+  'marrow_completion_contracts',
+  'marrow_evaluate_completion_contract',
+  'marrow_agent_status',
+  'marrow_value_report',
+  'marrow_buyer_proof',
+  'marrow_governance_timeline',
+  'marrow_decision_trace',
+  'marrow_fleet_lessons',
+  'marrow_model_usage',
+]);
+
+type MarrowToolProfile = 'primary' | 'core' | 'full';
+
+function activeToolProfile(): MarrowToolProfile {
+  const configured = process.env.MARROW_TOOL_PROFILE;
+  if (configured === undefined || configured === 'primary') return 'primary';
+  if (configured === 'core' || configured === 'full') return configured;
+  throw new Error(
+    'Invalid MARROW_TOOL_PROFILE value. Set MARROW_TOOL_PROFILE=primary, core, or full, '
+    + 'or unset it for primary; then restart MCP.',
+  );
+}
+
+function toolsForProfile(profile: MarrowToolProfile): typeof TOOLS {
+  if (profile === 'full') return TOOLS;
+  const visibleNames = profile === 'primary' ? PRIMARY_TOOL_NAMES : CORE_TOOL_NAMES;
+  return TOOLS.filter((tool) => visibleNames.has(tool.name));
+}
+
 function advertisedTools(): typeof TOOLS {
-  return process.env.MARROW_TOOL_PROFILE === 'full'
-    ? TOOLS
-    : TOOLS.filter((tool) => CORE_TOOL_NAMES.has(tool.name));
+  return toolsForProfile(activeToolProfile());
 }
 
 function toolAllowedByActiveProfile(toolName: string | undefined): boolean {
-  return process.env.MARROW_TOOL_PROFILE === 'full'
-    ? Boolean(toolName && TOOLS.some((tool) => tool.name === toolName))
-    : Boolean(toolName && CORE_TOOL_NAMES.has(toolName));
+  return Boolean(toolName && toolsForProfile(activeToolProfile()).some((tool) => tool.name === toolName));
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function backendPrimaryToolAvailability(value: unknown): unknown {
+  const payload = recordValue(value);
+  if (!payload) return null;
+  const data = recordValue(payload.data);
+  const status = recordValue(payload.status);
+  const entitlements = recordValue(payload.entitlements);
+  const entitlementProjection = recordValue(payload.entitlement_projection);
+  const statusEntitlements = recordValue(status?.entitlements);
+  const statusProjection = recordValue(status?.entitlement_projection);
+  const candidates = [
+    payload.primary_tool_availability,
+    data?.primary_tool_availability,
+    status?.primary_tool_availability,
+    entitlements?.primary_tool_availability,
+    entitlementProjection?.primary_tool_availability,
+    statusEntitlements?.primary_tool_availability,
+    statusProjection?.primary_tool_availability,
+  ];
+  return candidates.find((candidate) => Array.isArray(candidate) || recordValue(candidate)) || null;
+}
+
+function mcpToolProfileStatus(value: unknown): Record<string, unknown> {
+  const profile = activeToolProfile();
+  const visibleToolNames = toolsForProfile(profile).map((tool) => tool.name);
+  const payload = recordValue(value);
+  const cachedOrStale = payload?.cached === true
+    || payload?.stale === true
+    || payload?.status_freshness === 'stale'
+    || payload?.authorization_state === 'status_only_non_authorizing';
+  const backendProjection = cachedOrStale ? null : backendPrimaryToolAvailability(payload);
+  return {
+    configured_profile: process.env.MARROW_TOOL_PROFILE ?? 'unset',
+    effective_profile: profile,
+    visible_tool_count: visibleToolNames.length,
+    visible_tool_names: visibleToolNames,
+    local_visibility_grants_entitlement: false,
+    backend_entitlement_projection: backendProjection ? {
+      evidence_state: 'available',
+      source: 'authenticated_backend',
+      authorizes_calls: false,
+      primary_tool_availability: backendProjection,
+    } : {
+      evidence_state: 'unavailable',
+      source: cachedOrStale ? 'cached_or_stale_status' : 'backend_projection_not_provided',
+      authorizes_calls: false,
+      primary_tool_availability: null,
+    },
+  };
+}
+
+function withMcpToolProfileStatus(value: unknown): Record<string, unknown> {
+  const payload = recordValue(value) || { data: value };
+  return {
+    ...payload,
+    mcp_tool_profile: mcpToolProfileStatus(payload),
+  };
 }
 
 // Request handler
@@ -2027,7 +2126,10 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
       const args = (params?.arguments || {}) as Record<string, unknown>;
 
       if (!toolAllowedByActiveProfile(toolName)) {
-        error(id, -32601, 'Tool is not available in the active Marrow tool profile. Set MARROW_TOOL_PROFILE=full and restart MCP for advanced operator tools.');
+        const repair = toolName && PRIMARY_TOOL_NAMES.has(toolName)
+          ? 'Unset MARROW_TOOL_PROFILE or set MARROW_TOOL_PROFILE=primary, then restart MCP.'
+          : 'Set MARROW_TOOL_PROFILE=full, then restart MCP for the complete advanced/legacy catalog.';
+        error(id, -32601, `Tool is not available in the active Marrow tool profile. ${repair}`);
         return;
       }
 
@@ -2595,7 +2697,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           SESSION_ID,
           FLEET_AGENT_ID
         );
-        success(id, { content: [{ type: 'text', text: JSON.stringify({ ...result, local_control: localControlEvidence(Boolean(API_KEY)) }, null, 2) }] });
+        success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus({ ...result, local_control: localControlEvidence(Boolean(API_KEY)) }), null, 2) }] });
         return;
       }
 
@@ -2611,7 +2713,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           ),
           { cacheAware: false, toolName: 'marrow_runtime_status' },
         );
-        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+        success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus(result), null, 2) }] });
         return;
       }
 
