@@ -116,7 +116,11 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.78
+## What's New in v3.9.79
+
+v3.9.79 aligns `marrow_replay_compare` with the production replay contract. Its public MCP schema now exposes two exclusive modes: fetch an existing comparison with `comparison_id`, or create one with `source_decision_id`, `baseline.decision_id`, and `candidate.decision_id`. Empty, incomplete, mixed-mode, blank-ID, and same-decision comparisons fail locally before any request, while comparison fetches and valid distinct-decision comparisons keep their existing behavior. Replay comparison still uses only already-recorded durable evidence and never runs a model or replays customer content.
+
+## Previous: v3.9.78
 
 v3.9.78 separates durable post-action observation from action authorization. For outcome closure only, `marrow_commit` sends the existing `decision_id` to runtime and can use the backend's exact `outcome_observation_only` response to submit the already-completed result without forwarding its non-durable correlation ID as receipt evidence. That response never permits an action: it has `allow: false`, `durable: false`, and no authorization. The accepted result remains `committed: false`, `outcome_state: "observed_unverified"`, `authorization_granted: false`, and `trusted_learning_applied: false`; it is terminal delivery and is not retried from the local queue. Trusted promotion requires an explicit new commit attempt with the backend-required authorization and proof for the exact observed payload. Missing, malformed, conflicting, or cross-scope runtime truth still fails closed, and privacy-unsafe `instruction_ref` values such as dates and long numeric IDs now fail locally before any network call.
 
