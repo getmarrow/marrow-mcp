@@ -504,9 +504,16 @@ export interface ThinkResult {
 
 export interface CommitResult {
   committed: boolean;
-  success_rate: number;
-  insight: string | null;
-  narrative: Narrative;
+  accepted?: boolean;
+  outcome_state?: 'observed_unverified' | 'committed' | string;
+  outcome_observation_id?: string | null;
+  authorization_granted?: boolean;
+  trusted_learning_applied?: boolean;
+  governance?: Record<string, unknown> | null;
+  exact_next_action?: string | null;
+  success_rate?: number;
+  insight?: string | null;
+  narrative?: Narrative;
   marrow_contributed?: CommitContribution;
   token_value_signal?: MarrowTokenValueSignal | null;
   pre_action_gate?: { receipt_id?: string | null; decision?: string | null; enforced: boolean } | null;
