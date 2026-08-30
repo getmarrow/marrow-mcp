@@ -1574,7 +1574,7 @@ const TOOLS = [
           required: ['decision_id'],
         },
       },
-      required: [],
+      required: ['source_decision_id', 'baseline', 'candidate'],
     },
   },
   {

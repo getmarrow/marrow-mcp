@@ -85,6 +85,41 @@ test('replay comparison submits only recorded decision evidence and can fetch by
   assert.equal(calls[1].url, 'https://api.example.test/v1/agent/governance/replay-comparisons/replay_12345678');
 });
 
+test('replay comparison requires the backend decision contract before fetching', async (t) => {
+  const originalFetch = global.fetch;
+  let fetchCount = 0;
+  global.fetch = async () => {
+    fetchCount += 1;
+    return Response.json({ data: { status: 'complete' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  for (const [input, message] of [
+    [{ baseline: { decision_id: 'decision-a' }, candidate: { decision_id: 'decision-b' } }, /source_decision_id is required/],
+    [{ source_decision_id: 'decision-source', baseline: {}, candidate: { decision_id: 'decision-b' } }, /baseline\.decision_id is required/],
+    [{ source_decision_id: 'decision-source', baseline: { decision_id: 'decision-a' }, candidate: {} }, /candidate\.decision_id is required/],
+    [{
+      source_decision_id: 'decision-source',
+      baseline: { decision_id: 'decision-same' },
+      candidate: { decision_id: 'decision-same' },
+    }, /baseline and candidate decision ids must be distinct/],
+  ]) {
+    await assert.rejects(
+      marrowReplayCompare('key', 'https://api.example.test', input),
+      message,
+    );
+  }
+
+  assert.equal(fetchCount, 0);
+
+  const cli = readFileSync(resolve(__dirname, '../src/cli.ts'), 'utf8');
+  const replaySchema = cli.slice(
+    cli.indexOf("name: 'marrow_replay_compare'"),
+    cli.indexOf("name: 'marrow_governance_control_plane'"),
+  );
+  assert.match(replaySchema, /required: \['source_decision_id', 'baseline', 'candidate'\]/);
+});
+
 test('coordination and replay reject path traversal and remain advertised MCP tools', async () => {
   await assert.rejects(
     marrowCoordinate('key', 'https://api.example.test', {

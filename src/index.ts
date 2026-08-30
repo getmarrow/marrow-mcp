@@ -220,6 +220,12 @@ function normalizeReplayConstraints(value: unknown): Record<string, string | boo
   return normalized;
 }
 
+function requiredReplayDecisionId(value: unknown, field: string): string {
+  const decisionId = typeof value === 'string' ? value.trim() : '';
+  if (!decisionId) throw new TypeError(`${field} is required.`);
+  return decisionId;
+}
+
 /**
  * Validate and sanitize a base URL. Requires HTTPS.
  */
@@ -2155,12 +2161,24 @@ export async function marrowReplayCompare(
     });
     return (await safeJsonResponse(res)).data;
   }
+  const sourceDecisionId = requiredReplayDecisionId(input.source_decision_id, 'source_decision_id');
+  const baseline = input.baseline && typeof input.baseline === 'object' && !Array.isArray(input.baseline)
+    ? input.baseline as Record<string, unknown>
+    : {};
+  const candidate = input.candidate && typeof input.candidate === 'object' && !Array.isArray(input.candidate)
+    ? input.candidate as Record<string, unknown>
+    : {};
+  const baselineDecisionId = requiredReplayDecisionId(baseline.decision_id, 'baseline.decision_id');
+  const candidateDecisionId = requiredReplayDecisionId(candidate.decision_id, 'candidate.decision_id');
+  if (baselineDecisionId === candidateDecisionId) {
+    throw new TypeError('baseline and candidate decision ids must be distinct.');
+  }
   const body = redactSensitiveValue({
-    source_decision_id: input.source_decision_id,
+    source_decision_id: sourceDecisionId,
     workspace_binding_id: input.workspace_binding_id,
     constraints: normalizeReplayConstraints(input.constraints),
-    baseline: input.baseline,
-    candidate: input.candidate,
+    baseline: { ...baseline, decision_id: baselineDecisionId },
+    candidate: { ...candidate, decision_id: candidateDecisionId },
   });
   const res = await fetch(`${baseUrl}/v1/agent/governance/replay-comparisons`, {
     method: 'POST',
