@@ -1428,7 +1428,7 @@ if (process.argv[2] !== 'keys') {
                             required: ['decision_id'],
                         },
                     },
-                    required: [],
+                    required: ['source_decision_id', 'baseline', 'candidate'],
                 },
             },
             {
