@@ -74,7 +74,7 @@
     "scripts/control-path-canary.cjs"
   ],
   "dependencies": {
-    "@getmarrow/sdk": "^3.7.61"
+    "@getmarrow/sdk": "^3.7.62"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",
