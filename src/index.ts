@@ -46,7 +46,14 @@ import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
 import { invalidResponseError, MarrowRequestError, normalizeRequestError, reliableFetch, requestErrorFromResponse } from './request-reliability';
-import { highRiskRuntimeCanClose, highRiskRuntimeCanContinueWithProof, normalizeRuntimeResult, runtimeAuthorizationReceiptId } from './runtime-contract';
+import {
+  highRiskRuntimeCanClose,
+  highRiskRuntimeCanContinueWithProof,
+  isOutcomeObservationOnlyCorrelationId,
+  isOutcomeObservationOnlyRuntime,
+  normalizeRuntimeResult,
+  runtimeAuthorizationReceiptId,
+} from './runtime-contract';
 
 const fetch = reliableFetch;
 
@@ -368,6 +375,7 @@ function runtimeGateCanAuthorizeCommit(runtime: MarrowAgentRuntimeResult | null)
 }
 
 function runtimeGateCanSubmitOutcomeObservation(runtime: MarrowAgentRuntimeResult | null): boolean {
+  if (isOutcomeObservationOnlyRuntime(runtime)) return true;
   const receiptId = runtimeGateReceiptId(runtime);
   return Boolean(
     runtime
@@ -386,10 +394,14 @@ function runtimeGateMatchesCommitScope(
   agentId?: string,
 ): boolean {
   const action = redactSensitiveText(params.action);
-  const runtimeDecisionId = runtime.runtime_authorization?.decision_state === 'created'
-    ? runtime.runtime_authorization.decision_id || runtime.decision_id
-    : undefined;
+  const observationOnly = isOutcomeObservationOnlyRuntime(runtime);
+  const runtimeDecisionId = observationOnly
+    ? runtime.runtime_authorization?.decision_id || runtime.decision_id
+    : runtime.runtime_authorization?.decision_state === 'created'
+      ? runtime.runtime_authorization.decision_id || runtime.decision_id
+      : undefined;
   return runtime.action === action
+    && (!observationOnly || Boolean(runtimeDecisionId))
     && (!runtimeDecisionId || runtimeDecisionId === params.decision_id)
     && (!sessionId || !runtime.session_id || runtime.session_id === sessionId)
     && (!agentId || !runtime.agent_id || runtime.agent_id === agentId);
@@ -592,6 +604,16 @@ export async function marrowCommit(
   let gateReceiptId = params.gate_receipt_id || params.gate_receipt;
   let observationOnly = false;
 
+  for (const [field, value] of [
+    ['gate receipt', gateReceiptId],
+    ['arbitration receipt', params.arbitration_receipt_id],
+    ['owner approval receipt', params.owner_approval_receipt_id],
+  ] as const) {
+    if (isOutcomeObservationOnlyCorrelationId(value)) {
+      throw new TypeError(`An observation-only runtime correlation cannot be used as ${field} or approval evidence.`);
+    }
+  }
+
   if (!gateReceiptId && params.auto_gate !== false && params.action) {
     try {
       runtimeGate = await marrowAgentRuntime(
@@ -599,6 +621,8 @@ export async function marrowCommit(
         baseUrl,
         {
           action: redactSensitiveText(params.action),
+          decision_id: params.decision_id,
+          response_mode: 'expanded',
           type: params.type || 'handoff',
           surfaces: params.surfaces || ['handoff'],
           context: { mcp_commit_auto_gate: true },
@@ -613,8 +637,9 @@ export async function marrowCommit(
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`marrowCommit auto_gate failed before outcome closure: ${msg}`);
     }
+    const canSubmitObservation = runtimeGateCanSubmitOutcomeObservation(runtimeGate);
     gateReceiptId = runtimeGateReceiptId(runtimeGate) || undefined;
-    if (!gateReceiptId) {
+    if (!gateReceiptId && !canSubmitObservation) {
       throw new Error('marrowCommit auto_gate required a gate receipt backed by canonical runtime authorization, but /v1/agent/runtime returned missing, conflicting, or unverified receipt state');
     }
     if (!runtimeGateMatchesCommitScope(runtimeGate, {
@@ -624,11 +649,11 @@ export async function marrowCommit(
       throw new Error('marrowCommit auto_gate runtime authorization scope does not match the requested action, decision, session, or agent; outcome submission stopped before commit');
     }
     const canAuthorizeCommit = runtimeGateCanAuthorizeCommit(runtimeGate);
-    const canSubmitObservation = runtimeGateCanSubmitOutcomeObservation(runtimeGate);
     if (!canAuthorizeCommit && !canSubmitObservation) {
       throw new Error('marrowCommit auto_gate required a gate receipt backed by canonical runtime authorization, but /v1/agent/runtime returned missing, conflicting, or unverified receipt state');
     }
     observationOnly = !canAuthorizeCommit;
+    if (observationOnly) gateReceiptId = undefined;
   }
 
   const body: Record<string, unknown> = {

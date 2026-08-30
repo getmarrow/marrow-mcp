@@ -982,7 +982,7 @@ const TOOLS = [
       'Close a recorded action with success/failure, a specific outcome, and required proof. ' +
       'decision_id comes from marrow_think, marrow_auto, or an arbitration runtime that actually created a decision. ' +
       'Use the gate receipt from marrow_agent_runtime for consequential work. ' +
-      'A canonical non-authorizing runtime receipt may durably record an observed_unverified outcome, but it never authorizes action or trusted learning. ' +
+      'The exact non-authorizing outcome_observation_only runtime correlation may submit an observed_unverified result, but is never sent as receipt evidence and never authorizes action or trusted learning. ' +
       'Only committed:true closes trusted outcome learning.',
     inputSchema: {
       type: 'object',
@@ -1001,7 +1001,7 @@ const TOOLS = [
         action: { type: 'string', description: 'Optional original action. If provided and gate_receipt_id is omitted, MCP can fetch a matching runtime gate receipt before commit.' },
         type: { type: 'string', description: 'Optional original action type for auto gate lookup, e.g. deploy, publish, merge, handoff, implementation.' },
         surfaces: { type: 'array', items: { type: 'string' }, description: 'Optional surfaces for auto gate receipt, e.g. github, cloudflare, npm, production.' },
-        auto_gate: { type: 'boolean', description: 'If true/default and action is provided, fetch a canonical runtime receipt. Allow/warn receipts may authorize closure; review/block receipts can authenticate only an observed_unverified post-action outcome.' },
+        auto_gate: { type: 'boolean', description: 'If true/default and action is provided, fetch runtime truth bound to this existing decision. Authorizing receipts preserve normal closure; exact outcome_observation_only correlation can submit only an observed_unverified result and is omitted from receipt evidence.' },
         model_usage: { type: 'object', description: 'Optional compact token/cost/latency counts. Do not include raw prompts or completions.' },
       },
       required: ['decision_id', 'success', 'outcome'],

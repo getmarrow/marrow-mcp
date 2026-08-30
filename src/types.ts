@@ -111,7 +111,7 @@ export interface MarrowWorkflowGateRequest {
 
 export interface MarrowWorkflowGateResult {
   allow: boolean;
-  decision: 'allow' | 'warn' | 'review_required' | 'block';
+  decision: 'allow' | 'warn' | 'review_required' | 'block' | 'outcome_observation_only';
   risk_level: 'low' | 'medium' | 'high';
   reasons: Array<{ code: string; severity: string; message: string }>;
   enforcement_decision?: string;
@@ -122,6 +122,9 @@ export interface MarrowWorkflowGateResult {
   session_id?: string | null;
   gate_event_id?: string | null;
   gate_receipt_id?: string | null;
+  bypass_allowed?: boolean;
+  authorization_granted?: boolean;
+  permit_eligible?: boolean;
   prior_lessons?: unknown[];
   deployment_playbooks?: unknown[];
   next?: Record<string, unknown>;
@@ -142,6 +145,8 @@ export interface MarrowRuntimePlanCapability {
 }
 
 export interface MarrowAgentRuntimeRequest extends MarrowDecisionBriefRequest {
+  decision_id?: string;
+  response_mode?: 'slim' | 'expanded';
   risk_tolerance?: 'low' | 'medium' | 'high';
   requires_approval?: boolean;
   coordination?: MarrowArbitrationRequest;
@@ -297,7 +302,7 @@ export interface MarrowAgentRuntimeResult {
   decision_id?: string;
   runtime_authorization?: {
     id: string;
-    kind: 'durable_gate_receipt' | 'low_risk_guidance_receipt' | string;
+    kind: 'durable_gate_receipt' | 'low_risk_guidance_receipt' | 'outcome_observation_only' | string;
     durable: boolean;
     decision_state: 'created' | 'not_created' | string;
     decision_creation_required: boolean;
@@ -322,8 +327,12 @@ export interface MarrowAgentRuntimeResult {
   gate_receipt_id?: string | null;
   gate_receipt?: {
     id: string;
+    kind?: 'durable_gate_receipt' | 'low_risk_guidance_receipt' | 'outcome_observation_only' | string;
+    durable?: boolean;
     required: boolean;
     decision?: string;
+    authorization_granted?: boolean;
+    permit_eligible?: boolean;
     expires_at?: string;
     owner_approval_required?: boolean;
     required_steps?: string[];
