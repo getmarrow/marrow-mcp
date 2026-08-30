@@ -118,7 +118,7 @@ Detection and notification are automatic. After explicit installer activation, t
 
 ## What's New in v3.9.79
 
-v3.9.79 aligns `marrow_replay_compare` with the production replay contract. Its public MCP schema now exposes two exclusive modes: fetch an existing comparison with `comparison_id`, or create one with `source_decision_id`, `baseline.decision_id`, and `candidate.decision_id`. Empty, incomplete, mixed-mode, blank-ID, and same-decision comparisons fail locally before any request, while comparison fetches and valid distinct-decision comparisons keep their existing behavior. Replay comparison still uses only already-recorded durable evidence and never runs a model or replays customer content.
+v3.9.79 aligns `marrow_replay_compare` with the production replay contract. Its public MCP schema now exposes two exclusive modes: fetch an existing comparison with `comparison_id`, or create one with `source_decision_id`, `baseline.decision_id`, and `candidate.decision_id`. Empty, incomplete, mixed-mode, blank-ID, and same-decision comparisons fail locally before any request, while comparison fetches and valid distinct-decision comparisons keep their existing behavior. Replay comparison still uses only already-recorded durable evidence and never runs a model or replays customer content. This release requires SDK `^3.7.62`, keeping the active MCP dependency floor aligned with the current SDK release.
 
 ## Previous: v3.9.78
 
