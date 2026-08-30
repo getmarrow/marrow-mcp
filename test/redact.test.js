@@ -692,81 +692,132 @@ test('marrowCommit auto_gate rejects conflicting normalized receipt truth withou
   }
 });
 
-test('marrowCommit auto_gate durably delivers review-required and blocked outcomes as unverified observations', async () => {
+function exactBackendObservationOnlyRuntime({
+  action = 'deploy already completed release evidence',
+  decisionId = 'decision-observation-only',
+  correlationId = 'outcome_observation_only_0123456789abcdef0123456789abcdef',
+  sessionId = 'session-observer',
+  agentId = 'agent-observer',
+} = {}) {
+  const exactNextAction = 'Report this outcome by decision_id without receipt evidence; separate authoritative governance receipts and proof are required for trusted promotion.';
+  return {
+    ok: true,
+    action,
+    requested_action: action,
+    agent_id: agentId,
+    session_id: sessionId,
+    ...(decisionId ? { decision_id: decisionId } : {}),
+    runtime_authorization: {
+      id: correlationId,
+      kind: 'outcome_observation_only',
+      durable: false,
+      decision_state: 'outcome_observation_only',
+      decision_creation_required: !decisionId,
+      decision_creation_endpoint: decisionId ? null : '/v1/agent/think',
+      commit_endpoint: '/v1/agent/commit',
+      commit_with: decisionId ? 'decision_id' : null,
+      ...(decisionId ? { decision_id: decisionId } : {}),
+    },
+    risk_gate: {
+      allow: false,
+      decision: 'outcome_observation_only',
+      enforcement_decision: 'outcome_observation_only',
+      risk_level: 'high',
+      reasons: [],
+      enforced: false,
+      gate_receipt_id: correlationId,
+      gate_required: false,
+      bypass_allowed: false,
+      authorization_granted: false,
+      permit_eligible: false,
+    },
+    gate_receipt: {
+      id: correlationId,
+      kind: 'outcome_observation_only',
+      durable: false,
+      required: false,
+      decision: 'outcome_observation_only',
+      authorization_granted: false,
+      permit_eligible: false,
+    },
+    gate_receipt_id: correlationId,
+    arbitration: null,
+    enforcement_decision: 'outcome_observation_only',
+    risk_gate_enforced: false,
+    before_you_act: 'Observation-only runtime mode cannot authorize execution or issue a permit.',
+    intervention: {
+      allow: false,
+      decision: 'outcome_observation_only',
+      exact_next_action: exactNextAction,
+    },
+    loop_integrity: {
+      status: 'outcome_observation_only',
+      gate_receipt_required: false,
+      gate_receipt_id: correlationId,
+      agent_instruction: exactNextAction,
+    },
+    completion_contract: {
+      required_commit_fields: ['decision_id', 'success', 'outcome'],
+      gate_receipt_required: false,
+      gate_receipt_id: correlationId,
+      decision_state: 'outcome_observation_only',
+      exact_next_action: exactNextAction,
+    },
+    proof_pack: { complete: false },
+    exact_next_action: exactNextAction,
+  };
+}
+
+test('marrowCommit pairs with the exact backend observation-only runtime and omits receipt evidence', async () => {
   const { marrowCommit } = require('../dist/index.js');
   const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: String(url), body });
+    if (String(url).endsWith('/v1/agent/runtime')) {
+      assert.equal(body.decision_id, 'decision-observation-only');
+      assert.equal(body.context.mcp_commit_auto_gate, true);
+      assert.equal(body.response_mode, 'expanded');
+      return Response.json({ data: exactBackendObservationOnlyRuntime({ decisionId: body.decision_id }) });
+    }
+    return Response.json({ data: {
+      accepted: true,
+      committed: false,
+      outcome_state: 'observed_unverified',
+      outcome_observation_id: 'observation-paired-runtime',
+      authorization_granted: false,
+      trusted_learning_applied: false,
+      governance_validation: { code: 'MARROW_PRE_ACTION_GATE_REQUIRED' },
+      exact_next_action: 'Supply separate authoritative authorization and proof in an explicit promotion attempt.',
+    } }, { status: 202 });
+  };
 
   try {
-    for (const decision of ['review_required', 'block']) {
-      const calls = [];
-      globalThis.fetch = async (url, options) => {
-        const body = options.body ? JSON.parse(options.body) : null;
-        calls.push({ url: String(url), body });
-        if (String(url).endsWith('/v1/agent/runtime')) {
-          return Response.json({ data: {
-            action: 'deploy already completed release evidence',
-            agent_id: 'agent-observer',
-            session_id: 'session-observer',
-            risk_gate: {
-              allow: false,
-              decision,
-              risk_level: 'high',
-              reasons: [],
-              enforced: true,
-              enforcement_decision: decision,
-              gate_required: true,
-              gate_receipt_id: `gate-${decision}`,
-            },
-            gate_receipt_id: `gate-${decision}`,
-            gate_receipt: {
-              id: `gate-${decision}`,
-              required: true,
-              decision,
-              owner_approval_required: decision === 'review_required',
-            },
-            runtime_authorization: {
-              id: `gate-${decision}`,
-              kind: 'durable_gate_receipt',
-              durable: true,
-              decision_state: 'not_created',
-              decision_creation_required: true,
-              decision_creation_endpoint: '/v1/agent/think',
-            },
-            proof_pack: { complete: false },
-            exact_next_action: 'Supply the required authorization and proof in a new exact promotion attempt.',
-          } });
-        }
-        return Response.json({ data: {
-          accepted: true,
-          committed: false,
-          outcome_state: 'observed_unverified',
-          outcome_observation_id: `observation-${decision}`,
-          authorization_granted: false,
-          trusted_learning_applied: false,
-          governance: { decision, trusted_promotion_required: true },
-          exact_next_action: 'Supply the required authorization and proof in a new exact promotion attempt.',
-        } }, { status: decision === 'review_required' ? 202 : 200 });
-      };
+    const result = await marrowCommit('mrw_test_key', 'https://api.example.com', {
+      decision_id: 'decision-observation-only',
+      success: true,
+      outcome: 'The completed result and verification are recorded exactly.',
+      action: 'deploy already completed release evidence',
+      proof: { checks: 'passed' },
+    }, 'session-observer', 'agent-observer');
 
-      const result = await marrowCommit('mrw_test_key', 'https://api.example.com', {
-        decision_id: `decision-${decision}`,
-        success: true,
-        outcome: 'The completed result and verification are recorded exactly.',
-        action: 'deploy already completed release evidence',
-      }, 'session-observer', 'agent-observer');
-
-      assert.equal(calls.filter((call) => call.url.endsWith('/v1/agent/commit')).length, 1);
-      assert.equal(calls[1].body.gate_receipt_id, `gate-${decision}`);
-      assert.equal(result.accepted, true);
-      assert.equal(result.committed, false);
-      assert.equal(result.outcome_state, 'observed_unverified');
-      assert.equal(result.outcome_observation_id, `observation-${decision}`);
-      assert.equal(result.authorization_granted, false);
-      assert.equal(result.trusted_learning_applied, false);
-      assert.equal(result.runtime_gate.risk_gate.decision, decision);
-      assert.equal(result.runtime_gate.authorization_state, 'unverified');
-      assert.match(result.exact_next_action, /authorization and proof/i);
-    }
+    assert.equal(calls.filter((call) => call.url.endsWith('/v1/agent/commit')).length, 1);
+    assert.equal(calls[0].body.decision_id, calls[1].body.decision_id);
+    assert.equal(Object.hasOwn(calls[1].body, 'gate_receipt_id'), false);
+    assert.equal(Object.hasOwn(calls[1].body, 'arbitration_receipt_id'), false);
+    assert.equal(Object.hasOwn(calls[1].body, 'owner_approval_receipt_id'), false);
+    assert.equal(result.accepted, true);
+    assert.equal(result.committed, false);
+    assert.equal(result.outcome_state, 'observed_unverified');
+    assert.equal(result.outcome_observation_id, 'observation-paired-runtime');
+    assert.equal(result.authorization_granted, false);
+    assert.equal(result.trusted_learning_applied, false);
+    assert.equal(result.runtime_gate.runtime_authorization.kind, 'outcome_observation_only');
+    assert.equal(result.runtime_gate.runtime_authorization.durable, false);
+    assert.equal(result.runtime_gate.risk_gate.allow, false);
+    assert.equal(result.runtime_gate.authorization_state, 'unverified');
+    assert.match(result.exact_next_action, /authoritative authorization and proof/i);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -780,22 +831,10 @@ test('marrowCommit rejects a non-authorizing observation response that claims tr
   globalThis.fetch = async (url, options) => {
     calls.push(String(url));
     if (String(url).endsWith('/v1/agent/runtime')) {
-      return Response.json({ data: {
+      return Response.json({ data: exactBackendObservationOnlyRuntime({
         action: 'record blocked release outcome',
-        risk_gate: {
-          allow: false,
-          decision: 'block',
-          risk_level: 'high',
-          reasons: [],
-          enforced: true,
-          enforcement_decision: 'block',
-          gate_required: true,
-          gate_receipt_id: 'gate-blocked-truth',
-        },
-        gate_receipt_id: 'gate-blocked-truth',
-        gate_receipt: { id: 'gate-blocked-truth', required: true, decision: 'block' },
-        proof_pack: { complete: false },
-      } });
+        decisionId: 'decision-blocked-truth',
+      }) });
     }
     return Response.json({ data: {
       accepted: true,
@@ -831,26 +870,16 @@ test('marrowCommit auto_gate rejects cross-scope runtime action and decision val
   try {
     for (const mismatch of ['action', 'decision']) {
       const calls = [];
-      globalThis.fetch = async (url) => {
+      globalThis.fetch = async (url, options) => {
         calls.push(String(url));
         if (String(url).endsWith('/v1/agent/runtime')) {
-          return Response.json({ data: {
+          assert.equal(JSON.parse(options.body).decision_id, 'decision-exact-scope');
+          assert.equal(JSON.parse(options.body).response_mode, 'expanded');
+          return Response.json({ data: exactBackendObservationOnlyRuntime({
             action: mismatch === 'action' ? 'different tenant action' : 'record exact release outcome',
-            decision_id: mismatch === 'decision' ? 'decision-other-scope' : undefined,
-            risk_gate: {
-              allow: false,
-              decision: 'review_required',
-              risk_level: 'high',
-              reasons: [],
-              enforced: true,
-              enforcement_decision: 'review_required',
-              gate_required: true,
-              gate_receipt_id: `gate-cross-scope-${mismatch}`,
-            },
-            gate_receipt_id: `gate-cross-scope-${mismatch}`,
-            gate_receipt: { id: `gate-cross-scope-${mismatch}`, required: true, decision: 'review_required' },
-            proof_pack: { complete: false },
-          } });
+            decisionId: mismatch === 'decision' ? 'decision-other-scope' : 'decision-exact-scope',
+            correlationId: `outcome_observation_only_${(mismatch === 'action' ? '1' : '2').repeat(32)}`,
+          }) });
         }
         return Response.json({ data: { committed: true } });
       };
@@ -863,6 +892,91 @@ test('marrowCommit auto_gate rejects cross-scope runtime action and decision val
           action: 'record exact release outcome',
         }),
         /scope does not match/i,
+      );
+      assert.equal(calls.filter((url) => url.endsWith('/v1/agent/commit')).length, 0);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowCommit rejects observation-only correlation as gate, arbitration, or approval evidence', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  const observationOnlyId = 'outcome_observation_only_0123456789abcdef0123456789abcdef';
+  globalThis.fetch = async (...args) => {
+    calls.push(args);
+    return Response.json({ data: { committed: true } });
+  };
+
+  try {
+    for (const field of ['gate_receipt_id', 'arbitration_receipt_id', 'owner_approval_receipt_id']) {
+      await assert.rejects(
+        () => marrowCommit('mrw_test_key', 'https://api.example.com', {
+          decision_id: 'decision-observation-evidence',
+          success: true,
+          outcome: 'observation correlation is not authorization evidence',
+          auto_gate: false,
+          [field]: observationOnlyId,
+        }),
+        /observation-only.*cannot be used.*receipt|approval evidence/i,
+      );
+    }
+    assert.equal(calls.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowCommit rejects malformed observation-only runtime truth before commit', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const mutations = [
+    (runtime) => { delete runtime.runtime_authorization; },
+    (runtime) => { runtime.runtime_authorization.durable = true; },
+    (runtime) => { runtime.runtime_authorization.decision_id = 'decision-conflicting-observation'; },
+    (runtime) => { runtime.risk_gate.allow = true; },
+    (runtime) => { runtime.risk_gate.enforced = true; },
+    (runtime) => { runtime.risk_gate.authorization_granted = true; },
+    (runtime) => { runtime.risk_gate.permit_eligible = true; },
+    (runtime) => { runtime.gate_receipt.required = true; },
+    (runtime) => { runtime.gate_receipt.kind = 'durable_gate_receipt'; },
+    (runtime) => { runtime.gate_receipt_id = 'outcome_observation_only_ffffffffffffffffffffffffffffffff'; },
+    (runtime) => { delete runtime.loop_integrity; },
+    (runtime) => { runtime.completion_contract.exact_next_action = 'Conflicting next action.'; },
+    (runtime) => {
+      delete runtime.decision_id;
+      delete runtime.runtime_authorization.decision_id;
+      runtime.runtime_authorization.decision_creation_required = true;
+      runtime.runtime_authorization.decision_creation_endpoint = '/v1/agent/think';
+      runtime.runtime_authorization.commit_with = null;
+    },
+  ];
+
+  try {
+    for (const mutate of mutations) {
+      const calls = [];
+      globalThis.fetch = async (url) => {
+        calls.push(String(url));
+        if (String(url).endsWith('/v1/agent/runtime')) {
+          const runtime = exactBackendObservationOnlyRuntime({
+            action: 'record exact observation-only outcome',
+            decisionId: 'decision-exact-observation-only',
+          });
+          mutate(runtime);
+          return Response.json({ data: runtime });
+        }
+        return Response.json({ data: { committed: true } });
+      };
+
+      await assert.rejects(
+        () => marrowCommit('mrw_test_key', 'https://api.example.com', {
+          decision_id: 'decision-exact-observation-only',
+          success: true,
+          outcome: 'must remain fail closed',
+          action: 'record exact observation-only outcome',
+        }),
       );
       assert.equal(calls.filter((url) => url.endsWith('/v1/agent/commit')).length, 0);
     }
@@ -972,22 +1086,11 @@ test('marrowCommit treats an accepted observed outcome as terminal and does not 
     const body = options.body ? JSON.parse(options.body) : null;
     calls.push({ url: String(url), body });
     if (String(url).endsWith('/v1/agent/runtime')) {
-      return Response.json({ data: {
+      return Response.json({ data: exactBackendObservationOnlyRuntime({
         action: 'observe terminal blocked outcome',
-        risk_gate: {
-          allow: false,
-          decision: 'review_required',
-          risk_level: 'high',
-          reasons: [],
-          enforced: true,
-          enforcement_decision: 'review_required',
-          gate_required: true,
-          gate_receipt_id: 'gate-terminal-observation',
-        },
-        gate_receipt_id: 'gate-terminal-observation',
-        gate_receipt: { id: 'gate-terminal-observation', required: true, decision: 'review_required' },
-        proof_pack: { complete: false },
-      } });
+        decisionId: 'decision-terminal-observation',
+        correlationId: 'outcome_observation_only_abcdefabcdefabcdefabcdefabcdefab',
+      }) });
     }
     if (body?.decision_id === 'decision-terminal-observation') {
       return Response.json({ data: {
@@ -1019,8 +1122,8 @@ test('marrowCommit treats an accepted observed outcome as terminal and does not 
       auto_gate: false,
     });
 
-    assert.equal(calls.filter((call) => call.body?.decision_id === 'decision-terminal-observation').length, 1);
-    assert.equal(calls.filter((call) => call.body?.decision_id === 'decision-next-unrelated').length, 1);
+    assert.equal(calls.filter((call) => call.url.endsWith('/v1/agent/commit') && call.body?.decision_id === 'decision-terminal-observation').length, 1);
+    assert.equal(calls.filter((call) => call.url.endsWith('/v1/agent/commit') && call.body?.decision_id === 'decision-next-unrelated').length, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

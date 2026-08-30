@@ -3,8 +3,10 @@ const test = require('node:test');
 
 const {
   highRiskRuntimeCanClose,
+  highRiskRuntimeCanContinueWithProof,
   normalizeRuntimePlanCapability,
   normalizeRuntimeResult,
+  runtimeAuthorizationReceiptId,
 } = require('../dist/runtime-contract.js');
 
 function slim(overrides = {}) {
@@ -67,6 +69,92 @@ function full(overrides = {}) {
 function canClose(runtime) {
   return highRiskRuntimeCanClose(runtime, { verification: 'passed' }, 'gate-fixture');
 }
+
+function observationOnlyRuntime() {
+  const id = 'outcome_observation_only_0123456789abcdef0123456789abcdef';
+  const decisionId = 'decision-observation-only';
+  const exactNextAction = 'Submit this observation without receipt evidence; obtain separate authorization and proof for trusted promotion.';
+  return {
+    ok: true,
+    action: 'record an already completed action',
+    requested_action: 'record an already completed action',
+    agent_id: 'agent-fixture',
+    session_id: 'session-fixture',
+    decision_id: decisionId,
+    runtime_authorization: {
+      id,
+      kind: 'outcome_observation_only',
+      durable: false,
+      decision_state: 'outcome_observation_only',
+      decision_creation_required: false,
+      decision_creation_endpoint: null,
+      commit_endpoint: '/v1/agent/commit',
+      commit_with: 'decision_id',
+      decision_id: decisionId,
+    },
+    risk_gate: {
+      allow: false,
+      decision: 'outcome_observation_only',
+      enforcement_decision: 'outcome_observation_only',
+      risk_level: 'high',
+      reasons: [],
+      enforced: false,
+      gate_receipt_id: id,
+      gate_required: false,
+      bypass_allowed: false,
+      authorization_granted: false,
+      permit_eligible: false,
+    },
+    gate_receipt_id: id,
+    gate_receipt: {
+      id,
+      kind: 'outcome_observation_only',
+      durable: false,
+      required: false,
+      decision: 'outcome_observation_only',
+      authorization_granted: false,
+      permit_eligible: false,
+    },
+    arbitration: null,
+    enforcement_decision: 'outcome_observation_only',
+    risk_gate_enforced: false,
+    intervention: {
+      allow: false,
+      decision: 'outcome_observation_only',
+      exact_next_action: exactNextAction,
+    },
+    before_you_act: 'Observation-only runtime mode cannot authorize execution or issue a permit.',
+    loop_integrity: {
+      status: 'outcome_observation_only',
+      gate_receipt_required: false,
+      gate_receipt_id: id,
+      agent_instruction: exactNextAction,
+    },
+    completion_contract: {
+      required_commit_fields: ['decision_id', 'success', 'outcome'],
+      gate_receipt_required: false,
+      gate_receipt_id: id,
+      decision_state: 'outcome_observation_only',
+      exact_next_action: exactNextAction,
+    },
+    proof_pack: { complete: false },
+    exact_next_action: exactNextAction,
+  };
+}
+
+test('observation-only runtime correlation can submit evidence but can never authorize closure', () => {
+  const raw = observationOnlyRuntime();
+  const runtime = normalizeRuntimeResult(raw);
+  assert.ok(runtime);
+  assert.equal(runtime.runtime_authorization.kind, 'outcome_observation_only');
+  assert.equal(runtime.runtime_authorization.durable, false);
+  assert.equal(runtime.risk_gate.allow, false);
+  assert.equal(runtime.authorization_state, 'unverified');
+  assert.equal(runtime.hard_gate_obtained, false);
+  assert.equal(runtimeAuthorizationReceiptId(runtime), null);
+  assert.equal(highRiskRuntimeCanClose(runtime, { verification: 'passed' }, raw.gate_receipt_id), false);
+  assert.equal(highRiskRuntimeCanContinueWithProof(runtime, { verification: 'passed' }, raw.gate_receipt_id), false);
+});
 
 test('legacy slim allow without a server-required gate remains guidance, not high-risk authorization', () => {
   const runtime = normalizeRuntimeResult(slim({ gate_required: false }));

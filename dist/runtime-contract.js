@@ -1,7 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runtimeAuthorizationReceiptId = runtimeAuthorizationReceiptId;
+exports.isOutcomeObservationOnlyCorrelationId = isOutcomeObservationOnlyCorrelationId;
 exports.normalizeRuntimePlanCapability = normalizeRuntimePlanCapability;
+exports.isOutcomeObservationOnlyRuntime = isOutcomeObservationOnlyRuntime;
 exports.isValidRuntimeResult = isValidRuntimeResult;
 exports.normalizeRuntimeResult = normalizeRuntimeResult;
 exports.highRiskRuntimeCanClose = highRiskRuntimeCanClose;
@@ -10,6 +12,7 @@ const RUNTIME_GATE_DECISIONS = new Set([
     'allow',
     'proceed',
     'warn',
+    'outcome_observation_only',
     'review_required',
     'owner_approval_required',
     'block',
@@ -19,6 +22,8 @@ const RUNTIME_GATE_DECISIONS = new Set([
 const RUNTIME_RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical']);
 const RUNTIME_PLAN_MODES = new Set(['advisory', 'pilot', 'enforced', 'unknown']);
 const SAFE_RUNTIME_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const OUTCOME_OBSERVATION_ONLY = 'outcome_observation_only';
+const OUTCOME_OBSERVATION_ONLY_ID = /^outcome_observation_only_[a-f0-9]{32}$/;
 function optionalRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value)
         ? value
@@ -45,7 +50,12 @@ function safeRuntimeIdentifier(value) {
     return normalized && SAFE_RUNTIME_IDENTIFIER.test(normalized) ? normalized : null;
 }
 function runtimeAuthorizationReceiptId(runtime) {
+    if (runtime?.runtime_authorization?.kind === OUTCOME_OBSERVATION_ONLY)
+        return null;
     return safeRuntimeIdentifier(runtime?.runtime_authorization?.id);
+}
+function isOutcomeObservationOnlyCorrelationId(value) {
+    return typeof value === 'string' && OUTCOME_OBSERVATION_ONLY_ID.test(value);
 }
 function canonicalRuntimeReceipt(runtime) {
     const identifiers = [
@@ -138,6 +148,106 @@ function authoritativeHardGate(runtime, planCapability) {
         && runtime.gate_receipt?.required === true;
     return explicitEnforcement || serverRequiredSlimGate;
 }
+function hasOutcomeObservationOnlyMarker(runtime) {
+    const shape = runtime;
+    return runtime.runtime_authorization?.kind === OUTCOME_OBSERVATION_ONLY
+        || runtime.runtime_authorization?.decision_state === OUTCOME_OBSERVATION_ONLY
+        || runtime.risk_gate?.decision === OUTCOME_OBSERVATION_ONLY
+        || runtime.gate_receipt?.kind === OUTCOME_OBSERVATION_ONLY
+        || runtime.gate_receipt?.decision === OUTCOME_OBSERVATION_ONLY
+        || shape.enforcement_decision === OUTCOME_OBSERVATION_ONLY;
+}
+function normalizeOutcomeObservationOnlyRuntime(runtime) {
+    const shape = runtime;
+    const authorization = optionalRecord(runtime.runtime_authorization);
+    const riskGate = optionalRecord(runtime.risk_gate);
+    const gateReceipt = optionalRecord(runtime.gate_receipt);
+    const intervention = optionalRecord(runtime.intervention);
+    const loopIntegrity = optionalRecord(shape.loop_integrity);
+    const completion = optionalRecord(runtime.completion_contract);
+    const canonicalReceipt = canonicalRuntimeReceipt(runtime);
+    const correlationId = canonicalReceipt.id;
+    const decisionId = safeRuntimeIdentifier(runtime.decision_id);
+    const nestedDecisionId = safeRuntimeIdentifier(authorization?.decision_id);
+    const requiredCommitFields = completion?.required_commit_fields;
+    const exactNextAction = typeof runtime.exact_next_action === 'string'
+        ? runtime.exact_next_action.trim()
+        : '';
+    if (!correlationId
+        || canonicalReceipt.conflict
+        || !isOutcomeObservationOnlyCorrelationId(correlationId)
+        || runtime.ok !== true
+        || typeof runtime.action !== 'string'
+        || !runtime.action.trim()
+        || shape.requested_action !== runtime.action
+        || (runtime.decision_id != null && !decisionId)
+        || nestedDecisionId !== decisionId
+        || authorization?.kind !== OUTCOME_OBSERVATION_ONLY
+        || authorization?.durable !== false
+        || authorization?.decision_state !== OUTCOME_OBSERVATION_ONLY
+        || authorization?.decision_creation_required !== !decisionId
+        || authorization?.decision_creation_endpoint !== (decisionId ? null : '/v1/agent/think')
+        || authorization?.commit_endpoint !== '/v1/agent/commit'
+        || authorization?.commit_with !== (decisionId ? 'decision_id' : null)
+        || riskGate?.allow !== false
+        || riskGate?.enforced !== false
+        || riskGate?.decision !== OUTCOME_OBSERVATION_ONLY
+        || riskGate?.enforcement_decision !== OUTCOME_OBSERVATION_ONLY
+        || riskGate?.gate_receipt_id !== correlationId
+        || riskGate?.gate_required !== false
+        || riskGate?.bypass_allowed !== false
+        || riskGate?.authorization_granted !== false
+        || riskGate?.permit_eligible !== false
+        || gateReceipt?.id !== correlationId
+        || gateReceipt?.kind !== OUTCOME_OBSERVATION_ONLY
+        || gateReceipt?.durable !== false
+        || gateReceipt?.required !== false
+        || gateReceipt?.decision !== OUTCOME_OBSERVATION_ONLY
+        || gateReceipt?.authorization_granted !== false
+        || gateReceipt?.permit_eligible !== false
+        || shape.enforcement_decision !== OUTCOME_OBSERVATION_ONLY
+        || shape.risk_gate_enforced !== false
+        || runtime.arbitration !== null
+        || typeof runtime.before_you_act !== 'string'
+        || !runtime.before_you_act.trim()
+        || intervention?.allow !== false
+        || intervention?.decision !== OUTCOME_OBSERVATION_ONLY
+        || intervention?.exact_next_action !== exactNextAction
+        || loopIntegrity?.status !== OUTCOME_OBSERVATION_ONLY
+        || loopIntegrity?.gate_receipt_required !== false
+        || loopIntegrity?.gate_receipt_id !== correlationId
+        || loopIntegrity?.agent_instruction !== exactNextAction
+        || completion?.gate_receipt_required !== false
+        || completion?.gate_receipt_id !== correlationId
+        || completion?.decision_state !== OUTCOME_OBSERVATION_ONLY
+        || completion?.exact_next_action !== exactNextAction
+        || !Array.isArray(requiredCommitFields)
+        || requiredCommitFields.join(',') !== 'decision_id,success,outcome'
+        || !exactNextAction) {
+        return null;
+    }
+    return {
+        ...runtime,
+        ...(decisionId ? { decision_id: decisionId } : {}),
+        runtime_authorization: {
+            ...runtime.runtime_authorization,
+            id: correlationId,
+            kind: OUTCOME_OBSERVATION_ONLY,
+            durable: false,
+            decision_state: OUTCOME_OBSERVATION_ONLY,
+            decision_creation_required: !decisionId,
+            decision_creation_endpoint: decisionId ? null : '/v1/agent/think',
+            ...(decisionId ? { decision_id: decisionId } : {}),
+        },
+        fresh_runtime_response: true,
+        guidance_obtained: true,
+        authorization_state: 'unverified',
+        hard_gate_obtained: false,
+    };
+}
+function isOutcomeObservationOnlyRuntime(runtime) {
+    return Boolean(runtime && normalizeOutcomeObservationOnlyRuntime(runtime));
+}
 function withAuthorizationTruth(runtime) {
     const rawDecisionId = safeRuntimeIdentifier(runtime.decision_id);
     const canonicalReceipt = canonicalRuntimeReceipt(runtime);
@@ -197,8 +307,11 @@ function isValidRuntimeResult(value) {
         && RUNTIME_GATE_DECISIONS.has(gate.decision);
 }
 function normalizeRuntimeResult(value) {
-    if (isValidRuntimeResult(value))
+    if (isValidRuntimeResult(value)) {
+        if (hasOutcomeObservationOnlyMarker(value))
+            return normalizeOutcomeObservationOnlyRuntime(value);
         return withAuthorizationTruth(value);
+    }
     if (!value || typeof value !== 'object' || Array.isArray(value))
         return null;
     const slim = value;
