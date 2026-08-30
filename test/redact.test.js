@@ -692,6 +692,185 @@ test('marrowCommit auto_gate rejects conflicting normalized receipt truth withou
   }
 });
 
+test('marrowCommit auto_gate durably delivers review-required and blocked outcomes as unverified observations', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+
+  try {
+    for (const decision of ['review_required', 'block']) {
+      const calls = [];
+      globalThis.fetch = async (url, options) => {
+        const body = options.body ? JSON.parse(options.body) : null;
+        calls.push({ url: String(url), body });
+        if (String(url).endsWith('/v1/agent/runtime')) {
+          return Response.json({ data: {
+            action: 'deploy already completed release evidence',
+            agent_id: 'agent-observer',
+            session_id: 'session-observer',
+            risk_gate: {
+              allow: false,
+              decision,
+              risk_level: 'high',
+              reasons: [],
+              enforced: true,
+              enforcement_decision: decision,
+              gate_required: true,
+              gate_receipt_id: `gate-${decision}`,
+            },
+            gate_receipt_id: `gate-${decision}`,
+            gate_receipt: {
+              id: `gate-${decision}`,
+              required: true,
+              decision,
+              owner_approval_required: decision === 'review_required',
+            },
+            runtime_authorization: {
+              id: `gate-${decision}`,
+              kind: 'durable_gate_receipt',
+              durable: true,
+              decision_state: 'not_created',
+              decision_creation_required: true,
+              decision_creation_endpoint: '/v1/agent/think',
+            },
+            proof_pack: { complete: false },
+            exact_next_action: 'Supply the required authorization and proof in a new exact promotion attempt.',
+          } });
+        }
+        return Response.json({ data: {
+          accepted: true,
+          committed: false,
+          outcome_state: 'observed_unverified',
+          outcome_observation_id: `observation-${decision}`,
+          authorization_granted: false,
+          trusted_learning_applied: false,
+          governance: { decision, trusted_promotion_required: true },
+          exact_next_action: 'Supply the required authorization and proof in a new exact promotion attempt.',
+        } }, { status: decision === 'review_required' ? 202 : 200 });
+      };
+
+      const result = await marrowCommit('mrw_test_key', 'https://api.example.com', {
+        decision_id: `decision-${decision}`,
+        success: true,
+        outcome: 'The completed result and verification are recorded exactly.',
+        action: 'deploy already completed release evidence',
+      }, 'session-observer', 'agent-observer');
+
+      assert.equal(calls.filter((call) => call.url.endsWith('/v1/agent/commit')).length, 1);
+      assert.equal(calls[1].body.gate_receipt_id, `gate-${decision}`);
+      assert.equal(result.accepted, true);
+      assert.equal(result.committed, false);
+      assert.equal(result.outcome_state, 'observed_unverified');
+      assert.equal(result.outcome_observation_id, `observation-${decision}`);
+      assert.equal(result.authorization_granted, false);
+      assert.equal(result.trusted_learning_applied, false);
+      assert.equal(result.runtime_gate.risk_gate.decision, decision);
+      assert.equal(result.runtime_gate.authorization_state, 'unverified');
+      assert.match(result.exact_next_action, /authorization and proof/i);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowCommit rejects a non-authorizing observation response that claims trusted closure', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const { MarrowRequestError } = require('../dist/request-reliability.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push(String(url));
+    if (String(url).endsWith('/v1/agent/runtime')) {
+      return Response.json({ data: {
+        action: 'record blocked release outcome',
+        risk_gate: {
+          allow: false,
+          decision: 'block',
+          risk_level: 'high',
+          reasons: [],
+          enforced: true,
+          enforcement_decision: 'block',
+          gate_required: true,
+          gate_receipt_id: 'gate-blocked-truth',
+        },
+        gate_receipt_id: 'gate-blocked-truth',
+        gate_receipt: { id: 'gate-blocked-truth', required: true, decision: 'block' },
+        proof_pack: { complete: false },
+      } });
+    }
+    return Response.json({ data: {
+      accepted: true,
+      committed: true,
+      outcome_state: 'observed_unverified',
+      outcome_observation_id: 'observation-invalid-truth',
+      authorization_granted: true,
+      trusted_learning_applied: true,
+      exact_next_action: 'none',
+    } });
+  };
+
+  try {
+    await assert.rejects(
+      () => marrowCommit('mrw_test_key', 'https://api.example.com', {
+        decision_id: 'decision-blocked-truth',
+        success: true,
+        outcome: 'must remain observation only',
+        action: 'record blocked release outcome',
+      }),
+      (error) => error instanceof MarrowRequestError && error.code === 'invalid_response',
+    );
+    assert.equal(calls.filter((url) => url.endsWith('/v1/agent/commit')).length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('marrowCommit auto_gate rejects cross-scope runtime action and decision values before commit', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+
+  try {
+    for (const mismatch of ['action', 'decision']) {
+      const calls = [];
+      globalThis.fetch = async (url) => {
+        calls.push(String(url));
+        if (String(url).endsWith('/v1/agent/runtime')) {
+          return Response.json({ data: {
+            action: mismatch === 'action' ? 'different tenant action' : 'record exact release outcome',
+            decision_id: mismatch === 'decision' ? 'decision-other-scope' : undefined,
+            risk_gate: {
+              allow: false,
+              decision: 'review_required',
+              risk_level: 'high',
+              reasons: [],
+              enforced: true,
+              enforcement_decision: 'review_required',
+              gate_required: true,
+              gate_receipt_id: `gate-cross-scope-${mismatch}`,
+            },
+            gate_receipt_id: `gate-cross-scope-${mismatch}`,
+            gate_receipt: { id: `gate-cross-scope-${mismatch}`, required: true, decision: 'review_required' },
+            proof_pack: { complete: false },
+          } });
+        }
+        return Response.json({ data: { committed: true } });
+      };
+
+      await assert.rejects(
+        () => marrowCommit('mrw_test_key', 'https://api.example.com', {
+          decision_id: 'decision-exact-scope',
+          success: true,
+          outcome: 'must not cross scope',
+          action: 'record exact release outcome',
+        }),
+        /scope does not match/i,
+      );
+      assert.equal(calls.filter((url) => url.endsWith('/v1/agent/commit')).length, 0);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('marrowCommit auto_gate preserves a valid canonical no-decision receipt', async () => {
   const { marrowCommit } = require('../dist/index.js');
   const originalFetch = globalThis.fetch;
@@ -785,6 +964,100 @@ test('marrowCommit queues transient commit failures and drains on next commit', 
   }
 });
 
+test('marrowCommit treats an accepted observed outcome as terminal and does not retry it on the next request', async () => {
+  const { marrowCommit } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    const body = options.body ? JSON.parse(options.body) : null;
+    calls.push({ url: String(url), body });
+    if (String(url).endsWith('/v1/agent/runtime')) {
+      return Response.json({ data: {
+        action: 'observe terminal blocked outcome',
+        risk_gate: {
+          allow: false,
+          decision: 'review_required',
+          risk_level: 'high',
+          reasons: [],
+          enforced: true,
+          enforcement_decision: 'review_required',
+          gate_required: true,
+          gate_receipt_id: 'gate-terminal-observation',
+        },
+        gate_receipt_id: 'gate-terminal-observation',
+        gate_receipt: { id: 'gate-terminal-observation', required: true, decision: 'review_required' },
+        proof_pack: { complete: false },
+      } });
+    }
+    if (body?.decision_id === 'decision-terminal-observation') {
+      return Response.json({ data: {
+        accepted: true,
+        committed: false,
+        outcome_state: 'observed_unverified',
+        outcome_observation_id: 'observation-terminal',
+        authorization_granted: false,
+        trusted_learning_applied: false,
+        exact_next_action: 'Obtain authorization and submit an explicit promotion attempt.',
+      } });
+    }
+    return Response.json({ data: { committed: true } });
+  };
+
+  try {
+    const observed = await marrowCommit('mrw_test_key', 'https://api.example.com', {
+      decision_id: 'decision-terminal-observation',
+      success: true,
+      outcome: 'durable observation',
+      action: 'observe terminal blocked outcome',
+    });
+    assert.equal(observed.outcome_state, 'observed_unverified');
+
+    await marrowCommit('mrw_test_key', 'https://api.example.com', {
+      decision_id: 'decision-next-unrelated',
+      success: true,
+      outcome: 'authorized direct result',
+      auto_gate: false,
+    });
+
+    assert.equal(calls.filter((call) => call.body?.decision_id === 'decision-terminal-observation').length, 1);
+    assert.equal(calls.filter((call) => call.body?.decision_id === 'decision-next-unrelated').length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+test('marrowThink rejects dated instruction_ref locally without rewriting valid opaque references', async () => {
+  const { marrowThink } = require('../dist/index.js');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return Response.json({ data: { decision_id: 'decision-instruction-ref' } });
+  };
+
+  try {
+    for (const invalidRef of ['release-2026-08-30', 'ticket_1234567', '20260830']) {
+      await assert.rejects(
+        () => marrowThink('mrw_test_key', 'https://api.example.com', {
+          action: 'record instruction provenance',
+          instruction_ref: invalidRef,
+        }),
+        /instruction_ref.*privacy-safe opaque.*date.*long digit/i,
+      );
+    }
+    assert.equal(calls.length, 0, 'invalid instruction_ref must fail before all network calls');
+
+    await marrowThink('mrw_test_key', 'https://api.example.com', {
+      action: 'record instruction provenance',
+      instruction_ref: 'task_Opaque-abc123',
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.instruction_ref, 'task_Opaque-abc123');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test('marrowThink redacts direct action context source_meta and previous outcome', async () => {
   const { marrowThink } = require('../dist/index.js');

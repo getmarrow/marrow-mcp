@@ -970,7 +970,7 @@ const TOOLS = [
           description: 'Optional provenance source. Defaults to agent_autonomous for MCP calls.',
         },
         human_directed: { type: 'boolean', description: 'True only when the action is directly requested by the owner/user.' },
-        instruction_ref: { type: 'string', description: 'Optional opaque non-PII instruction reference.' },
+        instruction_ref: { type: 'string', description: 'Optional privacy-safe opaque reference. Dates, long digit runs, provider IDs, addresses, and domains are rejected locally; valid values are preserved exactly.' },
         source_meta: { type: 'object', description: 'Optional provenance metadata. PII and raw provider IDs are rejected by the API.' },
       },
       required: ['action'],
@@ -982,7 +982,8 @@ const TOOLS = [
       'Close a recorded action with success/failure, a specific outcome, and required proof. ' +
       'decision_id comes from marrow_think, marrow_auto, or an arbitration runtime that actually created a decision. ' +
       'Use the gate receipt from marrow_agent_runtime for consequential work. ' +
-      'Outcome closure is required for accountable fleet learning.',
+      'A canonical non-authorizing runtime receipt may durably record an observed_unverified outcome, but it never authorizes action or trusted learning. ' +
+      'Only committed:true closes trusted outcome learning.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1000,7 +1001,7 @@ const TOOLS = [
         action: { type: 'string', description: 'Optional original action. If provided and gate_receipt_id is omitted, MCP can fetch a matching runtime gate receipt before commit.' },
         type: { type: 'string', description: 'Optional original action type for auto gate lookup, e.g. deploy, publish, merge, handoff, implementation.' },
         surfaces: { type: 'array', items: { type: 'string' }, description: 'Optional surfaces for auto gate receipt, e.g. github, cloudflare, npm, production.' },
-        auto_gate: { type: 'boolean', description: 'If true/default and action is provided, call marrow_agent_runtime to obtain gate_receipt_id before commit.' },
+        auto_gate: { type: 'boolean', description: 'If true/default and action is provided, fetch a canonical runtime receipt. Allow/warn receipts may authorize closure; review/block receipts can authenticate only an observed_unverified post-action outcome.' },
         model_usage: { type: 'object', description: 'Optional compact token/cost/latency counts. Do not include raw prompts or completions.' },
       },
       required: ['decision_id', 'success', 'outcome'],

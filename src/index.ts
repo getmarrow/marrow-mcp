@@ -57,6 +57,15 @@ const SOURCE_CLIENTS = new Set(['claude-code', 'cursor', 'windsurf', 'openclaw',
 const SAFE_ARBITRATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const SAFE_ARBITRATION_EVIDENCE_KIND = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$/;
 const SAFE_ARBITRATION_EVIDENCE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const SAFE_OUTCOME_OBSERVATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const SAFE_INSTRUCTION_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const INSTRUCTION_REFERENCE_LONG_DIGIT_RUN = /\d{7,}/;
+const INSTRUCTION_REFERENCE_DATE = /(?:^|[._:-])(?:(?:19|20)\d{2}[._:-](?:0?[1-9]|1[0-2])[._:-](?:0?[1-9]|[12]\d|3[01])|(?:0?[1-9]|1[0-2])[._:-](?:0?[1-9]|[12]\d|3[01])[._:-](?:19|20)\d{2})(?:$|[._:-])/;
+const INSTRUCTION_REFERENCE_PROVIDER_ID = /^(?:telegram|tg|discord|slack|signal|whatsapp|wa|matrix|imessage|message|msg|chat|user|thread|channel|room|dm|sms|device)[_:.-]?[A-Za-z]*\d+[A-Za-z0-9_-]*$/i;
+const INSTRUCTION_REFERENCE_IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
+const INSTRUCTION_REFERENCE_IPV6 = /^(?:[a-f0-9]{0,4}:){2,}[a-f0-9:.]{0,}$/i;
+const INSTRUCTION_REFERENCE_DOMAIN = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/i;
+const INSTRUCTION_REFERENCE_ERROR = 'instruction_ref must be a privacy-safe opaque identifier (1-128 characters using A-Z, a-z, 0-9, ., _, :, or -); date-like references, long digit runs, provider IDs, addresses, and domains are not allowed.';
 const SECRETISH_ARBITRATION_REFERENCE =
   /(?:^|[._:-])(?:secret|token|password|credential|api[_-]?key|authorization|bearer)(?:$|[._:-])|^(?:sk|pk|ghp|github_pat|npm|cfut|mrw)_[A-Za-z0-9_-]+$/i;
 
@@ -69,6 +78,27 @@ function preserveOpaqueArbitrationValue(
     || !pattern.test(value)
     || SECRETISH_ARBITRATION_REFERENCE.test(value)) {
     throw new TypeError(`Agent arbitration ${field} must be a safe opaque identifier.`);
+  }
+  return value;
+}
+
+function preserveInstructionReference(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new TypeError(INSTRUCTION_REFERENCE_ERROR);
+  }
+  const domainSuffix = value.split('.').pop() || '';
+  const domainLike = INSTRUCTION_REFERENCE_DOMAIN.test(value) && /^[a-z]{2,}$/i.test(domainSuffix);
+  if (value !== value.trim()
+    || !SAFE_INSTRUCTION_REFERENCE.test(value)
+    || /^\d+$/.test(value)
+    || INSTRUCTION_REFERENCE_LONG_DIGIT_RUN.test(value)
+    || INSTRUCTION_REFERENCE_DATE.test(value)
+    || INSTRUCTION_REFERENCE_PROVIDER_ID.test(value)
+    || INSTRUCTION_REFERENCE_IPV4.test(value)
+    || INSTRUCTION_REFERENCE_IPV6.test(value)
+    || /^(?:https?:|www\.)/i.test(value)
+    || domainLike) {
+    throw new TypeError(INSTRUCTION_REFERENCE_ERROR);
   }
   return value;
 }
@@ -337,6 +367,46 @@ function runtimeGateCanAuthorizeCommit(runtime: MarrowAgentRuntimeResult | null)
     || (runtime.authorization_state === 'advisory_only' && runtime.hard_gate_obtained === false);
 }
 
+function runtimeGateCanSubmitOutcomeObservation(runtime: MarrowAgentRuntimeResult | null): boolean {
+  const receiptId = runtimeGateReceiptId(runtime);
+  return Boolean(
+    runtime
+    && receiptId
+    && runtime.runtime_authorization?.id === receiptId
+    && runtime.runtime_authorization.durable === true
+    && runtime.fresh_runtime_response === true
+    && runtime.guidance_obtained === true,
+  );
+}
+
+function runtimeGateMatchesCommitScope(
+  runtime: MarrowAgentRuntimeResult,
+  params: { action: string; decision_id: string },
+  sessionId?: string,
+  agentId?: string,
+): boolean {
+  const action = redactSensitiveText(params.action);
+  const runtimeDecisionId = runtime.runtime_authorization?.decision_state === 'created'
+    ? runtime.runtime_authorization.decision_id || runtime.decision_id
+    : undefined;
+  return runtime.action === action
+    && (!runtimeDecisionId || runtimeDecisionId === params.decision_id)
+    && (!sessionId || !runtime.session_id || runtime.session_id === sessionId)
+    && (!agentId || !runtime.agent_id || runtime.agent_id === agentId);
+}
+
+function isDurableObservedOutcome(value: Record<string, unknown>): boolean {
+  return value.accepted === true
+    && value.committed === false
+    && value.outcome_state === 'observed_unverified'
+    && typeof value.outcome_observation_id === 'string'
+    && SAFE_OUTCOME_OBSERVATION_IDENTIFIER.test(value.outcome_observation_id)
+    && value.authorization_granted === false
+    && value.trusted_learning_applied === false
+    && typeof value.exact_next_action === 'string'
+    && value.exact_next_action.trim().length > 0;
+}
+
 function clampPeriodDays(value: string | number | undefined, defaultDays: number = 7): number {
   const parsed = typeof value === 'number' ? value : parseInt(String(value || defaultDays), 10);
   if (!Number.isFinite(parsed)) return defaultDays;
@@ -445,7 +515,11 @@ export async function marrowThink(
   body.source_kind = params.source_kind || 'agent_autonomous';
   body.source_confidence = params.source_confidence ?? 0.9;
   body.human_directed = params.human_directed ?? false;
-  if (params.instruction_ref !== undefined) body.instruction_ref = params.instruction_ref;
+  if (params.instruction_ref !== undefined) {
+    body.instruction_ref = params.instruction_ref === null
+      ? null
+      : preserveInstructionReference(params.instruction_ref);
+  }
   if (params.instruction !== undefined) body.instruction = redactSensitiveText(params.instruction);
   if (params.instruction_hash !== undefined) body.instruction_hash = params.instruction_hash;
   body.source_meta = redactSensitiveValue({
@@ -516,6 +590,7 @@ export async function marrowCommit(
 ): Promise<CommitResult & { runtime_gate?: MarrowAgentRuntimeResult | null }> {
   let runtimeGate: MarrowAgentRuntimeResult | null = null;
   let gateReceiptId = params.gate_receipt_id || params.gate_receipt;
+  let observationOnly = false;
 
   if (!gateReceiptId && params.auto_gate !== false && params.action) {
     try {
@@ -539,9 +614,21 @@ export async function marrowCommit(
       throw new Error(`marrowCommit auto_gate failed before outcome closure: ${msg}`);
     }
     gateReceiptId = runtimeGateReceiptId(runtimeGate) || undefined;
-    if (!gateReceiptId || !runtimeGateCanAuthorizeCommit(runtimeGate)) {
+    if (!gateReceiptId) {
       throw new Error('marrowCommit auto_gate required a gate receipt backed by canonical runtime authorization, but /v1/agent/runtime returned missing, conflicting, or unverified receipt state');
     }
+    if (!runtimeGateMatchesCommitScope(runtimeGate, {
+      action: params.action,
+      decision_id: params.decision_id,
+    }, sessionId, agentId)) {
+      throw new Error('marrowCommit auto_gate runtime authorization scope does not match the requested action, decision, session, or agent; outcome submission stopped before commit');
+    }
+    const canAuthorizeCommit = runtimeGateCanAuthorizeCommit(runtimeGate);
+    const canSubmitObservation = runtimeGateCanSubmitOutcomeObservation(runtimeGate);
+    if (!canAuthorizeCommit && !canSubmitObservation) {
+      throw new Error('marrowCommit auto_gate required a gate receipt backed by canonical runtime authorization, but /v1/agent/runtime returned missing, conflicting, or unverified receipt state');
+    }
+    observationOnly = !canAuthorizeCommit;
   }
 
   const body: Record<string, unknown> = {
@@ -582,12 +669,25 @@ export async function marrowCommit(
     : await fetchWithRetryQueue(`${baseUrl}/v1/agent/commit`, commitInit, true);
 
   const json = await safeJsonResponse(res);
+  if (json.data
+    && typeof json.data === 'object'
+    && !Array.isArray(json.data)
+    && json.data.outcome_state === 'observed_unverified') {
+    if (!isDurableObservedOutcome(json.data)) throw invalidResponseError();
+    // A backend 202 can mean durable acceptance rather than async work. Do not
+    // attach the internal pending marker: this exact observation is terminal
+    // delivery and any trusted promotion must be a new explicit commit attempt.
+    return { ...json.data, committed: false, runtime_gate: runtimeGate } as CommitResult & {
+      runtime_gate?: MarrowAgentRuntimeResult | null;
+    };
+  }
+  if (observationOnly) throw invalidResponseError();
   if (res.status === 202
     && json.data
     && typeof json.data === 'object'
     && !Array.isArray(json.data)
     && (json.data.phase === undefined || json.data.phase === 'commit_pending' || json.data.resumable === true)) {
-    return markAutoResponseStatus({ ...json.data, committed: false } as CommitResult, res.status);
+    return markAutoResponseStatus({ ...json.data, committed: false, runtime_gate: runtimeGate } as CommitResult, res.status);
   }
   if (!json.data
     || typeof json.data !== 'object'
