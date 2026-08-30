@@ -1399,7 +1399,7 @@ if (process.argv[2] !== 'keys') {
                 inputSchema: {
                     type: 'object',
                     properties: {
-                        comparison_id: { type: 'string', description: 'Fetch a prior replay comparison by id.' },
+                        comparison_id: { type: 'string', minLength: 1, description: 'Fetch a prior replay comparison by id.' },
                         source_decision_id: { type: 'string', description: 'Original task decision used to bind the comparison.' },
                         workspace_binding_id: { type: 'string', description: 'Optional privacy-safe workspace binding from runtime.' },
                         constraints: {
@@ -1428,7 +1428,24 @@ if (process.argv[2] !== 'keys') {
                             required: ['decision_id'],
                         },
                     },
-                    required: ['source_decision_id', 'baseline', 'candidate'],
+                    oneOf: [
+                        {
+                            required: ['comparison_id'],
+                            not: {
+                                anyOf: [
+                                    { required: ['source_decision_id'] },
+                                    { required: ['workspace_binding_id'] },
+                                    { required: ['constraints'] },
+                                    { required: ['baseline'] },
+                                    { required: ['candidate'] },
+                                ],
+                            },
+                        },
+                        {
+                            required: ['source_decision_id', 'baseline', 'candidate'],
+                            not: { required: ['comparison_id'] },
+                        },
+                    ],
                 },
             },
             {

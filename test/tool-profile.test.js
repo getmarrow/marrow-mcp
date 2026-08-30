@@ -133,6 +133,17 @@ function messages(child) {
     .map((message) => [message.id, message]));
 }
 
+function matchesReplayMode(schema, input) {
+  const hasRequired = (required = []) => required.every((field) => Object.hasOwn(input, field));
+  const matchingBranches = schema.oneOf.filter((branch) => {
+    if (!hasRequired(branch.required)) return false;
+    if (branch.not?.required && hasRequired(branch.not.required)) return false;
+    if (branch.not?.anyOf?.some((clause) => hasRequired(clause.required))) return false;
+    return true;
+  });
+  return matchingBranches.length === 1;
+}
+
 test('unset MCP profile exposes exactly the documented 17-tool primary surface', () => {
   const output = messages(runMcp());
   const names = output.get(2).result.tools.map((tool) => tool.name);
@@ -148,6 +159,47 @@ test('explicit primary MCP profile matches the unset primary surface', () => {
     new Set(output.get(2).result.tools.map((tool) => tool.name)),
     new Set(PRIMARY_TOOLS),
   );
+});
+
+test('primary replay schema advertises exclusive fetch and create modes', () => {
+  const output = messages(runMcp());
+  const replaySchema = output.get(2).result.tools
+    .find((tool) => tool.name === 'marrow_replay_compare').inputSchema;
+
+  assert.equal(replaySchema.required, undefined);
+  assert.deepEqual(replaySchema.oneOf, [
+    {
+      required: ['comparison_id'],
+      not: {
+        anyOf: [
+          { required: ['source_decision_id'] },
+          { required: ['workspace_binding_id'] },
+          { required: ['constraints'] },
+          { required: ['baseline'] },
+          { required: ['candidate'] },
+        ],
+      },
+    },
+    {
+      required: ['source_decision_id', 'baseline', 'candidate'],
+      not: { required: ['comparison_id'] },
+    },
+  ]);
+
+  assert.equal(matchesReplayMode(replaySchema, { comparison_id: 'replay_12345678' }), true);
+  assert.equal(matchesReplayMode(replaySchema, {
+    source_decision_id: 'decision-source',
+    baseline: { decision_id: 'decision-a' },
+    candidate: { decision_id: 'decision-b' },
+  }), true);
+  assert.equal(matchesReplayMode(replaySchema, {}), false);
+  assert.equal(matchesReplayMode(replaySchema, { source_decision_id: 'decision-source' }), false);
+  assert.equal(matchesReplayMode(replaySchema, {
+    comparison_id: 'replay_12345678',
+    source_decision_id: 'decision-source',
+    baseline: { decision_id: 'decision-a' },
+    candidate: { decision_id: 'decision-b' },
+  }), false);
 });
 
 test('explicit core MCP profile preserves exactly the existing seven tools', () => {

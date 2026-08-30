@@ -103,6 +103,12 @@ test('replay comparison requires the backend decision contract before fetching',
       baseline: { decision_id: 'decision-same' },
       candidate: { decision_id: 'decision-same' },
     }, /baseline and candidate decision ids must be distinct/],
+    [{
+      comparison_id: 'replay_12345678',
+      source_decision_id: 'decision-source',
+      baseline: { decision_id: 'decision-a' },
+      candidate: { decision_id: 'decision-b' },
+    }, /comparison_id cannot be combined with replay comparison creation inputs/],
   ]) {
     await assert.rejects(
       marrowReplayCompare('key', 'https://api.example.test', input),
@@ -111,13 +117,6 @@ test('replay comparison requires the backend decision contract before fetching',
   }
 
   assert.equal(fetchCount, 0);
-
-  const cli = readFileSync(resolve(__dirname, '../src/cli.ts'), 'utf8');
-  const replaySchema = cli.slice(
-    cli.indexOf("name: 'marrow_replay_compare'"),
-    cli.indexOf("name: 'marrow_governance_control_plane'"),
-  );
-  assert.match(replaySchema, /required: \['source_decision_id', 'baseline', 'candidate'\]/);
 });
 
 test('coordination and replay reject path traversal and remain advertised MCP tools', async () => {

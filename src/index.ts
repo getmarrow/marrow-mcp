@@ -2152,8 +2152,19 @@ export async function marrowReplayCompare(
   sessionId?: string,
   agentId?: string
 ): Promise<Record<string, unknown>> {
-  const comparisonId = typeof input.comparison_id === 'string' ? input.comparison_id : '';
-  if (comparisonId) {
+  const hasComparisonId = Object.prototype.hasOwnProperty.call(input, 'comparison_id');
+  const hasCreateInput = [
+    'source_decision_id',
+    'workspace_binding_id',
+    'constraints',
+    'baseline',
+    'candidate',
+  ].some((field) => Object.prototype.hasOwnProperty.call(input, field));
+  if (hasComparisonId && hasCreateInput) {
+    throw new TypeError('comparison_id cannot be combined with replay comparison creation inputs.');
+  }
+  if (hasComparisonId) {
+    const comparisonId = typeof input.comparison_id === 'string' ? input.comparison_id.trim() : '';
     const safeId = validatePathParam(comparisonId, 'comparison_id');
     if (!safeId.startsWith('replay_')) throw new TypeError('comparison_id must be a Marrow replay identifier.');
     const res = await fetch(`${baseUrl}/v1/agent/governance/replay-comparisons/${safeId}`, {
