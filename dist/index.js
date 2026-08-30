@@ -178,6 +178,18 @@ const REPLAY_CONSTRAINT_STRING_FIELDS = new Set([
     'task_type',
 ]);
 const REPLAY_CONSTRAINT_BOOLEAN_FIELDS = new Set(['required_proof', 'same_workspace']);
+const REPLAY_INPUT_FIELDS = new Set([
+    'comparison_id',
+    'source_decision_id',
+    'workspace_binding_id',
+    'constraints',
+    'baseline',
+    'candidate',
+]);
+const REPLAY_OUTCOME_REFERENCE_FIELDS = new Set(['decision_id', 'label']);
+const SAFE_REPLAY_DECISION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const SAFE_REPLAY_LABEL = /^[A-Za-z0-9._:-]{1,80}$/;
+const SAFE_REPLAY_WORKSPACE_BINDING_ID = /^workspace_[a-f0-9]{24}$/;
 function boundCoordinationAgent(input, agentId) {
     const boundAgentId = typeof agentId === 'string' ? agentId.trim() : '';
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(boundAgentId)) {
@@ -220,10 +232,40 @@ function normalizeReplayConstraints(value) {
     return normalized;
 }
 function requiredReplayDecisionId(value, field) {
-    const decisionId = typeof value === 'string' ? value.trim() : '';
-    if (!decisionId)
+    if (typeof value !== 'string' || !value) {
         throw new TypeError(`${field} is required.`);
-    return decisionId;
+    }
+    if (!SAFE_REPLAY_DECISION_ID.test(value)) {
+        throw new TypeError(`${field} must be a safe identifier using 1-128 letters, numbers, dots, underscores, colons, or hyphens.`);
+    }
+    return value;
+}
+function optionalReplayWorkspaceBindingId(value) {
+    if (value == null)
+        return undefined;
+    if (typeof value !== 'string' || !SAFE_REPLAY_WORKSPACE_BINDING_ID.test(value)) {
+        throw new TypeError('workspace_binding_id must be a valid Marrow workspace binding identifier.');
+    }
+    return value;
+}
+function normalizeReplayOutcomeReference(value, field) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new TypeError(`${field} must be a bounded replay outcome reference.`);
+    }
+    const reference = value;
+    if (Object.keys(reference).some((key) => !REPLAY_OUTCOME_REFERENCE_FIELDS.has(key))) {
+        throw new TypeError(`${field} contains unsupported fields.`);
+    }
+    const decisionId = requiredReplayDecisionId(reference.decision_id, `${field}.decision_id`);
+    if (!Object.prototype.hasOwnProperty.call(reference, 'label')) {
+        return { decision_id: decisionId };
+    }
+    if (typeof reference.label !== 'string'
+        || !SAFE_REPLAY_LABEL.test(reference.label)
+        || SECRETISH_ARBITRATION_REFERENCE.test(reference.label)) {
+        throw new TypeError(`${field}.label must be a privacy-safe identifier using 1-80 letters, numbers, dots, underscores, colons, or hyphens.`);
+    }
+    return { decision_id: decisionId, label: reference.label };
 }
 /**
  * Validate and sanitize a base URL. Requires HTTPS.
@@ -1687,6 +1729,12 @@ async function marrowCoordinate(apiKey, baseUrl, input, sessionId, agentId) {
  * not execute either model or workflow through this endpoint.
  */
 async function marrowReplayCompare(apiKey, baseUrl, input, sessionId, agentId) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        throw new TypeError('Replay comparison input must be an object.');
+    }
+    if (Object.keys(input).some((field) => !REPLAY_INPUT_FIELDS.has(field))) {
+        throw new TypeError('Replay comparison input contains unsupported fields.');
+    }
     const hasComparisonId = Object.prototype.hasOwnProperty.call(input, 'comparison_id');
     const hasCreateInput = [
         'source_decision_id',
@@ -1709,23 +1757,17 @@ async function marrowReplayCompare(apiKey, baseUrl, input, sessionId, agentId) {
         return (await safeJsonResponse(res)).data;
     }
     const sourceDecisionId = requiredReplayDecisionId(input.source_decision_id, 'source_decision_id');
-    const baseline = input.baseline && typeof input.baseline === 'object' && !Array.isArray(input.baseline)
-        ? input.baseline
-        : {};
-    const candidate = input.candidate && typeof input.candidate === 'object' && !Array.isArray(input.candidate)
-        ? input.candidate
-        : {};
-    const baselineDecisionId = requiredReplayDecisionId(baseline.decision_id, 'baseline.decision_id');
-    const candidateDecisionId = requiredReplayDecisionId(candidate.decision_id, 'candidate.decision_id');
-    if (baselineDecisionId === candidateDecisionId) {
+    const baseline = normalizeReplayOutcomeReference(input.baseline, 'baseline');
+    const candidate = normalizeReplayOutcomeReference(input.candidate, 'candidate');
+    if (baseline.decision_id === candidate.decision_id) {
         throw new TypeError('baseline and candidate decision ids must be distinct.');
     }
     const body = (0, redact_1.redactSensitiveValue)({
         source_decision_id: sourceDecisionId,
-        workspace_binding_id: input.workspace_binding_id,
+        workspace_binding_id: optionalReplayWorkspaceBindingId(input.workspace_binding_id),
         constraints: normalizeReplayConstraints(input.constraints),
-        baseline: { ...baseline, decision_id: baselineDecisionId },
-        candidate: { ...candidate, decision_id: candidateDecisionId },
+        baseline,
+        candidate,
     });
     const res = await fetch(`${baseUrl}/v1/agent/governance/replay-comparisons`, {
         method: 'POST',
