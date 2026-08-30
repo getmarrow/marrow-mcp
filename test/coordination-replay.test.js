@@ -79,8 +79,11 @@ test('replay comparison submits only recorded decision evidence and can fetch by
   assert.equal(compared.generated_by_model, false);
   assert.equal(calls[0].url, 'https://api.example.test/v1/agent/governance/replay-comparisons');
   assert.equal(calls[0].init.method, 'POST');
-  assert.deepEqual(JSON.parse(calls[0].init.body).constraints, {
-    environment: 'staging', required_proof: true, tests: 'same',
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    source_decision_id: 'decision-source',
+    constraints: { environment: 'staging', required_proof: true, tests: 'same' },
+    baseline: { label: 'model-a', decision_id: 'decision-a' },
+    candidate: { label: 'model-b', decision_id: 'decision-b' },
   });
   assert.equal(calls[1].url, 'https://api.example.test/v1/agent/governance/replay-comparisons/replay_12345678');
 });
@@ -113,6 +116,50 @@ test('replay comparison requires the backend decision contract before fetching',
     await assert.rejects(
       marrowReplayCompare('key', 'https://api.example.test', input),
       message,
+    );
+  }
+
+  assert.equal(fetchCount, 0);
+});
+
+test('replay comparison rejects undeclared or unsafe content locally without network access', async (t) => {
+  const originalFetch = global.fetch;
+  let fetchCount = 0;
+  global.fetch = async () => {
+    fetchCount += 1;
+    return Response.json({ data: { status: 'complete' } });
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  const validCreate = {
+    source_decision_id: 'decision-source',
+    baseline: { decision_id: 'decision-a', label: 'baseline-a' },
+    candidate: { decision_id: 'decision-b', label: 'candidate-b' },
+  };
+  const unsafeInputs = [
+    { ...validCreate, prompt: 'customer prompt' },
+    { ...validCreate, code: 'private source code' },
+    { ...validCreate, transcript: 'private conversation' },
+    { comparison_id: 'replay_12345678', prompt: 'must not fetch' },
+    { ...validCreate, source_decision_id: 'decision/source' },
+    { ...validCreate, source_decision_id: `decision-${'x'.repeat(129)}` },
+    { ...validCreate, baseline: { ...validCreate.baseline, decision_id: 'decision with spaces' } },
+    { ...validCreate, candidate: { ...validCreate.candidate, decision_id: { nested: 'decision-b' } } },
+    { ...validCreate, baseline: { ...validCreate.baseline, prompt: 'customer prompt' } },
+    { ...validCreate, candidate: { ...validCreate.candidate, code: 'private source code' } },
+    { ...validCreate, candidate: { ...validCreate.candidate, transcript: 'private conversation' } },
+    { ...validCreate, baseline: { ...validCreate.baseline, unknown: { nested: true } } },
+    { ...validCreate, baseline: { ...validCreate.baseline, label: 'free text label' } },
+    { ...validCreate, baseline: { ...validCreate.baseline, label: 'sk_privatecredential' } },
+    { ...validCreate, candidate: { ...validCreate.candidate, label: 'x'.repeat(81) } },
+    { ...validCreate, candidate: { ...validCreate.candidate, label: { nested: 'candidate-b' } } },
+    { ...validCreate, workspace_binding_id: 'workspace-not-a-binding' },
+  ];
+
+  for (const input of unsafeInputs) {
+    await assert.rejects(
+      marrowReplayCompare('key', 'https://api.example.test', input),
+      /unsupported|safe identifier|privacy-safe identifier|required|workspace binding/,
     );
   }
 

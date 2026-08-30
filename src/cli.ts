@@ -1544,10 +1544,17 @@ const TOOLS = [
       'This does not run a model or replay customer content; it returns complete or insufficient_evidence.',
     inputSchema: {
       type: 'object',
+      additionalProperties: false,
       properties: {
         comparison_id: { type: 'string', minLength: 1, description: 'Fetch a prior replay comparison by id.' },
-        source_decision_id: { type: 'string', description: 'Original task decision used to bind the comparison.' },
-        workspace_binding_id: { type: 'string', description: 'Optional privacy-safe workspace binding from runtime.' },
+        source_decision_id: {
+          type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]{1,128}$',
+          description: 'Original task decision used to bind the comparison.',
+        },
+        workspace_binding_id: {
+          type: 'string', minLength: 34, maxLength: 34, pattern: '^workspace_[a-f0-9]{24}$',
+          description: 'Optional privacy-safe workspace binding from runtime.',
+        },
         constraints: {
           type: 'object',
           additionalProperties: false,
@@ -1565,12 +1572,22 @@ const TOOLS = [
         },
         baseline: {
           type: 'object',
-          properties: { label: { type: 'string' }, decision_id: { type: 'string' } },
+          additionalProperties: false,
+          maxProperties: 2,
+          properties: {
+            label: { type: 'string', minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9._:-]{1,80}$' },
+            decision_id: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]{1,128}$' },
+          },
           required: ['decision_id'],
         },
         candidate: {
           type: 'object',
-          properties: { label: { type: 'string' }, decision_id: { type: 'string' } },
+          additionalProperties: false,
+          maxProperties: 2,
+          properties: {
+            label: { type: 'string', minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9._:-]{1,80}$' },
+            decision_id: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]{1,128}$' },
+          },
           required: ['decision_id'],
         },
       },

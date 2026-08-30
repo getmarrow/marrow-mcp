@@ -134,6 +134,8 @@ function messages(child) {
 }
 
 function matchesReplayMode(schema, input) {
+  if (schema.additionalProperties === false
+    && Object.keys(input).some((field) => !Object.hasOwn(schema.properties, field))) return false;
   const hasRequired = (required = []) => required.every((field) => Object.hasOwn(input, field));
   const matchingBranches = schema.oneOf.filter((branch) => {
     if (!hasRequired(branch.required)) return false;
@@ -167,6 +169,16 @@ test('primary replay schema advertises exclusive fetch and create modes', () => 
     .find((tool) => tool.name === 'marrow_replay_compare').inputSchema;
 
   assert.equal(replaySchema.required, undefined);
+  assert.equal(replaySchema.additionalProperties, false);
+  assert.equal(replaySchema.properties.source_decision_id.pattern, '^[A-Za-z0-9._:-]{1,128}$');
+  assert.equal(replaySchema.properties.baseline.additionalProperties, false);
+  assert.equal(replaySchema.properties.baseline.maxProperties, 2);
+  assert.equal(replaySchema.properties.baseline.properties.decision_id.pattern, '^[A-Za-z0-9._:-]{1,128}$');
+  assert.equal(replaySchema.properties.baseline.properties.label.pattern, '^[A-Za-z0-9._:-]{1,80}$');
+  assert.equal(replaySchema.properties.candidate.additionalProperties, false);
+  assert.equal(replaySchema.properties.candidate.maxProperties, 2);
+  assert.equal(replaySchema.properties.candidate.properties.decision_id.pattern, '^[A-Za-z0-9._:-]{1,128}$');
+  assert.equal(replaySchema.properties.candidate.properties.label.pattern, '^[A-Za-z0-9._:-]{1,80}$');
   assert.deepEqual(replaySchema.oneOf, [
     {
       required: ['comparison_id'],
@@ -187,6 +199,7 @@ test('primary replay schema advertises exclusive fetch and create modes', () => 
   ]);
 
   assert.equal(matchesReplayMode(replaySchema, { comparison_id: 'replay_12345678' }), true);
+  assert.equal(matchesReplayMode(replaySchema, { comparison_id: 'replay_12345678', prompt: 'private' }), false);
   assert.equal(matchesReplayMode(replaySchema, {
     source_decision_id: 'decision-source',
     baseline: { decision_id: 'decision-a' },
