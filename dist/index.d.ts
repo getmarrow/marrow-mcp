@@ -5,6 +5,7 @@ import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, Orie
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 import { type LifecycleEvent } from './lifecycle-spool';
 export type { Narrative, CommitResult } from './types';
+declare const AUTO_MANAGED_WRITE: unique symbol;
 /**
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots.
@@ -43,6 +44,7 @@ export declare function marrowThink(apiKey: string, baseUrl: string, params: {
 }, sessionId?: string, agentId?: string, signal?: AbortSignal, options?: {
     idempotencyKey?: string;
     responseMode?: 'ack';
+    [AUTO_MANAGED_WRITE]?: true;
 }): Promise<ThinkResult>;
 /**
  * Explicitly commit the result of an action to Marrow.
@@ -68,6 +70,7 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     reused_identified_workflow?: boolean;
     model_usage?: MarrowModelUsageInput;
     modelUsage?: MarrowModelUsageInput;
+    [AUTO_MANAGED_WRITE]?: true;
 }, sessionId?: string, agentId?: string, signal?: AbortSignal, idempotencyKey?: string): Promise<CommitResult & {
     runtime_gate?: MarrowAgentRuntimeResult | null;
 }>;

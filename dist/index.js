@@ -73,6 +73,10 @@ const SAFE_ARBITRATION_EVIDENCE_KIND = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$/;
 const SAFE_ARBITRATION_EVIDENCE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const SAFE_OUTCOME_OBSERVATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const SAFE_INSTRUCTION_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const AGENT_WRITE_RECONCILIATION_ATTEMPTS = 3;
+const AGENT_WRITE_RECONCILIATION_DELAY_MS = 1_000;
+const AUTO_MANAGED_WRITE = Symbol('marrow-auto-managed-write');
 const INSTRUCTION_REFERENCE_LONG_DIGIT_RUN = /\d{7,}/;
 const INSTRUCTION_REFERENCE_DATE = /(?:^|[._:-])(?:(?:19|20)\d{2}[._:-](?:0?[1-9]|1[0-2])[._:-](?:0?[1-9]|[12]\d|3[01])|(?:0?[1-9]|1[0-2])[._:-](?:0?[1-9]|[12]\d|3[01])[._:-](?:19|20)\d{2})(?:$|[._:-])/;
 const INSTRUCTION_REFERENCE_PROVIDER_ID = /^(?:telegram|tg|discord|slack|signal|whatsapp|wa|matrix|imessage|message|msg|chat|user|thread|channel|room|dm|sms|device)[_:.-]?[A-Za-z]*\d+[A-Za-z0-9_-]*$/i;
@@ -447,6 +451,115 @@ function isDurableObservedOutcome(value) {
         && typeof value.exact_next_action === 'string'
         && value.exact_next_action.trim().length > 0;
 }
+function invocationIdempotencyKey(kind, supplied) {
+    if (supplied !== undefined) {
+        if (supplied !== supplied.trim() || !SAFE_IDEMPOTENCY_KEY.test(supplied)) {
+            throw new TypeError('Idempotency key must be a bounded privacy-safe identifier.');
+        }
+        return supplied;
+    }
+    return `mcp-${kind}:${(0, node_crypto_1.randomUUID)()}`;
+}
+function reconciliationError(exhausted) {
+    return new request_reliability_1.MarrowRequestError({
+        code: 'invalid_response',
+        backendCode: exhausted ? 'MCP_RECONCILIATION_EXHAUSTED' : 'MCP_RECONCILIATION_INVALID',
+        message: exhausted
+            ? 'Marrow write reconciliation did not complete within the bounded retry window'
+            : 'Marrow returned an invalid write reconciliation response',
+        status: 202,
+        retryable: exhausted,
+        exactFix: exhausted
+            ? 'Retry the same operation explicitly after checking Marrow status; do not assume the decision or outcome closed.'
+            : 'Check Marrow status and retry explicitly; do not accept or act on the malformed pending response.',
+    });
+}
+function validCorrelationId(value) {
+    return typeof value === 'string'
+        && value.length > 0
+        && value.length <= 256
+        && value === value.trim()
+        && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+}
+function pendingDecisionId(kind, value, idempotencyKey, expectedDecisionId) {
+    if (value.retryable !== true
+        || value.committed !== false
+        || value.idempotency_key !== idempotencyKey
+        || !validCorrelationId(value.decision_id)) {
+        return null;
+    }
+    if (kind === 'think') {
+        return value.reconciliation_state === 'runtime_continuation_persistence_pending'
+            && value.decision_state === 'created'
+            ? value.decision_id
+            : null;
+    }
+    if (value.decision_id !== expectedDecisionId)
+        return null;
+    if (value.reconciliation_state === 'pending')
+        return value.decision_id;
+    return value.reconciliation_state === 'runtime_continuation_invalidation_pending'
+        && value.outcome_persisted === true
+        ? value.decision_id
+        : null;
+}
+async function waitForWriteReconciliation(signal) {
+    await new Promise((resolve, reject) => {
+        let timer;
+        const abort = () => {
+            if (timer)
+                clearTimeout(timer);
+            signal?.removeEventListener('abort', abort);
+            reject((0, request_reliability_1.normalizeRequestError)(signal?.reason || new DOMException('Aborted', 'AbortError')));
+        };
+        if (signal?.aborted) {
+            abort();
+            return;
+        }
+        timer = setTimeout(() => {
+            signal?.removeEventListener('abort', abort);
+            resolve();
+        }, AGENT_WRITE_RECONCILIATION_DELAY_MS);
+        signal?.addEventListener('abort', abort, { once: true });
+    });
+}
+async function fetchAgentWrite(url, init, kind, idempotencyKey, expectedDecisionId, autoManaged = false) {
+    let reconciledDecisionId = null;
+    for (let attempt = 0; attempt < AGENT_WRITE_RECONCILIATION_ATTEMPTS; attempt += 1) {
+        const response = await fetch(url, init);
+        const json = await safeJsonResponse(response);
+        if (!json.data || typeof json.data !== 'object' || Array.isArray(json.data)) {
+            throw (0, request_reliability_1.invalidResponseError)();
+        }
+        const data = json.data;
+        // marrow_auto owns its existing phase/budget continuation contract. Its
+        // reserved keys are created only by autoIdempotencyKey below.
+        if (response.status === 202 && autoManaged) {
+            return { response, data };
+        }
+        if (response.status !== 202 || (kind === 'commit' && data.outcome_state === 'observed_unverified')) {
+            if (reconciledDecisionId) {
+                if (kind === 'think' && data.decision_id !== reconciledDecisionId) {
+                    throw reconciliationError(false);
+                }
+                if (kind === 'commit' && data.decision_id !== undefined && data.decision_id !== expectedDecisionId) {
+                    throw reconciliationError(false);
+                }
+            }
+            return { response, data };
+        }
+        const currentDecisionId = pendingDecisionId(kind, data, idempotencyKey, expectedDecisionId);
+        if (!currentDecisionId || (reconciledDecisionId && currentDecisionId !== reconciledDecisionId)) {
+            throw reconciliationError(false);
+        }
+        reconciledDecisionId = currentDecisionId;
+        if (attempt + 1 >= AGENT_WRITE_RECONCILIATION_ATTEMPTS) {
+            throw reconciliationError(true);
+        }
+        await waitForWriteReconciliation(init.signal || undefined);
+    }
+    throw reconciliationError(true);
+}
 function clampPeriodDays(value, defaultDays = 7) {
     const parsed = typeof value === 'number' ? value : parseInt(String(value || defaultDays), 10);
     if (!Number.isFinite(parsed))
@@ -511,20 +624,18 @@ async function marrowThink(apiKey, baseUrl, params, sessionId, agentId, signal, 
         body.previous_outcome = (0, redact_1.redactSensitiveText)(params.previous_outcome ?? '');
     }
     const thinkUrl = `${baseUrl}/v1/agent/think${options?.responseMode === 'ack' ? '?response=ack' : ''}`;
+    const idempotencyKey = invocationIdempotencyKey('think', options?.idempotencyKey);
     const thinkInit = {
         method: 'POST',
         headers: {
             ...buildHeaders(apiKey, sessionId, 'application/json', agentId),
-            ...(options?.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
+            'Idempotency-Key': idempotencyKey,
         },
         body: JSON.stringify(body),
         signal,
     };
-    const res = options?.idempotencyKey
-        ? await fetch(thinkUrl, thinkInit)
-        : await fetchWithRetryQueue(thinkUrl, thinkInit, true);
-    const json = await safeJsonResponse(res);
-    return markAutoResponseStatus(json.data, res.status);
+    const { response, data } = await fetchAgentWrite(thinkUrl, thinkInit, 'think', idempotencyKey, undefined, options?.[AUTO_MANAGED_WRITE] === true);
+    return markAutoResponseStatus(data, response.status);
 }
 /**
  * Explicitly commit the result of an action to Marrow.
@@ -608,46 +719,36 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId, signal,
     const modelUsage = params.model_usage || params.modelUsage;
     if (modelUsage)
         body.model_usage = normalizeModelUsage(modelUsage);
+    const resolvedIdempotencyKey = invocationIdempotencyKey('commit', idempotencyKey);
     const commitInit = {
         method: 'POST',
         headers: {
             ...buildHeaders(apiKey, sessionId, 'application/json', agentId),
-            ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+            'Idempotency-Key': resolvedIdempotencyKey,
         },
         body: JSON.stringify(body),
         signal,
     };
-    const res = idempotencyKey
-        ? await fetch(`${baseUrl}/v1/agent/commit`, commitInit)
-        : await fetchWithRetryQueue(`${baseUrl}/v1/agent/commit`, commitInit, true);
-    const json = await safeJsonResponse(res);
-    if (json.data
-        && typeof json.data === 'object'
-        && !Array.isArray(json.data)
-        && json.data.outcome_state === 'observed_unverified') {
-        if (!isDurableObservedOutcome(json.data))
+    const { response, data } = await fetchAgentWrite(`${baseUrl}/v1/agent/commit`, commitInit, 'commit', resolvedIdempotencyKey, params.decision_id, params[AUTO_MANAGED_WRITE] === true);
+    if (data.outcome_state === 'observed_unverified') {
+        if (!isDurableObservedOutcome(data))
             throw (0, request_reliability_1.invalidResponseError)();
         // A backend 202 can mean durable acceptance rather than async work. Do not
         // attach the internal pending marker: this exact observation is terminal
         // delivery and any trusted promotion must be a new explicit commit attempt.
-        return { ...json.data, committed: false, runtime_gate: runtimeGate };
+        return { ...data, committed: false, runtime_gate: runtimeGate };
     }
     if (observationOnly)
         throw (0, request_reliability_1.invalidResponseError)();
-    if (res.status === 202
-        && json.data
-        && typeof json.data === 'object'
-        && !Array.isArray(json.data)
-        && (json.data.phase === undefined || json.data.phase === 'commit_pending' || json.data.resumable === true)) {
-        return markAutoResponseStatus({ ...json.data, committed: false, runtime_gate: runtimeGate }, res.status);
+    if (response.status === 202
+        && params[AUTO_MANAGED_WRITE] === true
+        && (data.phase === undefined || data.phase === 'commit_pending' || data.resumable === true)) {
+        return markAutoResponseStatus({ ...data, committed: false, runtime_gate: runtimeGate }, response.status);
     }
-    if (!json.data
-        || typeof json.data !== 'object'
-        || Array.isArray(json.data)
-        || typeof json.data.committed !== 'boolean') {
+    if (typeof data.committed !== 'boolean') {
         throw (0, request_reliability_1.invalidResponseError)();
     }
-    return markAutoResponseStatus({ ...json.data, committed: json.data.committed, runtime_gate: runtimeGate }, res.status);
+    return markAutoResponseStatus({ ...data, committed: data.committed, runtime_gate: runtimeGate }, response.status);
 }
 async function marrowModelUsage(apiKey, baseUrl, input, sessionId, agentId) {
     const body = normalizeModelUsage({
@@ -924,6 +1025,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             }, sessionId, agentId, thinkTimeout.signal, {
                 idempotencyKey: autoIdempotencyKey(operationId, 'think'),
                 responseMode: 'ack',
+                [AUTO_MANAGED_WRITE]: true,
             });
         }
         catch (error) {
@@ -1057,6 +1159,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
                 type: params.type || 'general',
                 surfaces: params.surfaces,
                 auto_gate: false,
+                [AUTO_MANAGED_WRITE]: true,
             }, sessionId, agentId, commitTimeout.signal, autoIdempotencyKey(operationId, 'commit'));
         }
         catch (error) {
