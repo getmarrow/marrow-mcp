@@ -1036,12 +1036,16 @@ test('marrowCommit auto_gate preserves a valid canonical no-decision receipt', a
   }
 });
 
-test('marrowCommit queues transient commit failures and drains on next commit', async () => {
+test('marrowCommit safely retries a transient failure immediately with one stable invocation key', async () => {
   const { marrowCommit } = require('../dist/index.js');
   const originalFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options) => {
-    calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+    calls.push({
+      url: String(url),
+      body: options.body ? JSON.parse(options.body) : null,
+      idempotencyKey: new Headers(options.headers).get('Idempotency-Key'),
+    });
     if (calls.length === 1) {
       return new Response(JSON.stringify({ error: 'temporary upstream failure' }), {
         status: 503,
@@ -1055,24 +1059,24 @@ test('marrowCommit queues transient commit failures and drains on next commit', 
   };
 
   try {
-    await assert.rejects(
-      () => marrowCommit('mrw_test_key', 'https://api.example.com', {
-        decision_id: 'decision_retry_1',
-        success: true,
-        outcome: 'queued',
-        auto_gate: false,
-      }),
-      /503/
-    );
+    await marrowCommit('mrw_test_key', 'https://api.example.com', {
+      decision_id: 'decision_retry_1',
+      success: true,
+      outcome: 'retried safely',
+      auto_gate: false,
+    });
     await marrowCommit('mrw_test_key', 'https://api.example.com', {
       decision_id: 'decision_retry_2',
       success: true,
-      outcome: 'drain',
+      outcome: 'new invocation',
       auto_gate: false,
     });
     assert.equal(calls.length, 3);
-    assert.equal(calls[1].body.decision_id, 'decision_retry_1');
+    assert.equal(calls[0].body.decision_id, 'decision_retry_1');
+    assert.deepEqual(calls[1].body, calls[0].body);
+    assert.equal(calls[1].idempotencyKey, calls[0].idempotencyKey);
     assert.equal(calls[2].body.decision_id, 'decision_retry_2');
+    assert.notEqual(calls[2].idempotencyKey, calls[0].idempotencyKey);
   } finally {
     globalThis.fetch = originalFetch;
   }

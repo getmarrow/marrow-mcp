@@ -116,7 +116,11 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.79
+## What's New in v3.9.80
+
+v3.9.80 is a reliability patch for direct `marrow_think` and `marrow_commit` calls. Each invocation now carries one stable bounded idempotency key. Only the backend's documented pending-persistence states are reconciled, using the byte-identical request and key after a fixed one-second delay for at most three total attempts. A 202 response is never reported as successful completion; unknown, malformed, correlation-drifted, or exhausted pending responses fail closed with a structured error. Explicit caller-supplied idempotency keys remain unchanged, and durable `observed_unverified` outcomes retain their terminal, non-authorizing semantics.
+
+### Previous release: v3.9.79
 
 v3.9.79 aligns `marrow_replay_compare` with the production replay contract. Its public MCP schema now exposes two exclusive modes: fetch an existing comparison with `comparison_id`, or create one with `source_decision_id`, `baseline.decision_id`, and `candidate.decision_id`. Empty, incomplete, mixed-mode, blank-ID, unsafe-ID, same-decision, and undeclared content-bearing fields fail locally before any request, while comparison fetches and valid distinct-decision comparisons keep their existing behavior. Outbound baseline and candidate references contain only validated decision IDs and optional privacy-safe identifier labels. Replay comparison still uses only already-recorded durable evidence and never runs a model or replays customer content. This release requires SDK `^3.7.62`, keeping the active MCP dependency floor aligned with the current SDK release.
 
