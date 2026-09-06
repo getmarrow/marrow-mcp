@@ -3,18 +3,26 @@ const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { resolve } = require('node:path');
-const { version: packageVersion } = require('../package.json');
-const { MARROW_AUTO_RESPONSE_BUDGET_MAX_MS } = require('../dist/index.js');
+let packageVersion;
+let MARROW_AUTO_RESPONSE_BUDGET_MAX_MS;
+let configurationFailed = false;
+try {
+  ({ version: packageVersion } = require('../package.json'));
+  ({ MARROW_AUTO_RESPONSE_BUDGET_MAX_MS } = require('../dist/index.js'));
+} catch {
+  // A missing/broken build must still reach the CLI's bounded failure handler.
+  configurationFailed = true;
+}
 
 const CANARY_TOOL_TIMEOUT_MARGIN_MS = 2_000;
 const CANARY_TOOL_TIMEOUT_MAX_MS = 10_000;
 const CANARY_DEFAULT_TOOL_TIMEOUT_MS = Math.min(
   CANARY_TOOL_TIMEOUT_MAX_MS,
-  MARROW_AUTO_RESPONSE_BUDGET_MAX_MS + CANARY_TOOL_TIMEOUT_MARGIN_MS,
+  (MARROW_AUTO_RESPONSE_BUDGET_MAX_MS || 8_000) + CANARY_TOOL_TIMEOUT_MARGIN_MS,
 );
 
 if (CANARY_DEFAULT_TOOL_TIMEOUT_MS < MARROW_AUTO_RESPONSE_BUDGET_MAX_MS + CANARY_TOOL_TIMEOUT_MARGIN_MS) {
-  throw new Error('MCP canary timeout ceiling cannot contain the bounded marrow_auto budget');
+  configurationFailed = true;
 }
 
 function canaryCases(operationId) {
@@ -49,6 +57,68 @@ const HOT_PATH_TOOLS = new Set([
   'marrow_auto',
 ]);
 const OUTPUT_LIMIT_BYTES = 256 * 1024;
+const TOOL_NAMES = new Set(canaryCases('').map(([name]) => name));
+const errorEvidence = new WeakMap();
+const failureRecords = new WeakMap();
+
+function canaryError(errorClass, message = errorClass, httpStatus) {
+  const error = new Error(message);
+  errorEvidence.set(error, { error_class: errorClass, http_status: httpStatus });
+  return error;
+}
+
+function upstreamError(payload, fallback, message) {
+  const statuses = [payload?.http_status, payload?.status, payload?.status_code,
+    payload?.error?.http_status, payload?.error?.status, payload?.error?.status_code];
+  const status = statuses.find((value) => Number.isInteger(value) && value >= 100 && value <= 599);
+  const code = payload?.error?.code ?? payload?.error_code ?? payload?.code;
+  let errorClass = fallback;
+  if (status === 401 || ['UNAUTHORIZED', 'AUTH_REQUIRED', 'AUTHENTICATION_REQUIRED', 'INVALID_API_KEY', 'API_KEY_REQUIRED', 'unauthorized', 'invalid_api_key', 'authentication_required'].includes(code)) {
+    errorClass = 'authentication';
+  } else if (status === 403 || ['FORBIDDEN', 'PERMISSION_DENIED', 'INSUFFICIENT_PERMISSIONS', 'PLAN_REQUIRED', 'UPGRADE_REQUIRED', 'forbidden', 'permission_denied', 'plan_required'].includes(code)) {
+    errorClass = 'authorization';
+  } else if (status === 503 || code === 'HTTP_503' || code === 'http_503') {
+    errorClass = 'unavailable503';
+  }
+  return canaryError(errorClass, message, status);
+}
+
+function safeVersion(value) {
+  return typeof value === 'string' && value.length <= 64
+    && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value) ? value : null;
+}
+
+function safeMs(value) {
+  return Number.isFinite(value) ? Math.max(0, Math.min(60_000, Math.round(value))) : 0;
+}
+
+function failureRecord(error, context = {}) {
+  const evidence = errorEvidence.get(error) || { error_class: 'internal' };
+  const results = (context.results || []).slice(0, 11).map((row) => Object.freeze({
+    tool: row.tool, ok: true, live: true, latency_ms: safeMs(row.latency_ms),
+  }));
+  return Object.freeze({
+    schema_version: 1,
+    ok: false,
+    stage: context.stage || 'setup',
+    tool: TOOL_NAMES.has(context.tool) ? context.tool : null,
+    error_class: evidence.error_class,
+    package_version: safeVersion(context.version),
+    expected_version: safeVersion(context.expectedVersion),
+    attempt: Math.max(0, Math.min(3, context.attempt || 0)),
+    latency_ms: safeMs(performance.now() - (context.stageStarted ?? performance.now())),
+    total_latency_ms: safeMs(performance.now() - (context.started ?? performance.now())),
+    process_count: context.processCount === 1 ? 1 : 0,
+    initialization_ms: context.initializationMs == null ? null : safeMs(context.initializationMs),
+    tools_checked: results.length,
+    results: Object.freeze(results),
+    ...(evidence.http_status === undefined ? {} : { http_status: evidence.http_status }),
+  });
+}
+
+function serializeFailure(error) {
+  return JSON.stringify(failureRecords.get(error) || failureRecord(error));
+}
 
 function boundedMs(name, fallback, minimum = 100, maximum = 10_000, env = process.env) {
   const parsed = Number(env[name] || fallback);
@@ -73,26 +143,25 @@ function latencyGroup(rows) {
 }
 
 function toolPayload(message, name) {
-  if (!message) throw new Error(`${name} returned no MCP tool response`);
-  if (message.error) throw new Error(`${name} returned JSON-RPC error ${message.error.code}`);
+  if (!message) throw canaryError('contract', 'Missing MCP tool response');
+  if (message.error) throw upstreamError(message, 'protocol', 'MCP JSON-RPC error');
   const result = message.result || {};
   const text = result.content?.[0]?.text;
-  if (typeof text !== 'string' || !text.trim()) throw new Error(`${name} returned no MCP tool payload`);
+  if (typeof text !== 'string' || !text.trim()) throw canaryError('contract', 'Missing MCP tool payload');
   let payload;
-  try { payload = JSON.parse(text); } catch { throw new Error(`${name} returned invalid tool JSON`); }
+  try { payload = JSON.parse(text); } catch { throw canaryError('contract', 'Invalid tool JSON'); }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).length === 0) {
-    throw new Error(`${name} returned an empty or invalid tool payload`);
+    throw canaryError('contract', 'Empty or invalid tool payload');
   }
   if (result.isError || payload.ok === false || payload.available === false) {
-    const code = payload.error?.code || payload.error_code || 'tool_unavailable';
-    throw new Error(`${name} unavailable (${code})`);
+    throw upstreamError(payload, 'tool_unavailable', 'MCP tool unavailable');
   }
   return payload;
 }
 
 function validatePayload(name, payload) {
   const requireField = (valid, field) => {
-    if (!valid) throw new Error(`${name} returned an invalid ${field} contract`);
+    if (!valid) throw canaryError('contract', `${name} returned an invalid ${field} contract`);
   };
   if (name === 'marrow_status' || name === 'marrow_runtime_status') {
     requireField(
@@ -160,27 +229,31 @@ class PersistentMcpClient {
 
   start() {
     if (this.child) return;
-    this.child = this.spawnProcess(this.command, this.args, {
-      env: this.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    try {
+      this.child = this.spawnProcess(this.command, this.args, {
+        env: this.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch { throw canaryError('process_spawn', 'MCP child spawn failed'); }
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', (chunk) => this.onStdout(chunk));
     this.child.stderr.on('data', (chunk) => {
       this.stderrBytes += Buffer.byteLength(chunk);
-      if (this.stderrBytes > this.maxOutputBytes) this.abort(new Error('MCP child exceeded stderr limit'));
+      if (this.stderrBytes > this.maxOutputBytes) this.abort(canaryError('output_limit', 'MCP child exceeded stderr limit'));
     });
-    this.child.once('error', (error) => this.abort(new Error(`MCP child failed: ${error.code || 'process_error'}`)));
-    this.child.once('exit', (code, signal) => {
+    this.child.stdin.on?.('error', () => this.abort(canaryError('process_write', 'MCP child write failed')));
+    this.child.once('error', () => this.abort(canaryError('process_spawn', 'MCP child spawn failed')));
+    this.child.once('exit', () => {
       this.closed = true;
-      if (this.pending.size > 0) this.rejectAll(new Error(`MCP child exited ${code ?? signal ?? 'unknown'}`));
+      this.fatalError ||= canaryError('process_exit', 'MCP child exited');
+      this.rejectAll(this.fatalError);
     });
   }
 
   onStdout(chunk) {
     this.stdoutBuffer += chunk;
     if (Buffer.byteLength(this.stdoutBuffer) > this.maxOutputBytes) {
-      this.abort(new Error('MCP child exceeded stdout limit'));
+      this.abort(canaryError('output_limit', 'MCP child exceeded stdout limit'));
       return;
     }
     for (;;) {
@@ -191,13 +264,19 @@ class PersistentMcpClient {
       if (!line) continue;
       let message;
       try { message = JSON.parse(line); } catch {
-        this.abort(new Error('MCP child emitted malformed JSON'));
+        this.abort(canaryError('protocol', 'MCP child emitted malformed JSON'));
+        return;
+      }
+      if (!message || typeof message !== 'object' || Array.isArray(message) || message.jsonrpc !== '2.0'
+        || (message.id !== undefined && (!Number.isSafeInteger(message.id)
+          || (Object.hasOwn(message, 'result') === Object.hasOwn(message, 'error'))))) {
+        this.abort(canaryError('protocol', 'MCP child emitted malformed JSON-RPC'));
         return;
       }
       if (!Number.isSafeInteger(message.id)) continue;
       const pending = this.pending.get(message.id);
       if (!pending) {
-        this.abort(new Error(`MCP child returned unexpected response id ${message.id}`));
+        this.abort(canaryError('protocol', 'MCP child returned unexpected response id'));
         return;
       }
       clearTimeout(pending.timer);
@@ -207,25 +286,30 @@ class PersistentMcpClient {
   }
 
   request(method, params = {}, timeoutMs = this.timeoutMs) {
+    if (this.fatalError) return Promise.reject(this.fatalError);
     if (!this.child || this.closed || !this.child.stdin.writable) {
-      return Promise.reject(new Error('MCP child is not writable'));
+      return Promise.reject(canaryError('process_write', 'MCP child is not writable'));
     }
     const id = this.nextId++;
     return new Promise((resolveRequest, rejectRequest) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        const error = new Error(`${method} timed out`);
+        const error = canaryError('request_timeout', `${method} timed out`);
         rejectRequest(error);
         this.abort(error);
       }, timeoutMs);
       this.pending.set(id, { resolve: resolveRequest, reject: rejectRequest, timer });
-      this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`, (error) => {
+      const onWrite = (error) => {
         if (!error) return;
         clearTimeout(timer);
         this.pending.delete(id);
-        rejectRequest(new Error(`${method} write failed`));
-        this.abort(error);
-      });
+        const failure = canaryError('process_write', `${method} write failed`);
+        rejectRequest(failure);
+        this.abort(failure);
+      };
+      try {
+        this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`, onWrite);
+      } catch (error) { onWrite(error); }
     });
   }
 
@@ -238,8 +322,11 @@ class PersistentMcpClient {
   }
 
   abort(error) {
-    this.rejectAll(error instanceof Error ? error : new Error('MCP child aborted'));
-    if (this.child && !this.closed) this.child.kill('SIGKILL');
+    this.fatalError ||= error instanceof Error ? error : canaryError('internal');
+    this.rejectAll(this.fatalError);
+    if (this.child && !this.closed) {
+      try { this.child.kill('SIGKILL'); } catch { /* Preserve the original failure. */ }
+    }
   }
 
   async stop() {
@@ -247,7 +334,9 @@ class PersistentMcpClient {
     this.child.stdin.end();
     await new Promise((resolveExit) => {
       const timer = setTimeout(() => {
-        if (!this.closed) this.child.kill('SIGKILL');
+        if (!this.closed) {
+          try { this.child.kill('SIGKILL'); } catch { /* Shutdown remains bounded. */ }
+        }
         resolveExit();
       }, 500);
       this.child.once('exit', () => {
@@ -259,8 +348,23 @@ class PersistentMcpClient {
 }
 
 async function runCanary(env = process.env, options = {}) {
+  const started = performance.now();
+  const context = { started, stageStarted: started, stage: 'setup', results: [],
+    expectedVersion: env.MARROW_EXPECTED_MCP_VERSION || packageVersion };
+  try {
+    return await executeCanary(env, options, context);
+  } catch (caught) {
+    const error = errorEvidence.has(caught) ? caught : canaryError('internal');
+    error.failure = failureRecord(error, context);
+    failureRecords.set(error, error.failure);
+    throw error;
+  }
+}
+
+async function executeCanary(env, options, context) {
+  if (configurationFailed) throw canaryError('configuration', 'MCP canary build configuration failed');
   const key = env.MARROW_API_KEY || '';
-  if (!key) throw new Error('MARROW_API_KEY is required for the authenticated MCP control-path canary');
+  if (!key) throw canaryError('authentication', 'MARROW_API_KEY is required for the authenticated MCP control-path canary');
   const toolTimeoutMs = boundedMs(
     'MARROW_MCP_CANARY_TOOL_TIMEOUT_MS',
     CANARY_DEFAULT_TOOL_TIMEOUT_MS,
@@ -291,30 +395,44 @@ async function runCanary(env = process.env, options = {}) {
     env: childEnv,
     spawnProcess: options.spawnProcess,
   });
-  const totalTimer = setTimeout(() => client.abort(new Error('MCP canary total timeout')), totalTimeoutMs);
+  const totalTimer = setTimeout(() => client.abort(canaryError('total_timeout', 'MCP canary total timeout')), totalTimeoutMs);
   const processStarted = performance.now();
   const cases = canaryCases(`canary_${randomUUID()}`);
-  client.start();
+  const stage = (value, tool = null, attempt = 0) => {
+    Object.assign(context, { stage: value, tool, attempt, stageStarted: performance.now() });
+  };
+  let failed = false;
   try {
+    stage('spawn');
+    client.start();
+    context.processCount = 1;
+    stage('initialize', null, 1);
     const initialized = await client.request('initialize', {}, toolTimeoutMs + 3_000);
-    if (initialized.error) throw new Error(`MCP initialize failed ${initialized.error.code}`);
+    if (initialized.error) throw upstreamError(initialized, 'protocol', 'MCP initialize failed');
     const version = initialized.result?.serverInfo?.version;
-    if (!version) throw new Error('MCP initialize produced no version');
-    if (version !== expectedVersion) throw new Error(`MCP canary loaded ${version} instead of expected ${expectedVersion}`);
+    context.version = version;
+    if (typeof version !== 'string' || !version) throw canaryError('contract', 'MCP initialize produced no version');
+    if (version !== expectedVersion) throw canaryError('package_mismatch', 'MCP canary package version mismatch');
+    stage('tools_list', null, 1);
     const listed = await client.request('tools/list', {});
-    if (listed.error) throw new Error(`MCP tools/list failed ${listed.error.code}`);
-    const names = new Set((listed.result?.tools || []).map((tool) => tool.name));
+    if (listed.error) throw upstreamError(listed, 'protocol', 'MCP tools/list failed');
+    if (!Array.isArray(listed.result?.tools)) throw canaryError('contract', 'MCP tools/list missing tools');
+    const names = new Set(listed.result.tools.map((tool) => tool?.name));
     for (const [name] of cases) {
-      if (!names.has(name)) throw new Error(`${name} is missing from the full MCP contract`);
+      if (!names.has(name)) throw canaryError('contract', `${name} is missing from the full MCP contract`);
     }
     const initializationMs = Math.round(performance.now() - processStarted);
-    const results = [];
+    context.initializationMs = initializationMs;
+    const results = context.results;
     for (const [name, args] of cases) {
       const callStarted = performance.now();
       let called;
       let payload;
       for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (client.fatalError) throw client.fatalError;
+        stage('tool_call', name, attempt + 1);
         called = await client.request('tools/call', { name, arguments: args });
+        stage('tool_validate', name, attempt + 1);
         payload = toolPayload(called, name);
         if (name !== 'marrow_auto' || payload.live_delivery?.committed === true || payload.resumable !== true) break;
         if (attempt < 2) {
@@ -326,11 +444,12 @@ async function runCanary(env = process.env, options = {}) {
       const latencyMs = Math.round(performance.now() - callStarted);
       validatePayload(name, payload);
       const live = payload.stale !== true && payload.source !== 'last_known' && payload.available !== false;
-      if (!live) throw new Error(`${name} returned cached or unavailable guidance`);
+      if (!live) throw canaryError('contract', `${name} returned cached or unavailable guidance`);
       results.push({ tool: name, ok: true, live: true, latency_ms: latencyMs });
     }
     const hotPath = results.filter((row) => HOT_PATH_TOOLS.has(row.tool));
     const reports = results.filter((row) => !HOT_PATH_TOOLS.has(row.tool));
+    stage('shutdown');
     return {
       ok: true,
       package_version: version,
@@ -344,9 +463,14 @@ async function runCanary(env = process.env, options = {}) {
       },
       results,
     };
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     clearTimeout(totalTimer);
-    await client.stop();
+    try { await client.stop(); } catch {
+      if (!failed) throw canaryError('process_write', 'MCP child shutdown failed');
+    }
   }
 }
 
@@ -354,7 +478,8 @@ if (require.main === module) {
   runCanary().then((result) => {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   }).catch((error) => {
-    process.stderr.write(`MCP_CONTROL_PATH_CANARY=FAIL ${error instanceof Error ? error.message : 'unknown_error'}\n`);
+    process.stdout.write(`${serializeFailure(error)}\n`);
+    process.stderr.write('MCP_CONTROL_PATH_CANARY=FAIL\n');
     process.exitCode = 1;
   });
 }
@@ -367,4 +492,5 @@ module.exports = {
   latencyGroup,
   percentile,
   runCanary,
+  serializeFailure,
 };
