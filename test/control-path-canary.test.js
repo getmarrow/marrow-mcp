@@ -1,11 +1,15 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const { spawnSync } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const vm = require('node:vm');
 const test = require('node:test');
 const {
   CANARY_DEFAULT_TOOL_TIMEOUT_MS,
   CANARY_TOOL_TIMEOUT_MARGIN_MS,
   MARROW_AUTO_RESPONSE_BUDGET_MAX_MS,
   runCanary,
+  serializeFailure,
 } = require('../scripts/control-path-canary.cjs');
 
 const tools = [
@@ -50,11 +54,12 @@ function fakeSpawn(mode = 'good', timing = {}) {
       state.killed = true;
       finish(null, 'SIGKILL');
     };
-    child.stdin = {
+    child.stdin = Object.assign(new EventEmitter(), {
       writable: true,
       write(line, callback) {
         const request = JSON.parse(line);
         state.calls.push(request);
+        if (timing.handle?.(request, child, callback)) return;
         let response;
         if (request.method === 'initialize') {
           response = { jsonrpc: '2.0', id: request.id, result: { serverInfo: { version: 'test-version' } } };
@@ -92,7 +97,7 @@ function fakeSpawn(mode = 'good', timing = {}) {
           };
         }
         const delay = request.method === 'initialize'
-          ? 220
+          ? timing.initializeDelayMs ?? 220
           : request.method === 'tools/call' && request.params?.name === 'marrow_auto'
           ? timing.autoDelayMs ?? 10
           : request.method === 'tools/call'
@@ -105,7 +110,7 @@ function fakeSpawn(mode = 'good', timing = {}) {
         this.writable = false;
         finish(0);
       },
-    };
+    });
     return child;
   };
   return { factory, state };
@@ -193,3 +198,218 @@ for (const [mode, pattern] of [
     }
   });
 }
+
+test('failure retains safe structured evidence', async () => {
+  const fake = fakeSpawn('timeout');
+  await assert.rejects(runCanary(environment(), { spawnProcess: fake.factory }), (error) => {
+    assert.equal(error.failure?.ok, false);
+    assert.equal(error.failure.stage, 'tool_call');
+    assert.equal(error.failure.tool, 'marrow_status');
+    assert.equal(error.failure.error_class, 'request_timeout');
+    assert.equal(error.failure.attempt, 1);
+    assert.deepEqual(error.failure.results, []);
+    assert.deepEqual(JSON.parse(serializeFailure(error)), error.failure);
+    return true;
+  });
+});
+
+const secret = 'SECRET-private-key-customer-identity-prompt';
+async function captureFailure(handle, overrides = {}, spawnProcess) {
+  const fake = fakeSpawn('good', { initializeDelayMs: 0, handle });
+  let failure;
+  await assert.rejects(runCanary({ ...environment(), ...overrides }, {
+    spawnProcess: spawnProcess || fake.factory,
+  }), (error) => {
+    failure = error.failure;
+    assert.deepEqual(JSON.parse(serializeFailure(error)), failure);
+    assert.equal(serializeFailure(error).includes(secret), false);
+    assert.ok(Buffer.byteLength(serializeFailure(error)) < 4096);
+    assert.ok(Number.isFinite(failure.latency_ms) && failure.latency_ms >= 0 && failure.latency_ms <= 60000);
+    assert.ok(Number.isFinite(failure.total_latency_ms) && failure.total_latency_ms >= 0 && failure.total_latency_ms <= 60000);
+    assert.ok(failure.results.length <= 11);
+    return true;
+  });
+  return { failure, state: fake.state };
+}
+
+function respond(child, request, body) {
+  queueMicrotask(() => child.stdout.emit('data', `${JSON.stringify({ jsonrpc: '2.0', id: request.id, ...body })}\n`));
+  return true;
+}
+
+test('success retains all eleven live assertions in order', async () => {
+  const fake = fakeSpawn('good', { initializeDelayMs: 0 });
+  const result = await runCanary(environment(), { spawnProcess: fake.factory });
+  assert.equal(result.tools_checked, 11);
+  assert.deepEqual(result.results.map((row) => row.tool), tools);
+  assert.ok(result.results.every((row) => row.ok && row.live));
+});
+
+for (const mode of ['timeout', 'exit', 'write_callback', 'write_throw', 'stdin_error']) {
+  test(`partial results preserve the active failed tool on ${mode}`, async () => {
+    const { failure } = await captureFailure((request, child, callback) => {
+      if (request.params?.name !== 'marrow_ask') return false;
+      if (mode === 'exit') queueMicrotask(() => child.emit('exit', 17, secret));
+      if (mode === 'write_callback') callback(new Error(secret));
+      if (mode === 'write_throw') throw new Error(secret);
+      if (mode === 'stdin_error') queueMicrotask(() => child.stdin.emit('error', new Error(secret)));
+      return true;
+    });
+    assert.equal(failure.stage, 'tool_call');
+    assert.equal(failure.tool, 'marrow_ask');
+    assert.equal(failure.attempt, 1);
+    assert.equal(failure.error_class, mode === 'timeout' ? 'request_timeout' : mode === 'exit' ? 'process_exit' : 'process_write');
+    assert.deepEqual(failure.results.map((row) => row.tool), tools.slice(0, 3));
+    assert.equal(failure.tools_checked, 3);
+    assert.equal(Object.hasOwn(failure, 'http_status'), false);
+  });
+}
+
+test('total timeout identifies the active request and retains partial rows', async () => {
+  const { failure } = await captureFailure((request) => request.params?.name === 'marrow_auto', {
+    MARROW_MCP_CANARY_TOOL_TIMEOUT_MS: '10000', MARROW_MCP_CANARY_TOTAL_TIMEOUT_MS: '2000',
+  });
+  assert.equal(failure.error_class, 'total_timeout');
+  assert.equal(failure.tool, 'marrow_auto');
+  assert.equal(failure.stage, 'tool_call');
+  assert.equal(failure.results.length, 5);
+});
+
+for (const body of [null, [], 'bad', { jsonrpc: '2.0', id: 3 }, { jsonrpc: 'wrong', id: 3, result: {} }]) {
+  test(`malformed RPC structure ${JSON.stringify(body)} is bounded protocol failure`, async () => {
+    const { failure } = await captureFailure((request, child) => {
+      if (request.method !== 'tools/call') return false;
+      queueMicrotask(() => child.stdout.emit('data', `${JSON.stringify(body)}\n`));
+      return true;
+    });
+    assert.equal(failure.error_class, 'protocol');
+  });
+}
+
+for (const [label, body, expected, status] of [
+  ['invalid JSON', { content: [{ text: secret }] }, 'contract'],
+  ['empty JSON', { content: [{ text: '{}' }] }, 'contract'],
+  ['invalid status contract', { content: [{ text: JSON.stringify({ answer: secret }) }] }, 'contract'],
+  ['stale guidance', { content: [{ text: JSON.stringify({ status: 'healthy', stale: true }) }] }, 'contract'],
+  ['last known guidance', { content: [{ text: JSON.stringify({ status: 'healthy', source: 'last_known' }) }] }, 'contract'],
+  ...[
+    ['auth', { ok: false, error: { code: 'INVALID_API_KEY', message: secret } }, 'authentication'],
+    ['forbidden', { ok: false, error: { status: 403, message: secret } }, 'authorization', 403],
+    ['503', { available: false, error: { status: 503, code: secret } }, 'unavailable503', 503],
+    ['arbitrary error', { ok: false, error: { code: secret, message: 'HTTP 503' } }, 'tool_unavailable'],
+    ['string status', { ok: false, error: { status: '503', code: secret } }, 'tool_unavailable'],
+    ['invalid status', { ok: false, http_status: 999999, error_code: secret }, 'tool_unavailable'],
+  ].map(([label, body, expected, status]) => [label, { content: [{ text: JSON.stringify(body) }] }, expected, status]),
+]) {
+  test(`tool ${label} has a safe explicit classification`, async () => {
+    const { failure } = await captureFailure((request, child) => request.method === 'tools/call' && respond(child, request, { result: body }));
+    assert.equal(failure.error_class, expected);
+    assert.equal(failure.stage, 'tool_validate');
+    assert.equal(failure.tool, 'marrow_status');
+    assert.equal(failure.http_status, status);
+    assert.equal(Object.hasOwn(failure, 'http_status'), status !== undefined);
+  });
+}
+
+for (const [body, expected, version] of [
+  [{ result: {} }, 'contract', null],
+  [{ result: { serverInfo: { version: secret } } }, 'package_mismatch', null],
+  [{ result: { serverInfo: { version: '3.9.81' } } }, 'package_mismatch', '3.9.81'],
+  [{ error: { code: 'UNAUTHORIZED', message: secret } }, 'authentication', null],
+  [{ error: { status: 503, message: secret } }, 'unavailable503', null],
+]) {
+  test(`initialize ${expected} does not invent a tool or expose version strings`, async () => {
+    const { failure } = await captureFailure((request, child) => respond(child, request, body), {
+      MARROW_EXPECTED_MCP_VERSION: '3.9.80',
+    });
+    assert.equal(failure.stage, 'initialize');
+    assert.equal(failure.tool, null);
+    assert.equal(failure.error_class, expected);
+    assert.equal(failure.package_version, version);
+    assert.equal(failure.expected_version, '3.9.80');
+  });
+}
+
+test('missing full-profile tool is a hard contract failure without call attribution', async () => {
+  const { failure } = await captureFailure((request, child) => request.method === 'tools/list'
+    && respond(child, request, { result: { tools: [{ name: secret }] } }));
+  assert.equal(failure.stage, 'tools_list');
+  assert.equal(failure.error_class, 'contract');
+  assert.equal(failure.tool, null);
+});
+
+for (const mode of ['throw', 'error']) {
+  test(`spawn ${mode} produces no fabricated tool or HTTP status`, async () => {
+    const { failure } = await captureFailure(null, {}, mode === 'throw' ? () => { throw new Error(secret); } : (...args) => {
+      const child = fakeSpawn('good', { initializeDelayMs: 0 }).factory(...args);
+      queueMicrotask(() => child.emit('error', Object.assign(new Error(secret), { code: secret })));
+      return child;
+    });
+    assert.equal(failure.error_class, 'process_spawn');
+    assert.equal(failure.tool, null);
+    assert.equal(failure.http_status, undefined);
+    assert.equal(failure.package_version, null);
+  });
+}
+
+for (const stream of ['stdout', 'stderr']) {
+  test(`${stream} flood produces bounded evidence without retaining bytes`, async () => {
+    const { failure } = await captureFailure((request, child) => {
+      if (request.method !== 'tools/call') return false;
+      queueMicrotask(() => child[stream].emit('data', secret.repeat(10000)));
+      return true;
+    });
+    assert.equal(failure.error_class, 'output_limit');
+  });
+}
+
+test('uncommitted resumable auto remains bounded at three attempts', async () => {
+  const { failure, state } = await captureFailure((request, child) => request.params?.name === 'marrow_auto'
+    && respond(child, request, { result: { content: [{ text: JSON.stringify({ resumable: true, retry_after_ms: 0, live_delivery: { committed: false } }) }] } }));
+  assert.equal(failure.error_class, 'contract');
+  assert.equal(failure.tool, 'marrow_auto');
+  assert.equal(failure.attempt, 3);
+  assert.equal(state.calls.filter((request) => request.params?.name === 'marrow_auto').length, 3);
+});
+
+test('serializer ignores forged error fields and arbitrary strings', () => {
+  const error = Object.assign(new Error(secret), { failure: { tool: secret, error_class: secret, results: [secret] } });
+  assert.equal(serializeFailure(error).includes(secret), false);
+  assert.equal(JSON.parse(serializeFailure(error)).error_class, 'internal');
+});
+
+test('CLI missing authentication emits exactly one JSON record and constant stderr with exit 1', () => {
+  const env = { ...process.env, MARROW_API_KEY: '', MARROW_EXPECTED_MCP_VERSION: secret };
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, ['scripts/control-path-canary.cjs'], { cwd: require('node:path').resolve(__dirname, '..'), env, encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, 'MCP_CONTROL_PATH_CANARY=FAIL\n');
+  assert.equal(result.stdout.trim().split('\n').length, 1);
+  const failure = JSON.parse(result.stdout);
+  assert.equal(failure.error_class, 'authentication');
+  assert.equal(failure.stage, 'setup');
+  assert.equal(failure.process_count, 0);
+  assert.equal(failure.tool, null);
+  assert.equal(failure.expected_version, null);
+  assert.equal(result.stdout.includes(secret), false);
+});
+
+test('missing compiled dependency still reaches the CLI JSON handler', async () => {
+  const output = { stdout: '', stderr: '' };
+  const module = { exports: {} };
+  const localRequire = (name) => {
+    if (name === '../dist/index.js') throw new Error(secret);
+    if (name === '../package.json') return { version: '3.9.80' };
+    return require(name);
+  };
+  localRequire.main = module;
+  const mockProcess = { env: {}, stdout: { write: (value) => { output.stdout += value; } }, stderr: { write: (value) => { output.stderr += value; } } };
+  vm.runInNewContext(readFileSync(require.resolve('../scripts/control-path-canary.cjs'), 'utf8'), {
+    require: localRequire, module, process: mockProcess, __dirname, setTimeout, clearTimeout, Buffer,
+  });
+  await new Promise(setImmediate);
+  assert.equal(mockProcess.exitCode, 1);
+  assert.equal(JSON.parse(output.stdout).error_class, 'configuration');
+  assert.equal(output.stderr, 'MCP_CONTROL_PATH_CANARY=FAIL\n');
+  assert.equal(output.stdout.includes(secret), false);
+});
