@@ -116,7 +116,11 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.80
+## What's New in v3.9.81
+
+v3.9.81 adds bounded structured failure evidence to the authenticated eleven-tool control-path canary. Failed runs identify the observed stage, tool, error class, timing, and completed checks without retaining credentials, customer payloads, or arbitrary error text. Protocol and write failures observed after the final response or during shutdown now fail closed; the canary's own bounded cleanup remains compatible with a successful run. The eleven live-tool requirements, client deadlines, package identity checks, and retry limits are unchanged.
+
+### Previous release: v3.9.80
 
 v3.9.80 is a reliability patch for direct `marrow_think` and `marrow_commit` calls. Each invocation now carries one stable bounded idempotency key. Only the backend's documented pending-persistence states are reconciled, using the byte-identical request and key after a fixed one-second delay for at most three total attempts. A 202 response is never reported as successful completion; unknown, malformed, correlation-drifted, or exhausted pending responses fail closed with a structured error. Explicit caller-supplied idempotency keys remain unchanged, and durable `observed_unverified` outcomes retain their terminal, non-authorizing semantics.
 
