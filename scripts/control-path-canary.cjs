@@ -245,7 +245,9 @@ class PersistentMcpClient {
     this.child.once('error', () => this.abort(canaryError('process_spawn', 'MCP child spawn failed')));
     this.child.once('exit', (code, signal) => {
       this.closed = true;
-      if (this.stopping && code === 0 && !signal && this.pending.size === 0 && !this.fatalError) return;
+      const expectedExit = (code === 0 && !signal)
+        || (this.cleanupKillRequested && code === null && signal === 'SIGKILL');
+      if (this.stopping && expectedExit && this.pending.size === 0 && !this.fatalError) return;
       this.fatalError ||= canaryError('process_exit', 'MCP child exited');
       this.rejectAll(this.fatalError);
     });
@@ -340,7 +342,10 @@ class PersistentMcpClient {
     await new Promise((resolveExit) => {
       const timer = setTimeout(() => {
         if (!this.closed) {
-          this.abort(canaryError('process_exit', 'MCP child did not exit during shutdown'));
+          // The bounded cleanup deadline intentionally ends an otherwise healthy
+          // child. This signal is ours; actual protocol/write errors remain fatal.
+          this.cleanupKillRequested = true;
+          try { this.child.kill('SIGKILL'); } catch { this.cleanupKillRequested = false; }
         }
         resolveExit();
       }, 500);

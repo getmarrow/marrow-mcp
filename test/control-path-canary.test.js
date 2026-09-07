@@ -283,6 +283,35 @@ test('terminal asynchronous stdin error during shutdown rejects with completed p
   assert.equal(state.killed, true);
 });
 
+test('parent-requested bounded shutdown cleanup preserves an eleven-tool success', async () => {
+  const fake = fakeSpawn('good', { initializeDelayMs: 0, handle(request, child) {
+    if (request.method === 'initialize') child.stdin.end = () => { child.stdin.writable = false; };
+    return false;
+  } });
+  const result = await runCanary(environment(), { spawnProcess: fake.factory });
+  assert.equal(result.ok, true);
+  assert.equal(result.tools_checked, 11);
+  assert.deepEqual(result.results.map((row) => row.tool), tools);
+  assert.equal(fake.state.killed, true);
+});
+
+test('parent-requested cleanup does not hide an asynchronous write error', async () => {
+  const { failure } = await captureFailure((request, child) => {
+    if (request.method === 'initialize') {
+      child.stdin.end = () => { child.stdin.writable = false; };
+      const kill = child.kill.bind(child);
+      child.kill = () => {
+        queueMicrotask(() => child.stdin.emit('error', new Error(secret)));
+        kill();
+      };
+    }
+    return false;
+  });
+  assert.equal(failure.error_class, 'process_write');
+  assert.equal(failure.stage, 'shutdown');
+  assert.equal(failure.tools_checked, 11);
+});
+
 for (const mode of ['timeout', 'exit', 'write_callback', 'write_throw', 'stdin_error']) {
   test(`partial results preserve the active failed tool on ${mode}`, async () => {
     const { failure } = await captureFailure((request, child, callback) => {
