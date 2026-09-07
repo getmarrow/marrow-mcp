@@ -245,6 +245,44 @@ test('success retains all eleven live assertions in order', async () => {
   assert.ok(result.results.every((row) => row.ok && row.live));
 });
 
+test('terminal malformed output after the final response rejects with active tool evidence', async () => {
+  const { failure, state } = await captureFailure((request, child, callback) => {
+    if (request.params?.name !== 'marrow_fleet_lessons') return false;
+    const response = { jsonrpc: '2.0', id: request.id,
+      result: { content: [{ text: JSON.stringify(payload(request.params.name)) }] } };
+    queueMicrotask(() => child.stdout.emit('data', `${JSON.stringify(response)}\nnot-json\n`));
+    callback?.();
+    return true;
+  });
+  assert.equal(failure.error_class, 'protocol');
+  assert.equal(failure.stage, 'tool_call');
+  assert.equal(failure.tool, 'marrow_fleet_lessons');
+  assert.equal(failure.attempt, 1);
+  assert.deepEqual(failure.results.map((row) => row.tool), tools.slice(0, 10));
+  assert.equal(failure.tools_checked, 10);
+  assert.equal(state.killed, true);
+});
+
+test('terminal asynchronous stdin error during shutdown rejects with completed partial rows', async () => {
+  const { failure, state } = await captureFailure((request, child) => {
+    if (request.method === 'initialize') {
+      const end = child.stdin.end.bind(child.stdin);
+      child.stdin.end = () => {
+        queueMicrotask(() => child.stdin.emit('error', new Error(secret)));
+        end();
+      };
+    }
+    return false;
+  });
+  assert.equal(failure.error_class, 'process_write');
+  assert.equal(failure.stage, 'shutdown');
+  assert.equal(failure.tool, null);
+  assert.equal(failure.attempt, 0);
+  assert.deepEqual(failure.results.map((row) => row.tool), tools);
+  assert.equal(failure.tools_checked, 11);
+  assert.equal(state.killed, true);
+});
+
 for (const mode of ['timeout', 'exit', 'write_callback', 'write_throw', 'stdin_error']) {
   test(`partial results preserve the active failed tool on ${mode}`, async () => {
     const { failure } = await captureFailure((request, child, callback) => {
