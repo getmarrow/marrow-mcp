@@ -243,8 +243,9 @@ class PersistentMcpClient {
     });
     this.child.stdin.on?.('error', () => this.abort(canaryError('process_write', 'MCP child write failed')));
     this.child.once('error', () => this.abort(canaryError('process_spawn', 'MCP child spawn failed')));
-    this.child.once('exit', () => {
+    this.child.once('exit', (code, signal) => {
       this.closed = true;
+      if (this.stopping && code === 0 && !signal && this.pending.size === 0 && !this.fatalError) return;
       this.fatalError ||= canaryError('process_exit', 'MCP child exited');
       this.rejectAll(this.fatalError);
     });
@@ -330,12 +331,16 @@ class PersistentMcpClient {
   }
 
   async stop() {
-    if (!this.child || this.closed) return;
+    if (!this.child || this.closed) {
+      if (this.fatalError) throw this.fatalError;
+      return;
+    }
+    this.stopping = true;
     this.child.stdin.end();
     await new Promise((resolveExit) => {
       const timer = setTimeout(() => {
         if (!this.closed) {
-          try { this.child.kill('SIGKILL'); } catch { /* Shutdown remains bounded. */ }
+          this.abort(canaryError('process_exit', 'MCP child did not exit during shutdown'));
         }
         resolveExit();
       }, 500);
@@ -344,6 +349,7 @@ class PersistentMcpClient {
         resolveExit();
       });
     });
+    if (this.fatalError) throw this.fatalError;
   }
 }
 
@@ -408,6 +414,7 @@ async function executeCanary(env, options, context) {
     context.processCount = 1;
     stage('initialize', null, 1);
     const initialized = await client.request('initialize', {}, toolTimeoutMs + 3_000);
+    if (client.fatalError) throw client.fatalError;
     if (initialized.error) throw upstreamError(initialized, 'protocol', 'MCP initialize failed');
     const version = initialized.result?.serverInfo?.version;
     context.version = version;
@@ -415,6 +422,7 @@ async function executeCanary(env, options, context) {
     if (version !== expectedVersion) throw canaryError('package_mismatch', 'MCP canary package version mismatch');
     stage('tools_list', null, 1);
     const listed = await client.request('tools/list', {});
+    if (client.fatalError) throw client.fatalError;
     if (listed.error) throw upstreamError(listed, 'protocol', 'MCP tools/list failed');
     if (!Array.isArray(listed.result?.tools)) throw canaryError('contract', 'MCP tools/list missing tools');
     const names = new Set(listed.result.tools.map((tool) => tool?.name));
@@ -432,6 +440,7 @@ async function executeCanary(env, options, context) {
         if (client.fatalError) throw client.fatalError;
         stage('tool_call', name, attempt + 1);
         called = await client.request('tools/call', { name, arguments: args });
+        if (client.fatalError) throw client.fatalError;
         stage('tool_validate', name, attempt + 1);
         payload = toolPayload(called, name);
         if (name !== 'marrow_auto' || payload.live_delivery?.committed === true || payload.resumable !== true) break;
@@ -468,8 +477,8 @@ async function executeCanary(env, options, context) {
     throw error;
   } finally {
     clearTimeout(totalTimer);
-    try { await client.stop(); } catch {
-      if (!failed) throw canaryError('process_write', 'MCP child shutdown failed');
+    try { await client.stop(); } catch (error) {
+      if (!failed) throw errorEvidence.has(error) ? error : canaryError('process_write', 'MCP child shutdown failed');
     }
   }
 }
