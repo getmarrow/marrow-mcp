@@ -128,6 +128,64 @@ test('Retry-After beyond the owner budget survives restart without early retry o
   } finally { Date.now = originalNow; globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('concurrent delivery failures preserve the longest retry deadline and blocked guidance in either completion order', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-concurrent-retry-'));
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  const origin = Date.parse('2026-09-09T12:00:00.000Z');
+  let clock = origin;
+  Date.now = () => clock;
+  try {
+    for (const blocked of [false, true]) {
+      for (const reverse of [false, true]) {
+        clock = origin;
+        const path = join(directory, `spool-${blocked}-${reverse}.json`);
+        await withSpoolPath(path, async () => {
+          const input = lifecycleInput({ event_id: `concurrent-${blocked}-${reverse}` });
+          await recordLifecycleEvent({ ...input, deferDelivery: true });
+          const responses = [];
+          const bodies = [];
+          globalThis.fetch = async (_url, init) => {
+            bodies.push(init.body);
+            return new Promise((resolve) => responses.push(resolve));
+          };
+          const scope = { apiKey: input.apiKey, agentId: input.event.agent_id,
+            baseUrl: input.baseUrl, maxEvents: 1, budgetMs: 1000, requestTimeoutMs: 1000, retryDeadLetters: false };
+          const drains = [drainLifecycleSpool(scope), drainLifecycleSpool(scope)];
+          assert.equal(responses.length, 2);
+          const strict = new Response('{}', { status: 429, headers: { 'Retry-After': blocked ? 'tomorrow' : '60' } });
+          const ordinary = new Response('{}', { status: 503 });
+          responses[0](reverse ? ordinary : strict);
+          await drains[0];
+          responses[1](reverse ? strict : ordinary);
+          await drains[1];
+          assert.equal(bodies[0], bodies[1], 'same event wire identity survives concurrent owners');
+          const [row] = JSON.parse(readFileSync(path, 'utf8'));
+          assert.equal(row.attempts, 2);
+          assert.equal(row.delivery_state, 'queued');
+          if (blocked) {
+            assert.equal(row.retry_blocked, true);
+            assert.equal(row.retry_reason, 'retry_after_invalid');
+          } else {
+            assert.equal(row.next_attempt_at, new Date(origin + 60_000).toISOString());
+          }
+          let laterCalls = 0;
+          globalThis.fetch = async () => { laterCalls++; return new Response('{}', { status: 200 }); };
+          delete require.cache[require.resolve('../dist/lifecycle-spool.js')];
+          const restarted = require('../dist/lifecycle-spool.js');
+          clock = origin + 59_000;
+          await restarted.drainLifecycleSpool(scope);
+          assert.equal(laterCalls, 0, 'restart preserves minimum and blocked guidance');
+          clock = origin + 60_000;
+          await restarted.drainLifecycleSpool(scope);
+          assert.equal(laterCalls, blocked ? 0 : 1);
+          assert.equal(restarted.lifecycleSpoolStatus(scope).state, blocked ? 'attention_required' : 'clear');
+        });
+      }
+    }
+  } finally { Date.now = originalNow; globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('an offline background owner stops at its finite budget and leaves the next retry on disk', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-offline-budget-'));
   const path = join(directory, 'spool.json');

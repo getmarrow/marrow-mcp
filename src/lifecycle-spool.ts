@@ -691,16 +691,21 @@ async function attemptQueuedDelivery(input: {
     current.attempts = Math.min(MAX_ATTEMPTS, current.attempts + 1);
     current.last_status = status;
     current.last_attempt_at = new Date().toISOString();
-    current.retry_reason = result.reason;
-    delete current.next_attempt_at;
-    delete current.retry_blocked;
+    // Concurrent owners may finish out of order. Merge against the locked
+    // persisted row so a later failure cannot shorten a server minimum or
+    // clear guidance that requires explicit recovery.
+    if (!current.retry_blocked) current.retry_reason = result.reason;
     if (!retryable(status)) {
       current.delivery_state = 'dead_letter';
-    } else if (result.retryBlocked) {
+    } else if (result.retryBlocked || current.retry_blocked) {
       current.retry_blocked = true;
     } else {
       const backoffMs = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(current.attempts - 1, 16));
-      current.next_attempt_at = new Date(Date.now() + Math.max(backoffMs, result.retryAfterMs || 0)).toISOString();
+      const existingMinimum = current.next_attempt_at ? Date.parse(current.next_attempt_at) : 0;
+      current.next_attempt_at = new Date(Math.max(
+        existingMinimum,
+        Date.now() + Math.max(backoffMs, result.retryAfterMs || 0),
+      )).toISOString();
     }
   });
   return status;
