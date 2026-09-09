@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MarrowRequestError = void 0;
+exports.responseRetryAfter = responseRetryAfter;
 exports.requestErrorFromResponse = requestErrorFromResponse;
 exports.invalidResponseError = invalidResponseError;
 exports.normalizeRequestError = normalizeRequestError;
@@ -71,15 +72,18 @@ function boundedTimeout(url) {
         return 4_000;
     return 4_000;
 }
-function retryAfterMs(response) {
+function responseRetryAfter(response) {
     const raw = response.headers.get('retry-after');
-    if (!raw)
-        return null;
-    const seconds = Number(raw);
-    if (Number.isFinite(seconds) && seconds >= 0)
-        return Math.min(60_000, Math.round(seconds * 1_000));
-    const date = Date.parse(raw);
-    return Number.isFinite(date) ? Math.min(60_000, Math.max(0, date - Date.now())) : null;
+    if (raw === null)
+        return { delayMs: null, valid: true };
+    const text = raw.trim();
+    const seconds = Number(text);
+    const numeric = text !== '' && !Number.isNaN(seconds);
+    const parsedDate = numeric ? NaN : Date.parse(text);
+    const delayMs = numeric ? Math.ceil(seconds * 1_000) : Math.max(0, parsedDate - Date.now());
+    return Number.isSafeInteger(delayMs) && delayMs >= 0
+        ? { delayMs, valid: true }
+        : { delayMs: null, valid: false };
 }
 function exactFixForStatus(status) {
     if (status === 401)
@@ -92,6 +96,7 @@ function exactFixForStatus(status) {
 }
 function requestErrorFromResponse(response, detail) {
     const status = response.status;
+    const retryGuidance = responseRetryAfter(response);
     const cloudflareEdgeDenial = status === 403 && Boolean(response.headers.get('cf-ray')) && !detail;
     const errorObject = detail?.error && typeof detail.error === 'object' && !Array.isArray(detail.error)
         ? detail.error
@@ -147,11 +152,13 @@ function requestErrorFromResponse(response, detail) {
         backendCode,
         message: `HTTP ${status}: ${apiMessage}`,
         status,
-        retryable: cloudflareEdgeDenial ? false : RETRYABLE_STATUS.has(status),
-        retryAfterMs: retryAfterMs(response),
+        retryable: !cloudflareEdgeDenial && retryGuidance.valid && RETRYABLE_STATUS.has(status),
+        retryAfterMs: retryGuidance.delayMs,
         exactFix: cloudflareEdgeDenial
             ? 'Marrow was reached, but the Cloudflare edge denied this network client before API authentication. Record the Cloudflare Ray ID, retry from a trusted network, and send the Ray ID to Marrow support; do not rotate the API key.'
-            : apiFix,
+            : !retryGuidance.valid
+                ? 'Retry-After could not be interpreted safely. Check service guidance before explicitly retrying the same operation.'
+                : apiFix,
         fixCommand,
         currentPlan,
         requiredFeature,
@@ -210,13 +217,15 @@ function safeToRetry(url, init) {
     const headers = new Headers(init.headers);
     return headers.has('Idempotency-Key') || /\/v1\/analytics\/decision-brief(?:[/?]|$)/.test(url);
 }
-async function reliableFetch(url, init = {}) {
+async function reliableFetch(url, init = {}, options = {}) {
     const target = String(url);
-    const timeoutMs = boundedTimeout(target);
+    const timeoutMs = typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+        ? Math.min(boundedTimeout(target), options.timeoutMs)
+        : boundedTimeout(target);
     const deadline = Date.now() + timeoutMs;
     const externalSignal = init.signal;
     let lastError = null;
-    const attempts = safeToRetry(target, init) ? 2 : 1;
+    const attempts = options.retryOwner === 'caller' ? 1 : safeToRetry(target, init) ? 2 : 1;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
         if (externalSignal?.aborted)
             throw normalizeRequestError(externalSignal.reason || new DOMException('Aborted', 'AbortError'));
@@ -235,6 +244,8 @@ async function reliableFetch(url, init = {}) {
             if (!RETRYABLE_STATUS.has(response.status) || attempt + 1 >= attempts)
                 return response;
             lastError = requestErrorFromResponse(response);
+            if (!lastError.retryable)
+                return response;
             retryResponse = response;
             delayMs = lastError.retryAfterMs ?? 50;
         }

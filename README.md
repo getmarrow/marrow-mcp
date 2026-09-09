@@ -87,6 +87,14 @@ For most new installations, start with the universal installer instead:
 npx @getmarrow/install activate
 ```
 
+After setup writes MCP configuration or hooks, restart the agent host and review/enable its hook trust. Then verify the reloaded environment:
+
+```bash
+npx -y @getmarrow/install@latest doctor --self-test
+```
+
+Successful setup alone does not mean this process reloaded or that hooks are active. Keep savings at zero until observed usage supplies evidence.
+
 ## Tool Profiles
 
 Ordinary setup does not require `MARROW_TOOL_PROFILE`. When the variable is unset, Marrow uses the `primary` profile and exposes exactly the 17 tools in [Primary MCP Tools](#primary-mcp-tools).
@@ -116,7 +124,17 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.82
+## What's New in v3.9.83
+
+v3.9.83 confirms pending automatic writes by replaying the same authenticated operation and request, with one retry owner and a four-second attempt ceiling inside the unchanged eight-second total budget. Numeric and date-based server retry delays are preserved. Conflicting receipts never confirm closure, and unavailable or unverified results remain pending.
+
+Post-action commit lookup now preserves the original general/empty-surface defaults and optional explicit target. It remains observation-only. Receipt expiry uses an explicit normal runtime request for the original scope, followed by a separate verified commit; it does not extend the old receipt or grant retrospective permission. Transient lifecycle delivery retries preserve the queued event and its stable identity across restart within bounded scheduling and attempt limits. Queued, server-accepted, and committed remain separate facts.
+
+Before upgrading, finish existing pending auto operations with their current verified client. Older auto requests omitted supplied surfaces from think; correcting nonempty surfaces can therefore expose an idempotency conflict for that old operation. Do not reinterpret the conflict, open a replacement operation, use a silent legacy fallback, or automatically downgrade. Omitted/empty surface operations preserve their original canonical scope. This is a scope-correctness change, not a promise that every pending old-client operation can resume across an upgrade.
+
+Default primary guidance uses runtime followed by commit and exposes exactly 17 tools. Auto remains available in explicitly selected core/full profiles. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.83`, reload the host, review hook trust, and verify before claiming the updated client is active.
+
+### Previous release: v3.9.82
 
 v3.9.82 batches client reliability fixes for `marrow_auto`. Continuations honor the server's finite retry delay within the existing eight-second core budget; when the delay cannot fit, the same operation remains pending with retry guidance. Gated auto reuses the server-created decision after checking its canonical scope, and ordinary owner approval can resume that decision when the backend explicitly declares the supported proof contract. The installed bytes of v3.9.81 cannot provide these client changes; update MCP for this behavior. SDK and installer versions are unchanged.
 
@@ -168,7 +186,7 @@ v3.9.71 makes the advertised Grok control loop true:
 - Grok native PreToolUse, PostToolUse/PostToolUseFailure, and nonblocking Stop hooks provide bounded client-reported gating, result evidence, and one turn closeout. The governed wrapper remains an explicit bounded fallback;
 - idle spool nudge drains up to 40 current-namespace events so the queue does not sit as a nag;
 - if `risk_gate.enforced` is false, the gate is advisory — do not describe it as a live block;
-- `marrow_commit.decision_id` comes from `marrow_think`, `marrow_auto`, or an arbitration runtime that actually created a decision. A normal runtime authorization is a gate receipt, not a decision.
+- `marrow_commit.decision_id` comes from `marrow_think`, `marrow_auto`, or an arbitration runtime that actually created a decision. A normal runtime may create or reuse a decision: follow runtime.decision_id and completion_contract. Keep runtime.runtime_authorization.id separate as gate_receipt_id.
 
 ## Previous: v3.9.69
 
@@ -385,25 +403,29 @@ Client hook activity alone never produces certified coverage percentages. An ins
 
 ## Governed Action Flow
 
+With `MARROW_TOOL_PROFILE` unset, the default primary profile uses `marrow_agent_runtime` followed by `marrow_commit`. It exposes 17 tools; `marrow_auto` is available only after an explicit `core` or `full` selection and MCP restart. Primary status and lessons use `marrow_agent_status` and `marrow_fleet_lessons`.
+
 Configured hooks can provide cooperative telemetry and context, but they are not a certified execution boundary. Before deploys, merges, publishes, migrations, credential changes, financial operations, or customer-impacting work:
 
 1. Call `marrow_agent_runtime` or `marrow_decision_brief`.
 2. Stop when the returned decision is `block` or `review_required`; otherwise follow its prior lesson and proof contract.
-3. Reuse a server-created runtime `decision_id` when the completion contract identifies it. Call `marrow_think` or `marrow_auto` when decision creation is still required. Keep `marrow_agent_runtime.runtime_authorization.id` separate as the gate receipt for consequential work.
+3. Reuse a server-created runtime `decision_id` when the completion contract identifies it. Call `marrow_think` when decision creation is still required; explicitly selected core/full profiles can also use `marrow_auto`. Keep `marrow_agent_runtime.runtime_authorization.id` separate as the gate receipt for consequential work.
 4. Perform the action only when its gate allows it. Codex, Grok, and Gemini use configured native hooks only after restart and host hook review. The governed wrapper remains an explicit bounded fallback: `npx @getmarrow/install run --agent <agent-id> -- -- <command>`.
 5. Call `marrow_commit` with that `decision_id`, the outcome, gate receipt, and required proof.
 
-`marrow_agent_runtime` returns `runtime_authorization` with the authoritative gate receipt. An ordinary or arbitrated runtime that creates a decision also returns its server-created `decision_id`; follow `completion_contract.decision_creation_required` and preserve the returned scope. When decision creation is required, call `marrow_think` or use `marrow_auto`. Auto requests the existing expanded runtime response to check receipt identity, decision, action, agent, session, and expiry before reusing that decision; it does not obtain a second authorization fetch.
+`marrow_agent_runtime` returns `runtime_authorization` with the authoritative gate receipt. An ordinary or arbitrated runtime that creates a decision also returns its server-created `decision_id`; follow `completion_contract.decision_creation_required` and preserve the returned scope. When decision creation is required, call `marrow_think`; core/full can also use `marrow_auto`. Auto requests the existing expanded runtime response to check receipt identity, decision, action, agent, session, and expiry before reusing that decision; it does not obtain a second authorization fetch.
 
 A `review_required`, `block`, or `outcome_observation_only` result never permits the action. If the action already occurred and its real result must be preserved, `marrow_commit` can ask runtime to bind observation delivery to the existing decision, action, session, and agent. The exact backend `outcome_observation_only` correlation is non-durable and non-authorizing, so MCP never sends it as a gate, arbitration, or owner-approval receipt. An accepted observation reports `committed: false`, `outcome_state: "observed_unverified"`, `authorization_granted: false`, and `trusted_learning_applied: false`, plus the backend's `exact_next_action`. This is durable delivery, so do not retry or spool the same observation. To promote it into trusted learning, obtain the named authorization and proof, then make an explicit new commit attempt using the exact observed payload. Never synthesize a decision, receipt, approval, or authorization.
 
-`marrow_auto` returns an `operation_id`, phase, and resumable state. For a resumable pending phase, respect `retry_after_ms` and use the same operation ID and unchanged scope; auto never shortens the requested finite delay to fit its core budget. When the phase is `proof_required`, supply the requested measured evidence before retrying that operation. Stable phase idempotency keys preserve the original decision and outcome across retries; the backend remains authoritative for acceptance and conflicts.
+`marrow_auto` returns an `operation_id`, phase, and resumable state. For a resumable pending phase, respect `retry_after_ms` and use the same operation ID, tenant, agent, session, action, type, surfaces, outcome, proof and receipt payload; auto never shortens the requested finite delay to fit its core budget. When the phase is `proof_required`, supply the requested measured evidence before retrying that operation. Stable phase idempotency keys preserve the original decision and outcome across retries; the backend remains authoritative for acceptance and conflicts. A four-second automatic write attempt ceiling leaves replay time inside the existing eight-second total budget. Long server delays remain pending without waiting beyond that budget. Malformed or unbounded Retry-After headers stop automatic continuation. Only committed:true confirms closure; pending is not evidence that a server write failed.
+
+If a receipt expires while the same decision remains open, explicitly request normal runtime again with the original action, type, surfaces, agent and session. A fresh request key is required: replaying the old runtime key replays its old receipt. Verify the returned `runtime.decision_id` still matches the original, keep the new `runtime.runtime_authorization.id` as `gate_receipt_id`, and satisfy the current proof and approval contract. For a scope with an explicit target, use the `marrowAgentRuntime` library or `POST /v1/agent/runtime` preserving that target; the public MCP runtime schema does not expose target. Do not renew through post-action `auto_gate`: it only obtains observation truth. A fresh receipt never retrospectively authorizes an action taken without permission, and a changed scope is a different decision. Expired or used receipts may return an accepted `observed_unverified` result with `committed:false`; that is not closure.
 
 For an ordinary gate, continue only when the server declares `completion_contract.owner_approval.mode: "ordinary_non_arbitrated"`. Auto waits in `owner_approval_required` until the caller actually obtains explicit owner approval for the exact work and supplies `proof.owner_approval = { approved_by: "owner", reference: "approved-release-bundle" }` together with required measured proof. Then call auto once with the same operation ID and original decision/receipt scope. The object records actual approval; it is not permission to infer approval from action text, a model response, or `human_directed`. Unknown ordinary completion contracts remain stopped without automatically starting arbitration. The backend checks receipt ownership, scope, expiry, and proof before confirming closure.
 
 For arbitration, the ordinary proof marker is not accepted. Approve the exact arbitration decision in the authenticated Marrow dashboard, then call auto with the same operation ID, `arbitration_receipt_id`, and server-issued `owner_approval_receipt_id`. Proof or chat text cannot substitute for this dashboard receipt. A CLI closed response reports `phase: "closed"`, `live_delivery.committed: true`, and `resumable: false`; the library result uses `committed: true`. Neither an ordinary marker nor an outcome record changes a stopped action into an allowed action.
 
-The CLI's lifecycle `receipt.queued: true` means its stable event is stored locally for later bounded delivery; `receipt.accepted: false` must not be read as server acceptance. Process exit can interrupt the background nudge, leaving the event for a later run. `phase_timings_ms.total` measures core auto phases. `response_timings_ms` contains numeric `core`, `durable_enqueue`, and `full_response`; the last ends at response construction and excludes subsequent stdout drain and host processing. Canary `latency_ms` independently measures the MCP round trip, while `attempts` and `retry_wait_ms` describe measured outer tool retries, not internal database or network calls.
+The CLI's lifecycle `receipt.queued: true` means its stable event is stored locally for later bounded delivery; `receipt.accepted: false` must not be read as server acceptance. Transient failures preserve the queued event and retry schedule for later bounded delivery, including after restart. Server retry guidance is respected. Authentication and terminal delivery errors remain failed with explicit repair guidance. Process exit can interrupt the background nudge, leaving the event for a later run. `phase_timings_ms.total` measures core auto phases. `response_timings_ms` contains numeric `core`, `durable_enqueue`, and `full_response`; the last ends at response construction and excludes subsequent stdout drain and host processing. Canary `latency_ms` independently measures the MCP round trip, while `attempts` and `retry_wait_ms` describe measured outer tool retries, not internal database or network calls.
 
 Example pre-action request:
 

@@ -147,3 +147,45 @@ test('auto does not close on a durable unverified observation', async () => {
     assert.notEqual(result.phase, 'closed');
   } finally { globalThis.fetch = originalFetch; }
 });
+
+for (const [label, surfaces] of [['nonempty', ['api']], ['omitted', undefined], ['empty', []]]) {
+  test(`pre-upgrade pending auto ${label} surfaces preserve exact server scope`, async () => {
+    const originalFetch = globalThis.fetch;
+    const operationId = `upgrade_scope_${label}`;
+    let decisions = 1; // Original client already persisted this exact operation.
+    let commits = 0;
+    let thinks = 0;
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(init.body);
+      if (String(url).includes('/think')) {
+        thinks++;
+        assert.equal(new Headers(init.headers).get('Idempotency-Key'), `mcp-auto:${operationId}:think`);
+        // Backend think replay hashes canonical surfaces; omitted and [] both
+        // match the old client body that omitted surfaces, nonempty does not.
+        if ((body.surfaces || []).length !== 0) return Response.json({
+          error: 'Exact operation scope changed', details: { code: 'MARROW_IDEMPOTENCY_CONFLICT' },
+        }, { status: 409 });
+        return Response.json({ data: { decision_id: 'pre-upgrade-original-decision', deduped: true } });
+      }
+      commits++;
+      assert.equal(body.decision_id, 'pre-upgrade-original-decision');
+      return Response.json({ data: { committed: true, decision_id: body.decision_id } });
+    };
+    try {
+      const request = marrowAuto('upgrade-fixture-key', 'https://api.example.test', {
+        action: 'Record upgrade continuity fixture', success: true, outcome: 'Fixture complete', operation_id: operationId, surfaces,
+      });
+      if (label === 'nonempty') {
+        await assert.rejects(request, e => e.status === 409 && e.backendCode === 'MARROW_IDEMPOTENCY_CONFLICT');
+        assert.equal(commits, 0);
+      } else {
+        const result = await request;
+        assert.equal(result.committed, true);
+        assert.equal(result.decision_id, 'pre-upgrade-original-decision');
+        assert.equal(commits, 1);
+      }
+      assert.equal(decisions, 1);
+      assert.equal(thinks, 1);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+}

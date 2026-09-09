@@ -20,6 +20,7 @@ export type LifecycleEvent = {
     success?: boolean;
     occurred_at?: string;
 };
+type RetryReason = 'network_error' | 'ack_timeout' | 'transient_http' | 'rate_limited' | 'authentication_rejected' | 'schema_rejected' | 'permanent_http' | 'retry_after_invalid';
 export type LifecycleSpoolStatus = {
     state: 'clear' | 'pending' | 'attention_required';
     pending: number;
@@ -30,6 +31,14 @@ export type LifecycleSpoolStatus = {
     available: number;
     recovered_corruption: boolean;
     exact_fix: string | null;
+    retry: {
+        due: number;
+        scheduled: number;
+        blocked: number;
+        capacity_blocked: number;
+        next_attempt_at: string | null;
+        reasons: Partial<Record<RetryReason, number>>;
+    };
     other_namespaces: {
         state: 'clear' | 'attention_required';
         count: number;
@@ -73,6 +82,8 @@ export declare function drainLifecycleSpool(input: {
     budgetMs?: number;
     requestTimeoutMs?: number;
     retryDeadLetters?: boolean;
+    /** Used by the finite background owner; explicit drains attempt each ID once. */
+    retryWithinBudget?: boolean;
 }): Promise<LifecycleSpoolStatus>;
 export declare function recordLifecycleEvent(input: {
     apiKey: string;
@@ -87,4 +98,5 @@ export declare function recordLifecycleEvent(input: {
     pending: number;
     recovered_corruption: boolean;
 }>;
+export {};
 //# sourceMappingURL=lifecycle-spool.d.ts.map

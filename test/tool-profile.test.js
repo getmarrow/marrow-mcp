@@ -332,3 +332,22 @@ test('core and full status surfaces report their own effective profile and visib
   assert.equal(fullPayload.mcp_tool_profile.effective_profile, 'full');
   assert.equal(fullPayload.mcp_tool_profile.visible_tool_count, 58);
 });
+
+for (const profile of ['primary', 'core', 'full']) {
+  test(`enrollment guidance uses tools available in ${profile} without inventing decision authority`, () => {
+    const output = messages(runMcp({ MARROW_TOOL_PROFILE: profile, MARROW_AUTO_ENROLL: 'true' }));
+    const instructions = output.get(1).result.instructions;
+    assert.match(instructions, /runtime\.decision_id/);
+    assert.match(instructions, /runtime\.runtime_authorization\.id separate as gate_receipt_id/);
+    assert.match(instructions, /marrow_think only when decision creation is required/);
+    assert.match(instructions, /only committed:true confirms closure/);
+    if (profile === 'primary') {
+      assert.match(instructions, /17 tools/);
+      assert.match(instructions, /marrow_agent_status/);
+      assert.doesNotMatch(instructions, /marrow_auto|marrow_ask/);
+    } else {
+      assert.match(instructions, /marrow_auto/);
+      assert.match(instructions, /same operation_id and unchanged scope, outcome, proof and receipts/);
+    }
+  });
+}
