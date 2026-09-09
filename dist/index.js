@@ -958,6 +958,8 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
                         agent_id: agentId,
                         session_id: sessionId,
                         surfaces: params.surfaces,
+                        // Full canonical receipt scope and expiry are required for reuse.
+                        response_mode: 'expanded',
                         // Proof is commit evidence, not part of immutable runtime authorization.
                         // Keeping it out makes missing -> supplied proof a monotonic continuation.
                         context: { source: 'mcp_auto_risk_upgrade', operation_id: operationId },
@@ -989,6 +991,24 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
     }
     const thinkStarted = Date.now();
     let decisionId = operationBinding.decisionId || null;
+    const ordinaryApprovalDeclared = Boolean(runtimeGate && (0, runtime_contract_1.runtimeDeclaresOrdinaryOwnerApproval)(runtimeGate));
+    if (runtimeGate && !runtimeGate.arbitration && (runtimeGate.decision_id || ordinaryApprovalDeclared)) {
+        if (!(0, runtime_contract_1.runtimeDecisionMatchesAutoScope)(runtimeGate, {
+            action: (0, redact_1.redactSensitiveText)(params.action_for_gate || params.action), agentId, sessionId,
+        }) || (params.gate_receipt_id && params.gate_receipt_id !== gateReceiptId))
+            throw (0, request_reliability_1.invalidResponseError)();
+        const runtimeDecisionId = runtimeGate.decision_id;
+        if (decisionId && decisionId !== runtimeDecisionId) {
+            throw new request_reliability_1.MarrowRequestError({
+                code: 'request_failed', backendCode: 'MARROW_AUTO_RUNTIME_DECISION_MISMATCH',
+                message: 'The runtime receipt and auto operation are bound to different decisions.',
+                status: 409, retryable: false,
+                exactFix: 'Stop and reconcile this operation with its original server-issued decision and gate receipt.',
+            });
+        }
+        decisionId = runtimeDecisionId;
+        operationBinding.decisionId = runtimeDecisionId;
+    }
     const arbitrationDecisionId = typeof runtimeGate?.arbitration?.decision_id === 'string'
         && runtimeGate.arbitration.decision_id.trim()
         ? runtimeGate.arbitration.decision_id.trim()
@@ -1092,7 +1112,24 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
     const matchingRequiredApprovalReceipts = Boolean(params.owner_approval_receipt_id
         && (!runtimeArbitrationReceiptId
             || params.arbitration_receipt_id === runtimeArbitrationReceiptId));
-    if (genericReviewRequired) {
+    if (genericReviewRequired && ordinaryApprovalDeclared && runtimeGate) {
+        if (!(0, runtime_contract_1.hasOrdinaryOwnerApprovalProof)(params.proof)) {
+            return autoPartial({
+                operationId, decisionId, phase: 'owner_approval_required', runtimeGate, timings, startedAt,
+                resumable: false,
+                exactNextAction: 'Wait for explicit owner approval of this exact work. Then supply the server-supported proof.owner_approval object with the required measured proof and call marrow_auto with this same operation_id. Preserve the original decision and gate receipt. Do not infer or manufacture approval.',
+            });
+        }
+        proofCanClose = (0, runtime_contract_1.ordinaryOwnerApprovalCanAttemptCommit)(runtimeGate, params.proof, gateReceiptId);
+        if (!proofCanClose) {
+            return autoPartial({
+                operationId, decisionId, phase: 'review_required', runtimeGate, timings, startedAt,
+                resumable: false,
+                exactNextAction: 'The original ordinary approval receipt is expired or its enforced completion contract is not valid. Stop and reconcile fresh server guidance for this exact operation before attempting commit.',
+            });
+        }
+    }
+    else if (genericReviewRequired) {
         return autoPartial({
             operationId,
             decisionId,
@@ -1101,7 +1138,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             timings,
             startedAt,
             resumable: false,
-            exactNextAction: 'Stop this operation. A non-arbitrated review_required gate cannot issue a commit-compatible dashboard approval receipt. Start a new review with marrow_arbitrate, then use that arbitration response\'s exact decision_id, gate receipt, arbitration receipt, and dashboard-issued owner approval receipt. Do not retry this operation or use chat/proof text as approval.',
+            exactNextAction: 'Stop this operation and obtain the server-supported completion contract for this exact review. No supported ordinary approval path was declared. Preserve the operation and receipt references; do not infer approval or automatically retry.',
         });
     }
     if (arbitrationRequiresOwnerApproval && !matchingRequiredApprovalReceipts) {

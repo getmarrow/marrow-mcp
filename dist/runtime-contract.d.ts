@@ -12,4 +12,14 @@ export declare function highRiskRuntimeCanClose(runtime: MarrowAgentRuntimeResul
  * gate; the backend still validates and binds the exact proof on commit.
  */
 export declare function highRiskRuntimeCanContinueWithProof(runtime: MarrowAgentRuntimeResult, proof: Record<string, unknown> | undefined, explicitReceiptId: unknown, now?: number): boolean;
+/** Server-declared ordinary closure evidence, never action authorization. */
+export declare function runtimeDeclaresOrdinaryOwnerApproval(runtime: MarrowAgentRuntimeResult): boolean;
+export declare function hasOrdinaryOwnerApprovalProof(proof: Record<string, unknown> | undefined): boolean;
+/** Validate the server's existing decision before auto skips decision creation. */
+export declare function runtimeDecisionMatchesAutoScope(runtime: MarrowAgentRuntimeResult, scope: {
+    action: string;
+    agentId?: string;
+    sessionId?: string;
+}): boolean;
+export declare function ordinaryOwnerApprovalCanAttemptCommit(runtime: MarrowAgentRuntimeResult, proof: Record<string, unknown> | undefined, receiptId: unknown, now?: number): boolean;
 //# sourceMappingURL=runtime-contract.d.ts.map
