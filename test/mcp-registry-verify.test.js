@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { endpoint, verifyRegistry } = require('../scripts/mcp-registry-verify.cjs');
 
 const expectedName = 'io.github.getmarrow/marrow';
-const expectedVersion = '3.9.81';
+const expectedVersion = '3.9.82';
 
 function fixtureFetch(scenario, calls) {
   return async (input) => {
