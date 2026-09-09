@@ -1885,8 +1885,8 @@ test('published canary requires a completed child response for every route', () 
   assert.match(source, /process_count: 1/);
   assert.match(source, /per_tool_latency_excludes_initialization: true/);
   assert.match(source, /unexpected response id/);
-  assert.match(source, /returned no MCP tool response/);
-  assert.match(source, /empty or invalid tool payload/);
+  assert.match(source, /Missing MCP tool response/);
+  assert.match(source, /Empty or invalid tool payload/);
   assert.match(source, /version !== expectedVersion/);
   assert.match(source, /validatePayload\(name, payload\)/);
   assert.match(source, /\['marrow_value_report', \{ period: '7d' \}\]/);
