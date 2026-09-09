@@ -238,6 +238,148 @@ test('legacy array records preserve attempts and permanent dead letters while tr
   } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
 });
 
+
+test('near-limit legacy payload survives retry metadata without quarantine or false acceptance', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-byte-envelope-'));
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let clock = originalNow();
+  Date.now = () => clock;
+  const id = 'a'.repeat(128);
+  const base = { event_id: id, event_type: 'outcome_committed', harness: id, agent_id: id,
+    action: '漢'.repeat(180), target: '語'.repeat(180),
+    surfaces: Array.from({ length: 16 }, (_, index) => `${String(index).padStart(2, '0')}${'a'.repeat(78)}`),
+    workflow_id: id, session_id: id, decision_id: id, correlation_id: id, source: 'client_self_reported',
+    intervention_disposition: 'overridden', action_changed: true, risk_level: 'medium', outcome_state: 'closed', success: true };
+  try {
+    for (const [index, action] of [base.action, '\ud800'.repeat(120) + '漢'.repeat(60)].entries()) {
+      const path = join(directory, `spool-${index}.json`);
+      await withSpoolPath(path, async () => {
+        const input = lifecycleInput({ ...base, action });
+        await recordLifecycleEvent({ ...input, deferDelivery: true });
+        const [legacy] = JSON.parse(readFileSync(path, 'utf8'));
+        assert.equal(Buffer.byteLength(JSON.stringify(legacy)), index === 0 ? 3722 : 4082);
+        assert.equal(legacy.next_attempt_at, undefined);
+        const bodies = [];
+        globalThis.fetch = async (_url, init) => { bodies.push(init.body); return new Response('{}', { status: 503 }); };
+        const queued = await recordLifecycleEvent(input);
+        assert.equal(queued.accepted, false);
+        assert.equal(queued.queued, true);
+        assert.equal(queued.recovered_corruption, false);
+        const [retried] = JSON.parse(readFileSync(path, 'utf8'));
+        if (index === 1) assert.equal(Buffer.byteLength(JSON.stringify(retried)), 4222);
+        assert.equal(retried.event_id, legacy.event_id);
+        assert.equal(retried.action, legacy.action);
+        assert.equal(readdirSync(directory).some(name => name.includes('.corrupt-')), false);
+        clock = Date.parse(retried.next_attempt_at);
+        globalThis.fetch = async (_url, init) => { bodies.push(init.body); return new Response('{}', { status: 200 }); };
+        const closed = await recordLifecycleEvent(input);
+        assert.equal(closed.accepted, true);
+        assert.equal(bodies[0], bodies[1], 'retry envelope cannot change immutable wire bytes');
+        assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), []);
+      });
+    }
+  } finally { Date.now = originalNow; globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('local metadata has a bounded 227-byte maximum and cannot expand the immutable payload limit', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-metadata-maximum-'));
+  const path = join(directory, 'spool.json');
+  const metadata = { attempts: 1000000, delivery_state: 'dead_letter', last_status: 599,
+    last_attempt_at: '+275760-09-13T00:00:00.000Z', next_attempt_at: '+275760-09-13T00:00:00.000Z',
+    retry_reason: 'authentication_rejected', retry_blocked: true };
+  assert.equal(Buffer.byteLength(JSON.stringify(metadata)), 227);
+  assert.ok(Buffer.byteLength(JSON.stringify(metadata)) <= 256);
+  try {
+    await withSpoolPath(path, async () => {
+      await recordLifecycleEvent({ ...lifecycleInput({ event_id: 'metadata-maximum' }), deferDelivery: true });
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify([{ ...base, ...metadata }]), { mode: 0o600 });
+      assert.equal(lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' }).failed, 1);
+      assert.equal(existsSync(path), true);
+      const retained = readFileSync(path, 'utf8');
+      const id = 'a'.repeat(128);
+      await assert.rejects(recordLifecycleEvent({ ...lifecycleInput({ event_id: id, harness: id, agent_id: id,
+        action: '\ud800'.repeat(180), target: '\ud800'.repeat(180), workflow_id: id, session_id: id, decision_id: id, correlation_id: id,
+        surfaces: Array.from({ length: 16 }, (_, i) => `${String(i).padStart(2, '0')}${'a'.repeat(78)}`) }), deferDelivery: true }), /byte limit/);
+      await assert.rejects(recordLifecycleEvent({ ...lifecycleInput({ event_type: 'invalid-type' }), deferDelivery: true }), /event_type/);
+      assert.equal(readFileSync(path, 'utf8'), retained, 'invalid admission preserves already queued evidence');
+      writeFileSync(path, JSON.stringify([{ ...base, last_status: 9999 }]), { mode: 0o600 });
+      const invalid = lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' });
+      assert.equal(invalid.recovered_corruption, true);
+      assert.equal(existsSync(path), false, 'invalid metadata keeps the established quarantine behavior');
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('aggregate retry reservation blocks near-full legacy delivery before fetch and preserves admission headroom', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-total-retry-capacity-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  const metadataFields = ['attempts', 'delivery_state', 'last_status', 'last_attempt_at', 'next_attempt_at', 'retry_reason', 'retry_blocked'];
+  const payload = event => Object.fromEntries(Object.entries(event).filter(([key]) => !metadataFields.includes(key)));
+  const reserved = events => Buffer.byteLength(JSON.stringify(events.map(payload))) + events.length * 255;
+  const max = 2 * 1024 * 1024;
+  const id = 'a'.repeat(128);
+  const event = { event_id: id, event_type: 'outcome_committed', harness: id, agent_id: id, action: '漢'.repeat(180), target: '語'.repeat(180),
+    surfaces: Array.from({ length: 16 }, (_, i) => `${String(i).padStart(2, '0')}${'a'.repeat(78)}`),
+    workflow_id: id, session_id: id, decision_id: id, correlation_id: id, source: 'client_self_reported',
+    intervention_disposition: 'overridden', action_changed: true, risk_level: 'medium', outcome_state: 'closed', success: true };
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      const input = lifecycleInput(event);
+      await recordLifecycleEvent({ ...input, deferDelivery: true });
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      const recordBytes = Buffer.byteLength(JSON.stringify(base));
+      const count = Math.floor((max - 1) / (recordBytes + 1));
+      const rows = Array.from({ length: count }, (_, i) => ({ ...base, event_id: `${String(i).padStart(6, '0')}${'a'.repeat(122)}` }));
+      const legacy = JSON.stringify(rows);
+      assert.ok(Buffer.byteLength(legacy) <= max && Buffer.byteLength(legacy) > max - 4096);
+      assert.ok(reserved(rows) > max);
+      writeFileSync(path, legacy, { mode: 0o600 });
+      globalThis.fetch = async () => { calls++; return new Response('{}', { status: 429, headers: { 'Retry-After': '3600' } }); };
+      const scope = { apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: event.agent_id };
+      const status = await drainLifecycleSpool(scope);
+      assert.equal(status.state, 'attention_required');
+      assert.equal(status.retry.capacity_blocked, rows.length);
+      assert.match(status.exact_fix, /No delivery will start/);
+      await nudgeLifecycleSpool(scope);
+      const duplicate = await recordLifecycleEvent({ ...input, event: { ...event, event_id: rows[0].event_id } });
+      assert.equal(duplicate.queued, true);
+      assert.equal(calls, 0);
+      assert.equal(readFileSync(path, 'utf8'), legacy, 'legacy queue bytes survive capacity block');
+      const deadLegacy = JSON.stringify(rows.map(row => ({ ...row, delivery_state: 'dead_letter' })));
+      writeFileSync(path, deadLegacy, { mode: 0o600 });
+      const deadStatus = await drainLifecycleSpool(scope);
+      assert.equal(deadStatus.retry.capacity_blocked, rows.length);
+      assert.match(deadStatus.exact_fix, /No delivery will start/);
+      assert.equal(calls, 0);
+      assert.equal(readFileSync(path, 'utf8'), deadLegacy);
+
+      // Fixture reset only: model an admission with just enough reserved space.
+      while (reserved([...rows, base]) > max) rows.pop();
+      writeFileSync(path, JSON.stringify(rows), { mode: 0o600 });
+      const accepted = await recordLifecycleEvent({ ...input, deferDelivery: true });
+      assert.equal(accepted.queued, true);
+      const admitted = JSON.parse(readFileSync(path, 'utf8'));
+      assert.ok(reserved(admitted) <= max);
+      const beforeRejected = readFileSync(path, 'utf8');
+      await assert.rejects(recordLifecycleEvent({ ...input, event: { ...event, event_id: 'next'.padEnd(128, 'a') }, deferDelivery: true }), /capacity insufficient/);
+      assert.equal(readFileSync(path, 'utf8'), beforeRejected);
+      const attempted = await recordLifecycleEvent(input);
+      assert.equal(attempted.queued, true);
+      assert.equal(calls, 1);
+      const withRetry = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(withRetry.find(row => row.event_id === id).retry_reason, 'rate_limited');
+      assert.ok(Buffer.byteLength(JSON.stringify(withRetry)) <= max);
+      assert.equal(withRetry.length, admitted.length);
+      assert.equal(readdirSync(directory).some(name => name.includes('.corrupt-')), false);
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('passive hooks use joinable action bindings without treating tool exits as business success', () => {
   const hook = readFileSync(join(__dirname, '../src/hook.ts'), 'utf8');
   const context = readFileSync(join(__dirname, '../src/hook-context.ts'), 'utf8');
