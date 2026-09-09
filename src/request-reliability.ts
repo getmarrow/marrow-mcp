@@ -224,13 +224,19 @@ function safeToRetry(url: string, init: RequestInit): boolean {
   return headers.has('Idempotency-Key') || /\/v1\/analytics\/decision-brief(?:[/?]|$)/.test(url);
 }
 
-export async function reliableFetch(url: string | URL, init: RequestInit = {}): Promise<Response> {
+export async function reliableFetch(
+  url: string | URL,
+  init: RequestInit = {},
+  options: { retryOwner?: 'caller'; timeoutMs?: number } = {},
+): Promise<Response> {
   const target = String(url);
-  const timeoutMs = boundedTimeout(target);
+  const timeoutMs = typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? Math.min(boundedTimeout(target), options.timeoutMs)
+    : boundedTimeout(target);
   const deadline = Date.now() + timeoutMs;
   const externalSignal = init.signal;
   let lastError: MarrowRequestError | null = null;
-  const attempts = safeToRetry(target, init) ? 2 : 1;
+  const attempts = options.retryOwner === 'caller' ? 1 : safeToRetry(target, init) ? 2 : 1;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (externalSignal?.aborted) throw normalizeRequestError(externalSignal.reason || new DOMException('Aborted', 'AbortError'));
