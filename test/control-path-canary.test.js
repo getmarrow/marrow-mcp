@@ -149,6 +149,106 @@ test('retries a resumable auto phase with the same operation before accepting th
   assert.equal(autoCalls[0].params.arguments.operation_id, autoCalls[1].params.arguments.operation_id);
 });
 
+test('canary retains only valid auto timing metrics and measured outer attempts', async () => {
+  const fake = fakeSpawn('good', { initializeDelayMs: 0, handle: (request, child) => {
+    if (request.params?.name !== 'marrow_auto') return false;
+    return respond(child, request, { result: { content: [{ text: JSON.stringify({
+      ...payload('marrow_auto'), action: secret, proof: { secret },
+      phase_timings_ms: { runtime: null, think: 5, commit: 7, total: 12, secret },
+      response_timings_ms: { core: 12, durable_enqueue: 4, full_response: 17, secret },
+      attempts: secret,
+    }) }] } });
+  } });
+  const result = await runCanary(environment(), { spawnProcess: fake.factory });
+  const auto = result.results.find((row) => row.tool === 'marrow_auto');
+  assert.deepEqual(auto.phase_timings_ms, { think: 5, commit: 7, total: 12 });
+  assert.deepEqual(auto.response_timings_ms, { core: 12, durable_enqueue: 4, full_response: 17 });
+  assert.equal(auto.attempts, 1);
+  assert.equal(auto.retry_wait_ms, 0);
+  assert.equal(JSON.stringify(result).includes(secret), false);
+});
+
+test('canary omits invalid optional numbers and preserves auto measurements on later failure', async () => {
+  const { failure } = await captureFailure((request, child) => {
+    if (request.params?.name === 'marrow_auto') return respond(child, request, { result: { content: [{ text: JSON.stringify({
+      ...payload('marrow_auto'), phase_timings_ms: { runtime: Infinity, think: NaN, commit: -1, total: 60001 },
+      response_timings_ms: { core: '12', durable_enqueue: null, full_response: 25 },
+    }) }] } });
+    if (request.params?.name === 'marrow_first_value') return respond(child, request, { result: { content: [{ text: '{}' }] } });
+    return false;
+  });
+  const auto = failure.results.find((row) => row.tool === 'marrow_auto');
+  assert.equal(auto.phase_timings_ms, undefined);
+  assert.deepEqual(auto.response_timings_ms, { full_response: 25 });
+  assert.equal(auto.attempts, 1);
+  assert.equal(auto.retry_wait_ms, 0);
+  assert.equal(failure.error_class, 'contract');
+});
+
+test('canary keeps malformed and contradictory auto states as contract failures', async () => {
+  for (const invalid of [
+    { resumable: true, live_delivery: { committed: false } },
+    { phase: 'owner_approval_required', completion_state: 'pending_owner_approval', resumable: false,
+      live_delivery: { accepted: true, committed: true } },
+  ]) {
+    const { failure, state } = await captureFailure((request, child) => request.params?.name === 'marrow_auto'
+      && respond(child, request, { result: { content: [{ text: JSON.stringify(invalid) }] } }));
+    assert.equal(failure.error_class, 'contract');
+    assert.equal(failure.auto_phase, undefined);
+    assert.equal(state.calls.filter((row) => row.params?.name === 'marrow_auto').length, 1);
+  }
+});
+
+test('canary classifies actual CLI delivery failures without hiding HTTP authority or transport errors', async () => {
+  for (const [category, status, expected] of [
+    ['request_timeout', null, 'request_timeout'], ['authentication_required', null, 'authentication'],
+    ['permission_denied', null, 'authorization'], ['proof_required', 409, 'proof_required'],
+    ['proof_required', 401, 'authentication'], ['proof_required', 403, 'authorization'],
+    ['proof_required', 503, 'unavailable503'], ['dns_unavailable', null, 'tool_unavailable'],
+    ['invalid_response', null, 'contract'], ['arbitrary', null, 'contract'], ['toString', null, 'contract'],
+  ]) {
+    const { failure } = await captureFailure((request, child) => request.params?.name === 'marrow_auto'
+      && respond(child, request, { result: { content: [{ text: JSON.stringify({
+        phase: null, live_delivery: { accepted: false, committed: false, failure: {
+          ok: false, error: { category, status, message: secret, code: category },
+        } },
+      }) }] } }));
+    assert.equal(failure.error_class, expected, `${category}/${status}`);
+    assert.equal(failure.auto_phase, undefined);
+  }
+  const { failure } = await captureFailure((request, child) => request.params?.name === 'marrow_auto'
+    && respond(child, request, { result: { content: [{ text: JSON.stringify({
+      ...payload('marrow_auto'), live_delivery: { committed: true, failure: {
+        ok: false, error: { category: 'proof_required', status: 409 },
+      } },
+    }) }] } }));
+  assert.equal(failure.error_class, 'contract');
+});
+
+for (const [phase, completion, classification] of [
+  ['commit_pending', 'delivery_pending', 'completion_pending'],
+  ['owner_approval_required', 'pending_owner_approval', 'approval_required'],
+  ['review_required', 'review_required_terminal', 'approval_required'],
+  ['proof_required', 'pending_required_proof', 'proof_required'],
+]) {
+  test(`canary classifies valid ${phase} without success or an outage claim`, async () => {
+    const { failure, state } = await captureFailure((request, child) => request.params?.name === 'marrow_auto'
+      && respond(child, request, { result: { content: [{ text: JSON.stringify({
+        phase, completion_state: completion, resumable: phase === 'commit_pending', retry_after_ms: 900000,
+        live_delivery: { accepted: true, committed: false },
+        phase_timings_ms: { runtime: -1, think: 'secret', commit: 2, total: 3 },
+        response_timings_ms: { core: 3, durable_enqueue: 1, full_response: 5 },
+        decision_id: secret, exact_next_action: secret,
+      }) }] } }));
+    assert.equal(failure.ok, false);
+    assert.equal(failure.error_class, classification);
+    assert.equal(failure.auto_phase, phase);
+    assert.deepEqual(failure.phase_timings_ms, { commit: 2, total: 3 });
+    assert.equal(failure.response_timings_ms.full_response, 5);
+    assert.equal(state.calls.filter((row) => row.params?.name === 'marrow_auto').length, 1);
+  });
+}
+
 test('default canary tool timeout does not override the customer MCP request deadline', async () => {
   const fake = fakeSpawn();
   const env = environment();
@@ -432,8 +532,11 @@ for (const stream of ['stdout', 'stderr']) {
 
 test('uncommitted resumable auto remains bounded at three attempts', async () => {
   const { failure, state } = await captureFailure((request, child) => request.params?.name === 'marrow_auto'
-    && respond(child, request, { result: { content: [{ text: JSON.stringify({ resumable: true, retry_after_ms: 0, live_delivery: { committed: false } }) }] } }));
-  assert.equal(failure.error_class, 'contract');
+    && respond(child, request, { result: { content: [{ text: JSON.stringify({
+      phase: 'commit_pending', completion_state: 'delivery_pending', resumable: true, retry_after_ms: 0,
+      live_delivery: { accepted: true, committed: false },
+    }) }] } }));
+  assert.equal(failure.error_class, 'completion_pending');
   assert.equal(failure.tool, 'marrow_auto');
   assert.equal(failure.attempt, 3);
   assert.equal(state.calls.filter((request) => request.params?.name === 'marrow_auto').length, 3);

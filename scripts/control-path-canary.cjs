@@ -92,10 +92,46 @@ function safeMs(value) {
   return Number.isFinite(value) ? Math.max(0, Math.min(60_000, Math.round(value))) : 0;
 }
 
+function autoTimings(payload) {
+  const result = {};
+  for (const [group, fields] of [
+    ['phase_timings_ms', ['runtime', 'think', 'commit', 'total']],
+    ['response_timings_ms', ['core', 'durable_enqueue', 'full_response']],
+  ]) {
+    const source = payload?.[group];
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
+    const values = {};
+    for (const field of fields) {
+      const value = source[field];
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 60000) {
+        values[field] = Math.round(value);
+      }
+    }
+    if (Object.keys(values).length) result[group] = values;
+  }
+  return result;
+}
+
+function autoWaitClass(payload) {
+  if (payload?.live_delivery?.committed !== false
+    || typeof payload.live_delivery.accepted !== 'boolean'
+    || typeof payload.resumable !== 'boolean') return null;
+  if (['runtime_pending', 'think_pending', 'commit_pending'].includes(payload.phase)
+    && payload.completion_state === 'delivery_pending' && payload.resumable === true) return 'completion_pending';
+  if ((payload.phase === 'owner_approval_required' && payload.completion_state === 'pending_owner_approval'
+    || payload.phase === 'review_required' && payload.completion_state === 'review_required_terminal')
+    && payload.resumable === false) return 'approval_required';
+  if (payload.phase === 'proof_required' && payload.completion_state === 'pending_required_proof') return 'proof_required';
+  return null;
+}
+
 function failureRecord(error, context = {}) {
   const evidence = errorEvidence.get(error) || { error_class: 'internal' };
   const results = (context.results || []).slice(0, 11).map((row) => Object.freeze({
     tool: row.tool, ok: true, live: true, latency_ms: safeMs(row.latency_ms),
+    ...(row.tool === 'marrow_auto' ? {
+      ...autoTimings(row), attempts: row.attempts, retry_wait_ms: safeMs(row.retry_wait_ms),
+    } : {}),
   }));
   return Object.freeze({
     schema_version: 1,
@@ -112,6 +148,10 @@ function failureRecord(error, context = {}) {
     initialization_ms: context.initializationMs == null ? null : safeMs(context.initializationMs),
     tools_checked: results.length,
     results: Object.freeze(results),
+    ...(context.tool === 'marrow_auto' ? {
+      ...autoTimings(context.autoMetrics), retry_wait_ms: safeMs(context.retryWaitMs),
+      ...(context.autoPhase ? { auto_phase: context.autoPhase } : {}),
+    } : {}),
     ...(evidence.http_status === undefined ? {} : { http_status: evidence.http_status }),
   });
 }
@@ -186,6 +226,26 @@ function validatePayload(name, payload) {
       'runtime gate',
     );
   } else if (name === 'marrow_auto') {
+    const failure = payload.live_delivery?.failure;
+    if (failure) {
+      requireField(payload.live_delivery.committed === false && payload.phase == null
+        && failure.ok === false, 'failed auto delivery');
+      // Transport/auth status takes precedence over a caller-facing proof label.
+      const category = failure.error?.category;
+      const categories = {
+        authentication_required: 'authentication', permission_denied: 'authorization',
+        proof_required: 'proof_required', request_timeout: 'request_timeout',
+        dns_unavailable: 'tool_unavailable', connection_reset: 'tool_unavailable',
+        tls_failure: 'tool_unavailable', edge_access_denied: 'tool_unavailable',
+        service_unavailable: 'tool_unavailable', rate_limited: 'tool_unavailable',
+        request_failed: 'tool_unavailable', invalid_response: 'contract',
+      };
+      const classification = typeof category === 'string' && Object.hasOwn(categories, category)
+        ? categories[category] : 'contract';
+      throw upstreamError(failure, classification, 'Auto delivery failed');
+    }
+    const waitClass = autoWaitClass(payload);
+    if (waitClass) throw canaryError(waitClass, 'Auto completion is awaiting its declared next step');
     requireField(
       payload.live_delivery
         && payload.live_delivery.accepted === true
@@ -441,25 +501,41 @@ async function executeCanary(env, options, context) {
       const callStarted = performance.now();
       let called;
       let payload;
+      let attempts = 0;
+      context.retryWaitMs = 0;
+      context.autoMetrics = undefined;
+      context.autoPhase = undefined;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         if (client.fatalError) throw client.fatalError;
         stage('tool_call', name, attempt + 1);
+        attempts += 1;
         called = await client.request('tools/call', { name, arguments: args });
         if (client.fatalError) throw client.fatalError;
         stage('tool_validate', name, attempt + 1);
         payload = toolPayload(called, name);
-        if (name !== 'marrow_auto' || payload.live_delivery?.committed === true || payload.resumable !== true) break;
+        if (name !== 'marrow_auto') break;
+        context.autoMetrics = autoTimings(payload);
+        const waitClass = autoWaitClass(payload);
+        context.autoPhase = waitClass ? payload.phase : undefined;
+        if (waitClass !== 'completion_pending') break;
         if (attempt < 2) {
-          const retryAfterMs = Number(payload.retry_after_ms);
-          const delayMs = Number.isFinite(retryAfterMs) ? Math.max(0, Math.min(1_000, retryAfterMs)) : 250;
+          const requested = payload.retry_after_ms;
+          const delayMs = typeof requested === 'number' && Number.isFinite(requested) && requested >= 0
+            ? Math.ceil(requested) : 250;
+          const remaining = totalTimeoutMs - (performance.now() - context.started);
+          if (delayMs >= remaining) break;
+          const waitStarted = performance.now();
           await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+          context.retryWaitMs += Math.round(performance.now() - waitStarted);
         }
       }
       const latencyMs = Math.round(performance.now() - callStarted);
       validatePayload(name, payload);
       const live = payload.stale !== true && payload.source !== 'last_known' && payload.available !== false;
       if (!live) throw canaryError('contract', `${name} returned cached or unavailable guidance`);
-      results.push({ tool: name, ok: true, live: true, latency_ms: latencyMs });
+      results.push({ tool: name, ok: true, live: true, latency_ms: latencyMs,
+        ...(name === 'marrow_auto' ? { ...autoTimings(payload), attempts, retry_wait_ms: context.retryWaitMs } : {}),
+      });
     }
     const hotPath = results.filter((row) => HOT_PATH_TOOLS.has(row.tool));
     const reports = results.filter((row) => !HOT_PATH_TOOLS.has(row.tool));
