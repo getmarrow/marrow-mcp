@@ -61,6 +61,183 @@ function lifecycleInput(event) {
   };
 }
 
+test('bounded nudge backs off transient failures, preserves wire identity, and recovers without foreground network work', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-transient-schedule-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  const bodies = [];
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.parse('2026-09-09T12:00:00.000Z') });
+  try {
+    await withSpoolPath(path, async () => {
+      globalThis.fetch = async (_url, init) => {
+        bodies.push(init.body);
+        return new Response('{}', { status: bodies.length === 1 ? 503 : 200 });
+      };
+      const input = { ...lifecycleInput({ event_id: 'scheduled-transient' }), deferDelivery: true };
+      await recordLifecycleEvent(input);
+      assert.equal(bodies.length, 0, 'deferred local capture never enters fetch');
+      const nudge = nudgeLifecycleSpool({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id });
+      await new Promise(setImmediate);
+      assert.equal(bodies.length, 1);
+      let status = lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.event.agent_id });
+      assert.equal(status.pending, 1);
+      assert.equal(status.failed, 0);
+      assert.equal(status.retry.scheduled, 1);
+      assert.equal(status.retry.reasons.transient_http, 1);
+      t.mock.timers.tick(999);
+      await new Promise(setImmediate);
+      assert.equal(bodies.length, 1, 'no early background retry');
+      t.mock.timers.tick(1);
+      await nudge;
+      assert.equal(bodies.length, 2);
+      assert.equal(bodies[0], bodies[1], 'local attempt metadata never changes the server request');
+      assert.equal('next_attempt_at' in JSON.parse(bodies[1]), false);
+      status = lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.event.agent_id });
+      assert.equal(status.state, 'clear');
+    });
+  } finally { globalThis.fetch = originalFetch; t.mock.timers.reset(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Retry-After beyond the owner budget survives restart without early retry or namespace crossover', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-retry-after-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let clock = Date.parse('2026-09-09T12:00:00.000Z');
+  Date.now = () => clock;
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      globalThis.fetch = async () => { calls++; return new Response('{}', { status: 429, headers: { 'Retry-After': '3600' } }); };
+      const input = lifecycleInput({ event_id: 'server-retry-minimum' });
+      await recordLifecycleEvent(input);
+      const [row] = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(row.next_attempt_at, '2026-09-09T13:00:00.000Z');
+      delete require.cache[require.resolve('../dist/lifecycle-spool.js')];
+      const restarted = require('../dist/lifecycle-spool.js');
+      const scope = { apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id };
+      await restarted.nudgeLifecycleSpool(scope);
+      await restarted.recordLifecycleEvent(input);
+      assert.equal(calls, 1, 'restart and duplicate capture honor the persisted minimum');
+      clock = Date.parse(row.next_attempt_at);
+      globalThis.fetch = async () => { calls++; return new Response('{}', { status: 200 }); };
+      await restarted.nudgeLifecycleSpool(scope);
+      assert.equal(calls, 2);
+      assert.equal(restarted.lifecycleSpoolStatus(scope).state, 'clear');
+    });
+  } finally { Date.now = originalNow; globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('an offline background owner stops at its finite budget and leaves the next retry on disk', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-offline-budget-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  const origin = Date.parse('2026-09-09T12:00:00.000Z');
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: origin });
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      await recordLifecycleEvent({ ...lifecycleInput({ event_id: 'offline-budget' }), deferDelivery: true });
+      globalThis.fetch = async () => { calls++; throw new Error('offline'); };
+      const scope = { apiKey: 'test-mcp-spool-key', agentId: 'agent-one', baseUrl: 'https://api.example.com' };
+      const owner = nudgeLifecycleSpool(scope);
+      await new Promise(setImmediate);
+      for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+        t.mock.timers.tick(delay);
+        await new Promise(setImmediate);
+      }
+      await owner;
+      assert.equal(calls, 5);
+      const status = lifecycleSpoolStatus(scope);
+      assert.equal(status.failed, 0);
+      assert.equal(status.pending, 1);
+      assert.equal(status.retry.reasons.network_error, 1);
+      assert.equal(status.retry.next_attempt_at, new Date(origin + 31_000).toISOString());
+      t.mock.timers.tick(300_000);
+      await new Promise(setImmediate);
+      assert.equal(calls, 5, 'no timer or retry loop survives its owner budget');
+      globalThis.fetch = async () => { calls++; return new Response('{}', { status: 200 }); };
+      await nudgeLifecycleSpool(scope);
+      assert.equal(lifecycleSpoolStatus(scope).state, 'clear');
+      assert.equal(calls, 6);
+    });
+  } finally { globalThis.fetch = originalFetch; t.mock.timers.reset(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('malformed and excessive Retry-After suspend queued delivery rather than shorten the server minimum', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-invalid-retry-after-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      for (const [index, header] of ['tomorrow', '-1', '999999999999999999999999999'].entries()) {
+        globalThis.fetch = async () => { calls++; return new Response('{}', { status: 503, headers: { 'Retry-After': header } }); };
+        await recordLifecycleEvent(lifecycleInput({ event_id: `invalid-guidance-${index}` }));
+      }
+      const scope = { apiKey: 'test-mcp-spool-key', agentId: 'agent-one', baseUrl: 'https://api.example.com' };
+      await nudgeLifecycleSpool(scope);
+      const status = await drainLifecycleSpool(scope);
+      assert.equal(calls, 3);
+      assert.equal(status.pending, 3);
+      assert.equal(status.failed, 0);
+      assert.equal(status.retry.blocked, 3);
+      assert.equal(status.retry.reasons.retry_after_invalid, 3);
+      assert.equal(status.retry.next_attempt_at, null);
+      assert.match(status.exact_fix, /will not retry early/);
+      assert.doesNotMatch(JSON.stringify(status), /999999999999999999999999999|tomorrow/);
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('permanent authorization and schema rejection never enters automatic retries', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-permanent-classification-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      for (const status of [400, 401, 403, 422]) {
+        globalThis.fetch = async () => { calls++; return new Response('{}', { status }); };
+        const receipt = await recordLifecycleEvent(lifecycleInput({ event_id: `permanent-${status}` }));
+        assert.equal(receipt.failed, true);
+      }
+      const scope = { apiKey: 'test-mcp-spool-key', agentId: 'agent-one', baseUrl: 'https://api.example.com' };
+      await nudgeLifecycleSpool(scope);
+      const status = lifecycleSpoolStatus(scope);
+      assert.equal(calls, 4);
+      assert.equal(status.failed, 4);
+      assert.equal(status.pending, 0);
+      assert.equal(status.retry.reasons.authentication_rejected, 2);
+      assert.equal(status.retry.reasons.schema_rejected, 2);
+      assert.match(status.exact_fix, /credential and agent binding/);
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('legacy array records preserve attempts and permanent dead letters while transient queued events gain retry metadata', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-retry-compatibility-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  try {
+    await withSpoolPath(path, async () => {
+      await recordLifecycleEvent({ ...lifecycleInput({ event_id: 'legacy-queued' }), deferDelivery: true });
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify([{ ...base, attempts: 3, last_status: 0 }, { ...base, event_id: 'legacy-dead', attempts: 3, last_status: 0, delivery_state: 'dead_letter' }]), { mode: 0o600 });
+      globalThis.fetch = async () => { throw new Error('offline'); };
+      await drainLifecycleSpool({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one', baseUrl: 'https://api.example.com', retryDeadLetters: false });
+      const rows = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(rows[0].attempts, 4);
+      assert.equal(rows[0].delivery_state, 'queued');
+      assert.equal(rows[0].retry_reason, 'network_error');
+      assert.ok(rows[0].next_attempt_at);
+      assert.equal(rows[1].delivery_state, 'dead_letter');
+      assert.equal(rows[1].attempts, 3);
+      assert.equal(rows[1].next_attempt_at, undefined);
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('passive hooks use joinable action bindings without treating tool exits as business success', () => {
   const hook = readFileSync(join(__dirname, '../src/hook.ts'), 'utf8');
   const context = readFileSync(join(__dirname, '../src/hook-context.ts'), 'utf8');
@@ -232,6 +409,9 @@ test('pre-action policy maps block to deny, review to ask, and allow to native p
 });
 
 test('MCP lifecycle spool keeps compact redacted receipts across process attempts', async () => {
+  const originalNow = Date.now;
+  let clock = originalNow();
+  Date.now = () => clock;
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-spool-'));
   const path = join(directory, 'spool.json');
   const originalFetch = globalThis.fetch;
@@ -255,6 +435,7 @@ test('MCP lifecycle spool keeps compact redacted receipts across process attempt
       assert.doesNotMatch(readFileSync(path, 'utf8'), /secret-value-that-must-not-persist/);
 
       available = true;
+      clock += 1_000;
       const drained = await recordLifecycleEvent(lifecycleInput({
         event_id: 'mcp-event-two',
         event_type: 'outcome_committed',
@@ -267,6 +448,7 @@ test('MCP lifecycle spool keeps compact redacted receipts across process attempt
       assert.deepEqual(delivered.slice(-2).map((event) => event.event_id), ['mcp-event-two', 'mcp-event-one']);
     });
   } finally {
+    Date.now = originalNow;
     globalThis.fetch = originalFetch;
     rmSync(directory, { recursive: true, force: true });
   }
@@ -360,6 +542,9 @@ test('deferred receipt survives restart and lost ACK with stable ID and one nudg
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-deferred-replay-'));
   const path = join(directory, 'spool.json');
   const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let clock = originalNow();
+  Date.now = () => clock;
   const effects = new Set();
   const attempts = [];
   try {
@@ -372,6 +557,7 @@ test('deferred receipt survives restart and lost ACK with stable ID and one nudg
         const event = JSON.parse(init.body);
         attempts.push(event.event_id);
         effects.add(event.event_id); // Model the server's stable-event-ID dedupe.
+        clock += 20_001; // Exhaust this finite owner after its first attempt.
         throw new Error('ACK lost after the server recorded the event');
       };
       const nudgeInput = { apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id };
@@ -391,12 +577,13 @@ test('deferred receipt survives restart and lost ACK with stable ID and one nudg
         effects.add(event.event_id);
         return Response.json({ data: { accepted: true } });
       };
+      clock = Date.parse(JSON.parse(readFileSync(path, 'utf8'))[0].next_attempt_at);
       await restarted.nudgeLifecycleSpool(nudgeInput);
       assert.deepEqual(attempts, [queued.event_id, queued.event_id]);
       assert.equal(effects.size, 1);
       assert.equal(restarted.lifecycleSpoolStatus(nudgeInput).pending, 0);
     });
-  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+  } finally { Date.now = originalNow; globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('deferred capture reports full and unsafe spool failures without dropping prior receipts', async () => {
@@ -416,10 +603,13 @@ test('deferred capture reports full and unsafe spool failures without dropping p
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('terminal rejection and exhausted retries remain explicit durable dead letters', async () => {
+test('permanent rejection dead-letters while repeated transient failures remain scheduled', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-reject-'));
   const path = join(directory, 'spool.json');
   const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let clock = originalNow();
+  Date.now = () => clock;
   try {
     await withSpoolPath(path, async () => {
       globalThis.fetch = async () => new Response('{}', { status: 400 });
@@ -430,21 +620,24 @@ test('terminal rejection and exhausted retries remain explicit durable dead lett
 
       globalThis.fetch = async () => new Response('{}', { status: 503 });
       let exhausted;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
         exhausted = await recordLifecycleEvent(lifecycleInput({ event_id: 'retry-exhausted' }));
+        const row = JSON.parse(readFileSync(path, 'utf8')).find(event => event.event_id === 'retry-exhausted');
+        clock = Date.parse(row.next_attempt_at);
       }
       assert.equal(exhausted.accepted, false);
-      assert.equal(exhausted.failed, true);
+      assert.equal(exhausted.failed, false);
       const row = JSON.parse(readFileSync(path, 'utf8')).find((event) => event.event_id === 'retry-exhausted');
-      assert.equal(row.delivery_state, 'dead_letter');
-      assert.equal(row.attempts, 3);
+      assert.equal(row.delivery_state, 'queued');
+      assert.equal(row.attempts, 4);
       assert.equal(row.last_status, 503);
       assert.match(
         lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' }).exact_fix,
-        /timed out|unavailable/i,
+        /compatibility/i,
       );
     });
   } finally {
+    Date.now = originalNow;
     globalThis.fetch = originalFetch;
     rmSync(directory, { recursive: true, force: true });
   }
@@ -483,7 +676,7 @@ test('explicit drain retries durable dead letters after the delivery problem is 
   }
 });
 
-test('mixed drain does not hide dead letters that were never retried', async () => {
+test('explicit drain preserves transient backlog instead of inventing exhausted dead letters', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-mixed-drain-'));
   const path = join(directory, 'spool.json');
   const originalFetch = globalThis.fetch;
@@ -500,9 +693,9 @@ test('mixed drain does not hide dead letters that were never retried', async () 
         baseUrl: 'https://api.example.com',
         agentId: 'agent-one',
       });
-      assert.equal(status.state, 'attention_required');
-      assert.equal(status.pending, 0);
-      assert.equal(status.failed, 2);
+      assert.equal(status.state, 'pending');
+      assert.equal(status.pending, 2);
+      assert.equal(status.failed, 0);
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -1093,6 +1286,10 @@ test('bounded delivery timeout cannot stall a hook when fetch ignores abort', as
       assert.ok(Date.now() - started < 1500);
       assert.equal(result.queued, true);
       assert.match(readFileSync(path, 'utf8'), /timeout-event/);
+      const status = lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' });
+      assert.equal(status.failed, 0);
+      assert.equal(status.retry.reasons.ack_timeout, 1);
+      assert.equal(status.retry.scheduled, 1);
     });
   } finally {
     globalThis.fetch = originalFetch;
