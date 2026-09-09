@@ -980,14 +980,14 @@ const TOOLS = [
     name: 'marrow_commit',
     description:
       'Close a recorded action with success/failure, a specific outcome, and required proof. ' +
-      'decision_id comes from marrow_think, marrow_auto, or an arbitration runtime that actually created a decision. ' +
+      'decision_id comes from marrow_think, marrow_auto, or a runtime that actually created a decision. ' +
       'Use the gate receipt from marrow_agent_runtime for consequential work. ' +
       'The exact non-authorizing outcome_observation_only runtime correlation may submit an observed_unverified result, but is never sent as receipt evidence and never authorizes action or trusted learning. ' +
       'Only committed:true closes trusted outcome learning.',
     inputSchema: {
       type: 'object',
       properties: {
-        decision_id: { type: 'string', description: 'decision_id from marrow_think, marrow_auto, or an arbitration runtime that created a decision' },
+        decision_id: { type: 'string', description: 'decision_id from marrow_think, marrow_auto, or a runtime that created a decision' },
         success: { type: 'boolean', description: 'Did the action succeed?' },
         outcome: { type: 'string', description: 'What happened — be specific, this trains the hive' },
         caused_by: { type: 'string', description: 'Optional: what caused this action' },
@@ -1059,7 +1059,7 @@ const TOOLS = [
   {
     name: 'marrow_auto',
     description:
-      'Durably capture low-risk activity. One outer invocation normally completes in-band within the bounded client budget; a deadline continuation reuses the same operation_id and never opens a second decision. Outcomes remain pending unless success is explicit; risky completion still requires a fresh gate and measured proof.',
+      'Durably capture activity with bounded core completion. Respect retry_after_ms and reuse operation_id for pending continuation. Server-declared ordinary approval requires actual owner approval supplied in proof; arbitration requires its dashboard receipt. Lifecycle receipt queued is separate from server acceptance. Risky completion requires a fresh gate and measured proof.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1428,7 +1428,7 @@ const TOOLS = [
       'One-call agent-native Marrow loop. Returns passive status, decision brief, risk gate, relevant lessons, ' +
       'template suggestion, required proof pack, before-you-act instruction, and exact next action. ' +
       'Its runtime_authorization is the authoritative gate receipt; it returns decision_id only when runtime actually creates a decision. ' +
-      'Use marrow_auto or marrow_think to create the decision_id required for outcome closure. ' +
+      'Reuse its server-created decision_id for outcome closure; use marrow_auto or marrow_think only when the completion contract requires decision creation. ' +
       'Use this before meaningful work when you want Marrow to guide the whole action in one call.',
     inputSchema: {
       type: 'object',
