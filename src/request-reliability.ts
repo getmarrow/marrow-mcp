@@ -87,13 +87,17 @@ function boundedTimeout(url: string): number {
   return 4_000;
 }
 
-function retryAfterMs(response: Response): number | null {
+export function responseRetryAfter(response: Response): { delayMs: number | null; valid: boolean } {
   const raw = response.headers.get('retry-after');
-  if (!raw) return null;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(60_000, Math.round(seconds * 1_000));
-  const date = Date.parse(raw);
-  return Number.isFinite(date) ? Math.min(60_000, Math.max(0, date - Date.now())) : null;
+  if (raw === null) return { delayMs: null, valid: true };
+  const text = raw.trim();
+  const seconds = Number(text);
+  const numeric = text !== '' && !Number.isNaN(seconds);
+  const parsedDate = numeric ? NaN : Date.parse(text);
+  const delayMs = numeric ? Math.ceil(seconds * 1_000) : Math.max(0, parsedDate - Date.now());
+  return Number.isSafeInteger(delayMs) && delayMs >= 0
+    ? { delayMs, valid: true }
+    : { delayMs: null, valid: false };
 }
 
 function exactFixForStatus(status: number): string {
@@ -105,6 +109,7 @@ function exactFixForStatus(status: number): string {
 
 export function requestErrorFromResponse(response: Response, detail?: Record<string, unknown>): MarrowRequestError {
   const status = response.status;
+  const retryGuidance = responseRetryAfter(response);
   const cloudflareEdgeDenial = status === 403 && Boolean(response.headers.get('cf-ray')) && !detail;
   const errorObject = detail?.error && typeof detail.error === 'object' && !Array.isArray(detail.error)
     ? detail.error as Record<string, unknown>
@@ -159,10 +164,12 @@ export function requestErrorFromResponse(response: Response, detail?: Record<str
     backendCode,
     message: `HTTP ${status}: ${apiMessage}`,
     status,
-    retryable: cloudflareEdgeDenial ? false : RETRYABLE_STATUS.has(status),
-    retryAfterMs: retryAfterMs(response),
+    retryable: !cloudflareEdgeDenial && retryGuidance.valid && RETRYABLE_STATUS.has(status),
+    retryAfterMs: retryGuidance.delayMs,
     exactFix: cloudflareEdgeDenial
       ? 'Marrow was reached, but the Cloudflare edge denied this network client before API authentication. Record the Cloudflare Ray ID, retry from a trusted network, and send the Ray ID to Marrow support; do not rotate the API key.'
+      : !retryGuidance.valid
+      ? 'Retry-After could not be interpreted safely. Check service guidance before explicitly retrying the same operation.'
       : apiFix,
     fixCommand,
     currentPlan,
@@ -253,6 +260,7 @@ export async function reliableFetch(
       const response = await globalThis.fetch(target, { ...init, signal: controller.signal });
       if (!RETRYABLE_STATUS.has(response.status) || attempt + 1 >= attempts) return response;
       lastError = requestErrorFromResponse(response);
+      if (!lastError.retryable) return response;
       retryResponse = response;
       delayMs = lastError.retryAfterMs ?? 50;
     } catch (error) {

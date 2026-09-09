@@ -45,7 +45,7 @@ import {
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
-import { invalidResponseError, MarrowRequestError, normalizeRequestError, reliableFetch, requestErrorFromResponse } from './request-reliability';
+import { invalidResponseError, MarrowRequestError, normalizeRequestError, reliableFetch, requestErrorFromResponse, responseRetryAfter } from './request-reliability';
 import {
   highRiskRuntimeCanClose,
   highRiskRuntimeCanContinueWithProof,
@@ -582,17 +582,15 @@ async function fetchAgentWrite(
     }
     const data = json.data as Record<string, unknown>;
     if (autoManaged) {
-      const retryHeader = response.headers.get('retry-after');
-      if (retryHeader) {
-        const seconds = Number(retryHeader);
-        const headerDelay = Number.isFinite(seconds) && seconds >= 0
-          ? Math.ceil(seconds * 1_000)
-          : Math.max(0, Date.parse(retryHeader) - Date.now());
-        if (Number.isFinite(headerDelay)) {
-          const bodyDelay = typeof data.retry_after_ms === 'number' && Number.isFinite(data.retry_after_ms)
-            ? data.retry_after_ms : 0;
-          data.retry_after_ms = Math.max(bodyDelay, headerDelay);
-        }
+      const retryGuidance = responseRetryAfter(response);
+      if (!retryGuidance.valid) {
+        data.resumable = false;
+        data.retryable = false;
+        data.retry_after_ms = null;
+      } else if (retryGuidance.delayMs !== null) {
+        const bodyDelay = typeof data.retry_after_ms === 'number' && Number.isFinite(data.retry_after_ms)
+          ? data.retry_after_ms : 0;
+        data.retry_after_ms = Math.max(bodyDelay, retryGuidance.delayMs);
       }
       if ((data.idempotency_key !== undefined && data.idempotency_key !== idempotencyKey)
         || (kind === 'commit' && data.decision_id !== undefined && data.decision_id !== expectedDecisionId)
@@ -601,7 +599,8 @@ async function fetchAgentWrite(
       }
       // Canonical write reconciliation predates auto's phase/resumable fields.
       // Adapt only a validated exact-operation pending response.
-      if (response.status === 202 && pendingDecisionId(kind, data, idempotencyKey, expectedDecisionId)) {
+      if (response.status === 202 && retryGuidance.valid && data.resumable !== false
+        && pendingDecisionId(kind, data, idempotencyKey, expectedDecisionId)) {
         data.phase = `${kind}_pending`;
         data.resumable = true;
       }
