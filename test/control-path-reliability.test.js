@@ -47,6 +47,29 @@ function runMcp(home, extraEnv = {}, input = mcpInput()) {
 function installControlFetchMock(home) {
   const mockPath = join(home, 'mock-control-fetch.cjs');
   writeFileSync(mockPath, `
+let autoRequestStarted;
+if (process.env.MARROW_TEST_LIFECYCLE_UNRESOLVED === '1') {
+  const originalOutput = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk, ...rest) => {
+    const message = JSON.parse(String(chunk));
+    if (message.id === 3 && autoRequestStarted !== undefined) {
+      message.test_observed_response_ms = performance.now() - autoRequestStarted;
+      return originalOutput(JSON.stringify(message) + '\\n', ...rest);
+    }
+    return originalOutput(chunk, ...rest);
+  };
+}
+if (process.env.MARROW_TEST_ENQUEUE_DELAY_MS) {
+  const fs = require('node:fs');
+  const originalWrite = fs.writeFileSync;
+  fs.writeFileSync = function(path, ...args) {
+    if (String(path).includes('spool.json.') && String(path).endsWith('.tmp')) {
+      const until = Date.now() + Number(process.env.MARROW_TEST_ENQUEUE_DELAY_MS);
+      while (Date.now() < until) { /* deterministic disk delay fixture */ }
+    }
+    return originalWrite.call(this, path, ...args);
+  };
+}
 const delay = Number(process.env.MARROW_TEST_FETCH_DELAY_MS || 0);
 function wait(signal) {
   if (!delay) return Promise.resolve();
@@ -94,6 +117,7 @@ globalThis.fetch = async (url, init = {}) => {
     } });
   }
   if (target.includes('/v1/agent/think')) {
+    autoRequestStarted ??= performance.now();
     return Response.json({ data: { decision_id: 'decision-auto' } });
   }
   if (target.includes('/v1/agent/commit')) {
@@ -122,6 +146,7 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (target.includes('/v1/agent/integrations/events')) {
     const body = JSON.parse(String(init.body || '{}'));
+    if (process.env.MARROW_TEST_LIFECYCLE_UNRESOLVED === '1') return new Promise(() => {});
     if (process.env.MARROW_TEST_FORBID_OUTCOME_COMMITTED === '1' && body.event_type === 'outcome_committed') {
       return Response.json({ error: 'fixture forbids false closure' }, { status: 503 });
     }
@@ -845,12 +870,54 @@ test('marrow_auto returns in-band commit confirmation only after forwarding supp
     assert.equal(payload.resumable, false);
     assert.match(payload.operation_id, /^auto_[0-9a-f-]{36}$/);
     assert.equal(payload.receipt.event_id, `auto_closed_${payload.operation_id}`);
-    assert.equal(payload.receipt.accepted, true);
-    assert.equal(payload.receipt.queued, false);
+    assert.equal(payload.receipt.accepted, false);
+    assert.equal(payload.receipt.queued, true);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+for (const priorEvent of [false, true]) {
+  test(`marrow_auto responds after durable enqueue with unresolved lifecycle network, prior event=${priorEvent}`, () => {
+    const home = mkdtempSync(join(tmpdir(), 'marrow-auto-deferred-'));
+    const spoolPath = join(home, 'spool.json');
+    try {
+      const mockPath = installControlFetchMock(home);
+      if (priorEvent) writeFileSync(spoolPath, JSON.stringify([{
+        event_id: 'older-queued-receipt', event_type: 'tool_completed', action: 'previous event',
+        agent_id: 'agent-control-test', harness: 'mcp', occurred_at: new Date().toISOString(),
+        attempts: 0, delivery_state: 'queued', outcome_state: 'pending',
+      }]), { mode: 0o600 });
+      const child = runMcp(home, {
+        NODE_OPTIONS: `--require=${mockPath}`, MARROW_EVENT_SPOOL_PATH: spoolPath,
+        MARROW_TEST_LIFECYCLE_UNRESOLVED: '1', MARROW_TEST_ENQUEUE_DELAY_MS: '100',
+        MARROW_REQUEST_TIMEOUT_MS: '1000',
+      }, mcpInput('marrow_auto', {
+        action: 'Update a local documentation note', outcome: 'Documentation check passed', success: true,
+        proof: { test: 'passed' },
+        operation_id: `deferred_delivery_${priorEvent}`,
+      }));
+      assert.equal(child.status, 0, child.stderr);
+      const messages = child.stdout.trim().split('\n').map(JSON.parse);
+      const toolResponse = messages.find((message) => message.id === 3);
+      const payload = JSON.parse(toolResponse.result.content[0].text);
+      assert.equal(payload.receipt.accepted, false);
+      assert.equal(payload.receipt.queued, true);
+      assert.equal(payload.live_delivery.committed, true);
+      const timings = payload.response_timings_ms;
+      assert.deepEqual(Object.keys(timings).sort(), ['core', 'durable_enqueue', 'full_response']);
+      for (const value of Object.values(timings)) assert.ok(Number.isFinite(value) && value >= 0);
+      assert.ok(timings.durable_enqueue >= 100, JSON.stringify(timings));
+      assert.ok(timings.full_response >= timings.core + timings.durable_enqueue, JSON.stringify(timings));
+      assert.ok(timings.full_response < 500, 'unresolved event network must not delay response');
+      assert.ok(toolResponse.test_observed_response_ms >= 100);
+      assert.ok(toolResponse.test_observed_response_ms < 500, 'actual stdout response must not wait on delivery');
+      const events = JSON.parse(readFileSync(spoolPath, 'utf8'));
+      assert.ok(events.some((event) => event.event_id === payload.receipt.event_id));
+      if (priorEvent) assert.ok(events.some((event) => event.event_id === 'older-queued-receipt'));
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+}
 
 test('marrowAuto preserves an explicit HTTP 200 committed false result', async () => {
   const originalFetch = globalThis.fetch;
@@ -1745,7 +1812,7 @@ test('marrow_auto never closes or emits outcome_committed when HTTP 200 says com
     assert.equal(payload.phase, 'commit_pending');
     assert.equal(payload.resumable, true);
     assert.equal(payload.receipt.event_id, `auto_pending_${payload.operation_id}`);
-    assert.equal(payload.receipt.queued, false, 'fixture accepts only a non-outcome_committed lifecycle event');
+    assert.equal(payload.receipt.queued, true, 'the lifecycle receipt is queued separately from governed commit');
     assert.doesNotMatch(text, /closed_with_proof|outcome_committed/);
   } finally {
     rmSync(home, { recursive: true, force: true });

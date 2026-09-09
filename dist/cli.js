@@ -1920,6 +1920,7 @@ if (process.argv[2] !== 'keys') {
         // Request handler
         async function handleRequest(req) {
             const { id, method, params } = req;
+            const responseStartedAt = performance.now();
             // [FIX #15] Enforce initialize-first per MCP spec
             if (!initialized && method !== 'initialize') {
                 error(id, -32002, 'Server not initialized. Send initialize first.');
@@ -2234,19 +2235,22 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         }, SESSION_ID, FLEET_AGENT_ID, 8_000);
                         let delivered = null;
                         let deliveryFailure = null;
+                        const coreStartedAt = performance.now();
                         try {
                             delivered = await delivery();
                         }
                         catch (err) {
                             deliveryFailure = (0, request_reliability_1.structuredRequestFailure)(err);
                         }
+                        const coreDurationMs = Math.floor(performance.now() - coreStartedAt);
                         const runtimeGate = delivered?.runtime_gate || null;
                         if (runtimeGate)
                             storeRuntimeGuidance(runtimeGate);
+                        const enqueueStartedAt = performance.now();
                         const receipt = await (0, lifecycle_spool_1.recordLifecycleEvent)({
                             apiKey: API_KEY,
                             baseUrl: BASE_URL,
-                            deferDelivery: false,
+                            deferDelivery: true,
                             event: {
                                 ...(delivered?.operation_id ? {
                                     event_id: `auto_${delivered.committed ? 'closed' : 'pending'}_${delivered.operation_id}`,
@@ -2268,6 +2272,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 source: 'client_self_reported',
                             },
                         });
+                        const enqueueDurationMs = Math.floor(performance.now() - enqueueStartedAt);
                         const response = {
                             action,
                             outcome: outcome || 'pending',
@@ -2317,9 +2322,19 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             client_update: (0, request_reliability_1.localClientUpdate)(),
                             ...(runtimeGate ? { runtime_gate: runtimeGate } : {}),
                         };
+                        // Measure through response construction; stdout/host consumption occurs
+                        // after this snapshot and is not represented as server phase latency.
+                        response.response_timings_ms = {
+                            core: coreDurationMs,
+                            durable_enqueue: enqueueDurationMs,
+                            full_response: Math.floor(performance.now() - responseStartedAt),
+                        };
                         success(id, {
                             content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
                         });
+                        // The existing bounded owner handles rejection and preserves queued
+                        // receipts across exit/restart. Network work never holds this response.
+                        void (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
                         return;
                     }
                     if (toolName === 'marrow_ask') {

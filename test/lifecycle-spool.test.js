@@ -356,6 +356,66 @@ test('deferred lifecycle capture writes locally without a network call', async (
   }
 });
 
+test('deferred receipt survives restart and lost ACK with stable ID and one nudge owner', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-deferred-replay-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  const effects = new Set();
+  const attempts = [];
+  try {
+    await withSpoolPath(path, async () => {
+      const input = { ...lifecycleInput({ event_id: 'stable-deferred-replay' }), deferDelivery: true };
+      const queued = await recordLifecycleEvent(input);
+      assert.equal(queued.accepted, false);
+      assert.equal(queued.queued, true);
+      globalThis.fetch = async (_url, init) => {
+        const event = JSON.parse(init.body);
+        attempts.push(event.event_id);
+        effects.add(event.event_id); // Model the server's stable-event-ID dedupe.
+        throw new Error('ACK lost after the server recorded the event');
+      };
+      const nudgeInput = { apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id };
+      await Promise.all([nudgeLifecycleSpool(nudgeInput), nudgeLifecycleSpool(nudgeInput)]);
+      assert.equal(attempts.length, 1, 'overlapping nudges have one delivery owner');
+      assert.equal(JSON.parse(readFileSync(path, 'utf8'))[0].event_id, queued.event_id);
+
+      // Load a fresh module, as a restarted client does; only disk state survives.
+      delete require.cache[require.resolve('../dist/lifecycle-spool.js')];
+      const restarted = require('../dist/lifecycle-spool.js');
+      const replay = await restarted.recordLifecycleEvent(input);
+      assert.equal(replay.event_id, queued.event_id);
+      assert.equal(JSON.parse(readFileSync(path, 'utf8')).length, 1);
+      globalThis.fetch = async (_url, init) => {
+        const event = JSON.parse(init.body);
+        attempts.push(event.event_id);
+        effects.add(event.event_id);
+        return Response.json({ data: { accepted: true } });
+      };
+      await restarted.nudgeLifecycleSpool(nudgeInput);
+      assert.deepEqual(attempts, [queued.event_id, queued.event_id]);
+      assert.equal(effects.size, 1);
+      assert.equal(restarted.lifecycleSpoolStatus(nudgeInput).pending, 0);
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('deferred capture reports full and unsafe spool failures without dropping prior receipts', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-deferred-full-'));
+  const path = join(directory, 'spool.json');
+  try {
+    await withSpoolPath(path, async () => {
+      await recordLifecycleEvent({ ...lifecycleInput({ event_id: 'capacity-base' }), deferDelivery: true });
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      const full = Array.from({ length: 1000 }, (_, index) => ({ ...base, event_id: `full-${index}` }));
+      writeFileSync(path, JSON.stringify(full), { mode: 0o600 });
+      await assert.rejects(recordLifecycleEvent({ ...lifecycleInput({ event_id: 'must-not-claim-accepted' }), deferDelivery: true }), /capacity exceeded/);
+      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), full);
+      chmodSync(path, 0o666);
+      await assert.rejects(recordLifecycleEvent({ ...lifecycleInput({ event_id: 'unsafe-must-fail' }), deferDelivery: true }), /permission|private|unsafe|owner/i);
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('terminal rejection and exhausted retries remain explicit durable dead letters', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-reject-'));
   const path = join(directory, 'spool.json');
