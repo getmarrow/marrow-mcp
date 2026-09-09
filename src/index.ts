@@ -807,6 +807,7 @@ export async function marrowCommit(
     arbitration_receipt_id?: string;
     owner_approval_receipt_id?: string;
     action?: string;
+    target?: string;
     type?: string;
     surfaces?: string[];
     auto_gate?: boolean;
@@ -845,8 +846,9 @@ export async function marrowCommit(
           action: redactSensitiveText(params.action),
           decision_id: params.decision_id,
           response_mode: 'expanded',
-          type: params.type || 'handoff',
-          surfaces: params.surfaces || ['handoff'],
+          type: params.type || 'general',
+          target: params.target ? redactSensitiveText(params.target) : undefined,
+          surfaces: params.surfaces || [],
           context: { mcp_commit_auto_gate: true },
           proof: params.proof ? redactSensitiveValue(params.proof) as Record<string, unknown> : undefined,
         },
