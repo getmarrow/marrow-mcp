@@ -67,9 +67,12 @@ export type LifecycleEvent = {
 };
 
 type DeliveryState = 'queued' | 'dead_letter';
+type RetryReason = 'network_error' | 'ack_timeout' | 'transient_http' | 'rate_limited'
+  | 'authentication_rejected' | 'schema_rejected' | 'permanent_http' | 'retry_after_invalid';
 type StoredEvent = Required<Pick<LifecycleEvent, 'event_id' | 'event_type' | 'harness' | 'agent_id' | 'action' | 'occurred_at'>>
   & Omit<LifecycleEvent, 'event_id' | 'event_type' | 'harness' | 'agent_id' | 'action' | 'occurred_at'>
-  & { attempts: number; delivery_state: DeliveryState; last_status?: number };
+  & { attempts: number; delivery_state: DeliveryState; last_status?: number;
+    last_attempt_at?: string; next_attempt_at?: string; retry_reason?: RetryReason; retry_blocked?: boolean };
 
 const EVENT_TYPES = new Set<string>(LIFECYCLE_EVENT_TYPES);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
@@ -81,7 +84,12 @@ const MAX_RECORD_BYTES = 4096;
 const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
 const MAX_NAMESPACE_FILES = 128;
 const MAX_NAMESPACE_DIRECTORY_ENTRIES = 1024;
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 1_000_000;
+const RETRY_BASE_MS = 1_000;
+const RETRY_MAX_MS = 60_000;
+const MAX_SERVER_RETRY_MS = 7 * 24 * 60 * 60 * 1_000;
+const RETRY_REASONS = new Set<RetryReason>(['network_error', 'ack_timeout', 'transient_http', 'rate_limited',
+  'authentication_rejected', 'schema_rejected', 'permanent_http', 'retry_after_invalid']);
 const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
 const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
 const DELIVERY_DRAIN_BUDGET_MS = 30_000;
@@ -261,6 +269,10 @@ function validateStoredEvent(value: unknown): StoredEvent {
     attempts: Number.isInteger(event.attempts) && Number(event.attempts) >= 0 ? Math.min(Number(event.attempts), MAX_ATTEMPTS) : 0,
     delivery_state: event.delivery_state === 'dead_letter' ? 'dead_letter' : 'queued',
     ...(Number.isInteger(event.last_status) ? { last_status: Number(event.last_status) } : {}),
+    ...(event.last_attempt_at != null ? { last_attempt_at: canonicalTimestamp(event.last_attempt_at) } : {}),
+    ...(event.next_attempt_at != null ? { next_attempt_at: canonicalTimestamp(event.next_attempt_at) } : {}),
+    ...(RETRY_REASONS.has(event.retry_reason as RetryReason) ? { retry_reason: event.retry_reason as RetryReason } : {}),
+    ...(event.retry_blocked === true ? { retry_blocked: true } : {}),
   };
   if (Buffer.byteLength(JSON.stringify(stored), 'utf8') > MAX_RECORD_BYTES) {
     throw new Error('lifecycle spool record exceeds byte limit');
@@ -362,13 +374,35 @@ function snapshot(path: string, ownsParent: boolean): { events: StoredEvent[]; r
 }
 
 function retryable(status: number): boolean {
-  return status === 0 || [408, 425, 429, 500, 502, 503, 504].includes(status);
+  return status === 0 || [408, 425, 429].includes(status) || (status >= 500 && status <= 599);
 }
 
-async function deliver(baseUrl: string, apiKey: string, queued: StoredEvent, timeoutMs: number): Promise<number> {
+type DeliveryResult = { status: number; reason?: RetryReason; retryAfterMs?: number; retryBlocked?: boolean };
+
+function retryAfter(response: Response): Pick<DeliveryResult, 'retryAfterMs' | 'retryBlocked'> {
+  const value = response.headers.get('retry-after');
+  if (value == null) return {};
+  const trimmed = value.trim();
+  const milliseconds = /^\d+$/.test(trimmed)
+    ? Number(trimmed) * 1_000
+    : /^[A-Za-z]{3}, /.test(trimmed) ? Date.parse(trimmed) - Date.now() : NaN;
+  // Never turn an invalid or excessive server minimum into an earlier retry.
+  if (!Number.isFinite(milliseconds) || milliseconds > MAX_SERVER_RETRY_MS) return { retryBlocked: true };
+  return { retryAfterMs: Math.max(0, milliseconds) };
+}
+
+function dueAt(event: StoredEvent): number {
+  return event.retry_blocked ? Infinity : event.next_attempt_at ? Date.parse(event.next_attempt_at) : 0;
+}
+
+async function deliver(baseUrl: string, apiKey: string, queued: StoredEvent, timeoutMs: number): Promise<DeliveryResult> {
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   const wireEvent: Record<string, unknown> = { ...queued };
+  for (const field of ['attempts', 'delivery_state', 'last_status', 'last_attempt_at', 'next_attempt_at', 'retry_reason', 'retry_blocked']) {
+    delete wireEvent[field];
+  }
   if (queued.agent_id === 'unknown') delete wireEvent.agent_id;
   try {
     const response = await Promise.race([
@@ -386,12 +420,22 @@ async function deliver(baseUrl: string, apiKey: string, queued: StoredEvent, tim
       }),
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
+          timedOut = true;
           controller.abort();
           reject(new Error('lifecycle delivery timeout'));
         }, timeoutMs);
       }),
     ]);
-    return response.status;
+    const status = response.status;
+    if (status >= 200 && status < 300) return { status };
+    const guidance = retryable(status) ? retryAfter(response) : {};
+    return { status, ...guidance, reason: guidance.retryBlocked ? 'retry_after_invalid'
+      : status === 401 || status === 403 ? 'authentication_rejected'
+      : status === 400 || status === 422 ? 'schema_rejected'
+      : status === 429 ? 'rate_limited'
+      : retryable(status) ? 'transient_http' : 'permanent_http' };
+  } catch {
+    return { status: 0, reason: timedOut ? 'ack_timeout' : 'network_error' };
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -407,6 +451,13 @@ export type LifecycleSpoolStatus = {
   available: number;
   recovered_corruption: boolean;
   exact_fix: string | null;
+  retry: {
+    due: number;
+    scheduled: number;
+    blocked: number;
+    next_attempt_at: string | null;
+    reasons: Partial<Record<RetryReason, number>>;
+  };
   other_namespaces: {
     state: 'clear' | 'attention_required';
     count: number;
@@ -550,8 +601,14 @@ export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }
   const failureStatuses = failed.map((event) => event.last_status).filter((status): status is number => status != null);
   const authFailure = failureStatuses.some((status) => status === 401 || status === 403);
   const transportFailure = failureStatuses.some((status) => status === 0 || status === 408 || status >= 500);
+  const now = Date.now();
+  const retryBlocked = queued.filter((event) => event.retry_blocked).length;
+  const retryReasons: Partial<Record<RetryReason, number>> = {};
+  for (const event of current.events) {
+    if (event.retry_reason) retryReasons[event.retry_reason] = (retryReasons[event.retry_reason] || 0) + 1;
+  }
   return {
-    state: failed.length > 0 ? 'attention_required' : queued.length > 0 ? 'pending' : 'clear',
+    state: failed.length > 0 || retryBlocked > 0 ? 'attention_required' : queued.length > 0 ? 'pending' : 'clear',
     pending: queued.length,
     failed: failed.length,
     oldest_pending_at: queued.map((event) => event.occurred_at).sort()[0] || null,
@@ -559,14 +616,24 @@ export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }
     capacity: MAX_EVENTS,
     available: Math.max(0, MAX_EVENTS - current.events.length),
     recovered_corruption: current.recoveredCorruption,
-    exact_fix: failed.length > 0
+    retry: {
+      due: queued.filter((event) => dueAt(event) <= now).length,
+      scheduled: queued.filter((event) => Number.isFinite(dueAt(event)) && dueAt(event) > now).length,
+      blocked: retryBlocked,
+      next_attempt_at: queued.filter((event) => !event.retry_blocked && event.next_attempt_at)
+        .map((event) => event.next_attempt_at!).sort()[0] || null,
+      reasons: retryReasons,
+    },
+    exact_fix: retryBlocked > 0
+      ? 'The server Retry-After value could not be safely scheduled. Preserve the queued event and original credential/agent binding; inspect server retry guidance before an explicitly approved repair. Automatic delivery will not retry early.'
+      : failed.length > 0
       ? authFailure
         ? 'The server rejected delivery authentication or authorization. Restore the credential and agent binding, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
         : transportFailure
         ? 'Lifecycle delivery timed out or the service was unavailable. Keep the credential unchanged, verify reachability, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
         : 'Inspect the lifecycle event compatibility error, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
       : queued.length > 0
-        ? 'Keep MCP activity running so a later event can retry, or run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
+        ? 'Transient delivery remains queued with a persisted retry schedule. A bounded background owner or later MCP activity/restart retries when due; no delivery is promised while the host is stopped. An explicit drain also respects the schedule.'
         : null,
     other_namespaces: otherNamespaces,
   };
@@ -580,12 +647,8 @@ async function attemptQueuedDelivery(input: {
   event: StoredEvent;
   timeoutMs: number;
 }): Promise<number> {
-  let status = 0;
-  try {
-    status = await deliver(input.baseUrl, input.apiKey, input.event, input.timeoutMs);
-  } catch {
-    status = 0;
-  }
+  const result = await deliver(input.baseUrl, input.apiKey, input.event, input.timeoutMs);
+  const { status } = result;
   mutate(input.path, input.ownsParent, (events) => {
     const current = events.find((row) => row.event_id === input.event.event_id);
     if (!current || current.delivery_state !== 'queued') return;
@@ -593,10 +656,19 @@ async function attemptQueuedDelivery(input: {
       events.splice(events.indexOf(current), 1);
       return;
     }
-    current.attempts += 1;
+    current.attempts = Math.min(MAX_ATTEMPTS, current.attempts + 1);
     current.last_status = status;
-    if (!retryable(status) || current.attempts >= MAX_ATTEMPTS) {
+    current.last_attempt_at = new Date().toISOString();
+    current.retry_reason = result.reason;
+    delete current.next_attempt_at;
+    delete current.retry_blocked;
+    if (!retryable(status)) {
       current.delivery_state = 'dead_letter';
+    } else if (result.retryBlocked) {
+      current.retry_blocked = true;
+    } else {
+      const backoffMs = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(current.attempts - 1, 16));
+      current.next_attempt_at = new Date(Date.now() + Math.max(backoffMs, result.retryAfterMs || 0)).toISOString();
     }
   });
   return status;
@@ -675,6 +747,7 @@ export function nudgeLifecycleSpool(input: {
     budgetMs: NUDGE_DRAIN_BUDGET_MS,
     requestTimeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
     retryDeadLetters: false,
+    retryWithinBudget: true,
   })
     .then(() => undefined)
     .catch(() => undefined)
@@ -691,6 +764,8 @@ export async function drainLifecycleSpool(input: {
   budgetMs?: number;
   requestTimeoutMs?: number;
   retryDeadLetters?: boolean;
+  /** Used by the finite background owner; explicit drains attempt each ID once. */
+  retryWithinBudget?: boolean;
 }): Promise<LifecycleSpoolStatus> {
   const location = spoolPath(input.apiKey, input.agentId);
   const retryDeadLetters = input.retryDeadLetters !== false;
@@ -698,17 +773,19 @@ export async function drainLifecycleSpool(input: {
     ? Math.max(1, Math.min(MAX_EVENTS, Number(input.maxEvents)))
     : retryDeadLetters ? MAX_EVENTS : NUDGE_MAX_EVENTS;
   const budgetMs = Number.isInteger(input.budgetMs)
-    ? Math.max(1, Number(input.budgetMs))
+    ? Math.max(1, Math.min(DELIVERY_DRAIN_BUDGET_MS, Number(input.budgetMs)))
     : retryDeadLetters ? DELIVERY_DRAIN_BUDGET_MS : NUDGE_DRAIN_BUDGET_MS;
   const requestTimeoutMs = Number.isInteger(input.requestTimeoutMs)
-    ? Math.max(1, Number(input.requestTimeoutMs))
+    ? Math.max(1, Math.min(DRAIN_REQUEST_TIMEOUT_MS, Number(input.requestTimeoutMs)))
     : DRAIN_REQUEST_TIMEOUT_MS;
   const deliveryDeadline = Date.now() + budgetMs;
   const attempted = new Set<string>();
-  for (let delivered = 0; delivered < maxEvents; delivered += 1) {
-    let queued = snapshot(location.path, location.ownsParent).events.find((row) => (
-      row.delivery_state === 'queued' && !attempted.has(row.event_id)
+  let delivered = 0;
+  while (delivered < maxEvents && Date.now() < deliveryDeadline) {
+    const candidates = snapshot(location.path, location.ownsParent).events.filter((row) => (
+      row.delivery_state === 'queued' && (input.retryWithinBudget || !attempted.has(row.event_id))
     ));
+    let queued = candidates.find((row) => dueAt(row) <= Date.now());
     if (!queued && retryDeadLetters) {
       queued = mutate(location.path, location.ownsParent, (events) => {
         const failed = events.find((row) => row.delivery_state === 'dead_letter' && !attempted.has(row.event_id));
@@ -716,13 +793,24 @@ export async function drainLifecycleSpool(input: {
         failed.delivery_state = 'queued';
         failed.attempts = 0;
         delete failed.last_status;
+        delete failed.last_attempt_at;
+        delete failed.next_attempt_at;
+        delete failed.retry_reason;
+        delete failed.retry_blocked;
         return { ...failed };
       }).result;
     }
-    if (!queued) break;
+    if (!queued) {
+      const earliest = Math.min(...candidates.map(dueAt));
+      if (!Number.isFinite(earliest) || earliest >= deliveryDeadline) break;
+      const waitMs = earliest - Date.now();
+      if (waitMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+      continue;
+    }
     attempted.add(queued.event_id);
     const remainingMs = Math.min(requestTimeoutMs, deliveryDeadline - Date.now());
     if (remainingMs <= 0) break;
+    delivered += 1;
     await attemptQueuedDelivery({
       path: location.path,
       ownsParent: location.ownsParent,
@@ -730,16 +818,6 @@ export async function drainLifecycleSpool(input: {
       baseUrl: input.baseUrl,
       event: queued,
       timeoutMs: remainingMs,
-    });
-  }
-  if (retryDeadLetters) {
-    mutate(location.path, location.ownsParent, (events) => {
-      for (const event of events) {
-        if (event.delivery_state === 'queued') {
-          event.delivery_state = 'dead_letter';
-          event.last_status = event.last_status ?? 0;
-        }
-      }
     });
   }
   return lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
@@ -771,7 +849,7 @@ export async function recordLifecycleEvent(input: {
   let recoveredCorruption = queued.recoveredCorruption;
 
   let deliveryStatus = 0;
-  if (!input.deferDelivery && queued.result.delivery_state === 'queued') deliveryStatus = await attemptQueuedDelivery({
+  if (!input.deferDelivery && queued.result.delivery_state === 'queued' && dueAt(queued.result) <= Date.now()) deliveryStatus = await attemptQueuedDelivery({
     path: location.path,
     ownsParent: location.ownsParent,
     apiKey: input.apiKey,
@@ -781,7 +859,7 @@ export async function recordLifecycleEvent(input: {
   });
   if (deliveryStatus >= 200 && deliveryStatus < 300) {
     const previous = snapshot(location.path, location.ownsParent).events.find((row) => (
-      row.delivery_state === 'queued' && row.event_id !== event.event_id
+      row.delivery_state === 'queued' && row.event_id !== event.event_id && dueAt(row) <= Date.now()
     ));
     if (previous) {
       try {
