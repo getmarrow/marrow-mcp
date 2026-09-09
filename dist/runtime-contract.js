@@ -8,6 +8,10 @@ exports.isValidRuntimeResult = isValidRuntimeResult;
 exports.normalizeRuntimeResult = normalizeRuntimeResult;
 exports.highRiskRuntimeCanClose = highRiskRuntimeCanClose;
 exports.highRiskRuntimeCanContinueWithProof = highRiskRuntimeCanContinueWithProof;
+exports.runtimeDeclaresOrdinaryOwnerApproval = runtimeDeclaresOrdinaryOwnerApproval;
+exports.hasOrdinaryOwnerApprovalProof = hasOrdinaryOwnerApprovalProof;
+exports.runtimeDecisionMatchesAutoScope = runtimeDecisionMatchesAutoScope;
+exports.ordinaryOwnerApprovalCanAttemptCommit = ordinaryOwnerApprovalCanAttemptCommit;
 const RUNTIME_GATE_DECISIONS = new Set([
     'allow',
     'proceed',
@@ -415,5 +419,70 @@ function highRiskRuntimeCanClose(runtime, proof, explicitReceiptId, now = Date.n
  */
 function highRiskRuntimeCanContinueWithProof(runtime, proof, explicitReceiptId, now = Date.now()) {
     return highRiskRuntimeCanAttemptClosure(runtime, proof, explicitReceiptId, now, false);
+}
+/** Server-declared ordinary closure evidence, never action authorization. */
+function runtimeDeclaresOrdinaryOwnerApproval(runtime) {
+    const completion = runtime.completion_contract;
+    const approval = optionalRecord(completion?.owner_approval);
+    const shape = optionalRecord(approval?.proof_shape);
+    return !runtime.arbitration
+        && completion?.arbitration_receipt_required === false
+        && completion.owner_approval_required === true
+        && approval?.mode === 'ordinary_non_arbitrated'
+        && approval.proof_path === 'proof.owner_approval'
+        && approval.dashboard_receipt_required === false
+        && shape?.approved_by === 'owner'
+        && shape.reference === 'approved-release-bundle';
+}
+function hasOrdinaryOwnerApprovalProof(proof) {
+    const approval = optionalRecord(proof?.owner_approval);
+    return Boolean(approval
+        && Object.keys(approval).sort().join(',') === 'approved_by,reference'
+        && approval.approved_by === 'owner'
+        && approval.reference === 'approved-release-bundle');
+}
+/** Validate the server's existing decision before auto skips decision creation. */
+function runtimeDecisionMatchesAutoScope(runtime, scope) {
+    const decisionId = safeRuntimeIdentifier(runtime.decision_id);
+    const receiptId = runtimeAuthorizationReceiptId(runtime);
+    const completion = runtime.completion_contract;
+    const fields = completion?.required_commit_fields;
+    return Boolean(decisionId && receiptId
+        && runtime.fresh_runtime_response === true
+        && runtime.runtime_authorization?.durable === true
+        && runtime.runtime_authorization.decision_id === decisionId
+        && runtime.runtime_authorization.decision_state === 'created'
+        && runtime.runtime_authorization.decision_creation_required === false
+        && runtime.gate_receipt?.id === receiptId
+        && runtime.gate_receipt.required === true
+        && runtime.risk_gate?.gate_receipt_id === receiptId
+        && runtime.risk_gate.gate_required === true
+        && runtime.action === scope.action.trim()
+        && (!scope.agentId || runtime.agent_id === scope.agentId)
+        && runtime.session_id === (scope.sessionId || null)
+        && completion?.must_commit_outcome === true
+        && completion.commit_endpoint === '/v1/agent/commit'
+        && completion.gate_receipt_id === receiptId
+        && completion.gate_receipt_required === true
+        && completion.decision_id === decisionId
+        && completion.decision_state === 'created'
+        && completion.decision_creation_required === false
+        && Array.isArray(fields)
+        && ['decision_id', 'success', 'outcome', 'gate_receipt_id'].every((field) => fields.includes(field)));
+}
+function ordinaryOwnerApprovalCanAttemptCommit(runtime, proof, receiptId, now = Date.now()) {
+    const expiry = Date.parse(runtime.gate_receipt?.expires_at || '');
+    return runtimeDeclaresOrdinaryOwnerApproval(runtime)
+        && hasOrdinaryOwnerApprovalProof(proof)
+        && runtimeAuthorizationReceiptId(runtime) === safeRuntimeIdentifier(receiptId)
+        && runtime.runtime_authorization?.durable === true
+        && runtime.risk_gate.enforced === true
+        && runtime.plan_capability?.production_enforcement_entitled !== false
+        && runtime.plan_capability?.mode !== 'advisory'
+        && runtime.plan_capability?.mode !== 'pilot'
+        && ['review_required', 'owner_approval_required'].includes(runtime.risk_gate.decision)
+        && ['review_required', 'owner_approval_required'].includes(runtime.gate_receipt?.decision || '')
+        && runtime.gate_receipt?.owner_approval_required === true
+        && Number.isFinite(expiry) && expiry > now;
 }
 //# sourceMappingURL=runtime-contract.js.map

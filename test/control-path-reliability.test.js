@@ -1536,9 +1536,9 @@ test('generic review-required marrowAuto is terminal and does not advertise an i
     assert.equal(result.committed, false);
     assert.equal(result.resumable, false);
     assert.equal(result.retry_after_ms, null);
-    assert.match(result.exact_next_action, /non-arbitrated review_required gate cannot issue/i);
-    assert.match(result.exact_next_action, /marrow_arbitrate/);
-    assert.match(result.exact_next_action, /Do not retry/i);
+    assert.match(result.exact_next_action, /No supported ordinary approval path was declared/i);
+    assert.doesNotMatch(result.exact_next_action, /marrow_arbitrate/);
+    assert.match(result.exact_next_action, /do not infer approval or automatically retry/i);
     assert.equal(calls.filter((target) => target.includes('/v1/agent/commit')).length, 0);
   } finally {
     globalThis.fetch = originalFetch;
