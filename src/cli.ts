@@ -2106,6 +2106,7 @@ async function handleRequest(req: {
   params?: { name?: string; arguments?: Record<string, unknown> };
 }): Promise<void> {
   const { id, method, params } = req;
+  const responseStartedAt = performance.now();
 
   // [FIX #15] Enforce initialize-first per MCP spec
   if (!initialized && method !== 'initialize') {
@@ -2491,18 +2492,21 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
 
         let delivered: MarrowAutoResult | null = null;
         let deliveryFailure: Record<string, unknown> | null = null;
+        const coreStartedAt = performance.now();
         try {
           delivered = await delivery();
         } catch (err) {
           deliveryFailure = structuredRequestFailure(err);
         }
+        const coreDurationMs = Math.floor(performance.now() - coreStartedAt);
         const runtimeGate = delivered?.runtime_gate || null;
         if (runtimeGate) storeRuntimeGuidance(runtimeGate);
 
+        const enqueueStartedAt = performance.now();
         const receipt = await recordLifecycleEvent({
           apiKey: API_KEY,
           baseUrl: BASE_URL,
-          deferDelivery: false,
+          deferDelivery: true,
           event: {
             ...(delivered?.operation_id ? {
               event_id: `auto_${delivered.committed ? 'closed' : 'pending'}_${delivered.operation_id}`,
@@ -2524,6 +2528,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
             source: 'client_self_reported',
           },
         });
+        const enqueueDurationMs = Math.floor(performance.now() - enqueueStartedAt);
 
         const response: Record<string, unknown> = {
           action,
@@ -2574,10 +2579,20 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           client_update: localClientUpdate(),
           ...(runtimeGate ? { runtime_gate: runtimeGate } : {}),
         };
+        // Measure through response construction; stdout/host consumption occurs
+        // after this snapshot and is not represented as server phase latency.
+        response.response_timings_ms = {
+          core: coreDurationMs,
+          durable_enqueue: enqueueDurationMs,
+          full_response: Math.floor(performance.now() - responseStartedAt),
+        };
 
         success(id, {
           content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
         });
+        // The existing bounded owner handles rejection and preserves queued
+        // receipts across exit/restart. Network work never holds this response.
+        void nudgeLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
         return;
       }
 

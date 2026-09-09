@@ -876,15 +876,21 @@ function isAutoPendingResponse(value, phase) {
     return pending[AUTO_RESPONSE_STATUS] === 202
         && (pending.phase === phase || (pending.phase === undefined && pending.resumable === true));
 }
+function autoContinuationDelay(pending) {
+    const requested = pending.retry_after_ms;
+    return typeof requested === 'number' && Number.isFinite(requested) && requested >= 0
+        ? Math.max(25, Math.ceil(requested))
+        : 50;
+}
 async function waitForAutoContinuation(pending, startedAt, responseBudgetMs) {
     const remaining = responseBudgetMs - (Date.now() - startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS;
     if (remaining <= 0)
         return false;
-    const requestedDelay = Number(pending.retry_after_ms);
-    const delayMs = Number.isFinite(requestedDelay)
-        ? Math.min(500, Math.max(25, Math.floor(requestedDelay)))
-        : 50;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, remaining)));
+    const delayMs = autoContinuationDelay(pending);
+    // Never retry early or consume a partial delay that cannot leave request time.
+    if (delayMs >= remaining)
+        return false;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
     return responseBudgetMs - (Date.now() - startedAt) > AUTO_RESPONSE_DEADLINE_MARGIN_MS;
 }
 function autoPartial(input) {
@@ -1053,7 +1059,8 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             throw (0, request_reliability_1.invalidResponseError)();
         if (!await waitForAutoContinuation(thinkResult, startedAt, responseBudgetMs)) {
             timings.think = Date.now() - thinkStarted;
-            return autoPartial({ operationId, phase: 'think_pending', runtimeGate, timings, startedAt });
+            return autoPartial({ operationId, phase: 'think_pending', runtimeGate, timings, startedAt,
+                retryAfterMs: autoContinuationDelay(thinkResult) });
         }
     }
     timings.think = reusedDecision ? 0 : Date.now() - thinkStarted;
@@ -1184,7 +1191,8 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
         }
         if (!await waitForAutoContinuation(commitResult, startedAt, responseBudgetMs)) {
             timings.commit = Date.now() - commitStarted;
-            return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt });
+            return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt,
+                retryAfterMs: autoContinuationDelay(commitResult) });
         }
     }
     timings.commit = Date.now() - commitStarted;
