@@ -526,12 +526,41 @@ async function waitForWriteReconciliation(signal) {
 async function fetchAgentWrite(url, init, kind, idempotencyKey, expectedDecisionId, autoManaged = false) {
     let reconciledDecisionId = null;
     for (let attempt = 0; attempt < AGENT_WRITE_RECONCILIATION_ATTEMPTS; attempt += 1) {
-        const response = await fetch(url, init);
+        // Automatic writes have one retry owner and leave room for exact replay
+        // after a lost ACK inside marrowAuto's unchanged total response deadline.
+        const response = await (0, request_reliability_1.reliableFetch)(url, init, autoManaged
+            ? { retryOwner: 'caller', timeoutMs: 4_000 }
+            : {});
         const json = await safeJsonResponse(response);
         if (!json.data || typeof json.data !== 'object' || Array.isArray(json.data)) {
             throw (0, request_reliability_1.invalidResponseError)();
         }
         const data = json.data;
+        if (autoManaged) {
+            const retryGuidance = (0, request_reliability_1.responseRetryAfter)(response);
+            if (!retryGuidance.valid) {
+                data.resumable = false;
+                data.retryable = false;
+                data.retry_after_ms = null;
+            }
+            else if (retryGuidance.delayMs !== null) {
+                const bodyDelay = typeof data.retry_after_ms === 'number' && Number.isFinite(data.retry_after_ms)
+                    ? data.retry_after_ms : 0;
+                data.retry_after_ms = Math.max(bodyDelay, retryGuidance.delayMs);
+            }
+            if ((data.idempotency_key !== undefined && data.idempotency_key !== idempotencyKey)
+                || (kind === 'commit' && data.decision_id !== undefined && data.decision_id !== expectedDecisionId)
+                || (response.status === 202 && data.committed === true)) {
+                throw reconciliationError(false);
+            }
+            // Canonical write reconciliation predates auto's phase/resumable fields.
+            // Adapt only a validated exact-operation pending response.
+            if (response.status === 202 && retryGuidance.valid && data.resumable !== false
+                && pendingDecisionId(kind, data, idempotencyKey, expectedDecisionId)) {
+                data.phase = `${kind}_pending`;
+                data.resumable = true;
+            }
+        }
         // marrow_auto owns its existing phase/budget continuation contract. Its
         // reserved keys are created only by autoIdempotencyKey below.
         if (response.status === 202 && autoManaged) {
@@ -659,8 +688,9 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId, signal,
                 action: (0, redact_1.redactSensitiveText)(params.action),
                 decision_id: params.decision_id,
                 response_mode: 'expanded',
-                type: params.type || 'handoff',
-                surfaces: params.surfaces || ['handoff'],
+                type: params.type || 'general',
+                target: params.target ? (0, redact_1.redactSensitiveText)(params.target) : undefined,
+                surfaces: params.surfaces || [],
                 context: { mcp_commit_auto_gate: true },
                 proof: params.proof ? (0, redact_1.redactSensitiveValue)(params.proof) : undefined,
             }, sessionId, agentId, signal);
@@ -874,6 +904,7 @@ function isAutoPendingResponse(value, phase) {
         return false;
     const pending = value;
     return pending[AUTO_RESPONSE_STATUS] === 202
+        && pending.resumable !== false && pending.retryable !== false
         && (pending.phase === phase || (pending.phase === undefined && pending.resumable === true));
 }
 function autoContinuationDelay(pending) {
@@ -890,7 +921,10 @@ async function waitForAutoContinuation(pending, startedAt, responseBudgetMs) {
     // Never retry early or consume a partial delay that cannot leave request time.
     if (delayMs >= remaining)
         return false;
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    const resumeAt = performance.now() + delayMs;
+    do {
+        await new Promise((resolve) => setTimeout(resolve, Math.ceil(resumeAt - performance.now())));
+    } while (performance.now() < resumeAt);
     return responseBudgetMs - (Date.now() - startedAt) > AUTO_RESPONSE_DEADLINE_MARGIN_MS;
 }
 function autoPartial(input) {
@@ -904,7 +938,10 @@ function autoPartial(input) {
         retry_after_ms: resumable
             ? input.retryAfterMs === undefined ? 1_000 : input.retryAfterMs
             : null,
-        ...(input.exactNextAction ? { exact_next_action: input.exactNextAction } : {}),
+        ...(input.exactNextAction ? { exact_next_action: input.exactNextAction }
+            : resumable && input.phase.endsWith('_pending') ? {
+                exact_next_action: 'Resume marrow_auto with this same operation_id, tenant, agent, session, action, surfaces, outcome, proof, and approval receipts after retry_after_ms. Pending is not confirmation of closure.',
+            } : {}),
         ...(input.runtimeGate ? { runtime_gate: input.runtimeGate } : {}),
         phase_timings_ms: {
             ...input.timings,
@@ -1031,6 +1068,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
         operationBinding.decisionId = arbitrationDecisionId;
     }
     const reusedDecision = Boolean(decisionId);
+    let pendingThinkDecisionId = operationBinding.pendingThinkDecisionId || null;
     while (!decisionId) {
         const thinkTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
         let thinkResult;
@@ -1038,6 +1076,7 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             thinkResult = await marrowThink(apiKey, baseUrl, {
                 action: params.action,
                 type: params.type || 'general',
+                surfaces: params.surfaces,
                 context: params.context,
                 source_kind: 'agent_autonomous',
                 source_confidence: 0.9,
@@ -1055,11 +1094,14 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             });
         }
         catch (error) {
-            if ((0, request_reliability_1.normalizeRequestError)(error).code !== 'request_timeout'
-                || !await waitForAutoContinuation({}, startedAt, responseBudgetMs)) {
+            const failure = (0, request_reliability_1.normalizeRequestError)(error);
+            const recoverable = error instanceof request_reliability_1.MarrowRequestError && failure.retryable && failure.code !== 'invalid_response';
+            if (!recoverable
+                || !await waitForAutoContinuation({ retry_after_ms: failure.retryAfterMs }, startedAt, responseBudgetMs)) {
                 timings.think = Date.now() - thinkStarted;
-                if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
-                    return autoPartial({ operationId, phase: 'think_pending', runtimeGate, timings, startedAt });
+                if (recoverable) {
+                    return autoPartial({ operationId, decisionId: pendingThinkDecisionId, phase: 'think_pending', runtimeGate, timings, startedAt,
+                        retryAfterMs: failure.retryAfterMs ?? undefined });
                 }
                 throw error;
             }
@@ -1068,18 +1110,25 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
         finally {
             thinkTimeout.cancel();
         }
-        decisionId = typeof thinkResult.decision_id === 'string' && thinkResult.decision_id.trim()
-            ? thinkResult.decision_id.trim()
-            : null;
-        if (decisionId) {
+        const receivedDecisionId = validCorrelationId(thinkResult.decision_id) ? thinkResult.decision_id : null;
+        if (pendingThinkDecisionId && receivedDecisionId && receivedDecisionId !== pendingThinkDecisionId) {
+            throw reconciliationError(false);
+        }
+        if (!isAutoPendingResponse(thinkResult, 'think_pending')) {
+            if (thinkResult[AUTO_RESPONSE_STATUS] === 202 || !receivedDecisionId) {
+                throw (0, request_reliability_1.invalidResponseError)();
+            }
+            decisionId = receivedDecisionId;
             operationBinding.decisionId = decisionId;
             break;
         }
-        if (!isAutoPendingResponse(thinkResult, 'think_pending'))
-            throw (0, request_reliability_1.invalidResponseError)();
+        if (receivedDecisionId) {
+            pendingThinkDecisionId = receivedDecisionId;
+            operationBinding.pendingThinkDecisionId = receivedDecisionId;
+        }
         if (!await waitForAutoContinuation(thinkResult, startedAt, responseBudgetMs)) {
             timings.think = Date.now() - thinkStarted;
-            return autoPartial({ operationId, phase: 'think_pending', runtimeGate, timings, startedAt,
+            return autoPartial({ operationId, decisionId: pendingThinkDecisionId, phase: 'think_pending', runtimeGate, timings, startedAt,
                 retryAfterMs: autoContinuationDelay(thinkResult) });
         }
     }
@@ -1207,11 +1256,14 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
             }, sessionId, agentId, commitTimeout.signal, autoIdempotencyKey(operationId, 'commit'));
         }
         catch (error) {
-            if ((0, request_reliability_1.normalizeRequestError)(error).code !== 'request_timeout'
-                || !await waitForAutoContinuation({}, startedAt, responseBudgetMs)) {
+            const failure = (0, request_reliability_1.normalizeRequestError)(error);
+            const recoverable = error instanceof request_reliability_1.MarrowRequestError && failure.retryable && failure.code !== 'invalid_response';
+            if (!recoverable
+                || !await waitForAutoContinuation({ retry_after_ms: failure.retryAfterMs }, startedAt, responseBudgetMs)) {
                 timings.commit = Date.now() - commitStarted;
-                if ((0, request_reliability_1.normalizeRequestError)(error).code === 'request_timeout') {
-                    return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt });
+                if (recoverable) {
+                    return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt,
+                        retryAfterMs: failure.retryAfterMs ?? undefined });
                 }
                 throw error;
             }
@@ -1222,9 +1274,11 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
         }
         if (commitResult.committed)
             break;
+        const canResumeCommit = commitResult.resumable !== false && commitResult.retryable !== false;
         if (!isAutoPendingResponse(commitResult, 'commit_pending')) {
             timings.commit = Date.now() - commitStarted;
-            return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt });
+            return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt,
+                resumable: canResumeCommit });
         }
         if (!await waitForAutoContinuation(commitResult, startedAt, responseBudgetMs)) {
             timings.commit = Date.now() - commitStarted;

@@ -60,6 +60,7 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     arbitration_receipt_id?: string;
     owner_approval_receipt_id?: string;
     action?: string;
+    target?: string;
     type?: string;
     surfaces?: string[];
     auto_gate?: boolean;

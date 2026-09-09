@@ -165,17 +165,21 @@ Use Marrow according to the capability evidence returned by the MCP server:
 
 1. **MCP baseline is on demand:** MCP transport exposes tools; it does not provide passive hooks. Public hook callbacks and local configuration are client-self-reported activity, not certified coverage.
 2. **Before risky actions:** Respect the returned \`allow\`, \`warn\`, \`review_required\`, or \`block\` decision and its proof contract. Call \`marrow_agent_runtime\` explicitly when verified passive coverage cannot cover the action.
-3. **After meaningful work:** Record the real success or failure with \`marrow_commit\` or \`marrow_auto\`. A tool exit or session end is not proof that the business outcome succeeded.
+3. **After meaningful work:** Record the real success or failure with \`marrow_commit\`; \`marrow_auto\` is available only in explicitly selected core/full profiles. A tool exit or session end is not proof that the business outcome succeeded.
 4. **Unfinished work:** Leave pending outcomes visible. Do not invent success to clear a closure item.
 5. **To explain an intervention:** Use \`marrow_decision_trace\`, then relay its \`intervention_receipt\` in one factual sentence when Marrow blocked, warned, or required review. Stay quiet for routine low-risk work.
-6. **To query authorized history:** Call \`marrow_ask("plain english question")\` — ask what failed, what worked, and what policy should apply.
+6. **To query authorized history:** Use \`marrow_fleet_lessons\` in the default primary profile; core/full provide \`marrow_ask\` for authorized history.
 7. **When an update is reported:** Tell the operator and use the returned exact update and verification commands only when local change policy permits. Never silently change packages or configuration.
 
 Do not skip the gate or outcome. Marrow's value comes from controlling the action before execution and preserving evidence afterward.
 
 Capability boundaries: configured native hooks provide cooperative client-reported control and lifecycle evidence only; \`createPassiveRuntime().install()\` covers only its owned Node process while installed; a governed wrapper covers only its wrapped command; and a custom host needs a bounded event adapter. A model name, host label, API key, public hook entrypoint, installed configuration, or client-self-reported callback is not proof of coverage or enforcement. Codex, Grok, and Gemini use configured native hooks only after restart and the host's hook review; the governed wrapper remains an explicit bounded fallback.
 
-For bounded outcome capture: \`marrow_auto({ action: "did X", outcome: "result Y", success: true })\`. One outer invocation normally completes think and commit in-band within its bounded client budget. If the host or network deadline is reached, retry with the returned \`operation_id\`; Marrow continues the same operation and never opens a second decision.
+With MARROW_TOOL_PROFILE unset, use the 17-tool primary runtime → commit flow. Reuse runtime.decision_id when its completion_contract identifies a created decision; keep runtime.runtime_authorization.id separate as gate_receipt_id. Use marrow_think only when decision creation is required. Explicit core/full profiles also expose marrow_auto: continue a pending response only after retry_after_ms with the same operation_id and unchanged scope, outcome, proof, and receipts. Only committed:true confirms closure; queued lifecycle delivery is separate.
+
+For an expired receipt on a still-open decision, explicitly request normal runtime with the original scope and a fresh request key, verify the returned decision_id, and follow the current proof/approval contract. Post-action auto_gate is observation-only and cannot renew permission. Fresh receipts never retrospectively authorize earlier work.
+
+After authorized setup via \`npx -y --package=@getmarrow/mcp@latest marrow-mcp setup\`, reload the host, review/enable hook trust, then run \`npx -y @getmarrow/install@latest doctor --self-test\`. Configuration alone does not prove runtime coverage; empty savings remain zero until observed usage exists.
 ${MARROW_BLOCK_END}`;
     let dir = process.cwd();
     let claudeMdPath = null;
@@ -868,9 +872,10 @@ if (process.argv[2] !== 'keys') {
                         gate_receipt_id: { type: 'string', description: 'Canonical receipt id from marrow_agent_runtime.runtime_authorization.id for risky work.' },
                         arbitration_receipt_id: { type: 'string', description: 'Required for arbitrated work: use marrow_arbitrate.arbitration.receipt_id from the same runtime response.' },
                         owner_approval_receipt_id: { type: 'string', description: 'Single-use owner approval receipt issued by authenticated dashboard review for review_required arbitration.' },
-                        action: { type: 'string', description: 'Optional original action. If provided and gate_receipt_id is omitted, MCP can fetch a matching runtime gate receipt before commit.' },
-                        type: { type: 'string', description: 'Optional original action type for auto gate lookup, e.g. deploy, publish, merge, handoff, implementation.' },
-                        surfaces: { type: 'array', items: { type: 'string' }, description: 'Optional surfaces for auto gate receipt, e.g. github, cloudflare, npm, production.' },
+                        action: { type: 'string', description: 'Optional exact original action for post-action observation lookup. This lookup cannot renew execution authority.' },
+                        target: { type: 'string', description: 'Exact original target, if supplied when the decision was created.' },
+                        type: { type: 'string', description: 'Exact original action type for observation lookup; defaults to general.' },
+                        surfaces: { type: 'array', items: { type: 'string' }, description: 'Exact original surfaces for observation lookup; omitted and empty both mean no surfaces.' },
                         auto_gate: { type: 'boolean', description: 'If true/default and action is provided, fetch runtime truth bound to this existing decision. Authorizing receipts preserve normal closure; exact outcome_observation_only correlation can submit only an observed_unverified result and is omitted from receipt evidence.' },
                         model_usage: { type: 'object', description: 'Optional compact token/cost/latency counts. Do not include raw prompts or completions.' },
                     },
@@ -1935,7 +1940,7 @@ if (process.argv[2] !== 'keys') {
                         capabilities: { tools: {}, prompts: {} },
                         serverInfo: { name: 'marrow', version: hook_contract_2.MCP_ADAPTER_VERSION },
                         ...(AUTO_ENROLL ? {
-                            instructions: `Call marrow_think before meaningful work to create the decision_id. Use marrow_agent_runtime before consequential actions and obey fresh allow/warn/review_required/block only when risk_gate.enforced is true; if enforced is false the gate is advisory, not a live block. Use marrow_ask for relevant prior lessons, and close outcomes with marrow_commit using that decision_id. Infrastructure failures are not policy denials; continue only low-risk reversible work from the returned outage-safe brief, and require a fresh gate for high-risk work. ${(0, host_capability_1.hostCapabilityInstructions)(hostCapability)}`,
+                            instructions: `Use marrow_agent_runtime before consequential actions and follow its gate, proof and approval contract. Reuse runtime.decision_id when completion_contract identifies a created decision; keep runtime.runtime_authorization.id separate as gate_receipt_id. Call marrow_think only when decision creation is required. Close outcomes with marrow_commit; only committed:true confirms closure. ${activeToolProfile() === 'primary' ? 'The default primary profile exposes 17 tools. Use marrow_agent_status for status and marrow_fleet_lessons for prior lessons.' : 'This explicitly selected core/full profile also provides marrow_auto, marrow_status and marrow_ask. Resume pending auto only after retry_after_ms with the same operation_id and unchanged scope, outcome, proof and receipts.'} An advisory risk_gate.enforced:false is not live enforcement; review_required or block still does not grant permission. Infrastructure failures are not policy denials; continue only low-risk reversible work from returned outage-safe guidance and require a fresh gate for high-risk work. ${(0, host_capability_1.hostCapabilityInstructions)(hostCapability)}`,
                         } : {}),
                         _meta: { host_capability: hostCapability },
                     });
@@ -2009,7 +2014,7 @@ When runtime/status returns a client_update notice, tell the operator and use it
 
 ## Outcome closure
 
-A successful command or tool exit is not proof that the business outcome succeeded. After meaningful work, close the real outcome with marrow_commit or marrow_auto and include success or failure plus the required evidence. If the result is unknown, leave it pending. Never invent success to clear a closure item.
+A successful command or tool exit is not proof that the business outcome succeeded. After meaningful work, use the default primary runtime → marrow_commit flow and include success or failure plus required evidence. Reuse runtime.decision_id and keep runtime.runtime_authorization.id separate as gate_receipt_id. Explicit core/full profiles also expose marrow_auto; resume pending only after retry_after_ms with the same operation_id and unchanged scope/body. Only committed:true confirms closure. If the result is unknown, leave it pending. Never invent success to clear a closure item.
 
 Use marrow_decision_trace when you need to explain why Marrow changed an action. Its intervention_receipt packages the relevant gate, required workflow, permit follow-through, proof, and recorded outcome without raw context, proof values, or another tenant's data. After a meaningful intervention, relay one factual receipt summary to the operator. Stay quiet for routine low-risk work.
 
@@ -2125,6 +2130,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             arbitration_receipt_id: args.arbitration_receipt_id,
                             owner_approval_receipt_id: args.owner_approval_receipt_id,
                             action: args.action,
+                            target: args.target,
                             type: args.type,
                             surfaces: args.surfaces,
                             auto_gate: args.auto_gate,

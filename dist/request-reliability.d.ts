@@ -24,10 +24,17 @@ export declare class MarrowRequestError extends Error {
         missingFields?: string[];
     });
 }
+export declare function responseRetryAfter(response: Response): {
+    delayMs: number | null;
+    valid: boolean;
+};
 export declare function requestErrorFromResponse(response: Response, detail?: Record<string, unknown>): MarrowRequestError;
 export declare function invalidResponseError(): MarrowRequestError;
 export declare function normalizeRequestError(error: unknown): MarrowRequestError;
-export declare function reliableFetch(url: string | URL, init?: RequestInit): Promise<Response>;
+export declare function reliableFetch(url: string | URL, init?: RequestInit, options?: {
+    retryOwner?: 'caller';
+    timeoutMs?: number;
+}): Promise<Response>;
 export declare function localClientUpdate(): Record<string, unknown>;
 export declare function structuredRequestFailure(error: unknown): Record<string, unknown>;
 //# sourceMappingURL=request-reliability.d.ts.map
