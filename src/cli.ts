@@ -957,6 +957,8 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        idempotency_key: { type: 'string', description: 'Original privacy-safe pending receipt key when resuming the identical think request.' },
+        request_hash: { type: 'string', description: 'Pending receipt request_hash; validates unchanged arguments, credentials, agent and session before resuming.' },
         action: { type: 'string', description: 'What the agent is about to do' },
         type: {
           type: 'string',
@@ -2301,7 +2303,9 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
             source_meta: args.source_meta as Record<string, unknown>,
           },
           SESSION_ID,
-          FLEET_AGENT_ID
+          FLEET_AGENT_ID,
+          undefined,
+          { idempotencyKey: args.idempotency_key as string | undefined, requestHash: args.request_hash as string | undefined }
         );
 
         // Refresh orient warnings every 5th think call

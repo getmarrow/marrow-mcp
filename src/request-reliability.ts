@@ -21,6 +21,23 @@ export type MarrowFailureCode =
   | 'invalid_response'
   | 'request_failed';
 
+export function privacySafeIdempotencyKey(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)
+    && redactSensitiveText(value) === value
+    && (/^mcp-(?:think|commit):[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value)
+      || !/(?:^|[._:-])(?:\d[ .()-]*){7,}(?:$|[._:-])/.test(value))
+    && !/[a-z0-9-]+\.[a-z]{2,}(?:$|[/:])/i.test(value);
+}
+
+export interface PendingWriteReceipt {
+  contract: 'mcp_write_pending.v1';
+  operation: 'think' | 'commit';
+  committed: false;
+  safe_to_continue: false;
+  idempotency_key: string;
+  request_hash: string;
+}
+
 export class MarrowRequestError extends Error {
   readonly code: MarrowFailureCode;
   readonly backendCode: string | null;
@@ -32,6 +49,7 @@ export class MarrowRequestError extends Error {
   readonly currentPlan: string | null;
   readonly requiredFeature: string | null;
   readonly missingFields: string[];
+  readonly pendingReceipt?: PendingWriteReceipt;
 
   constructor(input: {
     code: MarrowFailureCode;
@@ -45,9 +63,20 @@ export class MarrowRequestError extends Error {
     currentPlan?: string | null;
     requiredFeature?: string | null;
     missingFields?: string[];
+    pendingReceipt?: PendingWriteReceipt;
   }) {
     super(redactSensitiveText(input.message).slice(0, 240));
     this.name = 'MarrowRequestError';
+    const receipt = input.pendingReceipt;
+    if (receipt?.contract === 'mcp_write_pending.v1'
+      && (receipt.operation === 'think' || receipt.operation === 'commit')
+      && receipt.committed === false && receipt.safe_to_continue === false
+      && privacySafeIdempotencyKey(receipt.idempotency_key) && /^[a-f0-9]{64}$/.test(receipt.request_hash)) {
+      this.pendingReceipt = {
+        contract: receipt.contract, operation: receipt.operation, committed: false, safe_to_continue: false,
+        idempotency_key: receipt.idempotency_key, request_hash: receipt.request_hash,
+      };
+    }
     this.code = input.code;
     this.backendCode = input.backendCode
       ? redactSensitiveText(input.backendCode).slice(0, 128)
@@ -336,6 +365,7 @@ export function structuredRequestFailure(error: unknown): Record<string, unknown
       service_reachable: true,
       missing_fields: normalized.missingFields,
     } : {}),
+    ...(normalized.pendingReceipt ? { pending_receipt: normalized.pendingReceipt } : {}),
     client_update: clientUpdate,
   };
 }
