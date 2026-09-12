@@ -43,6 +43,7 @@ export declare function marrowThink(apiKey: string, baseUrl: string, params: {
     source_meta?: Record<string, unknown>;
 }, sessionId?: string, agentId?: string, signal?: AbortSignal, options?: {
     idempotencyKey?: string;
+    requestHash?: string;
     responseMode?: 'ack';
     [AUTO_MANAGED_WRITE]?: true;
 }): Promise<ThinkResult>;

@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MarrowRequestError = void 0;
+exports.privacySafeIdempotencyKey = privacySafeIdempotencyKey;
 exports.responseRetryAfter = responseRetryAfter;
 exports.requestErrorFromResponse = requestErrorFromResponse;
 exports.invalidResponseError = invalidResponseError;
@@ -15,6 +16,13 @@ const RUNTIME_PATH = /\/v1\/agent\/runtime(?:[/?]|$)/;
 const COMMIT_PATH = /\/v1\/agent\/commit(?:[/?]|$)/;
 const STATUS_CONTEXT_PATH = /\/v1\/agent\/(?:status|context)(?:[/?]|$)/;
 const DECISION_READ_PATH = /\/(?:v1\/agent\/first-value|v1\/analytics\/decision-brief)(?:[/?]|$)/;
+function privacySafeIdempotencyKey(value) {
+    return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)
+        && (0, redact_1.redactSensitiveText)(value) === value
+        && (/^mcp-(?:think|commit):[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value)
+            || !/(?:^|[._:-])(?:\d[ .()-]*){7,}(?:$|[._:-])/.test(value))
+        && !/[a-z0-9-]+\.[a-z]{2,}(?:$|[/:])/i.test(value);
+}
 class MarrowRequestError extends Error {
     code;
     backendCode;
@@ -26,9 +34,20 @@ class MarrowRequestError extends Error {
     currentPlan;
     requiredFeature;
     missingFields;
+    pendingReceipt;
     constructor(input) {
         super((0, redact_1.redactSensitiveText)(input.message).slice(0, 240));
         this.name = 'MarrowRequestError';
+        const receipt = input.pendingReceipt;
+        if (receipt?.contract === 'mcp_write_pending.v1'
+            && (receipt.operation === 'think' || receipt.operation === 'commit')
+            && receipt.committed === false && receipt.safe_to_continue === false
+            && privacySafeIdempotencyKey(receipt.idempotency_key) && /^[a-f0-9]{64}$/.test(receipt.request_hash)) {
+            this.pendingReceipt = {
+                contract: receipt.contract, operation: receipt.operation, committed: false, safe_to_continue: false,
+                idempotency_key: receipt.idempotency_key, request_hash: receipt.request_hash,
+            };
+        }
         this.code = input.code;
         this.backendCode = input.backendCode
             ? (0, redact_1.redactSensitiveText)(input.backendCode).slice(0, 128)
@@ -325,6 +344,7 @@ function structuredRequestFailure(error) {
             service_reachable: true,
             missing_fields: normalized.missingFields,
         } : {}),
+        ...(normalized.pendingReceipt ? { pending_receipt: normalized.pendingReceipt } : {}),
         client_update: clientUpdate,
     };
 }

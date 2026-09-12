@@ -223,6 +223,8 @@ test('setup configures hooks without claiming automatic coverage', () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-capability-setup-'));
   try {
     mkdirSync(join(directory, '.claude'), { recursive: true });
+    // Keep setup's ancestor discovery inside this isolated synthetic workspace.
+    writeFileSync(join(directory, 'CLAUDE.md'), '');
     const child = spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js'), 'setup'], {
       cwd: directory,
       env: { ...process.env, HOME: directory },
@@ -233,6 +235,8 @@ test('setup configures hooks without claiming automatic coverage', () => {
     assert.equal(child.status, 0, child.stderr);
     const instructions = readFileSync(join(directory, 'CLAUDE.md'), 'utf8');
     assert.match(instructions, /MCP baseline is on demand/);
+    assert.match(instructions, /accepted observed_unverified result is terminal untrusted evidence/);
+    assert.doesNotMatch(instructions, /explicitly request normal runtime with the original scope and a fresh request key/);
     assert.match(instructions, /client-self-reported callback is not proof of coverage or enforcement/);
     assert.doesNotMatch(instructions, /Use it on EVERY session automatically|Passive by default/);
 

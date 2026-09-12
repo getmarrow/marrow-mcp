@@ -1,4 +1,13 @@
 export type MarrowFailureCode = 'authentication_required' | 'permission_denied' | 'proof_required' | 'rate_limited' | 'request_timeout' | 'dns_unavailable' | 'connection_reset' | 'tls_failure' | 'edge_access_denied' | 'service_unavailable' | 'invalid_response' | 'request_failed';
+export declare function privacySafeIdempotencyKey(value: unknown): value is string;
+export interface PendingWriteReceipt {
+    contract: 'mcp_write_pending.v1';
+    operation: 'think' | 'commit';
+    committed: false;
+    safe_to_continue: false;
+    idempotency_key: string;
+    request_hash: string;
+}
 export declare class MarrowRequestError extends Error {
     readonly code: MarrowFailureCode;
     readonly backendCode: string | null;
@@ -10,6 +19,7 @@ export declare class MarrowRequestError extends Error {
     readonly currentPlan: string | null;
     readonly requiredFeature: string | null;
     readonly missingFields: string[];
+    readonly pendingReceipt?: PendingWriteReceipt;
     constructor(input: {
         code: MarrowFailureCode;
         backendCode?: string | null;
@@ -22,6 +32,7 @@ export declare class MarrowRequestError extends Error {
         currentPlan?: string | null;
         requiredFeature?: string | null;
         missingFields?: string[];
+        pendingReceipt?: PendingWriteReceipt;
     });
 }
 export declare function responseRetryAfter(response: Response): {

@@ -177,7 +177,7 @@ Capability boundaries: configured native hooks provide cooperative client-report
 
 With MARROW_TOOL_PROFILE unset, use the 17-tool primary runtime → commit flow. Reuse runtime.decision_id when its completion_contract identifies a created decision; keep runtime.runtime_authorization.id separate as gate_receipt_id. Use marrow_think only when decision creation is required. Explicit core/full profiles also expose marrow_auto: continue a pending response only after retry_after_ms with the same operation_id and unchanged scope, outcome, proof, and receipts. Only committed:true confirms closure; queued lifecycle delivery is separate.
 
-For an expired receipt on a still-open decision, explicitly request normal runtime with the original scope and a fresh request key, verify the returned decision_id, and follow the current proof/approval contract. Post-action auto_gate is observation-only and cannot renew permission. Fresh receipts never retrospectively authorize earlier work.
+For an expired receipt, preserve the original decision, proof and idempotency key. Only an existing historically authorized checkpoint can support exact recovery. Otherwise an accepted observed_unverified result is terminal untrusted evidence: do not repeat the action, create a new decision, or renew permission retrospectively. Only committed:true confirms trusted learning.
 
 After authorized setup via \`npx -y --package=@getmarrow/mcp@latest marrow-mcp setup\`, reload the host, review/enable hook trust, then run \`npx -y @getmarrow/install@latest doctor --self-test\`. Configuration alone does not prove runtime coverage; empty savings remain zero until observed usage exists.
 ${MARROW_BLOCK_END}`;
@@ -828,6 +828,8 @@ if (process.argv[2] !== 'keys') {
                 inputSchema: {
                     type: 'object',
                     properties: {
+                        idempotency_key: { type: 'string', description: 'Original privacy-safe pending receipt key when resuming the identical think request.' },
+                        request_hash: { type: 'string', description: 'Pending receipt request_hash; validates unchanged arguments, credentials, agent and session before resuming.' },
                         action: { type: 'string', description: 'What the agent is about to do' },
                         type: {
                             type: 'string',
@@ -2088,7 +2090,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             human_directed: args.human_directed,
                             instruction_ref: args.instruction_ref,
                             source_meta: args.source_meta,
-                        }, SESSION_ID, FLEET_AGENT_ID);
+                        }, SESSION_ID, FLEET_AGENT_ID, undefined, { idempotencyKey: args.idempotency_key, requestHash: args.request_hash });
                         // Refresh orient warnings every 5th think call
                         thinkCallCount++;
                         if (thinkCallCount % 5 === 0) {
