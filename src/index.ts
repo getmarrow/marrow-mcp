@@ -45,7 +45,7 @@ import {
 import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
-import { invalidResponseError, MarrowRequestError, normalizeRequestError, reliableFetch, requestErrorFromResponse, responseRetryAfter } from './request-reliability';
+import { invalidResponseError, MarrowRequestError, type PendingWriteReceipt, privacySafeIdempotencyKey, normalizeRequestError, reliableFetch, requestErrorFromResponse, responseRetryAfter } from './request-reliability';
 import {
   highRiskRuntimeCanClose,
   highRiskRuntimeCanContinueWithProof,
@@ -70,7 +70,6 @@ const SAFE_ARBITRATION_EVIDENCE_KIND = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$/;
 const SAFE_ARBITRATION_EVIDENCE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const SAFE_OUTCOME_OBSERVATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const SAFE_INSTRUCTION_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const AGENT_WRITE_RECONCILIATION_ATTEMPTS = 3;
 const AGENT_WRITE_RECONCILIATION_DELAY_MS = 1_000;
 const AUTO_MANAGED_WRITE = Symbol('marrow-auto-managed-write');
@@ -484,7 +483,7 @@ type AgentWriteKind = 'think' | 'commit';
 
 function invocationIdempotencyKey(kind: AgentWriteKind, supplied?: string): string {
   if (supplied !== undefined) {
-    if (supplied !== supplied.trim() || !SAFE_IDEMPOTENCY_KEY.test(supplied)) {
+    if (!privacySafeIdempotencyKey(supplied)) {
       throw new TypeError('Idempotency key must be a bounded privacy-safe identifier.');
     }
     return supplied;
@@ -492,7 +491,7 @@ function invocationIdempotencyKey(kind: AgentWriteKind, supplied?: string): stri
   return `mcp-${kind}:${randomUUID()}`;
 }
 
-function reconciliationError(exhausted: boolean): MarrowRequestError {
+function reconciliationError(exhausted: boolean, pendingReceipt?: PendingWriteReceipt): MarrowRequestError {
   return new MarrowRequestError({
     code: 'invalid_response',
     backendCode: exhausted ? 'MCP_RECONCILIATION_EXHAUSTED' : 'MCP_RECONCILIATION_INVALID',
@@ -501,8 +500,10 @@ function reconciliationError(exhausted: boolean): MarrowRequestError {
       : 'Marrow returned an invalid write reconciliation response',
     status: 202,
     retryable: exhausted,
+    retryAfterMs: exhausted ? 1000 : null,
+    pendingReceipt,
     exactFix: exhausted
-      ? 'Retry the same operation explicitly after checking Marrow status; do not assume the decision or outcome closed.'
+      ? 'Resume with the pending receipt key and request_hash, unchanged arguments, credentials, agent and session. Do not act, create another decision, or assume closure.'
       : 'Check Marrow status and retry explicitly; do not accept or act on the malformed pending response.',
   });
 }
@@ -515,30 +516,40 @@ function validCorrelationId(value: unknown): value is string {
     && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
 }
 
-function pendingDecisionId(
+function pendingWriteReconciliation(
   kind: AgentWriteKind,
   value: Record<string, unknown>,
   idempotencyKey: string,
   expectedDecisionId?: string,
-): string | null {
-  if (value.retryable !== true
-    || value.committed !== false
-    || value.idempotency_key !== idempotencyKey
-    || !validCorrelationId(value.decision_id)) {
+): { decisionId: string | null } | null {
+  if (value.retryable !== true || value.committed !== false || value.idempotency_key !== idempotencyKey) {
     return null;
   }
   if (kind === 'think') {
-    return value.reconciliation_state === 'runtime_continuation_persistence_pending'
-      && value.decision_state === 'created'
-      ? value.decision_id
-      : null;
+    const decisionId = value.decision_id === undefined ? null
+      : validCorrelationId(value.decision_id) ? value.decision_id : undefined;
+    if (decisionId === undefined) return null;
+    const typed = value.reconciliation_contract !== undefined;
+    if (typed && (value.reconciliation_contract !== 'agent_write_reconciliation.v1'
+      || value.reconciliation_operation !== 'think' || value.safe_to_continue !== false)) return null;
+    const canonicalPending = value.phase === 'think_pending' && value.resumable === true
+      && value.safe_to_continue !== true
+      && value.retry_after_ms === AGENT_WRITE_RECONCILIATION_DELAY_MS;
+    const state = value.reconciliation_state;
+    const validState = state === 'runtime_continuation_persistence_pending' && value.decision_state === 'created'
+      || state === 'runtime_decision_authority_pending' && value.decision_state === 'pending' && decisionId === null
+      || state === 'pending' && (value.decision_state === 'pending' && decisionId === null
+        || value.decision_state === 'created');
+    if (canonicalPending && validState) return { decisionId };
+    // Keep the earlier documented identifier-bearing continuation contract compatible.
+    if (!typed && decisionId && state === 'runtime_continuation_persistence_pending'
+      && value.decision_state === 'created' && value.safe_to_continue !== true) return { decisionId };
+    return null;
   }
-  if (value.decision_id !== expectedDecisionId) return null;
-  if (value.reconciliation_state === 'pending') return value.decision_id;
+  if (!validCorrelationId(value.decision_id) || value.decision_id !== expectedDecisionId) return null;
+  if (value.reconciliation_state === 'pending') return { decisionId: value.decision_id };
   return value.reconciliation_state === 'runtime_continuation_invalidation_pending'
-    && value.outcome_persisted === true
-    ? value.decision_id
-    : null;
+    && value.outcome_persisted === true ? { decisionId: value.decision_id } : null;
 }
 
 async function waitForWriteReconciliation(signal?: AbortSignal): Promise<void> {
@@ -568,8 +579,25 @@ async function fetchAgentWrite(
   idempotencyKey: string,
   expectedDecisionId?: string,
   autoManaged = false,
+  expectedRequestHash?: string,
 ): Promise<{ response: Response; data: Record<string, unknown> }> {
+  const headers = new Headers(init.headers);
+  // Bind the canonical wire body and authenticated scope without exposing either.
+  const requestHash = createHash('sha256').update(JSON.stringify(canonicalAutoBindingValue({
+    url, key: idempotencyKey, body: JSON.parse(String(init.body)),
+    authorization: headers.get('Authorization'),
+    session: headers.get('X-Marrow-Session-Id'), agent: headers.get('X-Marrow-Agent-Id'),
+  }))).digest('hex');
+  if (expectedRequestHash !== undefined && (!/^[a-f0-9]{64}$/.test(expectedRequestHash)
+    || expectedRequestHash !== requestHash)) {
+    throw new TypeError('Pending request hash does not match this exact operation and authenticated scope.');
+  }
+  const pendingReceipt: PendingWriteReceipt = {
+    contract: 'mcp_write_pending.v1', operation: kind, committed: false, safe_to_continue: false,
+    idempotency_key: idempotencyKey, request_hash: requestHash,
+  };
   let reconciledDecisionId: string | null = null;
+  let reconciling = false;
   for (let attempt = 0; attempt < AGENT_WRITE_RECONCILIATION_ATTEMPTS; attempt += 1) {
     // Automatic writes have one retry owner and leave room for exact replay
     // after a lost ACK inside marrowAuto's unchanged total response deadline.
@@ -600,7 +628,7 @@ async function fetchAgentWrite(
       // Canonical write reconciliation predates auto's phase/resumable fields.
       // Adapt only a validated exact-operation pending response.
       if (response.status === 202 && retryGuidance.valid && data.resumable !== false
-        && pendingDecisionId(kind, data, idempotencyKey, expectedDecisionId)) {
+        && pendingWriteReconciliation(kind, data, idempotencyKey, expectedDecisionId)) {
         data.phase = `${kind}_pending`;
         data.resumable = true;
       }
@@ -611,8 +639,12 @@ async function fetchAgentWrite(
       return { response, data };
     }
     if (response.status !== 202 || (kind === 'commit' && data.outcome_state === 'observed_unverified')) {
-      if (reconciledDecisionId) {
-        if (kind === 'think' && data.decision_id !== reconciledDecisionId) {
+      if (reconciling) {
+        if (data.idempotency_key !== undefined && data.idempotency_key !== idempotencyKey) {
+          throw reconciliationError(false);
+        }
+        if (kind === 'think' && (!validCorrelationId(data.decision_id)
+          || (reconciledDecisionId && data.decision_id !== reconciledDecisionId))) {
           throw reconciliationError(false);
         }
         if (kind === 'commit' && data.decision_id !== undefined && data.decision_id !== expectedDecisionId) {
@@ -622,17 +654,18 @@ async function fetchAgentWrite(
       return { response, data };
     }
 
-    const currentDecisionId = pendingDecisionId(kind, data, idempotencyKey, expectedDecisionId);
-    if (!currentDecisionId || (reconciledDecisionId && currentDecisionId !== reconciledDecisionId)) {
+    const pending = pendingWriteReconciliation(kind, data, idempotencyKey, expectedDecisionId);
+    if (!pending || (reconciledDecisionId && pending.decisionId && pending.decisionId !== reconciledDecisionId)) {
       throw reconciliationError(false);
     }
-    reconciledDecisionId = currentDecisionId;
+    reconciling = true;
+    if (pending.decisionId) reconciledDecisionId = pending.decisionId;
     if (attempt + 1 >= AGENT_WRITE_RECONCILIATION_ATTEMPTS) {
-      throw reconciliationError(true);
+      throw reconciliationError(true, pendingReceipt);
     }
     await waitForWriteReconciliation(init.signal || undefined);
   }
-  throw reconciliationError(true);
+  throw reconciliationError(true, pendingReceipt);
 }
 
 function clampPeriodDays(value: string | number | undefined, defaultDays: number = 7): number {
@@ -727,7 +760,7 @@ export async function marrowThink(
   sessionId?: string,
   agentId?: string,
   signal?: AbortSignal,
-  options?: { idempotencyKey?: string; responseMode?: 'ack'; [AUTO_MANAGED_WRITE]?: true },
+  options?: { idempotencyKey?: string; requestHash?: string; responseMode?: 'ack'; [AUTO_MANAGED_WRITE]?: true },
 ): Promise<ThinkResult> {
   const body: Record<string, unknown> = {
     action: redactSensitiveText(params.action),
@@ -768,6 +801,7 @@ export async function marrowThink(
   }
 
   const thinkUrl = `${baseUrl}/v1/agent/think${options?.responseMode === 'ack' ? '?response=ack' : ''}`;
+  if (options?.requestHash !== undefined && !options.idempotencyKey) throw new TypeError('Pending resume requires the original idempotency key.');
   const idempotencyKey = invocationIdempotencyKey('think', options?.idempotencyKey);
   const thinkInit = {
     method: 'POST',
@@ -785,6 +819,7 @@ export async function marrowThink(
     idempotencyKey,
     undefined,
     options?.[AUTO_MANAGED_WRITE] === true,
+    options?.requestHash,
   );
   return markAutoResponseStatus(data as unknown as ThinkResult, response.status);
 }

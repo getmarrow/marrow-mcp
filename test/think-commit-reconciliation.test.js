@@ -282,3 +282,87 @@ test('observed_unverified HTTP 202 remains terminal and is never reconciled', as
     globalThis.fetch = originalFetch;
   }
 });
+
+function nonAuthorizingPending(state, key, typed = true) {
+  return {
+    ...(typed ? { reconciliation_contract: 'agent_write_reconciliation.v1', reconciliation_operation: 'think', safe_to_continue: false } : {}),
+    reconciliation_state: state,
+    decision_state: state === 'runtime_continuation_persistence_pending' ? 'created' : 'pending',
+    idempotency_key: key, committed: false, phase: 'think_pending', resumable: true,
+    retryable: true, retry_after_ms: 1000,
+  };
+}
+
+for (const typed of [true, false]) {
+  for (const state of ['pending', 'runtime_decision_authority_pending', 'runtime_continuation_persistence_pending']) {
+    test(`marrowThink recovers ${typed ? 'typed' : 'current legacy'} ${state} without inventing an identifier`, async () => {
+      const originalFetch = globalThis.fetch; const calls = [];
+      globalThis.fetch = async (url, init) => {
+        const headers = new Headers(init.headers);
+        calls.push({ ...requestRecord(url, init), authorization: headers.get('Authorization'), session: headers.get('X-Marrow-Session-Id'), agent: headers.get('X-Marrow-Agent-Id') });
+        if (calls.length === 1) return response(nonAuthorizingPending(state, calls[0].idempotencyKey, typed), 202);
+        return response({ decision_id: 'decision-eventually-confirmed', runtime_continuation_persisted: true, idempotency_key: calls[0].idempotencyKey });
+      };
+      try {
+        const result = await marrowThink('fixture-key', 'https://api.example.test', { action: 'Keep the original operation', surfaces: ['workspace'] },
+          'session-exact', 'agent-exact', undefined, { idempotencyKey: 'original-operation-key' });
+        assert.equal(result.decision_id, 'decision-eventually-confirmed');
+        assert.equal(result.runtime_continuation_persisted, true);assert.equal(calls.length, 2);
+        assert.deepEqual(calls[1], calls[0]);
+        assert.equal(calls[0].idempotencyKey, 'original-operation-key');
+        assert.equal(calls[0].authorization, 'Bearer fixture-key');assert.equal(calls[0].session, 'session-exact');assert.equal(calls[0].agent, 'agent-exact');
+        assert.equal(new URL(calls[0].url).pathname, '/v1/agent/think');
+      } finally { globalThis.fetch = originalFetch; }
+    });
+  }
+}
+
+test('no-ID think exhaustion preserves exactly three attempts and never claims a decision', async () => {
+  const originalFetch = globalThis.fetch; const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push(requestRecord(url, init));
+    return response(nonAuthorizingPending('runtime_decision_authority_pending', calls[0].idempotencyKey), 202);
+  };
+  try {
+    await assert.rejects(() => marrowThink('fixture-key', 'https://api.example.test', { action: 'Remain pending' }),
+      error => reconciliationError(error, 'MCP_RECONCILIATION_EXHAUSTED') && error.retryable === true);
+    assert.equal(calls.length, 3);assert.deepEqual(calls[1], calls[0]);assert.deepEqual(calls[2], calls[0]);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('no-ID think rejects unknown contract, unsafe state and mismatched operation without retry', async t => {
+  const mutations = [
+    { reconciliation_contract: 'unknown.v2' }, { reconciliation_operation: 'commit' },
+    { reconciliation_state: 'unknown' }, { safe_to_continue: true }, { committed: true },
+    { idempotency_key: 'different-key' }, { decision_id: '' }, { decision_id: 'unexpected-decision' },
+    { retry_after_ms: '1000' }, { phase: 'commit_pending' }, { resumable: false },
+    { decision_state: 'outcome_committed' },
+  ];
+  for (const mutation of mutations) await t.test(Object.keys(mutation)[0], async () => {
+    const originalFetch = globalThis.fetch;let calls = 0;
+    globalThis.fetch = async (_url, init) => {
+      calls += 1;const key = new Headers(init.headers).get('Idempotency-Key');
+      return response({ ...nonAuthorizingPending('runtime_decision_authority_pending', key), ...mutation }, 202);
+    };
+    try {
+      await assert.rejects(() => marrowThink('fixture-key', 'https://api.example.test', { action: 'Reject malformed pending' }),
+        error => reconciliationError(error, 'MCP_RECONCILIATION_INVALID'));
+      assert.equal(calls, 1);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+});
+
+for (const terminal of [{ idempotency_key: 'wrong-key', decision_id: 'decision-final' }, {}]) {
+  test(`no-ID recovery rejects ${terminal.decision_id ? 'wrong final key' : 'missing final decision'}`, async () => {
+    const originalFetch = globalThis.fetch;let calls = 0;
+    globalThis.fetch = async (_url, init) => {
+      calls += 1;const key = new Headers(init.headers).get('Idempotency-Key');
+      return calls === 1 ? response(nonAuthorizingPending('pending', key), 202) : response(terminal);
+    };
+    try {
+      await assert.rejects(() => marrowThink('fixture-key', 'https://api.example.test', { action: 'Keep final correlation' }),
+        error => reconciliationError(error, 'MCP_RECONCILIATION_INVALID'));
+      assert.equal(calls, 2);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+}

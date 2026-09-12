@@ -124,15 +124,21 @@ npx -y --package=@getmarrow/mcp@latest marrow-mcp ping
 
 Detection and notification are automatic. After explicit installer activation, the local controller may restore only Marrow-managed hooks/configuration. Package upgrades, owner policy, credentials, and unrelated configuration remain explicit and subject to the operator's normal change policy.
 
-## What's New in v3.9.83
+## Pending write recovery
 
-v3.9.83 confirms pending automatic writes by replaying the same authenticated operation and request, with one retry owner and a four-second attempt ceiling inside the unchanged eight-second total budget. Numeric and date-based server retry delays are preserved. Conflicting receipts never confirm closure, and unavailable or unverified results remain pending.
+A direct `marrow_think` can receive a durable pending response before the backend can safely expose a decision ID. The client recognizes the explicit `agent_write_reconciliation.v1` think contract and the corresponding current legacy pending shapes. It retries the identical authenticated request with the original idempotency key, agent and session, at most three attempts with the existing one-second wait. It never creates a placeholder decision or starts an automatic operation to recover a direct think call. Unknown states, conflicting keys and unsafe responses fail closed; exhaustion returns a retryable structured `pending_receipt` with `committed:false`, the original `idempotency_key`, and `request_hash`. To resume manually, pass both fields to `marrow_think` with the same arguments, credentials, agent and session. The hash binds that exact canonical request and scope; drift is rejected before sending. No prompt, credential, or raw scope is included in the receipt. Caller keys must be privacy-safe opaque identifiers.
 
-Post-action commit lookup now preserves the original general/empty-surface defaults and optional explicit target. It remains observation-only. Receipt expiry uses an explicit normal runtime request for the original scope, followed by a separate verified commit; it does not extend the old receipt or grant retrospective permission. Transient lifecycle delivery retries preserve the queued event and its stable identity across restart within bounded scheduling and attempt limits. Queued, server-accepted, and committed remain separate facts.
+A saved `observed_unverified` outcome is terminal observation evidence, not a committed outcome. Receipt expiry cannot retroactively authorize completed work. Preserve the original decision, receipt, proof and key; an already authorized durable checkpoint may finish through its existing exact recovery path. Do not repeat the action merely to obtain a fresh receipt.
+
+## What's New in v3.9.84
+
+v3.9.84 adds bounded direct-think recovery without inventing a decision ID, and an exact scoped pending receipt for manual continuation. Saved unverified observations remain terminal untrusted evidence. It also preserves confirmation of pending automatic writes by replaying the same authenticated operation and request, with one retry owner and a four-second attempt ceiling inside the unchanged eight-second total budget. Numeric and date-based server retry delays are preserved. Conflicting receipts never confirm closure, and unavailable or unverified results remain pending.
+
+Post-action commit lookup now preserves the original general/empty-surface defaults and optional explicit target. It remains observation-only. Receipt expiry retains unverified observation evidence unless an existing historically authorized checkpoint supports exact recovery; it does not extend the old receipt or grant retrospective permission. Transient lifecycle delivery retries preserve the queued event and its stable identity across restart within bounded scheduling and attempt limits. Queued, server-accepted, and committed remain separate facts.
 
 Before upgrading, finish existing pending auto operations with their current verified client. Older auto requests omitted supplied surfaces from think; correcting nonempty surfaces can therefore expose an idempotency conflict for that old operation. Do not reinterpret the conflict, open a replacement operation, use a silent legacy fallback, or automatically downgrade. Omitted/empty surface operations preserve their original canonical scope. This is a scope-correctness change, not a promise that every pending old-client operation can resume across an upgrade.
 
-Default primary guidance uses runtime followed by commit and exposes exactly 17 tools. Auto remains available in explicitly selected core/full profiles. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.83`, reload the host, review hook trust, and verify before claiming the updated client is active.
+Default primary guidance uses runtime followed by commit and exposes exactly 17 tools. Auto remains available in explicitly selected core/full profiles. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.84`, reload the host, review hook trust, and verify before claiming the updated client is active.
 
 ### Previous release: v3.9.82
 
