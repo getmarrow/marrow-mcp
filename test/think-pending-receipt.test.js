@@ -75,3 +75,42 @@ test('think tool exposes exact resume fields and tracks a decision only after th
   assert.match(handler, /idempotencyKey: args\.idempotency_key/); assert.match(handler, /requestHash: args\.request_hash/);
   assert.ok(handler.indexOf('await marrowThink(') < handler.indexOf('lastDecisionId = result.decision_id'));
 });
+
+test('manual resume validates the first terminal response before accepting any decision', async () => {
+  const original = globalThis.fetch; const calls = []; let receipt; let terminal = null;
+  const params = { action: 'Resume the original pending operation' };
+  const invoke = options => marrowThink('fixture-credential', 'https://fixture.test', params,
+    'session-original', 'agent-original', undefined, options);
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, body: init.body, headers: Object.fromEntries(new Headers(init.headers)) });
+    const key = new Headers(init.headers).get('Idempotency-Key');
+    return Response.json({ data: terminal || {
+      reconciliation_contract: 'agent_write_reconciliation.v1', reconciliation_operation: 'think',
+      reconciliation_state: 'pending', decision_state: 'pending', committed: false, safe_to_continue: false,
+      phase: 'think_pending', resumable: true, retryable: true, retry_after_ms: 1000, idempotency_key: key,
+    } }, { status: terminal ? 200 : 202 });
+  };
+  try {
+    await assert.rejects(() => invoke(), error => {
+      receipt = structuredRequestFailure(error).pending_receipt;
+      return error.backendCode === 'MCP_RECONCILIATION_EXHAUSTED' && !!receipt;
+    });
+    assert.equal(calls.length, 3);
+    const options = { idempotencyKey: receipt.idempotency_key, requestHash: receipt.request_hash };
+    for (const candidate of [
+      { decision_id: 'decision-final', idempotency_key: 'conflicting-key' },
+      { idempotency_key: receipt.idempotency_key },
+      { decision_id: '', idempotency_key: receipt.idempotency_key },
+      { decision_id: 'decision\ninvalid', idempotency_key: receipt.idempotency_key },
+    ]) {
+      terminal = candidate; const before = calls.length;
+      await assert.rejects(() => invoke(options), error => error.backendCode === 'MCP_RECONCILIATION_INVALID');
+      assert.equal(calls.length, before + 1, 'no additional HTTP request after a conflicting terminal response');
+      assert.deepEqual(calls.at(-1), calls[0]);
+    }
+    terminal = { decision_id: 'decision-final', idempotency_key: receipt.idempotency_key, runtime_continuation_persisted: true };
+    const before = calls.length; const result = await invoke(options);
+    assert.equal(result.decision_id, 'decision-final'); assert.equal(calls.length, before + 1);
+    assert.deepEqual(calls.at(-1), calls[0]);
+  } finally { globalThis.fetch = original; }
+});

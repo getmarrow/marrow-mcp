@@ -555,7 +555,8 @@ async function fetchAgentWrite(url, init, kind, idempotencyKey, expectedDecision
         idempotency_key: idempotencyKey, request_hash: requestHash,
     };
     let reconciledDecisionId = null;
-    let reconciling = false;
+    // A manual receipt resume must validate its very first terminal response.
+    let reconciling = expectedRequestHash !== undefined;
     for (let attempt = 0; attempt < AGENT_WRITE_RECONCILIATION_ATTEMPTS; attempt += 1) {
         // Automatic writes have one retry owner and leave room for exact replay
         // after a lost ACK inside marrowAuto's unchanged total response deadline.
