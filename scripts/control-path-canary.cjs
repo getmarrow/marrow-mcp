@@ -112,6 +112,103 @@ function autoTimings(payload) {
   return result;
 }
 
+const AUTO_HTTP_ERROR_CATEGORIES = new Set([
+  'authentication_required', 'permission_denied', 'proof_required', 'rate_limited',
+  'request_timeout', 'dns_unavailable', 'connection_reset', 'tls_failure',
+  'edge_access_denied', 'service_unavailable', 'invalid_response', 'request_failed',
+]);
+const AUTO_TRACE_CODES = new Set([
+  'runtime_pending', 'think_pending', 'commit_pending', 'pending', 'created',
+  'committed', 'closed', 'replayed', 'idempotent_replay', 'lost_ack_recovered',
+  'duplicate', 'original', 'new',
+]);
+
+function safeAutoHttpTrace(payload) {
+  const source = payload?.http_attempt_trace;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    return { attempts: [], dropped_count: 0 };
+  }
+  const attempts = [];
+  let rejected = Array.isArray(source.attempts) ? Math.max(0, source.attempts.length - 12) : 0;
+  for (const value of Array.isArray(source.attempts) ? source.attempts.slice(0, 12) : []) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || !['think', 'commit'].includes(value.route_phase)) {
+      rejected += 1;
+      continue;
+    }
+    const serverTimings = {};
+    const spans = value.server_timings_ms;
+    if (spans && typeof spans === 'object' && !Array.isArray(spans)) {
+      for (const [name, duration] of Object.entries(spans).slice(0, 24)) {
+        if (/^[a-z][a-z0-9_.-]{0,63}$/i.test(name)
+          && /(?:duration|latency|timing|elapsed|total|core|queue|db|durable|enqueue|response|commit|think|write|read|lookup|lock|wait|worker|edge)/i.test(name)
+          && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && duration <= 60_000) {
+          serverTimings[name.toLowerCase()] = Math.round(duration);
+        }
+      }
+    }
+    const status = Number.isInteger(value.status) && value.status >= 100 && value.status <= 599
+      ? value.status : null;
+    const errorCategory = AUTO_HTTP_ERROR_CATEGORIES.has(value.error_category)
+      ? value.error_category : null;
+    attempts.push({
+      route_phase: value.route_phase,
+      duration_ms: safeMs(value.duration_ms),
+      status,
+      error_category: errorCategory,
+      typed_timeout: errorCategory === 'request_timeout' && value.typed_timeout === true,
+      pending_code: AUTO_TRACE_CODES.has(value.pending_code) ? value.pending_code : null,
+      replay_code: AUTO_TRACE_CODES.has(value.replay_code) ? value.replay_code : null,
+      server_timings_ms: serverTimings,
+      requested_wait_ms: value.requested_wait_ms == null ? null : safeMs(value.requested_wait_ms),
+      actual_wait_ms: safeMs(value.actual_wait_ms),
+    });
+  }
+  const reportedDropped = Number.isInteger(source.dropped_count) && source.dropped_count >= 0
+    ? Math.min(999, source.dropped_count) : 0;
+  return { attempts, dropped_count: Math.min(999, reportedDropped + rejected) };
+}
+
+function autoOuterAttempt(payload, attempt, durationMs) {
+  const phase = ['runtime_pending', 'think_pending', 'decision_created', 'proof_required',
+    'review_required', 'owner_approval_required', 'commit_pending', 'closed'].includes(payload?.phase)
+    ? payload.phase : null;
+  const deliveryFailure = payload?.live_delivery?.failure?.error;
+  const errorCategory = AUTO_HTTP_ERROR_CATEGORIES.has(deliveryFailure?.category)
+    ? deliveryFailure.category : null;
+  return {
+    attempt,
+    duration_ms: safeMs(durationMs),
+    phase,
+    status: errorCategory ? 'failed' : payload?.live_delivery?.committed === true
+      ? 'committed' : payload?.live_delivery?.accepted === true ? 'pending' : 'unconfirmed',
+    error_category: errorCategory,
+    ...autoTimings(payload),
+    http_attempt_trace: safeAutoHttpTrace(payload),
+    requested_wait_ms: payload?.retry_after_ms == null ? null : safeMs(payload.retry_after_ms),
+    actual_wait_ms: 0,
+  };
+}
+
+function safeAutoOuterAttempts(source) {
+  if (!Array.isArray(source)) return [];
+  return source.slice(0, 3).map((record, index) => ({
+    attempt: index + 1,
+    duration_ms: safeMs(record?.duration_ms),
+    phase: ['runtime_pending', 'think_pending', 'decision_created', 'proof_required',
+      'review_required', 'owner_approval_required', 'commit_pending', 'closed'].includes(record?.phase)
+      ? record.phase : null,
+    status: ['committed', 'pending', 'failed', 'unconfirmed'].includes(record?.status)
+      ? record.status : 'unconfirmed',
+    error_category: AUTO_HTTP_ERROR_CATEGORIES.has(record?.error_category)
+      ? record.error_category : null,
+    ...autoTimings(record),
+    http_attempt_trace: safeAutoHttpTrace({ http_attempt_trace: record?.http_attempt_trace }),
+    requested_wait_ms: record?.requested_wait_ms == null ? null : safeMs(record.requested_wait_ms),
+    actual_wait_ms: safeMs(record?.actual_wait_ms),
+  }));
+}
+
 function autoWaitClass(payload) {
   if (payload?.live_delivery?.committed !== false
     || typeof payload.live_delivery.accepted !== 'boolean'
@@ -131,6 +228,7 @@ function failureRecord(error, context = {}) {
     tool: row.tool, ok: true, live: true, latency_ms: safeMs(row.latency_ms),
     ...(row.tool === 'marrow_auto' ? {
       ...autoTimings(row), attempts: row.attempts, retry_wait_ms: safeMs(row.retry_wait_ms),
+      auto_attempt_records: safeAutoOuterAttempts(row.auto_attempt_records),
     } : {}),
   }));
   return Object.freeze({
@@ -150,6 +248,7 @@ function failureRecord(error, context = {}) {
     results: Object.freeze(results),
     ...(context.tool === 'marrow_auto' ? {
       ...autoTimings(context.autoMetrics), retry_wait_ms: safeMs(context.retryWaitMs),
+      auto_attempt_records: safeAutoOuterAttempts(context.autoAttempts),
       ...(context.autoPhase ? { auto_phase: context.autoPhase } : {}),
     } : {}),
     ...(evidence.http_status === undefined ? {} : { http_status: evidence.http_status }),
@@ -505,15 +604,42 @@ async function executeCanary(env, options, context) {
       context.retryWaitMs = 0;
       context.autoMetrics = undefined;
       context.autoPhase = undefined;
+      context.autoAttempts = undefined;
+      const autoAttemptRecords = [];
+      if (name === 'marrow_auto') context.autoAttempts = autoAttemptRecords;
       for (let attempt = 0; attempt < 3; attempt += 1) {
+        const outerAttemptStarted = performance.now();
         if (client.fatalError) throw client.fatalError;
         stage('tool_call', name, attempt + 1);
         attempts += 1;
-        called = await client.request('tools/call', { name, arguments: args });
-        if (client.fatalError) throw client.fatalError;
-        stage('tool_validate', name, attempt + 1);
-        payload = toolPayload(called, name);
+        try {
+          called = await client.request('tools/call', { name, arguments: args });
+          if (client.fatalError) throw client.fatalError;
+          stage('tool_validate', name, attempt + 1);
+          payload = toolPayload(called, name);
+        } catch (error) {
+          if (name === 'marrow_auto') {
+            const evidence = errorEvidence.get(error);
+            autoAttemptRecords.push({
+              attempt: attempt + 1,
+              duration_ms: safeMs(performance.now() - outerAttemptStarted),
+              phase: null,
+              status: 'failed',
+              error_category: evidence?.error_class === 'request_timeout' ? 'request_timeout' : null,
+              http_attempt_trace: { attempts: [], dropped_count: 0 },
+              requested_wait_ms: null,
+              actual_wait_ms: 0,
+            });
+          }
+          throw error;
+        }
         if (name !== 'marrow_auto') break;
+        const outerAttemptRecord = autoOuterAttempt(
+          payload,
+          attempt + 1,
+          performance.now() - outerAttemptStarted,
+        );
+        autoAttemptRecords.push(outerAttemptRecord);
         context.autoMetrics = autoTimings(payload);
         const waitClass = autoWaitClass(payload);
         context.autoPhase = waitClass ? payload.phase : undefined;
@@ -526,7 +652,9 @@ async function executeCanary(env, options, context) {
           if (delayMs >= remaining) break;
           const waitStarted = performance.now();
           await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
-          context.retryWaitMs += Math.round(performance.now() - waitStarted);
+          const actualWaitMs = Math.round(performance.now() - waitStarted);
+          outerAttemptRecord.actual_wait_ms = actualWaitMs;
+          context.retryWaitMs += actualWaitMs;
         }
       }
       const latencyMs = Math.round(performance.now() - callStarted);
@@ -534,7 +662,12 @@ async function executeCanary(env, options, context) {
       const live = payload.stale !== true && payload.source !== 'last_known' && payload.available !== false;
       if (!live) throw canaryError('contract', `${name} returned cached or unavailable guidance`);
       results.push({ tool: name, ok: true, live: true, latency_ms: latencyMs,
-        ...(name === 'marrow_auto' ? { ...autoTimings(payload), attempts, retry_wait_ms: context.retryWaitMs } : {}),
+        ...(name === 'marrow_auto' ? {
+          ...autoTimings(payload),
+          attempts,
+          retry_wait_ms: context.retryWaitMs,
+          auto_attempt_records: safeAutoOuterAttempts(autoAttemptRecords),
+        } : {}),
       });
     }
     const hotPath = results.filter((row) => HOT_PATH_TOOLS.has(row.tool));

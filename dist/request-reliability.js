@@ -254,22 +254,56 @@ async function reliableFetch(url, init = {}, options = {}) {
         const controller = new AbortController();
         const abortFromCaller = () => controller.abort(externalSignal?.reason);
         externalSignal?.addEventListener('abort', abortFromCaller, { once: true });
-        const timer = setTimeout(() => controller.abort(), remaining);
+        const timer = setTimeout(() => controller.abort(new DOMException('Timed out', 'AbortError')), remaining);
         timer.unref?.();
-        let retryResponse = null;
         let delayMs = 0;
+        let consumingResponse = false;
         try {
             const response = await globalThis.fetch(target, { ...init, signal: controller.signal });
+            const consume = async () => {
+                if (!options.consumeResponse)
+                    return response;
+                return await new Promise((resolve, reject) => {
+                    const abort = () => {
+                        controller.signal.removeEventListener('abort', abort);
+                        reject(controller.signal.reason || new DOMException('Timed out', 'AbortError'));
+                    };
+                    if (controller.signal.aborted) {
+                        abort();
+                        return;
+                    }
+                    controller.signal.addEventListener('abort', abort, { once: true });
+                    Promise.resolve().then(() => options.consumeResponse(response)).then((value) => {
+                        controller.signal.removeEventListener('abort', abort);
+                        resolve(value);
+                    }, (error) => {
+                        controller.signal.removeEventListener('abort', abort);
+                        reject(error);
+                    });
+                });
+            };
+            const consumeTerminalResponse = async () => {
+                consumingResponse = true;
+                return await consume();
+            };
             if (!RETRYABLE_STATUS.has(response.status) || attempt + 1 >= attempts)
-                return response;
+                return await consumeTerminalResponse();
             lastError = requestErrorFromResponse(response);
             if (!lastError.retryable)
-                return response;
-            retryResponse = response;
+                return await consumeTerminalResponse();
             delayMs = lastError.retryAfterMs ?? 50;
+            const remainingAfterResponse = deadline - Date.now();
+            if (delayMs >= remainingAfterResponse - 50)
+                return await consumeTerminalResponse();
+            // A response that will be retried is never exposed to a caller. Cancel its
+            // body while the same deadline is still active so the connection can be
+            // reclaimed without leaving an unread stream behind.
+            void response.body?.cancel().catch(() => undefined);
         }
         catch (error) {
             lastError = normalizeRequestError(error);
+            if (consumingResponse)
+                throw lastError;
             if (!lastError.retryable || attempt + 1 >= attempts)
                 throw lastError;
             delayMs = 50;
@@ -279,9 +313,6 @@ async function reliableFetch(url, init = {}, options = {}) {
             externalSignal?.removeEventListener('abort', abortFromCaller);
         }
         const remainingAfterAttempt = deadline - Date.now();
-        if (retryResponse && delayMs >= remainingAfterAttempt - 50) {
-            return retryResponse;
-        }
         if (delayMs > 0) {
             await new Promise((resolve, reject) => {
                 const finish = () => {

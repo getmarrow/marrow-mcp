@@ -73,6 +73,9 @@ const SAFE_INSTRUCTION_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const AGENT_WRITE_RECONCILIATION_ATTEMPTS = 3;
 const AGENT_WRITE_RECONCILIATION_DELAY_MS = 1_000;
 const AUTO_MANAGED_WRITE = Symbol('marrow-auto-managed-write');
+const AUTO_HTTP_TRACE = Symbol('marrow-auto-http-trace');
+const AUTO_HTTP_TRACE_ERROR = Symbol('marrow-auto-http-trace-error');
+const AUTO_HTTP_TRACE_LIMIT = 12;
 const INSTRUCTION_REFERENCE_LONG_DIGIT_RUN = /\d{7,}/;
 const INSTRUCTION_REFERENCE_DATE = /(?:^|[._:-])(?:(?:19|20)\d{2}[._:-](?:0?[1-9]|1[0-2])[._:-](?:0?[1-9]|[12]\d|3[01])|(?:0?[1-9]|1[0-2])[._:-](?:0?[1-9]|[12]\d|3[01])[._:-](?:19|20)\d{2})(?:$|[._:-])/;
 const INSTRUCTION_REFERENCE_PROVIDER_ID = /^(?:telegram|tg|discord|slack|signal|whatsapp|wa|matrix|imessage|message|msg|chat|user|thread|channel|room|dm|sms|device)[_:.-]?[A-Za-z]*\d+[A-Za-z0-9_-]*$/i;
@@ -306,13 +309,19 @@ async function safeJsonResponse(res: Response): Promise<any> {
     try {
       const contentType = res.headers.get('content-type') || '';
       if (contentType.includes('json')) detail = await res.json() as Record<string, unknown>;
-    } catch { /* ignore malformed or non-JSON error bodies */ }
+    } catch (error) {
+      const failure = normalizeRequestError(error);
+      if (failure.code === 'request_timeout') throw failure;
+      // Malformed error bodies do not hide the authoritative HTTP status.
+    }
     throw requestErrorFromResponse(res, detail);
   }
   let json: any;
   try {
     json = await res.json();
-  } catch {
+  } catch (error) {
+    const failure = normalizeRequestError(error);
+    if (failure.code === 'request_timeout') throw failure;
     throw invalidResponseError();
   }
   if (!json || typeof json !== 'object' || Array.isArray(json) || json.error) {
@@ -572,6 +581,106 @@ async function waitForWriteReconciliation(signal?: AbortSignal): Promise<void> {
   });
 }
 
+export type MarrowAutoHttpAttempt = {
+  route_phase: 'think' | 'commit';
+  duration_ms: number;
+  status: number | null;
+  error_category: string | null;
+  typed_timeout: boolean;
+  pending_code: string | null;
+  replay_code: string | null;
+  server_timings_ms: Record<string, number>;
+  requested_wait_ms: number | null;
+  actual_wait_ms: number;
+};
+
+export type MarrowAutoHttpTrace = {
+  attempts: MarrowAutoHttpAttempt[];
+  dropped_count: number;
+};
+
+type AutoHttpTraceBuffer = MarrowAutoHttpTrace;
+type AutoTraceableError = Error & { [AUTO_HTTP_TRACE_ERROR]?: MarrowAutoHttpTrace };
+const AUTO_HTTP_STATE_CODES = new Set([
+  'runtime_pending', 'think_pending', 'commit_pending', 'pending',
+  'created', 'committed', 'closed', 'replayed', 'idempotent_replay',
+  'lost_ack_recovered', 'duplicate', 'original', 'new',
+]);
+
+function traceMs(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.min(60_000, Math.round(value))
+    : null;
+}
+
+function traceCode(value: unknown): string | null {
+  const code = typeof value === 'string' ? value.toLowerCase() : '';
+  return AUTO_HTTP_STATE_CODES.has(code) ? code : null;
+}
+
+function serverTimings(response: Response | null, data?: Record<string, unknown>): Record<string, number> {
+  const timings: Record<string, number> = {};
+  const add = (name: string, value: unknown) => {
+    const duration = traceMs(value);
+    if (duration === null || Object.keys(timings).length >= 24
+      || !/^[a-z][a-z0-9_.-]{0,63}$/i.test(name)
+      || !/(?:duration|latency|timing|elapsed|total|core|queue|db|durable|enqueue|response|commit|think|write|read|lookup|lock|wait|worker|edge)/i.test(name)) return;
+    timings[name.toLowerCase()] = duration;
+  };
+  const header = response?.headers.get('server-timing') || '';
+  for (const item of header.split(',')) {
+    const name = item.trim().match(/^([a-z][a-z0-9_-]{0,31})/i)?.[1];
+    const duration = item.match(/(?:^|;)\s*dur=([0-9]+(?:\.[0-9]+)?)(?:;|$)/i)?.[1];
+    if (name && duration !== undefined) add(`header.${name}`, Number(duration));
+  }
+  for (const group of ['timings_ms', 'phase_timings_ms', 'response_timings_ms', 'performance_ms', 'performance']) {
+    const source = data?.[group];
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
+    for (const [name, value] of Object.entries(source)) add(`${group}.${name}`, value);
+  }
+  return timings;
+}
+
+function appendAutoHttpAttempt(
+  trace: AutoHttpTraceBuffer | undefined,
+  input: Omit<MarrowAutoHttpAttempt, 'actual_wait_ms'>,
+): MarrowAutoHttpAttempt | null {
+  if (!trace) return null;
+  if (trace.attempts.length >= AUTO_HTTP_TRACE_LIMIT) {
+    trace.dropped_count += 1;
+    return null;
+  }
+  const attempt = { ...input, actual_wait_ms: 0 };
+  trace.attempts.push(attempt);
+  return attempt;
+}
+
+function snapshotAutoHttpTrace(trace: AutoHttpTraceBuffer): MarrowAutoHttpTrace {
+  return {
+    attempts: trace.attempts.map((attempt) => ({
+      ...attempt,
+      server_timings_ms: { ...attempt.server_timings_ms },
+    })),
+    dropped_count: trace.dropped_count,
+  };
+}
+
+function attachAutoHttpTrace(error: unknown, trace: AutoHttpTraceBuffer): unknown {
+  if (error instanceof Error) {
+    Object.defineProperty(error, AUTO_HTTP_TRACE_ERROR, {
+      value: snapshotAutoHttpTrace(trace),
+      configurable: true,
+    });
+  }
+  return error;
+}
+
+export function marrowAutoHttpTraceFromError(error: unknown): MarrowAutoHttpTrace | null {
+  if (!(error instanceof Error)) return null;
+  const trace = (error as AutoTraceableError)[AUTO_HTTP_TRACE_ERROR];
+  return trace ? snapshotAutoHttpTrace(trace) : null;
+}
+
 async function fetchAgentWrite(
   url: string,
   init: RequestInit,
@@ -580,6 +689,7 @@ async function fetchAgentWrite(
   expectedDecisionId?: string,
   autoManaged = false,
   expectedRequestHash?: string,
+  autoHttpTrace?: AutoHttpTraceBuffer,
 ): Promise<{ response: Response; data: Record<string, unknown> }> {
   const headers = new Headers(init.headers);
   // Bind the canonical wire body and authenticated scope without exposing either.
@@ -602,14 +712,81 @@ async function fetchAgentWrite(
   for (let attempt = 0; attempt < AGENT_WRITE_RECONCILIATION_ATTEMPTS; attempt += 1) {
     // Automatic writes have one retry owner and leave room for exact replay
     // after a lost ACK inside marrowAuto's unchanged total response deadline.
-    const response = await reliableFetch(url, init, autoManaged
-      ? { retryOwner: 'caller', timeoutMs: 4_000 }
-      : {});
-    const json = await safeJsonResponse(response);
+    const requestStarted = performance.now();
+    let receivedStatus: number | null = null;
+    let receivedServerTimings: Record<string, number> = {};
+    let response: Response;
+    let json: any;
+    try {
+      const consumed = await reliableFetch(url, init, autoManaged
+        ? {
+          retryOwner: 'caller',
+          timeoutMs: 4_000,
+          consumeResponse: async (currentResponse) => {
+            receivedStatus = currentResponse.status;
+            receivedServerTimings = serverTimings(currentResponse);
+            return { response: currentResponse, json: await safeJsonResponse(currentResponse) };
+          },
+        }
+        : {
+          consumeResponse: async (currentResponse) => {
+            receivedStatus = currentResponse.status;
+            receivedServerTimings = serverTimings(currentResponse);
+            return { response: currentResponse, json: await safeJsonResponse(currentResponse) };
+          },
+        });
+      response = consumed.response;
+      json = consumed.json;
+    } catch (error) {
+      const failure = normalizeRequestError(error);
+      appendAutoHttpAttempt(autoHttpTrace, {
+        route_phase: kind,
+        duration_ms: traceMs(performance.now() - requestStarted) || 0,
+        status: receivedStatus ?? failure.status,
+        error_category: failure.code,
+        typed_timeout: failure.code === 'request_timeout',
+        pending_code: null,
+        replay_code: null,
+        server_timings_ms: receivedServerTimings,
+        requested_wait_ms: traceMs(failure.retryAfterMs),
+      });
+      throw error;
+    }
     if (!json.data || typeof json.data !== 'object' || Array.isArray(json.data)) {
+      appendAutoHttpAttempt(autoHttpTrace, {
+        route_phase: kind,
+        duration_ms: traceMs(performance.now() - requestStarted) || 0,
+        status: response.status,
+        error_category: 'invalid_response',
+        typed_timeout: false,
+        pending_code: null,
+        replay_code: null,
+        server_timings_ms: serverTimings(response),
+        requested_wait_ms: null,
+      });
       throw invalidResponseError();
     }
     const data = json.data as Record<string, unknown>;
+    const headerWait = responseRetryAfter(response);
+    const bodyWait = traceMs(data.retry_after_ms);
+    const hasRequestedWait = bodyWait !== null || headerWait.delayMs !== null;
+    const requestedWait = headerWait.valid && hasRequestedWait
+      ? Math.max(bodyWait ?? 0, headerWait.delayMs ?? 0)
+      : null;
+    const traceAttempt = appendAutoHttpAttempt(autoHttpTrace, {
+      route_phase: kind,
+      duration_ms: traceMs(performance.now() - requestStarted) || 0,
+      status: response.status,
+      error_category: null,
+      typed_timeout: false,
+      pending_code: response.status === 202
+        ? traceCode(data.pending_code) || traceCode(data.phase) || `${kind}_pending`
+        : null,
+      replay_code: traceCode(data.replay_code) || traceCode(data.replay_state)
+        || (data.replayed === true ? 'replayed' : null),
+      server_timings_ms: serverTimings(response, data),
+      requested_wait_ms: requestedWait,
+    });
     if (autoManaged) {
       const retryGuidance = responseRetryAfter(response);
       if (!retryGuidance.valid) {
@@ -664,7 +841,9 @@ async function fetchAgentWrite(
     if (attempt + 1 >= AGENT_WRITE_RECONCILIATION_ATTEMPTS) {
       throw reconciliationError(true, pendingReceipt);
     }
+    const waitStarted = performance.now();
     await waitForWriteReconciliation(init.signal || undefined);
+    if (traceAttempt) traceAttempt.actual_wait_ms = traceMs(performance.now() - waitStarted) || 0;
   }
   throw reconciliationError(true, pendingReceipt);
 }
@@ -761,7 +940,13 @@ export async function marrowThink(
   sessionId?: string,
   agentId?: string,
   signal?: AbortSignal,
-  options?: { idempotencyKey?: string; requestHash?: string; responseMode?: 'ack'; [AUTO_MANAGED_WRITE]?: true },
+  options?: {
+    idempotencyKey?: string;
+    requestHash?: string;
+    responseMode?: 'ack';
+    [AUTO_MANAGED_WRITE]?: true;
+    [AUTO_HTTP_TRACE]?: AutoHttpTraceBuffer;
+  },
 ): Promise<ThinkResult> {
   const body: Record<string, unknown> = {
     action: redactSensitiveText(params.action),
@@ -821,6 +1006,7 @@ export async function marrowThink(
     undefined,
     options?.[AUTO_MANAGED_WRITE] === true,
     options?.requestHash,
+    options?.[AUTO_HTTP_TRACE],
   );
   return markAutoResponseStatus(data as unknown as ThinkResult, response.status);
 }
@@ -852,6 +1038,7 @@ export async function marrowCommit(
     model_usage?: MarrowModelUsageInput;
     modelUsage?: MarrowModelUsageInput;
     [AUTO_MANAGED_WRITE]?: true;
+    [AUTO_HTTP_TRACE]?: AutoHttpTraceBuffer;
   },
   sessionId?: string,
   agentId?: string,
@@ -956,6 +1143,8 @@ export async function marrowCommit(
     resolvedIdempotencyKey,
     params.decision_id,
     params[AUTO_MANAGED_WRITE] === true,
+    undefined,
+    params[AUTO_HTTP_TRACE],
   );
   if (data.outcome_state === 'observed_unverified') {
     if (!isDurableObservedOutcome(data)) throw invalidResponseError();
@@ -1168,6 +1357,7 @@ async function waitForAutoContinuation(
   pending: AutoPendingResponse,
   startedAt: number,
   responseBudgetMs: number,
+  autoHttpTrace?: AutoHttpTraceBuffer,
 ): Promise<boolean> {
   const remaining = responseBudgetMs - (Date.now() - startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS;
   if (remaining <= 0) return false;
@@ -1175,9 +1365,17 @@ async function waitForAutoContinuation(
   // Never retry early or consume a partial delay that cannot leave request time.
   if (delayMs >= remaining) return false;
   const resumeAt = performance.now() + delayMs;
+  const waitStarted = performance.now();
   do {
     await new Promise((resolve) => setTimeout(resolve, Math.ceil(resumeAt - performance.now())));
   } while (performance.now() < resumeAt);
+  const latestAttempt = autoHttpTrace?.attempts[autoHttpTrace.attempts.length - 1];
+  if (latestAttempt) {
+    latestAttempt.actual_wait_ms = Math.min(
+      60_000,
+      latestAttempt.actual_wait_ms + Math.max(0, Math.round(performance.now() - waitStarted)),
+    );
+  }
   return responseBudgetMs - (Date.now() - startedAt) > AUTO_RESPONSE_DEADLINE_MARGIN_MS;
 }
 
@@ -1196,6 +1394,24 @@ export type MarrowAutoResult = {
     commit: number | null;
     total: number;
   };
+  http_attempt_trace: MarrowAutoHttpTrace;
+};
+
+export type MarrowAutoParams = {
+  action: string;
+  outcome?: string;
+  success?: boolean;
+  type?: string;
+  context?: Record<string, unknown>;
+  source_meta?: Record<string, unknown>;
+  proof?: Record<string, unknown>;
+  gate_receipt_id?: string;
+  arbitration_receipt_id?: string;
+  owner_approval_receipt_id?: string;
+  action_for_gate?: string;
+  surfaces?: string[];
+  auto_gate?: boolean;
+  operation_id?: string;
 };
 
 function autoPartial(input: {
@@ -1208,6 +1424,7 @@ function autoPartial(input: {
   retryAfterMs?: number | null;
   resumable?: boolean;
   exactNextAction?: string | null;
+  autoHttpTrace: AutoHttpTraceBuffer;
 }): MarrowAutoResult {
   const resumable = input.resumable !== false;
   return {
@@ -1228,6 +1445,7 @@ function autoPartial(input: {
       ...input.timings,
       total: Date.now() - input.startedAt,
     },
+    http_attempt_trace: snapshotAutoHttpTrace(input.autoHttpTrace),
   };
 }
 
@@ -1241,25 +1459,27 @@ function autoPartial(input: {
 export async function marrowAuto(
   apiKey: string,
   baseUrl: string,
-  params: {
-    action: string;
-    outcome?: string;
-    success?: boolean;
-    type?: string;
-    context?: Record<string, unknown>;
-    source_meta?: Record<string, unknown>;
-    proof?: Record<string, unknown>;
-    gate_receipt_id?: string;
-    arbitration_receipt_id?: string;
-    owner_approval_receipt_id?: string;
-    action_for_gate?: string;
-    surfaces?: string[];
-    auto_gate?: boolean;
-    operation_id?: string;
-  },
+  params: MarrowAutoParams,
   sessionId?: string,
   agentId?: string,
   timeoutMs?: number
+): Promise<MarrowAutoResult> {
+  const autoHttpTrace: AutoHttpTraceBuffer = { attempts: [], dropped_count: 0 };
+  try {
+    return await marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, timeoutMs, autoHttpTrace);
+  } catch (error) {
+    throw attachAutoHttpTrace(error, autoHttpTrace);
+  }
+}
+
+async function marrowAutoWithTrace(
+  apiKey: string,
+  baseUrl: string,
+  params: MarrowAutoParams,
+  sessionId: string | undefined,
+  agentId: string | undefined,
+  timeoutMs: number | undefined,
+  autoHttpTrace: AutoHttpTraceBuffer,
 ): Promise<MarrowAutoResult> {
   const startedAt = Date.now();
   const responseBudgetMs = autoResponseBudget(timeoutMs);
@@ -1316,10 +1536,10 @@ export async function marrowAuto(
           operationBinding.runtimeGate = runtimeGate;
         } catch (error) {
           if (normalizeRequestError(error).code !== 'request_timeout'
-            || !await waitForAutoContinuation({}, startedAt, responseBudgetMs)) {
+            || !await waitForAutoContinuation({}, startedAt, responseBudgetMs, autoHttpTrace)) {
             timings.runtime = Date.now() - phaseStarted;
             if (normalizeRequestError(error).code === 'request_timeout') {
-              return autoPartial({ operationId, phase: 'runtime_pending', timings, startedAt });
+              return autoPartial({ operationId, phase: 'runtime_pending', timings, startedAt, autoHttpTrace });
             }
             throw error;
           }
@@ -1408,16 +1628,17 @@ export async function marrowAuto(
           idempotencyKey: autoIdempotencyKey(operationId, 'think'),
           responseMode: 'ack',
           [AUTO_MANAGED_WRITE]: true,
+          [AUTO_HTTP_TRACE]: autoHttpTrace,
         },
       );
     } catch (error) {
       const failure = normalizeRequestError(error);
       const recoverable = error instanceof MarrowRequestError && failure.retryable && failure.code !== 'invalid_response';
       if (!recoverable
-        || !await waitForAutoContinuation({ retry_after_ms: failure.retryAfterMs }, startedAt, responseBudgetMs)) {
+        || !await waitForAutoContinuation({ retry_after_ms: failure.retryAfterMs }, startedAt, responseBudgetMs, autoHttpTrace)) {
         timings.think = Date.now() - thinkStarted;
         if (recoverable) {
-          return autoPartial({ operationId, decisionId: pendingThinkDecisionId, phase: 'think_pending', runtimeGate, timings, startedAt,
+          return autoPartial({ operationId, decisionId: pendingThinkDecisionId, phase: 'think_pending', runtimeGate, timings, startedAt, autoHttpTrace,
             retryAfterMs: failure.retryAfterMs ?? undefined });
         }
         throw error;
@@ -1442,9 +1663,9 @@ export async function marrowAuto(
       pendingThinkDecisionId = receivedDecisionId;
       operationBinding.pendingThinkDecisionId = receivedDecisionId;
     }
-    if (!await waitForAutoContinuation(thinkResult, startedAt, responseBudgetMs)) {
+    if (!await waitForAutoContinuation(thinkResult, startedAt, responseBudgetMs, autoHttpTrace)) {
       timings.think = Date.now() - thinkStarted;
-      return autoPartial({ operationId, decisionId: pendingThinkDecisionId, phase: 'think_pending', runtimeGate, timings, startedAt,
+      return autoPartial({ operationId, decisionId: pendingThinkDecisionId, phase: 'think_pending', runtimeGate, timings, startedAt, autoHttpTrace,
         retryAfterMs: autoContinuationDelay(thinkResult) });
     }
   }
@@ -1458,6 +1679,7 @@ export async function marrowAuto(
       runtimeGate,
       timings,
       startedAt,
+      autoHttpTrace,
       retryAfterMs: null,
     });
   }
@@ -1489,7 +1711,7 @@ export async function marrowAuto(
   if (genericReviewRequired && ordinaryApprovalDeclared && runtimeGate) {
     if (!hasOrdinaryOwnerApprovalProof(params.proof)) {
       return autoPartial({
-        operationId, decisionId, phase: 'owner_approval_required', runtimeGate, timings, startedAt,
+        operationId, decisionId, phase: 'owner_approval_required', runtimeGate, timings, startedAt, autoHttpTrace,
         resumable: false,
         exactNextAction: 'Wait for explicit owner approval of this exact work. Then supply the server-supported proof.owner_approval object with the required measured proof and call marrow_auto with this same operation_id. Preserve the original decision and gate receipt. Do not infer or manufacture approval.',
       });
@@ -1497,7 +1719,7 @@ export async function marrowAuto(
     proofCanClose = ordinaryOwnerApprovalCanAttemptCommit(runtimeGate, params.proof, gateReceiptId);
     if (!proofCanClose) {
       return autoPartial({
-        operationId, decisionId, phase: 'review_required', runtimeGate, timings, startedAt,
+        operationId, decisionId, phase: 'review_required', runtimeGate, timings, startedAt, autoHttpTrace,
         resumable: false,
         exactNextAction: 'The original ordinary approval receipt is expired or its enforced completion contract is not valid. Stop and reconcile fresh server guidance for this exact operation before attempting commit.',
       });
@@ -1510,6 +1732,7 @@ export async function marrowAuto(
       runtimeGate,
       timings,
       startedAt,
+      autoHttpTrace,
       resumable: false,
       exactNextAction: 'Stop this operation and obtain the server-supported completion contract for this exact review. No supported ordinary approval path was declared. Preserve the operation and receipt references; do not infer approval or automatically retry.',
     });
@@ -1523,6 +1746,7 @@ export async function marrowAuto(
       runtimeGate,
       timings,
       startedAt,
+      autoHttpTrace,
       resumable: false,
     });
   }
@@ -1550,6 +1774,7 @@ export async function marrowAuto(
       runtimeGate,
       timings,
       startedAt,
+      autoHttpTrace,
       retryAfterMs: null,
     });
   }
@@ -1562,6 +1787,7 @@ export async function marrowAuto(
       runtimeGate,
       timings,
       startedAt,
+      autoHttpTrace,
     });
   }
 
@@ -1586,6 +1812,7 @@ export async function marrowAuto(
           surfaces: params.surfaces,
           auto_gate: false,
           [AUTO_MANAGED_WRITE]: true,
+          [AUTO_HTTP_TRACE]: autoHttpTrace,
         },
         sessionId,
         agentId,
@@ -1596,10 +1823,10 @@ export async function marrowAuto(
       const failure = normalizeRequestError(error);
       const recoverable = error instanceof MarrowRequestError && failure.retryable && failure.code !== 'invalid_response';
       if (!recoverable
-        || !await waitForAutoContinuation({ retry_after_ms: failure.retryAfterMs }, startedAt, responseBudgetMs)) {
+        || !await waitForAutoContinuation({ retry_after_ms: failure.retryAfterMs }, startedAt, responseBudgetMs, autoHttpTrace)) {
         timings.commit = Date.now() - commitStarted;
         if (recoverable) {
-          return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt,
+          return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt, autoHttpTrace,
             retryAfterMs: failure.retryAfterMs ?? undefined });
         }
         throw error;
@@ -1612,12 +1839,12 @@ export async function marrowAuto(
     const canResumeCommit = commitResult.resumable !== false && commitResult.retryable !== false;
     if (!isAutoPendingResponse(commitResult, 'commit_pending')) {
       timings.commit = Date.now() - commitStarted;
-      return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt,
+      return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt, autoHttpTrace,
         resumable: canResumeCommit });
     }
-    if (!await waitForAutoContinuation(commitResult, startedAt, responseBudgetMs)) {
+    if (!await waitForAutoContinuation(commitResult, startedAt, responseBudgetMs, autoHttpTrace)) {
       timings.commit = Date.now() - commitStarted;
-      return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt,
+      return autoPartial({ operationId, decisionId, phase: 'commit_pending', runtimeGate, timings, startedAt, autoHttpTrace,
         retryAfterMs: autoContinuationDelay(commitResult) });
     }
   }
@@ -1635,6 +1862,7 @@ export async function marrowAuto(
       ...timings,
       total: Date.now() - startedAt,
     },
+    http_attempt_trace: snapshotAutoHttpTrace(autoHttpTrace),
   };
 }
 

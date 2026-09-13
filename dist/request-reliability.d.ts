@@ -42,10 +42,12 @@ export declare function responseRetryAfter(response: Response): {
 export declare function requestErrorFromResponse(response: Response, detail?: Record<string, unknown>): MarrowRequestError;
 export declare function invalidResponseError(): MarrowRequestError;
 export declare function normalizeRequestError(error: unknown): MarrowRequestError;
-export declare function reliableFetch(url: string | URL, init?: RequestInit, options?: {
+export type ReliableFetchOptions<T = Response> = {
     retryOwner?: 'caller';
     timeoutMs?: number;
-}): Promise<Response>;
+    consumeResponse?: (response: Response) => Promise<T>;
+};
+export declare function reliableFetch<T = Response>(url: string | URL, init?: RequestInit, options?: ReliableFetchOptions<T>): Promise<T>;
 export declare function localClientUpdate(): Record<string, unknown>;
 export declare function structuredRequestFailure(error: unknown): Record<string, unknown>;
 //# sourceMappingURL=request-reliability.d.ts.map

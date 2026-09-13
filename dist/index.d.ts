@@ -6,6 +6,7 @@ import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParam
 import { type LifecycleEvent } from './lifecycle-spool';
 export type { Narrative, CommitResult } from './types';
 declare const AUTO_MANAGED_WRITE: unique symbol;
+declare const AUTO_HTTP_TRACE: unique symbol;
 /**
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots.
@@ -15,6 +16,24 @@ export declare function validatePathParam(value: string, paramName: string): str
  * Validate and sanitize a base URL. Requires HTTPS.
  */
 export declare function validateBaseUrl(rawUrl: string): string;
+export type MarrowAutoHttpAttempt = {
+    route_phase: 'think' | 'commit';
+    duration_ms: number;
+    status: number | null;
+    error_category: string | null;
+    typed_timeout: boolean;
+    pending_code: string | null;
+    replay_code: string | null;
+    server_timings_ms: Record<string, number>;
+    requested_wait_ms: number | null;
+    actual_wait_ms: number;
+};
+export type MarrowAutoHttpTrace = {
+    attempts: MarrowAutoHttpAttempt[];
+    dropped_count: number;
+};
+type AutoHttpTraceBuffer = MarrowAutoHttpTrace;
+export declare function marrowAutoHttpTraceFromError(error: unknown): MarrowAutoHttpTrace | null;
 export declare function marrowCreateKey(apiKey: string, baseUrl: string, params: CreateApiKeyParams, sessionId?: string, agentId?: string): Promise<CreateApiKeyResult>;
 export declare function marrowListKeys(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string): Promise<ListApiKeysResult>;
 export declare function marrowGetKey(apiKey: string, baseUrl: string, id: string, sessionId?: string, agentId?: string): Promise<MarrowApiKey | null>;
@@ -46,6 +65,7 @@ export declare function marrowThink(apiKey: string, baseUrl: string, params: {
     requestHash?: string;
     responseMode?: 'ack';
     [AUTO_MANAGED_WRITE]?: true;
+    [AUTO_HTTP_TRACE]?: AutoHttpTraceBuffer;
 }): Promise<ThinkResult>;
 /**
  * Explicitly commit the result of an action to Marrow.
@@ -73,6 +93,7 @@ export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     model_usage?: MarrowModelUsageInput;
     modelUsage?: MarrowModelUsageInput;
     [AUTO_MANAGED_WRITE]?: true;
+    [AUTO_HTTP_TRACE]?: AutoHttpTraceBuffer;
 }, sessionId?: string, agentId?: string, signal?: AbortSignal, idempotencyKey?: string): Promise<CommitResult & {
     runtime_gate?: MarrowAgentRuntimeResult | null;
 }>;
@@ -93,15 +114,9 @@ export type MarrowAutoResult = {
         commit: number | null;
         total: number;
     };
+    http_attempt_trace: MarrowAutoHttpTrace;
 };
-/**
- * Bounded outcome logging helper for tool hooks and simple integrations.
- * One outer invocation logs intent and, when an outcome is supplied, continues
- * resumable server phases so the outcome normally closes in-band. If the
- * caller's deadline is reached, the same operation ID resumes without opening
- * another decision.
- */
-export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
+export type MarrowAutoParams = {
     action: string;
     outcome?: string;
     success?: boolean;
@@ -116,7 +131,15 @@ export declare function marrowAuto(apiKey: string, baseUrl: string, params: {
     surfaces?: string[];
     auto_gate?: boolean;
     operation_id?: string;
-}, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<MarrowAutoResult>;
+};
+/**
+ * Bounded outcome logging helper for tool hooks and simple integrations.
+ * One outer invocation logs intent and, when an outcome is supplied, continues
+ * resumable server phases so the outcome normally closes in-band. If the
+ * caller's deadline is reached, the same operation ID resumes without opening
+ * another decision.
+ */
+export declare function marrowAuto(apiKey: string, baseUrl: string, params: MarrowAutoParams, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<MarrowAutoResult>;
 /**
  * Get agent patterns and failure history.
  */

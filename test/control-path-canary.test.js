@@ -88,6 +88,12 @@ function fakeSpawn(mode = 'good', timing = {}) {
                 resumable: true,
                 retry_after_ms: 0,
                 live_delivery: { accepted: true, committed: false },
+                http_attempt_trace: { attempts: [{
+                  route_phase: 'commit', duration_ms: 240, status: 202,
+                  error_category: null, typed_timeout: false, pending_code: 'commit_pending',
+                  replay_code: null, server_timings_ms: { 'timings_ms.db_write': 210 },
+                  requested_wait_ms: 0, actual_wait_ms: 0,
+                }], dropped_count: 0 },
               }
             : payload(request.params.name);
           response = {
@@ -147,6 +153,13 @@ test('retries a resumable auto phase with the same operation before accepting th
   assert.equal(fake.state.autoCalls, 2);
   const autoCalls = fake.state.calls.filter((call) => call.params?.name === 'marrow_auto');
   assert.equal(autoCalls[0].params.arguments.operation_id, autoCalls[1].params.arguments.operation_id);
+  const auto = result.results.find((row) => row.tool === 'marrow_auto');
+  assert.equal(auto.auto_attempt_records.length, 2);
+  assert.equal(auto.auto_attempt_records[0].phase, 'commit_pending');
+  assert.equal(auto.auto_attempt_records[0].requested_wait_ms, 0);
+  assert.ok(auto.auto_attempt_records[0].actual_wait_ms >= 0);
+  assert.equal(auto.auto_attempt_records[0].http_attempt_trace.attempts[0].status, 202);
+  assert.equal(auto.auto_attempt_records[1].status, 'committed');
 });
 
 test('canary retains only valid auto timing metrics and measured outer attempts', async () => {
@@ -156,6 +169,12 @@ test('canary retains only valid auto timing metrics and measured outer attempts'
       ...payload('marrow_auto'), action: secret, proof: { secret },
       phase_timings_ms: { runtime: null, think: 5, commit: 7, total: 12, secret },
       response_timings_ms: { core: 12, durable_enqueue: 4, full_response: 17, secret },
+      http_attempt_trace: { attempts: Array.from({ length: 13 }, () => ({
+        route_phase: 'think', duration_ms: 6, status: 200, error_category: null,
+        typed_timeout: false, pending_code: null, replay_code: null,
+        server_timings_ms: { 'timings_ms.db_write': 4, [secret]: 999 },
+        requested_wait_ms: null, actual_wait_ms: 0,
+      })), dropped_count: 0 },
       attempts: secret,
     }) }] } });
   } });
@@ -165,6 +184,9 @@ test('canary retains only valid auto timing metrics and measured outer attempts'
   assert.deepEqual(auto.response_timings_ms, { core: 12, durable_enqueue: 4, full_response: 17 });
   assert.equal(auto.attempts, 1);
   assert.equal(auto.retry_wait_ms, 0);
+  assert.equal(auto.auto_attempt_records[0].http_attempt_trace.attempts.length, 12);
+  assert.equal(auto.auto_attempt_records[0].http_attempt_trace.dropped_count, 1);
+  assert.equal(auto.auto_attempt_records[0].http_attempt_trace.attempts[0].server_timings_ms['timings_ms.db_write'], 4);
   assert.equal(JSON.stringify(result).includes(secret), false);
 });
 
@@ -182,7 +204,32 @@ test('canary omits invalid optional numbers and preserves auto measurements on l
   assert.deepEqual(auto.response_timings_ms, { full_response: 25 });
   assert.equal(auto.attempts, 1);
   assert.equal(auto.retry_wait_ms, 0);
+  assert.equal(auto.auto_attempt_records.length, 1);
+  assert.equal(auto.auto_attempt_records[0].status, 'committed');
   assert.equal(failure.error_class, 'contract');
+});
+
+test('canary retains the timed-out inner HTTP attempt when marrow_auto delivery fails', async () => {
+  const { failure } = await captureFailure((request, child) => request.params?.name === 'marrow_auto'
+    && respond(child, request, { result: { content: [{ text: JSON.stringify({
+      phase: null,
+      resumable: false,
+      live_delivery: { accepted: false, committed: false, failure: {
+        ok: false, error: { category: 'request_timeout', status: null },
+      } },
+      http_attempt_trace: { attempts: [{
+        route_phase: 'think', duration_ms: 4000, status: 200,
+        error_category: 'request_timeout', typed_timeout: true,
+        pending_code: null, replay_code: null,
+        server_timings_ms: { 'header.edge_duration': 3 },
+        requested_wait_ms: 1000, actual_wait_ms: 0,
+      }], dropped_count: 0 },
+    }) }] } }));
+  assert.equal(failure.error_class, 'request_timeout');
+  assert.equal(failure.auto_attempt_records.length, 1);
+  assert.equal(failure.auto_attempt_records[0].error_category, 'request_timeout');
+  assert.equal(failure.auto_attempt_records[0].http_attempt_trace.attempts[0].typed_timeout, true);
+  assert.equal(failure.auto_attempt_records[0].http_attempt_trace.attempts[0].status, 200);
 });
 
 test('canary keeps malformed and contradictory auto states as contract failures', async () => {

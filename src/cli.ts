@@ -59,6 +59,7 @@ import {
   marrowRevokeKey,
   marrowRotateKey,
   marrowGetKeyAudit,
+  marrowAutoHttpTraceFromError,
   validatePathParam,
   validateBaseUrl,
 } from './index';
@@ -2502,11 +2503,13 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
 
         let delivered: MarrowAutoResult | null = null;
         let deliveryFailure: Record<string, unknown> | null = null;
+        let failedHttpAttemptTrace: ReturnType<typeof marrowAutoHttpTraceFromError> = null;
         const coreStartedAt = performance.now();
         try {
           delivered = await delivery();
         } catch (err) {
           deliveryFailure = structuredRequestFailure(err);
+          failedHttpAttemptTrace = marrowAutoHttpTraceFromError(err);
         }
         const coreDurationMs = Math.floor(performance.now() - coreStartedAt);
         const runtimeGate = delivered?.runtime_gate || null;
@@ -2569,6 +2572,10 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           resumable: delivered?.resumable || false,
           retry_after_ms: delivered?.retry_after_ms ?? null,
           phase_timings_ms: delivered?.phase_timings_ms || null,
+          http_attempt_trace: delivered?.http_attempt_trace || failedHttpAttemptTrace || {
+            attempts: [],
+            dropped_count: 0,
+          },
           exact_next_action: delivered?.committed
             ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
             : delivered?.exact_next_action
