@@ -564,31 +564,32 @@ function traceCode(value) {
     const code = typeof value === 'string' ? value.toLowerCase() : '';
     return AUTO_HTTP_STATE_CODES.has(code) ? code : null;
 }
-function serverTimings(response, data) {
+function serverTimingEvidence(data) {
     const timings = {};
     const add = (name, value) => {
         const duration = traceMs(value);
-        if (duration === null || Object.keys(timings).length >= 24
-            || !/^[a-z][a-z0-9_.-]{0,63}$/i.test(name)
-            || !/(?:duration|latency|timing|elapsed|total|core|queue|db|durable|enqueue|response|commit|think|write|read|lookup|lock|wait|worker|edge)/i.test(name))
-            return;
-        timings[name.toLowerCase()] = duration;
+        if (duration !== null && timings[name] === undefined)
+            timings[name] = duration;
     };
-    const header = response?.headers.get('server-timing') || '';
-    for (const item of header.split(',')) {
-        const name = item.trim().match(/^([a-z][a-z0-9_-]{0,31})/i)?.[1];
-        const duration = item.match(/(?:^|;)\s*dur=([0-9]+(?:\.[0-9]+)?)(?:;|$)/i)?.[1];
-        if (name && duration !== undefined)
-            add(`header.${name}`, Number(duration));
+    const performanceShape = data?.performance;
+    if (performanceShape && typeof performanceShape === 'object' && !Array.isArray(performanceShape)) {
+        const performanceData = performanceShape;
+        add('auth_ms', performanceData.auth_ms);
+        add('parse_ms', performanceData.parse_ms);
+        const nestedTimings = performanceData.timings;
+        if (nestedTimings && typeof nestedTimings === 'object' && !Array.isArray(nestedTimings)) {
+            const nestedData = nestedTimings;
+            add('auth_ms', nestedData.auth_ms);
+            add('parse_ms', nestedData.parse_ms);
+        }
     }
-    for (const group of ['timings_ms', 'phase_timings_ms', 'response_timings_ms', 'performance_ms', 'performance']) {
-        const source = data?.[group];
-        if (!source || typeof source !== 'object' || Array.isArray(source))
-            continue;
-        for (const [name, value] of Object.entries(source))
-            add(`${group}.${name}`, value);
-    }
-    return timings;
+    return {
+        server_timings_ms: timings,
+        // The backend's detailed think/commit DB and DO stage timings are deferred
+        // query-performance records, not response fields. These response spans can
+        // therefore be partial at best.
+        server_timing_coverage: Object.keys(timings).length ? 'partial' : 'unavailable',
+    };
 }
 function appendAutoHttpAttempt(trace, input) {
     if (!trace)
@@ -649,7 +650,6 @@ async function fetchAgentWrite(url, init, kind, idempotencyKey, expectedDecision
         // after a lost ACK inside marrowAuto's unchanged total response deadline.
         const requestStarted = performance.now();
         let receivedStatus = null;
-        let receivedServerTimings = {};
         let response;
         let json;
         try {
@@ -659,14 +659,12 @@ async function fetchAgentWrite(url, init, kind, idempotencyKey, expectedDecision
                     timeoutMs: 4_000,
                     consumeResponse: async (currentResponse) => {
                         receivedStatus = currentResponse.status;
-                        receivedServerTimings = serverTimings(currentResponse);
                         return { response: currentResponse, json: await safeJsonResponse(currentResponse) };
                     },
                 }
                 : {
                     consumeResponse: async (currentResponse) => {
                         receivedStatus = currentResponse.status;
-                        receivedServerTimings = serverTimings(currentResponse);
                         return { response: currentResponse, json: await safeJsonResponse(currentResponse) };
                     },
                 });
@@ -683,7 +681,7 @@ async function fetchAgentWrite(url, init, kind, idempotencyKey, expectedDecision
                 typed_timeout: failure.code === 'request_timeout',
                 pending_code: null,
                 replay_code: null,
-                server_timings_ms: receivedServerTimings,
+                ...serverTimingEvidence(),
                 requested_wait_ms: traceMs(failure.retryAfterMs),
             });
             throw error;
@@ -697,7 +695,7 @@ async function fetchAgentWrite(url, init, kind, idempotencyKey, expectedDecision
                 typed_timeout: false,
                 pending_code: null,
                 replay_code: null,
-                server_timings_ms: serverTimings(response),
+                ...serverTimingEvidence(),
                 requested_wait_ms: null,
             });
             throw (0, request_reliability_1.invalidResponseError)();
@@ -720,7 +718,7 @@ async function fetchAgentWrite(url, init, kind, idempotencyKey, expectedDecision
                 : null,
             replay_code: traceCode(data.replay_code) || traceCode(data.replay_state)
                 || (data.replayed === true ? 'replayed' : null),
-            server_timings_ms: serverTimings(response, data),
+            ...serverTimingEvidence(data),
             requested_wait_ms: requestedWait,
         });
         if (autoManaged) {

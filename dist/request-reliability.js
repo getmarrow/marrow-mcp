@@ -20,6 +20,7 @@ function privacySafeIdempotencyKey(value) {
     return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)
         && (0, redact_1.redactSensitiveText)(value) === value
         && (/^mcp-(?:think|commit):[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value)
+            || /^mcp-auto:auto_[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}:(?:runtime|think|commit)$/.test(value)
             || !/(?:^|[._:-])(?:\d[ .()-]*){7,}(?:$|[._:-])/.test(value))
         && !/[a-z0-9-]+\.[a-z]{2,}(?:$|[/:])/i.test(value);
 }
