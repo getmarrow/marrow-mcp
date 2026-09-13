@@ -139,11 +139,10 @@ function safeAutoHttpTrace(payload) {
     const serverTimings = {};
     const spans = value.server_timings_ms;
     if (spans && typeof spans === 'object' && !Array.isArray(spans)) {
-      for (const [name, duration] of Object.entries(spans).slice(0, 24)) {
-        if (/^[a-z][a-z0-9_.-]{0,63}$/i.test(name)
-          && /(?:duration|latency|timing|elapsed|total|core|queue|db|durable|enqueue|response|commit|think|write|read|lookup|lock|wait|worker|edge)/i.test(name)
-          && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && duration <= 60_000) {
-          serverTimings[name.toLowerCase()] = Math.round(duration);
+      for (const name of ['auth_ms', 'parse_ms']) {
+        const duration = spans[name];
+        if (typeof duration === 'number' && Number.isFinite(duration) && duration >= 0 && duration <= 60_000) {
+          serverTimings[name] = Math.round(duration);
         }
       }
     }
@@ -160,6 +159,7 @@ function safeAutoHttpTrace(payload) {
       pending_code: AUTO_TRACE_CODES.has(value.pending_code) ? value.pending_code : null,
       replay_code: AUTO_TRACE_CODES.has(value.replay_code) ? value.replay_code : null,
       server_timings_ms: serverTimings,
+      server_timing_coverage: Object.keys(serverTimings).length ? 'partial' : 'unavailable',
       requested_wait_ms: value.requested_wait_ms == null ? null : safeMs(value.requested_wait_ms),
       actual_wait_ms: safeMs(value.actual_wait_ms),
     });

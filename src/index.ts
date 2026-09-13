@@ -590,6 +590,7 @@ export type MarrowAutoHttpAttempt = {
   pending_code: string | null;
   replay_code: string | null;
   server_timings_ms: Record<string, number>;
+  server_timing_coverage: 'partial' | 'unavailable';
   requested_wait_ms: number | null;
   actual_wait_ms: number;
 };
@@ -618,27 +619,34 @@ function traceCode(value: unknown): string | null {
   return AUTO_HTTP_STATE_CODES.has(code) ? code : null;
 }
 
-function serverTimings(response: Response | null, data?: Record<string, unknown>): Record<string, number> {
+function serverTimingEvidence(data?: Record<string, unknown>): Pick<
+  MarrowAutoHttpAttempt,
+  'server_timings_ms' | 'server_timing_coverage'
+> {
   const timings: Record<string, number> = {};
   const add = (name: string, value: unknown) => {
     const duration = traceMs(value);
-    if (duration === null || Object.keys(timings).length >= 24
-      || !/^[a-z][a-z0-9_.-]{0,63}$/i.test(name)
-      || !/(?:duration|latency|timing|elapsed|total|core|queue|db|durable|enqueue|response|commit|think|write|read|lookup|lock|wait|worker|edge)/i.test(name)) return;
-    timings[name.toLowerCase()] = duration;
+    if (duration !== null && timings[name] === undefined) timings[name] = duration;
   };
-  const header = response?.headers.get('server-timing') || '';
-  for (const item of header.split(',')) {
-    const name = item.trim().match(/^([a-z][a-z0-9_-]{0,31})/i)?.[1];
-    const duration = item.match(/(?:^|;)\s*dur=([0-9]+(?:\.[0-9]+)?)(?:;|$)/i)?.[1];
-    if (name && duration !== undefined) add(`header.${name}`, Number(duration));
+  const performanceShape = data?.performance;
+  if (performanceShape && typeof performanceShape === 'object' && !Array.isArray(performanceShape)) {
+    const performanceData = performanceShape as Record<string, unknown>;
+    add('auth_ms', performanceData.auth_ms);
+    add('parse_ms', performanceData.parse_ms);
+    const nestedTimings = performanceData.timings;
+    if (nestedTimings && typeof nestedTimings === 'object' && !Array.isArray(nestedTimings)) {
+      const nestedData = nestedTimings as Record<string, unknown>;
+      add('auth_ms', nestedData.auth_ms);
+      add('parse_ms', nestedData.parse_ms);
+    }
   }
-  for (const group of ['timings_ms', 'phase_timings_ms', 'response_timings_ms', 'performance_ms', 'performance']) {
-    const source = data?.[group];
-    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
-    for (const [name, value] of Object.entries(source)) add(`${group}.${name}`, value);
-  }
-  return timings;
+  return {
+    server_timings_ms: timings,
+    // The backend's detailed think/commit DB and DO stage timings are deferred
+    // query-performance records, not response fields. These response spans can
+    // therefore be partial at best.
+    server_timing_coverage: Object.keys(timings).length ? 'partial' : 'unavailable',
+  };
 }
 
 function appendAutoHttpAttempt(
@@ -714,7 +722,6 @@ async function fetchAgentWrite(
     // after a lost ACK inside marrowAuto's unchanged total response deadline.
     const requestStarted = performance.now();
     let receivedStatus: number | null = null;
-    let receivedServerTimings: Record<string, number> = {};
     let response: Response;
     let json: any;
     try {
@@ -724,14 +731,12 @@ async function fetchAgentWrite(
           timeoutMs: 4_000,
           consumeResponse: async (currentResponse) => {
             receivedStatus = currentResponse.status;
-            receivedServerTimings = serverTimings(currentResponse);
             return { response: currentResponse, json: await safeJsonResponse(currentResponse) };
           },
         }
         : {
           consumeResponse: async (currentResponse) => {
             receivedStatus = currentResponse.status;
-            receivedServerTimings = serverTimings(currentResponse);
             return { response: currentResponse, json: await safeJsonResponse(currentResponse) };
           },
         });
@@ -747,7 +752,7 @@ async function fetchAgentWrite(
         typed_timeout: failure.code === 'request_timeout',
         pending_code: null,
         replay_code: null,
-        server_timings_ms: receivedServerTimings,
+        ...serverTimingEvidence(),
         requested_wait_ms: traceMs(failure.retryAfterMs),
       });
       throw error;
@@ -761,7 +766,7 @@ async function fetchAgentWrite(
         typed_timeout: false,
         pending_code: null,
         replay_code: null,
-        server_timings_ms: serverTimings(response),
+        ...serverTimingEvidence(),
         requested_wait_ms: null,
       });
       throw invalidResponseError();
@@ -784,7 +789,7 @@ async function fetchAgentWrite(
         : null,
       replay_code: traceCode(data.replay_code) || traceCode(data.replay_state)
         || (data.replayed === true ? 'replayed' : null),
-      server_timings_ms: serverTimings(response, data),
+      ...serverTimingEvidence(data),
       requested_wait_ms: requestedWait,
     });
     if (autoManaged) {

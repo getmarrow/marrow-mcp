@@ -10,13 +10,13 @@ test('marrowAuto returns bounded privacy-safe timing records for each write requ
     if (String(url).includes('/think')) {
       return Response.json({ data: {
         decision_id: 'decision-trace',
-        timings_ms: { db_write: 4.4, secret: 999 },
+        performance: { auth_ms: 4.4, timings: { parse_ms: 2.5, tenant_123_ms: 999 } },
       } }, { headers: { 'server-timing': 'edge;dur=2.5, secret;dur=999' } });
     }
     return Response.json({ data: {
       committed: true,
       replayed: true,
-      performance_ms: { commit_write: 6.2, secret: 999 },
+      performance: { timings: { auth_ms: 1.2 }, account_123_ms: 999 },
     } });
   };
   try {
@@ -29,8 +29,9 @@ test('marrowAuto returns bounded privacy-safe timing records for each write requ
     assert.equal(result.http_attempt_trace.dropped_count, 0);
     assert.deepEqual(result.http_attempt_trace.attempts.map((row) => row.route_phase), ['think', 'commit']);
     assert.equal(result.http_attempt_trace.attempts[0].status, 200);
-    assert.equal(result.http_attempt_trace.attempts[0].server_timings_ms['header.edge'], 3);
-    assert.equal(result.http_attempt_trace.attempts[0].server_timings_ms['timings_ms.db_write'], 4);
+    assert.deepEqual(result.http_attempt_trace.attempts[0].server_timings_ms, { auth_ms: 4, parse_ms: 3 });
+    assert.equal(result.http_attempt_trace.attempts[0].server_timing_coverage, 'partial');
+    assert.deepEqual(result.http_attempt_trace.attempts[1].server_timings_ms, { auth_ms: 1 });
     assert.equal(result.http_attempt_trace.attempts[1].replay_code, 'replayed');
     assert.equal(JSON.stringify(result.http_attempt_trace).includes(secret), false);
   } finally {
@@ -62,7 +63,8 @@ test('marrowAuto identifies a stalled response body as the timed-out HTTP attemp
       typed_timeout: true,
       pending_code: null,
       replay_code: null,
-      server_timings_ms: { 'header.db': 8 },
+      server_timings_ms: {},
+      server_timing_coverage: 'unavailable',
       requested_wait_ms: 1_000,
       actual_wait_ms: 0,
     });

@@ -25,6 +25,7 @@ export type MarrowAutoHttpAttempt = {
     pending_code: string | null;
     replay_code: string | null;
     server_timings_ms: Record<string, number>;
+    server_timing_coverage: 'partial' | 'unavailable';
     requested_wait_ms: number | null;
     actual_wait_ms: number;
 };
