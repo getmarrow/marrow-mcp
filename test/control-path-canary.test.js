@@ -163,6 +163,92 @@ test('retries a resumable auto phase with the same operation before accepting th
   assert.equal(auto.auto_attempt_records[1].status, 'committed');
 });
 
+function autoTransportFailurePayload(category) {
+  return {
+    decision_id: 'canary-decision',
+    completion_state: 'delivery_failed',
+    phase: null,
+    resumable: true,
+    retry_after_ms: 0,
+    live_delivery: { accepted: false, committed: false, failure: { ok: false, error: { category } } },
+  };
+}
+
+test('canary retries a transport-class auto delivery failure with the same operation', async () => {
+  let autoCalls = 0;
+  const fake = fakeSpawn('good', { initializeDelayMs: 0, handle: (request, child) => {
+    if (request.method !== 'tools/call' || request.params?.name !== 'marrow_auto') return false;
+    autoCalls += 1;
+    const body = autoCalls === 1 ? autoTransportFailurePayload('request_failed') : payload('marrow_auto');
+    respond(child, request, { result: { content: [{ text: JSON.stringify(body) }] } });
+    return true;
+  } });
+  const result = await runCanary(environment(), { spawnProcess: fake.factory });
+  assert.equal(result.ok, true);
+  assert.equal(autoCalls, 2);
+  const autoCallsSeen = fake.state.calls.filter((call) => call.params?.name === 'marrow_auto');
+  assert.equal(autoCallsSeen[0].params.arguments.operation_id, autoCallsSeen[1].params.arguments.operation_id);
+  const auto = result.results.find((row) => row.tool === 'marrow_auto');
+  assert.equal(auto.recovered_on_retry, true);
+  assert.equal(auto.attempts, 2);
+  assert.equal(auto.auto_attempt_records[0].status, 'failed');
+  assert.equal(auto.auto_attempt_records[0].error_category, 'request_failed');
+  assert.equal(auto.auto_attempt_records[0].actual_wait_ms >= 1000, true);
+  assert.equal(auto.auto_attempt_records[1].status, 'committed');
+});
+
+test('canary fails after exhausting transport-class auto retries', async () => {
+  const fake = fakeSpawn('good', { initializeDelayMs: 0, handle: (request, child) => {
+    if (request.method !== 'tools/call' || request.params?.name !== 'marrow_auto') return false;
+    respond(child, request, { result: { content: [{ text: JSON.stringify(autoTransportFailurePayload('service_unavailable')) }] } });
+    return true;
+  } });
+  await assert.rejects(
+    runCanary(environment(), { spawnProcess: fake.factory }),
+    (error) => {
+      assert.equal(error.failure.error_class, 'tool_unavailable');
+      assert.equal(error.failure.tool, 'marrow_auto');
+      assert.equal(error.failure.auto_attempt_records.length, 3);
+      return true;
+    },
+  );
+});
+
+test('canary retries one transport-class failure on a non-auto tool', async () => {
+  let firstValueCalls = 0;
+  const fake = fakeSpawn('good', { initializeDelayMs: 0, handle: (request, child) => {
+    if (request.method !== 'tools/call' || request.params?.name !== 'marrow_first_value') return false;
+    firstValueCalls += 1;
+    const body = firstValueCalls === 1 ? { ok: false, http_status: 503 } : payload('marrow_first_value');
+    respond(child, request, { result: { content: [{ text: JSON.stringify(body) }] } });
+    return true;
+  } });
+  const result = await runCanary(environment(), { spawnProcess: fake.factory });
+  assert.equal(result.ok, true);
+  assert.equal(firstValueCalls, 2);
+  const row = result.results.find((entry) => entry.tool === 'marrow_first_value');
+  assert.equal(row.recovered_on_retry, true);
+  assert.equal(result.results.filter((entry) => entry.recovered_on_retry === true).length, 1);
+});
+
+test('canary does not retry a non-transport auto failure', async () => {
+  let autoCalls = 0;
+  const fake = fakeSpawn('good', { initializeDelayMs: 0, handle: (request, child) => {
+    if (request.method !== 'tools/call' || request.params?.name !== 'marrow_auto') return false;
+    autoCalls += 1;
+    respond(child, request, { result: { content: [{ text: JSON.stringify(autoTransportFailurePayload('authentication_required')) }] } });
+    return true;
+  } });
+  await assert.rejects(
+    runCanary(environment(), { spawnProcess: fake.factory }),
+    (error) => {
+      assert.equal(error.failure.error_class, 'authentication');
+      return true;
+    },
+  );
+  assert.equal(autoCalls, 1);
+});
+
 test('canary retains only valid auto timing metrics and measured outer attempts', async () => {
   const fake = fakeSpawn('good', { initializeDelayMs: 0, handle: (request, child) => {
     if (request.params?.name !== 'marrow_auto') return false;
