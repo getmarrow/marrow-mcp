@@ -130,7 +130,13 @@ A direct `marrow_think` can receive a durable pending response before the backen
 
 A saved `observed_unverified` outcome is terminal observation evidence, not a committed outcome. Receipt expiry cannot retroactively authorize completed work. Preserve the original decision, receipt, proof and key; an already authorized durable checkpoint may finish through its existing exact recovery path. Do not repeat the action merely to obtain a fresh receipt.
 
-## What's New in v3.9.85
+## What's New in v3.9.87
+
+v3.9.87 hardens the authenticated control-path canary against single-sample transport blips so monitoring stops flapping on a healthy service. The canary now retries transport-class delivery failures (`request_failed`, `service_unavailable`, `connection_reset`, `dns_unavailable`, `tls_failure`, `edge_access_denied`, `rate_limited`) in-run with the same idempotent operation before declaring a failure, gives the asynchronous `marrow_auto` and `marrow_first_value` calls a separate deadline ceiling (thirty seconds via `MARROW_MCP_CANARY_ASYNC_TOOL_TIMEOUT_MS`), and raises the default total canary budget to forty-five seconds so bounded retries fit. Results recovered by a retry are annotated with `recovered_on_retry: true`. Authentication, authorization, contract, and package-identity failures remain immediate hard failures with no retry. Tool surface, client contracts, and request deadlines are unchanged.
+
+v3.9.86 was published with the adapter version constant still at `3.9.85`, so the strict canary identity check rejected it; it is deprecated — use `3.9.87`. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.87`, reload the host, review hook trust, and verify before claiming the updated client is active.
+
+### Previous release: v3.9.85
 
 v3.9.85 keeps the existing Marrow Auto request and response deadlines active through response-body consumption and JSON parsing, so a server that sends headers and then stalls ends with the same typed bounded timeout as a stalled header response. The retry owner, four-second write-attempt ceiling, and eight-second Auto response budget are unchanged.
 
