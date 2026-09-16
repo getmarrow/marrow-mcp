@@ -1072,6 +1072,84 @@ test('recovery exhausts after three failed attempts and requires no local action
   } finally { globalThis.fetch = originalFetch; t.mock.timers.reset(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('recovery requeues at most five dead letters per nudge and the remainder waits', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-recovery-cap-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.parse('2026-09-16T00:00:00.000Z') });
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      const input = { ...lifecycleInput({ event_id: 'recovery-cap-seed' }), deferDelivery: true };
+      await recordLifecycleEvent(input);
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      const deadLetters = [];
+      for (let index = 1; index <= 7; index += 1) {
+        deadLetters.push({ ...base, event_id: `recovery-cap-${index}`,
+          delivery_state: 'dead_letter', last_status: 500, retry_reason: 'transient_http' });
+      }
+      writeFileSync(path, JSON.stringify(deadLetters), { mode: 0o600 });
+      const scope = { apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id };
+      assert.equal(lifecycleSpoolStatus(scope).recoverable, 7);
+      globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 5, 'one nudge recovery-drains at most five dead letters');
+      const remaining = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(remaining.length, 2);
+      assert.ok(remaining.every((row) => row.delivery_state === 'dead_letter'
+        && row.last_status === 500
+        && row.recovery_attempts === undefined && row.last_recovery_at === undefined),
+      'the two events over the per-nudge cap stay untouched dead letters');
+      assert.equal(lifecycleSpoolStatus(scope).recoverable, 2);
+      t.mock.timers.tick(15 * 60_000);
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 7, 'the next nudge recovers the remainder');
+      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), []);
+      assert.equal(lifecycleSpoolStatus(scope).state, 'clear');
+    });
+  } finally { globalThis.fetch = originalFetch; t.mock.timers.reset(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('recovery requeues but skips delivery once the queued drain consumes the nudge budget', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-recovery-budget-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.parse('2026-09-16T00:00:00.000Z') });
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      const scope = { apiKey: 'test-mcp-spool-key', baseUrl: 'https://api.example.com', agentId: 'agent-one' };
+      const input = { ...lifecycleInput({ event_id: 'budget-queued' }), deferDelivery: true };
+      await recordLifecycleEvent(input);
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify([
+        base,
+        { ...base, event_id: 'budget-dead-one',
+          delivery_state: 'dead_letter', last_status: 500, retry_reason: 'transient_http' },
+        { ...base, event_id: 'budget-dead-two',
+          delivery_state: 'dead_letter', last_status: 500, retry_reason: 'transient_http' },
+      ]), { mode: 0o600 });
+      globalThis.fetch = async () => {
+        calls += 1;
+        if (calls === 1) t.mock.timers.tick(20_000);
+        return new Response('{}', { status: 200 });
+      };
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 1, 'the slow queued delivery leaves no recovery delivery budget');
+      const rows = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(rows.length, 2);
+      assert.ok(rows.every((row) => row.delivery_state === 'queued'
+        && row.recovery_attempts === 1 && typeof row.last_recovery_at === 'string'
+        && row.last_status === undefined),
+      'dead letters are requeued but not delivered when no nudge budget remains');
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 3, 'the requeued events deliver on the next nudge');
+      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), []);
+      assert.equal(lifecycleSpoolStatus(scope).state, 'clear');
+    });
+  } finally { globalThis.fetch = originalFetch; t.mock.timers.reset(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('a legacy dead letter without last_status is recovery-eligible', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-legacy-corpse-'));
   const path = join(directory, 'spool.json');
