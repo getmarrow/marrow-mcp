@@ -23,6 +23,7 @@ const {
   nudgeLifecycleSpool,
   quarantineLegacyNamespaces,
   recordLifecycleEvent,
+  shouldNudgeLifecycleSpool,
 } = require('../dist/lifecycle-spool.js');
 const { lifecycleSpoolCommandOutcome } = require('../dist/spool-command.js');
 const {
@@ -1268,6 +1269,54 @@ test('status partitions a mixed spool into failed, recoverable, server_owned, an
   } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('shouldNudgeLifecycleSpool gates the nudge on pending or recoverable spools only', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-gate-predicate-'));
+  const originalFetch = globalThis.fetch;
+  try {
+    const scope = { apiKey: 'test-mcp-spool-key', agentId: 'agent-one', baseUrl: 'https://api.example.com' };
+    const withFreshSpool = async (name, mutate) => {
+      const path = join(directory, `${name}.json`);
+      return withSpoolPath(path, async () => {
+        if (mutate) {
+          await recordLifecycleEvent({ ...lifecycleInput({ event_id: `gate-${name}` }), deferDelivery: true });
+          const [base] = JSON.parse(readFileSync(path, 'utf8'));
+          writeFileSync(path, JSON.stringify([mutate(base)]), { mode: 0o600 });
+        }
+        return lifecycleSpoolStatus(scope);
+      });
+    };
+    const clear = await withFreshSpool('clear');
+    assert.equal(clear.state, 'clear');
+    assert.equal(shouldNudgeLifecycleSpool(clear), false, 'a clear spool never nudges');
+    const pendingOnly = await withFreshSpool('pending', (row) => row);
+    assert.equal(pendingOnly.pending, 1);
+    assert.equal(pendingOnly.recoverable, 0);
+    assert.equal(shouldNudgeLifecycleSpool(pendingOnly), true, 'a pending-only spool nudges');
+    const recoverableOnly = await withFreshSpool('recoverable', (row) => ({
+      ...row, delivery_state: 'dead_letter', last_status: 400, retry_reason: 'schema_rejected',
+    }));
+    assert.equal(recoverableOnly.pending, 0);
+    assert.equal(recoverableOnly.recoverable, 1);
+    assert.equal(shouldNudgeLifecycleSpool(recoverableOnly), true, 'a recoverable-only spool nudges');
+    const authFailed = await withFreshSpool('auth-failed', (row) => ({
+      ...row, delivery_state: 'dead_letter', last_status: 401, retry_reason: 'authentication_rejected',
+    }));
+    assert.equal(authFailed.pending, 0);
+    assert.equal(authFailed.recoverable, 0);
+    assert.equal(authFailed.failed, 1);
+    assert.equal(authFailed.state, 'attention_required');
+    assert.equal(shouldNudgeLifecycleSpool(authFailed), false, 'auth-failed dead letters need the operator, not a nudge');
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('reportLifecycleSpool routes its nudge gate through shouldNudgeLifecycleSpool', () => {
+  const cliSource = readFileSync(join(resolve(__dirname, '..'), 'src/cli.ts'), 'utf8');
+  const reportBody = cliSource.match(/function reportLifecycleSpool[\s\S]*?\n}/);
+  assert.ok(reportBody, 'reportLifecycleSpool is present in src/cli.ts');
+  assert.match(reportBody[0], /shouldNudgeLifecycleSpool\(spool\)/, 'the nudge gate calls the exported predicate');
+  assert.doesNotMatch(reportBody[0], /spool\.pending > 0 \|\| spool\.recoverable > 0/, 'the gate must not duplicate the predicate inline');
+});
+
 test('a recoverable-only spool satisfies the cli nudge gate and self-heals', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-gate-recoverable-'));
   const path = join(directory, 'spool.json');
@@ -1283,10 +1332,9 @@ test('a recoverable-only spool satisfies the cli nudge gate and self-heals', asy
       const status = lifecycleSpoolStatus(scope);
       assert.equal(status.pending, 0);
       assert.equal(status.recoverable, 1);
-      // The reportLifecycleSpool gate in src/cli.ts: pending > 0 || recoverable > 0.
-      assert.equal(status.pending > 0 || status.recoverable > 0, true, 'dead letters alone trigger the nudge gate');
+      assert.equal(shouldNudgeLifecycleSpool(status), true, 'dead letters alone trigger the nudge gate');
       globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
-      if (status.pending > 0 || status.recoverable > 0) await nudgeLifecycleSpool(scope);
+      if (shouldNudgeLifecycleSpool(status)) await nudgeLifecycleSpool(scope);
       assert.equal(calls, 1);
       assert.equal(lifecycleSpoolStatus(scope).state, 'clear');
     });

@@ -71,7 +71,7 @@ function reportLifecycleSpool(input) {
     }
     catch { /* owner-only quarantine is best effort */ }
     const spool = (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey: input.apiKey, agentId: input.agentId });
-    if (input.baseUrl && (spool.pending > 0 || spool.recoverable > 0)) {
+    if (input.baseUrl && (0, lifecycle_spool_1.shouldNudgeLifecycleSpool)(spool)) {
         void (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.agentId });
     }
     return spool;

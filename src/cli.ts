@@ -76,6 +76,7 @@ import {
   nudgeLifecycleSpool,
   quarantineLegacyNamespaces,
   recordLifecycleEvent,
+  shouldNudgeLifecycleSpool,
 } from './lifecycle-spool';
 import { lifecycleSpoolCommandOutcome } from './spool-command';
 import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
@@ -132,7 +133,7 @@ function reportLifecycleSpool(input: { apiKey: string; baseUrl?: string; agentId
     quarantineLegacyNamespaces({ apiKey: input.apiKey, agentId: input.agentId });
   } catch { /* owner-only quarantine is best effort */ }
   const spool = lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
-  if (input.baseUrl && (spool.pending > 0 || spool.recoverable > 0)) {
+  if (input.baseUrl && shouldNudgeLifecycleSpool(spool)) {
     void nudgeLifecycleSpool({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.agentId });
   }
   return spool;
