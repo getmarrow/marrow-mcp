@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LIFECYCLE_EVENT_TYPES = void 0;
 exports.lifecycleSpoolStatus = lifecycleSpoolStatus;
+exports.shouldNudgeLifecycleSpool = shouldNudgeLifecycleSpool;
 exports.quarantineLegacyNamespaces = quarantineLegacyNamespaces;
 exports.nudgeLifecycleSpool = nudgeLifecycleSpool;
 exports.drainLifecycleSpool = drainLifecycleSpool;
@@ -666,6 +667,9 @@ function lifecycleSpoolStatus(input) {
                             : null,
         other_namespaces: otherNamespaces,
     };
+}
+function shouldNudgeLifecycleSpool(spool) {
+    return spool.pending > 0 || spool.recoverable > 0;
 }
 async function attemptQueuedDelivery(input) {
     if (reservedSpoolBytes(snapshot(input.path, input.ownsParent).events) > MAX_SPOOL_BYTES)

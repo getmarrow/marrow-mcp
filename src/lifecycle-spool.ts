@@ -707,6 +707,10 @@ export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }
   };
 }
 
+export function shouldNudgeLifecycleSpool(spool: LifecycleSpoolStatus): boolean {
+  return spool.pending > 0 || spool.recoverable > 0;
+}
+
 async function attemptQueuedDelivery(input: {
   path: string;
   ownsParent: boolean;

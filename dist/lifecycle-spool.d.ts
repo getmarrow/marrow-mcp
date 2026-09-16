@@ -65,6 +65,7 @@ export declare function lifecycleSpoolStatus(input: {
     apiKey: string;
     agentId?: string;
 }): LifecycleSpoolStatus;
+export declare function shouldNudgeLifecycleSpool(spool: LifecycleSpoolStatus): boolean;
 export declare function quarantineLegacyNamespaces(input: {
     apiKey: string;
     agentId?: string;
