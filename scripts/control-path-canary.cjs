@@ -16,12 +16,22 @@ try {
 
 const CANARY_TOOL_TIMEOUT_MARGIN_MS = 2_000;
 const CANARY_TOOL_TIMEOUT_MAX_MS = 10_000;
+const CANARY_ASYNC_TOOL_TIMEOUT_MAX_MS = 30_000;
 const CANARY_DEFAULT_TOOL_TIMEOUT_MS = Math.min(
   CANARY_TOOL_TIMEOUT_MAX_MS,
   (MARROW_AUTO_RESPONSE_BUDGET_MAX_MS || 8_000) + CANARY_TOOL_TIMEOUT_MARGIN_MS,
 );
+const CANARY_DEFAULT_ASYNC_TOOL_TIMEOUT_MS = Math.min(
+  CANARY_ASYNC_TOOL_TIMEOUT_MAX_MS,
+  (MARROW_AUTO_RESPONSE_BUDGET_MAX_MS || 8_000) + CANARY_TOOL_TIMEOUT_MARGIN_MS,
+);
+const CANARY_DEFAULT_TOTAL_TIMEOUT_MS = 45_000;
+const TRANSPORT_RETRY_WAIT_MS = 1_000;
 
 if (CANARY_DEFAULT_TOOL_TIMEOUT_MS < MARROW_AUTO_RESPONSE_BUDGET_MAX_MS + CANARY_TOOL_TIMEOUT_MARGIN_MS) {
+  configurationFailed = true;
+}
+if (CANARY_DEFAULT_ASYNC_TOOL_TIMEOUT_MS < MARROW_AUTO_RESPONSE_BUDGET_MAX_MS + CANARY_TOOL_TIMEOUT_MARGIN_MS) {
   configurationFailed = true;
 }
 
@@ -55,6 +65,15 @@ const HOT_PATH_TOOLS = new Set([
   'marrow_ask',
   'marrow_agent_runtime',
   'marrow_auto',
+]);
+const ASYNC_PATH_TOOLS = new Set([
+  'marrow_auto',
+  'marrow_first_value',
+]);
+const TRANSPORT_RETRY_ERROR_CLASSES = new Set(['tool_unavailable', 'unavailable503']);
+const AUTO_TRANSPORT_RETRY_CATEGORIES = new Set([
+  'request_failed', 'service_unavailable', 'connection_reset', 'dns_unavailable',
+  'tls_failure', 'edge_access_denied', 'rate_limited',
 ]);
 const OUTPUT_LIMIT_BYTES = 256 * 1024;
 const TOOL_NAMES = new Set(canaryCases('').map(([name]) => name));
@@ -542,7 +561,14 @@ async function executeCanary(env, options, context) {
     CANARY_TOOL_TIMEOUT_MAX_MS,
     env,
   );
-  const totalTimeoutMs = boundedMs('MARROW_MCP_CANARY_TOTAL_TIMEOUT_MS', 30_000, 2_000, 60_000, env);
+  const asyncToolTimeoutMs = boundedMs(
+    'MARROW_MCP_CANARY_ASYNC_TOOL_TIMEOUT_MS',
+    CANARY_DEFAULT_ASYNC_TOOL_TIMEOUT_MS,
+    250,
+    CANARY_ASYNC_TOOL_TIMEOUT_MAX_MS,
+    env,
+  );
+  const totalTimeoutMs = boundedMs('MARROW_MCP_CANARY_TOTAL_TIMEOUT_MS', CANARY_DEFAULT_TOTAL_TIMEOUT_MS, 2_000, 60_000, env);
   const expectedVersion = env.MARROW_EXPECTED_MCP_VERSION || packageVersion;
   const childPath = env.MARROW_MCP_CANARY_CHILD || resolve(__dirname, '../dist/cli.js');
   const childEnv = {
@@ -598,9 +624,11 @@ async function executeCanary(env, options, context) {
     const results = context.results;
     for (const [name, args] of cases) {
       const callStarted = performance.now();
+      const perToolTimeoutMs = ASYNC_PATH_TOOLS.has(name) ? asyncToolTimeoutMs : toolTimeoutMs;
       let called;
       let payload;
       let attempts = 0;
+      let recoveredOnRetry = false;
       context.retryWaitMs = 0;
       context.autoMetrics = undefined;
       context.autoPhase = undefined;
@@ -613,13 +641,13 @@ async function executeCanary(env, options, context) {
         stage('tool_call', name, attempt + 1);
         attempts += 1;
         try {
-          called = await client.request('tools/call', { name, arguments: args });
+          called = await client.request('tools/call', { name, arguments: args }, perToolTimeoutMs);
           if (client.fatalError) throw client.fatalError;
           stage('tool_validate', name, attempt + 1);
           payload = toolPayload(called, name);
         } catch (error) {
+          const evidence = errorEvidence.get(error);
           if (name === 'marrow_auto') {
-            const evidence = errorEvidence.get(error);
             autoAttemptRecords.push({
               attempt: attempt + 1,
               duration_ms: safeMs(performance.now() - outerAttemptStarted),
@@ -630,6 +658,17 @@ async function executeCanary(env, options, context) {
               requested_wait_ms: null,
               actual_wait_ms: 0,
             });
+          }
+          // One bounded in-run retry for transport-class failures: a single edge
+          // reset or 503 must not fail the canary when the very next call succeeds.
+          const remaining = totalTimeoutMs - (performance.now() - context.started);
+          const mayRetry = name === 'marrow_auto' ? attempt < 2 : attempt < 1;
+          if (evidence && TRANSPORT_RETRY_ERROR_CLASSES.has(evidence.error_class)
+            && mayRetry && remaining > TRANSPORT_RETRY_WAIT_MS + 250) {
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, TRANSPORT_RETRY_WAIT_MS));
+            context.retryWaitMs += TRANSPORT_RETRY_WAIT_MS;
+            recoveredOnRetry = true;
+            continue;
           }
           throw error;
         }
@@ -643,11 +682,17 @@ async function executeCanary(env, options, context) {
         context.autoMetrics = autoTimings(payload);
         const waitClass = autoWaitClass(payload);
         context.autoPhase = waitClass ? payload.phase : undefined;
-        if (waitClass !== 'completion_pending') break;
+        const autoFailureCategory = payload?.live_delivery?.failure?.error?.category;
+        const transportRetryable = waitClass == null
+          && AUTO_TRANSPORT_RETRY_CATEGORIES.has(autoFailureCategory);
+        if (waitClass !== 'completion_pending' && !transportRetryable) break;
         if (attempt < 2) {
           const requested = payload.retry_after_ms;
-          const delayMs = typeof requested === 'number' && Number.isFinite(requested) && requested >= 0
-            ? Math.ceil(requested) : 250;
+          const serverWaitMs = typeof requested === 'number' && Number.isFinite(requested) && requested >= 0
+            ? Math.ceil(requested) : null;
+          const delayMs = transportRetryable
+            ? Math.max(TRANSPORT_RETRY_WAIT_MS, serverWaitMs ?? 0)
+            : serverWaitMs ?? 250;
           const remaining = totalTimeoutMs - (performance.now() - context.started);
           if (delayMs >= remaining) break;
           const waitStarted = performance.now();
@@ -655,6 +700,7 @@ async function executeCanary(env, options, context) {
           const actualWaitMs = Math.round(performance.now() - waitStarted);
           outerAttemptRecord.actual_wait_ms = actualWaitMs;
           context.retryWaitMs += actualWaitMs;
+          if (transportRetryable) recoveredOnRetry = true;
         }
       }
       const latencyMs = Math.round(performance.now() - callStarted);
@@ -662,6 +708,7 @@ async function executeCanary(env, options, context) {
       const live = payload.stale !== true && payload.source !== 'last_known' && payload.available !== false;
       if (!live) throw canaryError('contract', `${name} returned cached or unavailable guidance`);
       results.push({ tool: name, ok: true, live: true, latency_ms: latencyMs,
+        ...(recoveredOnRetry ? { recovered_on_retry: true } : {}),
         ...(name === 'marrow_auto' ? {
           ...autoTimings(payload),
           attempts,
@@ -709,7 +756,10 @@ if (require.main === module) {
 
 module.exports = {
   CANARY_DEFAULT_TOOL_TIMEOUT_MS,
+  CANARY_DEFAULT_ASYNC_TOOL_TIMEOUT_MS,
+  CANARY_DEFAULT_TOTAL_TIMEOUT_MS,
   CANARY_TOOL_TIMEOUT_MARGIN_MS,
+  CANARY_ASYNC_TOOL_TIMEOUT_MAX_MS,
   MARROW_AUTO_RESPONSE_BUDGET_MAX_MS,
   PersistentMcpClient,
   latencyGroup,
