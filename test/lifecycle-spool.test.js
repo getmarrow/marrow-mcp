@@ -248,7 +248,7 @@ test('malformed and excessive Retry-After suspend queued delivery rather than sh
   } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('permanent authorization and schema rejection never enters automatic retries', async () => {
+test('permanent authorization rejections never enter automatic recovery while schema rejections get one bounded attempt', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-permanent-classification-'));
   const path = join(directory, 'spool.json');
   const originalFetch = globalThis.fetch;
@@ -262,10 +262,19 @@ test('permanent authorization and schema rejection never enters automatic retrie
       }
       const scope = { apiKey: 'test-mcp-spool-key', agentId: 'agent-one', baseUrl: 'https://api.example.com' };
       await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 6, 'auth dead letters are never auto-retried; recoverable ones get one bounded attempt');
+      const rows = JSON.parse(readFileSync(path, 'utf8'));
+      const auth = rows.filter((row) => row.event_id === 'permanent-401' || row.event_id === 'permanent-403');
+      assert.equal(auth.length, 2);
+      assert.ok(auth.every((row) => row.delivery_state === 'dead_letter'
+        && row.recovery_attempts === undefined && row.last_recovery_at === undefined));
+      const recoverable = rows.filter((row) => row.event_id === 'permanent-400' || row.event_id === 'permanent-422');
+      assert.ok(recoverable.every((row) => row.delivery_state === 'dead_letter' && row.recovery_attempts === 1));
       const status = lifecycleSpoolStatus(scope);
-      assert.equal(calls, 4);
-      assert.equal(status.failed, 4);
+      assert.equal(status.failed, 2);
+      assert.equal(status.recoverable, 2);
       assert.equal(status.pending, 0);
+      assert.equal(status.state, 'attention_required');
       assert.equal(status.retry.reasons.authentication_rejected, 2);
       assert.equal(status.retry.reasons.schema_rejected, 2);
       assert.match(status.exact_fix, /credential and agent binding/);
@@ -340,20 +349,24 @@ test('near-limit legacy payload survives retry metadata without quarantine or fa
   } finally { Date.now = originalNow; globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('local metadata has a bounded 227-byte maximum and cannot expand the immutable payload limit', async () => {
+test('local metadata has a bounded 350-byte maximum and cannot expand the immutable payload limit', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-metadata-maximum-'));
   const path = join(directory, 'spool.json');
   const metadata = { attempts: 1000000, delivery_state: 'dead_letter', last_status: 599,
     last_attempt_at: '+275760-09-13T00:00:00.000Z', next_attempt_at: '+275760-09-13T00:00:00.000Z',
-    retry_reason: 'authentication_rejected', retry_blocked: true };
-  assert.equal(Buffer.byteLength(JSON.stringify(metadata)), 227);
-  assert.ok(Buffer.byteLength(JSON.stringify(metadata)) <= 256);
+    retry_reason: 'authentication_rejected', retry_blocked: true,
+    recovery_attempts: 1000000, last_recovery_at: '+275760-09-13T00:00:00.000Z',
+    recovery_exhausted: true, server_owned: true };
+  assert.equal(Buffer.byteLength(JSON.stringify(metadata)), 350);
+  assert.ok(Buffer.byteLength(JSON.stringify(metadata)) <= 384);
   try {
     await withSpoolPath(path, async () => {
       await recordLifecycleEvent({ ...lifecycleInput({ event_id: 'metadata-maximum' }), deferDelivery: true });
       const [base] = JSON.parse(readFileSync(path, 'utf8'));
       writeFileSync(path, JSON.stringify([{ ...base, ...metadata }]), { mode: 0o600 });
-      assert.equal(lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' }).failed, 1);
+      const retainedStatus = lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' });
+      assert.equal(retainedStatus.failed, 0);
+      assert.equal(retainedStatus.server_owned, 1);
       assert.equal(existsSync(path), true);
       const retained = readFileSync(path, 'utf8');
       const id = 'a'.repeat(128);
@@ -375,9 +388,10 @@ test('aggregate retry reservation blocks near-full legacy delivery before fetch 
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-total-retry-capacity-'));
   const path = join(directory, 'spool.json');
   const originalFetch = globalThis.fetch;
-  const metadataFields = ['attempts', 'delivery_state', 'last_status', 'last_attempt_at', 'next_attempt_at', 'retry_reason', 'retry_blocked'];
+  const metadataFields = ['attempts', 'delivery_state', 'last_status', 'last_attempt_at', 'next_attempt_at', 'retry_reason', 'retry_blocked',
+    'recovery_attempts', 'last_recovery_at', 'recovery_exhausted', 'server_owned'];
   const payload = event => Object.fromEntries(Object.entries(event).filter(([key]) => !metadataFields.includes(key)));
-  const reserved = events => Buffer.byteLength(JSON.stringify(events.map(payload))) + events.length * 255;
+  const reserved = events => Buffer.byteLength(JSON.stringify(events.map(payload))) + events.length * 383;
   const max = 2 * 1024 * 1024;
   const id = 'a'.repeat(128);
   const event = { event_id: id, event_type: 'outcome_committed', harness: id, agent_id: id, action: '漢'.repeat(180), target: '語'.repeat(180),
@@ -831,10 +845,11 @@ test('permanent rejection dead-letters while repeated transient failures remain 
       assert.equal(row.delivery_state, 'queued');
       assert.equal(row.attempts, 4);
       assert.equal(row.last_status, 503);
-      assert.match(
-        lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' }).exact_fix,
-        /compatibility/i,
-      );
+      const finalStatus = lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' });
+      assert.equal(finalStatus.failed, 0);
+      assert.equal(finalStatus.recoverable, 1);
+      assert.match(finalStatus.exact_fix, /Automatic recovery/);
+      assert.match(finalStatus.exact_fix, /No local action is required/);
     });
   } finally {
     Date.now = originalNow;
@@ -857,7 +872,9 @@ test('explicit drain retries durable dead letters after the delivery problem is 
     await withSpoolPath(path, async () => {
       const rejected = await recordLifecycleEvent(lifecycleInput({ event_id: 'recover-dead-letter' }));
       assert.equal(rejected.failed, true);
-      assert.equal(lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' }).failed, 1);
+      const beforeDrain = lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' });
+      assert.equal(beforeDrain.failed, 0, 'a schema rejection is recoverable, not operator attention');
+      assert.equal(beforeDrain.recoverable, 1);
 
       available = true;
       const drained = await drainLifecycleSpool({
@@ -901,6 +918,301 @@ test('explicit drain preserves transient backlog instead of inventing exhausted 
     globalThis.fetch = originalFetch;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('nudge automatically recovers a transport-class dead letter once the server is healthy', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-auto-recovery-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const bodies = [];
+  try {
+    await withSpoolPath(path, async () => {
+      const input = { ...lifecycleInput({ event_id: 'auto-recover-transport' }), deferDelivery: true };
+      await recordLifecycleEvent(input);
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify([{ ...base, delivery_state: 'dead_letter', last_status: 503, retry_reason: 'transient_http' }]), { mode: 0o600 });
+      const before = lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.event.agent_id });
+      assert.equal(before.failed, 0);
+      assert.equal(before.recoverable, 1);
+      assert.notEqual(before.state, 'attention_required');
+      globalThis.fetch = async (_url, init) => { calls += 1; bodies.push(init.body); return new Response('{}', { status: 200 }); };
+      await nudgeLifecycleSpool({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id });
+      assert.equal(calls, 1);
+      const wire = JSON.parse(bodies[0]);
+      assert.equal(wire.recovery_attempts, undefined, 'local recovery metadata never reaches the wire');
+      assert.equal(wire.server_owned, undefined);
+      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), [], 'recovered event is removed after delivery');
+      assert.equal(lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.event.agent_id }).state, 'clear');
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a 409 during recovery marks the dead letter server_owned without operator attention', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-recovery-conflict-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      const input = { ...lifecycleInput({ event_id: 'recovery-conflict' }), deferDelivery: true };
+      await recordLifecycleEvent(input);
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify([{ ...base, delivery_state: 'dead_letter', last_status: 400, retry_reason: 'schema_rejected' }]), { mode: 0o600 });
+      globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 409 }); };
+      const scope = { apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id };
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 1);
+      const [row] = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(row.delivery_state, 'dead_letter');
+      assert.equal(row.server_owned, true);
+      assert.equal(row.recovery_attempts, 1);
+      const status = lifecycleSpoolStatus(scope);
+      assert.equal(status.failed, 0);
+      assert.equal(status.server_owned, 1);
+      assert.equal(status.recoverable, 0);
+      assert.notEqual(status.state, 'attention_required');
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 1, 'server-owned evidence is never replayed');
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('authentication dead letters are never auto-retried and keep drain-spool guidance', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-auth-manual-only-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      for (const status of [401, 403]) {
+        globalThis.fetch = async () => { calls += 1; return new Response('{}', { status }); };
+        const receipt = await recordLifecycleEvent(lifecycleInput({ event_id: `auth-${status}` }));
+        assert.equal(receipt.failed, true);
+      }
+      assert.equal(calls, 2);
+      globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
+      const scope = { apiKey: 'test-mcp-spool-key', agentId: 'agent-one', baseUrl: 'https://api.example.com' };
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 2, 'the auth class is manual-only and never auto-retried');
+      const rows = JSON.parse(readFileSync(path, 'utf8'));
+      assert.ok(rows.every((row) => row.delivery_state === 'dead_letter'
+        && row.recovery_attempts === undefined && row.last_recovery_at === undefined));
+      const status = lifecycleSpoolStatus(scope);
+      assert.equal(status.failed, 2);
+      assert.equal(status.state, 'attention_required');
+      assert.match(status.exact_fix, /credential and agent binding/);
+      assert.match(status.exact_fix, /drain-spool/);
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('recovery cooldown prevents re-attempts within fifteen minutes', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-recovery-cooldown-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.parse('2026-09-16T00:00:00.000Z') });
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      const input = { ...lifecycleInput({ event_id: 'recovery-cooldown' }), deferDelivery: true };
+      await recordLifecycleEvent(input);
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify([{ ...base, delivery_state: 'dead_letter', last_status: 503, retry_reason: 'transient_http' }]), { mode: 0o600 });
+      globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 400 }); };
+      const scope = { apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id };
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 1);
+      assert.equal(JSON.parse(readFileSync(path, 'utf8'))[0].recovery_attempts, 1);
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 1, 'a second nudge inside the cooldown does not re-attempt');
+      t.mock.timers.tick(15 * 60_000 - 1);
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 1, 'one millisecond early is still cooling down');
+      t.mock.timers.tick(1);
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 2, 'recovery resumes once the cooldown elapses');
+      assert.equal(JSON.parse(readFileSync(path, 'utf8'))[0].recovery_attempts, 2);
+    });
+  } finally { globalThis.fetch = originalFetch; t.mock.timers.reset(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('recovery exhausts after three failed attempts and requires no local action', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-recovery-exhausted-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.parse('2026-09-16T00:00:00.000Z') });
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      const input = { ...lifecycleInput({ event_id: 'recovery-exhaustion' }), deferDelivery: true };
+      await recordLifecycleEvent(input);
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify([{ ...base, delivery_state: 'dead_letter', last_status: 400, retry_reason: 'schema_rejected' }]), { mode: 0o600 });
+      globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 400 }); };
+      const scope = { apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id };
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        await nudgeLifecycleSpool(scope);
+        assert.equal(calls, attempt);
+        t.mock.timers.tick(15 * 60_000);
+      }
+      const [row] = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(row.delivery_state, 'dead_letter');
+      assert.equal(row.recovery_attempts, 3);
+      assert.equal(row.recovery_exhausted, true);
+      const status = lifecycleSpoolStatus(scope);
+      assert.equal(status.failed, 0);
+      assert.equal(status.recoverable, 0);
+      assert.equal(status.recovery_exhausted, 1);
+      assert.notEqual(status.state, 'attention_required');
+      assert.match(status.exact_fix, /no local action is required/i);
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 3, 'exhausted dead letters are not re-attempted');
+    });
+  } finally { globalThis.fetch = originalFetch; t.mock.timers.reset(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a legacy dead letter without last_status is recovery-eligible', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-legacy-corpse-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      const input = { ...lifecycleInput({ event_id: 'legacy-corpse' }), deferDelivery: true };
+      await recordLifecycleEvent(input);
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify([{ ...base, delivery_state: 'dead_letter' }]), { mode: 0o600 });
+      globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
+      await nudgeLifecycleSpool({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id });
+      assert.equal(calls, 1);
+      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), []);
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a 409 on first delivery marks the event server_owned immediately', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-first-conflict-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 409 }); };
+      const receipt = await recordLifecycleEvent(lifecycleInput({ event_id: 'first-delivery-conflict' }));
+      assert.equal(receipt.accepted, false);
+      assert.equal(receipt.failed, true);
+      const [row] = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(row.delivery_state, 'dead_letter');
+      assert.equal(row.server_owned, true);
+      const scope = { apiKey: 'test-mcp-spool-key', agentId: 'agent-one', baseUrl: 'https://api.example.com' };
+      const status = lifecycleSpoolStatus(scope);
+      assert.equal(status.failed, 0);
+      assert.equal(status.server_owned, 1);
+      assert.notEqual(status.state, 'attention_required');
+      globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
+      await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 1, 'server-owned evidence is never replayed by the nudge');
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('manual drain retries auth and exhausted dead letters but skips server_owned', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-manual-drain-authority-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await withSpoolPath(path, async () => {
+      const ids = ['drain-auth', 'drain-owned', 'drain-exhausted'];
+      for (const eventId of ids) {
+        await recordLifecycleEvent({ ...lifecycleInput({ event_id: eventId }), deferDelivery: true });
+      }
+      const rows = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify(rows.map((row) => {
+        if (row.event_id === 'drain-auth') return { ...row, delivery_state: 'dead_letter', last_status: 401, retry_reason: 'authentication_rejected' };
+        if (row.event_id === 'drain-owned') return { ...row, delivery_state: 'dead_letter', last_status: 409, retry_reason: 'permanent_http', server_owned: true };
+        return { ...row, delivery_state: 'dead_letter', last_status: 400, retry_reason: 'schema_rejected', recovery_attempts: 3, recovery_exhausted: true };
+      })), { mode: 0o600 });
+      globalThis.fetch = async (_url, init) => {
+        const eventId = JSON.parse(init.body).event_id;
+        calls.push(eventId);
+        return new Response('{}', { status: eventId === 'drain-exhausted' ? 503 : 200 });
+      };
+      const scope = { apiKey: 'test-mcp-spool-key', agentId: 'agent-one', baseUrl: 'https://api.example.com' };
+      const drained = await drainLifecycleSpool(scope);
+      assert.deepEqual(calls.sort(), ['drain-auth', 'drain-exhausted'], 'manual drain retries auth and exhausted classes only');
+      const remaining = JSON.parse(readFileSync(path, 'utf8'));
+      assert.equal(remaining.some((row) => row.event_id === 'drain-auth'), false, 'delivered auth event is removed');
+      const exhausted = remaining.find((row) => row.event_id === 'drain-exhausted');
+      assert.equal(exhausted.delivery_state, 'queued');
+      assert.equal(exhausted.recovery_exhausted, undefined, 'manual requeue clears exhaustion for a fresh budget');
+      assert.equal(exhausted.recovery_attempts, undefined);
+      const owned = remaining.find((row) => row.event_id === 'drain-owned');
+      assert.equal(owned.delivery_state, 'dead_letter');
+      assert.equal(owned.server_owned, true);
+      assert.equal(owned.last_attempt_at, undefined, 'server-owned rows are never re-attempted');
+      assert.equal(drained.failed, 0);
+      assert.equal(drained.server_owned, 1);
+      assert.equal(drained.pending, 1);
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('status partitions a mixed spool into failed, recoverable, server_owned, and recovery_exhausted', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-mixed-counts-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  try {
+    await withSpoolPath(path, async () => {
+      const ids = ['mix-queued', 'mix-auth', 'mix-owned', 'mix-recoverable-one', 'mix-recoverable-two', 'mix-exhausted'];
+      for (const eventId of ids) {
+        await recordLifecycleEvent({ ...lifecycleInput({ event_id: eventId }), deferDelivery: true });
+      }
+      const rows = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify(rows.map((row) => {
+        if (row.event_id === 'mix-auth') return { ...row, delivery_state: 'dead_letter', last_status: 403, retry_reason: 'authentication_rejected' };
+        if (row.event_id === 'mix-owned') return { ...row, delivery_state: 'dead_letter', last_status: 409, retry_reason: 'permanent_http' };
+        if (row.event_id === 'mix-recoverable-one') return { ...row, delivery_state: 'dead_letter', last_status: 400, retry_reason: 'schema_rejected' };
+        if (row.event_id === 'mix-recoverable-two') return { ...row, delivery_state: 'dead_letter', last_status: 503, retry_reason: 'transient_http' };
+        if (row.event_id === 'mix-exhausted') return { ...row, delivery_state: 'dead_letter', last_status: 400, retry_reason: 'schema_rejected', recovery_attempts: 3, recovery_exhausted: true };
+        return row;
+      })), { mode: 0o600 });
+      const status = lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' });
+      assert.equal(status.pending, 1);
+      assert.equal(status.failed, 1);
+      assert.equal(status.recoverable, 2);
+      assert.equal(status.server_owned, 1, 'a legacy 409 corpse classifies as server-owned');
+      assert.equal(status.recovery_exhausted, 1);
+      assert.equal(status.state, 'attention_required', 'only the auth class forces operator attention');
+      assert.match(status.exact_fix, /credential and agent binding/);
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a recoverable-only spool satisfies the cli nudge gate and self-heals', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-gate-recoverable-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    await withSpoolPath(path, async () => {
+      const input = { ...lifecycleInput({ event_id: 'gate-recoverable' }), deferDelivery: true };
+      await recordLifecycleEvent(input);
+      const [base] = JSON.parse(readFileSync(path, 'utf8'));
+      writeFileSync(path, JSON.stringify([{ ...base, delivery_state: 'dead_letter', last_status: 400, retry_reason: 'schema_rejected' }]), { mode: 0o600 });
+      const scope = { apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.event.agent_id };
+      const status = lifecycleSpoolStatus(scope);
+      assert.equal(status.pending, 0);
+      assert.equal(status.recoverable, 1);
+      // The reportLifecycleSpool gate in src/cli.ts: pending > 0 || recoverable > 0.
+      assert.equal(status.pending > 0 || status.recoverable > 0, true, 'dead letters alone trigger the nudge gate');
+      globalThis.fetch = async () => { calls += 1; return new Response('{}', { status: 200 }); };
+      if (status.pending > 0 || status.recoverable > 0) await nudgeLifecycleSpool(scope);
+      assert.equal(calls, 1);
+      assert.equal(lifecycleSpoolStatus(scope).state, 'clear');
+    });
+  } finally { globalThis.fetch = originalFetch; rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('spool status exposes older credential namespaces without replaying them under the current key', async () => {
@@ -1033,7 +1345,8 @@ test('explicit drain continues after a failed current-namespace event', async ()
       });
       assert.equal(calls, 2);
       assert.equal(drained.pending, 0);
-      assert.equal(drained.failed, 1);
+      assert.equal(drained.failed, 0, 'a 400 dead letter is recoverable, not operator attention');
+      assert.equal(drained.recoverable, 1);
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -1179,7 +1492,7 @@ test('active namespace failures retain a nonzero exit independently of legacy in
   process.env.HOME = home;
   delete process.env.MARROW_EVENT_SPOOL_PATH;
   try {
-    globalThis.fetch = async () => new Response('{}', { status: 400 });
+    globalThis.fetch = async () => new Response('{}', { status: 401 });
     await recordLifecycleEvent({
       ...lifecycleInput({ event_id: 'current-failed', agent_id: 'agent-one' }),
       apiKey: 'current-failed-key',
@@ -1190,6 +1503,7 @@ test('active namespace failures retain a nonzero exit independently of legacy in
     assert.equal(outcome.output.ok, false);
     assert.equal(outcome.output.lifecycle_spool.state, 'attention_required');
     assert.equal(outcome.output.lifecycle_spool.failed, 1);
+    assert.match(outcome.output.lifecycle_spool.exact_fix, /credential and agent binding/);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalHome === undefined) delete process.env.HOME;

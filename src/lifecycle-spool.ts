@@ -72,7 +72,8 @@ type RetryReason = 'network_error' | 'ack_timeout' | 'transient_http' | 'rate_li
 type StoredEvent = Required<Pick<LifecycleEvent, 'event_id' | 'event_type' | 'harness' | 'agent_id' | 'action' | 'occurred_at'>>
   & Omit<LifecycleEvent, 'event_id' | 'event_type' | 'harness' | 'agent_id' | 'action' | 'occurred_at'>
   & { attempts: number; delivery_state: DeliveryState; last_status?: number;
-    last_attempt_at?: string; next_attempt_at?: string; retry_reason?: RetryReason; retry_blocked?: boolean };
+    last_attempt_at?: string; next_attempt_at?: string; retry_reason?: RetryReason; retry_blocked?: boolean;
+    recovery_attempts?: number; last_recovery_at?: string; recovery_exhausted?: true; server_owned?: true };
 
 const EVENT_TYPES = new Set<string>(LIFECYCLE_EVENT_TYPES);
 const RISK_LEVELS = new Set(['low', 'medium', 'high']);
@@ -81,12 +82,14 @@ const INTERVENTION_DISPOSITIONS = new Set(['followed', 'ignored', 'overridden'])
 const LIFECYCLE_SOURCES = new Set(['client_self_reported']);
 const MAX_EVENTS = 1000;
 const MAX_RECORD_BYTES = 4096;
-// Maximum parsed metadata is 227 bytes: bounded attempts/status, two canonical
-// ISO dates (at most 27 bytes each), enums and one boolean. Keep event admission
-// independent of this local-only envelope so legacy near-limit rows can retry.
-const MAX_DELIVERY_METADATA_BYTES = 256;
+// Maximum parsed metadata is 350 bytes: bounded attempts/status, three canonical
+// ISO dates (at most 27 bytes each), enums, booleans, and bounded recovery
+// bookkeeping. Keep event admission independent of this local-only envelope so
+// legacy near-limit rows can retry.
+const MAX_DELIVERY_METADATA_BYTES = 384;
 const DELIVERY_METADATA_FIELDS = ['attempts', 'delivery_state', 'last_status',
-  'last_attempt_at', 'next_attempt_at', 'retry_reason', 'retry_blocked'] as const;
+  'last_attempt_at', 'next_attempt_at', 'retry_reason', 'retry_blocked',
+  'recovery_attempts', 'last_recovery_at', 'recovery_exhausted', 'server_owned'] as const;
 const MAX_SPOOL_BYTES = 2 * 1024 * 1024;
 const MAX_NAMESPACE_FILES = 128;
 const MAX_NAMESPACE_DIRECTORY_ENTRIES = 1024;
@@ -101,6 +104,9 @@ const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
 const DELIVERY_DRAIN_BUDGET_MS = 30_000;
 const NUDGE_DRAIN_BUDGET_MS = 20_000;
 const NUDGE_MAX_EVENTS = 40;
+const RECOVERY_MAX_ATTEMPTS = 3;
+const RECOVERY_COOLDOWN_MS = 15 * 60_000;
+const RECOVERY_MAX_EVENTS_PER_NUDGE = 5;
 const NAMESPACE_JSON_RE = /^mcp-[a-f0-9]{20}\.json$/;
 const NAMESPACE_LOCK_RE = /^mcp-[a-f0-9]{20}\.json\.lock$/;
 const LOCK_WAIT_MS = 20;
@@ -270,6 +276,10 @@ function validateStoredEvent(value: unknown): StoredEvent {
     || Number(event.last_status) < 0 || Number(event.last_status) > 599)) throw new Error('invalid lifecycle last_status');
   if (event.retry_reason != null && !RETRY_REASONS.has(event.retry_reason as RetryReason)) throw new Error('invalid lifecycle retry_reason');
   if (event.retry_blocked != null && typeof event.retry_blocked !== 'boolean') throw new Error('invalid lifecycle retry_blocked');
+  if (event.recovery_attempts != null && (!Number.isInteger(event.recovery_attempts)
+    || Number(event.recovery_attempts) < 0)) throw new Error('invalid lifecycle recovery_attempts');
+  if (event.recovery_exhausted != null && typeof event.recovery_exhausted !== 'boolean') throw new Error('invalid lifecycle recovery_exhausted');
+  if (event.server_owned != null && typeof event.server_owned !== 'boolean') throw new Error('invalid lifecycle server_owned');
   const surfaces = surfaceList(event.surfaces);
   const stored: StoredEvent = {
     event_id: safeId(event.event_id) || (() => { throw new Error('invalid lifecycle event_id'); })(),
@@ -297,6 +307,12 @@ function validateStoredEvent(value: unknown): StoredEvent {
     ...(event.next_attempt_at != null ? { next_attempt_at: canonicalTimestamp(event.next_attempt_at) } : {}),
     ...(RETRY_REASONS.has(event.retry_reason as RetryReason) ? { retry_reason: event.retry_reason as RetryReason } : {}),
     ...(event.retry_blocked === true ? { retry_blocked: true } : {}),
+    ...(Number.isInteger(event.recovery_attempts)
+      ? { recovery_attempts: Math.min(Number(event.recovery_attempts), MAX_ATTEMPTS) }
+      : {}),
+    ...(event.last_recovery_at != null ? { last_recovery_at: canonicalTimestamp(event.last_recovery_at) } : {}),
+    ...(event.recovery_exhausted === true ? { recovery_exhausted: true as const } : {}),
+    ...(event.server_owned === true ? { server_owned: true as const } : {}),
   };
   if (Buffer.byteLength(JSON.stringify(eventPayload(stored)), 'utf8') > MAX_RECORD_BYTES) {
     throw new Error('lifecycle spool record exceeds byte limit');
@@ -406,6 +422,17 @@ function retryable(status: number): boolean {
   return status === 0 || [408, 425, 429].includes(status) || (status >= 500 && status <= 599);
 }
 
+type DeadLetterClass = 'auth' | 'server_owned' | 'recoverable';
+
+function deadLetterClass(event: StoredEvent): DeadLetterClass {
+  // A 409 from this route means the server already holds durable evidence for
+  // this event id; legacy corpses carry only last_status. Authentication
+  // failures always require the owner to restore the credential binding.
+  if (event.server_owned === true || event.last_status === 409) return 'server_owned';
+  if (event.last_status === 401 || event.last_status === 403) return 'auth';
+  return 'recoverable';
+}
+
 type DeliveryResult = { status: number; reason?: RetryReason; retryAfterMs?: number; retryBlocked?: boolean };
 
 function retryAfter(response: Response): Pick<DeliveryResult, 'retryAfterMs' | 'retryBlocked'> {
@@ -471,6 +498,9 @@ export type LifecycleSpoolStatus = {
   state: 'clear' | 'pending' | 'attention_required';
   pending: number;
   failed: number;
+  recoverable: number;
+  server_owned: number;
+  recovery_exhausted: number;
   oldest_pending_at: string | null;
   oldest_failed_at: string | null;
   capacity: number;
@@ -623,11 +653,15 @@ export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }
   const location = spoolPath(input.apiKey, input.agentId);
   const current = snapshot(location.path, location.ownsParent);
   const queued = current.events.filter((event) => event.delivery_state === 'queued');
-  const failed = current.events.filter((event) => event.delivery_state === 'dead_letter');
+  const deadLetters = current.events.filter((event) => event.delivery_state === 'dead_letter');
+  // Only auth-class dead letters genuinely need the operator. Server-owned
+  // conflicts hold durable server evidence, and recoverable classes self-heal
+  // through the bounded nudge recovery pass.
+  const failed = deadLetters.filter((event) => deadLetterClass(event) === 'auth');
+  const serverOwned = deadLetters.filter((event) => deadLetterClass(event) === 'server_owned');
+  const recoveryExhausted = deadLetters.filter((event) => deadLetterClass(event) === 'recoverable' && event.recovery_exhausted === true);
+  const recoverable = deadLetters.length - failed.length - serverOwned.length - recoveryExhausted.length;
   const otherNamespaces = otherNamespaceStatus(location.path, location.ownsParent);
-  const failureStatuses = failed.map((event) => event.last_status).filter((status): status is number => status != null);
-  const authFailure = failureStatuses.some((status) => status === 401 || status === 403);
-  const transportFailure = failureStatuses.some((status) => status === 0 || status === 408 || status >= 500);
   const now = Date.now();
   const retryBlocked = queued.filter((event) => event.retry_blocked).length;
   const capacityBlocked = reservedSpoolBytes(current.events) > MAX_SPOOL_BYTES ? current.events.length : 0;
@@ -639,6 +673,9 @@ export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }
     state: failed.length > 0 || retryBlocked > 0 || capacityBlocked > 0 ? 'attention_required' : queued.length > 0 ? 'pending' : 'clear',
     pending: queued.length,
     failed: failed.length,
+    recoverable,
+    server_owned: serverOwned.length,
+    recovery_exhausted: recoveryExhausted.length,
     oldest_pending_at: queued.map((event) => event.occurred_at).sort()[0] || null,
     oldest_failed_at: failed.map((event) => event.occurred_at).sort()[0] || null,
     capacity: MAX_EVENTS,
@@ -658,11 +695,11 @@ export function lifecycleSpoolStatus(input: { apiKey: string; agentId?: string }
       : retryBlocked > 0
       ? 'The server Retry-After value could not be safely scheduled. Preserve the queued event and original credential/agent binding; inspect server retry guidance before an explicitly approved repair. Automatic delivery will not retry early.'
       : failed.length > 0
-      ? authFailure
-        ? 'The server rejected delivery authentication or authorization. Restore the credential and agent binding, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
-        : transportFailure
-        ? 'Lifecycle delivery timed out or the service was unavailable. Keep the credential unchanged, verify reachability, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
-        : 'Inspect the lifecycle event compatibility error, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
+      ? 'The server rejected delivery authentication or authorization. Restore the credential and agent binding, then run npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool.'
+      : deadLetters.length > 0
+      ? recoverable > 0
+        ? 'Automatic recovery of these lifecycle dead letters is scheduled during passive nudges with bounded attempts and cooldown; the server holds durable evidence for conflicted events. No local action is required.'
+        : 'The server holds durable evidence for these lifecycle events, or bounded automatic recovery is exhausted; no local action is required. An explicit operator drain (npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool) remains available but is not required.'
       : queued.length > 0
         ? 'Transient delivery remains queued with a persisted retry schedule. A bounded background owner or later MCP activity/restart retries when due; no delivery is promised while the host is stopped. An explicit drain also respects the schedule.'
         : null,
@@ -697,6 +734,10 @@ async function attemptQueuedDelivery(input: {
     if (!current.retry_blocked) current.retry_reason = result.reason;
     if (!retryable(status)) {
       current.delivery_state = 'dead_letter';
+      // A 409 from this route means the server holds durable evidence for this
+      // event id, on a first attempt or during recovery.
+      if (status === 409) current.server_owned = true;
+      if ((current.recovery_attempts ?? 0) >= RECOVERY_MAX_ATTEMPTS) current.recovery_exhausted = true;
     } else if (result.retryBlocked || current.retry_blocked) {
       current.retry_blocked = true;
     } else {
@@ -771,6 +812,59 @@ export function quarantineLegacyNamespaces(input: { apiKey: string; agentId?: st
 
 let nudgeInFlight = false;
 
+async function recoverLifecycleDeadLetters(input: {
+  apiKey: string;
+  baseUrl: string;
+  agentId?: string;
+}, deadline: number): Promise<void> {
+  const location = spoolPath(input.apiKey, input.agentId);
+  if (reservedSpoolBytes(snapshot(location.path, location.ownsParent).events) > MAX_SPOOL_BYTES) return;
+  const now = Date.now();
+  const recovered = mutate(location.path, location.ownsParent, (events) => {
+    const selected: StoredEvent[] = [];
+    for (const row of events) {
+      if (row.delivery_state !== 'dead_letter') continue;
+      const classification = deadLetterClass(row);
+      if (classification === 'server_owned') {
+        // Legacy 409 corpses carry only last_status; the server already answered
+        // definitively, so mark them without redelivery.
+        if (row.server_owned !== true) row.server_owned = true;
+        continue;
+      }
+      if (classification === 'auth') continue;
+      if (row.recovery_exhausted === true) continue;
+      const attempts = row.recovery_attempts ?? 0;
+      if (attempts >= RECOVERY_MAX_ATTEMPTS) {
+        row.recovery_exhausted = true;
+        continue;
+      }
+      if (row.last_recovery_at && now - Date.parse(row.last_recovery_at) < RECOVERY_COOLDOWN_MS) continue;
+      if (selected.length >= RECOVERY_MAX_EVENTS_PER_NUDGE) continue;
+      row.delivery_state = 'queued';
+      row.attempts = 0;
+      delete row.last_status;
+      delete row.last_attempt_at;
+      delete row.next_attempt_at;
+      delete row.retry_reason;
+      delete row.retry_blocked;
+      row.recovery_attempts = attempts + 1;
+      row.last_recovery_at = new Date(now).toISOString();
+      selected.push({ ...row });
+    }
+    return selected;
+  }).result;
+  const remainingMs = deadline - Date.now();
+  if (recovered.length === 0 || remainingMs <= 0) return;
+  await drainLifecycleSpool({
+    ...input,
+    maxEvents: recovered.length,
+    budgetMs: remainingMs,
+    requestTimeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+    retryDeadLetters: false,
+    retryWithinBudget: false,
+  });
+}
+
 export function nudgeLifecycleSpool(input: {
   apiKey: string;
   baseUrl: string;
@@ -778,6 +872,7 @@ export function nudgeLifecycleSpool(input: {
 }): Promise<void> {
   if (nudgeInFlight) return Promise.resolve();
   nudgeInFlight = true;
+  const deadline = Date.now() + NUDGE_DRAIN_BUDGET_MS;
   return drainLifecycleSpool({
     ...input,
     maxEvents: NUDGE_MAX_EVENTS,
@@ -786,6 +881,7 @@ export function nudgeLifecycleSpool(input: {
     retryDeadLetters: false,
     retryWithinBudget: true,
   })
+    .then(() => recoverLifecycleDeadLetters(input, deadline))
     .then(() => undefined)
     .catch(() => undefined)
     .finally(() => {
@@ -828,7 +924,11 @@ export async function drainLifecycleSpool(input: {
     let queued = candidates.find((row) => dueAt(row) <= Date.now());
     if (!queued && retryDeadLetters) {
       queued = mutate(location.path, location.ownsParent, (events) => {
-        const failed = events.find((row) => row.delivery_state === 'dead_letter' && !attempted.has(row.event_id));
+        // An explicit drain retries every dead letter the operator can fix,
+        // including the auth class. Server-owned conflicts already have durable
+        // server evidence and are never replayed.
+        const failed = events.find((row) => row.delivery_state === 'dead_letter'
+          && deadLetterClass(row) !== 'server_owned' && !attempted.has(row.event_id));
         if (!failed) return undefined;
         failed.delivery_state = 'queued';
         failed.attempts = 0;
@@ -837,6 +937,10 @@ export async function drainLifecycleSpool(input: {
         delete failed.next_attempt_at;
         delete failed.retry_reason;
         delete failed.retry_blocked;
+        // A manual drain after a credential repair earns a fresh recovery budget.
+        delete failed.recovery_exhausted;
+        delete failed.recovery_attempts;
+        delete failed.last_recovery_at;
         return { ...failed };
       }).result;
     }
