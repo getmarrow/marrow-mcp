@@ -25,6 +25,9 @@ export type LifecycleSpoolStatus = {
     state: 'clear' | 'pending' | 'attention_required';
     pending: number;
     failed: number;
+    recoverable: number;
+    server_owned: number;
+    recovery_exhausted: number;
     oldest_pending_at: string | null;
     oldest_failed_at: string | null;
     capacity: number;
