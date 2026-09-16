@@ -5,7 +5,10 @@ const { readFileSync } = require('node:fs');
 const vm = require('node:vm');
 const test = require('node:test');
 const {
+  CANARY_ASYNC_TOOL_TIMEOUT_MAX_MS,
+  CANARY_DEFAULT_ASYNC_TOOL_TIMEOUT_MS,
   CANARY_DEFAULT_TOOL_TIMEOUT_MS,
+  CANARY_DEFAULT_TOTAL_TIMEOUT_MS,
   CANARY_TOOL_TIMEOUT_MARGIN_MS,
   MARROW_AUTO_RESPONSE_BUDGET_MAX_MS,
   runCanary,
@@ -634,4 +637,106 @@ test('missing compiled dependency still reaches the CLI JSON handler', async () 
   assert.equal(JSON.parse(output.stdout).error_class, 'configuration');
   assert.equal(output.stderr, 'MCP_CONTROL_PATH_CANARY=FAIL\n');
   assert.equal(output.stdout.includes(secret), false);
+});
+
+test('default async tool ceiling and total budget match the published canary contract', () => {
+  assert.equal(CANARY_ASYNC_TOOL_TIMEOUT_MAX_MS, 30_000);
+  assert.equal(CANARY_DEFAULT_ASYNC_TOOL_TIMEOUT_MS, 10_000);
+  assert.equal(CANARY_DEFAULT_ASYNC_TOOL_TIMEOUT_MS, Math.min(
+    CANARY_ASYNC_TOOL_TIMEOUT_MAX_MS,
+    MARROW_AUTO_RESPONSE_BUDGET_MAX_MS + CANARY_TOOL_TIMEOUT_MARGIN_MS,
+  ));
+  assert.equal(CANARY_DEFAULT_TOTAL_TIMEOUT_MS, 45_000);
+});
+
+test('async ceiling lets marrow_auto outlast the minimum regular tool timeout by default', async () => {
+  const fake = fakeSpawn('good', { initializeDelayMs: 0, autoDelayMs: 400 });
+  const result = await runCanary(environment(), { spawnProcess: fake.factory });
+  assert.equal(result.ok, true);
+  const auto = result.results.find((row) => row.tool === 'marrow_auto');
+  assert.ok(auto.latency_ms >= 400, `unexpected auto latency ${auto.latency_ms}ms`);
+});
+
+test('async ceiling bounds a hanging marrow_auto without retrying the timeout', async () => {
+  const { failure, state } = await captureFailure((request, child, callback) => {
+    if (request.params?.name !== 'marrow_auto') return false;
+    if (callback) callback();
+    return true;
+  }, { MARROW_MCP_CANARY_ASYNC_TOOL_TIMEOUT_MS: '300' });
+  assert.equal(failure.error_class, 'request_timeout');
+  assert.equal(failure.tool, 'marrow_auto');
+  assert.equal(failure.attempt, 1);
+  assert.equal(failure.auto_attempt_records.length, 1);
+  assert.equal(failure.auto_attempt_records[0].error_category, 'request_timeout');
+  assert.equal(state.killed, true);
+});
+
+test('async ceiling does not extend regular tools past the tool timeout', async () => {
+  const { failure } = await captureFailure((request, child) => {
+    if (request.params?.name !== 'marrow_ask') return false;
+    setTimeout(() => respond(child, request, {
+      result: { content: [{ text: JSON.stringify(payload('marrow_ask')) }] },
+    }), 400);
+    return true;
+  }, { MARROW_MCP_CANARY_ASYNC_TOOL_TIMEOUT_MS: '5000' });
+  assert.equal(failure.error_class, 'request_timeout');
+  assert.equal(failure.tool, 'marrow_ask');
+  assert.equal(failure.attempt, 1);
+});
+
+test('async ceiling above the 30s maximum clamps before the default 45s total budget', { timeout: 60_000 }, async () => {
+  const { failure } = await captureFailure((request, child, callback) => {
+    if (request.params?.name !== 'marrow_auto') return false;
+    if (callback) callback();
+    return true;
+  }, {
+    MARROW_MCP_CANARY_ASYNC_TOOL_TIMEOUT_MS: '60000',
+    MARROW_MCP_CANARY_TOTAL_TIMEOUT_MS: undefined,
+  });
+  assert.equal(failure.error_class, 'request_timeout');
+  assert.equal(failure.tool, 'marrow_auto');
+  assert.ok(failure.latency_ms >= 29_000, `async ceiling fired at ${failure.latency_ms}ms`);
+  assert.ok(failure.total_latency_ms < 45_000, `total budget fired at ${failure.total_latency_ms}ms`);
+});
+
+test('one transport-class failure retries in-run and annotates recovered_on_retry', async () => {
+  let statusCalls = 0;
+  const fake = fakeSpawn('good', { initializeDelayMs: 0, handle: (request, child) => {
+    if (request.params?.name !== 'marrow_status') return false;
+    statusCalls += 1;
+    if (statusCalls > 1) return false;
+    return respond(child, request, { result: { content: [{ text: JSON.stringify({
+      ok: false, error: { code: 'edge_reset', message: secret },
+    }) }] } });
+  } });
+  const result = await runCanary(environment(), { spawnProcess: fake.factory });
+  assert.equal(result.ok, true);
+  assert.equal(statusCalls, 2);
+  const row = result.results.find((entry) => entry.tool === 'marrow_status');
+  assert.equal(row.recovered_on_retry, true);
+  assert.deepEqual(result.results.filter((entry) => entry.recovered_on_retry).map((entry) => entry.tool), ['marrow_status']);
+  assert.equal(JSON.stringify(result).includes(secret), false);
+});
+
+test('non-transport tool failure does not trigger the in-run retry', async () => {
+  const { failure, state } = await captureFailure((request, child) => request.params?.name === 'marrow_status'
+    && respond(child, request, { result: { content: [{ text: '{}' }] } }));
+  assert.equal(failure.error_class, 'contract');
+  assert.equal(failure.stage, 'tool_validate');
+  assert.equal(failure.tool, 'marrow_status');
+  assert.equal(failure.attempt, 1);
+  assert.equal(state.calls.filter((call) => call.params?.name === 'marrow_status').length, 1);
+});
+
+test('a persistent transport failure exhausts the single retry and still fails', async () => {
+  const { failure, state } = await captureFailure((request, child) => request.params?.name === 'marrow_status'
+    && respond(child, request, { result: { content: [{ text: JSON.stringify({
+      available: false, error: { status: 503 },
+    }) }] } }));
+  assert.equal(failure.error_class, 'unavailable503');
+  assert.equal(failure.tool, 'marrow_status');
+  assert.equal(failure.attempt, 2);
+  assert.equal(failure.http_status, 503);
+  assert.equal(state.calls.filter((call) => call.params?.name === 'marrow_status').length, 2);
+  assert.ok(failure.total_latency_ms >= 1_000, `retry wait was ${failure.total_latency_ms}ms`);
 });
