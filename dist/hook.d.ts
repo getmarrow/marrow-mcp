@@ -1,5 +1,5 @@
 export declare const AUTO_HOOK_COMMAND: string;
-export declare const AUTO_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*";
+export declare const AUTO_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*";
 interface HookEvent {
     session_id?: string;
     conversation_id?: string;

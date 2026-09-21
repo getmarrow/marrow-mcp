@@ -29,6 +29,7 @@ const redact_1 = require("./redact");
 const status_cache_1 = require("./status-cache");
 const habit_loop_copy_1 = require("./habit-loop-copy");
 const host_capability_1 = require("./host-capability");
+const session_loop_guard_1 = require("./session-loop-guard");
 // Parse CLI args
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -61,6 +62,9 @@ function parseArgs() {
         }
         if (args[i] === 'ping' || args[i] === '--ping') {
             result.ping = true;
+        }
+        if (args[i] === 'loop-guard-self-test' || args[i] === '--loop-guard-self-test') {
+            result.loopGuardSelfTest = true;
         }
     }
     return result;
@@ -256,6 +260,8 @@ ${MARROW_BLOCK_END}`;
         process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on it. Activity remains client-self-reported and does not certify observed coverage.\n`);
     }
     process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
+    process.stdout.write('Configured private local session loop guard for supported native hook events. It becomes active only after host restart/trust review and an actual hook invocation; setup alone does not prove enforcement.\n');
+    process.stdout.write('Offline verification: marrow-mcp loop-guard-self-test (uses isolated temporary state and does not touch the user ledger).\n');
     process.stdout.write('Set MARROW_AUTO_HOOK=false to disable passive hooks.\n');
     process.stdout.write('Set MARROW_PASSIVE_BRIEF=false to disable automatic decision briefs, or MARROW_PASSIVE_BRIEF=always to brief every prompt.\n');
     process.stdout.write('Set MARROW_HOOK_DEBUG=true for write-side hook diagnostics, or MARROW_CONTEXT_HOOK_DEBUG=true for prompt-context diagnostics.\n');
@@ -380,6 +386,9 @@ if (process.argv[2] !== 'keys') {
     }
     else if (cliArgs.ping) {
         void runPingCommand();
+    }
+    else if (cliArgs.loopGuardSelfTest) {
+        process.stdout.write(`${JSON.stringify((0, session_loop_guard_1.runSessionLoopGuardSelfTest)(), null, 2)}\n`);
     }
     else if (cliArgs.setup) {
         runSetup();

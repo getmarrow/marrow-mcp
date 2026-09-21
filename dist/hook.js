@@ -12,6 +12,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_pre_action_1 = require("./hook-pre-action");
 const control_state_1 = require("./control-state");
 const hook_tool_policy_1 = require("./hook-tool-policy");
+const session_loop_guard_1 = require("./session-loop-guard");
 const hook_contract_1 = require("./hook-contract");
 exports.AUTO_HOOK_COMMAND = hook_contract_1.ACTION_RESULT_HOOK_COMMAND;
 exports.AUTO_HOOK_MATCHER = hook_contract_1.NATIVE_HOOK_MATCHER;
@@ -125,25 +126,46 @@ async function runHookCommand(input) {
         else {
             event = (0, hook_contract_1.normalizeHookEventPayload)(input);
         }
-        if (shouldSkipAutoLog(event)) {
-            debug('[marrow-hook] skipped read-only tool');
-            return;
-        }
-        const classified = (0, hook_pre_action_1.classifyTool)(event);
-        const action = deriveAction(event);
-        if (!action) {
+        if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)) {
             return;
         }
         const resolvedEnv = identity.environment;
+        const privateLoopPayload = (0, hook_contract_1.privateHookLoopGuardPayload)(event);
+        const classified = (0, hook_pre_action_1.classifyTool)(event);
+        const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
+            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+        const agentId = identity.agent_id;
+        const outcome = deriveToolOutcome(event);
+        const loopOperation = {
+            sessionId,
+            agentId,
+            harness: identity.harness,
+            toolName: event.tool_name,
+            toolInput: privateLoopPayload.toolInput ?? event.tool_input,
+            invocationId: event.tool_use_id,
+            readOnly: classified.readOnly,
+        };
+        try {
+            (0, session_loop_guard_1.recordSessionLoopOutcome)(loopOperation, outcome.success, privateLoopPayload.toolResult ?? event.tool_output ?? event.tool_response ?? event.tool_result
+                ?? { success: event.success, error: event.error, failure_type: event.failure_type });
+        }
+        catch {
+            debug('[marrow-hook] local loop guard state is unsafe');
+        }
+        if (shouldSkipAutoLog(event)) {
+            debug('[marrow-hook] recorded read-only result locally; skipped network event');
+            return;
+        }
+        const action = deriveAction(event);
+        if (!action)
+            return;
         const apiKey = resolvedEnv.apiKey || '';
         if (!apiKey) {
             debug(`[marrow-hook] skipped missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
             return;
         }
         const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
-        const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id);
-        const agentId = identity.agent_id;
-        const { success } = deriveToolOutcome(event);
+        const { success } = outcome;
         const toolName = normalizeToolName(getString(event.tool_name) || 'tool');
         const eventType = toolName === 'bash'
             ? success ? 'command_completed' : 'command_failed'

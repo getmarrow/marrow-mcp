@@ -136,7 +136,13 @@ v3.9.87 hardens the authenticated control-path canary against single-sample tran
 
 v3.9.86 was published with the adapter version constant still at `3.9.85`, so the strict canary identity check rejected it; it is deprecated — use `3.9.87`. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.87`, reload the host, review hook trust, and verify before claiming the updated client is active.
 
-## What's New in v3.9.88
+## What's New in v3.9.89
+
+v3.9.89 adds a default-enabled, private local session loop guard for every supported native-hook installation, independent of Marrow plan or fleet entitlement. It hashes bounded operation inputs and results into owner-only state under `~/.marrow`, stops unchanged successful verification repeats, stops the third unchanged poll or failed attempt, resets after meaningful mutation or a new owner prompt, and clears the session at close. Routine read-only results remain local, so ordinary checks add no Marrow API or database writes; one compact client-reported block marker is emitted only when a configured hook actually denies a repeat. Official Marrow tools remain excluded. `MARROW_AUTO_HOOK=false` and the existing owner local-control disable remain the explicit opt-outs.
+
+The pre-action path now reuses a valid runtime-created decision and calls Think only when the runtime completion contract explicitly requires decision creation. Setup reports the loop guard as configured without claiming live enforcement before host restart, trust review, and an observed hook invocation. `marrow-mcp loop-guard-self-test` verifies the local behavior against isolated temporary state without touching the user's ledger. SDK `3.7.62` and installer `0.1.57` are unchanged.
+
+### Earlier v3.9.88 changes
 
 v3.9.88 makes the lifecycle spool self-healing so users never need a manual `drain-spool` for ordinary failures. Dead letters are now classified: authentication rejections (401/403) stay `attention_required` with credential-restore guidance and are never auto-retried; conflicts (409) are marked `server_owned` because the server already holds durable evidence for that event id, and are never replayed; every other dead letter (transport, schema, or legacy rows without a status) is `recoverable` and retried automatically by the passive nudge — at most 5 events per nudge, 3 recovery attempts each, with a 15-minute cooldown between attempts, inside the existing bounded nudge budget. Recovery bookkeeping stays local and never changes the server request. `spool-status` gains `recoverable`, `server_owned`, and `recovery_exhausted` counts, and `failed` now counts only auth-class dead letters that genuinely need the operator. Explicit `drain-spool` keeps full authority: it still retries every operator-fixable dead letter including the auth class, clears recovery exhaustion for a fresh budget, and skips server-owned events. SDK `3.7.62` and installer `0.1.56` are unchanged.
 
