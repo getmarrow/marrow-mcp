@@ -10,6 +10,7 @@ const habit_loop_copy_1 = require("./habit-loop-copy");
 const node_fs_1 = require("node:fs");
 const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
+const session_loop_guard_1 = require("./session-loop-guard");
 exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const SESSION_END_TIMEOUT_MS = 900;
@@ -96,12 +97,17 @@ async function runSessionHookCommand(input) {
             return;
         }
         const resolved = identity.environment;
+        const source = readStopHookSource(input);
+        const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+        const agentId = identity.agent_id;
+        try {
+            (0, session_loop_guard_1.clearSessionLoopGuard)({ sessionId, agentId, harness: identity.harness });
+        }
+        catch { /* session close remains best effort */ }
         if (!resolved.apiKey)
             return;
         const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
-        const source = readStopHookSource(input);
-        const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id || undefined;
-        const agentId = identity.agent_id;
         const workflowId = (0, hook_contract_1.stableSessionWorkflowId)(sessionId, identity.harness === 'cursor'
             ? [source.conversation_id, source.generation_id, source.tool_use_id]
             : identity.harness === 'cline'

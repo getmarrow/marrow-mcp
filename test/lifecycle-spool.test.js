@@ -574,15 +574,15 @@ test('native hook activity stays client-self-reported and cannot emit certificat
   }
 });
 
-test('pre-action and result hooks share tool correlation while sessions share workflow identity', () => {
+test('tool correlation is stable across host tool-use ids and changes with canonical operation input', () => {
   const event = {
     session_id: 'session-one',
     tool_use_id: 'tool-use-one',
     tool_name: 'Bash',
     tool_input: { command: 'deploy' },
   };
-  assert.equal(stableToolCorrelation(event), stableToolCorrelation({ ...event, tool_input: { command: 'changed after execution' } }));
-  assert.notEqual(stableToolCorrelation(event), stableToolCorrelation({ ...event, tool_use_id: 'tool-use-two' }));
+  assert.notEqual(stableToolCorrelation(event), stableToolCorrelation({ ...event, tool_input: { command: 'changed after execution' } }));
+  assert.equal(stableToolCorrelation(event), stableToolCorrelation({ ...event, tool_use_id: 'tool-use-two' }));
   assert.equal(stableSessionWorkflowId('session-one'), stableSessionWorkflowId('session-one', 'other'));
 });
 

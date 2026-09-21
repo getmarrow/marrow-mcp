@@ -29,6 +29,7 @@ import {
   stableSessionWorkflowId,
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
+import { advanceSessionInstructionEpoch } from './session-loop-guard';
 
 export const CONTEXT_HOOK_COMMAND = CONTRACT_CONTEXT_HOOK_COMMAND;
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
@@ -639,6 +640,17 @@ export async function runContextHookCommand(): Promise<void> {
 
     const identity = resolveNativeHookIdentity(process.argv[2]);
     const resolvedEnv = identity.environment;
+    const sessionId = resolvedEnv.sessionId || asString(event.session_id)
+      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+    const agentId = identity.agent_id;
+    try {
+      advanceSessionInstructionEpoch({ sessionId, agentId, harness: identity.harness });
+    } catch {
+      debug('[marrow-context-hook] local loop guard state is unsafe');
+      emitNoContext();
+      process.exit(0);
+      return;
+    }
     const apiKey = resolvedEnv.apiKey || '';
     if (!apiKey) {
       debug(`[marrow-context-hook] missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
@@ -648,8 +660,6 @@ export async function runContextHookCommand(): Promise<void> {
     }
 
     const baseUrl = validateBaseUrl(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
-    const sessionId = resolvedEnv.sessionId || asString(event.session_id);
-    const agentId = identity.agent_id;
 
     const passiveBriefInput = inferPassiveBriefInput(prompt);
     const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);

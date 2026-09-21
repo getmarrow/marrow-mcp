@@ -86,11 +86,17 @@ function stringValue(value: unknown): string | undefined {
 }
 
 export function normalizeHookToolName(value: unknown): string {
-  return String(value || '').replace(/^mcp__/, '').replace(/^MCP:/i, '').trim().toLowerCase();
+  const raw = String(value || '').trim();
+  const withoutNamespace = raw.replace(/^functions\./i, '');
+  const mapped = /^(?:exec|exec_command)$/i.test(withoutNamespace) ? 'bash'
+    : /^(?:apply_patch|write_file)$/i.test(withoutNamespace) ? 'edit'
+    : /^(?:view_image|read_file)$/i.test(withoutNamespace) ? 'read_file'
+    : withoutNamespace;
+  return mapped.replace(/^mcp__/, '').replace(/^MCP:/i, '').trim().toLowerCase();
 }
 
 export function isOfficialMarrowMcpTool(value: unknown): boolean {
-  const tool = String(value || '').trim();
+  const tool = String(value || '').trim().replace(/^functions\./i, '');
   return /^mcp__marrow__marrow_[a-z0-9_]+$/i.test(tool)
     || /^MCP:(?:marrow:)?marrow_[a-z0-9_]+$/i.test(tool)
     || /^mcp_marrow_marrow_[a-z0-9_]+$/i.test(tool);
@@ -122,7 +128,7 @@ export function hookToolCommand(event: ToolPolicyEvent): string {
   if (typeof event.tool_input === 'string') return event.tool_input.trim();
   const input = asRecord(event.tool_input);
   if (!input) return '';
-  for (const key of ['command', 'description', 'query', 'path', 'file_path', 'url', 'name']) {
+  for (const key of ['command', 'cmd', 'description', 'query', 'path', 'file_path', 'url', 'name']) {
     const value = stringValue(input[key]);
     if (value) return value;
   }
@@ -164,6 +170,8 @@ export function isReadOnlyToolEvent(event: ToolPolicyEvent): boolean {
   const command = hookToolCommand(event).replace(/\s+/g, ' ').trim();
   if ((tool === 'bash' || tool === 'run_terminal_command') && command && !hasCompoundShellSyntax(command) && !hasWriteLikeShellSyntax(command)) {
     if (/^(?:node|npm)\s+(?:-v|--version)$/i.test(command)) return true;
+    if (/^(?:npm|pnpm|yarn)\s+(?:test|audit|run\s+(?:test|check|lint|typecheck|build))(?:\s|$)/i.test(command)) return true;
+    if (/^(?:node\s+--test|npx\s+(?:vitest|tsc\s+--noemit)|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest)|cargo\s+(?:test|check)|go\s+test)(?:\s|$)/i.test(command)) return true;
     if (/^git\s+(?:status|diff|show|log|branch|rev-parse|ls-files|ls-remote)(?:\s|$)/i.test(command)) return true;
     const firstToken = command.split(/[\s|;&]+/, 1)[0]?.toLowerCase();
     if (firstToken && READ_ONLY_BASH_COMMANDS.has(firstToken)) return true;

@@ -13,6 +13,7 @@ import {
   stableSessionWorkflowId,
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
+import { clearSessionLoopGuard } from './session-loop-guard';
 
 export const SESSION_HOOK_COMMAND = SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
@@ -108,11 +109,13 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     if (process.env.MARROW_AUTO_HOOK === 'false') return;
     try { if (!readLocalControlState().enabled) return; } catch { return; }
     const resolved = identity.environment;
+    const source = readStopHookSource(input);
+    const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+    const agentId = identity.agent_id;
+    try { clearSessionLoopGuard({ sessionId, agentId, harness: identity.harness }); } catch { /* session close remains best effort */ }
     if (!resolved.apiKey) return;
     const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
-    const source = readStopHookSource(input);
-    const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id || undefined;
-    const agentId = identity.agent_id;
     const workflowId = stableSessionWorkflowId(
       sessionId,
       identity.harness === 'cursor'

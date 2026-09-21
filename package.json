@@ -1,6 +1,6 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.88",
+  "version": "3.9.89",
   "mcpName": "io.github.getmarrow/marrow",
   "description": "Runtime control, proof, and fleet intelligence for MCP-compatible AI agents.",
   "bin": {
@@ -53,6 +53,7 @@
     "category": "agent_fleet_governance_and_control_layer",
     "positioning": "agent_fleet_governance_and_control_layer",
     "role": "mcp-runtime-control-and-proof-server",
+    "localSessionLoopGuard": "default-enabled for supported native hooks; private hashed state; explicit owner opt-out",
     "operatorApprovalRequired": true,
     "privacy": "No raw prompts, source code, credentials, or customer data are accepted by public discovery.",
     "governanceFit": "https://getmarrow.ai/.well-known/marrow.json",

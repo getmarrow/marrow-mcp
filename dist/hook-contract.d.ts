@@ -1,8 +1,8 @@
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
-export declare const MCP_ADAPTER_VERSION = "3.9.88";
-export declare const NATIVE_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*";
+export declare const MCP_ADAPTER_VERSION = "3.9.89";
+export declare const NATIVE_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*";
 export declare const GROK_NATIVE_HOOK_MATCHER = "run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video";
-export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.88";
+export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.89";
 export declare const CONTEXT_HOOK_COMMAND: string;
 export declare const PRE_ACTION_HOOK_COMMAND: string;
 export declare const ACTION_RESULT_HOOK_COMMAND: string;
@@ -42,6 +42,11 @@ export interface NativeHookIdentity {
  */
 export declare function resolveNativeHookIdentity(entrypoint: unknown, options?: Parameters<typeof resolveMarrowEnv>[0]): NativeHookIdentity;
 export declare function clientReportedHookLifecycleIdentity(identity: NativeHookIdentity): Pick<import('./lifecycle-spool').LifecycleEvent, 'harness' | 'agent_id' | 'source'>;
+type PrivateHookLoopGuardPayload = {
+    toolInput?: unknown;
+    toolResult?: unknown;
+};
+export declare function privateHookLoopGuardPayload(event: object): PrivateHookLoopGuardPayload;
 export declare function normalizeHookEventPayload(value: unknown): Record<string, unknown>;
 type HookSettings = Record<string, unknown>;
 export declare function findHookSettingsPath(startDir?: string): string;

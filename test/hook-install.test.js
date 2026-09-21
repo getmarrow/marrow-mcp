@@ -28,6 +28,10 @@ test('native matcher exempts only the exact official Marrow MCP namespace', () =
   assert.equal(matcher.test('mcp__marrow__marrow_commit'), false);
   assert.equal(matcher.test('mcp__marrow_evil__delete'), true);
   assert.equal(matcher.test('mcp__payments__refund'), true);
+  assert.equal(matcher.test('Read'), true);
+  assert.equal(matcher.test('Grep'), true);
+  assert.equal(matcher.test('functions.exec'), true);
+  assert.equal(matcher.test('functions.mcp__marrow__marrow_commit'), false);
 });
 
 function withSettings(value, callback) {

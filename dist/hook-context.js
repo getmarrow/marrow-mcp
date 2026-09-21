@@ -25,6 +25,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const guidance_cache_1 = require("./guidance-cache");
 const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
+const session_loop_guard_1 = require("./session-loop-guard");
 exports.CONTEXT_HOOK_COMMAND = hook_contract_1.CONTEXT_HOOK_COMMAND;
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 400;
@@ -573,6 +574,18 @@ async function runContextHookCommand() {
         }
         const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
         const resolvedEnv = identity.environment;
+        const sessionId = resolvedEnv.sessionId || asString(event.session_id)
+            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+        const agentId = identity.agent_id;
+        try {
+            (0, session_loop_guard_1.advanceSessionInstructionEpoch)({ sessionId, agentId, harness: identity.harness });
+        }
+        catch {
+            debug('[marrow-context-hook] local loop guard state is unsafe');
+            emitNoContext();
+            process.exit(0);
+            return;
+        }
         const apiKey = resolvedEnv.apiKey || '';
         if (!apiKey) {
             debug(`[marrow-context-hook] missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
@@ -581,8 +594,6 @@ async function runContextHookCommand() {
             return;
         }
         const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
-        const sessionId = resolvedEnv.sessionId || asString(event.session_id);
-        const agentId = identity.agent_id;
         const passiveBriefInput = inferPassiveBriefInput(prompt);
         const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
         const requestCorrelation = (0, hook_contract_1.stablePromptCorrelation)({ session_id: sessionId, prompt });

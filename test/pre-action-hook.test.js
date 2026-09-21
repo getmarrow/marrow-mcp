@@ -111,6 +111,7 @@ test('protected command variants fail closed without trusted Marrow credentials'
   delete process.env.MARROW_API_KEY;
   delete process.env.MARROW_KEY;
   process.env.HOME = join(directory, 'home');
+  mkdirSync(process.env.HOME, { recursive: true, mode: 0o700 });
   process.chdir(directory);
   try {
     for (const command of [
@@ -216,6 +217,7 @@ test('pre-action CLI fails closed without leaking malformed trusted endpoint con
         MARROW_BASE_URL: baseUrl,
         MARROW_AUTO_HOOK: 'true',
       };
+      mkdirSync(env.HOME, { recursive: true, mode: 0o700 });
       const result = spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js'), 'pre-action-hook'], {
         cwd: directory,
         env,
@@ -246,6 +248,7 @@ test('Codex pre-action CLI denies protected input without credentials and keeps 
       MARROW_KEY: '',
       MARROW_AUTO_HOOK: 'true',
     };
+    mkdirSync(env.HOME, { recursive: true, mode: 0o700 });
     const result = spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js'), 'codex-pre-action-hook'], {
       cwd: directory,
       env,
@@ -280,20 +283,26 @@ test('look-alike Marrow MCP namespaces remain governed', () => {
 });
 
 test('protected pre-action hook rejects a verified permit with a mismatched identity', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-permit-mismatch-'));
   const originalFetch = globalThis.fetch;
   const originalWrite = process.stdout.write;
   const previous = {
     MARROW_API_KEY: process.env.MARROW_API_KEY,
     MARROW_BASE_URL: process.env.MARROW_BASE_URL,
+    HOME: process.env.HOME,
   };
   let output = '';
   process.env.MARROW_API_KEY = 'test-pre-action-key';
   process.env.MARROW_BASE_URL = 'https://api.example.test';
+  process.env.HOME = directory;
   process.stdout.write = (chunk) => { output += String(chunk); return true; };
   globalThis.fetch = async (url, init = {}) => {
     const pathname = new URL(String(url)).pathname;
     const body = init.body ? JSON.parse(String(init.body)) : {};
-    if (pathname === '/v1/agent/runtime') return Response.json({ data: { risk_gate: { allow: true, decision: 'allow', reasons: [] } } });
+    if (pathname === '/v1/agent/runtime') return Response.json({ data: {
+      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      completion_contract: { decision_creation_required: true },
+    } });
     if (pathname === '/v1/agent/think') return Response.json({ data: { decision_id: 'decision-one' } });
     if (pathname === '/v1/agent/enforcement' && body.operation === 'issue') {
       return Response.json({ data: { permit_id: 'permit-issued', permit: 'signed-permit' } });
@@ -316,6 +325,7 @@ test('protected pre-action hook rejects a verified permit with a mismatched iden
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -338,6 +348,7 @@ test('native enforcement ignores repository-local Marrow credentials', async () 
   delete process.env.MARROW_API_KEY;
   delete process.env.MARROW_KEY;
   process.env.HOME = join(directory, 'home');
+  mkdirSync(process.env.HOME, { recursive: true, mode: 0o700 });
   process.chdir(directory);
   let output = '';
   process.stdout.write = (chunk) => { output += String(chunk); return true; };
@@ -412,6 +423,7 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
     MARROW_AGENT_ID: process.env.MARROW_AGENT_ID,
     MARROW_SESSION_ID: process.env.MARROW_SESSION_ID,
     MARROW_EVENT_SPOOL_PATH: process.env.MARROW_EVENT_SPOOL_PATH,
+    HOME: process.env.HOME,
   };
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-pre-action-'));
   const calls = [];
@@ -421,6 +433,7 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
   process.env.MARROW_AGENT_ID = 'agent-one';
   process.env.MARROW_SESSION_ID = 'session-one';
   process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
+  process.env.HOME = directory;
   process.stdout.write = (chunk) => {
     output += String(chunk);
     return true;
@@ -431,15 +444,16 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
     if (pathname !== '/v1/agent/integrations/events') calls.push({ pathname, body, signal: init.signal });
     if (pathname === '/v1/agent/runtime') {
       return Response.json({ data: {
+        decision_id: 'decision-runtime',
+        runtime_authorization: { id: 'gate-one', decision_id: 'decision-runtime', decision_creation_required: false },
+        completion_contract: { decision_id: 'decision-runtime', decision_creation_required: false },
         risk_gate: { allow: true, decision: 'allow', reasons: [] },
         gate_receipt_id: 'gate-one',
         gate_receipt: { id: 'gate-one' },
         proof_pack: { fields: ['command', 'exit_code'] },
       } });
     }
-    if (pathname === '/v1/agent/think') {
-      return Response.json({ data: { decision_id: 'decision-one', intelligence: {}, stream_url: '' } });
-    }
+    if (pathname === '/v1/agent/think') throw new Error('runtime-created decision must be reused without Think');
     if (pathname === '/v1/agent/enforcement' && body.operation === 'issue') {
       return Response.json({ data: { permit_id: 'permit-one', permit: 'signed-permit' } });
     }
@@ -458,21 +472,18 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
     });
     assert.deepEqual(calls.map((entry) => entry.pathname), [
       '/v1/agent/runtime',
-      '/v1/agent/think',
       '/v1/agent/enforcement',
       '/v1/agent/enforcement',
     ]);
-    assert.equal(calls[2].body.decision_id, 'decision-one');
-    assert.equal(calls[2].body.gate_receipt_id, 'gate-one');
+    assert.equal(calls[1].body.decision_id, 'decision-runtime');
+    assert.equal(calls[1].body.gate_receipt_id, 'gate-one');
     assert.equal(calls[0].body.target, calls[1].body.target);
-    assert.equal(calls[1].body.target, calls[2].body.target);
     assert.equal(calls[0].body.target, 'production:deploy');
     assert.notEqual(calls[0].body.target, 'tool-one');
     assert.deepEqual(calls[0].body.surfaces, calls[1].body.surfaces);
     assert.deepEqual(calls[1].body.surfaces, calls[2].body.surfaces);
-    assert.deepEqual(calls[2].body.surfaces, calls[3].body.surfaces);
-    assert.equal(calls[3].body.operation, 'verify');
-    assert.equal(calls[3].body.permit, 'signed-permit');
+    assert.equal(calls[2].body.operation, 'verify');
+    assert.equal(calls[2].body.permit, 'signed-permit');
     assert.equal(calls.every((entry) => entry.signal instanceof AbortSignal), true);
     assert.equal(new Set(calls.map((entry) => entry.signal)).size, calls.length);
     const result = JSON.parse(output);

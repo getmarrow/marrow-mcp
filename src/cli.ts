@@ -88,13 +88,14 @@ import { redactSensitiveText, redactSensitiveValue } from './redact';
 import { cachedStatusPayload, readStatusCache, writeStatusCache } from './status-cache';
 import { formatHabitLoopCopy } from './habit-loop-copy';
 import { hostCapabilityInstructions, resolveHostCapability } from './host-capability';
+import { runSessionLoopGuardSelfTest } from './session-loop-guard';
 import type { MarrowAutoResult } from './index';
 import type { ThinkResult, MarrowMemory } from './types';
 
 // Parse CLI args
-function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean } {
+function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean } {
   const args = process.argv.slice(2);
-  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean } = {};
+  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
@@ -123,6 +124,9 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     }
     if (args[i] === 'ping' || args[i] === '--ping') {
       result.ping = true;
+    }
+    if (args[i] === 'loop-guard-self-test' || args[i] === '--loop-guard-self-test') {
+      result.loopGuardSelfTest = true;
     }
   }
   return result;
@@ -320,6 +324,8 @@ ${MARROW_BLOCK_END}`;
   }
 
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
+  process.stdout.write('Configured private local session loop guard for supported native hook events. It becomes active only after host restart/trust review and an actual hook invocation; setup alone does not prove enforcement.\n');
+  process.stdout.write('Offline verification: marrow-mcp loop-guard-self-test (uses isolated temporary state and does not touch the user ledger).\n');
   process.stdout.write('Set MARROW_AUTO_HOOK=false to disable passive hooks.\n');
   process.stdout.write('Set MARROW_PASSIVE_BRIEF=false to disable automatic decision briefs, or MARROW_PASSIVE_BRIEF=always to brief every prompt.\n');
   process.stdout.write('Set MARROW_HOOK_DEBUG=true for write-side hook diagnostics, or MARROW_CONTEXT_HOOK_DEBUG=true for prompt-context diagnostics.\n');
@@ -426,6 +432,8 @@ if (cliArgs.hook) {
   void runSpoolCommand(true);
 } else if (cliArgs.ping) {
   void runPingCommand();
+} else if (cliArgs.loopGuardSelfTest) {
+  process.stdout.write(`${JSON.stringify(runSessionLoopGuardSelfTest(), null, 2)}\n`);
 } else if (cliArgs.setup) {
   runSetup();
 } else {

@@ -4,8 +4,8 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 
-export const MCP_ADAPTER_VERSION = '3.9.88';
-export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|mcp__(?!marrow__marrow_).*';
+export const MCP_ADAPTER_VERSION = '3.9.89';
+export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*';
 export const GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
 const hookCommand = (entrypoint: string) => `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp ${entrypoint}`;
@@ -21,7 +21,7 @@ export const GROK_FIXED_DENIAL = 'Marrow blocked this protected action.';
 export const GROK_LAUNCH_FAILURE = 'Marrow governance adapter was unavailable; this action is blocked.';
 const GROK_PRE_ACTION_GUARD_SOURCE = [
   'const {spawn}=require("node:child_process");',
-  `const valid=new Set([${JSON.stringify('{"decision":"allow"}')},${JSON.stringify(`{"decision":"deny","reason":"${GROK_FIXED_DENIAL}"}`)}]);`,
+  `const valid=value=>{try{const parsed=JSON.parse(value);return JSON.stringify(parsed)===value&&parsed&&Object.keys(parsed).every(key=>["decision","reason"].includes(key))&&(parsed.decision==="allow"&&parsed.reason===undefined||parsed.decision==="deny"&&typeof parsed.reason==="string"&&parsed.reason.length>0&&parsed.reason.length<=500);}catch{return false;}};`,
   'let child=null,timer=null,done=false,input=[],inputBytes=0,output="",outputBytes=0;',
   `const fail=()=>{if(done)return;done=true;if(timer)clearTimeout(timer);if(child&&!child.killed)child.kill("SIGKILL");process.stderr.write(${JSON.stringify(`${GROK_LAUNCH_FAILURE}\n`)});process.exitCode=2;process.stdin.destroy();};`,
   'process.stdin.on("error",fail);',
@@ -31,7 +31,7 @@ const GROK_PRE_ACTION_GUARD_SOURCE = [
   'timer=setTimeout(fail,5000);',
   'child.stdout.on("data",chunk=>{if(done)return;outputBytes+=chunk.length;if(outputBytes>512){fail();return;}output+=chunk.toString("utf8");});',
   'child.on("error",fail);child.stdin.on("error",fail);',
-  'child.on("close",code=>{if(done)return;if(code!==0||!valid.has(output)){fail();return;}done=true;if(timer)clearTimeout(timer);process.stdout.write(output);});',
+  'child.on("close",code=>{if(done)return;if(code!==0||!valid(output)){fail();return;}done=true;if(timer)clearTimeout(timer);process.stdout.write(output);});',
   'child.stdin.end(Buffer.concat(input));}catch{fail();}});',
 ].join('');
 export const GROK_PRE_ACTION_GUARD_COMMAND = `node -e '${GROK_PRE_ACTION_GUARD_SOURCE}'`;
@@ -47,7 +47,7 @@ export const WINDSURF_SESSION_END_HOOK_COMMAND = hookCommand('windsurf-session-h
 export const GEMINI_PRE_ACTION_HOOK_COMMAND = hookCommand('gemini-pre-action-hook');
 export const GEMINI_ACTION_RESULT_HOOK_COMMAND = hookCommand('gemini-hook');
 export const GEMINI_SESSION_END_HOOK_COMMAND = hookCommand('gemini-session-hook');
-const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end'] as const;
+const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end', 'session_loop_guard'] as const;
 
 export type NativeHookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
 
@@ -147,6 +147,21 @@ const CURSOR_EVENT_NAMES: Record<string, string> = {
   stop: 'Stop',
 };
 
+type PrivateHookLoopGuardPayload = { toolInput?: unknown; toolResult?: unknown };
+const PRIVATE_HOOK_LOOP_GUARD_PAYLOAD = new WeakMap<object, PrivateHookLoopGuardPayload>();
+
+function attachPrivateHookLoopGuardPayload(
+  normalized: Record<string, unknown>,
+  payload: PrivateHookLoopGuardPayload,
+): Record<string, unknown> {
+  PRIVATE_HOOK_LOOP_GUARD_PAYLOAD.set(normalized, payload);
+  return normalized;
+}
+
+export function privateHookLoopGuardPayload(event: object): PrivateHookLoopGuardPayload {
+  return PRIVATE_HOOK_LOOP_GUARD_PAYLOAD.get(event) || {};
+}
+
 function boundedCorrelationId(value: unknown): string | undefined {
   const candidate = typeof value === 'string' ? value.trim().slice(0, 128) : '';
   return candidate && /^[A-Za-z0-9._:-]+$/.test(candidate) ? candidate : undefined;
@@ -224,7 +239,10 @@ function normalizeGeminiHookEvent(source: Record<string, unknown>): Record<strin
     ? Math.max(0, Math.min(300_000, Math.round(source.duration_ms)))
     : undefined;
   if (duration !== undefined) normalized.duration_ms = duration;
-  return normalized;
+  return attachPrivateHookLoopGuardPayload(normalized, {
+    toolInput: source.tool_input,
+    toolResult: source.tool_response,
+  });
 }
 
 function normalizeGrokHookEvent(source: Record<string, unknown>): Record<string, unknown> {
@@ -271,7 +289,10 @@ function normalizeGrokHookEvent(source: Record<string, unknown>): Record<string,
     ? Math.max(0, Math.min(300_000, Math.round(source.durationMs)))
     : undefined;
   if (duration !== undefined) normalized.duration_ms = duration;
-  return normalized;
+  return attachPrivateHookLoopGuardPayload(normalized, {
+    toolInput: source.toolInput,
+    toolResult: source.toolResult,
+  });
 }
 
 export function normalizeHookEventPayload(value: unknown): Record<string, unknown> {
@@ -499,7 +520,7 @@ function exactHookDescriptors(
 export function localHookConfigurationFingerprint(startDir = process.cwd()): string {
   const settings = readHookSettings(startDir);
   const contract = {
-    schema: 'marrow-claude-native-hooks.v3',
+    schema: 'marrow-claude-native-hooks.v4',
     adapter_version: MCP_ADAPTER_VERSION,
     configured_stages: LOCAL_CONFIGURED_HOOK_STAGES,
     configured: {
@@ -508,6 +529,8 @@ export function localHookConfigurationFingerprint(startDir = process.cwd()): str
       action_result_success: hasExactCommandHook(settings, 'PostToolUse', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
       action_result_failure: hasExactCommandHook(settings, 'PostToolUseFailure', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
       session_end: hasExactCommandHook(settings, 'Stop', SESSION_END_HOOK_COMMAND),
+      session_loop_guard: hasExactCommandHook(settings, 'PreToolUse', PRE_ACTION_HOOK_COMMAND, NATIVE_HOOK_MATCHER)
+        && hasExactCommandHook(settings, 'PostToolUse', ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK_MATCHER),
     },
     descriptors: {
       prompt: exactHookDescriptors(settings, 'UserPromptSubmit', CONTEXT_HOOK_COMMAND),
@@ -527,8 +550,19 @@ export function localHookConfigurationFingerprint(startDir = process.cwd()): str
   return createHash('sha256').update(JSON.stringify(contract)).digest('hex');
 }
 
+function stableCanonical(value: unknown, depth = 0): unknown {
+  if (depth > 8) return '[depth]';
+  if (Array.isArray(value)) return value.slice(0, 128).map((item) => stableCanonical(item, depth + 1));
+  if (value && typeof value === 'object') {
+    const source = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(source).sort().slice(0, 128)
+      .map((key) => [key, stableCanonical(source[key], depth + 1)]));
+  }
+  return typeof value === 'string' ? value.slice(0, 16_384) : value;
+}
+
 function stableHash(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 32);
+  return createHash('sha256').update(JSON.stringify(stableCanonical(value))).digest('hex').slice(0, 32);
 }
 
 export function stableToolCorrelation(event: {
@@ -539,9 +573,8 @@ export function stableToolCorrelation(event: {
 }): string {
   return stableHash([
     event.session_id || '',
-    event.tool_use_id || '',
     event.tool_name || 'tool',
-    event.tool_use_id ? null : event.tool_input ?? null,
+    event.tool_input ?? null,
   ]);
 }
 

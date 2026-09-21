@@ -2,6 +2,7 @@ import { marrowAgentRuntime, marrowEnforcement, marrowThink, validateBaseUrl } f
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { CONTROL_BYPASS_ACTION, readLocalControlState } from './control-state';
 import { runtimeAuthorizationReceiptId } from './runtime-contract';
+import { consultSessionLoopGuard, type LoopGuardOperation } from './session-loop-guard';
 import { hookToolCommand, isMcpHookTool, isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool, isProtectedShellMutation, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import {
   clientReportedHookLifecycleIdentity,
@@ -37,12 +38,38 @@ type PreActionControlResult = {
   enforcementError?: string;
 };
 
+const SAFE_DECISION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+
 export function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null {
   if (harness === 'windsurf') return null;
   if (harness === 'cursor') return { permission: 'allow' };
   if (harness === 'cline') return { cancel: false };
   if (harness === 'gemini' || harness === 'grok') return { decision: 'allow' };
   return {};
+}
+
+export function localLoopGuardDenyOutput(
+  harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client',
+  reason: string,
+): Record<string, unknown> | null {
+  const bounded = reason.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+  if (harness === 'windsurf') return null;
+  if (harness === 'cursor') return { permission: 'deny', user_message: bounded, agent_message: bounded };
+  if (harness === 'cline') return { cancel: true, errorMessage: bounded };
+  if (harness === 'gemini' || harness === 'grok') return { decision: 'deny', reason: bounded };
+  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: bounded } };
+}
+
+function emitLoopGuardDenial(
+  harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client',
+  reason: string,
+): void {
+  if (harness === 'windsurf') {
+    process.exitCode = 2;
+    process.stderr.write(`${reason.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500)}\n`);
+    return;
+  }
+  process.stdout.write(JSON.stringify(localLoopGuardDenyOutput(harness, reason)));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -336,19 +363,6 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     return;
   }
   const classified = classifyTool(source);
-  if (classified.readOnly) {
-    if (identity.harness === 'windsurf') {
-      process.exitCode = 0;
-      return;
-    }
-    process.stdout.write(JSON.stringify(
-      identity.harness === 'cursor' ? { permission: 'allow' }
-        : identity.harness === 'cline' ? { cancel: false }
-        : ['gemini', 'grok'].includes(identity.harness) ? { decision: 'allow' }
-        : {},
-    ));
-    return;
-  }
   let localControl;
   try {
     localControl = readLocalControlState();
@@ -386,9 +400,56 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   }
   let resolved = identity.environment;
   const enforcementRequired = classified.protected || ['windsurf', 'gemini', 'grok'].includes(identity.harness);
-  const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
+  const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
   const agentId = identity.agent_id;
   const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
+  const loopOperation: LoopGuardOperation = {
+    sessionId,
+    agentId,
+    harness: identity.harness,
+    toolName: source.tool_name,
+    toolInput: source.tool_input,
+    invocationId: source.tool_use_id,
+    readOnly: classified.readOnly,
+  };
+  let loopDecision;
+  try {
+    loopDecision = consultSessionLoopGuard(loopOperation);
+  } catch {
+    emitLoopGuardDenial(identity.harness, 'Marrow local loop guard state is unsafe. Repair the private owner-only state before retrying.');
+    return;
+  }
+  if (!loopDecision.allow) {
+    if (resolved.apiKey) {
+      try {
+        const loopBaseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
+        await recordLifecycleEvent({ apiKey: resolved.apiKey, baseUrl: loopBaseUrl, event: {
+          event_id: `loop-block-${loopDecision.receipt.slice(4)}`,
+          event_type: 'pre_action_checked',
+          ...clientReportedHookLifecycleIdentity(identity),
+          session_id: sessionId,
+          workflow_id: stableSessionWorkflowId(sessionId),
+          correlation_id: loopDecision.receipt,
+          action: 'local session loop guard blocked an unchanged repeated operation',
+          target: 'marrow:loop-guard',
+          surfaces: ['workspace'],
+          risk_level: 'low',
+          outcome_state: 'pending',
+          intervention_disposition: 'followed',
+          action_changed: true,
+        } }).catch(() => null);
+      } catch { /* local denial remains authoritative when telemetry is unavailable */ }
+    }
+    emitLoopGuardDenial(identity.harness, loopDecision.reason || `Marrow local loop guard blocked this unchanged repeat. Receipt: ${loopDecision.receipt}.`);
+    return;
+  }
+  if (classified.readOnly) {
+    const allow = localControlAllowOutput(identity.harness);
+    if (allow === null) process.exitCode = 0;
+    else process.stdout.write(JSON.stringify(allow));
+    return;
+  }
 
   let baseUrl: string;
   try {
@@ -437,18 +498,38 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       surfaces: classified.surfaces,
     }, sessionId, agentId, signal);
     const gateReceiptId = runtimeAuthorizationReceiptId(runtime);
-    const decision = await marrowThink(resolved.apiKey, baseUrl, {
-      action: classified.action,
-      target: classified.target,
-      surfaces: classified.surfaces,
-      type: classified.type,
-      source_kind: 'integration',
-      source_meta: {
-        harness: identity.harness,
-        correlation_id: correlation,
-        gate_receipt_id: gateReceiptId,
-      },
-    }, sessionId, agentId, signal);
+    const runtimeIds = [runtime.decision_id, runtime.completion_contract?.decision_id, runtime.runtime_authorization?.decision_id]
+      .filter((value): value is string => typeof value === 'string' && SAFE_DECISION_ID.test(value));
+    const distinctRuntimeIds = [...new Set(runtimeIds)];
+    const creationRequired = runtime.completion_contract?.decision_creation_required
+      ?? runtime.runtime_authorization?.decision_creation_required;
+    if (distinctRuntimeIds.length > 1) {
+      return { runtime, permit: null, protectedRisk: enforcementRequired, enforcementError: 'Marrow runtime returned conflicting decision identifiers.' };
+    }
+    let decisionId = distinctRuntimeIds[0] || null;
+    if (creationRequired === true) {
+      const decision = await marrowThink(resolved.apiKey, baseUrl, {
+        action: classified.action,
+        target: classified.target,
+        surfaces: classified.surfaces,
+        type: classified.type,
+        source_kind: 'integration',
+        source_meta: {
+          harness: identity.harness,
+          correlation_id: correlation,
+          gate_receipt_id: gateReceiptId,
+        },
+      }, sessionId, agentId, signal);
+      decisionId = SAFE_DECISION_ID.test(decision.decision_id) ? decision.decision_id : null;
+    }
+    if (!decisionId) {
+      return {
+        runtime,
+        permit: null,
+        protectedRisk: enforcementRequired,
+        ...(enforcementRequired ? { enforcementError: 'Marrow runtime did not provide a valid decision and did not authorize decision creation.' } : {}),
+      };
+    }
     const issued = await marrowEnforcement(resolved.apiKey, baseUrl, {
       operation: 'issue',
       action: classified.action,
@@ -456,7 +537,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       target: classified.target,
       correlation_id: correlation,
       harness: identity.harness,
-      decision_id: decision.decision_id,
+      decision_id: decisionId,
       gate_receipt_id: gateReceiptId,
       proof_requirements: runtime.proof_pack?.fields || [],
       surfaces: classified.surfaces,
