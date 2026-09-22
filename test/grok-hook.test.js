@@ -205,7 +205,7 @@ test('Grok installed pre-action guard rejects launcher failure and stdout pollut
   assert.equal(warned.status, 0);
   assert.equal(warned.stdout, '{"decision":"allow"}');
   assert.equal(warned.stderr, `${MARROW_OUTAGE_WARNING}\n`);
-  assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /setTimeout\(fail,5000\)/);
+  assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /setTimeout\(fail,10000\)/);
   assert.doesNotMatch(GROK_PRE_ACTION_GUARD_COMMAND, /\btimeout\b/);
   assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /grok-pre-action-hook/);
 });

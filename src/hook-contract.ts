@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 
-export const MCP_ADAPTER_VERSION = '3.9.90';
+export const MCP_ADAPTER_VERSION = '3.9.91';
 export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*';
 export const GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
@@ -30,7 +30,7 @@ const GROK_PRE_ACTION_GUARD_SOURCE = [
   'process.stdin.on("data",chunk=>{const value=Buffer.from(chunk);inputBytes+=value.length;if(inputBytes>65536){fail();return;}input.push(value);});',
   'process.stdin.on("end",()=>{if(done)return;try{',
   `child=spawn(process.platform==="win32"?"npx.cmd":"npx",${JSON.stringify(['-y', `--package=${MCP_PACKAGE_SPEC}`, 'marrow-mcp', 'grok-pre-action-hook'])},{stdio:["pipe","pipe","pipe"]});`,
-  'timer=setTimeout(fail,5000);',
+  'timer=setTimeout(fail,10000);',
   'child.stdout.on("data",chunk=>{if(done)return;outputBytes+=chunk.length;if(outputBytes>512){fail();return;}output+=chunk.toString("utf8");});',
   'child.stderr.on("data",chunk=>{if(done)return;if(err.length<1024)err+=chunk.toString("utf8");});',
   'child.on("error",fail);child.stdin.on("error",fail);',

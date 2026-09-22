@@ -1,6 +1,12 @@
 import { marrowAgentRuntime, marrowEnforcement } from './index';
 import { MARROW_OUTAGE_WARNING } from './hook-contract';
 export { MARROW_OUTAGE_WARNING };
+export declare const PRE_ACTION_CONTROL_TIMEOUT_MS = 8000;
+export declare class PreActionControlTimeoutError extends Error {
+    readonly code = "request_timeout";
+    constructor();
+}
+export declare function isMarrowControlOutage(error: unknown): boolean;
 export type PreToolUseEvent = {
     session_id?: string;
     conversation_id?: string;

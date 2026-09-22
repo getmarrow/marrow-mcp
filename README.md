@@ -136,7 +136,11 @@ v3.9.87 hardens the authenticated control-path canary against single-sample tran
 
 v3.9.86 was published with the adapter version constant still at `3.9.85`, so the strict canary identity check rejected it; it is deprecated — use `3.9.87`. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.87`, reload the host, review hook trust, and verify before claiming the updated client is active.
 
-## What's New in v3.9.90
+## What's New in v3.9.91
+
+v3.9.91 keeps the unreachable-control allow, and stops treating every control failure as an outage. A rejected key, a permission denial, a malformed response, or any other reached-and-rejected control call still denies a protected action. Only a timeout, a network failure, or an unavailable service warns and allows. The pre-action wait is 8 seconds so the deployed auth grace can finish before the hook gives up. The published `3.9.90` package cannot deliver this distinction. SDK `3.7.63` is unchanged.
+
+### Previous release: v3.9.90
 
 v3.9.90 is a reliability fix for every supported native hook. When Marrow or the MCP control path is unreachable, the hook warns, allows the action, and leaves the record in the local spool so it is sent after Marrow accepts traffic again. A real block or review decision still stops the action. A missing local key, an unsafe local control file, and malformed input still stop it. The published `3.9.89` package cannot deliver this behavior. SDK `3.7.63` is unchanged. Installer `0.1.58` still pins MCP `3.9.89` until the installer release that follows this publish.
 
