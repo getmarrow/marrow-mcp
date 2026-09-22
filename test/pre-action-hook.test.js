@@ -5,7 +5,17 @@ const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
-const { classifyTool, grokPreActionHookOutput, runPreActionHookCommand } = require('../dist/hook-pre-action.js');
+const {
+  MARROW_OUTAGE_WARNING,
+  classifyTool,
+  clinePreActionHookOutput,
+  cursorPreActionHookOutput,
+  geminiPreActionHookOutput,
+  grokPreActionHookOutput,
+  preActionHookOutput,
+  runPreActionHookCommand,
+  windsurfPreActionDecision,
+} = require('../dist/hook-pre-action.js');
 const { deriveAction } = require('../dist/hook.js');
 const { normalizeHookEventPayload } = require('../dist/hook-contract.js');
 const { isReadOnlyToolEvent } = require('../dist/hook-tool-policy.js');
@@ -48,6 +58,32 @@ test('Grok pre-action maps protected review and unavailable proof to fixed priva
     permit: { verified: true },
     runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] } },
   }), { decision: 'allow' });
+});
+
+test('an outage allows every harness and keeps the private failure text out of the decision', () => {
+  const privateText = 'synthetic-private-service-text';
+  const outage = {
+    protectedRisk: true,
+    permit: null,
+    runtime: null,
+    outage: true,
+    enforcementError: privateText,
+  };
+  assert.deepEqual(grokPreActionHookOutput(outage), { decision: 'allow' });
+  assert.deepEqual(geminiPreActionHookOutput(outage), { decision: 'allow' });
+  assert.deepEqual(windsurfPreActionDecision(outage), { exitCode: 0, stderr: `${MARROW_OUTAGE_WARNING}\n` });
+  assert.deepEqual(cursorPreActionHookOutput(outage), {
+    permission: 'allow',
+    user_message: MARROW_OUTAGE_WARNING,
+    agent_message: MARROW_OUTAGE_WARNING,
+  });
+  assert.deepEqual(clinePreActionHookOutput(outage), { cancel: false });
+  const claude = preActionHookOutput(outage);
+  const codex = preActionHookOutput(outage, 'codex');
+  assert.equal(claude.hookSpecificOutput.permissionDecision, undefined);
+  assert.equal(codex.hookSpecificOutput.permissionDecision, undefined);
+  assert.match(claude.hookSpecificOutput.additionalContext, /queued locally/);
+  assert.equal(JSON.stringify({ claude, codex, grok: grokPreActionHookOutput(outage) }).includes(privateText), false);
 });
 
 test('pre-action and result hooks use the same privacy-safe action binding', () => {
@@ -490,6 +526,83 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
     assert.notEqual(result.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(result.hookSpecificOutput.additionalContext, /action permit verified/);
     assert.doesNotMatch(output, /signed-permit/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.stdout.write = originalWrite;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a received runtime block is denied before think when a later control call fails', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWrite = process.stdout.write;
+  const previous = {
+    MARROW_API_KEY: process.env.MARROW_API_KEY,
+    MARROW_BASE_URL: process.env.MARROW_BASE_URL,
+    MARROW_AGENT_ID: process.env.MARROW_AGENT_ID,
+    MARROW_SESSION_ID: process.env.MARROW_SESSION_ID,
+    MARROW_EVENT_SPOOL_PATH: process.env.MARROW_EVENT_SPOOL_PATH,
+    HOME: process.env.HOME,
+  };
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-pre-action-block-'));
+  const calls = [];
+  let output = '';
+  process.env.MARROW_API_KEY = 'test-pre-action-key';
+  process.env.MARROW_BASE_URL = 'https://api.example.test';
+  process.env.MARROW_AGENT_ID = 'agent-one';
+  process.env.MARROW_SESSION_ID = 'session-one';
+  process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
+  process.env.HOME = directory;
+  process.stdout.write = (chunk) => {
+    output += String(chunk);
+    return true;
+  };
+  globalThis.fetch = async (url, init = {}) => {
+    const pathname = new URL(String(url)).pathname;
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    if (pathname !== '/v1/agent/integrations/events') calls.push({ pathname, body, signal: init.signal });
+    if (pathname === '/v1/agent/runtime') {
+      return Response.json({ data: {
+        decision_id: 'decision-runtime',
+        runtime_authorization: { id: 'gate-one', decision_id: 'decision-runtime', decision_creation_required: true },
+        completion_contract: { decision_id: 'decision-runtime', decision_creation_required: true },
+        risk_gate: { allow: false, decision: 'block', reasons: [] },
+        gate_receipt_id: 'gate-one',
+        gate_receipt: { id: 'gate-one' },
+        proof_pack: { fields: ['command', 'exit_code'] },
+      } });
+    }
+    if (pathname === '/v1/agent/think') {
+      return new Response(JSON.stringify({ error: 'think failed' }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (pathname === '/v1/agent/enforcement' && body.operation === 'issue') {
+      return Response.json({ data: { permit_id: 'permit-one', permit: 'signed-permit' } });
+    }
+    if (pathname === '/v1/agent/enforcement' && body.operation === 'verify') {
+      return Response.json({ data: { permit_id: 'permit-one', verified: true } });
+    }
+    return Response.json({ data: { accepted: true } });
+  };
+
+  try {
+    await runPreActionHookCommand({
+      session_id: 'session-one',
+      tool_use_id: 'tool-one',
+      tool_name: 'Bash',
+      tool_input: { command: 'wrangler deploy production' },
+    });
+    assert.equal(calls.some((entry) => entry.pathname === '/v1/agent/think'), false);
+    assert.deepEqual(calls.map((entry) => entry.pathname), ['/v1/agent/runtime']);
+    const result = JSON.parse(output);
+    assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+    assert.doesNotMatch(output, /Marrow is offline/);
   } finally {
     globalThis.fetch = originalFetch;
     process.stdout.write = originalWrite;

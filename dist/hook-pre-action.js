@@ -1,5 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MARROW_OUTAGE_WARNING = void 0;
+exports.isMarrowOutage = isMarrowOutage;
 exports.localControlAllowOutput = localControlAllowOutput;
 exports.localLoopGuardDenyOutput = localLoopGuardDenyOutput;
 exports.classifyTool = classifyTool;
@@ -18,8 +20,12 @@ const runtime_contract_1 = require("./runtime-contract");
 const session_loop_guard_1 = require("./session-loop-guard");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
+Object.defineProperty(exports, "MARROW_OUTAGE_WARNING", { enumerable: true, get: function () { return hook_contract_1.MARROW_OUTAGE_WARNING; } });
 const MAX_INPUT_BYTES = 64 * 1024;
 const RUNTIME_TIMEOUT_MS = 3000;
+function isMarrowOutage(result) {
+    return result.outage === true;
+}
 const SAFE_DECISION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 function localControlAllowOutput(harness) {
     if (harness === 'windsurf')
@@ -124,6 +130,9 @@ function classifyTool(event) {
     };
 }
 function cursorPreActionHookOutput(result) {
+    if (isMarrowOutage(result)) {
+        return { permission: 'allow', user_message: hook_contract_1.MARROW_OUTAGE_WARNING, agent_message: hook_contract_1.MARROW_OUTAGE_WARNING };
+    }
     const { runtime, permit, protectedRisk } = result;
     const message = (value) => String(value || 'Marrow denied this action.')
         .replace(/[\u0000-\u001f\u007f]/g, ' ')
@@ -151,6 +160,8 @@ function cursorPreActionHookOutput(result) {
     return { permission: 'allow' };
 }
 function clinePreActionHookOutput(result) {
+    if (isMarrowOutage(result))
+        return { cancel: false };
     if (result.protectedRisk && (!result.runtime || !result.permit?.verified)) {
         const credentialsUnavailable = /credentials are unavailable/i.test(String(result.enforcementError || ''));
         return {
@@ -174,6 +185,8 @@ function clinePreActionHookOutput(result) {
     return { cancel: false };
 }
 function windsurfPreActionDecision(result) {
+    if (isMarrowOutage(result))
+        return { exitCode: 0, stderr: `${hook_contract_1.MARROW_OUTAGE_WARNING}\n` };
     const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
     const gate = result.runtime?.risk_gate;
     const denied = unavailable
@@ -188,6 +201,8 @@ function windsurfPreActionDecision(result) {
         : { exitCode: 0, stderr: '' };
 }
 function geminiPreActionHookOutput(result) {
+    if (isMarrowOutage(result))
+        return { decision: 'allow' };
     const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
     const gate = result.runtime?.risk_gate;
     const denied = unavailable
@@ -202,6 +217,8 @@ function geminiPreActionHookOutput(result) {
         : { decision: 'allow' };
 }
 function grokPreActionHookOutput(result) {
+    if (isMarrowOutage(result))
+        return { decision: 'allow' };
     const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
     const gate = result.runtime?.risk_gate;
     const denied = unavailable
@@ -221,6 +238,14 @@ function preActionHookOutput(result, harness = 'claude-code') {
         return geminiPreActionHookOutput(result);
     if (harness === 'grok')
         return grokPreActionHookOutput(result);
+    if (isMarrowOutage(result)) {
+        return {
+            hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                additionalContext: hook_contract_1.MARROW_OUTAGE_WARNING,
+            },
+        };
+    }
     const { runtime, permit, protectedRisk } = result;
     if (protectedRisk && (!runtime || !permit?.verified)) {
         return {
@@ -264,6 +289,8 @@ function emitDecision(result, harness = 'claude-code') {
             process.stderr.write(decision.stderr);
         return;
     }
+    if (result.outage)
+        process.stderr.write(`${hook_contract_1.MARROW_OUTAGE_WARNING}\n`);
     process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
 }
 async function withTimeout(operation) {
@@ -473,6 +500,10 @@ async function runPreActionHookCommand(input) {
             role: classified.role,
             surfaces: classified.surfaces,
         }, sessionId, agentId, signal);
+        const gate = runtime.risk_gate;
+        if (gate?.decision === 'block' || gate?.decision === 'review_required' || gate?.allow === false) {
+            return { runtime, permit: null, protectedRisk: enforcementRequired };
+        }
         const gateReceiptId = (0, runtime_contract_1.runtimeAuthorizationReceiptId)(runtime);
         const runtimeIds = [runtime.decision_id, runtime.completion_contract?.decision_id, runtime.runtime_authorization?.decision_id]
             .filter((value) => typeof value === 'string' && SAFE_DECISION_ID.test(value));
@@ -546,7 +577,8 @@ async function runPreActionHookCommand(input) {
         runtime: null,
         permit: null,
         protectedRisk: enforcementRequired,
-        enforcementError: 'Marrow governance timed out before this protected action. Retry instead of bypassing the gate.',
+        outage: true,
+        enforcementError: hook_contract_1.MARROW_OUTAGE_WARNING,
     }, identity.harness);
 }
 //# sourceMappingURL=hook-pre-action.js.map
