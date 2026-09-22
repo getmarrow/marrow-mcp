@@ -5,7 +5,17 @@ const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
-const { classifyTool, grokPreActionHookOutput, runPreActionHookCommand } = require('../dist/hook-pre-action.js');
+const {
+  MARROW_OUTAGE_WARNING,
+  classifyTool,
+  clinePreActionHookOutput,
+  cursorPreActionHookOutput,
+  geminiPreActionHookOutput,
+  grokPreActionHookOutput,
+  preActionHookOutput,
+  runPreActionHookCommand,
+  windsurfPreActionDecision,
+} = require('../dist/hook-pre-action.js');
 const { deriveAction } = require('../dist/hook.js');
 const { normalizeHookEventPayload } = require('../dist/hook-contract.js');
 const { isReadOnlyToolEvent } = require('../dist/hook-tool-policy.js');
@@ -48,6 +58,32 @@ test('Grok pre-action maps protected review and unavailable proof to fixed priva
     permit: { verified: true },
     runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] } },
   }), { decision: 'allow' });
+});
+
+test('an outage allows every harness and keeps the private failure text out of the decision', () => {
+  const privateText = 'synthetic-private-service-text';
+  const outage = {
+    protectedRisk: true,
+    permit: null,
+    runtime: null,
+    outage: true,
+    enforcementError: privateText,
+  };
+  assert.deepEqual(grokPreActionHookOutput(outage), { decision: 'allow' });
+  assert.deepEqual(geminiPreActionHookOutput(outage), { decision: 'allow' });
+  assert.deepEqual(windsurfPreActionDecision(outage), { exitCode: 0, stderr: `${MARROW_OUTAGE_WARNING}\n` });
+  assert.deepEqual(cursorPreActionHookOutput(outage), {
+    permission: 'allow',
+    user_message: MARROW_OUTAGE_WARNING,
+    agent_message: MARROW_OUTAGE_WARNING,
+  });
+  assert.deepEqual(clinePreActionHookOutput(outage), { cancel: false });
+  const claude = preActionHookOutput(outage);
+  const codex = preActionHookOutput(outage, 'codex');
+  assert.equal(claude.hookSpecificOutput.permissionDecision, undefined);
+  assert.equal(codex.hookSpecificOutput.permissionDecision, undefined);
+  assert.match(claude.hookSpecificOutput.additionalContext, /queued locally/);
+  assert.equal(JSON.stringify({ claude, codex, grok: grokPreActionHookOutput(outage) }).includes(privateText), false);
 });
 
 test('pre-action and result hooks use the same privacy-safe action binding', () => {

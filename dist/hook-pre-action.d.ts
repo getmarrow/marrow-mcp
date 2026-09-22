@@ -1,4 +1,6 @@
 import { marrowAgentRuntime, marrowEnforcement } from './index';
+import { MARROW_OUTAGE_WARNING } from './hook-contract';
+export { MARROW_OUTAGE_WARNING };
 export type PreToolUseEvent = {
     session_id?: string;
     conversation_id?: string;
@@ -14,7 +16,9 @@ type PreActionControlResult = {
     permit: Awaited<ReturnType<typeof marrowEnforcement>> | null;
     protectedRisk: boolean;
     enforcementError?: string;
+    outage?: boolean;
 };
+export declare function isMarrowOutage(result: PreActionControlResult): boolean;
 export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
 export declare function localLoopGuardDenyOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', reason: string): Record<string, unknown> | null;
 export declare function classifyTool(event: PreToolUseEvent): {
@@ -47,5 +51,4 @@ export declare function installPreActionHook(startDir?: string): {
     installed: boolean;
 };
 export declare function runPreActionHookCommand(input?: unknown): Promise<void>;
-export {};
 //# sourceMappingURL=hook-pre-action.d.ts.map
