@@ -7,15 +7,18 @@ const test = require('node:test');
 
 const {
   MARROW_OUTAGE_WARNING,
+  PreActionControlTimeoutError,
   classifyTool,
   clinePreActionHookOutput,
   cursorPreActionHookOutput,
   geminiPreActionHookOutput,
   grokPreActionHookOutput,
+  isMarrowControlOutage,
   preActionHookOutput,
   runPreActionHookCommand,
   windsurfPreActionDecision,
 } = require('../dist/hook-pre-action.js');
+const { MarrowRequestError } = require('../dist/request-reliability.js');
 const { deriveAction } = require('../dist/hook.js');
 const { normalizeHookEventPayload } = require('../dist/hook-contract.js');
 const { isReadOnlyToolEvent } = require('../dist/hook-tool-policy.js');
@@ -58,6 +61,27 @@ test('Grok pre-action maps protected review and unavailable proof to fixed priva
     permit: { verified: true },
     runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] } },
   }), { decision: 'allow' });
+});
+
+test('a reached control rejection is not an outage', () => {
+  assert.equal(isMarrowControlOutage(new PreActionControlTimeoutError()), true);
+  assert.equal(isMarrowControlOutage(new TypeError('fetch failed')), true);
+  assert.equal(isMarrowControlOutage(Object.assign(new Error('reset'), { code: 'ECONNRESET' })), true);
+  assert.equal(isMarrowControlOutage(new MarrowRequestError({
+    code: 'service_unavailable',
+    message: 'HTTP 503',
+    status: 503,
+    exactFix: 'retry',
+  })), true);
+  for (const code of ['authentication_required', 'permission_denied', 'invalid_response', 'rate_limited', 'tls_failure', 'edge_access_denied']) {
+    assert.equal(isMarrowControlOutage(new MarrowRequestError({
+      code,
+      message: 'reached',
+      status: 401,
+      exactFix: 'restore governance',
+    })), false, code);
+  }
+  assert.equal(isMarrowControlOutage(new Error('malformed local state')), false);
 });
 
 test('an outage allows every harness and keeps the private failure text out of the decision', () => {
@@ -603,6 +627,62 @@ test('a received runtime block is denied before think when a later control call 
     const result = JSON.parse(output);
     assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
     assert.doesNotMatch(output, /Marrow is offline/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.stdout.write = originalWrite;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a rejected runtime call denies a protected action instead of failing open', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWrite = process.stdout.write;
+  const previous = {
+    MARROW_API_KEY: process.env.MARROW_API_KEY,
+    MARROW_BASE_URL: process.env.MARROW_BASE_URL,
+    MARROW_AGENT_ID: process.env.MARROW_AGENT_ID,
+    MARROW_SESSION_ID: process.env.MARROW_SESSION_ID,
+    MARROW_EVENT_SPOOL_PATH: process.env.MARROW_EVENT_SPOOL_PATH,
+    HOME: process.env.HOME,
+  };
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-pre-action-reject-'));
+  let output = '';
+  process.env.MARROW_API_KEY = 'test-pre-action-key';
+  process.env.MARROW_BASE_URL = 'https://api.example.test';
+  process.env.MARROW_AGENT_ID = 'agent-one';
+  process.env.MARROW_SESSION_ID = 'session-one';
+  process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
+  process.env.HOME = directory;
+  process.stdout.write = (chunk) => {
+    output += String(chunk);
+    return true;
+  };
+  globalThis.fetch = async (url) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === '/v1/agent/runtime') {
+      return new Response(JSON.stringify({ error: 'unauthorized' }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return Response.json({ data: { accepted: true } });
+  };
+
+  try {
+    await runPreActionHookCommand({
+      session_id: 'session-one',
+      tool_use_id: 'tool-one',
+      tool_name: 'Bash',
+      tool_input: { command: 'wrangler deploy production' },
+    });
+    const result = JSON.parse(output);
+    assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+    assert.doesNotMatch(output, /Marrow is offline/);
+    assert.doesNotMatch(output, /unauthorized/);
   } finally {
     globalThis.fetch = originalFetch;
     process.stdout.write = originalWrite;

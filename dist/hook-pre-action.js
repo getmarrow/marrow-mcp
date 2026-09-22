@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MARROW_OUTAGE_WARNING = void 0;
+exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MARROW_OUTAGE_WARNING = void 0;
+exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.isMarrowOutage = isMarrowOutage;
 exports.localControlAllowOutput = localControlAllowOutput;
 exports.localLoopGuardDenyOutput = localLoopGuardDenyOutput;
@@ -14,6 +15,7 @@ exports.preActionHookOutput = preActionHookOutput;
 exports.installPreActionHook = installPreActionHook;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const index_1 = require("./index");
+const request_reliability_1 = require("./request-reliability");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
@@ -22,7 +24,49 @@ const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 Object.defineProperty(exports, "MARROW_OUTAGE_WARNING", { enumerable: true, get: function () { return hook_contract_1.MARROW_OUTAGE_WARNING; } });
 const MAX_INPUT_BYTES = 64 * 1024;
-const RUNTIME_TIMEOUT_MS = 3000;
+// Cold auth may already use 900ms plus a 1600ms in-flight grace before think
+// and enforcement. Keep this above that budget so a slow store is not aborted
+// and misread as an outage.
+exports.PRE_ACTION_CONTROL_TIMEOUT_MS = 8_000;
+const CONTROL_OUTAGE_CODES = new Set([
+    'request_timeout',
+    'dns_unavailable',
+    'connection_reset',
+    'service_unavailable',
+]);
+const NETWORK_ERROR_CODES = new Set([
+    'ENOTFOUND',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'EAI_AGAIN',
+    'ETIMEDOUT',
+    'EHOSTUNREACH',
+    'ENETUNREACH',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_SOCKET',
+]);
+class PreActionControlTimeoutError extends Error {
+    code = 'request_timeout';
+    constructor() {
+        super('Marrow control path timed out');
+        this.name = 'PreActionControlTimeoutError';
+    }
+}
+exports.PreActionControlTimeoutError = PreActionControlTimeoutError;
+function isMarrowControlOutage(error) {
+    if (error instanceof PreActionControlTimeoutError)
+        return true;
+    if (error instanceof request_reliability_1.MarrowRequestError)
+        return CONTROL_OUTAGE_CODES.has(error.code);
+    if (!error || typeof error !== 'object')
+        return false;
+    const named = error;
+    if (named.name === 'AbortError' || named.name === 'TimeoutError')
+        return true;
+    if (typeof named.code === 'string' && NETWORK_ERROR_CODES.has(named.code))
+        return true;
+    return error instanceof TypeError && /fetch|network|getaddrinfo/i.test(String(named.message || ''));
+}
 function isMarrowOutage(result) {
     return result.outage === true;
 }
@@ -299,16 +343,13 @@ async function withTimeout(operation) {
     try {
         return await Promise.race([
             operation(controller.signal),
-            new Promise((resolve) => {
+            new Promise((_, reject) => {
                 timer = setTimeout(() => {
                     controller.abort();
-                    resolve(null);
-                }, RUNTIME_TIMEOUT_MS);
+                    reject(new PreActionControlTimeoutError());
+                }, exports.PRE_ACTION_CONTROL_TIMEOUT_MS);
             }),
         ]);
-    }
-    catch {
-        return null;
     }
     finally {
         if (timer)
@@ -572,13 +613,23 @@ async function runPreActionHookCommand(input) {
             ...(verifiedExactly ? {} : { enforcementError: 'Marrow permit verification did not match the issued permit.' }),
         };
     };
-    const [result] = await Promise.all([withTimeout(control), lifecycle]);
-    emitDecision(result || {
-        runtime: null,
-        permit: null,
-        protectedRisk: enforcementRequired,
-        outage: true,
-        enforcementError: hook_contract_1.MARROW_OUTAGE_WARNING,
-    }, identity.harness);
+    const [result] = await Promise.all([
+        withTimeout(control).catch((error) => (isMarrowControlOutage(error)
+            ? {
+                runtime: null,
+                permit: null,
+                protectedRisk: enforcementRequired,
+                outage: true,
+                enforcementError: hook_contract_1.MARROW_OUTAGE_WARNING,
+            }
+            : {
+                runtime: null,
+                permit: null,
+                protectedRisk: enforcementRequired,
+                enforcementError: 'Marrow rejected this protected action. Restore trusted governance before retrying.',
+            })),
+        lifecycle,
+    ]);
+    emitDecision(result, identity.harness);
 }
 //# sourceMappingURL=hook-pre-action.js.map

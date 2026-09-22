@@ -1,4 +1,5 @@
 import { marrowAgentRuntime, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
+import { MarrowRequestError } from './request-reliability';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { CONTROL_BYPASS_ACTION, readLocalControlState } from './control-state';
 import { runtimeAuthorizationReceiptId } from './runtime-contract';
@@ -20,7 +21,46 @@ import {
 export { MARROW_OUTAGE_WARNING };
 
 const MAX_INPUT_BYTES = 64 * 1024;
-const RUNTIME_TIMEOUT_MS = 3000;
+// Cold auth may already use 900ms plus a 1600ms in-flight grace before think
+// and enforcement. Keep this above that budget so a slow store is not aborted
+// and misread as an outage.
+export const PRE_ACTION_CONTROL_TIMEOUT_MS = 8_000;
+const CONTROL_OUTAGE_CODES = new Set([
+  'request_timeout',
+  'dns_unavailable',
+  'connection_reset',
+  'service_unavailable',
+]);
+const NETWORK_ERROR_CODES = new Set([
+  'ENOTFOUND',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
+export class PreActionControlTimeoutError extends Error {
+  readonly code = 'request_timeout';
+
+  constructor() {
+    super('Marrow control path timed out');
+    this.name = 'PreActionControlTimeoutError';
+  }
+}
+
+export function isMarrowControlOutage(error: unknown): boolean {
+  if (error instanceof PreActionControlTimeoutError) return true;
+  if (error instanceof MarrowRequestError) return CONTROL_OUTAGE_CODES.has(error.code);
+  if (!error || typeof error !== 'object') return false;
+  const named = error as { name?: unknown; code?: unknown; message?: unknown };
+  if (named.name === 'AbortError' || named.name === 'TimeoutError') return true;
+  if (typeof named.code === 'string' && NETWORK_ERROR_CODES.has(named.code)) return true;
+  return error instanceof TypeError && /fetch|network|getaddrinfo/i.test(String(named.message || ''));
+}
 
 export type PreToolUseEvent = {
   session_id?: string;
@@ -316,21 +356,19 @@ function emitDecision(result: PreActionControlResult, harness: 'claude-code' | '
   process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
 }
 
-async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T | null> {
+async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       operation(controller.signal),
-      new Promise<null>((resolve) => {
+      new Promise<T>((_, reject) => {
         timer = setTimeout(() => {
           controller.abort();
-          resolve(null);
-        }, RUNTIME_TIMEOUT_MS);
+          reject(new PreActionControlTimeoutError());
+        }, PRE_ACTION_CONTROL_TIMEOUT_MS);
       }),
     ]);
-  } catch {
-    return null;
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -592,12 +630,24 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       ...(verifiedExactly ? {} : { enforcementError: 'Marrow permit verification did not match the issued permit.' }),
     };
   };
-  const [result] = await Promise.all([withTimeout(control), lifecycle]);
-  emitDecision(result || {
-    runtime: null,
-    permit: null,
-    protectedRisk: enforcementRequired,
-    outage: true,
-    enforcementError: MARROW_OUTAGE_WARNING,
-  }, identity.harness);
+  const [result] = await Promise.all([
+    withTimeout(control).catch((error: unknown): PreActionControlResult => (
+      isMarrowControlOutage(error)
+        ? {
+          runtime: null,
+          permit: null,
+          protectedRisk: enforcementRequired,
+          outage: true,
+          enforcementError: MARROW_OUTAGE_WARNING,
+        }
+        : {
+          runtime: null,
+          permit: null,
+          protectedRisk: enforcementRequired,
+          enforcementError: 'Marrow rejected this protected action. Restore trusted governance before retrying.',
+        }
+    )),
+    lifecycle,
+  ]);
+  emitDecision(result, identity.harness);
 }
