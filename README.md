@@ -136,7 +136,11 @@ v3.9.87 hardens the authenticated control-path canary against single-sample tran
 
 v3.9.86 was published with the adapter version constant still at `3.9.85`, so the strict canary identity check rejected it; it is deprecated — use `3.9.87`. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.87`, reload the host, review hook trust, and verify before claiming the updated client is active.
 
-## What's New in v3.9.89
+## What's New in v3.9.90
+
+v3.9.90 is a reliability fix for every supported native hook. When Marrow or the MCP control path is unreachable, the hook warns, allows the action, and leaves the record in the local spool so it is sent after Marrow accepts traffic again. A real block or review decision still stops the action. A missing local key, an unsafe local control file, and malformed input still stop it. The published `3.9.89` package cannot deliver this behavior. SDK `3.7.63` is unchanged. Installer `0.1.58` still pins MCP `3.9.89` until the installer release that follows this publish.
+
+### Previous release: v3.9.89
 
 v3.9.89 adds a default-enabled, private local session loop guard for every supported native-hook installation, independent of Marrow plan or fleet entitlement. It hashes bounded operation inputs and results into owner-only state under `~/.marrow`, stops unchanged successful verification repeats, stops the third unchanged poll or failed attempt, resets after meaningful mutation or a new owner prompt, and clears the session at close. Routine read-only results remain local, so ordinary checks add no Marrow API or database writes; one compact client-reported block marker is emitted only when a configured hook actually denies a repeat. Official Marrow tools remain excluded. `MARROW_AUTO_HOOK=false` and the existing owner local-control disable remain the explicit opt-outs.
 
