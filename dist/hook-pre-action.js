@@ -500,6 +500,10 @@ async function runPreActionHookCommand(input) {
             role: classified.role,
             surfaces: classified.surfaces,
         }, sessionId, agentId, signal);
+        const gate = runtime.risk_gate;
+        if (gate?.decision === 'block' || gate?.decision === 'review_required' || gate?.allow === false) {
+            return { runtime, permit: null, protectedRisk: enforcementRequired };
+        }
         const gateReceiptId = (0, runtime_contract_1.runtimeAuthorizationReceiptId)(runtime);
         const runtimeIds = [runtime.decision_id, runtime.completion_contract?.decision_id, runtime.runtime_authorization?.decision_id]
             .filter((value) => typeof value === 'string' && SAFE_DECISION_ID.test(value));
