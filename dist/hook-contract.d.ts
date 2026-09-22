@@ -13,6 +13,7 @@ export declare const GROK_ACTION_RESULT_HOOK_COMMAND: string;
 export declare const GROK_SESSION_END_HOOK_COMMAND: string;
 export declare const GROK_FIXED_DENIAL = "Marrow blocked this protected action.";
 export declare const GROK_LAUNCH_FAILURE = "Marrow governance adapter was unavailable; this action is blocked.";
+export declare const MARROW_OUTAGE_WARNING = "Marrow is offline. This action is allowed. The record stays queued locally and is sent when Marrow is back.";
 export declare const GROK_PRE_ACTION_GUARD_COMMAND: string;
 export declare const CURSOR_PRE_ACTION_HOOK_COMMAND: string;
 export declare const CURSOR_ACTION_RESULT_HOOK_COMMAND: string;

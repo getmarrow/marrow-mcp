@@ -9,6 +9,7 @@ const {
   GROK_FIXED_DENIAL,
   GROK_LAUNCH_FAILURE,
   GROK_PRE_ACTION_GUARD_COMMAND,
+  MARROW_OUTAGE_WARNING,
   normalizeHookEventPayload,
   resolveNativeHookIdentity,
 } = require('../dist/hook-contract.js');
@@ -55,7 +56,7 @@ function runGuard(mode) {
     const fakeBin = join(home, 'bin');
     mkdirSync(fakeBin);
     const fakeNpx = join(fakeBin, 'npx');
-    writeFileSync(fakeNpx, '#!/bin/sh\ncat >/dev/null\ncase "$FAKE_NPX_MODE" in allow) printf "%s" \'{"decision":"allow"}\' ;; polluted) printf "%s\\n" \'{"decision":"allow"}\' ;; *) printf "%s\\n" "synthetic-private-launch-error" >&2; exit 7 ;; esac\n');
+    writeFileSync(fakeNpx, `#!/bin/sh\ncat >/dev/null\ncase "$FAKE_NPX_MODE" in allow) printf "%s" '{"decision":"allow"}' ;; polluted) printf "%s\\n" '{"decision":"allow"}' ;; warn) printf "%s" '{"decision":"allow"}'; printf "%s\\n" '${MARROW_OUTAGE_WARNING}' >&2 ;; *) printf "%s\\n" "synthetic-private-launch-error" >&2; exit 7 ;; esac\n`);
     chmodSync(fakeNpx, 0o755);
     return spawnSync(GROK_PRE_ACTION_GUARD_COMMAND, {
       shell: true,
@@ -198,6 +199,12 @@ test('Grok installed pre-action guard rejects launcher failure and stdout pollut
   assert.equal(failed.status, 2);
   assert.equal(failed.stdout, '');
   assert.equal(failed.stderr, `${GROK_LAUNCH_FAILURE}\n`);
+  assert.equal(failed.stderr.includes('synthetic-private-launch-error'), false);
+
+  const warned = runGuard('warn');
+  assert.equal(warned.status, 0);
+  assert.equal(warned.stdout, '{"decision":"allow"}');
+  assert.equal(warned.stderr, `${MARROW_OUTAGE_WARNING}\n`);
   assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /setTimeout\(fail,5000\)/);
   assert.doesNotMatch(GROK_PRE_ACTION_GUARD_COMMAND, /\btimeout\b/);
   assert.match(GROK_PRE_ACTION_GUARD_COMMAND, /grok-pre-action-hook/);
