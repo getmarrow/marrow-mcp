@@ -10,6 +10,7 @@
  *   MARROW_API_KEY=mrw_abc123 npx @getmarrow/mcp
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+const model_usage_1 = require("./model-usage");
 const index_1 = require("./index");
 const control_state_1 = require("./control-state");
 const hook_1 = require("./hook");
@@ -888,7 +889,7 @@ if (process.argv[2] !== 'keys') {
                         type: { type: 'string', description: 'Exact original action type for observation lookup; defaults to general.' },
                         surfaces: { type: 'array', items: { type: 'string' }, description: 'Exact original surfaces for observation lookup; omitted and empty both mean no surfaces.' },
                         auto_gate: { type: 'boolean', description: 'If true/default and action is provided, fetch runtime truth bound to this existing decision. Authorizing receipts preserve normal closure; exact outcome_observation_only correlation can submit only an observed_unverified result and is omitted from receipt evidence.' },
-                        model_usage: { type: 'object', description: 'Optional compact token/cost/latency counts. Do not include raw prompts or completions.' },
+                        model_usage: { type: 'object', properties: model_usage_1.MODEL_USAGE_EVIDENCE_PROPERTIES, additionalProperties: false, description: 'Optional compact token/cost/latency counts. Do not include raw prompts or completions.' },
                     },
                     required: ['decision_id', 'success', 'outcome'],
                 },
@@ -899,6 +900,7 @@ if (process.argv[2] !== 'keys') {
                 inputSchema: {
                     type: 'object',
                     properties: {
+                        ...model_usage_1.MODEL_USAGE_EVIDENCE_PROPERTIES,
                         provider: { type: 'string', description: 'Model provider, e.g. openai, anthropic, google, xai, qwen, deepseek.' },
                         model: { type: 'string', description: 'Model name.' },
                         input_tokens: { type: 'number' },

@@ -1,7 +1,4 @@
 "use strict";
-/**
- * @getmarrow/mcp — API Functions
- */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MARROW_AUTO_RESPONSE_BUDGET_MAX_MS = void 0;
 exports.validatePathParam = validatePathParam;
@@ -60,6 +57,10 @@ exports.marrowDecisionTrace = marrowDecisionTrace;
 exports.marrowAcceptDetected = marrowAcceptDetected;
 exports.marrowListTemplates = marrowListTemplates;
 exports.marrowInstallTemplate = marrowInstallTemplate;
+const model_usage_1 = require("./model-usage");
+/**
+ * @getmarrow/mcp — API Functions
+ */
 const node_crypto_1 = require("node:crypto");
 const sdk_1 = require("@getmarrow/sdk");
 const redact_1 = require("./redact");
@@ -142,24 +143,6 @@ function defaultSourceClient() {
         glm: 'glm',
     };
     return aliases[raw] || (SOURCE_CLIENTS.has(raw) ? raw : 'custom');
-}
-function normalizeModelUsage(input = {}) {
-    const body = {};
-    const copyString = (key) => {
-        const value = input[key];
-        if (typeof value === 'string' && value.trim())
-            body[String(key)] = (0, redact_1.redactSensitiveText)(value).slice(0, 180);
-    };
-    const copyNumber = (key) => {
-        const value = Number(input[key]);
-        if (Number.isFinite(value) && value >= 0)
-            body[String(key)] = value;
-    };
-    ['agent_id', 'session_id', 'workflow_id', 'decision_id', 'provider', 'model', 'task_type', 'action_type', 'source', 'marrow_intervention'].forEach(copyString);
-    ['input_tokens', 'output_tokens', 'cached_tokens', 'total_tokens', 'cost_usd', 'latency_ms', 'baseline_tokens', 'estimated_tokens_saved', 'estimated_cost_saved_usd', 'estimated_minutes_saved'].forEach(copyNumber);
-    if (typeof input.success === 'boolean')
-        body.success = input.success;
-    return body;
 }
 /**
  * Validate a path parameter to prevent path traversal attacks.
@@ -956,7 +939,7 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId, signal,
     }
     const modelUsage = params.model_usage || params.modelUsage;
     if (modelUsage)
-        body.model_usage = normalizeModelUsage(modelUsage);
+        body.model_usage = (0, model_usage_1.normalizeModelUsage)(modelUsage);
     const resolvedIdempotencyKey = invocationIdempotencyKey('commit', idempotencyKey);
     const commitInit = {
         method: 'POST',
@@ -989,7 +972,7 @@ async function marrowCommit(apiKey, baseUrl, params, sessionId, agentId, signal,
     return markAutoResponseStatus({ ...data, committed: data.committed, runtime_gate: runtimeGate }, response.status);
 }
 async function marrowModelUsage(apiKey, baseUrl, input, sessionId, agentId) {
-    const body = normalizeModelUsage({
+    const body = (0, model_usage_1.normalizeModelUsage)({
         ...input,
         agent_id: input.agent_id || agentId,
         session_id: input.session_id || sessionId,

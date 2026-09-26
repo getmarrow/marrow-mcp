@@ -1,6 +1,6 @@
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { marrowModelUsage, marrowSessionEnd, validateBaseUrl } from './index';
-import { extractModelUsageFromUnknown } from './habit-loop-copy';
+import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from './habit-loop-copy';
 import { readFileSync } from 'node:fs';
 import {
   findHookSettingsPath,
@@ -164,8 +164,8 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     }
 
     if (!['windsurf', 'gemini', 'grok'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
-      const usage = extractModelUsageFromUnknown(input);
-      if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
+      const usage = extractModelUsageFromUnknown(input, { ...modelUsageCaptureContextFromEnv(), usage_kind: 'cumulative' });
+      if (usage) {
         await marrowModelUsage(resolved.apiKey, baseUrl, {
           ...usage,
           source: 'mcp_session_end',
