@@ -1,4 +1,4 @@
-import { redactSensitiveText } from './redact';
+import { redactSensitiveText, redactSensitiveValue } from './redact';
 import type { MarrowModelUsageInput } from './types';
 
 const stringFields = ['agent_id', 'session_id', 'workflow_id', 'decision_id', 'provider', 'model', 'task_type', 'action_type', 'source', 'marrow_intervention', 'billing_host', 'usage_event_id', 'baseline_usage_id', 'comparison_id', 'task_fingerprint', 'constraints_fingerprint'] as const;
@@ -20,7 +20,7 @@ export function normalizeModelUsage(input: MarrowModelUsageInput = {}): Record<s
       body[key] = redactSensitiveText(value as string);
       continue;
     }
-    if (typeof value !== 'string' || !safeLabel.test(value) || /^(?:sk|mrw|ghp|github_pat|npm)_[\w-]+$/i.test(value)) invalid(key);
+    if (typeof value !== 'string' || !safeLabel.test(value) || redactSensitiveText(value) !== value || /^(?:sk|mrw|ghp|github_pat|npm)_[\w-]+$/i.test(value)) invalid(key);
     body[key] = value;
   }
   for (const key of numberFields) {
@@ -50,6 +50,8 @@ export function normalizeModelUsage(input: MarrowModelUsageInput = {}): Record<s
     const result: Record<string, string | number> = {};
     for (const [key, value] of Object.entries(dims)) {
       if (!/^[a-z_]{1,40}$/.test(key) || key === '__proto__' || !(typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,80}$/.test(value) || typeof value === 'number' && Number.isFinite(value) && value >= 0)) invalid('pricing_dimensions');
+      const filtered = redactSensitiveValue({ [key]: value }) as Record<string, unknown>;
+      if (filtered[key] !== value) invalid('pricing_dimensions');
       result[key] = value;
     }
     body.pricing_dimensions = result;
