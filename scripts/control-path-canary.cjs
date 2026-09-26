@@ -660,7 +660,7 @@ async function executeCanary(env, options, context) {
   });
   const totalTimer = setTimeout(() => client.abort(canaryError('total_timeout', 'MCP canary total timeout')), totalTimeoutMs);
   const processStarted = performance.now();
-  const cases = canaryCases(`canary_${randomUUID()}`);
+  const cases = canaryCases(`auto_${randomUUID()}`);
   const stage = (value, tool = null, attempt = 0) => {
     Object.assign(context, { stage: value, tool, attempt, stageStarted: performance.now() });
   };
