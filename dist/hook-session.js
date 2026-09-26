@@ -155,8 +155,8 @@ async function runSessionHookCommand(input) {
             // The pending lifecycle receipt remains durable for later reconciliation.
         }
         if (!['windsurf', 'gemini', 'grok'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
-            const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(input);
-            if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
+            const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(input, { ...(0, habit_loop_copy_1.modelUsageCaptureContextFromEnv)(), usage_kind: 'cumulative' });
+            if (usage) {
                 await (0, index_1.marrowModelUsage)(resolved.apiKey, baseUrl, {
                     ...usage,
                     source: 'mcp_session_end',

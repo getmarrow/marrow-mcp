@@ -136,7 +136,19 @@ v3.9.87 hardens the authenticated control-path canary against single-sample tran
 
 v3.9.86 was published with the adapter version constant still at `3.9.85`, so the strict canary identity check rejected it; it is deprecated — use `3.9.87`. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.87`, reload the host, review hook trust, and verify before claiming the updated client is active.
 
-## What's New in v3.9.93
+## What's New in v3.9.94
+
+v3.9.94 preserves compact model-cost evidence through native capture, direct usage submission and Commit. It captures OpenAI Chat/Responses cache subsets and Anthropic cache reads/writes with their actual token semantics and stable provider response identity. Published 3.9.93 strips these fields, so this correction requires updating MCP and reloading the host. It does not change authentication, plans, or claim baseline savings.
+
+### Observed usage and calculated cost
+
+A connector tool call does not automatically expose the upstream chat model's usage. Native hooks capture only usage actually present in their event. Adapters can pass an observed request endpoint to `extractModelUsageFromUnknown`; native hooks accept explicit host configuration through `MARROW_MODEL_USAGE_ENDPOINT`. First-party billing is recognized only for HTTPS `api.openai.com` and `api.anthropic.com`, with no credentials or custom port. Set this only when it describes the requests whose responses the hook observes; do not label a proxy or mixed-provider stream as first-party. Endpoints and response content are never sent as usage evidence.
+
+`MARROW_MODEL_USAGE_PRICING_DIMENSIONS` accepts a compact JSON object of dimensions actually established by the request configuration (for example tier, region and modality). Missing dimensions remain unknown. Observed service tier, Anthropic inference geography and single-TTL cache-creation counts take precedence. Mixed cache TTL writes remain unresolved. Set `MARROW_MODEL_USAGE_BILLING_MODE=subscription` only for subscription usage; displayed cost then means an API-equivalent estimate, not an invoice. Never use these settings to fill gaps by guessing.
+
+Direct `marrow_model_usage` and Commit `model_usage` also accept billing host, token semantics, cache writes, response/event identity, occurrence time, pricing dimensions and explicit coverage/comparison metadata. Invalid supplied values fail validation; absent counts do not become observed zero. Stable IDs retain retry identity. Session totals and partial stream-start observations remain cumulative and unpriced without a proven delta. This hook does not assemble SSE streams or read transcripts. If cost is unavailable, inspect the returned reason and coverage: missing host/model/counts/variant evidence cannot be recovered from a successful tool call. No capture infers complete coverage, overhead or a causal baseline; baseline and net savings stay pending until those are proven.
+
+### Previous release: v3.9.93
 
 v3.9.93 fixes the full eleven-tool canary's Auto operation identifiers. The canary now uses Auto's canonical UUID namespace, so valid numeric UUIDs reach Think and Commit instead of failing locally before a request. Privacy validation, authentication, proof requirements, deadlines, and retries are unchanged. Published 3.9.92 cannot provide this harness correction; update and reload the host before verifying activation. SDK 3.7.63 is unchanged.
 

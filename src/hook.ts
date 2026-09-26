@@ -1,5 +1,5 @@
 import { marrowModelUsage, validateBaseUrl } from './index';
-import { extractModelUsageFromUnknown } from './habit-loop-copy';
+import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from './habit-loop-copy';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
 import { readLocalControlState } from './control-state';
@@ -231,11 +231,12 @@ export async function runHookCommand(input?: unknown): Promise<void> {
     });
 
     if (identity.harness !== 'grok' && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
-      const usage = extractModelUsageFromUnknown(event.tool_response)
-        || extractModelUsageFromUnknown(event.tool_result)
-        || extractModelUsageFromUnknown(event.tool_output)
-        || extractModelUsageFromUnknown(event);
-      if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
+      const capture = modelUsageCaptureContextFromEnv();
+      const usage = extractModelUsageFromUnknown(event.tool_response, capture)
+        || extractModelUsageFromUnknown(event.tool_result, capture)
+        || extractModelUsageFromUnknown(event.tool_output, capture)
+        || extractModelUsageFromUnknown(event, capture);
+      if (usage) {
         await marrowModelUsage(apiKey, baseUrl, {
           ...usage,
           source: 'mcp_post_tool_use',

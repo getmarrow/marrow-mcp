@@ -9,6 +9,8 @@
  *   MARROW_API_KEY=mrw_abc123 npx @getmarrow/mcp
  */
 
+import { MODEL_USAGE_EVIDENCE_PROPERTIES } from './model-usage';
+
 import {
   marrowThink,
   marrowCommit,
@@ -1019,7 +1021,7 @@ const TOOLS = [
         type: { type: 'string', description: 'Exact original action type for observation lookup; defaults to general.' },
         surfaces: { type: 'array', items: { type: 'string' }, description: 'Exact original surfaces for observation lookup; omitted and empty both mean no surfaces.' },
         auto_gate: { type: 'boolean', description: 'If true/default and action is provided, fetch runtime truth bound to this existing decision. Authorizing receipts preserve normal closure; exact outcome_observation_only correlation can submit only an observed_unverified result and is omitted from receipt evidence.' },
-        model_usage: { type: 'object', description: 'Optional compact token/cost/latency counts. Do not include raw prompts or completions.' },
+        model_usage: { type: 'object', properties: MODEL_USAGE_EVIDENCE_PROPERTIES, additionalProperties: false, description: 'Optional compact token/cost/latency counts. Do not include raw prompts or completions.' },
       },
       required: ['decision_id', 'success', 'outcome'],
     },
@@ -1031,6 +1033,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
+        ...MODEL_USAGE_EVIDENCE_PROPERTIES,
         provider: { type: 'string', description: 'Model provider, e.g. openai, anthropic, google, xai, qwen, deepseek.' },
         model: { type: 'string', description: 'Model name.' },
         input_tokens: { type: 'number' },
