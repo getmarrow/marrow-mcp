@@ -99,7 +99,7 @@ function fakeSpawn(mode = 'good', timing = {}) {
                   requested_wait_ms: 0, actual_wait_ms: 0,
                 }], dropped_count: 0 },
               }
-            : payload(request.params.name);
+            : timing.payload?.(request.params.name) ?? payload(request.params.name);
           response = {
             jsonrpc: '2.0',
             id: request.id,
@@ -148,6 +148,80 @@ test('uses one persistent process and excludes startup from per-tool timings', a
   assert.equal(result.latency_groups.reports.count, 5);
   const autoCall = fake.state.calls.find((call) => call.params?.name === 'marrow_auto');
   assert.match(autoCall.params.arguments.operation_id, /^canary_[0-9a-f-]{36}$/);
+  assert.equal(result.all_outcome_eligible_writes_closed, true);
+  assert.deepEqual(result.results.find((row) => row.tool === 'marrow_auto').outcome_closeout, 'closed');
+});
+
+test('retains only allowlisted backend diagnostics and actual operation latency on failure', async () => {
+  const fake = fakeSpawn('good', { payload(name) {
+    return name === 'marrow_first_value' ? { ok: false, error: {
+      code: 'MARROW_RUNTIME_CONTINUATION_UNAVAILABLE', category: 'service_unavailable', status: 503,
+      message: 'private-customer-sentinel', unknown: 'secret-sentinel',
+    }, backend_identity: { release_ref: 'a'.repeat(40), worker_version_id: 'c03d0cc1-8d54-408f-84e9-1ffbe82cc66b',
+      unknown: 'private-identity-sentinel' } } : payload(name);
+  } });
+  await assert.rejects(() => runCanary(environment(), { spawnProcess: fake.factory }), (error) => {
+    const failure = JSON.parse(serializeFailure(error));
+    assert.equal(failure.backend_code, 'MARROW_RUNTIME_CONTINUATION_UNAVAILABLE');
+    assert.equal(failure.backend_category, 'service_unavailable');
+    assert.equal(failure.http_status, 503);
+    assert.equal(failure.tool_operation_latency_ms >= 1000, true);
+    assert.equal(failure.stage_latency_ms < failure.tool_operation_latency_ms, true);
+    assert.equal(failure.backend_identity.release_ref, 'a'.repeat(40));
+    assert.doesNotMatch(JSON.stringify(failure), /private-|secret-sentinel/);
+    return true;
+  });
+});
+
+test('closes runtime and First Value fixtures with their actual returned scope before acceptance', async () => {
+  const fake = fakeSpawn('good', { payload(name) {
+    if (name === 'marrow_agent_runtime') return { ...payload(name), decision_id: 'runtime-fixture', session_id: 'runtime-session', agent_id: 'runtime-agent' };
+    if (name === 'marrow_first_value') return { ...payload(name), runtime: {
+      decision_id: 'first-value-fixture', session_id: 'first-value:fixture', agent_id: 'first-value-agent', gate_receipt: { id: 'gate-fixture' },
+    } };
+    return payload(name);
+  } });
+  const commits = [];
+  const result = await runCanary(environment(), { spawnProcess: fake.factory, commitFixture: async (...args) => {
+    commits.push(args); return { committed: true };
+  } });
+  assert.deepEqual(commits.map((args) => [args[2].decision_id, args[3]]), [
+    ['runtime-fixture', 'runtime-session'], ['first-value-fixture', 'first-value:fixture'],
+  ]);
+  assert.equal(commits[1][2].gate_receipt_id, 'gate-fixture');
+  assert.deepEqual(commits.map((args) => args[4]), ['runtime-agent', 'first-value-agent']);
+  assert.equal(result.all_outcome_eligible_writes_closed, true);
+  assert.equal(result.results.filter((row) => row.outcome_eligible).every((row) => row.outcome_closeout === 'closed'), true);
+});
+
+test('an unclosed fixture keeps full canary acceptance incomplete', async () => {
+  const fake = fakeSpawn('good', { payload(name) {
+    return name === 'marrow_agent_runtime' ? { ...payload(name), decision_id: 'runtime-open-fixture' } : payload(name);
+  } });
+  await assert.rejects(() => runCanary(environment(), { spawnProcess: fake.factory,
+    commitFixture: async () => ({ committed: false }) }), (error) => {
+    const failure = JSON.parse(serializeFailure(error));
+    assert.equal(failure.stage, 'outcome_closeout');
+    assert.equal(failure.error_class, 'completion_pending');
+    return true;
+  });
+});
+
+test('unknown backend diagnostics and identity are stripped', async () => {
+  const fake = fakeSpawn('good', { payload(name) {
+    return name === 'marrow_buyer_proof' ? { ok: false, error: {
+      code: 'PRIVATE_SENTINEL', category: 'private-category', status: 403,
+    }, backend_identity: { release_ref: 'private-release', worker_version_id: 'private-worker' } } : payload(name);
+  } });
+  await assert.rejects(() => runCanary(environment(), { spawnProcess: fake.factory }), (error) => {
+    const failure = JSON.parse(serializeFailure(error));
+    assert.equal(failure.error_class, 'authorization');
+    assert.equal(failure.backend_code, undefined);
+    assert.equal(failure.backend_category, undefined);
+    assert.equal(failure.backend_identity, undefined);
+    assert.doesNotMatch(JSON.stringify(failure), /PRIVATE_SENTINEL|private-/);
+    return true;
+  });
 });
 
 test('retries a resumable auto phase with the same operation before accepting the canary', async () => {

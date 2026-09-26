@@ -326,6 +326,15 @@ async function safeJsonResponse(res) {
     }
     return json;
 }
+async function fetchJsonResponse(url, init = {}) {
+    return fetch(url, init, { consumeResponse: safeJsonResponse });
+}
+function requireObjectData(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length === 0) {
+        throw (0, request_reliability_1.invalidResponseError)();
+    }
+    return value;
+}
 function requireRuntimeResult(value) {
     const runtime = (0, runtime_contract_1.normalizeRuntimeResult)(value);
     if (!runtime)
@@ -372,17 +381,20 @@ async function drainRetryQueue() {
 }
 async function fetchWithRetryQueue(url, init, queueable = false) {
     await drainRetryQueue();
+    let queued = false;
     try {
-        const res = await fetch(url, init);
-        if (queueable && !res.ok && isRetryableStatus(res.status)) {
-            if (retryQueue.length >= 25)
-                retryQueue.shift();
-            retryQueue.push({ url, init, attempts: 0 });
-        }
-        return res;
+        return await fetch(url, init, { consumeResponse: async (res) => {
+                if (queueable && !res.ok && isRetryableStatus(res.status)) {
+                    if (retryQueue.length >= 25)
+                        retryQueue.shift();
+                    retryQueue.push({ url, init, attempts: 0 });
+                    queued = true;
+                }
+                return safeJsonResponse(res);
+            } });
     }
     catch (error) {
-        if (queueable && isRetryableError(error)) {
+        if (queueable && !queued && isRetryableError(error)) {
             if (retryQueue.length >= 25)
                 retryQueue.shift();
             retryQueue.push({ url, init, attempts: 0 });
@@ -983,12 +995,11 @@ async function marrowModelUsage(apiKey, baseUrl, input, sessionId, agentId) {
         session_id: input.session_id || sessionId,
         source: input.source || 'mcp',
     });
-    const res = await fetchWithRetryQueue(`${baseUrl}/v1/agent/model-usage`, {
+    const json = await fetchWithRetryQueue(`${baseUrl}/v1/agent/model-usage`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
     }, true);
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 function createTimeoutSignal(timeoutMs, startedAt) {
@@ -1533,10 +1544,9 @@ async function marrowAgentPatterns(apiKey, baseUrl, params, sessionId, agentId) 
     }
     const url = `${baseUrl}/v1/agent/patterns` +
         (qs.toString() ? '?' + qs.toString() : '');
-    const res = await fetch(url, {
+    const json = await fetchJsonResponse(url, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
@@ -1646,7 +1656,7 @@ async function marrowOrient(apiKey, baseUrl, params, sessionId, agentId, signal)
  * Query the collective hive for failure patterns and recommendations.
  */
 async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId, signal) {
-    const res = await fetch(`${baseUrl}/v1/analytics/decision-brief`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/analytics/decision-brief`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({
@@ -1658,7 +1668,6 @@ async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId, signal) {
         }),
         signal,
     });
-    const json = await safeJsonResponse(res);
     const brief = json.data;
     const topOutcomes = Array.isArray(brief.top_outcomes) && brief.top_outcomes.length
         ? brief.top_outcomes
@@ -1690,19 +1699,21 @@ async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId, signal) {
  * Get API health status.
  */
 async function marrowStatus(apiKey, baseUrl, sessionId, agentId, signal) {
-    const res = await fetch(`${baseUrl}/v1/agent/status?fast=1&compact=1`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/status?fast=1&compact=1`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
         signal,
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 // ─── Workflow Registry API ───────────────────────────────────────
 async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
     const headers = buildHeaders(apiKey, sessionId, 'application/json', agentId);
+    const fetchWorkflowJson = (url, init) => fetch(url, init, {
+        consumeResponse: (response) => response.json(),
+    });
     switch (params.action) {
         case 'register': {
-            const res = await fetch(`${baseUrl}/v1/workflows/register`, {
+            const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows/register`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({
@@ -1712,7 +1723,6 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
                     tags: params.tags,
                 }),
             });
-            const json = await res.json();
             if (json.error)
                 return { success: false, error: json.error };
             return { success: true, data: json.data };
@@ -1723,8 +1733,7 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
                 qs.set('status', params.status);
             if (params.tags && params.tags.length > 0)
                 qs.set('tags', params.tags.join(','));
-            const res = await fetch(`${baseUrl}/v1/workflows?${qs.toString()}`, { headers });
-            const json = await res.json();
+            const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows?${qs.toString()}`, { headers });
             if (json.error)
                 return { success: false, error: json.error };
             return { success: true, data: json.data };
@@ -1733,8 +1742,7 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
             if (!params.workflowId)
                 return { success: false, error: 'workflowId required' };
             const safeId = validatePathParam(params.workflowId, 'workflowId');
-            const res = await fetch(`${baseUrl}/v1/workflows/${safeId}`, { headers });
-            const json = await res.json();
+            const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows/${safeId}`, { headers });
             if (json.error)
                 return { success: false, error: json.error };
             return { success: true, data: json.data };
@@ -1743,7 +1751,7 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
             if (!params.workflowId)
                 return { success: false, error: 'workflowId required' };
             const safeId = validatePathParam(params.workflowId, 'workflowId');
-            const res = await fetch(`${baseUrl}/v1/workflows/${safeId}`, {
+            const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows/${safeId}`, {
                 method: 'PUT',
                 headers,
                 body: JSON.stringify({
@@ -1753,7 +1761,6 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
                     status: params.status,
                 }),
             });
-            const json = await res.json();
             if (json.error)
                 return { success: false, error: json.error };
             return { success: true, data: json.data };
@@ -1764,7 +1771,7 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
             if (!params.agentId)
                 return { success: false, error: 'agentId required' };
             const safeId = validatePathParam(params.workflowId, 'workflowId');
-            const res = await fetch(`${baseUrl}/v1/workflows/${safeId}/start`, {
+            const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows/${safeId}/start`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({
@@ -1773,7 +1780,6 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
                     inputs: params.inputs,
                 }),
             });
-            const json = await res.json();
             if (json.error)
                 return { success: false, error: json.error };
             return { success: true, data: json.data };
@@ -1789,7 +1795,7 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
                 return { success: false, error: 'outcome required' };
             const safeWorkflowId = validatePathParam(params.workflowId, 'workflowId');
             const safeInstanceId = validatePathParam(params.instanceId, 'instanceId');
-            const res = await fetch(`${baseUrl}/v1/workflows/${safeWorkflowId}/instances/${safeInstanceId}/step`, {
+            const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows/${safeWorkflowId}/instances/${safeInstanceId}/step`, {
                 method: 'PUT',
                 headers,
                 body: JSON.stringify({
@@ -1799,7 +1805,6 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
                     context_update: params.contextUpdate,
                 }),
             });
-            const json = await res.json();
             if (json.error)
                 return { success: false, error: json.error };
             return { success: true, data: json.data };
@@ -1811,8 +1816,7 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
             const qs = new URLSearchParams();
             if (params.status)
                 qs.set('status', params.status);
-            const res = await fetch(`${baseUrl}/v1/workflows/${safeId}/instances?${qs.toString()}`, { headers });
-            const json = await res.json();
+            const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows/${safeId}/instances?${qs.toString()}`, { headers });
             if (json.error)
                 return { success: false, error: json.error };
             return { success: true, data: json.data };
@@ -1826,10 +1830,9 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
  * Get operator dashboard — account health, top failures, workflow status, saves.
  */
 async function marrowDashboard(apiKey, baseUrl, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/dashboard`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/dashboard`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
@@ -1837,10 +1840,9 @@ async function marrowDashboard(apiKey, baseUrl, sessionId, agentId) {
  */
 async function marrowDigest(apiKey, baseUrl, period = '7d', sessionId, agentId) {
     const days = parseInt(period) || 7;
-    const res = await fetch(`${baseUrl}/v1/digest?period=${days}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/digest?period=${days}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
@@ -1851,11 +1853,10 @@ async function marrowAgentStatus(apiKey, baseUrl, period = '7d', agentIdFilter, 
     const qs = new URLSearchParams({ period: String(days) });
     if (agentIdFilter)
         qs.set('agent_id', agentIdFilter);
-    const res = await fetch(`${baseUrl}/v1/analytics/agent-status?${qs.toString()}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/analytics/agent-status?${qs.toString()}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
         signal,
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
@@ -1863,11 +1864,10 @@ async function marrowAgentStatus(apiKey, baseUrl, period = '7d', agentIdFilter, 
  */
 async function marrowRuntimeStatus(apiKey, baseUrl, fast = true, sessionId, agentId, signal) {
     const qs = fast ? '?fast=1' : '';
-    const res = await fetch(`${baseUrl}/v1/agent/status${qs}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/status${qs}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
         signal,
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
@@ -1877,11 +1877,10 @@ async function marrowAgentContext(apiKey, baseUrl, sessionId, agentId, signal) {
     const query = new URLSearchParams({ compact: '1' });
     if (agentId)
         query.set('agent_id', agentId);
-    const res = await fetch(`${baseUrl}/v1/agent/context?${query.toString()}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/context?${query.toString()}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
         signal,
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
@@ -1892,10 +1891,9 @@ async function marrowValueReport(apiKey, baseUrl, period = '7d', agentIdFilter, 
     const qs = new URLSearchParams({ period: String(days) });
     if (agentIdFilter)
         qs.set('agent_id', agentIdFilter);
-    const res = await fetch(`${baseUrl}/v1/analytics/value-report?${qs.toString()}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/analytics/value-report?${qs.toString()}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
@@ -1907,21 +1905,19 @@ async function marrowDecisionBrief(apiKey, baseUrl, input, sessionId, agentId) {
         agent_id: input.agent_id || agentId,
         session_id: input.session_id || sessionId,
     };
-    const res = await fetch(`${baseUrl}/v1/analytics/decision-brief`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/analytics/decision-brief`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowWorkflowGate(apiKey, baseUrl, input, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/workflow/gate`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/workflow/gate`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(input),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId, signal, idempotencyKeyOverride) {
@@ -1931,7 +1927,7 @@ async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId, si
         session_id: input.session_id || sessionId,
     };
     const idempotencyKey = idempotencyKeyOverride || `mcp-runtime-${(0, node_crypto_1.randomUUID)()}`;
-    const res = await fetch(`${baseUrl}/v1/agent/runtime`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/runtime`, {
         method: 'POST',
         headers: {
             ...buildHeaders(apiKey, sessionId, 'application/json', agentId),
@@ -1940,7 +1936,6 @@ async function marrowAgentRuntime(apiKey, baseUrl, input, sessionId, agentId, si
         body: JSON.stringify(body),
         signal,
     });
-    const json = await safeJsonResponse(res);
     const runtime = requireRuntimeResult(json.data);
     if (!runtime.action && typeof input.action === 'string' && input.action.trim()) {
         runtime.action = input.action;
@@ -1953,13 +1948,12 @@ async function marrowEnforcement(apiKey, baseUrl, input, sessionId, agentId, sig
         agent_id: input.agent_id || agentId,
         session_id: input.session_id || sessionId,
     };
-    const res = await fetch(`${baseUrl}/v1/agent/enforcement`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/enforcement`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
         signal,
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
@@ -2018,33 +2012,29 @@ async function marrowArbitrate(apiKey, baseUrl, input, sessionId, agentId) {
     }, sessionId, agentId);
 }
 async function marrowGovernanceControlPlane(apiKey, baseUrl, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/governance/control-plane`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/control-plane`, {
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowHermesIntegration(apiKey, baseUrl, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/integrations/hermes`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/integrations/hermes`, {
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowCompletionContracts(apiKey, baseUrl, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/governance/completion-contracts`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/completion-contracts`, {
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowEvaluateCompletionContract(apiKey, baseUrl, input, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/governance/completion-contracts/evaluate`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/completion-contracts/evaluate`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(input),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowGovernanceTimeline(apiKey, baseUrl, options = {}, sessionId, agentId) {
@@ -2053,10 +2043,9 @@ async function marrowGovernanceTimeline(apiKey, baseUrl, options = {}, sessionId
         qs.set('agent_id', options.agentId || agentId || '');
     if (options.limit)
         qs.set('limit', String(options.limit));
-    const res = await fetch(`${baseUrl}/v1/agent/governance/timeline${qs.toString() ? `?${qs.toString()}` : ''}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/timeline${qs.toString() ? `?${qs.toString()}` : ''}`, {
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowBuyerProof(apiKey, baseUrl, options = {}, sessionId, agentId) {
@@ -2065,11 +2054,10 @@ async function marrowBuyerProof(apiKey, baseUrl, options = {}, sessionId, agentI
         qs.set('agent_id', options.agentId || agentId || '');
     if (options.periodDays)
         qs.set('period_days', String(options.periodDays));
-    const res = await fetch(`${baseUrl}/v1/agent/governance/buyer-proof${qs.toString() ? `?${qs.toString()}` : ''}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/buyer-proof${qs.toString() ? `?${qs.toString()}` : ''}`, {
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     });
-    const json = await safeJsonResponse(res);
-    return json.data;
+    return requireObjectData(json.data);
 }
 /**
  * Coordinate tenant agents through resource leases and compact proof packets.
@@ -2084,8 +2072,8 @@ async function marrowCoordinate(apiKey, baseUrl, input, sessionId, agentId) {
             qs.set('status', input.status);
         if (Number.isFinite(Number(input.limit)))
             qs.set('limit', String(input.limit));
-        const res = await fetch(`${baseUrl}/v1/agent/governance/leases${qs.toString() ? `?${qs}` : ''}`, { headers });
-        return (await safeJsonResponse(res)).data;
+        const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/leases${qs.toString() ? `?${qs}` : ''}`, { headers });
+        return json.data;
     }
     if (action === 'acquire_lease') {
         const boundAgentId = boundCoordinationAgent(input, agentId);
@@ -2096,17 +2084,17 @@ async function marrowCoordinate(apiKey, baseUrl, input, sessionId, agentId) {
             workflow_id: input.workflow_id,
             ttl_seconds: input.ttl_seconds,
         };
-        const res = await fetch(`${baseUrl}/v1/agent/governance/leases/acquire`, {
+        const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/leases/acquire`, {
             method: 'POST', headers, body: JSON.stringify(body),
         });
-        return (await safeJsonResponse(res)).data;
+        return json.data;
     }
     if (action === 'release_lease') {
         const boundAgentId = boundCoordinationAgent(input, agentId);
         const leaseId = validatePathParam(String(input.lease_id || ''), 'lease_id');
         if (!leaseId.startsWith('lease_'))
             throw new TypeError('lease_id must be a Marrow lease identifier.');
-        const res = await fetch(`${baseUrl}/v1/agent/governance/leases/${leaseId}/release`, {
+        const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/leases/${leaseId}/release`, {
             method: 'POST',
             headers,
             body: JSON.stringify({
@@ -2114,14 +2102,14 @@ async function marrowCoordinate(apiKey, baseUrl, input, sessionId, agentId) {
                 lease_token: input.lease_token,
             }),
         });
-        return (await safeJsonResponse(res)).data;
+        return json.data;
     }
     if (action === 'list_proof_packets') {
         const qs = new URLSearchParams();
         if (Number.isFinite(Number(input.limit)))
             qs.set('limit', String(input.limit));
-        const res = await fetch(`${baseUrl}/v1/agent/governance/proof-packets${qs.toString() ? `?${qs}` : ''}`, { headers });
-        return (await safeJsonResponse(res)).data;
+        const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/proof-packets${qs.toString() ? `?${qs}` : ''}`, { headers });
+        return json.data;
     }
     if (action === 'create_proof_packet') {
         const boundAgentId = boundCoordinationAgent(input, agentId);
@@ -2138,10 +2126,10 @@ async function marrowCoordinate(apiKey, baseUrl, input, sessionId, agentId) {
             summary: input.summary,
             evidence_refs: input.evidence_refs,
         });
-        const res = await fetch(`${baseUrl}/v1/agent/governance/proof-packets`, {
+        const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/proof-packets`, {
             method: 'POST', headers, body: JSON.stringify(body),
         });
-        return (await safeJsonResponse(res)).data;
+        return json.data;
     }
     throw new TypeError('Unsupported coordination action.');
 }
@@ -2172,10 +2160,10 @@ async function marrowReplayCompare(apiKey, baseUrl, input, sessionId, agentId) {
         const safeId = validatePathParam(comparisonId, 'comparison_id');
         if (!safeId.startsWith('replay_'))
             throw new TypeError('comparison_id must be a Marrow replay identifier.');
-        const res = await fetch(`${baseUrl}/v1/agent/governance/replay-comparisons/${safeId}`, {
+        const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/replay-comparisons/${safeId}`, {
             headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         });
-        return (await safeJsonResponse(res)).data;
+        return json.data;
     }
     const sourceDecisionId = requiredReplayDecisionId(input.source_decision_id, 'source_decision_id');
     const baseline = normalizeReplayOutcomeReference(input.baseline, 'baseline');
@@ -2190,55 +2178,50 @@ async function marrowReplayCompare(apiKey, baseUrl, input, sessionId, agentId) {
         baseline,
         candidate,
     });
-    const res = await fetch(`${baseUrl}/v1/agent/governance/replay-comparisons`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/replay-comparisons`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
     });
-    return (await safeJsonResponse(res)).data;
+    return json.data;
 }
 async function marrowRecommendGovernanceMode(apiKey, baseUrl, input, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/mode/recommend`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/mode/recommend`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(input),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowListPolicyProfiles(apiKey, baseUrl, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/policy-profiles`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/policy-profiles`, {
         method: 'GET',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowCreatePolicyProfile(apiKey, baseUrl, input, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/policy-profiles`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/policy-profiles`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(input),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowAssignProjectPolicyProfile(apiKey, baseUrl, input, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/project-policy-profile`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/project-policy-profile`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(input),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowResolvePolicy(apiKey, baseUrl, input, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/policy/resolve`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/policy/resolve`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(input),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowFirstValue(apiKey, baseUrl, input = {}, sessionId, agentId) {
@@ -2247,22 +2230,20 @@ async function marrowFirstValue(apiKey, baseUrl, input = {}, sessionId, agentId)
         agent_id: input.agent_id || agentId,
         session_id: input.session_id || sessionId,
     };
-    const res = await fetch(`${baseUrl}/v1/agent/first-value`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/first-value`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify(body),
     });
-    const json = await safeJsonResponse(res);
-    return json.data;
+    return requireObjectData(json.data);
 }
 async function marrowAgentPerformance(apiKey, baseUrl, period = '7d', agentIdFilter, sessionId, agentId) {
     const qs = new URLSearchParams({ period: String(clampPeriodDays(period)) });
     if (agentIdFilter || agentId)
         qs.set('agent_id', agentIdFilter || agentId || '');
-    const res = await fetch(`${baseUrl}/v1/analytics/agent-performance?${qs.toString()}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/analytics/agent-performance?${qs.toString()}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowFleetLessons(apiKey, baseUrl, options = {}, sessionId, agentId) {
@@ -2275,14 +2256,13 @@ async function marrowFleetLessons(apiKey, baseUrl, options = {}, sessionId, agen
         qs.set('agent_id', options.agentId || agentId || '');
     if (options.limit)
         qs.set('limit', String(options.limit));
-    const res = await fetch(`${baseUrl}/v1/fleet/lessons${qs.toString() ? `?${qs.toString()}` : ''}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/fleet/lessons${qs.toString() ? `?${qs.toString()}` : ''}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowRecordDeploymentMemory(apiKey, baseUrl, input, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/fleet/deployment-memory`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/fleet/deployment-memory`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({
@@ -2291,11 +2271,10 @@ async function marrowRecordDeploymentMemory(apiKey, baseUrl, input, sessionId, a
             tests: Array.isArray(input.tests) ? input.tests : undefined,
         }),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowCreateHandoff(apiKey, baseUrl, input, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/fleet/handoffs`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/fleet/handoffs`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({
@@ -2305,12 +2284,11 @@ async function marrowCreateHandoff(apiKey, baseUrl, input, sessionId, agentId) {
             task: String(input.task || ''),
         }),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowUpdateHandoff(apiKey, baseUrl, handoffId, input, sessionId, agentId) {
     const safeId = validatePathParam(handoffId, 'handoffId');
-    const res = await fetch(`${baseUrl}/v1/fleet/handoffs/${safeId}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/fleet/handoffs/${safeId}`, {
         method: 'PATCH',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({
@@ -2319,7 +2297,6 @@ async function marrowUpdateHandoff(apiKey, baseUrl, handoffId, input, sessionId,
             result_summary: typeof input.result_summary === 'string' ? input.result_summary : undefined,
         }),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowHandoffStatus(apiKey, baseUrl, options = {}, sessionId, agentId, signal) {
@@ -2330,34 +2307,31 @@ async function marrowHandoffStatus(apiKey, baseUrl, options = {}, sessionId, age
         qs.set('agent_id', options.agentId || agentId || '');
     if (options.limit)
         qs.set('limit', String(options.limit));
-    const res = await fetch(`${baseUrl}/v1/fleet/handoffs/status${qs.toString() ? `?${qs.toString()}` : ''}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/fleet/handoffs/status${qs.toString() ? `?${qs.toString()}` : ''}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
         signal,
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
  * Get a periodic improvement nudge when Marrow has something worth surfacing.
  */
 async function marrowNudge(apiKey, baseUrl, sessionId, agentId) {
-    const res = await fetch(`${baseUrl}/v1/agent/nudge`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/nudge`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
  * Explicitly end the current session.
  */
 async function marrowSessionEnd(apiKey, baseUrl, autoCommitOpen = false, sessionId, agentId, signal) {
-    const res = await fetch(`${baseUrl}/v1/agent/session/end`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/session/end`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({ auto_commit_open: autoCommitOpen }),
         signal,
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 async function marrowIntegrationEvent(apiKey, baseUrl, event, sessionId, agentId) {
@@ -2373,10 +2347,9 @@ async function marrowIntegrationEvent(apiKey, baseUrl, event, sessionId, agentId
 }
 async function marrowDecisionTrace(apiKey, baseUrl, decisionId, sessionId, agentId) {
     const safeId = validatePathParam(decisionId, 'decisionId');
-    const response = await fetch(`${baseUrl}/v1/agent/governance/trace/${safeId}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/trace/${safeId}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
-    const json = await safeJsonResponse(response);
     return json.data || json;
 }
 /**
@@ -2384,12 +2357,11 @@ async function marrowDecisionTrace(apiKey, baseUrl, decisionId, sessionId, agent
  */
 async function marrowAcceptDetected(apiKey, baseUrl, detectedId, sessionId, agentId) {
     const safeId = validatePathParam(detectedId, 'detectedId');
-    const res = await fetch(`${baseUrl}/v1/workflows/accept-detected`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/workflows/accept-detected`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({ detected_id: safeId }),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 // ============= Template Marketplace (MCP v3.1.3) =============
@@ -2405,10 +2377,9 @@ async function marrowListTemplates(apiKey, baseUrl, params, sessionId, agentId) 
     if (params?.limit)
         qs.set('limit', String(params.limit));
     const query = qs.toString();
-    const res = await fetch(`${baseUrl}/v1/templates${query ? '?' + query : ''}`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/templates${query ? '?' + query : ''}`, {
         headers: buildHeaders(apiKey, sessionId, undefined, agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 /**
@@ -2416,11 +2387,10 @@ async function marrowListTemplates(apiKey, baseUrl, params, sessionId, agentId) 
  */
 async function marrowInstallTemplate(apiKey, baseUrl, slug, sessionId, agentId) {
     const safeSlug = validatePathParam(slug, 'slug');
-    const res = await fetch(`${baseUrl}/v1/templates/${safeSlug}/install`, {
+    const json = await fetchJsonResponse(`${baseUrl}/v1/templates/${safeSlug}/install`, {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
     });
-    const json = await safeJsonResponse(res);
     return json.data;
 }
 //# sourceMappingURL=index.js.map

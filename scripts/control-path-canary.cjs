@@ -99,7 +99,40 @@ function upstreamError(payload, fallback, message) {
   } else if (status === 503 || code === 'HTTP_503' || code === 'http_503') {
     errorClass = 'unavailable503';
   }
-  return canaryError(errorClass, message, status);
+  const error = canaryError(errorClass, message, status);
+  Object.assign(errorEvidence.get(error), safeBackendDiagnostics(payload));
+  return error;
+}
+
+const BACKEND_CODES = new Set([
+  'request_failed', 'request_timeout', 'MARROW_PLAN_UPGRADE_REQUIRED', 'MARROW_PRE_ACTION_GATE_SCOPE_MISMATCH',
+  'MARROW_ARBITRATION_SCOPE_MISMATCH', 'MARROW_TENANT_ADMISSION_REJECTED', 'MARROW_RATE_LIMITED',
+  'MARROW_REQUEST_TIMEOUT', 'MARROW_RUNTIME_UNAVAILABLE', 'AUTH_STORE_TIMEOUT', 'UNAUTHORIZED', 'FORBIDDEN',
+  'MARROW_RUNTIME_CONTINUATION_UNAVAILABLE', 'MARROW_RUNTIME_STATUS_UNAVAILABLE', 'MARROW_PROOF_PACK_INCOMPLETE',
+]);
+
+function safeBackendIdentity(payload) {
+  const value = payload?.backend_identity;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const identity = {};
+  if (typeof value.release_ref === 'string' && /^[a-f0-9]{40}$/.test(value.release_ref)) identity.release_ref = value.release_ref;
+  if (typeof value.worker_version_id === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.worker_version_id)) {
+    identity.worker_version_id = value.worker_version_id;
+  }
+  return Object.keys(identity).length ? { backend_identity: identity } : {};
+}
+
+function safeBackendDiagnostics(payload) {
+  const result = safeBackendIdentity(payload);
+  for (const value of [payload, payload?.error, payload?.details]) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    if (BACKEND_CODES.has(value.code) || AUTO_HTTP_ERROR_CATEGORIES.has(value.code)) result.backend_code = value.code;
+    if (AUTO_HTTP_ERROR_CATEGORIES.has(value.category)
+      || ['authorization', 'authentication', 'timeout', 'rate_limit', 'validation', 'server_error', 'network'].includes(value.category)) {
+      result.backend_category = value.category;
+    }
+  }
+  return result;
 }
 
 function safeVersion(value) {
@@ -249,6 +282,7 @@ function failureRecord(error, context = {}) {
       ...autoTimings(row), attempts: row.attempts, retry_wait_ms: safeMs(row.retry_wait_ms),
       auto_attempt_records: safeAutoOuterAttempts(row.auto_attempt_records),
     } : {}),
+    ...(row.outcome_closeout ? { outcome_eligible: row.outcome_eligible, outcome_closeout: row.outcome_closeout } : {}),
   }));
   return Object.freeze({
     schema_version: 1,
@@ -260,6 +294,8 @@ function failureRecord(error, context = {}) {
     expected_version: safeVersion(context.expectedVersion),
     attempt: Math.max(0, Math.min(3, context.attempt || 0)),
     latency_ms: safeMs(performance.now() - (context.stageStarted ?? performance.now())),
+    stage_latency_ms: safeMs(performance.now() - (context.stageStarted ?? performance.now())),
+    tool_operation_latency_ms: safeMs(performance.now() - (context.toolStarted ?? context.stageStarted ?? performance.now())),
     total_latency_ms: safeMs(performance.now() - (context.started ?? performance.now())),
     process_count: context.processCount === 1 ? 1 : 0,
     initialization_ms: context.initializationMs == null ? null : safeMs(context.initializationMs),
@@ -271,7 +307,38 @@ function failureRecord(error, context = {}) {
       ...(context.autoPhase ? { auto_phase: context.autoPhase } : {}),
     } : {}),
     ...(evidence.http_status === undefined ? {} : { http_status: evidence.http_status }),
+    ...safeBackendDiagnostics({ code: evidence.backend_code, category: evidence.backend_category,
+      backend_identity: evidence.backend_identity }),
   });
+}
+
+async function closeFixtureOutcome(name, payload, env, options) {
+  if (name === 'marrow_auto') return { outcome_eligible: true, outcome_closeout: 'closed',
+    completion_state: payload.completion_state, phase: payload.phase, resumable: payload.resumable };
+  if (!['marrow_agent_runtime', 'marrow_first_value'].includes(name)) return {};
+  const runtime = name === 'marrow_first_value' ? payload.runtime : payload;
+  const decisionId = runtime?.decision_id || runtime?.runtime_authorization?.decision_id
+    || runtime?.completion_contract?.decision_id;
+  if (decisionId == null) return { outcome_eligible: false, outcome_closeout: 'not_required' };
+  if (typeof decisionId !== 'string' || !decisionId.trim()) throw canaryError('contract', 'Invalid fixture decision identity');
+  const commit = options.commitFixture || require('../dist/index.js').marrowCommit;
+  let result;
+  try {
+    result = await commit(env.MARROW_API_KEY, env.MARROW_BASE_URL || 'https://api.getmarrow.ai', {
+      decision_id: decisionId,
+      success: true,
+      outcome: `The MCP canary received and validated the ${name} fixture response.`,
+      proof: { checks: ['mcp_canary_contract_validated'] },
+      ...(runtime?.gate_receipt?.id || runtime?.risk_gate?.gate_receipt_id ? {
+        gate_receipt_id: runtime.gate_receipt?.id || runtime.risk_gate.gate_receipt_id,
+      } : {}),
+    }, runtime?.session_id || env.MARROW_SESSION_ID, runtime?.agent_id || env.MARROW_FLEET_AGENT_ID);
+  } catch (error) {
+    const { structuredRequestFailure } = require('../dist/request-reliability.js');
+    throw upstreamError(structuredRequestFailure(error), 'tool_unavailable', 'Fixture outcome closeout failed');
+  }
+  if (result?.committed !== true) throw canaryError('completion_pending', 'Fixture outcome remains open');
+  return { outcome_eligible: true, outcome_closeout: 'closed' };
 }
 
 function serializeFailure(error) {
@@ -624,6 +691,7 @@ async function executeCanary(env, options, context) {
     const results = context.results;
     for (const [name, args] of cases) {
       const callStarted = performance.now();
+      context.toolStarted = callStarted;
       const perToolTimeoutMs = ASYNC_PATH_TOOLS.has(name) ? asyncToolTimeoutMs : toolTimeoutMs;
       let called;
       let payload;
@@ -707,7 +775,12 @@ async function executeCanary(env, options, context) {
       validatePayload(name, payload);
       const live = payload.stale !== true && payload.source !== 'last_known' && payload.available !== false;
       if (!live) throw canaryError('contract', `${name} returned cached or unavailable guidance`);
+      stage('outcome_closeout', name, attempts);
+      const outcome = await closeFixtureOutcome(name, payload, childEnv, options);
       results.push({ tool: name, ok: true, live: true, latency_ms: latencyMs,
+        tool_operation_latency_ms: safeMs(performance.now() - callStarted),
+        ...outcome,
+        ...safeBackendIdentity(payload),
         ...(recoveredOnRetry ? { recovered_on_retry: true } : {}),
         ...(name === 'marrow_auto' ? {
           ...autoTimings(payload),
@@ -727,6 +800,7 @@ async function executeCanary(env, options, context) {
       initialization_ms: initializationMs,
       per_tool_latency_excludes_initialization: true,
       tools_checked: results.length,
+      all_outcome_eligible_writes_closed: results.every((row) => row.outcome_eligible !== true || row.outcome_closeout === 'closed'),
       latency_groups: {
         hot_path: latencyGroup(hotPath),
         reports: latencyGroup(reports),

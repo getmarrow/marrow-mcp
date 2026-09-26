@@ -369,7 +369,7 @@ test('fleet-bound identity is identical in agent-scoped headers, bodies, and que
         proof_required: false, proof_complete: true, gate_receipt_id: 'gate-fixture',
       } });
     }
-    return Response.json({ data: {} });
+    return Response.json({ data: { positioning: 'Bounded buyer-proof fixture' } });
   };
   try {
     const agentId = 'fleet-bound-agent';
