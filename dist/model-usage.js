@@ -24,7 +24,7 @@ function normalizeModelUsage(input = {}) {
             body[key] = (0, redact_1.redactSensitiveText)(value);
             continue;
         }
-        if (typeof value !== 'string' || !safeLabel.test(value) || /^(?:sk|mrw|ghp|github_pat|npm)_[\w-]+$/i.test(value))
+        if (typeof value !== 'string' || !safeLabel.test(value) || (0, redact_1.redactSensitiveText)(value) !== value || /^(?:sk|mrw|ghp|github_pat|npm)_[\w-]+$/i.test(value))
             invalid(key);
         body[key] = value;
     }
@@ -63,6 +63,9 @@ function normalizeModelUsage(input = {}) {
         const result = {};
         for (const [key, value] of Object.entries(dims)) {
             if (!/^[a-z_]{1,40}$/.test(key) || key === '__proto__' || !(typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,80}$/.test(value) || typeof value === 'number' && Number.isFinite(value) && value >= 0))
+                invalid('pricing_dimensions');
+            const filtered = (0, redact_1.redactSensitiveValue)({ [key]: value });
+            if (filtered[key] !== value)
                 invalid('pricing_dimensions');
             result[key] = value;
         }
