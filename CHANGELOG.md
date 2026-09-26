@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.9.93
+
+- Use canonical Auto operation IDs in the full eleven-tool canary so numeric UUIDs pass existing privacy validation and reach durable outcome closure.
+- Preserve authentication, proof gates, idempotency, request deadlines and retries.
+
 ## 3.9.92
 
 - Keep JSON response bodies and cancellation within existing control-call deadlines without expanding retry budgets.

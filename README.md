@@ -136,7 +136,11 @@ v3.9.87 hardens the authenticated control-path canary against single-sample tran
 
 v3.9.86 was published with the adapter version constant still at `3.9.85`, so the strict canary identity check rejected it; it is deprecated — use `3.9.87`. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.87`, reload the host, review hook trust, and verify before claiming the updated client is active.
 
-## What's New in v3.9.92
+## What's New in v3.9.93
+
+v3.9.93 fixes the full eleven-tool canary's Auto operation identifiers. The canary now uses Auto's canonical UUID namespace, so valid numeric UUIDs reach Think and Commit instead of failing locally before a request. Privacy validation, authentication, proof requirements, deadlines, and retries are unchanged. Published 3.9.92 cannot provide this harness correction; update and reload the host before verifying activation. SDK 3.7.63 is unchanged.
+
+### Previous release: v3.9.92
 
 v3.9.92 keeps response-body consumption and cancellation inside the existing MCP request deadline, including Orient, First Value, buyer proof, and other JSON control calls. Malformed secondary-call responses fail explicitly. The full eleven-tool canary retains bounded backend error categories and elapsed operation timings, and closes any outcome-eligible fixture decisions before reporting success. These are client reliability corrections that the published 3.9.91 bytes cannot provide; they do not establish the cause of older unavailable receipts. Reload the host after updating and verify the installed version before claiming activation.
 

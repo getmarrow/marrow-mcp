@@ -147,7 +147,7 @@ test('uses one persistent process and excludes startup from per-tool timings', a
   assert.equal(result.latency_groups.hot_path.count, 6);
   assert.equal(result.latency_groups.reports.count, 5);
   const autoCall = fake.state.calls.find((call) => call.params?.name === 'marrow_auto');
-  assert.match(autoCall.params.arguments.operation_id, /^canary_[0-9a-f-]{36}$/);
+  assert.match(autoCall.params.arguments.operation_id, /^auto_[0-9a-f-]{36}$/);
   assert.equal(result.all_outcome_eligible_writes_closed, true);
   assert.deepEqual(result.results.find((row) => row.tool === 'marrow_auto').outcome_closeout, 'closed');
 });

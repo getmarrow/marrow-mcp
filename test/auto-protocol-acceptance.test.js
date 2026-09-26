@@ -56,3 +56,38 @@ test('mock protocol cold/concurrent/idle/restart auto converges on one decision 
     t.diagnostic(JSON.stringify(counts));
   } finally { globalThis.fetch = originalFetch; }
 });
+
+
+test('canonical canary numeric UUID reaches Think and Commit and closes exactly one outcome', async () => {
+  const originalFetch = globalThis.fetch;
+  const operationId = 'auto_12345678-1234-4234-8234-123456789012';
+  const requests = [];
+  const records = new Map();
+  globalThis.fetch = async (url, init) => {
+    const phase = new URL(String(url)).pathname.endsWith('/think') ? 'think' : 'commit';
+    const key = new Headers(init.headers).get('Idempotency-Key');
+    requests.push({ phase, key });
+    assert.equal(key, `mcp-auto:${operationId}:${phase}`);
+    if (records.has(key)) assert.equal(records.get(key).body, init.body);
+    else records.set(key, { body: init.body, result: phase === 'think'
+      ? { decision_id: 'numeric-canary-decision' } : { committed: true } });
+    return Response.json({ data: records.get(key).result });
+  };
+  try {
+    const params = { operation_id: operationId, action: 'Record one bounded MCP control-path canary outcome',
+      outcome: 'The MCP auto canary reached one committed outcome.', success: true,
+      type: 'process', proof: { checks: ['mcp_auto_committed'] } };
+    const invoke = () => marrowAuto('canary-fixture-key', 'https://api.example.test', params,
+      'canary-fixture-session', 'canary-fixture-agent', 8000);
+    const first = await invoke();
+    assert.equal(first.phase, 'closed');
+    assert.equal(first.committed, true);
+    assert.equal(first.decision_id, 'numeric-canary-decision');
+    assert.deepEqual(requests.map(({ phase }) => phase), ['think', 'commit']);
+    const replay = await invoke();
+    assert.equal(replay.phase, 'closed');
+    assert.equal(replay.committed, true);
+    assert.equal(replay.decision_id, first.decision_id);
+    assert.equal(records.size, 2, 'one durable decision key and one durable outcome key');
+  } finally { globalThis.fetch = originalFetch; }
+});
