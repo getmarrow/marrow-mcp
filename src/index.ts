@@ -1,3 +1,4 @@
+import { normalizeModelUsage } from './model-usage';
 /**
  * @getmarrow/mcp — API Functions
  */
@@ -148,21 +149,6 @@ function defaultSourceClient(): string {
   return aliases[raw] || (SOURCE_CLIENTS.has(raw) ? raw : 'custom');
 }
 
-function normalizeModelUsage(input: MarrowModelUsageInput = {}): Record<string, unknown> {
-  const body: Record<string, unknown> = {};
-  const copyString = (key: keyof MarrowModelUsageInput) => {
-    const value = input[key];
-    if (typeof value === 'string' && value.trim()) body[String(key)] = redactSensitiveText(value).slice(0, 180);
-  };
-  const copyNumber = (key: keyof MarrowModelUsageInput) => {
-    const value = Number(input[key]);
-    if (Number.isFinite(value) && value >= 0) body[String(key)] = value;
-  };
-  (['agent_id', 'session_id', 'workflow_id', 'decision_id', 'provider', 'model', 'task_type', 'action_type', 'source', 'marrow_intervention'] as Array<keyof MarrowModelUsageInput>).forEach(copyString);
-  (['input_tokens', 'output_tokens', 'cached_tokens', 'total_tokens', 'cost_usd', 'latency_ms', 'baseline_tokens', 'estimated_tokens_saved', 'estimated_cost_saved_usd', 'estimated_minutes_saved'] as Array<keyof MarrowModelUsageInput>).forEach(copyNumber);
-  if (typeof input.success === 'boolean') body.success = input.success;
-  return body;
-}
 
 /**
  * Validate a path parameter to prevent path traversal attacks.

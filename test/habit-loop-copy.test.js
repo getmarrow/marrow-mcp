@@ -66,7 +66,7 @@ test('extracts observed usage and ignores empty objects', () => {
     model: 'gpt-test',
     input_tokens: 11,
     output_tokens: 7,
-    cached_tokens: undefined,
     total_tokens: 18,
+    token_semantics: 'input_includes_cache',
   });
 });

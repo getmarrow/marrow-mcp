@@ -190,11 +190,12 @@ async function runHookCommand(input) {
             },
         });
         if (identity.harness !== 'grok' && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
-            const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_response)
-                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_result)
-                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_output)
-                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event);
-            if (usage && (usage.input_tokens || usage.output_tokens || usage.total_tokens || usage.cached_tokens)) {
+            const capture = (0, habit_loop_copy_1.modelUsageCaptureContextFromEnv)();
+            const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_response, capture)
+                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_result, capture)
+                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_output, capture)
+                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event, capture);
+            if (usage) {
                 await (0, index_1.marrowModelUsage)(apiKey, baseUrl, {
                     ...usage,
                     source: 'mcp_post_tool_use',
