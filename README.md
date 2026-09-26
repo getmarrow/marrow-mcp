@@ -140,7 +140,7 @@ v3.9.86 was published with the adapter version constant still at `3.9.85`, so th
 
 v3.9.92 keeps response-body consumption and cancellation inside the existing MCP request deadline, including Orient, First Value, buyer proof, and other JSON control calls. Malformed secondary-call responses fail explicitly. The full eleven-tool canary retains bounded backend error categories and elapsed operation timings, and closes any outcome-eligible fixture decisions before reporting success. These are client reliability corrections that the published 3.9.91 bytes cannot provide; they do not establish the cause of older unavailable receipts. Reload the host after updating and verify the installed version before claiming activation.
 
-## What's New in v3.9.91
+### Previous release: v3.9.91
 
 v3.9.91 keeps the unreachable-control allow, and stops treating every control failure as an outage. A rejected key, a permission denial, a malformed response, or any other reached-and-rejected control call still denies a protected action. Only a timeout, a network failure, or an unavailable service warns and allows. The pre-action wait is 8 seconds so the deployed auth grace can finish before the hook gives up. The published `3.9.90` package cannot deliver this distinction. SDK `3.7.63` is unchanged.
 
