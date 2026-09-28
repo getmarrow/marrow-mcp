@@ -74,6 +74,22 @@ test('path escape, symlink, oversized file and line are rejected', () => {
   } finally { f.close(); }
 });
 
+test('rejects noncanonical symlink traversal before opening an outside transcript', () => {
+  const inside = fixture(), outside = fixture();
+  try {
+    const child = join(outside.root, 'child');
+    fs.mkdirSync(child, { mode: 0o700 });
+    fs.symlinkSync(child, join(inside.root, 'link'));
+    // Do not join/normalize this spelling: the OS follows link before resolving .. .
+    const traversal = `${inside.root}/link/../fixture.jsonl`;
+    assert.equal(fs.readFileSync(traversal, 'utf8'), fs.readFileSync(outside.file, 'utf8'));
+    const result = observe({ ...inside.input, transcript_path: traversal }, undefined, { sessionsRoot: inside.root });
+    assert.equal(result.reason, 'transcript_path_rejected');
+    assert.equal(result.usage, undefined);
+    assert.equal(observe(inside.input, undefined, { sessionsRoot: inside.root }).reason, 'observed_delta');
+  } finally { inside.close(); outside.close(); }
+});
+
 test('documented event needs bound model/turn and checkpoint delta; repeat/reset do not become usage', () => {
   const camel = v => Object.fromEntries(Object.entries(v).map(([k, n]) => [k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()), n]));
   const event = { method: 'thread/tokenUsage/updated', session_id: thread, turn_id: turn, model, params: { threadId: thread, turnId: turn, tokenUsage: { total: camel(counts(100, 10)), last: camel(counts(100, 10)), modelContextWindow: 1000000 } } };
