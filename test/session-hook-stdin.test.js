@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
-const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { createServer } = require('node:http');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
@@ -46,7 +46,8 @@ globalThis.fetch = (input, init) => {
       child.once('close', (code, signal) => resolve({ code, signal }));
     });
     const timeout = setTimeout(() => child.kill('SIGKILL'), 5000);
-    child.stdin.end(typeof input === 'string' ? input : JSON.stringify(input));
+    const payload = typeof input === 'function' ? input(directory) : input;
+    child.stdin.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
     const result = await completion.finally(() => clearTimeout(timeout));
     assert.equal(result.code, 0, `CLI failed: ${stderr}`);
     assert.equal(result.signal, null);
@@ -86,4 +87,23 @@ test('real session CLI does not invent usage for absent counts or malformed stdi
     assert.equal(result.calls.filter(call => call.path === '/v1/agent/model-usage').length, 0);
     assert.equal(result.calls.filter(call => call.path === '/v1/agent/session/end').length, 1);
   }
+});
+
+
+test('real Codex session CLI captures bounded native transcript delta', async () => {
+  const result = await runCli(directory => {
+    const thread = '11111111-1111-4111-8111-111111111111', turn = '22222222-2222-4222-8222-222222222222';
+    const root = join(directory, '.codex', 'sessions'); mkdirSync(root, { recursive: true, mode: 0o700 });
+    const path = join(root, 'native.jsonl');
+    const counts = (i, o) => ({ input_tokens: i, cached_input_tokens: 0, output_tokens: o, reasoning_output_tokens: 0, total_tokens: i + o });
+    const event = (total, last) => ({ type: 'event_msg', timestamp: '2026-09-28T10:00:00Z', payload: { type: 'token_count', info: { total_token_usage: total, last_token_usage: last } } });
+    const rows = [{ type: 'session_meta', payload: { id: thread, cli_version: '0.157.1', model_provider: 'openai' } },
+      { type: 'turn_context', payload: { turn_id: turn, model: 'gpt-6-astra' } }, event(counts(100, 10), counts(100, 10)), event(counts(150, 18), counts(50, 8))];
+    writeFileSync(path, rows.map(JSON.stringify).join('\n') + '\n', { mode: 0o600 });
+    return { session_id: thread, turn_id: turn, model: 'gpt-6-astra', transcript_path: path };
+  });
+  const calls = result.calls.filter(call => call.path === '/v1/agent/model-usage');
+  assert.equal(calls.length, 1); assert.equal(calls[0].body.input_tokens, 50);
+  assert.equal(calls[0].body.output_tokens, 8); assert.equal(calls[0].body.usage_kind, 'delta');
+  assert.equal(calls[0].body.source, 'codex_native_usage');
 });

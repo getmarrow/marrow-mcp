@@ -6,6 +6,7 @@ exports.deriveAction = deriveAction;
 exports.deriveToolOutcome = deriveToolOutcome;
 exports.installPostToolUseHook = installPostToolUseHook;
 exports.runHookCommand = runHookCommand;
+const codex_native_usage_1 = require("./codex-native-usage");
 const index_1 = require("./index");
 const habit_loop_copy_1 = require("./habit-loop-copy");
 const lifecycle_spool_1 = require("./lifecycle-spool");
@@ -126,10 +127,19 @@ async function runHookCommand(input) {
         else {
             event = (0, hook_contract_1.normalizeHookEventPayload)(input);
         }
+        const resolvedEnv = identity.environment;
+        if (identity.harness === 'codex' && resolvedEnv.apiKey && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+            const context = (0, habit_loop_copy_1.modelUsageCaptureContextFromEnv)();
+            const supplied = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_response, context)
+                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_result, context)
+                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_output, context)
+                || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event, context);
+            if (!supplied)
+                await (0, codex_native_usage_1.captureCodexNativeUsage)(event, resolvedEnv.apiKey, (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai'), identity.agent_id);
+        }
         if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)) {
             return;
         }
-        const resolvedEnv = identity.environment;
         const privateLoopPayload = (0, hook_contract_1.privateHookLoopGuardPayload)(event);
         const classified = (0, hook_pre_action_1.classifyTool)(event);
         const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)

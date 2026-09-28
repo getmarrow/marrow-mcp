@@ -1,3 +1,4 @@
+import { captureCodexNativeUsage } from './codex-native-usage';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { marrowModelUsage, marrowSessionEnd, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from './habit-loop-copy';
@@ -177,6 +178,8 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
           marrow_intervention: 'passive_model_usage_capture',
           action_type: 'session',
         }, sessionId, agentId).catch(() => undefined);
+      } else if (identity.harness === 'codex') {
+        await captureCodexNativeUsage(payload, resolved.apiKey, baseUrl, agentId);
       }
     }
   } catch (error) {

@@ -4,6 +4,7 @@ exports.SESSION_HOOK_COMMAND = void 0;
 exports.installSessionEndHook = installSessionEndHook;
 exports.sessionEndAutoCommitOpen = sessionEndAutoCommitOpen;
 exports.runSessionHookCommand = runSessionHookCommand;
+const codex_native_usage_1 = require("./codex-native-usage");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const index_1 = require("./index");
 const habit_loop_copy_1 = require("./habit-loop-copy");
@@ -167,6 +168,9 @@ async function runSessionHookCommand(input) {
                     marrow_intervention: 'passive_model_usage_capture',
                     action_type: 'session',
                 }, sessionId, agentId).catch(() => undefined);
+            }
+            else if (identity.harness === 'codex') {
+                await (0, codex_native_usage_1.captureCodexNativeUsage)(payload, resolved.apiKey, baseUrl, agentId);
             }
         }
     }
