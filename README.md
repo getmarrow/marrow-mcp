@@ -680,3 +680,5 @@ MIT
 
 - [@getmarrow/install](https://www.npmjs.com/package/@getmarrow/install) - default installer, self-test, governed runner, and operator TUI
 - [@getmarrow/sdk](https://www.npmjs.com/package/@getmarrow/sdk) - Node.js and TypeScript integration for owned agent runtimes
+
+Codex native usage capture accepts a bound `thread/tokenUsage/updated` event or a bounded current transcript with the supported `0.157.1` schema. It records only the latest observed model call when matching model/turn counters prove that call's delta; it does not reconstruct whole turns or history. Repeated hooks use a compact private checkpoint and stable usage ID. Unknown versions, missing context, counter resets, unsafe/oversized files, and unproven subagent bindings abstain. Cached input and reasoning output remain subsets. Billing endpoint, tier, region, and subscription mode require explicit capture configuration; native model names do not establish a price or savings baseline.

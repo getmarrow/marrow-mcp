@@ -1,3 +1,4 @@
+import { captureCodexNativeUsage } from './codex-native-usage';
 import { marrowModelUsage, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from './habit-loop-copy';
 import { recordLifecycleEvent } from './lifecycle-spool';
@@ -159,10 +160,19 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       event = normalizeHookEventPayload(input) as HookEvent;
     }
 
+    const resolvedEnv = identity.environment;
+    if (identity.harness === 'codex' && resolvedEnv.apiKey && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
+      const context = modelUsageCaptureContextFromEnv();
+      const supplied = extractModelUsageFromUnknown(event.tool_response, context)
+        || extractModelUsageFromUnknown(event.tool_result, context)
+        || extractModelUsageFromUnknown(event.tool_output, context)
+        || extractModelUsageFromUnknown(event, context);
+      if (!supplied) await captureCodexNativeUsage(event, resolvedEnv.apiKey,
+        validateBaseUrl(resolvedEnv.baseUrl || 'https://api.getmarrow.ai'), identity.agent_id);
+    }
     if (isOfficialMarrowMcpEvent(event)) {
       return;
     }
-    const resolvedEnv = identity.environment;
     const privateLoopPayload = privateHookLoopGuardPayload(event);
     const classified = classifyTool(event);
     const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
