@@ -136,6 +136,10 @@ v3.9.87 hardens the authenticated control-path canary against single-sample tran
 
 v3.9.86 was published with the adapter version constant still at `3.9.85`, so the strict canary identity check rejected it; it is deprecated — use `3.9.87`. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.87`, reload the host, review hook trust, and verify before claiming the updated client is active.
 
+## What's New in v3.9.95
+
+v3.9.95 fixes supplied model usage lost when native session hooks consumed stdin. It also captures the latest proven Codex model-call delta from bound token-usage events or a bounded transcript using the supported Codex `0.157.1` schema. Unknown versions, model/turn identity, unsafe paths, counter resets and unproven child bindings abstain. Billing dimensions remain unknown unless explicitly supplied. Capture is not proof of complete coverage, a comparable baseline, overhead or savings. Update and reload the owning host before claiming active capture.
+
 ## What's New in v3.9.94
 
 v3.9.94 preserves compact model-cost evidence through native capture, direct usage submission and Commit. It captures OpenAI Chat/Responses cache subsets and Anthropic cache reads/writes with their actual token semantics and stable provider response identity. Published 3.9.93 strips these fields, so this correction requires updating MCP and reloading the host. It does not change authentication, plans, or claim baseline savings.
