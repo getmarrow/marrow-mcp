@@ -142,6 +142,8 @@ v3.9.94 preserves compact model-cost evidence through native capture, direct usa
 
 ### Observed usage and calculated cost
 
+Session-hook commands retain observed usage supplied on stdin for capture. Session totals remain cumulative and unpriced without a proven delta; this does not add transcript collection or manufacture missing model usage.
+
 A connector tool call does not automatically expose the upstream chat model's usage. Native hooks capture only usage actually present in their event. Adapters can pass an observed request endpoint to `extractModelUsageFromUnknown`; native hooks accept explicit host configuration through `MARROW_MODEL_USAGE_ENDPOINT`. First-party billing is recognized only for HTTPS `api.openai.com` and `api.anthropic.com`, with no credentials or custom port. Set this only when it describes the requests whose responses the hook observes; do not label a proxy or mixed-provider stream as first-party. Endpoints and response content are never sent as usage evidence.
 
 `MARROW_MODEL_USAGE_PRICING_DIMENSIONS` accepts a compact JSON object of dimensions actually established by the request configuration (for example tier, region and modality). Missing dimensions remain unknown. Observed service tier, Anthropic inference geography and single-TTL cache-creation counts take precedence. Mixed cache TTL writes remain unresolved. Set `MARROW_MODEL_USAGE_BILLING_MODE=subscription` only for subscription usage; displayed cost then means an API-equivalent estimate, not an invoice. Never use these settings to fill gaps by guessing.
