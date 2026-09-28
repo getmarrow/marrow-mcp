@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.9.95
+
+- Preserve supplied model usage through the real native session-hook stdin boundary.
+- Capture only the latest proven native Codex model-call delta with stable dedupe, cache/reasoning subset semantics and bounded private transcript reads for supported schema `0.157.1`.
+- Reject noncanonical/symlink paths and abstain on unknown versions, missing context, counter resets or unproven child identity. No billing dimensions, coverage, baselines or savings are inferred.
+
 ## 3.9.93
 
 - Use canonical Auto operation IDs in the full eleven-tool canary so numeric UUIDs pass existing privacy validation and reach durable outcome closure.
