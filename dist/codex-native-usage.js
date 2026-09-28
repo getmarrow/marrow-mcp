@@ -47,6 +47,10 @@ function ownedPath(path, directory) {
 function safeTranscript(path, root) {
     if (!(0, node_path_1.isAbsolute)(path) || !(0, node_path_1.isAbsolute)(root))
         return false;
+    // The opened spelling must be the same path whose ancestors we validate.
+    // In particular, a symlink followed by /.. has different filesystem semantics.
+    if (path !== (0, node_path_1.resolve)(path))
+        return false;
     const rel = (0, node_path_1.relative)(root, path);
     if (!rel || rel.startsWith('..') || (0, node_path_1.isAbsolute)(rel) || !path.endsWith('.jsonl'))
         return false;
