@@ -31,7 +31,7 @@ type StopHookSource = {
   hook_event_name?: string;
 };
 
-function readStopHookSource(input?: unknown): StopHookSource {
+function readStopHookInput(input?: unknown): unknown {
   let value = input;
   if (value === undefined) {
     try {
@@ -41,8 +41,12 @@ function readStopHookSource(input?: unknown): StopHookSource {
       value = {};
     }
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const source = normalizeHookEventPayload(value);
+  return value;
+}
+
+function readStopHookSource(input: unknown): StopHookSource {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const source = normalizeHookEventPayload(input);
   const take = (field: string): string | undefined => {
     const candidate = typeof source[field] === 'string' ? String(source[field]).trim().slice(0, 1024) : '';
     return candidate || undefined;
@@ -109,7 +113,8 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     if (process.env.MARROW_AUTO_HOOK === 'false') return;
     try { if (!readLocalControlState().enabled) return; } catch { return; }
     const resolved = identity.environment;
-    const source = readStopHookSource(input);
+    const payload = readStopHookInput(input);
+    const source = readStopHookSource(payload);
     const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
       || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
     const agentId = identity.agent_id;
@@ -164,7 +169,7 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     }
 
     if (!['windsurf', 'gemini', 'grok'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
-      const usage = extractModelUsageFromUnknown(input, { ...modelUsageCaptureContextFromEnv(), usage_kind: 'cumulative' });
+      const usage = extractModelUsageFromUnknown(payload, { ...modelUsageCaptureContextFromEnv(), usage_kind: 'cumulative' });
       if (usage) {
         await marrowModelUsage(resolved.apiKey, baseUrl, {
           ...usage,

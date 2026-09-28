@@ -15,7 +15,7 @@ exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const SESSION_END_TIMEOUT_MS = 900;
 const completedGrokTurns = new Set();
-function readStopHookSource(input) {
+function readStopHookInput(input) {
     let value = input;
     if (value === undefined) {
         try {
@@ -26,9 +26,12 @@ function readStopHookSource(input) {
             value = {};
         }
     }
-    if (!value || typeof value !== 'object' || Array.isArray(value))
+    return value;
+}
+function readStopHookSource(input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input))
         return {};
-    const source = (0, hook_contract_1.normalizeHookEventPayload)(value);
+    const source = (0, hook_contract_1.normalizeHookEventPayload)(input);
     const take = (field) => {
         const candidate = typeof source[field] === 'string' ? String(source[field]).trim().slice(0, 1024) : '';
         return candidate || undefined;
@@ -97,7 +100,8 @@ async function runSessionHookCommand(input) {
             return;
         }
         const resolved = identity.environment;
-        const source = readStopHookSource(input);
+        const payload = readStopHookInput(input);
+        const source = readStopHookSource(payload);
         const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
             || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
         const agentId = identity.agent_id;
@@ -155,7 +159,7 @@ async function runSessionHookCommand(input) {
             // The pending lifecycle receipt remains durable for later reconciliation.
         }
         if (!['windsurf', 'gemini', 'grok'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
-            const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(input, { ...(0, habit_loop_copy_1.modelUsageCaptureContextFromEnv)(), usage_kind: 'cumulative' });
+            const usage = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(payload, { ...(0, habit_loop_copy_1.modelUsageCaptureContextFromEnv)(), usage_kind: 'cumulative' });
             if (usage) {
                 await (0, index_1.marrowModelUsage)(resolved.apiKey, baseUrl, {
                     ...usage,
