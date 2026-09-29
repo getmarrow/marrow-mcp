@@ -171,6 +171,7 @@ export interface MarrowEnforcementRequest {
   surfaces?: string[];
   success?: boolean;
   evidence?: Record<string, unknown>;
+  protocol_version?: 1 | 2;
 }
 
 export interface MarrowEnforcementResult {
@@ -183,6 +184,7 @@ export interface MarrowEnforcementResult {
   required_proof?: string[];
   exact_next_action?: string;
   credential_capability?: Record<string, unknown>;
+  protocol_version?: number;
 }
 
 export interface MarrowArbitrationEvidence {

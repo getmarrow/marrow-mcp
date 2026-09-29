@@ -139,7 +139,7 @@ test('Gemini BeforeTool uses exact fixed allow and deny JSON without service tex
     permit: { verified: true },
     runtime: {
       exact_next_action: 'synthetic-private-service-text',
-      risk_gate: { allow: false, decision: 'review_required', reasons: [{ message: 'synthetic-private-reason' }] },
+      risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [{ message: 'synthetic-private-reason' }] },
     },
   }), { decision: 'deny', reason: FIXED_REASON });
   assert.deepEqual(geminiPreActionHookOutput({
@@ -151,7 +151,7 @@ test('Gemini BeforeTool uses exact fixed allow and deny JSON without service tex
   assert.deepEqual(geminiPreActionHookOutput({
     protectedRisk: true,
     permit: { verified: true },
-    runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] } },
+    runtime: { risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] } },
   }), { decision: 'allow' });
 });
 

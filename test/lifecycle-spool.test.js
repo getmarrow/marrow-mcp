@@ -588,7 +588,7 @@ test('tool correlation is stable across host tool-use ids and changes with canon
 
 test('pre-action policy maps block to deny, review to ask, and allow to native permission flow', () => {
   const block = preActionHookOutput({
-    runtime: { risk_gate: { allow: false, decision: 'block', reasons: [{ message: 'proof missing' }] }, exact_next_action: 'collect proof' },
+    runtime: { risk_gate: { allow: false, decision: 'block', enforced: true, reasons: [{ message: 'proof missing' }] }, exact_next_action: 'collect proof' },
     permit: { verified: true, permit_id: 'permit-block' },
     protectedRisk: true,
   });
@@ -597,14 +597,14 @@ test('pre-action policy maps block to deny, review to ask, and allow to native p
 
   const interactive = { available: true, unavailableReason: '' };
   const review = preActionHookOutput({
-    runtime: { risk_gate: { allow: false, decision: 'review_required', reasons: [] }, exact_next_action: 'ask owner' },
+    runtime: { risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] }, exact_next_action: 'ask owner' },
     permit: { verified: true, permit_id: 'permit-review' },
     protectedRisk: true,
   }, 'claude-code', interactive);
   assert.equal(review.hookSpecificOutput.permissionDecision, 'ask');
 
   const codexReview = preActionHookOutput({
-    runtime: { risk_gate: { allow: false, decision: 'review_required', reasons: [] }, exact_next_action: 'ask owner' },
+    runtime: { risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] }, exact_next_action: 'ask owner' },
     permit: { verified: true, permit_id: 'permit-review' },
     protectedRisk: true,
   }, 'codex', interactive);
@@ -612,7 +612,7 @@ test('pre-action policy maps block to deny, review to ask, and allow to native p
   assert.match(codexReview.hookSpecificOutput.permissionDecisionReason, /^Marrow requires owner review before this action.*Reason: ask owner$/);
 
   const allow = preActionHookOutput({
-    runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] }, before_you_act: 'reuse the prior lesson' },
+    runtime: { risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] }, before_you_act: 'reuse the prior lesson' },
     permit: { verified: true, permit_id: 'permit-allow' },
     protectedRisk: false,
   });

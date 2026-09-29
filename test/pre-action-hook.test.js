@@ -11,6 +11,8 @@ const {
   PreActionControlTimeoutError,
   classifyTool,
   clinePreActionHookOutput,
+  DENIED_DECISION_CLOSE_TIMEOUT_MS,
+  closeDeniedDecision,
   controlRejectionMessage,
   cursorPreActionHookOutput,
   geminiPreActionHookOutput,
@@ -50,7 +52,7 @@ test('Grok pre-action maps protected review and unavailable proof to fixed priva
     permit: { verified: true },
     runtime: {
       exact_next_action: privateText,
-      risk_gate: { allow: false, decision: 'review_required', reasons: [{ message: privateText }] },
+      risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [{ message: privateText }] },
     },
   }), { decision: 'deny', reason: 'Marrow blocked this protected action.' });
   assert.deepEqual(grokPreActionHookOutput({
@@ -62,7 +64,7 @@ test('Grok pre-action maps protected review and unavailable proof to fixed priva
   assert.deepEqual(grokPreActionHookOutput({
     protectedRisk: true,
     permit: { verified: true },
-    runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] } },
+    runtime: { risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] } },
   }), { decision: 'allow' });
 });
 
@@ -363,7 +365,7 @@ test('protected pre-action hook rejects a verified permit with a mismatched iden
     const pathname = new URL(String(url)).pathname;
     const body = init.body ? JSON.parse(String(init.body)) : {};
     if (pathname === '/v1/agent/runtime') return Response.json({ data: {
-      risk_gate: { allow: true, decision: 'allow', reasons: [] },
+      risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] },
       completion_contract: { decision_creation_required: true },
     } });
     if (pathname === '/v1/agent/think') return Response.json({ data: { decision_id: 'decision-one' } });
@@ -373,6 +375,7 @@ test('protected pre-action hook rejects a verified permit with a mismatched iden
     if (pathname === '/v1/agent/enforcement' && body.operation === 'verify') {
       return Response.json({ data: { permit_id: 'permit-other', verified: true } });
     }
+    if (pathname === '/v1/agent/commit') return Response.json({ data: { committed: true } });
     return Response.json({ data: { accepted: true } });
   };
   try {
@@ -516,7 +519,7 @@ test('protected pre-action hook binds runtime gate to a decision before verifyin
         decision_id: 'decision-runtime',
         runtime_authorization: { id: 'gate-one', decision_id: 'decision-runtime', decision_creation_required: false },
         completion_contract: { decision_id: 'decision-runtime', decision_creation_required: false },
-        risk_gate: { allow: true, decision: 'allow', reasons: [] },
+        risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] },
         gate_receipt_id: 'gate-one',
         gate_receipt: { id: 'gate-one' },
         proof_pack: { fields: ['command', 'exit_code'] },
@@ -603,7 +606,7 @@ test('a received runtime block is denied before think when a later control call 
         decision_id: 'decision-runtime',
         runtime_authorization: { id: 'gate-one', decision_id: 'decision-runtime', decision_creation_required: true },
         completion_contract: { decision_id: 'decision-runtime', decision_creation_required: true },
-        risk_gate: { allow: false, decision: 'block', reasons: [] },
+        risk_gate: { allow: false, decision: 'block', enforced: true, reasons: [] },
         gate_receipt_id: 'gate-one',
         gate_receipt: { id: 'gate-one' },
         proof_pack: { fields: ['command', 'exit_code'] },
@@ -621,6 +624,7 @@ test('a received runtime block is denied before think when a later control call 
     if (pathname === '/v1/agent/enforcement' && body.operation === 'verify') {
       return Response.json({ data: { permit_id: 'permit-one', verified: true } });
     }
+    if (pathname === '/v1/agent/commit') return Response.json({ data: { committed: true } });
     return Response.json({ data: { accepted: true } });
   };
 
@@ -632,7 +636,10 @@ test('a received runtime block is denied before think when a later control call 
       tool_input: { command: 'wrangler deploy production' },
     });
     assert.equal(calls.some((entry) => entry.pathname === '/v1/agent/think'), false);
-    assert.deepEqual(calls.map((entry) => entry.pathname), ['/v1/agent/runtime']);
+    // The block is denied without think; only the runtime decision is closed as a failure.
+    assert.deepEqual(calls.map((entry) => entry.pathname), ['/v1/agent/runtime', '/v1/agent/commit']);
+    assert.equal(calls[1].body.decision_id, 'decision-runtime');
+    assert.equal(calls[1].body.success, false);
     const result = JSON.parse(output);
     assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
     assert.doesNotMatch(output, /Marrow is offline/);
@@ -711,6 +718,7 @@ async function runHookAgainst(respond, event, entrypoint) {
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-pre-action-contract-'));
   const calls = [];
+  const commits = [];
   let output = '';
   delete process.env.MARROW_FLEET_AGENT_ID;
   process.env.MARROW_API_KEY = 'test-pre-action-key';
@@ -728,12 +736,17 @@ async function runHookAgainst(respond, event, entrypoint) {
     const pathname = new URL(String(url)).pathname;
     const body = init.body ? JSON.parse(String(init.body)) : {};
     if (pathname === '/v1/agent/integrations/events') return Response.json({ data: { accepted: true } });
+    // A denial closes its decision; answer at once so the hook never waits on a mock.
+    if (pathname === '/v1/agent/commit') {
+      commits.push({ body, idempotencyKey: new Headers(init.headers).get('Idempotency-Key') });
+      return Response.json({ data: { committed: true, decision_id: body.decision_id } });
+    }
     calls.push({ pathname, body });
     return respond(pathname, body);
   };
   try {
     await runPreActionHookCommand(event);
-    return { calls, output };
+    return { calls, output, commits };
   } finally {
     globalThis.fetch = originalFetch;
     process.stdout.write = originalWrite;
@@ -749,7 +762,7 @@ async function runHookAgainst(respond, event, entrypoint) {
 const fastPathRuntime = () => Response.json({ data: {
   runtime_authorization: { id: 'fast_gate_one', durable: false, decision_creation_required: true },
   completion_contract: { decision_creation_required: true },
-  risk_gate: { allow: true, decision: 'allow', reasons: [] },
+  risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] },
   gate_receipt_id: 'fast_gate_one',
   before_you_act: 'Proceed with the low-risk work.',
   proof_pack: { fields: [] },
@@ -865,7 +878,7 @@ const reviewRuntime = (extra = {}) => Response.json({ data: {
     arbitration_receipt_required: false,
     owner_approval: { mode: 'ordinary_non_arbitrated', proof_path: 'proof.owner_approval', dashboard_receipt_required: false },
   },
-  risk_gate: { allow: false, decision: 'review_required', reasons: [{ message: 'Publishing needs owner review.' }] },
+  risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [{ message: 'Publishing needs owner review.' }] },
   gate_receipt_id: 'gate-review',
   exact_next_action: 'Obtain explicit owner approval.',
   ...extra,
@@ -1022,7 +1035,7 @@ test('control failures name what happened: credential scope, unavailability, or 
   const otherForbidden = new MarrowRequestError({ code: 'permission_denied', backendCode: 'MARROW_PLAN_REQUIRED', message: 'x', status: 403, exactFix: 'fix' });
   assert.equal(controlRejectionMessage(otherForbidden, 'darvis'), 'Marrow rejected this protected action (HTTP 403 MARROW_PLAN_REQUIRED). Restore trusted governance before retrying.');
 
-  const reviewGate = { risk_gate: { allow: false, decision: 'review_required', reasons: [] } };
+  const reviewGate = { risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] } };
   assert.deepEqual(clinePreActionHookOutput({ protectedRisk: true, permit: null, runtime: reviewGate }),
     { cancel: true, errorMessage: 'Marrow requires operator review before this protected action.' });
   assert.deepEqual(clinePreActionHookOutput({ protectedRisk: true, permit: null, runtime: null, failure: 'credential_scope', enforcementError: 'private' }),
@@ -1288,4 +1301,159 @@ test('a carriage-return disguised deletion reaches the Marrow gate instead of be
   assert.equal(calls[0].pathname, '/v1/agent/runtime');
   assert.equal(calls[0].body.risk_level, 'high');
   assert.equal(JSON.parse(output).hookSpecificOutput.permissionDecision, 'deny');
+});
+
+const advisoryRuntime = (gate) => Response.json({ data: {
+  decision_id: 'decision-advisory',
+  runtime_authorization: { id: 'gate-advisory', decision_id: 'decision-advisory', decision_creation_required: false },
+  completion_contract: { decision_id: 'decision-advisory', decision_creation_required: false },
+  risk_gate: { enforced: false, gate_required: false, enforcement_decision: 'advisory', reasons: [{ message: 'Publishing is high risk.' }], ...gate },
+  gate_receipt_id: 'gate-advisory',
+  before_you_act: 'Check the release notes first.',
+} });
+
+test('a free or starter plan advisory gate warns and allows without demanding a permit', async () => {
+  for (const [label, gate] of [
+    ['free-plan warn', { allow: true, decision: 'warn' }],
+    ['pilot review', { allow: true, decision: 'review_required' }],
+    ['unenforced allow:false', { allow: false, decision: 'warn' }],
+  ]) {
+    const { calls, output } = await runHookAgainst((pathname) => {
+      if (pathname !== '/v1/agent/runtime') throw new Error(`an advisory gate must not call ${pathname}`);
+      return advisoryRuntime(gate);
+    }, publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+    assert.deepEqual(calls.map((entry) => entry.pathname), ['/v1/agent/runtime'], label);
+    assert.equal(calls[0].body.risk_level, 'high', label);
+    const decision = JSON.parse(output).hookSpecificOutput;
+    assert.equal(decision.permissionDecision, undefined, label);
+    assert.match(decision.additionalContext, /^Marrow advisory: this plan does not enforce the pre-action gate, so the action is allowed\. Gate decision: \w+\. Reason: Publishing is high risk\./, label);
+    assert.match(decision.additionalContext, /Check the release notes first\./, label);
+  }
+
+  const advisory = { runtime: { risk_gate: { allow: true, decision: 'review_required', enforced: false, reasons: [] } }, permit: null, protectedRisk: false };
+  assert.deepEqual(grokPreActionHookOutput(advisory), { decision: 'allow' });
+  assert.deepEqual(geminiPreActionHookOutput(advisory), { decision: 'allow' });
+  assert.deepEqual(windsurfPreActionDecision(advisory), { exitCode: 0, stderr: '' });
+  assert.deepEqual(clinePreActionHookOutput(advisory), { cancel: false });
+  assert.equal(cursorPreActionHookOutput(advisory).permission, 'allow');
+  assert.match(cursorPreActionHookOutput(advisory).agent_message, /^Marrow advisory/);
+});
+
+test('an enforced review asks the owner and an enforced or advisory block denies', async () => {
+  const review = await runHookAgainst(noControlAfterGate(() => reviewRuntime({
+    risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [{ message: 'Publishing needs owner review.' }] },
+  })), publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+  assert.equal(JSON.parse(review.output).hookSpecificOutput.permissionDecision, 'ask');
+
+  for (const enforced of [true, false]) {
+    const blocked = await runHookAgainst(noControlAfterGate(() => reviewRuntime({
+      risk_gate: { allow: false, decision: 'block', enforced, reasons: [{ message: 'Release freeze is active.' }] },
+      exact_next_action: null,
+    })), publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+    const decision = JSON.parse(blocked.output).hookSpecificOutput;
+    assert.equal(decision.permissionDecision, 'deny', `enforced=${enforced}`);
+    assert.equal(decision.permissionDecisionReason, 'Marrow blocked this action under the current policy. Reason: Release freeze is active.');
+  }
+  const blockedResult = { runtime: { risk_gate: { allow: false, decision: 'block', enforced: false, reasons: [] } }, permit: null, protectedRisk: true };
+  assert.deepEqual(grokPreActionHookOutput(blockedResult), { decision: 'deny', reason: 'Marrow blocked this protected action.' });
+  assert.equal(windsurfPreActionDecision(blockedResult).exitCode, 2);
+});
+
+test('permit verify declares the issued protocol version', async () => {
+  for (const [issuedVersion, expected] of [[undefined, 1], [1, 1], [2, 2], ['2', 1]]) {
+    const { calls } = await runHookAgainst((pathname, body) => {
+      if (pathname === '/v1/agent/runtime') return fastPathRuntime();
+      if (pathname === '/v1/agent/think') return Response.json({ data: { decision_id: 'decision-think' } });
+      if (pathname === '/v1/agent/enforcement' && body.operation === 'issue') {
+        return Response.json({ data: { permit_id: 'permit-one', permit: 'signed-permit', ...(issuedVersion === undefined ? {} : { protocol_version: issuedVersion }) } });
+      }
+      if (pathname === '/v1/agent/enforcement' && body.operation === 'verify') {
+        return Response.json({ data: { permit_id: 'permit-one', verified: true } });
+      }
+      throw new Error(`unexpected ${pathname}`);
+    }, publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+    const verify = calls.find((entry) => entry.pathname === '/v1/agent/enforcement' && entry.body.operation === 'verify');
+    assert.equal(verify.body.protocol_version, expected, `issued ${issuedVersion}`);
+  }
+});
+
+test('a denied action closes its held decision as a failure with the gate receipt', async () => {
+  const review = await runHookAgainst(noControlAfterGate(() => reviewRuntime()),
+    publishEvent({ permission_mode: 'bypassPermissions' }), 'claude-pre-action-hook');
+  assert.equal(JSON.parse(review.output).hookSpecificOutput.permissionDecision, 'deny');
+  assert.deepEqual(review.calls.map((entry) => entry.pathname), ['/v1/agent/runtime']);
+  assert.equal(review.commits.length, 1);
+  const [closed] = review.commits;
+  assert.equal(closed.body.decision_id, 'decision-review');
+  assert.equal(closed.body.success, false);
+  assert.equal(closed.body.gate_receipt_id, 'gate-review');
+  assert.match(closed.body.outcome, /^denied by Marrow pre-action gate: Marrow requires owner review before this action, and no owner approval prompt is available/);
+  assert.equal(closed.body.proof, undefined, 'a denial never claims owner approval');
+  assert.match(closed.idempotencyKey, /^mcp-hook-deny:[a-f0-9]{40}$/);
+
+  const blocked = await runHookAgainst(noControlAfterGate(() => reviewRuntime({
+    risk_gate: { allow: false, decision: 'block', enforced: true, reasons: [{ message: 'Release freeze is active.' }] },
+  })), publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+  assert.equal(blocked.commits.length, 1);
+  assert.match(blocked.commits[0].body.outcome, /^denied by Marrow pre-action gate: Marrow blocked this action under the current policy/);
+
+  const scope = await runHookAgainst((pathname, body) => {
+    if (pathname === '/v1/agent/runtime') return fastPathRuntime();
+    if (pathname === '/v1/agent/think') return Response.json({ data: { decision_id: 'decision-think' } });
+    if (pathname === '/v1/agent/enforcement' && body.operation === 'issue') {
+      return new Response(JSON.stringify({ code: 'ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID' }), { status: 403, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`unexpected ${pathname}`);
+  }, publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+  assert.equal(scope.commits.length, 1);
+  assert.equal(scope.commits[0].body.decision_id, 'decision-think');
+  assert.equal(scope.commits[0].body.gate_receipt_id, undefined, 'a Think decision is not bound to the runtime receipt');
+  assert.match(scope.commits[0].body.outcome, /not authorized to obtain action permits for agent "agent-one"/);
+});
+
+test('an owner prompt, an advisory gate and an allowed action never close the decision', async () => {
+  const asked = await runHookAgainst(noControlAfterGate(() => reviewRuntime()),
+    publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+  assert.equal(JSON.parse(asked.output).hookSpecificOutput.permissionDecision, 'ask');
+  assert.deepEqual(asked.commits, []);
+
+  const advisory = await runHookAgainst(noControlAfterGate(() => advisoryRuntime({ allow: true, decision: 'review_required' })),
+    publishEvent({ permission_mode: 'bypassPermissions' }), 'claude-pre-action-hook');
+  assert.equal(JSON.parse(advisory.output).hookSpecificOutput.permissionDecision, undefined);
+  assert.deepEqual(advisory.commits, []);
+
+  const allowed = await runHookAgainst((pathname, body) => {
+    if (pathname === '/v1/agent/runtime') return fastPathRuntime();
+    if (pathname === '/v1/agent/think') return Response.json({ data: { decision_id: 'decision-think' } });
+    if (body.operation === 'issue') return Response.json({ data: { permit_id: 'permit-one', permit: 'signed-permit' } });
+    return Response.json({ data: { permit_id: 'permit-one', verified: true } });
+  }, publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+  assert.notEqual(JSON.parse(allowed.output).hookSpecificOutput.permissionDecision, 'deny');
+  assert.deepEqual(allowed.commits, []);
+});
+
+test('closing a denied decision is bounded and never throws', async () => {
+  const originalFetch = globalThis.fetch;
+  const held = { decisionId: 'decision-slow', gateReceiptId: 'gate-slow' };
+  try {
+    globalThis.fetch = () => new Promise(() => {});
+    const started = Date.now();
+    assert.equal(await closeDeniedDecision('test-key', 'https://api.example.test', held, 'Marrow blocked this action.', 'session-one', 'agent-one'), false);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= DENIED_DECISION_CLOSE_TIMEOUT_MS - 50 && elapsed < DENIED_DECISION_CLOSE_TIMEOUT_MS + 2_000, `elapsed ${elapsed}`);
+
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: 'conflict', code: 'MARROW_IDEMPOTENCY_CONFLICT' }), { status: 409, headers: { 'content-type': 'application/json' } });
+    assert.equal(await closeDeniedDecision('test-key', 'https://api.example.test', held, 'denied', 'session-one', 'agent-one'), false);
+
+    // Enforcing plans record a denied gate's failure only as an unverified observation.
+    globalThis.fetch = async () => Response.json({ data: {
+      accepted: true, committed: false, outcome_state: 'observed_unverified', authorization_granted: false,
+      trusted_learning_applied: false, decision_id: 'decision-slow', exact_next_action: 'none',
+    } }, { status: 202 });
+    assert.equal(await closeDeniedDecision('test-key', 'https://api.example.test', held, 'denied', 'session-one', 'agent-one'), false);
+
+    assert.equal(await closeDeniedDecision('test-key', 'https://api.example.test', { decisionId: null, gateReceiptId: null }, 'denied', 'session-one'), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
