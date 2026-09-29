@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.9.96
+
+- Send only accepted `source_meta` when the native pre-action hook creates a decision; Think rejected the hook's extra keys with HTTP 400, denying protected actions after an allowing gate. The gate receipt and correlation still bind on the action permit.
+- Send the risk level of enforced actions so the runtime issues a durable gate receipt that can back an action permit instead of a non-durable fast-path receipt.
+- Stop unprotected actions at the runtime gate without creating a decision or requesting a permit.
+- Name reached control rejections by HTTP status and stable failure code without echoing service text. Policy, proof and fail-closed behavior are unchanged.
+
 ## 3.9.95
 
 - Preserve supplied model usage through the real native session-hook stdin boundary.
