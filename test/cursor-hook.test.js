@@ -10,6 +10,16 @@ const {
   runPreActionHookCommand,
 } = require('../dist/hook-pre-action.js');
 const { deriveAction, deriveToolOutcome, runHookCommand } = require('../dist/hook.js');
+
+// PostToolUse now only spools (no inline network wait); deliver through the same
+// drain the detached background nudge uses so these tests still assert wire content.
+async function runHookAndDrain(payload) {
+  await runHookCommand(payload);
+  await require('../dist/lifecycle-spool.js').drainLifecycleSpool({
+    apiKey: process.env.MARROW_API_KEY, baseUrl: process.env.MARROW_BASE_URL,
+    agentId: process.env.MARROW_FLEET_AGENT_ID || process.env.MARROW_AGENT_ID || undefined,
+  });
+}
 const { isOfficialMarrowMcpTool } = require('../dist/hook-tool-policy.js');
 const { runSessionHookCommand } = require('../dist/hook-session.js');
 
@@ -161,7 +171,7 @@ test('Cursor result events recognize success and failure fields without emitting
         MARROW_PASSIVE_TOKEN_USAGE: 'false',
       },
     }, async () => {
-      await runHookCommand({
+      await runHookAndDrain({
         eventName: 'postToolUse',
         conversationId: 'conversation-3',
         generationId: 'generation-3',
@@ -171,7 +181,7 @@ test('Cursor result events recognize success and failure fields without emitting
         toolOutput: { content: 'raw-output synthetic-output-secret' },
         durationMs: 450000,
       });
-      await runHookCommand({
+      await runHookAndDrain({
         eventName: 'postToolUseFailure',
         conversationId: 'conversation-3',
         generationId: 'generation-3',

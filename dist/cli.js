@@ -18,6 +18,7 @@ const hook_contract_1 = require("./hook-contract");
 const hook_context_1 = require("./hook-context");
 const hook_session_1 = require("./hook-session");
 const hook_pre_action_1 = require("./hook-pre-action");
+const node_child_process_1 = require("node:child_process");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const spool_command_1 = require("./spool-command");
@@ -61,6 +62,9 @@ function parseArgs() {
         if (args[i] === 'drain-spool' || args[i] === '--drain-spool') {
             result.drainSpool = true;
         }
+        if (args[i] === 'background-nudge') {
+            result.backgroundNudge = true;
+        }
         if (args[i] === 'ping' || args[i] === '--ping') {
             result.ping = true;
         }
@@ -80,6 +84,62 @@ function reportLifecycleSpool(input) {
         void (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.agentId });
     }
     return spool;
+}
+// PostToolUse only spools. When this invocation actually spooled an event (so it passed
+// MARROW_AUTO_HOOK, local-control and read-only gates), start one detached, unref'd
+// process that delivers with the longer background timeout. No spool scan happens here.
+function launchBackgroundLifecycleNudge() {
+    try {
+        if (!(0, hook_1.hookSpooledLifecycleEvent)() || !(0, lifecycle_spool_1.backgroundNudgeEnabled)())
+            return;
+        const identity = (0, hook_contract_2.resolveNativeHookIdentity)(process.argv[2]);
+        const apiKey = identity.environment.apiKey || '';
+        if (!apiKey)
+            return;
+        const nonce = (0, lifecycle_spool_1.claimBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id });
+        if (!nonce)
+            return;
+        const child = (0, node_child_process_1.spawn)(process.execPath, [process.argv[1], 'background-nudge'], {
+            detached: true, stdio: 'ignore', windowsHide: true,
+            env: { ...process.env, MARROW_INTERNAL_NUDGE_LOCK: nonce },
+        });
+        child.on('error', () => (0, lifecycle_spool_1.releaseBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id, nonce }));
+        child.unref();
+    }
+    catch { /* the event stays spooled for the next nudge */ }
+}
+async function runBackgroundNudge() {
+    const identity = (0, hook_contract_2.resolveNativeHookIdentity)(undefined);
+    const apiKey = identity.environment.apiKey || '';
+    const agentId = identity.agent_id;
+    let nonce = process.env.MARROW_INTERNAL_NUDGE_LOCK || '';
+    const release = () => { if (apiKey && nonce)
+        (0, lifecycle_spool_1.releaseBackgroundNudgeLock)({ apiKey, agentId, nonce }); };
+    // Hard lifetime cap, below the lock's stale threshold.
+    const watchdog = setTimeout(() => { release(); process.exit(0); }, lifecycle_spool_1.BACKGROUND_NUDGE_MAX_LIFETIME_MS);
+    try {
+        if (!apiKey || !nonce)
+            return;
+        const baseUrl = (0, index_1.validateBaseUrl)(identity.environment.baseUrl || 'https://api.getmarrow.ai');
+        // Deliver, then re-check once for events spooled while this process held the lock.
+        for (let round = 0; round < 3; round += 1) {
+            await (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey, baseUrl, agentId });
+            if (!(0, lifecycle_spool_1.hasDueLifecycleEvents)({ apiKey, agentId }))
+                break;
+        }
+        release();
+        const next = (0, lifecycle_spool_1.hasDueLifecycleEvents)({ apiKey, agentId }) ? (0, lifecycle_spool_1.claimBackgroundNudgeLock)({ apiKey, agentId }) : null;
+        if (next) {
+            nonce = next;
+            await (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey, baseUrl, agentId });
+        }
+    }
+    catch { /* best effort */ }
+    finally {
+        clearTimeout(watchdog);
+        release();
+        process.exit(0);
+    }
 }
 async function runPingCommand() {
     if (cliArgs.apiKey) {
@@ -365,7 +425,10 @@ if (process.argv[2] === 'keys') {
 // Only start MCP server if not handling a CLI command
 if (process.argv[2] !== 'keys') {
     if (cliArgs.hook) {
-        void (0, hook_1.runHookCommand)();
+        void (0, hook_1.runHookCommand)().finally(launchBackgroundLifecycleNudge);
+    }
+    else if (cliArgs.backgroundNudge) {
+        void runBackgroundNudge();
     }
     else if (cliArgs.contextHook) {
         void (0, hook_context_1.runContextHookCommand)();
