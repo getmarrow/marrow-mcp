@@ -94,6 +94,8 @@ export declare function recordLifecycleEvent(input: {
     baseUrl: string;
     event: LifecycleEvent;
     deferDelivery?: boolean;
+    /** Lower inline acknowledgement cap for hooks that share a tight host deadline. */
+    deliveryTimeoutMs?: number;
 }): Promise<{
     event_id: string;
     accepted: boolean;

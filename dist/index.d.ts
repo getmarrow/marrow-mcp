@@ -2,6 +2,12 @@ import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, Orie
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 import { type LifecycleEvent } from './lifecycle-spool';
 export type { Narrative, CommitResult } from './types';
+/**
+ * Delay before resuming a pending write. Honors the server's retry_after_ms (and
+ * Retry-After header, whichever is larger) clamped to [250 ms, 5 s]. Without
+ * guidance, exponential backoff (250 ms * 2^n, capped at 5 s) with 50-100% jitter.
+ */
+export declare function writeReconciliationDelayMs(attemptIndex: number, requestedMs: number | null, random?: () => number): number;
 declare const AUTO_MANAGED_WRITE: unique symbol;
 declare const AUTO_HTTP_TRACE: unique symbol;
 /**

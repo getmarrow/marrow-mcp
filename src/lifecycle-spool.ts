@@ -99,7 +99,13 @@ const RETRY_MAX_MS = 60_000;
 const MAX_SERVER_RETRY_MS = 7 * 24 * 60 * 60 * 1_000;
 const RETRY_REASONS = new Set<RetryReason>(['network_error', 'ack_timeout', 'transient_http', 'rate_limited',
   'authentication_rejected', 'schema_rejected', 'permanent_http', 'retry_after_invalid']);
-const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
+// Server acceptance measured p50 551 ms / p90 755 ms; 2.2 s covers p90 with ~3x margin.
+// A timed-out event stays spooled (ack_timeout, scheduled retry), so nothing is lost.
+const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 2_200;
+// Hard wall-clock cap on inline delivery inside one hook invocation (current event
+// plus one opportunistic older-event retry). Keeps hooks under short host timeouts.
+const PASSIVE_HOOK_DELIVERY_BUDGET_MS = 2_500;
+const PASSIVE_MIN_SECOND_DELIVERY_MS = 250;
 const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
 const DELIVERY_DRAIN_BUDGET_MS = 30_000;
 const NUDGE_DRAIN_BUDGET_MS = 20_000;
@@ -977,6 +983,8 @@ export async function recordLifecycleEvent(input: {
   baseUrl: string;
   event: LifecycleEvent;
   deferDelivery?: boolean;
+  /** Lower inline acknowledgement cap for hooks that share a tight host deadline. */
+  deliveryTimeoutMs?: number;
 }): Promise<{
   event_id: string;
   accepted: boolean;
@@ -1001,19 +1009,24 @@ export async function recordLifecycleEvent(input: {
   let recoveredCorruption = queued.recoveredCorruption;
 
   let deliveryStatus = 0;
+  const inlineTimeoutMs = typeof input.deliveryTimeoutMs === 'number' && Number.isFinite(input.deliveryTimeoutMs)
+    ? Math.max(1, Math.min(PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS, Math.floor(input.deliveryTimeoutMs)))
+    : PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS;
+  const deliveryDeadline = Date.now() + Math.min(PASSIVE_HOOK_DELIVERY_BUDGET_MS, inlineTimeoutMs + PASSIVE_MIN_SECOND_DELIVERY_MS);
   if (!input.deferDelivery && queued.result.delivery_state === 'queued' && dueAt(queued.result) <= Date.now()) deliveryStatus = await attemptQueuedDelivery({
     path: location.path,
     ownsParent: location.ownsParent,
     apiKey: input.apiKey,
     baseUrl: input.baseUrl,
     event: queued.result,
-    timeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+    timeoutMs: inlineTimeoutMs,
   });
   if (deliveryStatus >= 200 && deliveryStatus < 300) {
     const previous = snapshot(location.path, location.ownsParent).events.find((row) => (
       row.delivery_state === 'queued' && row.event_id !== event.event_id && dueAt(row) <= Date.now()
     ));
-    if (previous) {
+    const previousTimeoutMs = Math.min(inlineTimeoutMs, deliveryDeadline - Date.now());
+    if (previous && previousTimeoutMs >= PASSIVE_MIN_SECOND_DELIVERY_MS) {
       try {
         await attemptQueuedDelivery({
           path: location.path,
@@ -1021,7 +1034,7 @@ export async function recordLifecycleEvent(input: {
           apiKey: input.apiKey,
           baseUrl: input.baseUrl,
           event: previous,
-          timeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+          timeoutMs: previousTimeoutMs,
         });
       } catch {
         // An older receipt retry must not turn a successfully accepted current receipt into a failure.

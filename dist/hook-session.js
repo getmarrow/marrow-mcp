@@ -15,6 +15,10 @@ const session_loop_guard_1 = require("./session-loop-guard");
 exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const SESSION_END_TIMEOUT_MS = 900;
+// The Stop hook also awaits session end under a short host deadline (Grok: 3 s), so its
+// inline lifecycle acknowledgement keeps the earlier cap; a timeout stays spooled and is
+// retried off the critical path with the longer passive timeout.
+const SESSION_STOP_LIFECYCLE_TIMEOUT_MS = 750;
 const completedGrokTurns = new Set();
 function readStopHookInput(input) {
     let value = input;
@@ -152,6 +156,7 @@ async function runSessionHookCommand(input) {
                                 : 'agent session ended',
                 outcome_state: 'pending',
             },
+            deliveryTimeoutMs: SESSION_STOP_LIFECYCLE_TIMEOUT_MS,
         });
         try {
             await boundedSessionEnd(resolved.apiKey, baseUrl, sessionId, agentId);

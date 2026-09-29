@@ -4,6 +4,9 @@ const fs = require('node:fs');
 const { marrowThink } = require('../dist/index.js');
 const { MarrowRequestError, structuredRequestFailure, privacySafeIdempotencyKey } = require('../dist/request-reliability.js');
 
+// 3 s budget with 1000 ms server guidance fits exactly three identical attempts.
+process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS = '3000';
+
 test('pending receipt resumes the exact scoped request and rejects local drift before sending', async () => {
   const original = globalThis.fetch; const calls = []; let receipt;
   const params = { action: 'Synthetic bounded operation', context: { a: 1, b: 2 } };

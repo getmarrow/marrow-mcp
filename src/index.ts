@@ -71,8 +71,45 @@ const SAFE_ARBITRATION_EVIDENCE_KIND = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,39}$/;
 const SAFE_ARBITRATION_EVIDENCE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const SAFE_OUTCOME_OBSERVATION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const SAFE_INSTRUCTION_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const AGENT_WRITE_RECONCILIATION_ATTEMPTS = 3;
-const AGENT_WRITE_RECONCILIATION_DELAY_MS = 1_000;
+// Manual think/commit reconciliation (not marrow_auto, which owns its own budget).
+// Wall-clock budget across all attempts of one operation; the same idempotency key
+// and request hash are reused for every attempt.
+const AGENT_WRITE_RECONCILIATION_BUDGET_DEFAULT_MS = 15_000;
+const AGENT_WRITE_RECONCILIATION_BUDGET_MIN_MS = 1_000;
+const AGENT_WRITE_RECONCILIATION_BUDGET_MAX_MS = 60_000;
+const AGENT_WRITE_RECONCILIATION_MAX_ATTEMPTS = 12;
+const AGENT_WRITE_RECONCILIATION_MIN_DELAY_MS = 250;
+const AGENT_WRITE_RECONCILIATION_MAX_DELAY_MS = 5_000;
+// Time that must remain after a wait for the resumed request to be worth sending.
+const AGENT_WRITE_RECONCILIATION_REQUEST_MARGIN_MS = 500;
+
+function writeReconciliationBudgetMs(): number {
+  const configured = Number(process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS);
+  return Number.isFinite(configured) && process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS !== ''
+    ? Math.min(AGENT_WRITE_RECONCILIATION_BUDGET_MAX_MS,
+      Math.max(AGENT_WRITE_RECONCILIATION_BUDGET_MIN_MS, Math.floor(configured)))
+    : AGENT_WRITE_RECONCILIATION_BUDGET_DEFAULT_MS;
+}
+
+/**
+ * Delay before resuming a pending write. Honors the server's retry_after_ms (and
+ * Retry-After header, whichever is larger) clamped to [250 ms, 5 s]. Without
+ * guidance, exponential backoff (250 ms * 2^n, capped at 5 s) with 50-100% jitter.
+ */
+export function writeReconciliationDelayMs(
+  attemptIndex: number,
+  requestedMs: number | null,
+  random: () => number = Math.random,
+): number {
+  if (requestedMs !== null && Number.isFinite(requestedMs) && requestedMs >= 0) {
+    return Math.min(AGENT_WRITE_RECONCILIATION_MAX_DELAY_MS,
+      Math.max(AGENT_WRITE_RECONCILIATION_MIN_DELAY_MS, Math.ceil(requestedMs)));
+  }
+  const exponential = Math.min(AGENT_WRITE_RECONCILIATION_MAX_DELAY_MS,
+    AGENT_WRITE_RECONCILIATION_MIN_DELAY_MS * 2 ** Math.max(0, Math.min(10, attemptIndex)));
+  return Math.min(AGENT_WRITE_RECONCILIATION_MAX_DELAY_MS,
+    Math.max(AGENT_WRITE_RECONCILIATION_MIN_DELAY_MS, Math.ceil(exponential * (0.5 + 0.5 * random()))));
+}
 const AUTO_MANAGED_WRITE = Symbol('marrow-auto-managed-write');
 const AUTO_HTTP_TRACE = Symbol('marrow-auto-http-trace');
 const AUTO_HTTP_TRACE_ERROR = Symbol('marrow-auto-http-trace-error');
@@ -543,7 +580,11 @@ function pendingWriteReconciliation(
       || value.reconciliation_operation !== 'think' || value.safe_to_continue !== false)) return null;
     const canonicalPending = value.phase === 'think_pending' && value.resumable === true
       && value.safe_to_continue !== true
-      && value.retry_after_ms === AGENT_WRITE_RECONCILIATION_DELAY_MS;
+      // The server sizes retry_after_ms to the remaining lease; any finite,
+      // non-negative number (or none) is valid guidance and is clamped when used.
+      && (value.retry_after_ms === undefined || value.retry_after_ms === null
+        || (typeof value.retry_after_ms === 'number' && Number.isFinite(value.retry_after_ms)
+          && value.retry_after_ms >= 0));
     const state = value.reconciliation_state;
     const validState = state === 'runtime_continuation_persistence_pending' && value.decision_state === 'created'
       || state === 'runtime_decision_authority_pending' && value.decision_state === 'pending' && decisionId === null
@@ -561,7 +602,7 @@ function pendingWriteReconciliation(
     && value.outcome_persisted === true ? { decisionId: value.decision_id } : null;
 }
 
-async function waitForWriteReconciliation(signal?: AbortSignal): Promise<void> {
+async function waitForWriteReconciliation(delayMs: number, signal?: AbortSignal): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const abort = () => {
@@ -576,7 +617,7 @@ async function waitForWriteReconciliation(signal?: AbortSignal): Promise<void> {
     timer = setTimeout(() => {
       signal?.removeEventListener('abort', abort);
       resolve();
-    }, AGENT_WRITE_RECONCILIATION_DELAY_MS);
+    }, delayMs);
     signal?.addEventListener('abort', abort, { once: true });
   });
 }
@@ -717,7 +758,9 @@ async function fetchAgentWrite(
   let reconciledDecisionId: string | null = null;
   // A manual receipt resume must validate its very first terminal response.
   let reconciling = expectedRequestHash !== undefined;
-  for (let attempt = 0; attempt < AGENT_WRITE_RECONCILIATION_ATTEMPTS; attempt += 1) {
+  const reconciliationStarted = performance.now();
+  const reconciliationBudgetMs = writeReconciliationBudgetMs();
+  for (let attempt = 0; attempt < AGENT_WRITE_RECONCILIATION_MAX_ATTEMPTS; attempt += 1) {
     // Automatic writes have one retry owner and leave room for exact replay
     // after a lost ACK inside marrowAuto's unchanged total response deadline.
     const requestStarted = performance.now();
@@ -843,11 +886,17 @@ async function fetchAgentWrite(
     }
     reconciling = true;
     if (pending.decisionId) reconciledDecisionId = pending.decisionId;
-    if (attempt + 1 >= AGENT_WRITE_RECONCILIATION_ATTEMPTS) {
+    // Resume the SAME operation after the server's guidance (or jittered backoff).
+    // If the wait plus a useful request cannot fit the budget, stop and hand back
+    // the resumable pending receipt: never success, never a second decision.
+    const delayMs = writeReconciliationDelayMs(attempt, requestedWait);
+    const remainingBudget = reconciliationBudgetMs - (performance.now() - reconciliationStarted);
+    if (attempt + 1 >= AGENT_WRITE_RECONCILIATION_MAX_ATTEMPTS
+      || remainingBudget - delayMs < AGENT_WRITE_RECONCILIATION_REQUEST_MARGIN_MS) {
       throw reconciliationError(true, pendingReceipt);
     }
     const waitStarted = performance.now();
-    await waitForWriteReconciliation(init.signal || undefined);
+    await waitForWriteReconciliation(delayMs, init.signal || undefined);
     if (traceAttempt) traceAttempt.actual_wait_ms = traceMs(performance.now() - waitStarted) || 0;
   }
   throw reconciliationError(true, pendingReceipt);
