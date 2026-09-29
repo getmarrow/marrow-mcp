@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "npm run build && node --test test/*.test.js",
+    "test": "npm run build && node --test --require ./test/support/isolated-environment.cjs test/*.test.js",
     "registry:check": "node scripts/mcp-registry-check.cjs",
     "registry:verify": "node scripts/mcp-registry-verify.cjs",
     "canary:control-path": "node scripts/control-path-canary.cjs"
