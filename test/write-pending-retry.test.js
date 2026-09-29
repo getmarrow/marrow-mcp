@@ -6,7 +6,11 @@ const { join } = require('node:path');
 
 const { MarrowRequestError, structuredRequestFailure } = require('../dist/request-reliability.js');
 const { marrowThink, marrowCommit, writeReconciliationDelayMs } = require('../dist/index.js');
-const { recordLifecycleEvent, lifecycleSpoolStatus } = require('../dist/lifecycle-spool.js');
+const {
+  recordLifecycleEvent, lifecycleSpoolStatus, nudgeLifecycleSpool,
+  claimBackgroundNudgeLock, releaseBackgroundNudgeLock,
+} = require('../dist/lifecycle-spool.js');
+const { runHookCommand } = require('../dist/hook.js');
 
 const originalBudget = process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS;
 test.after(() => {
@@ -180,70 +184,112 @@ test('rejects malformed retry_after_ms and unknown pending shapes without retryi
   }
 });
 
-test('passive lifecycle delivery tolerates a 1.2 s acknowledgement that the old 750 ms cap aborted', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-slow-ack-'));
-  const original = globalThis.fetch; const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
-  process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
-  globalThis.fetch = async () => { await new Promise((r) => setTimeout(r, 1200)); return new Response('{}', { status: 200 }); };
+test('lease_remaining_ms wins over the legacy retry_after_ms of 1000', async () => {
+  process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS = '10000';
+  const original = globalThis.fetch; const calls = [];
+  globalThis.fetch = async (url, init) => {
+    const call = record(url, init, Date.now()); calls.push(call);
+    return calls.length === 1
+      ? Response.json({ data: pendingBody(call.key, { retry_after_ms: 1000, lease_remaining_ms: 400 }) }, { status: 202 })
+      : Response.json({ data: { decision_id: 'thinkdec_lease', idempotency_key: call.key } });
+  };
   try {
-    const result = await recordLifecycleEvent({
-      apiKey: 'slow-ack-key', baseUrl: 'https://api.example.test',
-      event: { event_id: 'slow-ack', event_type: 'tool_completed', agent_id: 'agent-one', action: 'tool execution observed', outcome_state: 'pending', success: true },
-    });
-    assert.equal(result.accepted, true);
-    assert.equal(result.queued, false);
-    assert.equal(lifecycleSpoolStatus({ apiKey: 'slow-ack-key', agentId: 'agent-one' }).pending, 0);
-  } finally {
-    globalThis.fetch = original;
-    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH; else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
-    rmSync(directory, { recursive: true, force: true });
-  }
+    await marrowThink('fixture', 'https://fixture.test', { action: 'lease field' });
+    const gap = calls[1].at - calls[0].at;
+    assert.ok(gap >= 380 && gap < 900, `used lease field (${gap} ms)`);
+  } finally { globalThis.fetch = original; }
 });
 
-test('a hook never waits beyond the bounded budget and the timed-out event stays spooled for retry', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-slow-hook-'));
-  const original = globalThis.fetch; const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
-  process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
-  globalThis.fetch = () => new Promise(() => {});
+test('invalid lease_remaining_ms falls back to retry_after_ms', async () => {
+  process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS = '10000';
+  const original = globalThis.fetch; const calls = [];
+  globalThis.fetch = async (url, init) => {
+    const call = record(url, init, Date.now()); calls.push(call);
+    return calls.length === 1
+      ? Response.json({ data: pendingBody(call.key, { retry_after_ms: 500, lease_remaining_ms: 'soon' }) }, { status: 202 })
+      : Response.json({ data: { decision_id: 'thinkdec_fb', idempotency_key: call.key } });
+  };
   try {
-    const started = Date.now();
-    const result = await recordLifecycleEvent({
-      apiKey: 'hung-key', baseUrl: 'https://api.example.test',
-      event: { event_id: 'hung-ack', event_type: 'tool_completed', agent_id: 'agent-one', action: 'tool execution observed', outcome_state: 'pending', success: true },
-    });
-    const elapsed = Date.now() - started;
-    assert.ok(elapsed >= 2100 && elapsed < 3000, `bounded at the delivery timeout (${elapsed} ms)`);
-    assert.equal(result.accepted, false);
-    assert.equal(result.queued, true);
-    const status = lifecycleSpoolStatus({ apiKey: 'hung-key', agentId: 'agent-one' });
-    assert.equal(status.pending, 1);
-    assert.equal(status.failed, 0);
-    assert.equal(status.retry.reasons.ack_timeout, 1);
-  } finally {
-    globalThis.fetch = original;
-    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH; else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
-    rmSync(directory, { recursive: true, force: true });
-  }
+    await marrowThink('fixture', 'https://fixture.test', { action: 'bad lease field' });
+    const gap = calls[1].at - calls[0].at;
+    assert.ok(gap >= 480 && gap < 950, `used retry_after_ms (${gap} ms)`);
+  } finally { globalThis.fetch = original; }
 });
 
-test('a hook with a tighter host deadline can lower the inline acknowledgement cap and keeps the event spooled', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-tight-hook-'));
-  const original = globalThis.fetch; const originalPath = process.env.MARROW_EVENT_SPOOL_PATH;
-  process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
+function withSpool(fn) {
+  return async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-bg-'));
+    const original = globalThis.fetch; const env = { ...process.env };
+    process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
+    try { await fn(directory); } finally {
+      globalThis.fetch = original;
+      for (const k of ['MARROW_EVENT_SPOOL_PATH', 'MARROW_API_KEY', 'MARROW_BASE_URL', 'MARROW_FLEET_AGENT_ID', 'MARROW_PASSIVE_TOKEN_USAGE']) {
+        if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k];
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
+}
+
+test('PostToolUse returns immediately while the server is hung; background nudge delivers the spooled event later', withSpool(async () => {
+  process.env.MARROW_PASSIVE_TOKEN_USAGE = 'false'; process.env.MARROW_API_KEY = 'mrw_post_tool_test_key'; process.env.MARROW_BASE_URL = 'https://api.example.test';
+  let hung = true; const posted = [];
+  globalThis.fetch = (url, init) => {
+    if (!String(url).endsWith('/v1/agent/integrations/events')) return new Promise(() => {});
+    if (hung) return new Promise(() => {});
+    posted.push(JSON.parse(String(init.body)));
+    return Promise.resolve(new Response('{}', { status: 200 }));
+  };
+  const started = Date.now();
+  await runHookCommand({
+    session_id: 'post-tool-fast', hook_event_name: 'PostToolUse', tool_name: 'Write',
+    tool_input: { file_path: '/tmp/out.txt', content: 'x' }, tool_response: { ok: true }, tool_use_id: 'toolu_fast',
+  });
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 150, `hook returned in ${elapsed} ms with a hung server`);
+  const before = lifecycleSpoolStatus({ apiKey: 'mrw_post_tool_test_key' });
+  assert.equal(before.pending, 1, 'event is durably spooled');
+  assert.equal(posted.length, 0);
+  hung = false;
+  await nudgeLifecycleSpool({ apiKey: 'mrw_post_tool_test_key', baseUrl: 'https://api.example.test' });
+  assert.equal(posted.length, 1, 'background path delivered it');
+  assert.equal(lifecycleSpoolStatus({ apiKey: 'mrw_post_tool_test_key' }).pending, 0);
+}));
+
+test('background delivery tolerates a 1.2 s acknowledgement that the 750 ms inline cap aborts', withSpool(async () => {
+  const input = { apiKey: 'slow-ack-key', baseUrl: 'https://api.example.test' };
+  let delay = 1200;
+  globalThis.fetch = async () => { await new Promise((r) => setTimeout(r, delay)); return new Response('{}', { status: 200 }); };
+  const event = { event_id: 'slow-ack', event_type: 'tool_completed', agent_id: 'agent-one', action: 'tool execution observed', outcome_state: 'pending', success: true };
+  const inline = await recordLifecycleEvent({ ...input, event });
+  assert.equal(inline.queued, true, 'inline 750 ms cap leaves it spooled');
+  assert.equal(lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: 'agent-one' }).retry.reasons.ack_timeout, 1);
+  await new Promise((r) => setTimeout(r, 1100));
+  await nudgeLifecycleSpool({ ...input, agentId: 'agent-one' });
+  assert.equal(lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: 'agent-one' }).pending, 0);
+}));
+
+test('inline delivery stays bounded and a timed-out event stays spooled', withSpool(async () => {
   globalThis.fetch = () => new Promise(() => {});
-  try {
-    const started = Date.now();
-    const result = await recordLifecycleEvent({
-      apiKey: 'tight-key', baseUrl: 'https://api.example.test', deliveryTimeoutMs: 750,
-      event: { event_id: 'tight-ack', event_type: 'session_completed', agent_id: 'agent-one', action: 'agent session ended', outcome_state: 'pending' },
-    });
-    const elapsed = Date.now() - started;
-    assert.ok(elapsed >= 700 && elapsed < 1500, `bounded at 750 ms (${elapsed} ms)`);
-    assert.equal(result.queued, true);
-    assert.equal(lifecycleSpoolStatus({ apiKey: 'tight-key', agentId: 'agent-one' }).pending, 1);
-  } finally {
-    globalThis.fetch = original;
-    if (originalPath === undefined) delete process.env.MARROW_EVENT_SPOOL_PATH; else process.env.MARROW_EVENT_SPOOL_PATH = originalPath;
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
+  const started = Date.now();
+  const result = await recordLifecycleEvent({
+    apiKey: 'hung-key', baseUrl: 'https://api.example.test',
+    event: { event_id: 'hung-ack', event_type: 'tool_completed', agent_id: 'agent-one', action: 'tool execution observed', outcome_state: 'pending', success: true },
+  });
+  assert.ok(Date.now() - started < 1500);
+  assert.equal(result.queued, true);
+  assert.equal(lifecycleSpoolStatus({ apiKey: 'hung-key', agentId: 'agent-one' }).failed, 0);
+}));
+
+test('background nudge lock admits one launcher and recovers from a stale lock', withSpool(async () => {
+  const input = { apiKey: 'lock-key', agentId: 'agent-one' };
+  assert.equal(claimBackgroundNudgeLock(input), true);
+  assert.equal(claimBackgroundNudgeLock(input), false);
+  releaseBackgroundNudgeLock(input);
+  assert.equal(claimBackgroundNudgeLock(input), true);
+  const lock = `${process.env.MARROW_EVENT_SPOOL_PATH}.nudge.lock`;
+  const old = new Date(Date.now() - 60_000);
+  require('node:fs').utimesSync(lock, old, old);
+  assert.equal(claimBackgroundNudgeLock(input), true, 'stale lock is reclaimed');
+  releaseBackgroundNudgeLock(input);
+}));

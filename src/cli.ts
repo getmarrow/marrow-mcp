@@ -71,10 +71,13 @@ import { installGrokNativeHooks } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
+import { spawn } from 'node:child_process';
 import { resolveMarrowEnv } from './env';
 import {
+  claimBackgroundNudgeLock,
   drainLifecycleSpool,
   lifecycleSpoolStatus,
+  releaseBackgroundNudgeLock,
   nudgeLifecycleSpool,
   quarantineLegacyNamespaces,
   recordLifecycleEvent,
@@ -83,7 +86,7 @@ import {
 import { lifecycleSpoolCommandOutcome } from './spool-command';
 import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
 import { localClientUpdate, MarrowRequestError, structuredRequestFailure } from './request-reliability';
-import { MCP_ADAPTER_VERSION } from './hook-contract';
+import { MCP_ADAPTER_VERSION, resolveNativeHookIdentity } from './hook-contract';
 import { resolvePingTimeoutMs, updatePingState } from './ping-state';
 import { controlPathStats, recordControlPathSample } from './control-path-state';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
@@ -95,9 +98,9 @@ import type { MarrowAutoResult } from './index';
 import type { ThinkResult, MarrowMemory } from './types';
 
 // Parse CLI args
-function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean } {
+function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean; backgroundNudge?: boolean } {
   const args = process.argv.slice(2);
-  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean } = {};
+  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean; backgroundNudge?: boolean } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
@@ -124,6 +127,9 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     if (args[i] === 'drain-spool' || args[i] === '--drain-spool') {
       result.drainSpool = true;
     }
+    if (args[i] === 'background-nudge') {
+      result.backgroundNudge = true;
+    }
     if (args[i] === 'ping' || args[i] === '--ping') {
       result.ping = true;
     }
@@ -143,6 +149,38 @@ function reportLifecycleSpool(input: { apiKey: string; baseUrl?: string; agentId
     void nudgeLifecycleSpool({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.agentId });
   }
   return spool;
+}
+
+// PostToolUse only spools. This starts one detached, unref'd process that delivers the
+// spooled events with the longer background timeout, so the hook returns immediately.
+function launchBackgroundLifecycleNudge(): void {
+  try {
+    if (process.env.MARROW_HOOK_BACKGROUND_NUDGE === 'false' || !process.argv[1]) return;
+    const identity = resolveNativeHookIdentity(process.argv[2]);
+    const apiKey = identity.environment.apiKey || '';
+    if (!apiKey) return;
+    const spool = lifecycleSpoolStatus({ apiKey, agentId: identity.agent_id });
+    if (!shouldNudgeLifecycleSpool(spool)) return;
+    if (!claimBackgroundNudgeLock({ apiKey, agentId: identity.agent_id })) return;
+    const child = spawn(process.execPath, [process.argv[1], 'background-nudge'], {
+      detached: true, stdio: 'ignore', env: process.env,
+    });
+    child.on('error', () => releaseBackgroundNudgeLock({ apiKey, agentId: identity.agent_id }));
+    child.unref();
+  } catch { /* the event stays spooled for the next nudge */ }
+}
+
+async function runBackgroundNudge(): Promise<void> {
+  const identity = resolveNativeHookIdentity(undefined);
+  const apiKey = identity.environment.apiKey || '';
+  try {
+    if (!apiKey) return;
+    const baseUrl = validateBaseUrl(identity.environment.baseUrl || 'https://api.getmarrow.ai');
+    await nudgeLifecycleSpool({ apiKey, baseUrl, agentId: identity.agent_id });
+  } catch { /* best effort */ } finally {
+    if (apiKey) releaseBackgroundNudgeLock({ apiKey, agentId: identity.agent_id });
+    process.exit(0);
+  }
 }
 
 async function runPingCommand(): Promise<void> {
@@ -418,7 +456,9 @@ if (process.argv[2] === 'keys') {
 if (process.argv[2] !== 'keys') {
 
 if (cliArgs.hook) {
-  void runHookCommand();
+  void runHookCommand().finally(launchBackgroundLifecycleNudge);
+} else if (cliArgs.backgroundNudge) {
+  void runBackgroundNudge();
 } else if (cliArgs.contextHook) {
   void runContextHookCommand();
 } else if (cliArgs.preActionHook) {

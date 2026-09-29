@@ -83,6 +83,19 @@ const AGENT_WRITE_RECONCILIATION_MAX_DELAY_MS = 5_000;
 // Time that must remain after a wait for the resumed request to be worth sending.
 const AGENT_WRITE_RECONCILIATION_REQUEST_MARGIN_MS = 500;
 
+// Optional body field carrying the REAL remaining server lease. Older servers only
+// send retry_after_ms (kept at 1000 for old clients). Single place to rename.
+const PENDING_LEASE_REMAINING_FIELD = 'lease_remaining_ms';
+
+/** Server-requested wait: lease field if valid, else retry_after_ms; then the larger Retry-After header. */
+function pendingWriteRequestedWaitMs(data: Record<string, unknown>, headerWait: { delayMs: number | null; valid: boolean }): number | null {
+  if (!headerWait.valid) return null;
+  const lease = traceMs(data[PENDING_LEASE_REMAINING_FIELD]);
+  const body = lease !== null ? lease : traceMs(data.retry_after_ms);
+  if (body === null && headerWait.delayMs === null) return null;
+  return Math.max(body ?? 0, headerWait.delayMs ?? 0);
+}
+
 function writeReconciliationBudgetMs(): number {
   const configured = Number(process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS);
   return Number.isFinite(configured) && process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS !== ''
@@ -816,11 +829,7 @@ async function fetchAgentWrite(
     }
     const data = json.data as Record<string, unknown>;
     const headerWait = responseRetryAfter(response);
-    const bodyWait = traceMs(data.retry_after_ms);
-    const hasRequestedWait = bodyWait !== null || headerWait.delayMs !== null;
-    const requestedWait = headerWait.valid && hasRequestedWait
-      ? Math.max(bodyWait ?? 0, headerWait.delayMs ?? 0)
-      : null;
+    const requestedWait = pendingWriteRequestedWaitMs(data, headerWait);
     const traceAttempt = appendAutoHttpAttempt(autoHttpTrace, {
       route_phase: kind,
       duration_ms: traceMs(performance.now() - requestStarted) || 0,

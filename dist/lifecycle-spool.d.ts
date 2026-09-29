@@ -94,8 +94,6 @@ export declare function recordLifecycleEvent(input: {
     baseUrl: string;
     event: LifecycleEvent;
     deferDelivery?: boolean;
-    /** Lower inline acknowledgement cap for hooks that share a tight host deadline. */
-    deliveryTimeoutMs?: number;
 }): Promise<{
     event_id: string;
     accepted: boolean;
@@ -104,5 +102,18 @@ export declare function recordLifecycleEvent(input: {
     pending: number;
     recovered_corruption: boolean;
 }>;
+/**
+ * Cross-process guard so a burst of hook invocations starts at most one detached
+ * background nudge per credential namespace. Best effort: any filesystem problem
+ * simply means no background nudge is started (the event stays spooled).
+ */
+export declare function claimBackgroundNudgeLock(input: {
+    apiKey: string;
+    agentId?: string;
+}): boolean;
+export declare function releaseBackgroundNudgeLock(input: {
+    apiKey: string;
+    agentId?: string;
+}): void;
 export {};
 //# sourceMappingURL=lifecycle-spool.d.ts.map
