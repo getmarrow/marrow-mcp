@@ -197,6 +197,7 @@ export interface MarrowRuntimePlanCapability {
 export interface MarrowAgentRuntimeRequest extends MarrowDecisionBriefRequest {
     decision_id?: string;
     response_mode?: 'slim' | 'expanded';
+    risk_level?: 'low' | 'medium' | 'high';
     risk_tolerance?: 'low' | 'medium' | 'high';
     requires_approval?: boolean;
     coordination?: MarrowArbitrationRequest;

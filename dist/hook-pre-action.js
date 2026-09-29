@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MARROW_OUTAGE_WARNING = void 0;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.isMarrowOutage = isMarrowOutage;
+exports.controlRejectionMessage = controlRejectionMessage;
 exports.localControlAllowOutput = localControlAllowOutput;
 exports.localLoopGuardDenyOutput = localLoopGuardDenyOutput;
 exports.classifyTool = classifyTool;
@@ -69,6 +70,20 @@ function isMarrowControlOutage(error) {
 }
 function isMarrowOutage(result) {
     return result.outage === true;
+}
+const SAFE_FAILURE_CODE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
+// Names a reached control failure by HTTP status and stable failure code only, so the
+// denial is diagnosable without echoing private service text into the agent transcript.
+function controlRejectionMessage(error) {
+    const detail = [];
+    if (error instanceof request_reliability_1.MarrowRequestError) {
+        if (typeof error.status === 'number' && Number.isInteger(error.status))
+            detail.push(`HTTP ${error.status}`);
+        const code = [error.backendCode, error.code].find((value) => typeof value === 'string' && SAFE_FAILURE_CODE.test(value));
+        if (code)
+            detail.push(code);
+    }
+    return `Marrow rejected this protected action${detail.length ? ` (${detail.join(' ')})` : ''}. Restore trusted governance before retrying.`;
 }
 const SAFE_DECISION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 function localControlAllowOutput(harness) {
@@ -540,11 +555,18 @@ async function runPreActionHookCommand(input) {
             type: classified.type,
             role: classified.role,
             surfaces: classified.surfaces,
+            // Without a risk level the runtime may take its low-risk fast path, whose
+            // non-durable fast_gate receipt can never back an action permit.
+            ...(enforcementRequired ? { risk_level: classified.risk } : {}),
         }, sessionId, agentId, signal);
         const gate = runtime.risk_gate;
         if (gate?.decision === 'block' || gate?.decision === 'review_required' || gate?.allow === false) {
             return { runtime, permit: null, protectedRisk: enforcementRequired };
         }
+        // Only enforced actions need a decision and permit; creating them for every
+        // unprotected tool call would record a decision per edit.
+        if (!enforcementRequired)
+            return { runtime, permit: null, protectedRisk: false };
         const gateReceiptId = (0, runtime_contract_1.runtimeAuthorizationReceiptId)(runtime);
         const runtimeIds = [runtime.decision_id, runtime.completion_contract?.decision_id, runtime.runtime_authorization?.decision_id]
             .filter((value) => typeof value === 'string' && SAFE_DECISION_ID.test(value));
@@ -562,11 +584,9 @@ async function runPreActionHookCommand(input) {
                 surfaces: classified.surfaces,
                 type: classified.type,
                 source_kind: 'integration',
-                source_meta: {
-                    harness: identity.harness,
-                    correlation_id: correlation,
-                    gate_receipt_id: gateReceiptId,
-                },
+                // Think rejects any source_meta key outside channel, client, agent_id, task_depth and
+                // user_intent with HTTP 400. The gate receipt and correlation bind on the permit below.
+                ...(identity.harness !== 'mcp-client' ? { source_meta: { client: identity.harness } } : {}),
             }, sessionId, agentId, signal);
             decisionId = SAFE_DECISION_ID.test(decision.decision_id) ? decision.decision_id : null;
         }
@@ -626,7 +646,7 @@ async function runPreActionHookCommand(input) {
                 runtime: null,
                 permit: null,
                 protectedRisk: enforcementRequired,
-                enforcementError: 'Marrow rejected this protected action. Restore trusted governance before retrying.',
+                enforcementError: controlRejectionMessage(error),
             })),
         lifecycle,
     ]);

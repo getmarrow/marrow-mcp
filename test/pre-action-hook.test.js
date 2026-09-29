@@ -10,6 +10,7 @@ const {
   PreActionControlTimeoutError,
   classifyTool,
   clinePreActionHookOutput,
+  controlRejectionMessage,
   cursorPreActionHookOutput,
   geminiPreActionHookOutput,
   grokPreActionHookOutput,
@@ -692,4 +693,155 @@ test('a rejected runtime call denies a protected action instead of failing open'
     }
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+async function runHookAgainst(respond, event, entrypoint) {
+  const originalFetch = globalThis.fetch;
+  const originalWrite = process.stdout.write;
+  const originalEntrypoint = process.argv[2];
+  const keys = ['MARROW_API_KEY', 'MARROW_BASE_URL', 'MARROW_AGENT_ID', 'MARROW_SESSION_ID', 'MARROW_EVENT_SPOOL_PATH', 'HOME'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-pre-action-contract-'));
+  const calls = [];
+  let output = '';
+  process.env.MARROW_API_KEY = 'test-pre-action-key';
+  process.env.MARROW_BASE_URL = 'https://api.example.test';
+  process.env.MARROW_AGENT_ID = 'agent-one';
+  process.env.MARROW_SESSION_ID = 'session-one';
+  process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
+  process.env.HOME = directory;
+  if (entrypoint) process.argv[2] = entrypoint;
+  process.stdout.write = (chunk) => {
+    output += String(chunk);
+    return true;
+  };
+  globalThis.fetch = async (url, init = {}) => {
+    const pathname = new URL(String(url)).pathname;
+    const body = init.body ? JSON.parse(String(init.body)) : {};
+    if (pathname === '/v1/agent/integrations/events') return Response.json({ data: { accepted: true } });
+    calls.push({ pathname, body });
+    return respond(pathname, body);
+  };
+  try {
+    await runPreActionHookCommand(event);
+    return { calls, output };
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.stdout.write = originalWrite;
+    if (entrypoint) process.argv[2] = originalEntrypoint;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+const fastPathRuntime = () => Response.json({ data: {
+  runtime_authorization: { id: 'fast_gate_one', durable: false, decision_creation_required: true },
+  completion_contract: { decision_creation_required: true },
+  risk_gate: { allow: true, decision: 'allow', reasons: [] },
+  gate_receipt_id: 'fast_gate_one',
+  before_you_act: 'Proceed with the low-risk work.',
+  proof_pack: { fields: [] },
+} });
+
+test('a protected action asks for a durable gate and creates its decision with only accepted source metadata', async () => {
+  const { calls, output } = await runHookAgainst((pathname, body) => {
+    if (pathname === '/v1/agent/runtime') return fastPathRuntime();
+    if (pathname === '/v1/agent/think') return Response.json({ data: { decision_id: 'decision-think' } });
+    if (pathname === '/v1/agent/enforcement' && body.operation === 'issue') {
+      return Response.json({ data: { permit_id: 'permit-one', permit: 'signed-permit' } });
+    }
+    if (pathname === '/v1/agent/enforcement' && body.operation === 'verify') {
+      return Response.json({ data: { permit_id: 'permit-one', verified: true } });
+    }
+    throw new Error(`unexpected ${pathname}`);
+  }, {
+    session_id: 'session-one',
+    tool_use_id: 'tool-one',
+    tool_name: 'Bash',
+    tool_input: { command: 'rm -rf build' },
+  }, 'claude-pre-action-hook');
+
+  assert.deepEqual(calls.map((entry) => entry.pathname), [
+    '/v1/agent/runtime',
+    '/v1/agent/think',
+    '/v1/agent/enforcement',
+    '/v1/agent/enforcement',
+  ]);
+  assert.equal(calls[0].body.risk_level, 'high');
+  const sourceMeta = calls[1].body.source_meta;
+  assert.deepEqual(Object.keys(sourceMeta).filter((key) => !['channel', 'client', 'agent_id', 'task_depth', 'user_intent'].includes(key)), []);
+  assert.equal(sourceMeta.client, 'claude-code');
+  assert.equal(calls[2].body.decision_id, 'decision-think');
+  assert.equal(calls[2].body.gate_receipt_id, 'fast_gate_one');
+  assert.equal(typeof calls[2].body.correlation_id, 'string');
+  assert.notEqual(JSON.parse(output).hookSpecificOutput.permissionDecision, 'deny');
+});
+
+test('the generic hook entrypoint keeps the default source client on think', async () => {
+  const { calls } = await runHookAgainst((pathname, body) => {
+    if (pathname === '/v1/agent/runtime') return fastPathRuntime();
+    if (pathname === '/v1/agent/think') return Response.json({ data: { decision_id: 'decision-think' } });
+    if (body.operation === 'issue') return Response.json({ data: { permit_id: 'permit-one', permit: 'signed-permit' } });
+    return Response.json({ data: { permit_id: 'permit-one', verified: true } });
+  }, {
+    session_id: 'session-one',
+    tool_use_id: 'tool-one',
+    tool_name: 'Bash',
+    tool_input: { command: 'rm -rf build' },
+  });
+
+  const think = calls.find((entry) => entry.pathname === '/v1/agent/think');
+  assert.notEqual(think.body.source_meta.client, 'mcp-client');
+  assert.equal(think.body.source_meta.harness, undefined);
+});
+
+test('an unprotected action stops at the runtime gate without creating a decision or permit', async () => {
+  const { calls, output } = await runHookAgainst((pathname) => {
+    if (pathname === '/v1/agent/runtime') return fastPathRuntime();
+    throw new Error(`unprotected action must not call ${pathname}`);
+  }, {
+    session_id: 'session-one',
+    tool_use_id: 'tool-one',
+    tool_name: 'Bash',
+    tool_input: { command: 'mkdir -p build' },
+  });
+
+  assert.deepEqual(calls.map((entry) => entry.pathname), ['/v1/agent/runtime']);
+  assert.equal(calls[0].body.risk_level, undefined);
+  const result = JSON.parse(output);
+  assert.equal(result.hookSpecificOutput.permissionDecision, undefined);
+  assert.equal(result.hookSpecificOutput.additionalContext, 'Proceed with the low-risk work.');
+});
+
+test('a reached control rejection names its status and code without echoing service text', async () => {
+  const privateText = 'synthetic-private-service-text';
+  const { output } = await runHookAgainst((pathname) => {
+    if (pathname === '/v1/agent/runtime') return fastPathRuntime();
+    return new Response(JSON.stringify({ error: privateText, code: 'MARROW_INVALID_SOURCE_META' }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    });
+  }, {
+    session_id: 'session-one',
+    tool_use_id: 'tool-one',
+    tool_name: 'Bash',
+    tool_input: { command: 'rm -rf build' },
+  });
+
+  const result = JSON.parse(output);
+  assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(result.hookSpecificOutput.permissionDecisionReason, /\(HTTP 400 MARROW_INVALID_SOURCE_META\)/);
+  assert.doesNotMatch(output, new RegExp(privateText));
+
+  assert.equal(
+    controlRejectionMessage(new MarrowRequestError({ code: 'request_failed', backendCode: 'not a <safe> code', message: privateText, status: 400, exactFix: 'fix' })),
+    'Marrow rejected this protected action (HTTP 400 request_failed). Restore trusted governance before retrying.',
+  );
+  assert.equal(
+    controlRejectionMessage(new Error(privateText)),
+    'Marrow rejected this protected action. Restore trusted governance before retrying.',
+  );
 });
