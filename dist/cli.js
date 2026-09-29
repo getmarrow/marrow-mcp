@@ -85,25 +85,25 @@ function reportLifecycleSpool(input) {
     }
     return spool;
 }
-// PostToolUse only spools. This starts one detached, unref'd process that delivers the
-// spooled events with the longer background timeout, so the hook returns immediately.
+// PostToolUse only spools. When this invocation actually spooled an event (so it passed
+// MARROW_AUTO_HOOK, local-control and read-only gates), start one detached, unref'd
+// process that delivers with the longer background timeout. No spool scan happens here.
 function launchBackgroundLifecycleNudge() {
     try {
-        if (process.env.MARROW_HOOK_BACKGROUND_NUDGE === 'false' || !process.argv[1])
+        if (!(0, hook_1.hookSpooledLifecycleEvent)() || !(0, lifecycle_spool_1.backgroundNudgeEnabled)())
             return;
         const identity = (0, hook_contract_2.resolveNativeHookIdentity)(process.argv[2]);
         const apiKey = identity.environment.apiKey || '';
         if (!apiKey)
             return;
-        const spool = (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey, agentId: identity.agent_id });
-        if (!(0, lifecycle_spool_1.shouldNudgeLifecycleSpool)(spool))
-            return;
-        if (!(0, lifecycle_spool_1.claimBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id }))
+        const nonce = (0, lifecycle_spool_1.claimBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id });
+        if (!nonce)
             return;
         const child = (0, node_child_process_1.spawn)(process.execPath, [process.argv[1], 'background-nudge'], {
-            detached: true, stdio: 'ignore', env: process.env,
+            detached: true, stdio: 'ignore', windowsHide: true,
+            env: { ...process.env, MARROW_INTERNAL_NUDGE_LOCK: nonce },
         });
-        child.on('error', () => (0, lifecycle_spool_1.releaseBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id }));
+        child.on('error', () => (0, lifecycle_spool_1.releaseBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id, nonce }));
         child.unref();
     }
     catch { /* the event stays spooled for the next nudge */ }
@@ -111,16 +111,33 @@ function launchBackgroundLifecycleNudge() {
 async function runBackgroundNudge() {
     const identity = (0, hook_contract_2.resolveNativeHookIdentity)(undefined);
     const apiKey = identity.environment.apiKey || '';
+    const agentId = identity.agent_id;
+    let nonce = process.env.MARROW_INTERNAL_NUDGE_LOCK || '';
+    const release = () => { if (apiKey && nonce)
+        (0, lifecycle_spool_1.releaseBackgroundNudgeLock)({ apiKey, agentId, nonce }); };
+    // Hard lifetime cap, below the lock's stale threshold.
+    const watchdog = setTimeout(() => { release(); process.exit(0); }, lifecycle_spool_1.BACKGROUND_NUDGE_MAX_LIFETIME_MS);
     try {
-        if (!apiKey)
+        if (!apiKey || !nonce)
             return;
         const baseUrl = (0, index_1.validateBaseUrl)(identity.environment.baseUrl || 'https://api.getmarrow.ai');
-        await (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey, baseUrl, agentId: identity.agent_id });
+        // Deliver, then re-check once for events spooled while this process held the lock.
+        for (let round = 0; round < 3; round += 1) {
+            await (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey, baseUrl, agentId });
+            if (!(0, lifecycle_spool_1.hasDueLifecycleEvents)({ apiKey, agentId }))
+                break;
+        }
+        release();
+        const next = (0, lifecycle_spool_1.hasDueLifecycleEvents)({ apiKey, agentId }) ? (0, lifecycle_spool_1.claimBackgroundNudgeLock)({ apiKey, agentId }) : null;
+        if (next) {
+            nonce = next;
+            await (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey, baseUrl, agentId });
+        }
     }
     catch { /* best effort */ }
     finally {
-        if (apiKey)
-            (0, lifecycle_spool_1.releaseBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id });
+        clearTimeout(watchdog);
+        release();
         process.exit(0);
     }
 }

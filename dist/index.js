@@ -92,8 +92,9 @@ const AGENT_WRITE_RECONCILIATION_REQUEST_MARGIN_MS = 500;
 const PENDING_LEASE_REMAINING_FIELD = 'lease_remaining_ms';
 /** Server-requested wait: lease field if valid, else retry_after_ms; then the larger Retry-After header. */
 function pendingWriteRequestedWaitMs(data, headerWait) {
+    // An unreadable Retry-After is never turned into an earlier retry: wait at least 1 s.
     if (!headerWait.valid)
-        return null;
+        return 1_000;
     const lease = traceMs(data[PENDING_LEASE_REMAINING_FIELD]);
     const body = lease !== null ? lease : traceMs(data.retry_after_ms);
     if (body === null && headerWait.delayMs === null)
@@ -107,13 +108,15 @@ function writeReconciliationBudgetMs() {
         : AGENT_WRITE_RECONCILIATION_BUDGET_DEFAULT_MS;
 }
 /**
- * Delay before resuming a pending write. Honors the server's retry_after_ms (and
- * Retry-After header, whichever is larger) clamped to [250 ms, 5 s]. Without
- * guidance, exponential backoff (250 ms * 2^n, capped at 5 s) with 50-100% jitter.
+ * Delay before resuming a pending write. A server-requested wait (lease field,
+ * retry_after_ms or Retry-After, whichever is larger) is honored with a 250 ms floor
+ * and no fixed ceiling: the caller stops with the resumable receipt when it does not
+ * fit the remaining budget. Without guidance, exponential backoff (250 ms * 2^n,
+ * capped at 5 s) with 50-100% jitter.
  */
 function writeReconciliationDelayMs(attemptIndex, requestedMs, random = Math.random) {
     if (requestedMs !== null && Number.isFinite(requestedMs) && requestedMs >= 0) {
-        return Math.min(AGENT_WRITE_RECONCILIATION_MAX_DELAY_MS, Math.max(AGENT_WRITE_RECONCILIATION_MIN_DELAY_MS, Math.ceil(requestedMs)));
+        return Math.max(AGENT_WRITE_RECONCILIATION_MIN_DELAY_MS, Math.ceil(requestedMs));
     }
     const exponential = Math.min(AGENT_WRITE_RECONCILIATION_MAX_DELAY_MS, AGENT_WRITE_RECONCILIATION_MIN_DELAY_MS * 2 ** Math.max(0, Math.min(10, attemptIndex)));
     return Math.min(AGENT_WRITE_RECONCILIATION_MAX_DELAY_MS, Math.max(AGENT_WRITE_RECONCILIATION_MIN_DELAY_MS, Math.ceil(exponential * (0.5 + 0.5 * random()))));
@@ -507,7 +510,7 @@ function invocationIdempotencyKey(kind, supplied) {
     }
     return `mcp-${kind}:${(0, node_crypto_1.randomUUID)()}`;
 }
-function reconciliationError(exhausted, pendingReceipt) {
+function reconciliationError(exhausted, pendingReceipt, retryAfterMs) {
     return new request_reliability_1.MarrowRequestError({
         code: 'invalid_response',
         backendCode: exhausted ? 'MCP_RECONCILIATION_EXHAUSTED' : 'MCP_RECONCILIATION_INVALID',
@@ -516,7 +519,8 @@ function reconciliationError(exhausted, pendingReceipt) {
             : 'Marrow returned an invalid write reconciliation response',
         status: 202,
         retryable: exhausted,
-        retryAfterMs: exhausted ? 1000 : null,
+        // Report the real retry hint (server lease/Retry-After or the backoff that did not fit).
+        retryAfterMs: exhausted ? Math.max(250, Math.ceil(retryAfterMs ?? 1000)) : null,
         pendingReceipt,
         exactFix: exhausted
             ? 'Resume with the pending receipt key and request_hash, unchanged arguments, credentials, agent and session. Do not act, create another decision, or assume closure.'
@@ -818,7 +822,7 @@ async function fetchAgentWrite(url, init, kind, idempotencyKey, expectedDecision
         const remainingBudget = reconciliationBudgetMs - (performance.now() - reconciliationStarted);
         if (attempt + 1 >= AGENT_WRITE_RECONCILIATION_MAX_ATTEMPTS
             || remainingBudget - delayMs < AGENT_WRITE_RECONCILIATION_REQUEST_MARGIN_MS) {
-            throw reconciliationError(true, pendingReceipt);
+            throw reconciliationError(true, pendingReceipt, delayMs);
         }
         const waitStarted = performance.now();
         await waitForWriteReconciliation(delayMs, init.signal || undefined);
