@@ -7,6 +7,7 @@ const test = require('node:test');
 
 const {
   MARROW_OUTAGE_WARNING,
+  MAX_PRE_ACTION_INPUT_BYTES,
   PreActionControlTimeoutError,
   classifyTool,
   clinePreActionHookOutput,
@@ -15,6 +16,7 @@ const {
   geminiPreActionHookOutput,
   grokPreActionHookOutput,
   isMarrowControlOutage,
+  ownerApprovalPrompt,
   preActionHookOutput,
   runPreActionHookCommand,
   windsurfPreActionDecision,
@@ -463,7 +465,10 @@ test('protected pre-action hook denies when the Marrow credential is unavailable
 
 test('malformed mutation-capable hook input is denied instead of silently bypassed', async () => {
   const originalWrite = process.stdout.write;
+  const previousHome = process.env.HOME;
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-malformed-'));
   let output = '';
+  process.env.HOME = directory;
   process.stdout.write = (chunk) => { output += String(chunk); return true; };
   try {
     await runPreActionHookCommand({ tool_input: { command: 'unknown mutation' } });
@@ -472,6 +477,9 @@ test('malformed mutation-capable hook input is denied instead of silently bypass
     assert.match(result.hookSpecificOutput.permissionDecisionReason, /could not classify/i);
   } finally {
     process.stdout.write = originalWrite;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -699,11 +707,12 @@ async function runHookAgainst(respond, event, entrypoint) {
   const originalFetch = globalThis.fetch;
   const originalWrite = process.stdout.write;
   const originalEntrypoint = process.argv[2];
-  const keys = ['MARROW_API_KEY', 'MARROW_BASE_URL', 'MARROW_AGENT_ID', 'MARROW_SESSION_ID', 'MARROW_EVENT_SPOOL_PATH', 'HOME'];
+  const keys = ['MARROW_API_KEY', 'MARROW_BASE_URL', 'MARROW_AGENT_ID', 'MARROW_FLEET_AGENT_ID', 'MARROW_SESSION_ID', 'MARROW_EVENT_SPOOL_PATH', 'HOME'];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-pre-action-contract-'));
   const calls = [];
   let output = '';
+  delete process.env.MARROW_FLEET_AGENT_ID;
   process.env.MARROW_API_KEY = 'test-pre-action-key';
   process.env.MARROW_BASE_URL = 'https://api.example.test';
   process.env.MARROW_AGENT_ID = 'agent-one';
@@ -844,4 +853,354 @@ test('a reached control rejection names its status and code without echoing serv
     controlRejectionMessage(new Error(privateText)),
     'Marrow rejected this protected action. Restore trusted governance before retrying.',
   );
+});
+
+const reviewRuntime = (extra = {}) => Response.json({ data: {
+  decision_id: 'decision-review',
+  runtime_authorization: { id: 'gate-review', decision_id: 'decision-review', decision_creation_required: false },
+  completion_contract: {
+    decision_id: 'decision-review',
+    decision_creation_required: false,
+    owner_approval_required: true,
+    arbitration_receipt_required: false,
+    owner_approval: { mode: 'ordinary_non_arbitrated', proof_path: 'proof.owner_approval', dashboard_receipt_required: false },
+  },
+  risk_gate: { allow: false, decision: 'review_required', reasons: [{ message: 'Publishing needs owner review.' }] },
+  gate_receipt_id: 'gate-review',
+  exact_next_action: 'Obtain explicit owner approval.',
+  ...extra,
+} });
+const noControlAfterGate = (respond) => (pathname, body) => {
+  if (pathname !== '/v1/agent/runtime') throw new Error(`a review gate must not call ${pathname}`);
+  return respond(pathname, body);
+};
+const publishEvent = (extra = {}) => ({
+  session_id: 'session-one',
+  tool_use_id: 'tool-one',
+  tool_name: 'Bash',
+  tool_input: { command: 'npm publish' },
+  ...extra,
+});
+
+test('owner prompts are offered only where Claude Code shows the prompt to a person', () => {
+  const child = { CLAUDE_CODE_CHILD_SESSION: '1' };
+  const cases = [
+    ['claude-code', { permission_mode: 'default' }, {}, true],
+    ['claude-code', { permission_mode: 'acceptEdits' }, {}, true],
+    ['claude-code', { permission_mode: 'auto', scratchpad_dir: '/tmp/claude-1000/project/session/scratchpad' }, {}, true],
+    ['claude-code', { permission_mode: 'auto' }, {}, false],
+    ['claude-code', { permission_mode: 'plan' }, {}, false],
+    ['claude-code', { permission_mode: 'dontAsk' }, {}, false],
+    ['claude-code', { permission_mode: 'bypassPermissions' }, {}, false],
+    ['claude-code', {}, {}, false],
+    ['claude-code', { permission_mode: 'default; rm' }, {}, false],
+    ['mcp-client', { permission_mode: 'default' }, child, true],
+    ['mcp-client', { permission_mode: 'default' }, {}, false],
+    ['mcp-client', { permission_mode: 'bypassPermissions' }, child, false],
+    ['codex', { permission_mode: 'default' }, child, false],
+    ['cursor', { permission_mode: 'default' }, child, false],
+    ['cline', { permission_mode: 'default' }, child, false],
+    ['gemini', { permission_mode: 'default' }, child, false],
+    ['grok', { permission_mode: 'default' }, child, false],
+    ['windsurf', { permission_mode: 'default' }, child, false],
+  ];
+  for (const [harness, event, env, available] of cases) {
+    const prompt = ownerApprovalPrompt(harness, event, env);
+    assert.equal(prompt.available, available, `${harness} ${JSON.stringify(event)} ${JSON.stringify(env)}`);
+    assert.equal(prompt.unavailableReason === '', available);
+  }
+  assert.match(ownerApprovalPrompt('claude-code', { permission_mode: 'bypassPermissions' }, {}).unavailableReason, /bypassPermissions/);
+  assert.match(ownerApprovalPrompt('codex', { permission_mode: 'default' }, {}).unavailableReason, /Codex/);
+});
+
+test('an ordinary review gate asks the owner in an interactive Claude Code session', async () => {
+  const { calls, output } = await runHookAgainst(noControlAfterGate(() => reviewRuntime()),
+    publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+  assert.deepEqual(calls.map((entry) => entry.pathname), ['/v1/agent/runtime']);
+  const decision = JSON.parse(output).hookSpecificOutput;
+  assert.equal(decision.permissionDecision, 'ask');
+  assert.equal(decision.permissionDecisionReason,
+    'Marrow requires owner review before this action. Approve only if you authorize this exact action. Reason: Publishing needs owner review. Next: Obtain explicit owner approval.');
+});
+
+test('the installer generic entrypoint asks only when Claude Code spawned the hook', async () => {
+  const previous = process.env.CLAUDE_CODE_CHILD_SESSION;
+  try {
+    process.env.CLAUDE_CODE_CHILD_SESSION = '1';
+    const spawned = await runHookAgainst(noControlAfterGate(() => reviewRuntime()), publishEvent({ permission_mode: 'acceptEdits' }));
+    assert.equal(JSON.parse(spawned.output).hookSpecificOutput.permissionDecision, 'ask');
+    delete process.env.CLAUDE_CODE_CHILD_SESSION;
+    const unknownHost = await runHookAgainst(noControlAfterGate(() => reviewRuntime()), publishEvent({ permission_mode: 'acceptEdits' }));
+    const denied = JSON.parse(unknownHost.output).hookSpecificOutput;
+    assert.equal(denied.permissionDecision, 'deny');
+    assert.match(denied.permissionDecisionReason, /^Marrow requires owner review before this action, and no owner approval prompt is available \(this agent host cannot prompt the owner\)/);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_CHILD_SESSION;
+    else process.env.CLAUDE_CODE_CHILD_SESSION = previous;
+  }
+});
+
+test('a review gate is denied with its reason wherever no person would see the prompt', async () => {
+  for (const [entrypoint, event, expected] of [
+    ['claude-pre-action-hook', publishEvent({ permission_mode: 'bypassPermissions' }), /permission mode bypassPermissions cannot guarantee an owner prompt/],
+    ['claude-pre-action-hook', publishEvent({ permission_mode: 'dontAsk' }), /permission mode dontAsk/],
+    ['claude-pre-action-hook', publishEvent({ permission_mode: 'plan' }), /permission mode plan/],
+    ['claude-pre-action-hook', publishEvent({ permission_mode: 'auto' }), /does not prove a Claude Code version/],
+    ['claude-pre-action-hook', publishEvent(), /permission mode unknown/],
+    ['codex-pre-action-hook', publishEvent({ permission_mode: 'default' }), /Codex hooks cannot prompt the owner/],
+  ]) {
+    const { output } = await runHookAgainst(noControlAfterGate(() => reviewRuntime()), event, entrypoint);
+    const decision = JSON.parse(output).hookSpecificOutput;
+    assert.equal(decision.permissionDecision, 'deny', `${entrypoint} ${event.permission_mode}`);
+    assert.match(decision.permissionDecisionReason, /^Marrow requires owner review before this action, and no owner approval prompt is available/);
+    assert.match(decision.permissionDecisionReason, expected);
+    assert.match(decision.permissionDecisionReason, /Reason: Publishing needs owner review\./);
+    assert.doesNotMatch(decision.permissionDecisionReason, /could not verify/);
+  }
+});
+
+test('block and arbitration review never ask, even in an interactive session', async () => {
+  const interactive = publishEvent({ permission_mode: 'default' });
+  const blocked = await runHookAgainst(noControlAfterGate(() => reviewRuntime({
+    risk_gate: { allow: false, decision: 'block', reasons: [{ message: 'Release freeze is active.' }] },
+    exact_next_action: null,
+  })), interactive, 'claude-pre-action-hook');
+  assert.deepEqual(JSON.parse(blocked.output).hookSpecificOutput, {
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'deny',
+    permissionDecisionReason: 'Marrow blocked this action under the current policy. Reason: Release freeze is active.',
+  });
+
+  for (const arbitration of [
+    { arbitration: { receipt_id: 'arb-1', resolution: 'review_required' } },
+    { completion_contract: { arbitration_receipt_required: true, owner_approval_required: true } },
+    { completion_contract: { owner_approval: { mode: 'arbitration_review_required', dashboard_receipt_required: true } } },
+  ]) {
+    const { output } = await runHookAgainst(noControlAfterGate(() => reviewRuntime(arbitration)), interactive, 'claude-pre-action-hook');
+    const decision = JSON.parse(output).hookSpecificOutput;
+    assert.equal(decision.permissionDecision, 'deny', JSON.stringify(arbitration));
+    assert.match(decision.permissionDecisionReason, /^Marrow arbitration requires owner approval in the authenticated Marrow dashboard/);
+  }
+});
+
+test('an outage stays an allowed warning and a credential failure stays a denial, never an owner prompt', async () => {
+  const interactive = publishEvent({ permission_mode: 'default' });
+  const prompt = ownerApprovalPrompt('claude-code', interactive, {});
+  assert.equal(prompt.available, true);
+  const outage = preActionHookOutput({ protectedRisk: true, permit: null, runtime: null, outage: true, enforcementError: MARROW_OUTAGE_WARNING }, 'claude-code', prompt);
+  assert.deepEqual(outage, { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: MARROW_OUTAGE_WARNING } });
+
+  const privateText = 'synthetic-private-service-text';
+  const scope = await runHookAgainst((pathname, body) => {
+    if (pathname === '/v1/agent/runtime') return fastPathRuntime();
+    if (pathname === '/v1/agent/think') return Response.json({ data: { decision_id: 'decision-think' } });
+    if (pathname === '/v1/agent/enforcement' && body.operation === 'issue') {
+      return new Response(JSON.stringify({ error: privateText, code: 'ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID' }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    throw new Error(`unexpected ${pathname}`);
+  }, interactive, 'claude-pre-action-hook');
+  const scopeDecision = JSON.parse(scope.output).hookSpecificOutput;
+  assert.equal(scopeDecision.permissionDecision, 'deny');
+  assert.equal(scopeDecision.permissionDecisionReason,
+    'This Marrow API key is not authorized to obtain action permits for agent "agent-one" (HTTP 403 ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID). Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.');
+  assert.doesNotMatch(scope.output, new RegExp(privateText));
+});
+
+test('control failures name what happened: credential scope, unavailability, or a rejection', () => {
+  const scope = new MarrowRequestError({ code: 'permission_denied', backendCode: 'ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID', message: 'x', status: 403, exactFix: 'fix' });
+  assert.match(controlRejectionMessage(scope, 'darvis'), /^This Marrow API key is not authorized to obtain action permits for agent "darvis" \(HTTP 403 ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID\)/);
+  assert.match(controlRejectionMessage(scope), /for this hook's agent \(no MARROW_FLEET_AGENT_ID or MARROW_AGENT_ID is set\)/);
+  assert.match(controlRejectionMessage(scope, 'bad agent id!'), /no MARROW_FLEET_AGENT_ID or MARROW_AGENT_ID is set/);
+  const mismatch = new MarrowRequestError({ code: 'permission_denied', backendCode: 'MARROW_AGENT_SCOPE_MISMATCH', message: 'x', status: 403, exactFix: 'fix' });
+  assert.match(controlRejectionMessage(mismatch, 'darvis'), /not authorized to obtain action permits for agent "darvis"/);
+  for (const code of ['tls_failure', 'invalid_response', 'edge_access_denied']) {
+    assert.match(controlRejectionMessage(new MarrowRequestError({ code, message: 'x', exactFix: 'fix' })), /^Marrow is unavailable, so this protected action was denied/, code);
+  }
+  const otherForbidden = new MarrowRequestError({ code: 'permission_denied', backendCode: 'MARROW_PLAN_REQUIRED', message: 'x', status: 403, exactFix: 'fix' });
+  assert.equal(controlRejectionMessage(otherForbidden, 'darvis'), 'Marrow rejected this protected action (HTTP 403 MARROW_PLAN_REQUIRED). Restore trusted governance before retrying.');
+
+  const reviewGate = { risk_gate: { allow: false, decision: 'review_required', reasons: [] } };
+  assert.deepEqual(clinePreActionHookOutput({ protectedRisk: true, permit: null, runtime: reviewGate }),
+    { cancel: true, errorMessage: 'Marrow requires operator review before this protected action.' });
+  assert.deepEqual(clinePreActionHookOutput({ protectedRisk: true, permit: null, runtime: null, failure: 'credential_scope', enforcementError: 'private' }),
+    { cancel: true, errorMessage: 'This Marrow API key is not authorized to obtain action permits for this agent. Use the API key issued to this agent and retry.' });
+  assert.deepEqual(clinePreActionHookOutput({ protectedRisk: true, permit: null, runtime: null, failure: 'unavailable', enforcementError: 'private' }),
+    { cancel: true, errorMessage: 'Marrow is unavailable, so this protected action was denied. Retry when Marrow is reachable.' });
+  const denial = preActionHookOutput({ protectedRisk: true, permit: null, runtime: reviewGate });
+  assert.match(denial.hookSpecificOutput.permissionDecisionReason, /^Marrow requires owner review before this action/);
+});
+
+test('read-only inspection is not protected by words in paths or arguments; real actions and secrets stay protected', () => {
+  const bash = (command) => ({ tool_name: 'Bash', tool_input: { command, description: 'Check the release, deploy and publish state' } });
+  const readOnly = { readOnly: true, protected: false };
+  const unprotectedWrite = { readOnly: false, protected: false };
+  const guarded = { readOnly: false, protected: true };
+  const rows = [
+    // Denied on 2026-09-29 although they only inspect.
+    ['ls piped to grep -c', bash('ls /home/majinbuu/agents/jarvis/results/hook-permit-3996-20260929/ | grep -c release'), readOnly],
+    ['grep of a release script', bash("grep -n 'package_metadata' /home/majinbuu/scripts/marrow-fast-backend-release.sh"), readOnly],
+    ['TaskCreate subject', { tool_name: 'TaskCreate', tool_input: { subject: 'publish MCP 3.9.97', description: 'npm publish after owner approval' } }, readOnly],
+    ['Edit of notes mentioning credentials', { tool_name: 'Edit', tool_input: { file_path: '/home/u/notes/plan.md', old_string: 'a', new_string: 'rotate credentials, then deploy production' } }, unprotectedWrite],
+    // Other read-only inspection.
+    ['cat non-secret', bash('cat RELEASE.md'), readOnly],
+    ['head and tail', bash('head -20 docs/deploy.md && tail -n 5 /var/log/release.log'), readOnly],
+    ['rg', bash('rg -n "publish|deploy" src --glob "*.ts"'), readOnly],
+    ['grep for secret words', bash('grep -rn credential src/ 2>/dev/null | head -20'), readOnly],
+    ['find without exec', bash("find . -name '*release*' -type f"), readOnly],
+    ['git status', bash('git status --short'), readOnly],
+    ['git log', bash('git log --oneline -5 -- scripts/release.sh | grep -c tag'), readOnly],
+    ['git diff', bash('git -C /repo diff HEAD~1 -- scripts/deploy.sh'), readOnly],
+    ['git show', bash('git show v3.9.96 --stat'), readOnly],
+    ['multi-line inspection', bash('git status\ngit log -1 --format=%s'), readOnly],
+    ['jq', bash("jq '.scripts.release' package.json"), readOnly],
+    ['npm view', bash('npm view @getmarrow/mcp dist-tags --json'), readOnly],
+    ['gh pr view', bash('gh pr view 42 --repo getmarrow/marrow-mcp --json title,state'), readOnly],
+    ['env template', bash('cat .env.example'), readOnly],
+    ['listing a secret directory', bash('ls -la ~/.ssh'), readOnly],
+    ['TaskUpdate', { tool_name: 'TaskUpdate', tool_input: { taskId: '3', status: 'completed', subject: 'deploy done' } }, readOnly],
+    ['TodoWrite', { tool_name: 'TodoWrite', tool_input: { todos: [{ content: 'merge and publish', status: 'pending' }] } }, readOnly],
+    ['Read', { tool_name: 'Read', tool_input: { file_path: '/repo/docs/release-notes.md' } }, readOnly],
+    ['Glob', { tool_name: 'Glob', tool_input: { pattern: '**/deploy*' } }, readOnly],
+    ['Grep', { tool_name: 'Grep', tool_input: { pattern: 'credential', path: '/repo/src' } }, readOnly],
+    // Executing deploy, publish, push, release or merge.
+    ['npm publish', bash('npm publish'), guarded],
+    ['git push', bash('git push origin fix/hook'), guarded],
+    ['gh pr merge', bash('gh pr merge 42 --squash'), guarded],
+    ['wrangler deploy', bash('wrangler deploy --env production'), guarded],
+    ['release script', bash('bash /home/majinbuu/scripts/marrow-fast-backend-release.sh --execute'), guarded],
+    ['deploy script', bash('./scripts/deploy.sh'), guarded],
+    ['env-wrapped publish', bash('env NPM_CONFIG_PROVENANCE=true npm publish'), guarded],
+    // Compound commands take their most dangerous part.
+    ['inspect then push', bash('git status && git push origin master'), guarded],
+    ['grep then publish', bash('ls dist | grep -c release; npm publish'), guarded],
+    ['pipe into destruction', bash('find . -name "*.tmp" | xargs rm -f'), guarded],
+    ['newline-hidden deploy', bash('cat package.json\nnode scripts/deploy.js'), guarded],
+    // Destructive commands.
+    ['rm', bash('rm -rf build'), guarded],
+    ['find -delete', bash('find . -name "*.log" -delete'), guarded],
+    ['find -exec rm', bash('find . -name "*.log" -exec rm {} +'), guarded],
+    // Writing secret or credential files, or Marrow control state.
+    ['Edit .env', { tool_name: 'Edit', tool_input: { file_path: '/repo/.env', old_string: 'A=1', new_string: 'A=2' } }, guarded],
+    ['Write authorized_keys', { tool_name: 'Write', tool_input: { file_path: '/home/u/.ssh/authorized_keys', content: 'ssh-ed25519 AAA' } }, guarded],
+    ['Write control state', { tool_name: 'Write', tool_input: { file_path: '/home/u/.marrow/control.json', content: '{}' } }, guarded],
+    ['append to .env', bash('echo TOKEN=1 >> .env'), guarded],
+    ['apply_patch secret', { tool_name: 'functions.apply_patch', tool_input: { input: '*** Begin Patch\n*** Update File: config/.dev.vars\n@@\n-A\n+B\n*** End Patch' } }, guarded],
+    // Reading secret or credential material.
+    ['cat git credentials', bash('cat ~/.git-credentials'), guarded],
+    ['head of an agent key', bash('head -5 ~/.marrow/credentials/darvis.key | cat'), guarded],
+    ['input redirect', bash('wc -c < ~/.netrc'), guarded],
+    ['git show secret', bash('git show HEAD:.env'), guarded],
+    ['print secret variable', bash('echo "$MARROW_API_KEY"'), guarded],
+    ['printenv secret', bash('printenv GITHUB_TOKEN'), guarded],
+    ['jq env dump', bash("jq -n 'env'"), guarded],
+    ['Read credentials file', { tool_name: 'Read', tool_input: { file_path: '/home/u/.claude/.credentials.json' } }, guarded],
+    ['Grep a secret directory', { tool_name: 'Grep', tool_input: { pattern: 'aws_secret', path: '/home/u/.aws' } }, guarded],
+    // Syntax that could run code stays conservative.
+    ['command substitution', bash('cat $(ls release)'), guarded],
+    ['rg preprocessor', bash('rg --pre ./x.sh foo'), unprotectedWrite],
+    ['git pager override', bash('GIT_PAGER=./x.sh git log'), unprotectedWrite],
+    ['git config pager', bash('git -c core.pager=./x.sh log'), unprotectedWrite],
+    ['sort to file', bash('sort -o out.txt in.txt'), unprotectedWrite],
+    ['find -exec read', bash('find . -name "*.md" -exec cat {} +'), unprotectedWrite],
+  ];
+  for (const [name, event, expected] of rows) {
+    const result = classifyTool(event);
+    assert.deepEqual({ readOnly: result.readOnly, protected: result.protected }, expected, name);
+    assert.equal(result.risk, expected.readOnly ? 'low' : expected.protected ? 'high' : 'medium', name);
+  }
+});
+
+test('a read-only compound command is allowed without reaching Marrow', async () => {
+  const { calls, output } = await runHookAgainst((pathname) => {
+    throw new Error(`read-only inspection must not call ${pathname}`);
+  }, {
+    session_id: 'session-one',
+    tool_use_id: 'tool-read-only',
+    tool_name: 'Bash',
+    tool_input: { command: 'ls /home/majinbuu/agents/jarvis/results/hook-permit-3996-20260929/ | grep -c release' },
+  }, 'claude-pre-action-hook');
+  assert.deepEqual(calls, []);
+  assert.deepEqual(JSON.parse(output), {});
+});
+
+function controlHome(directory, enabled) {
+  const home = join(directory, 'home');
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  if (enabled !== undefined) {
+    mkdirSync(join(home, '.marrow'), { mode: 0o700 });
+    writeFileSync(join(home, '.marrow', 'control.json'), `${JSON.stringify({
+      version: 1, enabled, changed_at: '2026-09-29T00:00:00.000Z', change_id: 'ctl_0123456789abcdef0123456789abcdef', changed_by: 'owner_cli',
+    })}\n`, { mode: 0o600 });
+  }
+  return home;
+}
+
+function runPreActionCli(home, input) {
+  return spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js'), 'claude-pre-action-hook'], {
+    cwd: home,
+    env: {
+      PATH: process.env.PATH,
+      HOME: home,
+      MARROW_API_KEY: '',
+      MARROW_KEY: '',
+      MARROW_AUTO_HOOK: 'true',
+      MARROW_EVENT_SPOOL_PATH: join(home, 'spool.json'),
+    },
+    input,
+    encoding: 'utf8',
+    timeout: 20_000,
+    maxBuffer: 1024 * 1024,
+  });
+}
+
+const largeWrite = (bytes) => JSON.stringify({
+  session_id: 'session-large',
+  tool_use_id: 'tool-large',
+  hook_event_name: 'PreToolUse',
+  permission_mode: 'default',
+  tool_name: 'Write',
+  tool_input: { file_path: '/repo/docs/plan.md', content: `# Release plan\n\n${'Deploy, publish and rotate credentials after review.\n'.repeat(Math.ceil(bytes / 52))}` },
+});
+
+test('a large Write is classified normally instead of failing closed as oversized', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-large-write-'));
+  try {
+    const input = largeWrite(300 * 1024);
+    assert.ok(Buffer.byteLength(input) > 64 * 1024);
+    const result = runPreActionCli(controlHome(directory), input);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {});
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('input over the pre-action bound is allowed when control is disabled and names the size limit when enabled', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-oversized-'));
+  try {
+    const input = largeWrite(MAX_PRE_ACTION_INPUT_BYTES + 1024);
+    assert.ok(Buffer.byteLength(input) > MAX_PRE_ACTION_INPUT_BYTES);
+
+    const disabled = runPreActionCli(controlHome(join(directory, 'disabled'), false), input);
+    assert.equal(disabled.status, 0, disabled.stderr);
+    assert.deepEqual(JSON.parse(disabled.stdout), {});
+    const disabledMalformed = runPreActionCli(controlHome(join(directory, 'disabled-malformed'), false), '{"tool_name": "Write", ');
+    assert.deepEqual(JSON.parse(disabledMalformed.stdout), {});
+
+    for (const home of [controlHome(join(directory, 'default')), controlHome(join(directory, 'enabled'), true)]) {
+      const enabled = runPreActionCli(home, input);
+      assert.equal(enabled.status, 0, enabled.stderr);
+      const decision = JSON.parse(enabled.stdout).hookSpecificOutput;
+      assert.equal(decision.permissionDecision, 'deny');
+      assert.equal(decision.permissionDecisionReason,
+        `Marrow did not check this action because its hook input is ${Buffer.byteLength(input)} bytes, over the ${MAX_PRE_ACTION_INPUT_BYTES}-byte pre-action limit, so it was denied. Split it into smaller tool calls and retry.`);
+    }
+    const malformed = runPreActionCli(controlHome(join(directory, 'enabled-malformed'), true), '{"tool_name": "Write", ');
+    assert.equal(JSON.parse(malformed.stdout).hookSpecificOutput.permissionDecisionReason, 'Marrow rejected malformed pre-action input.');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

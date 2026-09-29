@@ -1,9 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MARROW_OUTAGE_WARNING = void 0;
+exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = void 0;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.isMarrowOutage = isMarrowOutage;
+exports.controlFailureKind = controlFailureKind;
 exports.controlRejectionMessage = controlRejectionMessage;
+exports.ownerApprovalPrompt = ownerApprovalPrompt;
+exports.runtimeGateVerdict = runtimeGateVerdict;
+exports.gateDecisionMessage = gateDecisionMessage;
 exports.localControlAllowOutput = localControlAllowOutput;
 exports.localLoopGuardDenyOutput = localLoopGuardDenyOutput;
 exports.classifyTool = classifyTool;
@@ -24,7 +28,9 @@ const session_loop_guard_1 = require("./session-loop-guard");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 Object.defineProperty(exports, "MARROW_OUTAGE_WARNING", { enumerable: true, get: function () { return hook_contract_1.MARROW_OUTAGE_WARNING; } });
-const MAX_INPUT_BYTES = 64 * 1024;
+// Claude Code sends the whole tool input, and a Write of a long document grows
+// further once JSON-escaped, so tens of kilobytes of markdown must still parse.
+exports.MAX_PRE_ACTION_INPUT_BYTES = 4 * 1024 * 1024;
 // Cold auth may already use 900ms plus a 1600ms in-flight grace before think
 // and enforcement. Keep this above that budget so a slow store is not aborted
 // and misread as an outage.
@@ -72,9 +78,21 @@ function isMarrowOutage(result) {
     return result.outage === true;
 }
 const SAFE_FAILURE_CODE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
+const SAFE_AGENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+// The key is valid but not bound to the agent this hook acts as.
+const AGENT_CREDENTIAL_SCOPE_CODES = new Set(['ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID', 'MARROW_AGENT_SCOPE_MISMATCH']);
+// Marrow could not be used at all, as opposed to answering with a policy or credential decision.
+const CONTROL_UNAVAILABLE_CODES = new Set(['tls_failure', 'invalid_response', 'edge_access_denied']);
+function controlFailureKind(error) {
+    if (!(error instanceof request_reliability_1.MarrowRequestError))
+        return undefined;
+    if (error.status === 403 && AGENT_CREDENTIAL_SCOPE_CODES.has(error.backendCode || ''))
+        return 'credential_scope';
+    return CONTROL_UNAVAILABLE_CODES.has(error.code) ? 'unavailable' : undefined;
+}
 // Names a reached control failure by HTTP status and stable failure code only, so the
 // denial is diagnosable without echoing private service text into the agent transcript.
-function controlRejectionMessage(error) {
+function controlRejectionMessage(error, agentId) {
     const detail = [];
     if (error instanceof request_reliability_1.MarrowRequestError) {
         if (typeof error.status === 'number' && Number.isInteger(error.status))
@@ -83,7 +101,99 @@ function controlRejectionMessage(error) {
         if (code)
             detail.push(code);
     }
-    return `Marrow rejected this protected action${detail.length ? ` (${detail.join(' ')})` : ''}. Restore trusted governance before retrying.`;
+    const suffix = detail.length ? ` (${detail.join(' ')})` : '';
+    const kind = controlFailureKind(error);
+    if (kind === 'credential_scope') {
+        const agent = agentId && SAFE_AGENT_ID.test(agentId)
+            ? `agent "${agentId}"`
+            : 'this hook\'s agent (no MARROW_FLEET_AGENT_ID or MARROW_AGENT_ID is set)';
+        return `This Marrow API key is not authorized to obtain action permits for ${agent}${suffix}. Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.`;
+    }
+    if (kind === 'unavailable') {
+        return `Marrow is unavailable, so this protected action was denied${suffix}. Retry when Marrow is reachable.`;
+    }
+    return `Marrow rejected this protected action${suffix}. Restore trusted governance before retrying.`;
+}
+// Claude Code permission modes in which a PreToolUse "ask" reaches a person.
+// bypassPermissions disables prompts, dontAsk auto-denies anything that would
+// prompt, and plan mode with bypass available runs edits without prompting.
+// https://code.claude.com/docs/en/hooks#pretooluse-decision-control
+// https://code.claude.com/docs/en/permission-modes
+const OWNER_PROMPT_PERMISSION_MODES = new Set(['default', 'acceptEdits', 'auto']);
+const NO_OWNER_PROMPT = { available: false, unavailableReason: 'this agent host cannot prompt the owner' };
+/**
+ * Whether a PreToolUse "ask" from this hook reaches a person who can approve.
+ * Only Claude Code asks; the generic entrypoint counts as Claude Code only when
+ * Claude Code itself spawned the hook (CLAUDE_CODE_CHILD_SESSION, v2.1.172+).
+ */
+function ownerApprovalPrompt(harness, event, env = process.env) {
+    const claudeCode = harness === 'claude-code' || (harness === 'mcp-client' && env.CLAUDE_CODE_CHILD_SESSION === '1');
+    if (!claudeCode) {
+        return harness === 'codex'
+            ? { available: false, unavailableReason: 'Codex hooks cannot prompt the owner' }
+            : NO_OWNER_PROMPT;
+    }
+    const mode = typeof event.permission_mode === 'string' && /^[A-Za-z]{1,32}$/.test(event.permission_mode) ? event.permission_mode : '';
+    if (!OWNER_PROMPT_PERMISSION_MODES.has(mode)) {
+        return { available: false, unavailableReason: `Claude Code permission mode ${mode || 'unknown'} cannot guarantee an owner prompt` };
+    }
+    // Before Claude Code v2.1.211 the auto-mode classifier could approve a Bash
+    // command outside the sandbox without the prompt a hook asked for. The hook
+    // input carries scratchpad_dir only from v2.1.257, so it proves a fixed version.
+    if (mode === 'auto' && !(typeof event.scratchpad_dir === 'string' && event.scratchpad_dir.trim())) {
+        return { available: false, unavailableReason: 'this auto-mode session does not prove a Claude Code version whose classifier honors hook prompts' };
+    }
+    return { available: true, unavailableReason: '' };
+}
+function boundedText(value, limit) {
+    return String(value ?? '')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, limit);
+}
+function asOptionalRecord(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+// Arbitration review is satisfied only by an authenticated-dashboard receipt,
+// never by a host prompt, so any arbitration signal keeps the denial.
+function arbitrationReview(runtime) {
+    const completion = runtime.completion_contract;
+    const approval = asOptionalRecord(completion?.owner_approval);
+    return Boolean(runtime.arbitration)
+        || completion?.arbitration_receipt_required === true
+        || approval?.dashboard_receipt_required === true
+        || (approval?.mode !== undefined && approval.mode !== 'ordinary_non_arbitrated');
+}
+function runtimeGateVerdict(runtime) {
+    const gate = runtime?.risk_gate;
+    if (!runtime || !gate)
+        return null;
+    const decision = String(gate.decision || '');
+    const review = decision === 'review_required' || decision === 'owner_approval_required';
+    if (decision !== 'block' && !review && gate.allow !== false)
+        return null;
+    const why = boundedText(gate.reasons?.[0]?.message, 240);
+    const next = boundedText(runtime.exact_next_action, 240);
+    const reason = why && next && why !== next ? `${why}${/[.!?]$/.test(why) ? '' : '.'} Next: ${next}` : why || next;
+    if (decision === 'block')
+        return { kind: 'block', reason };
+    if (review)
+        return { kind: arbitrationReview(runtime) ? 'arbitration_review' : 'review', reason };
+    return { kind: 'denied', reason };
+}
+// Fixed wording leads so a long service reason can never truncate what happened.
+function gateDecisionMessage(verdict, ask, prompt = NO_OWNER_PROMPT) {
+    const headline = verdict.kind === 'block'
+        ? 'Marrow blocked this action under the current policy.'
+        : verdict.kind === 'arbitration_review'
+            ? 'Marrow arbitration requires owner approval in the authenticated Marrow dashboard before this action.'
+            : verdict.kind === 'denied'
+                ? 'Marrow did not allow this action.'
+                : ask
+                    ? 'Marrow requires owner review before this action. Approve only if you authorize this exact action.'
+                    : `Marrow requires owner review before this action, and no owner approval prompt is available (${prompt.unavailableReason}), so it was denied. Ask the owner to approve or run it.`;
+    return boundedText(verdict.reason ? `${headline} Reason: ${verdict.reason}` : headline, 500);
 }
 const SAFE_DECISION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 function localControlAllowOutput(harness) {
@@ -129,19 +239,31 @@ async function readStdin() {
     for await (const chunk of process.stdin) {
         const buffer = Buffer.from(chunk);
         bytes += buffer.length;
-        if (bytes > MAX_INPUT_BYTES)
-            throw new Error('pre-action hook input exceeds byte limit');
-        chunks.push(buffer);
+        // Keep draining so the host never sees a broken pipe, but stop buffering past the bound.
+        if (bytes <= exports.MAX_PRE_ACTION_INPUT_BYTES)
+            chunks.push(buffer);
     }
-    return Buffer.concat(chunks).toString('utf8');
+    return { raw: bytes > exports.MAX_PRE_ACTION_INPUT_BYTES ? '' : Buffer.concat(chunks).toString('utf8'), bytes };
+}
+function localControlDisabled() {
+    try {
+        return (0, control_state_1.readLocalControlState)().enabled === false;
+    }
+    catch {
+        return false;
+    }
 }
 function classifyTool(event) {
     const tool = String(event.tool_name || 'tool').slice(0, 64);
     const normalizedTool = (0, hook_tool_policy_1.normalizeHookToolName)(tool);
-    const command = (0, hook_tool_policy_1.hookToolCommand)(event);
-    const input = `${normalizedTool} ${command} ${JSON.stringify(event.tool_input || {})}`.toLowerCase();
+    // Editing and task tools are judged by their target; shell-like words in the
+    // content they write or the subject they record are not actions.
+    const shellGoverned = (0, hook_tool_policy_1.isShellGovernedTool)(event);
+    const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
+    const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
     const readOnly = (0, hook_tool_policy_1.isReadOnlyToolEvent)(event);
-    const protectedShellCommand = (0, hook_tool_policy_1.isProtectedShellMutation)(command);
+    const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccess)(event);
+    const protectedShellCommand = shellGoverned && (0, hook_tool_policy_1.isProtectedShellMutation)(command);
     const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
         && protectedShellCommand;
     let type = 'process';
@@ -153,7 +275,7 @@ function classifyTool(event) {
         type = 'review';
     else if (/\b(?:migration|schema|database|d1)\b/.test(input))
         type = 'migration';
-    else if (/\b(?:secret|credential|token|key|permission)\b/.test(input))
+    else if (secretAccess || /\b(?:secret|credential|token|key|permission)\b/.test(input))
         type = 'audit';
     else if (/\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input))
         type = 'financial';
@@ -161,11 +283,12 @@ function classifyTool(event) {
         /\b(?:deploy|release|production|prod|wrangler)\b/.test(input) || infrastructureDeployment ? 'production' : '',
         /\b(?:git|github|merge|pull request|push)\b/.test(input) ? 'github' : '',
         /\b(?:npm|package|publish)\b/.test(input) ? 'npm' : '',
-        /\b(?:secret|credential|token|key)\b/.test(input) ? 'secrets' : '',
+        secretAccess || /\b(?:secret|credential|token|key)\b/.test(input) ? 'secrets' : '',
         /\b(?:migration|schema|database|d1)\b/.test(input) ? 'database' : '',
         /\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input) ? 'financial' : '',
     ].filter(Boolean);
-    const protectedAction = !readOnly && (/\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input)
+    const protectedAction = !readOnly && (secretAccess
+        || (shellGoverned && /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input))
         || protectedShellCommand
         || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name))
         || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
@@ -193,52 +316,44 @@ function cursorPreActionHookOutput(result) {
         return { permission: 'allow', user_message: hook_contract_1.MARROW_OUTAGE_WARNING, agent_message: hook_contract_1.MARROW_OUTAGE_WARNING };
     }
     const { runtime, permit, protectedRisk } = result;
-    const message = (value) => String(value || 'Marrow denied this action.')
-        .replace(/[\u0000-\u001f\u007f]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 500);
+    const verdict = runtimeGateVerdict(runtime);
+    if (verdict) {
+        const denial = gateDecisionMessage(verdict, false);
+        return { permission: 'deny', user_message: denial, agent_message: denial };
+    }
     if (protectedRisk && (!runtime || !permit?.verified)) {
-        const denial = message(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.');
+        const denial = boundedText(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.', 500);
         return {
             permission: 'deny',
             user_message: denial,
             agent_message: denial,
         };
     }
-    const gate = runtime?.risk_gate;
-    if (!gate)
-        return { permission: 'allow' };
-    const reason = runtime?.exact_next_action
-        || gate.reasons?.[0]?.message
-        || 'Marrow requires additional proof or operator review before this action.';
-    if (gate.decision === 'review_required' || gate.decision === 'block' || gate.allow === false) {
-        const denial = message(reason);
-        return { permission: 'deny', user_message: denial, agent_message: denial };
-    }
     return { permission: 'allow' };
 }
 function clinePreActionHookOutput(result) {
     if (isMarrowOutage(result))
         return { cancel: false };
+    const verdict = runtimeGateVerdict(result.runtime);
+    if (verdict) {
+        return {
+            cancel: true,
+            errorMessage: verdict.kind === 'review' || verdict.kind === 'arbitration_review'
+                ? 'Marrow requires operator review before this protected action.'
+                : 'Marrow blocked this protected action under the current policy.',
+        };
+    }
     if (result.protectedRisk && (!result.runtime || !result.permit?.verified)) {
         const credentialsUnavailable = /credentials are unavailable/i.test(String(result.enforcementError || ''));
         return {
             cancel: true,
             errorMessage: credentialsUnavailable
                 ? 'Marrow credentials are unavailable for this protected action. Restore the configured agent key and retry.'
-                : 'Marrow could not verify the required action permit. Restore trusted governance and retry.',
-        };
-    }
-    const gate = result.runtime?.risk_gate;
-    if (!gate)
-        return { cancel: false };
-    if (gate.decision === 'review_required' || gate.decision === 'block' || gate.allow === false) {
-        return {
-            cancel: true,
-            errorMessage: gate.decision === 'review_required'
-                ? 'Marrow requires operator review before this protected action.'
-                : 'Marrow blocked this protected action under the current policy.',
+                : result.failure === 'credential_scope'
+                    ? 'This Marrow API key is not authorized to obtain action permits for this agent. Use the API key issued to this agent and retry.'
+                    : result.failure === 'unavailable'
+                        ? 'Marrow is unavailable, so this protected action was denied. Retry when Marrow is reachable.'
+                        : 'Marrow could not verify the required action permit. Restore trusted governance and retry.',
         };
     }
     return { cancel: false };
@@ -288,7 +403,7 @@ function grokPreActionHookOutput(result) {
         ? { decision: 'deny', reason: 'Marrow blocked this protected action.' }
         : { decision: 'allow' };
 }
-function preActionHookOutput(result, harness = 'claude-code') {
+function preActionHookOutput(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT) {
     if (harness === 'cursor')
         return cursorPreActionHookOutput(result);
     if (harness === 'cline')
@@ -306,6 +421,26 @@ function preActionHookOutput(result, harness = 'claude-code') {
         };
     }
     const { runtime, permit, protectedRisk } = result;
+    const context = runtime?.before_you_act || permit?.permit_id ? {
+        additionalContext: [
+            runtime?.before_you_act,
+            permit?.permit_id ? `Marrow action permit verified: ${permit.permit_id}. Evidence and outcome closure remain required.` : null,
+        ].filter(Boolean).join('\n'),
+    } : {};
+    const verdict = runtimeGateVerdict(runtime);
+    if (verdict) {
+        // Only an ordinary review in a session that shows the owner a prompt asks;
+        // block, arbitration and every host where no person would see it deny.
+        const ask = verdict.kind === 'review' && prompt.available && harness !== 'codex';
+        return {
+            hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: ask ? 'ask' : 'deny',
+                permissionDecisionReason: gateDecisionMessage(verdict, ask, prompt),
+                ...context,
+            },
+        };
+    }
     if (protectedRisk && (!runtime || !permit?.verified)) {
         return {
             hookSpecificOutput: {
@@ -318,29 +453,14 @@ function preActionHookOutput(result, harness = 'claude-code') {
     if (!runtime?.risk_gate) {
         return {};
     }
-    const gate = runtime.risk_gate;
-    const reason = runtime.exact_next_action
-        || gate.reasons?.[0]?.message
-        || 'Marrow requires additional proof or operator review before this action.';
-    const permissionDecision = gate.decision === 'review_required'
-        ? harness === 'codex' ? 'deny' : 'ask'
-        : gate.decision === 'block' || gate.allow === false
-            ? 'deny'
-            : null;
     return {
         hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            ...(permissionDecision ? { permissionDecision, permissionDecisionReason: reason } : {}),
-            ...(runtime.before_you_act || permit?.permit_id ? {
-                additionalContext: [
-                    runtime.before_you_act,
-                    permit?.permit_id ? `Marrow action permit verified: ${permit.permit_id}. Evidence and outcome closure remain required.` : null,
-                ].filter(Boolean).join('\n'),
-            } : {}),
+            ...context,
         },
     };
 }
-function emitDecision(result, harness = 'claude-code') {
+function emitDecision(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT) {
     if (harness === 'windsurf') {
         const decision = windsurfPreActionDecision(result);
         process.exitCode = decision.exitCode;
@@ -350,7 +470,7 @@ function emitDecision(result, harness = 'claude-code') {
     }
     if (result.outage)
         process.stderr.write(`${hook_contract_1.MARROW_OUTAGE_WARNING}\n`);
-    process.stdout.write(JSON.stringify(preActionHookOutput(result, harness)));
+    process.stdout.write(JSON.stringify(preActionHookOutput(result, harness, prompt)));
 }
 async function withTimeout(operation) {
     const controller = new AbortController();
@@ -387,19 +507,36 @@ async function runPreActionHookCommand(input) {
         return;
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     let event = input;
+    let inputFailure = null;
     if (event === undefined) {
         try {
-            const raw = (await readStdin()).trim();
-            event = raw ? (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw)) : {};
+            const stdin = await readStdin();
+            if (stdin.bytes > exports.MAX_PRE_ACTION_INPUT_BYTES) {
+                inputFailure = `Marrow did not check this action because its hook input is ${stdin.bytes} bytes, over the ${exports.MAX_PRE_ACTION_INPUT_BYTES}-byte pre-action limit, so it was denied. Split it into smaller tool calls and retry.`;
+            }
+            else {
+                const raw = stdin.raw.trim();
+                event = raw ? (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw)) : {};
+            }
         }
         catch {
-            emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow rejected malformed or oversized pre-action input.' }, identity.harness);
-            return;
+            inputFailure = 'Marrow rejected malformed pre-action input.';
         }
     }
-    const source = asRecord((0, hook_contract_1.normalizeHookEventPayload)(event));
-    if (!source?.tool_name) {
-        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow could not classify this mutation-capable tool request.' }, identity.harness);
+    const source = inputFailure ? null : asRecord((0, hook_contract_1.normalizeHookEventPayload)(event));
+    if (!inputFailure && !source?.tool_name)
+        inputFailure = 'Marrow could not classify this mutation-capable tool request.';
+    if (inputFailure || !source) {
+        // Owner-disabled local control allows every action, including input Marrow cannot read.
+        if (localControlDisabled()) {
+            const allow = localControlAllowOutput(identity.harness);
+            if (allow === null)
+                process.exitCode = 0;
+            else
+                process.stdout.write(JSON.stringify(allow));
+            return;
+        }
+        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: inputFailure || 'Marrow could not classify this mutation-capable tool request.' }, identity.harness);
         return;
     }
     if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(source)) {
@@ -646,10 +783,11 @@ async function runPreActionHookCommand(input) {
                 runtime: null,
                 permit: null,
                 protectedRisk: enforcementRequired,
-                enforcementError: controlRejectionMessage(error),
+                enforcementError: controlRejectionMessage(error, agentId),
+                ...(controlFailureKind(error) ? { failure: controlFailureKind(error) } : {}),
             })),
         lifecycle,
     ]);
-    emitDecision(result, identity.harness);
+    emitDecision(result, identity.harness, ownerApprovalPrompt(identity.harness, source));
 }
 //# sourceMappingURL=hook-pre-action.js.map

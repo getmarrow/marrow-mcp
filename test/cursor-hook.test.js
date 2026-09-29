@@ -80,13 +80,23 @@ test('Cursor native pre-action denies review and unavailable proof, never asks',
       risk_gate: { allow: false, decision: 'review_required', reasons: [] },
     },
   });
+  const reviewMessage = 'Marrow requires owner review before this action, and no owner approval prompt is available (this agent host cannot prompt the owner), so it was denied. Ask the owner to approve or run it. Reason: owner approval required';
   assert.deepEqual(review, {
     permission: 'deny',
-    user_message: 'owner approval required',
-    agent_message: 'owner approval required',
+    user_message: reviewMessage,
+    agent_message: reviewMessage,
   });
   assert.deepEqual(Object.keys(review).sort(), ['agent_message', 'permission', 'user_message']);
-  assert.equal(JSON.stringify(review).includes('ask'), false);
+  assert.notEqual(review.permission, 'ask');
+  // A review gate arrives without a permit; it still names the review, not a missing permit.
+  assert.deepEqual(cursorPreActionHookOutput({
+    protectedRisk: true,
+    permit: null,
+    runtime: {
+      exact_next_action: 'owner approval required',
+      risk_gate: { allow: false, decision: 'review_required', reasons: [] },
+    },
+  }), review);
   assert.deepEqual(cursorPreActionHookOutput({
     protectedRisk: true,
     permit: null,

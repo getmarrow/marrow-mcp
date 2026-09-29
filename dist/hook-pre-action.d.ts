@@ -1,6 +1,7 @@
 import { marrowAgentRuntime, marrowEnforcement } from './index';
 import { MARROW_OUTAGE_WARNING } from './hook-contract';
 export { MARROW_OUTAGE_WARNING };
+export declare const MAX_PRE_ACTION_INPUT_BYTES: number;
 export declare const PRE_ACTION_CONTROL_TIMEOUT_MS = 8000;
 export declare class PreActionControlTimeoutError extends Error {
     readonly code = "request_timeout";
@@ -16,16 +17,36 @@ export type PreToolUseEvent = {
     tool_use_id?: string;
     tool_name?: string;
     tool_input?: unknown;
+    permission_mode?: string;
+    scratchpad_dir?: string;
 };
 type PreActionControlResult = {
     runtime: Awaited<ReturnType<typeof marrowAgentRuntime>> | null;
     permit: Awaited<ReturnType<typeof marrowEnforcement>> | null;
     protectedRisk: boolean;
     enforcementError?: string;
+    failure?: 'credential_scope' | 'unavailable';
     outage?: boolean;
 };
 export declare function isMarrowOutage(result: PreActionControlResult): boolean;
-export declare function controlRejectionMessage(error: unknown): string;
+export declare function controlFailureKind(error: unknown): PreActionControlResult['failure'];
+export declare function controlRejectionMessage(error: unknown, agentId?: string): string;
+export type OwnerApprovalPrompt = {
+    available: boolean;
+    unavailableReason: string;
+};
+/**
+ * Whether a PreToolUse "ask" from this hook reaches a person who can approve.
+ * Only Claude Code asks; the generic entrypoint counts as Claude Code only when
+ * Claude Code itself spawned the hook (CLAUDE_CODE_CHILD_SESSION, v2.1.172+).
+ */
+export declare function ownerApprovalPrompt(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', event: Pick<PreToolUseEvent, 'permission_mode' | 'scratchpad_dir'>, env?: NodeJS.ProcessEnv): OwnerApprovalPrompt;
+type GateVerdict = {
+    kind: 'block' | 'review' | 'arbitration_review' | 'denied';
+    reason: string;
+};
+export declare function runtimeGateVerdict(runtime: PreActionControlResult['runtime']): GateVerdict | null;
+export declare function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt?: OwnerApprovalPrompt): string;
 export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
 export declare function localLoopGuardDenyOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', reason: string): Record<string, unknown> | null;
 export declare function classifyTool(event: PreToolUseEvent): {
@@ -52,7 +73,7 @@ export declare function grokPreActionHookOutput(result: PreActionControlResult):
     decision: 'allow' | 'deny';
     reason?: string;
 };
-export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown>;
+export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', prompt?: OwnerApprovalPrompt): Record<string, unknown>;
 export declare function installPreActionHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;
