@@ -4,6 +4,16 @@ const test = require('node:test');
 const { normalizeHookEventPayload, resolveNativeHookIdentity } = require('../dist/hook-contract.js');
 const { clinePreActionHookOutput, classifyTool, runPreActionHookCommand } = require('../dist/hook-pre-action.js');
 const { deriveAction, deriveToolOutcome, runHookCommand } = require('../dist/hook.js');
+
+// PostToolUse now only spools (no inline network wait); deliver through the same
+// drain the detached background nudge uses so these tests still assert wire content.
+async function runHookAndDrain(payload) {
+  await runHookCommand(payload);
+  await require('../dist/lifecycle-spool.js').drainLifecycleSpool({
+    apiKey: process.env.MARROW_API_KEY, baseUrl: process.env.MARROW_BASE_URL,
+    agentId: process.env.MARROW_FLEET_AGENT_ID || process.env.MARROW_AGENT_ID || undefined,
+  });
+}
 const { isOfficialMarrowMcpEvent } = require('../dist/hook-tool-policy.js');
 const { runSessionHookCommand } = require('../dist/hook-session.js');
 
@@ -174,7 +184,7 @@ test('Cline PostToolUse captures nested success and failure without retaining ra
       MARROW_FLEET_AGENT_ID: 'cline-agent',
       MARROW_PASSIVE_TOKEN_USAGE: 'false',
     }, async () => {
-      await runHookCommand({
+      await runHookAndDrain({
         hookName: 'PostToolUse',
         taskId: 'task-3',
         postToolUse: {
@@ -185,7 +195,7 @@ test('Cline PostToolUse captures nested success and failure without retaining ra
           durationMs: 450000,
         },
       });
-      await runHookCommand({
+      await runHookAndDrain({
         hookName: 'PostToolUse',
         taskId: 'task-3',
         postToolUse: {

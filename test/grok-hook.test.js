@@ -15,6 +15,16 @@ const {
 } = require('../dist/hook-contract.js');
 const { classifyTool, grokPreActionHookOutput, runPreActionHookCommand } = require('../dist/hook-pre-action.js');
 const { runHookCommand } = require('../dist/hook.js');
+
+// PostToolUse now only spools (no inline network wait); deliver through the same
+// drain the detached background nudge uses so these tests still assert wire content.
+async function runHookAndDrain(payload) {
+  await runHookCommand(payload);
+  await require('../dist/lifecycle-spool.js').drainLifecycleSpool({
+    apiKey: process.env.MARROW_API_KEY, baseUrl: process.env.MARROW_BASE_URL,
+    agentId: process.env.MARROW_FLEET_AGENT_ID || process.env.MARROW_AGENT_ID || undefined,
+  });
+}
 const { runSessionHookCommand } = require('../dist/hook-session.js');
 
 async function captureStdout(callback) {
@@ -225,9 +235,9 @@ test('Grok post hooks record compact success and failure without changing result
       MARROW_FLEET_AGENT_ID: 'grok-agent',
     }, async () => {
       output = await captureStdout(async () => {
-        await runHookCommand({ hookEventName: 'PostToolUse', sessionId: 'grok-post', toolUseId: 'one', toolName: 'write', toolInput: { private: 'synthetic-private-input' }, toolResult: { output: 'synthetic-private-output' } });
-        await runHookCommand({ hookEventName: 'PostToolUseFailure', sessionId: 'grok-post', toolUseId: 'two', toolName: 'run_terminal_command', toolInput: { command: 'synthetic-private-command' }, toolResult: { error: 'synthetic-private-error' } });
-        await runHookCommand({ hookEventName: 'PostToolUse', sessionId: 'grok-post', toolUseId: 'three', toolName: 'use_tool', toolInput: { serverName: 'marrow', toolName: 'marrow_agent_runtime', private: 'synthetic-private-mcp' }, toolResult: { output: 'synthetic-private-output' } });
+        await runHookAndDrain({ hookEventName: 'PostToolUse', sessionId: 'grok-post', toolUseId: 'one', toolName: 'write', toolInput: { private: 'synthetic-private-input' }, toolResult: { output: 'synthetic-private-output' } });
+        await runHookAndDrain({ hookEventName: 'PostToolUseFailure', sessionId: 'grok-post', toolUseId: 'two', toolName: 'run_terminal_command', toolInput: { command: 'synthetic-private-command' }, toolResult: { error: 'synthetic-private-error' } });
+        await runHookAndDrain({ hookEventName: 'PostToolUse', sessionId: 'grok-post', toolUseId: 'three', toolName: 'use_tool', toolInput: { serverName: 'marrow', toolName: 'marrow_agent_runtime', private: 'synthetic-private-mcp' }, toolResult: { output: 'synthetic-private-output' } });
       });
     });
   } finally {

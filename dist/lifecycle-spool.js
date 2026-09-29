@@ -1,12 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.LIFECYCLE_EVENT_TYPES = void 0;
+exports.BACKGROUND_NUDGE_MAX_LIFETIME_MS = exports.LIFECYCLE_EVENT_TYPES = void 0;
 exports.lifecycleSpoolStatus = lifecycleSpoolStatus;
 exports.shouldNudgeLifecycleSpool = shouldNudgeLifecycleSpool;
 exports.quarantineLegacyNamespaces = quarantineLegacyNamespaces;
 exports.nudgeLifecycleSpool = nudgeLifecycleSpool;
 exports.drainLifecycleSpool = drainLifecycleSpool;
 exports.recordLifecycleEvent = recordLifecycleEvent;
+exports.backgroundNudgeEnabled = backgroundNudgeEnabled;
+exports.hasDueLifecycleEvents = hasDueLifecycleEvents;
+exports.claimBackgroundNudgeLock = claimBackgroundNudgeLock;
+exports.releaseBackgroundNudgeLock = releaseBackgroundNudgeLock;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
@@ -57,7 +61,15 @@ const RETRY_MAX_MS = 60_000;
 const MAX_SERVER_RETRY_MS = 7 * 24 * 60 * 60 * 1_000;
 const RETRY_REASONS = new Set(['network_error', 'ack_timeout', 'transient_http', 'rate_limited',
     'authentication_rejected', 'schema_rejected', 'permanent_http', 'retry_after_invalid']);
+// Inline delivery blocks a hook process, so it keeps the tight 750 ms cap; a timeout
+// leaves the event spooled (ack_timeout, scheduled retry).
 const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
+// Background delivery (nudge, drain, dead-letter recovery) never holds a hook. Server
+// acceptance measured p50 551 ms / p90 755 ms, so 2.2 s covers p90 with ~3x margin.
+const PASSIVE_BACKGROUND_DELIVERY_TIMEOUT_MS = 2_200;
+const BACKGROUND_NUDGE_LOCK_STALE_MS = 30_000;
+// Child watchdog, below the stale threshold so a live nudge never has its lock reclaimed.
+exports.BACKGROUND_NUDGE_MAX_LIFETIME_MS = 25_000;
 const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
 const DELIVERY_DRAIN_BUDGET_MS = 30_000;
 const NUDGE_DRAIN_BUDGET_MS = 20_000;
@@ -827,7 +839,7 @@ async function recoverLifecycleDeadLetters(input, deadline) {
         ...input,
         maxEvents: recovered.length,
         budgetMs: remainingMs,
-        requestTimeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+        requestTimeoutMs: PASSIVE_BACKGROUND_DELIVERY_TIMEOUT_MS,
         retryDeadLetters: false,
         retryWithinBudget: false,
     });
@@ -841,7 +853,7 @@ function nudgeLifecycleSpool(input) {
         ...input,
         maxEvents: NUDGE_MAX_EVENTS,
         budgetMs: NUDGE_DRAIN_BUDGET_MS,
-        requestTimeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+        requestTimeoutMs: PASSIVE_BACKGROUND_DELIVERY_TIMEOUT_MS,
         retryDeadLetters: false,
         retryWithinBudget: true,
     })
@@ -977,5 +989,68 @@ async function recordLifecycleEvent(input) {
         pending: final.events.filter((row) => row.delivery_state === 'queued').length,
         recovered_corruption: recoveredCorruption,
     };
+}
+/** True when PostToolUse may defer delivery to a detached background nudge. */
+function backgroundNudgeEnabled() {
+    return process.env.MARROW_HOOK_BACKGROUND_NUDGE !== 'false' && Boolean(process.argv[1]);
+}
+/** Cheap current-namespace check (no other-namespace inventory): any queued event due now? */
+function hasDueLifecycleEvents(input) {
+    try {
+        const location = spoolPath(input.apiKey, input.agentId);
+        return snapshot(location.path, location.ownsParent).events
+            .some((row) => row.delivery_state === 'queued' && dueAt(row) <= Date.now());
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Cross-process guard so a burst of hook invocations starts at most one detached
+ * background nudge per credential namespace. The lock file holds a random nonce
+ * (plus the claiming pid for diagnostics); only the holder of that nonce releases
+ * it. Returns the nonce, or null when not claimed. Best effort: any filesystem
+ * problem means no background nudge (the event stays spooled).
+ */
+function claimBackgroundNudgeLock(input) {
+    try {
+        const lockPath = `${spoolPath(input.apiKey, input.agentId).path}.nudge.lock`;
+        const nonce = (0, node_crypto_1.randomUUID)();
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+                const fd = (0, node_fs_1.openSync)(lockPath, node_fs_1.constants.O_CREAT | node_fs_1.constants.O_EXCL | node_fs_1.constants.O_WRONLY, 0o600);
+                try {
+                    (0, node_fs_1.writeFileSync)(fd, `${process.pid}:${nonce}`);
+                }
+                finally {
+                    (0, node_fs_1.closeSync)(fd);
+                }
+                return nonce;
+            }
+            catch (error) {
+                if (error.code !== 'EEXIST')
+                    return null;
+                try {
+                    if (Date.now() - (0, node_fs_1.statSync)(lockPath).mtimeMs <= BACKGROUND_NUDGE_LOCK_STALE_MS)
+                        return null;
+                    (0, node_fs_1.unlinkSync)(lockPath);
+                }
+                catch {
+                    return null;
+                }
+            }
+        }
+    }
+    catch { /* best effort */ }
+    return null;
+}
+/** Release only when the lock still carries this nonce (a reclaimed lock is not ours). */
+function releaseBackgroundNudgeLock(input) {
+    try {
+        const lockPath = `${spoolPath(input.apiKey, input.agentId).path}.nudge.lock`;
+        if ((0, node_fs_1.readFileSync)(lockPath, 'utf8').split(':')[1] === input.nonce)
+            (0, node_fs_1.unlinkSync)(lockPath);
+    }
+    catch { /* already gone or not ours */ }
 }
 //# sourceMappingURL=lifecycle-spool.js.map

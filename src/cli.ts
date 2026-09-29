@@ -66,15 +66,21 @@ import {
   validateBaseUrl,
 } from './index';
 import { localControlEvidence } from './control-state';
-import { installPostToolUseHook, runHookCommand } from './hook';
+import { hookSpooledLifecycleEvent, installPostToolUseHook, runHookCommand } from './hook';
 import { installGrokNativeHooks } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
+import { spawn } from 'node:child_process';
 import { resolveMarrowEnv } from './env';
 import {
+  BACKGROUND_NUDGE_MAX_LIFETIME_MS,
+  backgroundNudgeEnabled,
+  claimBackgroundNudgeLock,
   drainLifecycleSpool,
+  hasDueLifecycleEvents,
   lifecycleSpoolStatus,
+  releaseBackgroundNudgeLock,
   nudgeLifecycleSpool,
   quarantineLegacyNamespaces,
   recordLifecycleEvent,
@@ -83,7 +89,7 @@ import {
 import { lifecycleSpoolCommandOutcome } from './spool-command';
 import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
 import { localClientUpdate, MarrowRequestError, structuredRequestFailure } from './request-reliability';
-import { MCP_ADAPTER_VERSION } from './hook-contract';
+import { MCP_ADAPTER_VERSION, resolveNativeHookIdentity } from './hook-contract';
 import { resolvePingTimeoutMs, updatePingState } from './ping-state';
 import { controlPathStats, recordControlPathSample } from './control-path-state';
 import { redactSensitiveText, redactSensitiveValue } from './redact';
@@ -95,9 +101,9 @@ import type { MarrowAutoResult } from './index';
 import type { ThinkResult, MarrowMemory } from './types';
 
 // Parse CLI args
-function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean } {
+function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean; backgroundNudge?: boolean } {
   const args = process.argv.slice(2);
-  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean } = {};
+  const result: { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean; backgroundNudge?: boolean } = {};
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
@@ -124,6 +130,9 @@ function parseArgs(): { apiKey?: string; setup?: boolean; hook?: boolean; contex
     if (args[i] === 'drain-spool' || args[i] === '--drain-spool') {
       result.drainSpool = true;
     }
+    if (args[i] === 'background-nudge') {
+      result.backgroundNudge = true;
+    }
     if (args[i] === 'ping' || args[i] === '--ping') {
       result.ping = true;
     }
@@ -143,6 +152,55 @@ function reportLifecycleSpool(input: { apiKey: string; baseUrl?: string; agentId
     void nudgeLifecycleSpool({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.agentId });
   }
   return spool;
+}
+
+// PostToolUse only spools. When this invocation actually spooled an event (so it passed
+// MARROW_AUTO_HOOK, local-control and read-only gates), start one detached, unref'd
+// process that delivers with the longer background timeout. No spool scan happens here.
+function launchBackgroundLifecycleNudge(): void {
+  try {
+    if (!hookSpooledLifecycleEvent() || !backgroundNudgeEnabled()) return;
+    const identity = resolveNativeHookIdentity(process.argv[2]);
+    const apiKey = identity.environment.apiKey || '';
+    if (!apiKey) return;
+    const nonce = claimBackgroundNudgeLock({ apiKey, agentId: identity.agent_id });
+    if (!nonce) return;
+    const child = spawn(process.execPath, [process.argv[1], 'background-nudge'], {
+      detached: true, stdio: 'ignore', windowsHide: true,
+      env: { ...process.env, MARROW_INTERNAL_NUDGE_LOCK: nonce },
+    });
+    child.on('error', () => releaseBackgroundNudgeLock({ apiKey, agentId: identity.agent_id, nonce }));
+    child.unref();
+  } catch { /* the event stays spooled for the next nudge */ }
+}
+
+async function runBackgroundNudge(): Promise<void> {
+  const identity = resolveNativeHookIdentity(undefined);
+  const apiKey = identity.environment.apiKey || '';
+  const agentId = identity.agent_id;
+  let nonce = process.env.MARROW_INTERNAL_NUDGE_LOCK || '';
+  const release = () => { if (apiKey && nonce) releaseBackgroundNudgeLock({ apiKey, agentId, nonce }); };
+  // Hard lifetime cap, below the lock's stale threshold.
+  const watchdog = setTimeout(() => { release(); process.exit(0); }, BACKGROUND_NUDGE_MAX_LIFETIME_MS);
+  try {
+    if (!apiKey || !nonce) return;
+    const baseUrl = validateBaseUrl(identity.environment.baseUrl || 'https://api.getmarrow.ai');
+    // Deliver, then re-check once for events spooled while this process held the lock.
+    for (let round = 0; round < 3; round += 1) {
+      await nudgeLifecycleSpool({ apiKey, baseUrl, agentId });
+      if (!hasDueLifecycleEvents({ apiKey, agentId })) break;
+    }
+    release();
+    const next = hasDueLifecycleEvents({ apiKey, agentId }) ? claimBackgroundNudgeLock({ apiKey, agentId }) : null;
+    if (next) {
+      nonce = next;
+      await nudgeLifecycleSpool({ apiKey, baseUrl, agentId });
+    }
+  } catch { /* best effort */ } finally {
+    clearTimeout(watchdog);
+    release();
+    process.exit(0);
+  }
 }
 
 async function runPingCommand(): Promise<void> {
@@ -418,7 +476,9 @@ if (process.argv[2] === 'keys') {
 if (process.argv[2] !== 'keys') {
 
 if (cliArgs.hook) {
-  void runHookCommand();
+  void runHookCommand().finally(launchBackgroundLifecycleNudge);
+} else if (cliArgs.backgroundNudge) {
+  void runBackgroundNudge();
 } else if (cliArgs.contextHook) {
   void runContextHookCommand();
 } else if (cliArgs.preActionHook) {

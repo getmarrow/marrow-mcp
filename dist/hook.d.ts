@@ -30,6 +30,8 @@ export declare function deriveToolOutcome(event: HookEvent): {
     duration_ms?: number;
 };
 export declare function installPostToolUseHook(startDir?: string): HookInstallResult;
+/** True only when the latest runHookCommand call spooled an event for background delivery. */
+export declare function hookSpooledLifecycleEvent(): boolean;
 export declare function runHookCommand(input?: unknown): Promise<void>;
 export {};
 //# sourceMappingURL=hook.d.ts.map
