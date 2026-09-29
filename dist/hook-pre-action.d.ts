@@ -45,7 +45,17 @@ type GateVerdict = {
     kind: 'block' | 'review' | 'arbitration_review' | 'denied';
     reason: string;
 };
-/** The runtime, not the hook, decides whether its gate is enforced (Team+ hard enforcement). */
+/**
+ * True only for the runtime's positive advisory contract. On a plan without
+ * production_action_enforcement the backend gate (agent-runtime.service.ts,
+ * the hardGateEnforcement branch) carries enforced:false with
+ * enforcement_decision:'advisory', and gate_required, owner_approval_required
+ * and gate_receipt.required are false; the slim shape the MCP client receives
+ * carries risk_gate_enforced:false instead. Missing, malformed or conflicting
+ * enforcement fields are never advisory, so a protected action fails closed.
+ */
+export declare function runtimeGateAdvisory(runtime: PreActionControlResult['runtime']): boolean;
+/** Every gate is enforced unless the runtime positively declares it advisory. */
 export declare function runtimeGateEnforced(runtime: PreActionControlResult['runtime']): boolean;
 /** A warning for a non-allow gate the runtime does not enforce on this plan. */
 export declare function advisoryGateNotice(runtime: PreActionControlResult['runtime']): string | null;

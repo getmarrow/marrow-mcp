@@ -21,6 +21,8 @@ const {
   ownerApprovalPrompt,
   preActionHookOutput,
   runPreActionHookCommand,
+  runtimeGateAdvisory,
+  runtimeGateEnforced,
   windsurfPreActionDecision,
 } = require('../dist/hook-pre-action.js');
 const { MarrowRequestError } = require('../dist/request-reliability.js');
@@ -1316,7 +1318,6 @@ test('a free or starter plan advisory gate warns and allows without demanding a 
   for (const [label, gate] of [
     ['free-plan warn', { allow: true, decision: 'warn' }],
     ['pilot review', { allow: true, decision: 'review_required' }],
-    ['unenforced allow:false', { allow: false, decision: 'warn' }],
   ]) {
     const { calls, output } = await runHookAgainst((pathname) => {
       if (pathname !== '/v1/agent/runtime') throw new Error(`an advisory gate must not call ${pathname}`);
@@ -1330,7 +1331,7 @@ test('a free or starter plan advisory gate warns and allows without demanding a 
     assert.match(decision.additionalContext, /Check the release notes first\./, label);
   }
 
-  const advisory = { runtime: { risk_gate: { allow: true, decision: 'review_required', enforced: false, reasons: [] } }, permit: null, protectedRisk: false };
+  const advisory = { runtime: { risk_gate: { allow: true, decision: 'review_required', enforced: false, enforcement_decision: 'advisory', reasons: [] } }, permit: null, protectedRisk: false };
   assert.deepEqual(grokPreActionHookOutput(advisory), { decision: 'allow' });
   assert.deepEqual(geminiPreActionHookOutput(advisory), { decision: 'allow' });
   assert.deepEqual(windsurfPreActionDecision(advisory), { exitCode: 0, stderr: '' });
@@ -1354,7 +1355,7 @@ test('an enforced review asks the owner and an enforced or advisory block denies
     assert.equal(decision.permissionDecision, 'deny', `enforced=${enforced}`);
     assert.equal(decision.permissionDecisionReason, 'Marrow blocked this action under the current policy. Reason: Release freeze is active.');
   }
-  const blockedResult = { runtime: { risk_gate: { allow: false, decision: 'block', enforced: false, reasons: [] } }, permit: null, protectedRisk: true };
+  const blockedResult = { runtime: { risk_gate: { allow: false, decision: 'block', enforced: false, enforcement_decision: 'advisory', reasons: [] } }, permit: null, protectedRisk: true };
   assert.deepEqual(grokPreActionHookOutput(blockedResult), { decision: 'deny', reason: 'Marrow blocked this protected action.' });
   assert.equal(windsurfPreActionDecision(blockedResult).exitCode, 2);
 });
@@ -1455,5 +1456,80 @@ test('closing a denied decision is bounded and never throws', async () => {
     assert.equal(await closeDeniedDecision('test-key', 'https://api.example.test', { decisionId: null, gateReceiptId: null }, 'denied', 'session-one'), false);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('only a positive advisory contract skips enforcement; every other gate shape fails closed', async () => {
+  const advisoryGate = { allow: true, decision: 'review_required', enforced: false, enforcement_decision: 'advisory', gate_required: false, reasons: [] };
+  const review = { allow: false, decision: 'review_required', reasons: [] };
+  const shapes = [
+    // Barvis F-27-1 table: each was allowed by the first version of F4.
+    ['hard gate declared outside risk_gate', { risk_gate: review, authorization_state: 'hard_gate', hard_gate_obtained: true }, false],
+    ['required gate receipt', { risk_gate: review, gate_receipt: { id: 'g', required: true } }, false],
+    ['slim risk_gate_enforced true', { response_mode: 'slim', risk_gate: review, risk_gate_enforced: true }, false],
+    ['authorization unverified', { risk_gate: { ...advisoryGate }, authorization_state: 'unverified' }, false],
+    ['no enforcement flags', { risk_gate: review }, false],
+    ['owner approval required without flags', { risk_gate: { ...review, decision: 'owner_approval_required', owner_approval_required: true } }, false],
+    ['hard enforcement decision without enforced', { risk_gate: { ...review, enforcement_decision: 'hard_enforcement' } }, false],
+    ['enforced as a string', { risk_gate: { ...review, enforced: 'true' } }, false],
+    ['enforced false without the advisory decision', { risk_gate: { ...advisoryGate, enforcement_decision: undefined } }, false],
+    ['advisory decision without enforced false', { risk_gate: { ...advisoryGate, enforced: undefined } }, false],
+    ['expanded advisory that disallows', { risk_gate: { ...advisoryGate, allow: false } }, false],
+    ['advisory with a required gate', { risk_gate: { ...advisoryGate, gate_required: true } }, false],
+    ['advisory with owner approval guidance', { risk_gate: advisoryGate, completion_contract: { owner_approval: { mode: 'ordinary_non_arbitrated' } } }, false],
+    ['advisory with arbitration', { risk_gate: advisoryGate, arbitration: { receipt_id: 'arb' } }, false],
+    ['advisory on an enforcing plan', { risk_gate: advisoryGate, plan_capability: { mode: 'enforced', production_enforcement_entitled: true } }, false],
+    ['slim advisory missing risk_gate_enforced', { response_mode: 'slim', risk_gate: { ...advisoryGate, allow: false } }, false],
+    ['advisory block', { risk_gate: { ...advisoryGate, allow: false, decision: 'block' } }, false],
+    // The shapes the backend sends on a plan without production_action_enforcement.
+    ['expanded advisory', { risk_gate: advisoryGate, authorization_state: 'advisory_only' }, true],
+    ['expanded advisory warn', { risk_gate: { ...advisoryGate, decision: 'warn' } }, true],
+    ['slim advisory', { response_mode: 'slim', risk_gate: { ...advisoryGate, allow: false }, risk_gate_enforced: false, enforcement_decision: 'advisory', authorization_state: 'advisory_only' }, true],
+  ];
+  for (const [label, runtime, advisory] of shapes) {
+    assert.equal(runtimeGateAdvisory(runtime), advisory, label);
+    assert.equal(runtimeGateEnforced(runtime), !advisory, label);
+    // control() returns an advisory gate as unprotected and every other protected gate as protected.
+    const output = preActionHookOutput({ runtime, permit: null, protectedRisk: !advisory }, 'claude-code');
+    if (advisory) {
+      assert.equal(output.hookSpecificOutput.permissionDecision, undefined, label);
+    } else {
+      assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', label);
+    }
+  }
+});
+
+test('the slim runtime shape the MCP client receives is enforced unless it says advisory', async () => {
+  const slim = (fields) => Response.json({ data: {
+    response_mode: 'slim',
+    ok: true,
+    action: 'classified Bash action: publish on npm',
+    decision_id: 'decision-slim',
+    risk_level: 'high',
+    gate_receipt_id: 'gate-slim',
+    gate_required: false,
+    proof_required: false,
+    proof_complete: true,
+    exact_next_action: 'Get owner review.',
+    ...fields,
+  } });
+  for (const [label, fields, advisory] of [
+    ['slim advisory pilot review', { decision: 'review_required', risk_gate_enforced: false, enforcement_decision: 'advisory' }, true],
+    ['slim advisory warn', { decision: 'warn', risk_gate_enforced: false, enforcement_decision: 'advisory' }, true],
+    ['slim enforced review', { decision: 'review_required', risk_gate_enforced: true, enforcement_decision: 'owner_approval_required', gate_required: true }, false],
+    ['slim review without enforcement fields', { decision: 'review_required' }, false],
+    ['slim advisory decision but enforced null', { decision: 'review_required', risk_gate_enforced: null, enforcement_decision: 'advisory' }, false],
+  ]) {
+    const { calls, output } = await runHookAgainst(noControlAfterGate(() => slim(fields)),
+      publishEvent({ permission_mode: 'bypassPermissions' }), 'claude-pre-action-hook');
+    assert.deepEqual(calls.map((entry) => entry.pathname), ['/v1/agent/runtime'], label);
+    const decision = JSON.parse(output).hookSpecificOutput;
+    if (advisory) {
+      assert.equal(decision.permissionDecision, undefined, label);
+      assert.match(decision.additionalContext, /^Marrow advisory: this plan does not enforce the pre-action gate/, label);
+    } else {
+      assert.equal(decision.permissionDecision, 'deny', label);
+      assert.match(decision.permissionDecisionReason, /^Marrow requires owner review before this action/, label);
+    }
   }
 });
