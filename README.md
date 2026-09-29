@@ -136,7 +136,11 @@ v3.9.87 hardens the authenticated control-path canary against single-sample tran
 
 v3.9.86 was published with the adapter version constant still at `3.9.85`, so the strict canary identity check rejected it; it is deprecated — use `3.9.87`. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.87`, reload the host, review hook trust, and verify before claiming the updated client is active.
 
-## What's New in v3.9.95
+## What's New in v3.9.96
+
+v3.9.96 fixes native pre-action hooks that denied protected actions after the runtime gate allowed them. The hook sent `source_meta` fields that Think rejects, and without a risk level the runtime answered protected actions on its low-risk fast path, whose receipt cannot back an action permit. Protected actions now request a durable gate and create their decision with accepted metadata only; unprotected actions stop at the gate without creating a decision or permit. A rejected control call now names its HTTP status and failure code without echoing service text. Policy decisions, proof requirements and fail-closed behavior are unchanged. Update, reload the host and review hook trust before relying on the new hook.
+
+### Previous release: v3.9.95
 
 v3.9.95 fixes supplied model usage lost when native session hooks consumed stdin. It also captures the latest proven Codex model-call delta from bound token-usage events or a bounded transcript using the supported Codex `0.157.1` schema. Unknown versions, model/turn identity, unsafe paths, counter resets and unproven child bindings abstain. Billing dimensions remain unknown unless explicitly supplied. Capture is not proof of complete coverage, a comparable baseline, overhead or savings. Update and reload the owning host before claiming active capture.
 
