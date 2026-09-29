@@ -2,12 +2,12 @@
 
 ## 3.9.97
 
-- Free and starter gates are advisory again: an advisory runtime gate no longer hard-blocks the action. Enforcement is skipped only on a positive advisory contract; enforced tiers are unchanged.
-- Claude Code shows an owner-approval prompt when an action needs owner approval.
+- Free and starter gates are advisory again: an advisory runtime gate no longer hard-blocks the action. Enforcement is skipped only on a positive advisory contract; enforced tiers are unchanged, and a `block` decision still denies on every plan.
+- Claude Code shows an owner-approval prompt for an enforced review, only in its default, acceptEdits and auto permission modes. In plan, dontAsk and bypassPermissions modes, and for arbitration reviews, the action is still denied. Policy, proof and fail-closed behavior are otherwise unchanged.
 - Far fewer false blocks: read-only shell commands are classified as read-only and are no longer stopped.
 - Clearer denial messages that state the reason and the next step.
 - Send `protocol_version` when verifying an action permit.
-- Record denied actions as closed outcomes instead of leaving the decision pending.
+- On a denial the hook makes a best-effort attempt, capped at 2.5 s, to close the decision with a denied outcome. If the backend does not confirm, the decision stays open.
 - Faster hooks: PostToolUse telemetry is spooled and delivered by a detached background nudge that honors opt-outs, uses a nonce lock, and honors large `Retry-After` values.
 - Better retry of pending writes: honor `retry_after_ms`, resume the same write, and read the optional `lease_remaining_ms`; the passive lifecycle acknowledgement window is wider.
 - Test suites run in an isolated HOME so local Marrow configuration cannot affect results.

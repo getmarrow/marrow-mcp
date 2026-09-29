@@ -138,7 +138,7 @@ v3.9.86 was published with the adapter version constant still at `3.9.85`, so th
 
 ## What's New in v3.9.97
 
-v3.9.97 makes native hook control easier to live with. Free and starter gates are advisory again, so they no longer hard-block work; enforced tiers keep enforcing. In Claude Code, an action that needs owner approval now shows an owner-approval prompt instead of a silent denial. Read-only commands such as `git show`, `git log` and `ls` no longer trigger false blocks, and denial messages now say plainly why an action was stopped and what to do next. The hook sends `protocol_version` when it verifies an action permit, and an action that was denied is recorded as a closed outcome rather than left pending. Hooks return faster because telemetry is now delivered by a detached background process that honors opt-outs and never blocks the action. Pending writes are retried more reliably: the client honors `retry_after_ms` and the optional `lease_remaining_ms`, and resumes the same write instead of starting a new one. Policy decisions, proof requirements and fail-closed behavior for enforced actions are unchanged. Update, reload the host and review hook trust before relying on the new hook.
+v3.9.97 makes native hook control easier to live with. Free and starter gates are advisory again, so an advisory gate no longer hard-blocks work; a `block` decision still denies on every plan. In Claude Code's default, acceptEdits and auto permission modes, an enforced review now shows an owner-approval prompt instead of a denial. In plan, dontAsk and bypassPermissions modes, and for arbitration reviews, the action is still denied. Read-only commands such as `git show`, `git log` and `ls` no longer trigger false blocks, and denial messages now say plainly why an action was stopped and what to do next. The hook sends `protocol_version` when it verifies an action permit. When an action is denied, the hook makes a best-effort attempt, capped at 2.5 s, to close the decision with a denied outcome; if the backend does not confirm, the decision stays open. Hooks return faster because telemetry is delivered by a detached background process that honors opt-outs and never blocks the action (see `MARROW_HOOK_BACKGROUND_NUDGE` in Environment). Pending writes are retried more reliably: the client honors `retry_after_ms` and the optional `lease_remaining_ms`, and resumes the same write instead of starting a new one (see `MARROW_WRITE_RECONCILIATION_BUDGET_MS`). Policy decisions, proof requirements and fail-closed behavior are unchanged, except that an enforced review now asks the owner (in the modes above) instead of denying. Update, reload the host and review hook trust before relying on the new hook.
 
 ### Previous release: v3.9.96
 
@@ -183,11 +183,6 @@ v3.9.90 is a reliability fix for every supported native hook. When Marrow or the
 v3.9.89 adds a default-enabled, private local session loop guard for every supported native-hook installation, independent of Marrow plan or fleet entitlement. It hashes bounded operation inputs and results into owner-only state under `~/.marrow`, stops unchanged successful verification repeats, stops the third unchanged poll or failed attempt, resets after meaningful mutation or a new owner prompt, and clears the session at close. Routine read-only results remain local, so ordinary checks add no Marrow API or database writes; one compact client-reported block marker is emitted only when a configured hook actually denies a repeat. Official Marrow tools remain excluded. `MARROW_AUTO_HOOK=false` and the existing owner local-control disable remain the explicit opt-outs.
 
 The pre-action path now reuses a valid runtime-created decision and calls Think only when the runtime completion contract explicitly requires decision creation. Setup reports the loop guard as configured without claiming live enforcement before host restart, trust review, and an observed hook invocation. `marrow-mcp loop-guard-self-test` verifies the local behavior against isolated temporary state without touching the user's ledger. SDK `3.7.62` and installer `0.1.57` are unchanged.
-
-Delivery settings for lifecycle telemetry and pending writes:
-
-- `MARROW_HOOK_BACKGROUND_NUDGE` (default on): PostToolUse only spools the event and starts one detached background process that delivers it, so the hook adds almost no latency. Set it to `false` to keep bounded inline delivery (750 ms) inside the hook instead. It never runs when `MARROW_AUTO_HOOK=false` or local control is disabled.
-- `MARROW_WRITE_RECONCILIATION_BUDGET_MS` (default `15000`, range 1000-60000): total time a pending think or commit may wait, resuming the same idempotency key and request hash after the server's `retry_after_ms` or `Retry-After`. When the next wait does not fit, the call returns the resumable pending receipt and never reports success.
 
 ### Earlier v3.9.88 changes
 
@@ -681,6 +676,8 @@ See the [Trust Center](https://getmarrow.ai/trust/) for implemented controls, cu
 | `MARROW_BASE_URL` | No | API base override |
 | `MARROW_AGENT_ID` | No | Bound agent identity for MCP tools |
 | `MARROW_FLEET_AGENT_ID` | No | Fleet agent identity used by passive setup |
+| `MARROW_HOOK_BACKGROUND_NUDGE` | No | Default on: PostToolUse only spools the event and starts one detached background process that delivers it, so the hook adds almost no latency. Set to `false` to keep bounded inline delivery (750 ms) inside the hook. Never runs when `MARROW_AUTO_HOOK=false` or local control is disabled |
+| `MARROW_WRITE_RECONCILIATION_BUDGET_MS` | No | Default `15000`, range 1000-60000: total time a pending think or commit may wait, resuming the same idempotency key and request hash after the server's `retry_after_ms` or `Retry-After`. When the next wait does not fit, the call returns the resumable pending receipt and never reports success |
 
 ## Documentation
 
