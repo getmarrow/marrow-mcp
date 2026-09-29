@@ -56,7 +56,7 @@ const NON_CONTENT_BASH_COMMANDS = new Set([
 ]);
 const READ_ONLY_TOOLCHAIN_COMMANDS = [
   /^(?:node|npm)\s+(?:-v|--version)$/i,
-  /^(?:npm|pnpm|yarn)\s+(?:test|audit|run\s+(?:test|check|lint|typecheck|build))(?:\s|$)/i,
+  /^(?:npm|pnpm|yarn)\s+(?:test|audit(?!\s+fix)|run\s+(?:test|check|lint|typecheck|build))(?:\s|$)/i,
   /^(?:node\s+--test|npx\s+(?:vitest|tsc\s+--noemit)|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest)|cargo\s+(?:test|check)|go\s+test)(?:\s|$)/i,
   /^(?:npm|pnpm)\s+(?:view|info|show|ls|list|outdated|explain|why)(?:\s|$)/i,
   /^yarn\s+(?:info|list|why|outdated)(?:\s|$)/i,
@@ -222,7 +222,8 @@ export function parseShellSegments(command: string): ShellSegment[] | null {
   // Reads $NAME, ${NAME} or a special parameter at index; returns the consumed length, or -1 when unsupported.
   const expansion = (index: number): number => {
     const rest = command.slice(index);
-    if (rest.startsWith('$(')) return -1;
+    // $( runs a command; $'...' and $"..." decode escapes the words would hide.
+    if (rest.startsWith('$(') || rest.startsWith("$'") || rest.startsWith('$"')) return -1;
     const braced = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/.exec(rest);
     if (braced) {
       segment.expansions.push(braced[1]);
@@ -285,7 +286,8 @@ export function parseShellSegments(command: string): ShellSegment[] | null {
       index += 2;
       continue;
     }
-    if (char === '`' || char === '(' || char === ')') return null;
+    // Braces expand or group commands, so the words would not be what runs.
+    if (char === '`' || char === '(' || char === ')' || char === '{') return null;
     if (char === '$') {
       const consumed = expansion(index);
       if (consumed < 0) return null;
@@ -372,9 +374,16 @@ function secretPath(value: string): boolean {
   return pathLike && SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }
 
+// A glob such as .env* or *.pem names secret files without spelling one out.
+function globVariants(value: string): string[] {
+  if (!/[*?[]/.test(value)) return [value];
+  const firstInClass = value.replace(/\[!?\^?([^\]])[^\]]*\]/g, '$1');
+  return [value, firstInClass.replace(/[*?]/g, ''), firstInClass.replace(/[*?]/g, 'x')];
+}
+
 /** True for a path that holds secret or credential material. */
 export function isSecretPath(value: string): boolean {
-  return pathCandidates(String(value || '')).some(secretPath);
+  return pathCandidates(String(value || '')).flatMap(globVariants).some(secretPath);
 }
 
 function isProtectedWriteTarget(value: string): boolean {
@@ -426,6 +435,31 @@ function contentReadTargets(program: string, args: string[]): string[] {
   return targets;
 }
 
+// GNU getopt and git accept any unambiguous prefix of a long option.
+function longOptionPrefix(arg: string, names: string[]): boolean {
+  if (!arg.startsWith('--')) return false;
+  const name = arg.slice(2).split('=')[0];
+  return name.length > 0 && names.some((candidate) => candidate.startsWith(name));
+}
+
+const GIT_BRANCH_LIST_FLAGS = new Set(['--list', '-l', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--verbose', '--show-current',
+  '-i', '--ignore-case', '--color', '--no-color', '--column', '--no-column', '--omit-empty']);
+const GIT_BRANCH_VALUE_FLAGS = new Set(['--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format']);
+
+// `git branch` only lists when every argument is a list option or a --list pattern.
+function gitBranchListsOnly(args: string[]): boolean {
+  const listing = args.includes('--list') || args.includes('-l');
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (GIT_BRANCH_LIST_FLAGS.has(arg)) continue;
+    if (GIT_BRANCH_VALUE_FLAGS.has(arg)) { index += 1; continue; }
+    if ([...GIT_BRANCH_VALUE_FLAGS].some((flag) => arg.startsWith(`${flag}=`))) continue;
+    if (!arg.startsWith('-') && listing) continue;
+    return false;
+  }
+  return true;
+}
+
 function readOnlyProgramInvocation(program: string, args: string[]): boolean {
   if (program === 'git') {
     let index = 0;
@@ -434,17 +468,21 @@ function readOnlyProgramInvocation(program: string, args: string[]): boolean {
       else if (args[index] === '--no-pager') index += 1;
       else break;
     }
-    return READ_ONLY_GIT_SUBCOMMANDS.has(args[index] || '')
-      && !args.slice(index + 1).some((arg) => /^--(?:output|ext-diff)(?:=|$)/.test(arg));
+    const subcommand = args[index] || '';
+    const rest = args.slice(index + 1);
+    if (!READ_ONLY_GIT_SUBCOMMANDS.has(subcommand)) return false;
+    if (subcommand === 'branch') return gitBranchListsOnly(rest);
+    if (subcommand === 'ls-remote') return !rest.some((arg) => longOptionPrefix(arg, ['upload-pack', 'exec']));
+    return !rest.some((arg) => longOptionPrefix(arg, ['output', 'ext-diff']));
   }
   if (program === 'gh') return READ_ONLY_GH_COMMAND.test(args.join(' '));
   if (READ_ONLY_TOOLCHAIN_COMMANDS.some((pattern) => pattern.test([program, ...args].join(' ')))) return true;
   if (!READ_ONLY_BASH_COMMANDS.has(program)) return false;
   if (program === 'find') return !args.some((arg) => /^-(?:exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/.test(arg));
-  if (program === 'rg') return !args.some((arg) => /^--pre(?:=|$)/.test(arg));
-  if (program === 'sort') return !args.some((arg) => /^(?:--output|--compress-program)(?:=|$)/.test(arg) || /^-[A-Za-z]*o/.test(arg));
+  if (program === 'rg') return !args.some((arg) => longOptionPrefix(arg, ['pre', 'hostname-bin']));
+  if (program === 'sort') return !args.some((arg) => longOptionPrefix(arg, ['output', 'compress-program']) || /^-[A-Za-z]*o/.test(arg));
   if (program === 'env') return args.every((arg) => arg === '-0' || arg === '--null');
-  if (program === 'date') return !args.some((arg) => /^(?:-s|--set)/.test(arg));
+  if (program === 'date') return !args.some((arg) => /^-[A-Za-z]*s/.test(arg) || longOptionPrefix(arg, ['set']));
   return true;
 }
 
@@ -460,6 +498,8 @@ export function shellSegmentVerdict(segment: ShellSegment): ShellSegmentVerdict 
     // Printing a secret variable copies it into the agent transcript.
     if (segment.expansions.some(isSecretVariableName)) return 'secret';
     if (program === 'printenv' && args.some(isSecretVariableName)) return 'secret';
+    // A bare env or printenv prints every secret the process holds.
+    if ((program === 'env' || program === 'printenv') && args.every((arg) => arg.startsWith('-'))) return 'secret';
     if (program === 'jq' && args.some((arg) => /\$ENV\b|(?:^|[^A-Za-z0-9_$.])env\b/.test(arg))) return 'secret';
     if (!NON_CONTENT_BASH_COMMANDS.has(program)) {
       const targets = ['grep', 'egrep', 'fgrep', 'rg', 'jq'].includes(program) ? contentReadTargets(program, args) : args.filter((arg) => !arg.startsWith('-') || arg.includes('='));

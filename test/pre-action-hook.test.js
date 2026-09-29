@@ -1035,6 +1035,8 @@ test('control failures name what happened: credential scope, unavailability, or 
 
 test('read-only inspection is not protected by words in paths or arguments; real actions and secrets stay protected', () => {
   const bash = (command) => ({ tool_name: 'Bash', tool_input: { command, description: 'Check the release, deploy and publish state' } });
+  // Unparseable syntax falls back to whole-input keyword rules, which also read the description.
+  const plain = (command) => ({ tool_name: 'Bash', tool_input: { command } });
   const readOnly = { readOnly: true, protected: false };
   const unprotectedWrite = { readOnly: false, protected: false };
   const guarded = { readOnly: false, protected: true };
@@ -1099,12 +1101,40 @@ test('read-only inspection is not protected by words in paths or arguments; real
     ['Read credentials file', { tool_name: 'Read', tool_input: { file_path: '/home/u/.claude/.credentials.json' } }, guarded],
     ['Grep a secret directory', { tool_name: 'Grep', tool_input: { pattern: 'aws_secret', path: '/home/u/.aws' } }, guarded],
     // Syntax that could run code stays conservative.
-    ['command substitution', bash('cat $(ls release)'), guarded],
+    ['command substitution', plain('cat $(ls release)'), guarded],
+    ['unparseable syntax keeps description keywords', bash('find . -name "*.md" -exec cat {} +'), guarded],
     ['rg preprocessor', bash('rg --pre ./x.sh foo'), unprotectedWrite],
     ['git pager override', bash('GIT_PAGER=./x.sh git log'), unprotectedWrite],
     ['git config pager', bash('git -c core.pager=./x.sh log'), unprotectedWrite],
     ['sort to file', bash('sort -o out.txt in.txt'), unprotectedWrite],
-    ['find -exec read', bash('find . -name "*.md" -exec cat {} +'), unprotectedWrite],
+    ['find -exec read', plain('find . -name "*.md" -exec cat {} +'), unprotectedWrite],
+    // Quoting, expansion and option-spelling tricks never make a command read-only.
+    ['ANSI-C quote hides a command', bash("echo $'\\'' ; rm -rf x #'"), guarded],
+    ['ANSI-C quote hides a path', plain("cat $'.en\\x76'"), unprotectedWrite],
+    ['ANSI-C quote hides -exec', plain("find . $'-exec' sh -c x \\;"), unprotectedWrite],
+    ['brace-expanded secret', plain('cat .en{v,x}'), unprotectedWrite],
+    ['brace-expanded find option', plain('find . -{delete,print}'), unprotectedWrite],
+    ['brace-expanded sort option', plain('sort -{o,x} file'), unprotectedWrite],
+    ['globbed .env', bash('cat .env*'), guarded],
+    ['bracket-globbed .env', bash('cat .e[n]v'), guarded],
+    ['globbed key files', bash('cat *.pem'), guarded],
+    ['abbreviated sort --output', bash('sort --outp=/tmp/f x'), unprotectedWrite],
+    ['abbreviated sort --compress-program', bash('sort --compr=prog x'), unprotectedWrite],
+    ['abbreviated git diff --output', bash('git diff --outp=/tmp/f'), unprotectedWrite],
+    ['abbreviated git log --output', bash('git log --outp=f'), unprotectedWrite],
+    ['git ls-remote upload-pack', bash("git ls-remote --upload-pack='touch /tmp/x' ."), unprotectedWrite],
+    ['git branch create', bash('git branch newname'), unprotectedWrite],
+    ['git branch force move', bash('git branch -f main HEAD~5'), unprotectedWrite],
+    ['git branch list', bash('git branch --list "fix/*" -v'), readOnly],
+    ['bare env dump', bash('env'), guarded],
+    ['bare printenv dump', bash('printenv'), guarded],
+    ['printenv filtered', bash('printenv | grep -i token'), guarded],
+    ['env filtered', bash('env | grep KEY'), guarded],
+    ['printenv of a non-secret', bash('printenv HOME'), readOnly],
+    ['npm audit fix', bash('npm audit fix'), unprotectedWrite],
+    ['npm audit', bash('npm audit --omit=dev'), readOnly],
+    ['rg hostname-bin', bash('rg --hostname-bin=/tmp/x foo'), unprotectedWrite],
+    ['date set', bash('date -s "2026-01-01"'), unprotectedWrite],
   ];
   for (const [name, event, expected] of rows) {
     const result = classifyTool(event);
