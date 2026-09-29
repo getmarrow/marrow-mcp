@@ -1938,6 +1938,36 @@ test('bounded delivery timeout cannot stall a hook when fetch ignores abort', as
   }
 });
 
+test('one hook event takes one spool lock when deferred and two around inline delivery', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-lock-count-'));
+  const path = join(directory, 'spool.json');
+  const fs = require('node:fs');
+  const originalOpen = fs.openSync;
+  const originalFetch = globalThis.fetch;
+  let acquisitions = 0;
+  fs.openSync = function countSpoolLocks(target, flags, ...rest) {
+    if (target === `${path}.lock` && flags === 'wx') acquisitions += 1;
+    return originalOpen.call(this, target, flags, ...rest);
+  };
+  globalThis.fetch = async () => new Response('{}', { status: 503 });
+  try {
+    await withSpoolPath(path, async () => {
+      const deferred = await recordLifecycleEvent({ ...lifecycleInput({ event_id: 'lock-count-deferred' }), deferDelivery: true });
+      assert.equal(deferred.queued, true);
+      assert.equal(acquisitions, 1, 'deferred capture');
+      acquisitions = 0;
+      const inline = await recordLifecycleEvent(lifecycleInput({ event_id: 'lock-count-inline' }));
+      assert.equal(inline.queued, true);
+      assert.equal(inline.pending, 2);
+      assert.equal(acquisitions, 2, 'inline delivery');
+    });
+  } finally {
+    fs.openSync = originalOpen;
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('same-namespace concurrent hook processes do not lose lifecycle receipts', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-concurrent-'));
   const path = join(directory, 'spool.json');
