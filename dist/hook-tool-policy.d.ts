@@ -22,12 +22,16 @@ export type ShellSegmentVerdict = 'read' | 'secret' | 'other';
  * complex parameter expansion); callers then fall back to whole-command rules.
  */
 export declare function parseShellSegments(command: string): ShellSegment[] | null;
+/** Resolves ~, $HOME, ., .. and repeated slashes against the directory the command runs in. */
+export declare function normalizedToolPath(value: string, base?: string): string;
 /** True for a path that holds secret or credential material. */
-export declare function isSecretPath(value: string): boolean;
+export declare function isSecretPath(value: string, base?: string): boolean;
+/** True for a secret file or Marrow's own local control state. */
+export declare function isProtectedWriteTarget(value: string, base?: string): boolean;
 /** True for an environment variable name that conventionally holds a secret. */
 export declare function isSecretVariableName(value: string): boolean;
 /** Classifies one simple command: a read-only inspection, a secret access, or anything else. */
-export declare function shellSegmentVerdict(segment: ShellSegment): ShellSegmentVerdict;
+export declare function shellSegmentVerdict(segment: ShellSegment, cwd?: string | null): ShellSegmentVerdict;
 /** Files a file-reading or file-editing tool targets, including apply_patch file headers. */
 export declare function toolTargetPaths(event: ToolPolicyEvent): string[];
 /**

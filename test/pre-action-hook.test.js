@@ -1037,6 +1037,7 @@ test('read-only inspection is not protected by words in paths or arguments; real
   const bash = (command) => ({ tool_name: 'Bash', tool_input: { command, description: 'Check the release, deploy and publish state' } });
   // Unparseable syntax falls back to whole-input keyword rules, which also read the description.
   const plain = (command) => ({ tool_name: 'Bash', tool_input: { command } });
+  const home = process.env.HOME || require('node:os').homedir();
   const readOnly = { readOnly: true, protected: false };
   const unprotectedWrite = { readOnly: false, protected: false };
   const guarded = { readOnly: false, protected: true };
@@ -1135,6 +1136,31 @@ test('read-only inspection is not protected by words in paths or arguments; real
     ['npm audit', bash('npm audit --omit=dev'), readOnly],
     ['rg hostname-bin', bash('rg --hostname-bin=/tmp/x foo'), unprotectedWrite],
     ['date set', bash('date -s "2026-01-01"'), unprotectedWrite],
+    // Barvis F-25-1: bash treats a lone carriage return as a word character, not a separator.
+    ['lone CR inside find -delete', plain('find \r realpath /home/u/important -delete'), guarded],
+    ['lone CR inside sort -o control state', plain('sort -t \r cat -o ~/.marrow/control.json'), guarded],
+    ['lone CR inside find -exec', plain('find . -name x \r ls -exec sh -c id ;'), unprotectedWrite],
+    ['CRLF line ending', plain('ls\r\nrm -rf x'), guarded],
+    // Barvis F-25-2: equivalent spellings of Marrow control state stay protected.
+    ['Write control state via /./', { tool_name: 'Write', tool_input: { file_path: `${home}/.marrow/./control.json`, content: '{}' } }, guarded],
+    ['Write control state via ..', { tool_name: 'Write', tool_input: { file_path: `${home}/.marrow/spool/../control.json`, content: '{}' } }, guarded],
+    ['Write control state via //', { tool_name: 'Write', tool_input: { file_path: `${home}//.marrow//control.json`, content: '{}' } }, guarded],
+    ['Edit control state via ~', { tool_name: 'Edit', tool_input: { file_path: '~/.marrow/./control.json', old_string: 'true', new_string: 'false' } }, guarded],
+    ['redirect to control state via /./', plain('echo {} > ~/.marrow/./control.json'), guarded],
+    ['redirect to control state via $HOME and ..', plain('echo x > $HOME/.marrow/../.marrow/control.json'), guarded],
+    ['relative write after cd into ~/.marrow', plain('cd ~/.marrow && echo x > control.json'), guarded],
+    ['relative copy after cd into ~/.marrow', plain('cd ~/.marrow; cp /tmp/x ./control.json'), guarded],
+    // Barvis regression table: reads through the working directory or a local settings file.
+    ['cd into credentials then cat *', plain('cd ~/.marrow/credentials && cat *'), guarded],
+    ['cd into .ssh then cat *', plain('cd ~/.ssh && cat *'), guarded],
+    ['jq of Claude local settings', plain('jq . ~/.claude/settings.local.json'), guarded],
+    ['gh prints its token', plain('gh auth token'), guarded],
+    ['cd Marrow cannot follow', plain('cd - && cat notes.md'), unprotectedWrite],
+    ['expanded option to find', plain('find . $OPT'), unprotectedWrite],
+    ['expanded option to git', plain('git log $X'), unprotectedWrite],
+    ['file -C writes a magic file', plain('file -C -m x'), unprotectedWrite],
+    ['home-relative inspection', plain('cat $HOME/notes.md'), readOnly],
+    ['inspection after cd', plain('cd /repo && git status && ls | grep -c release'), readOnly],
   ];
   for (const [name, event, expected] of rows) {
     const result = classifyTool(event);
@@ -1233,4 +1259,33 @@ test('input over the pre-action bound is allowed when control is disabled and na
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('characters the shell splitter does not model never yield a read-only command', () => {
+  const unmodeled = ['\r', '\v', '\f', '\u0000', '\u0001', '\u001b', '\u007f', '\u0085', ' ', '­',
+    ' ', ' ', '​', '‎', ' ', ' ', '‮', '⁦', '　', '﻿'];
+  for (const character of unmodeled) {
+    const label = `U+${character.codePointAt(0).toString(16).padStart(4, '0')}`;
+    for (const command of [`ls ${character} cat notes.md`, `ls${character}cat notes.md`, `${character}ls`, `ls${character}`,
+      `find . -name x ${character} -delete`, `cat notes.md ${character}| head`]) {
+      const result = classifyTool({ tool_name: 'Bash', tool_input: { command } });
+      assert.equal(result.readOnly, false, `${label} in ${JSON.stringify(command)}`);
+    }
+    assert.equal(classifyTool({ tool_name: 'Bash', tool_input: { command: `find ${character} realpath /tmp/x -delete` } }).protected, true, label);
+  }
+  // The ordinary separators the splitter does model keep inspection read-only.
+  assert.equal(classifyTool({ tool_name: 'Bash', tool_input: { command: 'git status\n\tls | grep -c release; pwd' } }).readOnly, true);
+});
+
+test('a carriage-return disguised deletion reaches the Marrow gate instead of being allowed', async () => {
+  const { calls, output } = await runHookAgainst(noControlAfterGate(() => reviewRuntime()), {
+    session_id: 'session-one',
+    tool_use_id: 'tool-cr',
+    permission_mode: 'bypassPermissions',
+    tool_name: 'Bash',
+    tool_input: { command: 'find \r realpath /home/u/important -delete' },
+  }, 'claude-pre-action-hook');
+  assert.equal(calls[0].pathname, '/v1/agent/runtime');
+  assert.equal(calls[0].body.risk_level, 'high');
+  assert.equal(JSON.parse(output).hookSpecificOutput.permissionDecision, 'deny');
 });
