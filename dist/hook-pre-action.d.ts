@@ -25,6 +25,7 @@ type PreActionControlResult = {
     outage?: boolean;
 };
 export declare function isMarrowOutage(result: PreActionControlResult): boolean;
+export declare function controlRejectionMessage(error: unknown): string;
 export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
 export declare function localLoopGuardDenyOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', reason: string): Record<string, unknown> | null;
 export declare function classifyTool(event: PreToolUseEvent): {
