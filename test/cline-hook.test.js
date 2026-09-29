@@ -78,7 +78,7 @@ test('Cline native pre-action schema denies review and unavailable proof and all
     permit: { verified: true },
     runtime: {
       exact_next_action: 'owner approval required',
-      risk_gate: { allow: false, decision: 'review_required', reasons: [] },
+      risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] },
     },
   });
   assert.deepEqual(review, { cancel: true, errorMessage: 'Marrow requires operator review before this protected action.' });
@@ -95,7 +95,7 @@ test('Cline native pre-action schema denies review and unavailable proof and all
   assert.deepEqual(clinePreActionHookOutput({
     protectedRisk: false,
     permit: null,
-    runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] } },
+    runtime: { risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] } },
   }), { cancel: false });
 
   const serviceSecret = 'synthetic-service-private-value';
@@ -107,6 +107,7 @@ test('Cline native pre-action schema denies review and unavailable proof and all
       risk_gate: {
         allow: false,
         decision: 'review_required',
+        enforced: true,
         reasons: [{ message: `private service text ${serviceSecret}` }],
       },
     },

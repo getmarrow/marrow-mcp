@@ -144,7 +144,7 @@ test('Grok native pre-action emits only exact fixed allow or private deny JSON',
     permit: { verified: true },
     runtime: {
       exact_next_action: 'synthetic-private-service-text',
-      risk_gate: { allow: false, decision: 'review_required', reasons: [{ message: 'synthetic-private-reason' }] },
+      risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [{ message: 'synthetic-private-reason' }] },
     },
   }), { decision: 'deny', reason: GROK_FIXED_DENIAL });
   assert.deepEqual(grokPreActionHookOutput({
@@ -156,7 +156,7 @@ test('Grok native pre-action emits only exact fixed allow or private deny JSON',
   assert.deepEqual(grokPreActionHookOutput({
     protectedRisk: true,
     permit: { verified: true },
-    runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] } },
+    runtime: { risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] } },
   }), { decision: 'allow' });
 
   await withGrokEnvironment('grok-pre-action-hook', {}, async () => {
