@@ -118,7 +118,9 @@ const RECOVERY_MAX_EVENTS_PER_NUDGE = 5;
 const NAMESPACE_JSON_RE = /^mcp-[a-f0-9]{20}\.json$/;
 const NAMESPACE_LOCK_RE = /^mcp-[a-f0-9]{20}\.json\.lock$/;
 const LOCK_WAIT_MS = 20;
-const LOCK_ATTEMPTS = 250;
+// Wall-clock wait budget for one acquisition. An attempt count stretched or shrank with
+// scheduler oversleep under load; a deadline does not.
+const LOCK_WAIT_BUDGET_MS = 10_000;
 const LOCK_STALE_MS = 30_000;
 
 function safeId(value: unknown, fallback?: string): string | undefined {
@@ -229,7 +231,8 @@ function withLock<T>(path: string, ownsParent: boolean, operation: () => T): T {
   ensureParent(path, ownsParent);
   const lockPath = `${path}.lock`;
   let descriptor: number | null = null;
-  for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
+  const deadline = Date.now() + LOCK_WAIT_BUDGET_MS;
+  for (;;) {
     try {
       descriptor = openSync(lockPath, 'wx', 0o600);
       break;
@@ -245,7 +248,10 @@ function withLock<T>(path: string, ownsParent: boolean, operation: () => T): T {
           : '';
         if (inspectionCode !== 'ENOENT') throw inspectionError;
       }
-      sleep(LOCK_WAIT_MS);
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      // Jittered polling (10-30 ms) keeps a burst of waiters from waking in lockstep.
+      sleep(Math.min(remainingMs, LOCK_WAIT_MS / 2 + Math.random() * LOCK_WAIT_MS));
     }
   }
   if (descriptor == null) throw new Error('lifecycle spool lock timeout');
@@ -726,11 +732,16 @@ async function attemptQueuedDelivery(input: {
   baseUrl: string;
   event: StoredEvent;
   timeoutMs: number;
-}): Promise<number> {
-  if (reservedSpoolBytes(snapshot(input.path, input.ownsParent).events) > MAX_SPOOL_BYTES) return -1;
+  /** Rows the caller just read under the spool lock; skips a second acquisition for the capacity check. */
+  rows?: StoredEvent[];
+}): Promise<{ status: number; rows?: StoredEvent[]; recoveredCorruption?: boolean }> {
+  if (reservedSpoolBytes(input.rows ?? snapshot(input.path, input.ownsParent).events) > MAX_SPOOL_BYTES) return { status: -1 };
   const result = await deliver(input.baseUrl, input.apiKey, input.event, input.timeoutMs);
   const { status } = result;
-  mutate(input.path, input.ownsParent, (events) => {
+  let rows: StoredEvent[] = [];
+  const written = mutate(input.path, input.ownsParent, (events) => {
+    // The persisted rows after this write, returned so callers need not lock again to read them.
+    rows = events;
     const current = events.find((row) => row.event_id === input.event.event_id);
     if (!current || current.delivery_state !== 'queued') return;
     if (status >= 200 && status < 300) {
@@ -761,7 +772,7 @@ async function attemptQueuedDelivery(input: {
       )).toISOString();
     }
   });
-  return status;
+  return { status, rows, recoveredCorruption: written.recoveredCorruption };
 }
 
 export function quarantineLegacyNamespaces(input: { apiKey: string; agentId?: string }): {
@@ -967,7 +978,7 @@ export async function drainLifecycleSpool(input: {
     const remainingMs = Math.min(requestTimeoutMs, deliveryDeadline - Date.now());
     if (remainingMs <= 0) break;
     delivered += 1;
-    const deliveredStatus = await attemptQueuedDelivery({
+    const { status: deliveredStatus } = await attemptQueuedDelivery({
       path: location.path,
       ownsParent: location.ownsParent,
       apiKey: input.apiKey,
@@ -995,7 +1006,12 @@ export async function recordLifecycleEvent(input: {
 }> {
   const location = spoolPath(input.apiKey, input.event.agent_id);
   const event = compact(input.event);
+  // Each lock acquisition re-reads and re-validates the whole spool, so a burst of hook
+  // processes serializes on it. Reuse the rows each locked write returns: at most one
+  // acquisition before delivery and one after, never a separate re-read.
+  let rows: StoredEvent[] = [];
   const queued = mutate(location.path, location.ownsParent, (events) => {
+    rows = events;
     const index = events.findIndex((row) => row.event_id === event.event_id);
     if (index < 0) {
       if (reservedSpoolBytes([...events, event]) > MAX_SPOOL_BYTES) {
@@ -1009,42 +1025,49 @@ export async function recordLifecycleEvent(input: {
   let recoveredCorruption = queued.recoveredCorruption;
 
   let deliveryStatus = 0;
-  if (!input.deferDelivery && queued.result.delivery_state === 'queued' && dueAt(queued.result) <= Date.now()) deliveryStatus = await attemptQueuedDelivery({
-    path: location.path,
-    ownsParent: location.ownsParent,
-    apiKey: input.apiKey,
-    baseUrl: input.baseUrl,
-    event: queued.result,
-    timeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
-  });
+  if (!input.deferDelivery && queued.result.delivery_state === 'queued' && dueAt(queued.result) <= Date.now()) {
+    const delivery = await attemptQueuedDelivery({
+      path: location.path,
+      ownsParent: location.ownsParent,
+      apiKey: input.apiKey,
+      baseUrl: input.baseUrl,
+      event: queued.result,
+      timeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+      rows,
+    });
+    deliveryStatus = delivery.status;
+    if (delivery.rows) rows = delivery.rows;
+    recoveredCorruption ||= delivery.recoveredCorruption === true;
+  }
   if (deliveryStatus >= 200 && deliveryStatus < 300) {
-    const previous = snapshot(location.path, location.ownsParent).events.find((row) => (
+    const previous = rows.find((row) => (
       row.delivery_state === 'queued' && row.event_id !== event.event_id && dueAt(row) <= Date.now()
     ));
     if (previous) {
       try {
-        await attemptQueuedDelivery({
+        const retry = await attemptQueuedDelivery({
           path: location.path,
           ownsParent: location.ownsParent,
           apiKey: input.apiKey,
           baseUrl: input.baseUrl,
           event: previous,
           timeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+          rows,
         });
+        if (retry.rows) rows = retry.rows;
+        recoveredCorruption ||= retry.recoveredCorruption === true;
       } catch {
         // An older receipt retry must not turn a successfully accepted current receipt into a failure.
       }
     }
   }
-  const final = snapshot(location.path, location.ownsParent);
-  recoveredCorruption ||= final.recoveredCorruption;
-  const current = final.events.find((row) => row.event_id === event.event_id);
+  const current = rows.find((row) => row.event_id === event.event_id);
   return {
     event_id: event.event_id,
     accepted: !current,
     queued: current?.delivery_state === 'queued',
     failed: current?.delivery_state === 'dead_letter',
-    pending: final.events.filter((row) => row.delivery_state === 'queued').length,
+    pending: rows.filter((row) => row.delivery_state === 'queued').length,
     recovered_corruption: recoveredCorruption,
   };
 }

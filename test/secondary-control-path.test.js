@@ -17,6 +17,9 @@ test('control calls keep stalled response bodies inside the transport deadline',
   const originalTimeout = process.env.MARROW_REQUEST_TIMEOUT_MS;
   process.env.MARROW_REQUEST_TIMEOUT_MS = '150';
   try {
+    // Node loads its fetch implementation on first use; under CPU starvation that load can outlast the 600 ms guard below.
+    // Warm it with a local data: URL (no network) so the guard measures only the transport deadline.
+    await originalFetch('data:text/plain,warm').then((warm) => warm.text());
     for (const [name, call] of Object.entries(calls)) {
       globalThis.fetch = async () => {
         return new Response(new ReadableStream({ start(controller) {
