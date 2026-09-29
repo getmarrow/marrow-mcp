@@ -181,9 +181,12 @@ async function runHookCommand(input) {
             ? success ? 'command_completed' : 'command_failed'
             : success ? 'tool_completed' : 'tool_failed';
         const lifecycleCorrelation = (0, hook_contract_1.stableToolCorrelation)({ ...event, session_id: sessionId });
+        // Spool only: PostToolUse runs on every tool call, so it must add ~no latency.
+        // cli.ts launches a detached background nudge that delivers the spooled event.
         await (0, lifecycle_spool_1.recordLifecycleEvent)({
             apiKey,
             baseUrl,
+            deferDelivery: true,
             event: {
                 event_id: `posttool-${lifecycleCorrelation}`,
                 event_type: eventType,

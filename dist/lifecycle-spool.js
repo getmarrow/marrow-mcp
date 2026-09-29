@@ -7,6 +7,8 @@ exports.quarantineLegacyNamespaces = quarantineLegacyNamespaces;
 exports.nudgeLifecycleSpool = nudgeLifecycleSpool;
 exports.drainLifecycleSpool = drainLifecycleSpool;
 exports.recordLifecycleEvent = recordLifecycleEvent;
+exports.claimBackgroundNudgeLock = claimBackgroundNudgeLock;
+exports.releaseBackgroundNudgeLock = releaseBackgroundNudgeLock;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
@@ -57,13 +59,13 @@ const RETRY_MAX_MS = 60_000;
 const MAX_SERVER_RETRY_MS = 7 * 24 * 60 * 60 * 1_000;
 const RETRY_REASONS = new Set(['network_error', 'ack_timeout', 'transient_http', 'rate_limited',
     'authentication_rejected', 'schema_rejected', 'permanent_http', 'retry_after_invalid']);
-// Server acceptance measured p50 551 ms / p90 755 ms; 2.2 s covers p90 with ~3x margin.
-// A timed-out event stays spooled (ack_timeout, scheduled retry), so nothing is lost.
-const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 2_200;
-// Hard wall-clock cap on inline delivery inside one hook invocation (current event
-// plus one opportunistic older-event retry). Keeps hooks under short host timeouts.
-const PASSIVE_HOOK_DELIVERY_BUDGET_MS = 2_500;
-const PASSIVE_MIN_SECOND_DELIVERY_MS = 250;
+// Inline delivery blocks a hook process, so it keeps the tight 750 ms cap; a timeout
+// leaves the event spooled (ack_timeout, scheduled retry).
+const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
+// Background delivery (nudge, drain, dead-letter recovery) never holds a hook. Server
+// acceptance measured p50 551 ms / p90 755 ms, so 2.2 s covers p90 with ~3x margin.
+const PASSIVE_BACKGROUND_DELIVERY_TIMEOUT_MS = 2_200;
+const BACKGROUND_NUDGE_LOCK_STALE_MS = 30_000;
 const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
 const DELIVERY_DRAIN_BUDGET_MS = 30_000;
 const NUDGE_DRAIN_BUDGET_MS = 20_000;
@@ -833,7 +835,7 @@ async function recoverLifecycleDeadLetters(input, deadline) {
         ...input,
         maxEvents: recovered.length,
         budgetMs: remainingMs,
-        requestTimeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+        requestTimeoutMs: PASSIVE_BACKGROUND_DELIVERY_TIMEOUT_MS,
         retryDeadLetters: false,
         retryWithinBudget: false,
     });
@@ -847,7 +849,7 @@ function nudgeLifecycleSpool(input) {
         ...input,
         maxEvents: NUDGE_MAX_EVENTS,
         budgetMs: NUDGE_DRAIN_BUDGET_MS,
-        requestTimeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
+        requestTimeoutMs: PASSIVE_BACKGROUND_DELIVERY_TIMEOUT_MS,
         retryDeadLetters: false,
         retryWithinBudget: true,
     })
@@ -945,10 +947,6 @@ async function recordLifecycleEvent(input) {
     });
     let recoveredCorruption = queued.recoveredCorruption;
     let deliveryStatus = 0;
-    const inlineTimeoutMs = typeof input.deliveryTimeoutMs === 'number' && Number.isFinite(input.deliveryTimeoutMs)
-        ? Math.max(1, Math.min(PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS, Math.floor(input.deliveryTimeoutMs)))
-        : PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS;
-    const deliveryDeadline = Date.now() + Math.min(PASSIVE_HOOK_DELIVERY_BUDGET_MS, inlineTimeoutMs + PASSIVE_MIN_SECOND_DELIVERY_MS);
     if (!input.deferDelivery && queued.result.delivery_state === 'queued' && dueAt(queued.result) <= Date.now())
         deliveryStatus = await attemptQueuedDelivery({
             path: location.path,
@@ -956,12 +954,11 @@ async function recordLifecycleEvent(input) {
             apiKey: input.apiKey,
             baseUrl: input.baseUrl,
             event: queued.result,
-            timeoutMs: inlineTimeoutMs,
+            timeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
         });
     if (deliveryStatus >= 200 && deliveryStatus < 300) {
         const previous = snapshot(location.path, location.ownsParent).events.find((row) => (row.delivery_state === 'queued' && row.event_id !== event.event_id && dueAt(row) <= Date.now()));
-        const previousTimeoutMs = Math.min(inlineTimeoutMs, deliveryDeadline - Date.now());
-        if (previous && previousTimeoutMs >= PASSIVE_MIN_SECOND_DELIVERY_MS) {
+        if (previous) {
             try {
                 await attemptQueuedDelivery({
                     path: location.path,
@@ -969,7 +966,7 @@ async function recordLifecycleEvent(input) {
                     apiKey: input.apiKey,
                     baseUrl: input.baseUrl,
                     event: previous,
-                    timeoutMs: previousTimeoutMs,
+                    timeoutMs: PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS,
                 });
             }
             catch {
@@ -988,5 +985,41 @@ async function recordLifecycleEvent(input) {
         pending: final.events.filter((row) => row.delivery_state === 'queued').length,
         recovered_corruption: recoveredCorruption,
     };
+}
+/**
+ * Cross-process guard so a burst of hook invocations starts at most one detached
+ * background nudge per credential namespace. Best effort: any filesystem problem
+ * simply means no background nudge is started (the event stays spooled).
+ */
+function claimBackgroundNudgeLock(input) {
+    try {
+        const lockPath = `${spoolPath(input.apiKey, input.agentId).path}.nudge.lock`;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+                (0, node_fs_1.closeSync)((0, node_fs_1.openSync)(lockPath, node_fs_1.constants.O_CREAT | node_fs_1.constants.O_EXCL | node_fs_1.constants.O_WRONLY, 0o600));
+                return true;
+            }
+            catch (error) {
+                if (error.code !== 'EEXIST')
+                    return false;
+                try {
+                    if (Date.now() - (0, node_fs_1.statSync)(lockPath).mtimeMs <= BACKGROUND_NUDGE_LOCK_STALE_MS)
+                        return false;
+                    (0, node_fs_1.unlinkSync)(lockPath);
+                }
+                catch {
+                    return false;
+                }
+            }
+        }
+    }
+    catch { /* best effort */ }
+    return false;
+}
+function releaseBackgroundNudgeLock(input) {
+    try {
+        (0, node_fs_1.unlinkSync)(`${spoolPath(input.apiKey, input.agentId).path}.nudge.lock`);
+    }
+    catch { /* already gone */ }
 }
 //# sourceMappingURL=lifecycle-spool.js.map

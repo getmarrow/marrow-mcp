@@ -18,6 +18,7 @@ const hook_contract_1 = require("./hook-contract");
 const hook_context_1 = require("./hook-context");
 const hook_session_1 = require("./hook-session");
 const hook_pre_action_1 = require("./hook-pre-action");
+const node_child_process_1 = require("node:child_process");
 const env_1 = require("./env");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const spool_command_1 = require("./spool-command");
@@ -61,6 +62,9 @@ function parseArgs() {
         if (args[i] === 'drain-spool' || args[i] === '--drain-spool') {
             result.drainSpool = true;
         }
+        if (args[i] === 'background-nudge') {
+            result.backgroundNudge = true;
+        }
         if (args[i] === 'ping' || args[i] === '--ping') {
             result.ping = true;
         }
@@ -80,6 +84,45 @@ function reportLifecycleSpool(input) {
         void (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.agentId });
     }
     return spool;
+}
+// PostToolUse only spools. This starts one detached, unref'd process that delivers the
+// spooled events with the longer background timeout, so the hook returns immediately.
+function launchBackgroundLifecycleNudge() {
+    try {
+        if (process.env.MARROW_HOOK_BACKGROUND_NUDGE === 'false' || !process.argv[1])
+            return;
+        const identity = (0, hook_contract_2.resolveNativeHookIdentity)(process.argv[2]);
+        const apiKey = identity.environment.apiKey || '';
+        if (!apiKey)
+            return;
+        const spool = (0, lifecycle_spool_1.lifecycleSpoolStatus)({ apiKey, agentId: identity.agent_id });
+        if (!(0, lifecycle_spool_1.shouldNudgeLifecycleSpool)(spool))
+            return;
+        if (!(0, lifecycle_spool_1.claimBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id }))
+            return;
+        const child = (0, node_child_process_1.spawn)(process.execPath, [process.argv[1], 'background-nudge'], {
+            detached: true, stdio: 'ignore', env: process.env,
+        });
+        child.on('error', () => (0, lifecycle_spool_1.releaseBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id }));
+        child.unref();
+    }
+    catch { /* the event stays spooled for the next nudge */ }
+}
+async function runBackgroundNudge() {
+    const identity = (0, hook_contract_2.resolveNativeHookIdentity)(undefined);
+    const apiKey = identity.environment.apiKey || '';
+    try {
+        if (!apiKey)
+            return;
+        const baseUrl = (0, index_1.validateBaseUrl)(identity.environment.baseUrl || 'https://api.getmarrow.ai');
+        await (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey, baseUrl, agentId: identity.agent_id });
+    }
+    catch { /* best effort */ }
+    finally {
+        if (apiKey)
+            (0, lifecycle_spool_1.releaseBackgroundNudgeLock)({ apiKey, agentId: identity.agent_id });
+        process.exit(0);
+    }
 }
 async function runPingCommand() {
     if (cliArgs.apiKey) {
@@ -365,7 +408,10 @@ if (process.argv[2] === 'keys') {
 // Only start MCP server if not handling a CLI command
 if (process.argv[2] !== 'keys') {
     if (cliArgs.hook) {
-        void (0, hook_1.runHookCommand)();
+        void (0, hook_1.runHookCommand)().finally(launchBackgroundLifecycleNudge);
+    }
+    else if (cliArgs.backgroundNudge) {
+        void runBackgroundNudge();
     }
     else if (cliArgs.contextHook) {
         void (0, hook_context_1.runContextHookCommand)();

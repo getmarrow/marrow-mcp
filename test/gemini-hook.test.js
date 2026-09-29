@@ -8,6 +8,16 @@ const test = require('node:test');
 const { normalizeHookEventPayload, resolveNativeHookIdentity } = require('../dist/hook-contract.js');
 const { classifyTool, geminiPreActionHookOutput } = require('../dist/hook-pre-action.js');
 const { runHookCommand } = require('../dist/hook.js');
+
+// PostToolUse now only spools (no inline network wait); deliver through the same
+// drain the detached background nudge uses so these tests still assert wire content.
+async function runHookAndDrain(payload) {
+  await runHookCommand(payload);
+  await require('../dist/lifecycle-spool.js').drainLifecycleSpool({
+    apiKey: process.env.MARROW_API_KEY, baseUrl: process.env.MARROW_BASE_URL,
+    agentId: process.env.MARROW_FLEET_AGENT_ID || process.env.MARROW_AGENT_ID || undefined,
+  });
+}
 const { runSessionHookCommand } = require('../dist/hook-session.js');
 
 const FIXED_REASON = 'Marrow blocked this action because required governance approval or proof is unavailable.';
@@ -213,8 +223,8 @@ test('Gemini AfterTool returns neutral JSON and records compact success/failure 
       MARROW_PASSIVE_TOKEN_USAGE: 'false',
     }, async () => {
       output = await captureStdout(async () => {
-        await runHookCommand({ session_id: 'gemini-post', hook_event_name: 'AfterTool', tool_name: 'write_file', tool_input: { content: 'synthetic-private-input' }, tool_response: { output: 'synthetic-private-output' } });
-        await runHookCommand({ session_id: 'gemini-post', hook_event_name: 'AfterTool', tool_name: 'mcp_github_create_issue', tool_input: { private: 'synthetic-private-args' }, tool_response: { error: 'synthetic-private-error' }, mcp_context: { private: 'synthetic-private-context' } });
+        await runHookAndDrain({ session_id: 'gemini-post', hook_event_name: 'AfterTool', tool_name: 'write_file', tool_input: { content: 'synthetic-private-input' }, tool_response: { output: 'synthetic-private-output' } });
+        await runHookAndDrain({ session_id: 'gemini-post', hook_event_name: 'AfterTool', tool_name: 'mcp_github_create_issue', tool_input: { private: 'synthetic-private-args' }, tool_response: { error: 'synthetic-private-error' }, mcp_context: { private: 'synthetic-private-context' } });
       });
     });
   } finally {

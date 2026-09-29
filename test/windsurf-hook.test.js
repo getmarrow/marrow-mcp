@@ -8,6 +8,16 @@ const test = require('node:test');
 const { normalizeHookEventPayload, resolveNativeHookIdentity } = require('../dist/hook-contract.js');
 const { classifyTool, windsurfPreActionDecision } = require('../dist/hook-pre-action.js');
 const { runHookCommand } = require('../dist/hook.js');
+
+// PostToolUse now only spools (no inline network wait); deliver through the same
+// drain the detached background nudge uses so these tests still assert wire content.
+async function runHookAndDrain(payload) {
+  await runHookCommand(payload);
+  await require('../dist/lifecycle-spool.js').drainLifecycleSpool({
+    apiKey: process.env.MARROW_API_KEY, baseUrl: process.env.MARROW_BASE_URL,
+    agentId: process.env.MARROW_FLEET_AGENT_ID || process.env.MARROW_AGENT_ID || undefined,
+  });
+}
 const { runSessionHookCommand } = require('../dist/hook-session.js');
 
 const FIXED_DENIAL = 'Marrow blocked this action because required governance approval or proof is unavailable.\n';
@@ -203,9 +213,9 @@ test('Windsurf post success hooks record compact evidence without raw tool data'
       MARROW_FLEET_AGENT_ID: 'windsurf-agent',
       MARROW_PASSIVE_TOKEN_USAGE: 'false',
     }, async () => {
-      await runHookCommand({ agent_action_name: 'post_run_command', trajectory_id: 'trajectory-post', execution_id: 'command-post', tool_info: { command_line: 'synthetic-private-command', output: 'synthetic-private-output' } });
-      await runHookCommand({ agent_action_name: 'post_write_code', trajectory_id: 'trajectory-post', execution_id: 'write-post', tool_info: { file_path: '/synthetic/private/path', edits: [{ text: 'synthetic-private-edit' }] } });
-      await runHookCommand({ agent_action_name: 'post_mcp_tool_use', trajectory_id: 'trajectory-post', execution_id: 'mcp-post', tool_info: { mcp_server_name: 'github', mcp_tool_name: 'create_issue', mcp_tool_arguments: { private: 'synthetic-private-args' }, mcp_result: 'synthetic-private-result' } });
+      await runHookAndDrain({ agent_action_name: 'post_run_command', trajectory_id: 'trajectory-post', execution_id: 'command-post', tool_info: { command_line: 'synthetic-private-command', output: 'synthetic-private-output' } });
+      await runHookAndDrain({ agent_action_name: 'post_write_code', trajectory_id: 'trajectory-post', execution_id: 'write-post', tool_info: { file_path: '/synthetic/private/path', edits: [{ text: 'synthetic-private-edit' }] } });
+      await runHookAndDrain({ agent_action_name: 'post_mcp_tool_use', trajectory_id: 'trajectory-post', execution_id: 'mcp-post', tool_info: { mcp_server_name: 'github', mcp_tool_name: 'create_issue', mcp_tool_arguments: { private: 'synthetic-private-args' }, mcp_result: 'synthetic-private-result' } });
     });
   } finally {
     globalThis.fetch = originalFetch;
