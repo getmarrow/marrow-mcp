@@ -1,3 +1,6 @@
+import { homedir } from 'node:os';
+import { posix } from 'node:path';
+
 type ToolPolicyEvent = {
   tool_name?: string;
   tool_input?: unknown;
@@ -75,6 +78,15 @@ const SOURCE_OR_DOC_FILE = /\.(?:[cm]?[jt]sx?|md|mdx|rst|py|rb|go|rs|java|kt|swi
 const SECRET_VARIABLE_PART = new Set(['KEY', 'APIKEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PAT', 'CREDENTIAL', 'CREDENTIALS', 'AUTH']);
 const GOVERNANCE_CONTROL_FILE = /(?:^|\/)\.marrow\/control\.json$/;
 const MAX_SHELL_ANALYSIS_BYTES = 8192;
+// Characters whose shell meaning the splitter does not model exactly. Bash
+// treats a lone carriage return, other control characters and Unicode spaces
+// or line separators as word characters, so splitting on them could hide one
+// command inside another; such input takes the conservative whole-command path.
+const UNMODELED_SHELL_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u00a0\u00ad\u061c\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff\ufff9-\ufffb]/;
+// Programs whose options can execute, write, or change what runs; an expanded
+// variable could supply such an option, so they are not read-only with one.
+const OPTION_SENSITIVE_PROGRAMS = new Set(['find', 'rg', 'sort', 'git', 'gh', 'date', 'env', 'file', 'npm', 'pnpm', 'yarn', 'node', 'npx',
+  'pytest', 'python', 'python3', 'cargo', 'go']);
 
 const MUTATION_TOOL_VERB = /(?:^|__|_)(?:create|update|delete|remove|write|edit|send|post|put|patch|execute|run|deploy|publish|merge|push|commit|revoke|rotate|charge|refund|cancel|approve)(?:_|$)/;
 const READ_ONLY_TOOL_VERB = /(?:^|__|_)(?:get|list|read|search|find|fetch|status|inspect|query)(?:_|$)/;
@@ -195,7 +207,7 @@ export type ShellSegmentVerdict = 'read' | 'secret' | 'other';
  * complex parameter expansion); callers then fall back to whole-command rules.
  */
 export function parseShellSegments(command: string): ShellSegment[] | null {
-  if (command.length > MAX_SHELL_ANALYSIS_BYTES) return null;
+  if (command.length > MAX_SHELL_ANALYSIS_BYTES || UNMODELED_SHELL_CHARACTER.test(command)) return null;
   const segments: ShellSegment[] = [];
   let segment: ShellSegment = { words: [], outputs: [], inputs: [], expansions: [] };
   let word = '';
@@ -295,7 +307,7 @@ export function parseShellSegments(command: string): ShellSegment[] | null {
       continue;
     }
     if (char === ' ' || char === '\t') { finishWord(); index += 1; continue; }
-    if (char === '\n' || char === '\r' || char === ';') {
+    if (char === '\n' || char === ';') {
       if (!finishSegment()) return null;
       index += 1;
       continue;
@@ -358,20 +370,39 @@ function pathCandidates(value: string): string[] {
   return candidates.filter(Boolean);
 }
 
-function secretPath(value: string): boolean {
-  const path = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
-  if (!path) return false;
+function homeDirectory(): string {
+  return process.env.HOME || homedir();
+}
+
+function expandHome(value: string): string {
+  if (value === '~' || value.startsWith('~/')) return `${homeDirectory()}${value.slice(1)}`;
+  return value.replace(/^\$(?:HOME|\{HOME\})(?=\/|$)/, homeDirectory());
+}
+
+/** Resolves ~, $HOME, ., .. and repeated slashes against the directory the command runs in. */
+export function normalizedToolPath(value: string, base = process.cwd()): string {
+  return posix.resolve(base.replace(/\\/g, '/'), expandHome(value.trim().replace(/\\/g, '/')));
+}
+
+function secretPath(value: string, base: string): boolean {
+  const cleaned = value.trim().replace(/\\/g, '/');
+  if (!cleaned) return false;
+  const rawName = cleaned.replace(/\/+$/, '').split('/').pop() || '';
+  // A bare word such as "token" is usually a search term or argument, not a file.
+  const pathLike = cleaned.includes('/') || cleaned.startsWith('~') || rawName.startsWith('.') || /\.[A-Za-z0-9]+$/.test(rawName);
+  const path = normalizedToolPath(cleaned, base);
   const parts = path.split('/').filter(Boolean);
   const name = parts[parts.length - 1] || '';
-  // A bare word such as "token" is usually a search term or argument, not a file.
-  const pathLike = path.includes('/') || name.startsWith('.') || /\.[A-Za-z0-9]+$/.test(name);
   const directories = pathLike ? parts : parts.slice(0, -1);
   if (directories.some((part) => SECRET_STORE_DIRECTORY.test(part))) return true;
   if (!SOURCE_OR_DOC_FILE.test(name) && directories.some((part) => NAMED_SECRET_DIRECTORY.test(part))) return true;
   if (/^\/proc\/[^/]+\/environ$/.test(path) || /^\/etc\/g?shadow$/.test(path)) return true;
+  // Claude Code local settings can carry agent keys in their env block.
+  if (name === 'settings.local.json' && parts[parts.length - 2] === '.claude') return true;
+  if (!pathLike) return SECRET_FILE.test(name) && !ENV_TEMPLATE_FILE.test(name);
   if (ENV_TEMPLATE_FILE.test(name)) return false;
   if (SECRET_FILE.test(name)) return true;
-  return pathLike && SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
+  return SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }
 
 // A glob such as .env* or *.pem names secret files without spelling one out.
@@ -382,12 +413,14 @@ function globVariants(value: string): string[] {
 }
 
 /** True for a path that holds secret or credential material. */
-export function isSecretPath(value: string): boolean {
-  return pathCandidates(String(value || '')).flatMap(globVariants).some(secretPath);
+export function isSecretPath(value: string, base = process.cwd()): boolean {
+  return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base));
 }
 
-function isProtectedWriteTarget(value: string): boolean {
-  return pathCandidates(String(value || '')).some((path) => secretPath(path) || GOVERNANCE_CONTROL_FILE.test(path.trim()));
+/** True for a secret file or Marrow's own local control state. */
+export function isProtectedWriteTarget(value: string, base = process.cwd()): boolean {
+  return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base)
+    || GOVERNANCE_CONTROL_FILE.test(normalizedToolPath(candidate, base)));
 }
 
 /** True for an environment variable name that conventionally holds a secret. */
@@ -483,36 +516,60 @@ function readOnlyProgramInvocation(program: string, args: string[]): boolean {
   if (program === 'sort') return !args.some((arg) => longOptionPrefix(arg, ['output', 'compress-program']) || /^-[A-Za-z]*o/.test(arg));
   if (program === 'env') return args.every((arg) => arg === '-0' || arg === '--null');
   if (program === 'date') return !args.some((arg) => /^-[A-Za-z]*s/.test(arg) || longOptionPrefix(arg, ['set']));
+  if (program === 'file') return !args.some((arg) => /^-[A-Za-z]*C/.test(arg) || longOptionPrefix(arg, ['compile']));
   return true;
 }
 
 /** Classifies one simple command: a read-only inspection, a secret access, or anything else. */
-export function shellSegmentVerdict(segment: ShellSegment): ShellSegmentVerdict {
+export function shellSegmentVerdict(segment: ShellSegment, cwd: string | null = process.cwd()): ShellSegmentVerdict {
+  // After a cd Marrow cannot follow, relative paths are unknown, so nothing that follows is read-only.
+  const base = cwd ?? process.cwd();
+  const secret = (value: string) => isSecretPath(value, base);
+  const protectedTarget = (value: string) => isProtectedWriteTarget(value, base);
   const writes = segment.outputs.filter((target) => !['/dev/null', '/dev/stdout', '/dev/stderr'].includes(target));
-  if (segment.inputs.some(isSecretPath) || writes.some(isProtectedWriteTarget)) return 'secret';
-  if (!segment.words.length) return writes.length ? 'other' : 'read';
+  if (segment.inputs.some(secret) || writes.some(protectedTarget)) return 'secret';
+  if (!segment.words.length) return writes.length || cwd === null ? 'other' : 'read';
   // A leading assignment can redirect a pager or helper into arbitrary code.
   const program = /^[A-Za-z_][A-Za-z0-9_]*=/.test(segment.words[0]) ? null : programName(segment.words[0]);
   const args = segment.words.slice(1);
-  if (program && readOnlyProgramInvocation(program, args)) {
+  if (program === 'gh' && /^auth\s+(?:token\b|status\b.*(?:--show-token|-t\b))/.test(args.join(' '))) return 'secret';
+  const expandedOption = program !== null && OPTION_SENSITIVE_PROGRAMS.has(program) && segment.expansions.length > 0;
+  if (program && !expandedOption && readOnlyProgramInvocation(program, args)) {
     // Printing a secret variable copies it into the agent transcript.
     if (segment.expansions.some(isSecretVariableName)) return 'secret';
     if (program === 'printenv' && args.some(isSecretVariableName)) return 'secret';
     // A bare env or printenv prints every secret the process holds.
     if ((program === 'env' || program === 'printenv') && args.every((arg) => arg.startsWith('-'))) return 'secret';
     if (program === 'jq' && args.some((arg) => /\$ENV\b|(?:^|[^A-Za-z0-9_$.])env\b/.test(arg))) return 'secret';
+    if (program === 'cd' && args.some(secret)) return 'secret';
     if (!NON_CONTENT_BASH_COMMANDS.has(program)) {
       const targets = ['grep', 'egrep', 'fgrep', 'rg', 'jq'].includes(program) ? contentReadTargets(program, args) : args.filter((arg) => !arg.startsWith('-') || arg.includes('='));
-      if (targets.some(isSecretPath)) return 'secret';
+      if (targets.some(secret)) return 'secret';
     }
-    return writes.length ? 'other' : 'read';
+    return writes.length || cwd === null ? 'other' : 'read';
   }
-  return segment.words.some(isProtectedWriteTarget) ? 'secret' : 'other';
+  return segment.words.some(protectedTarget) ? 'secret' : 'other';
+}
+
+// The directory later simple commands run in after this one, or null when it cannot be known.
+function nextWorkingDirectory(segment: ShellSegment, cwd: string | null): string | null {
+  if (cwd === null || programName(segment.words[0] || '') !== 'cd') return cwd;
+  const targets = segment.words.slice(1).filter((arg) => arg !== '--');
+  if (!targets.length) return homeDirectory();
+  if (targets.length > 1 || targets[0] === '-' || targets[0].startsWith('-') || segment.expansions.some((name) => name !== 'HOME')) return null;
+  return normalizedToolPath(targets[0], cwd);
 }
 
 function shellAnalysis(command: string): { segments: ShellSegment[]; verdicts: ShellSegmentVerdict[] } | null {
   const segments = parseShellSegments(command);
-  return segments ? { segments, verdicts: segments.map(shellSegmentVerdict) } : null;
+  if (!segments) return null;
+  let cwd: string | null = process.cwd();
+  const verdicts = segments.map((segment) => {
+    const verdict = shellSegmentVerdict(segment, cwd);
+    cwd = nextWorkingDirectory(segment, cwd);
+    return verdict;
+  });
+  return { segments, verdicts };
 }
 
 function stringLeaves(value: unknown, depth = 0, output: string[] = []): string[] {
@@ -540,19 +597,30 @@ export function toolTargetPaths(event: ToolPolicyEvent): string[] {
   return [...new Set(paths)];
 }
 
+// The shell text exactly as the host will run it; hookToolCommand trims, and a
+// trimmed control or Unicode space character must still reach the parser check.
+function shellCommandText(event: ToolPolicyEvent): string {
+  if (typeof event.tool_input === 'string') return event.tool_input;
+  const input = asRecord(event.tool_input);
+  for (const key of ['command', 'cmd']) {
+    if (typeof input?.[key] === 'string' && String(input[key]).trim()) return String(input[key]);
+  }
+  return hookToolCommand(event);
+}
+
 /**
  * True when a tool reads secret or credential material, or writes a secret file
  * or Marrow's local control state. Unparseable shell falls back to a token scan.
  */
 export function isSecretMaterialAccess(event: ToolPolicyEvent): boolean {
   const tool = normalizeHookToolName(event.tool_name);
-  if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some(isSecretPath);
-  if (FILE_EDIT_TOOLS.has(tool)) return toolTargetPaths(event).some(isProtectedWriteTarget);
+  if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path));
+  if (FILE_EDIT_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
   if (!SHELL_TOOLS.has(tool)) return false;
-  const command = hookToolCommand(event);
+  const command = shellCommandText(event);
   const analysis = shellAnalysis(command);
   if (analysis) return analysis.verdicts.includes('secret');
-  return command.split(/[\s'"`;&|<>()]+/).some(isProtectedWriteTarget);
+  return command.split(/[\s'"`;&|<>(){}]+/).some((token) => isProtectedWriteTarget(token));
 }
 
 /**
@@ -566,7 +634,7 @@ export function toolClassificationText(event: ToolPolicyEvent): string {
   if (FILE_EDIT_TOOLS.has(tool)) return [tool, ...toolTargetPaths(event)].join(' ');
   const command = hookToolCommand(event);
   if (SHELL_TOOLS.has(tool)) {
-    const analysis = shellAnalysis(command);
+    const analysis = shellAnalysis(shellCommandText(event));
     if (analysis) {
       return [tool, ...analysis.segments
         .filter((_, index) => analysis.verdicts[index] !== 'read')
@@ -605,11 +673,11 @@ export function isReadOnlyToolEvent(event: ToolPolicyEvent): boolean {
   const command = hookToolCommand(event);
   if (tool === 'bash' && command) {
     // A compound command is read-only only when every simple command in it is.
-    const analysis = shellAnalysis(command);
+    const analysis = shellAnalysis(shellCommandText(event));
     return Boolean(analysis?.segments.length && analysis.verdicts.every((verdict) => verdict === 'read'));
   }
 
   return !['edit', 'write', 'multiedit', 'search_replace'].includes(tool)
     && pathOnlyInput(event.tool_input)
-    && !toolTargetPaths(event).some(isSecretPath);
+    && !toolTargetPaths(event).some((path) => isSecretPath(path));
 }
