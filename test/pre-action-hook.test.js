@@ -1262,8 +1262,8 @@ test('input over the pre-action bound is allowed when control is disabled and na
 });
 
 test('characters the shell splitter does not model never yield a read-only command', () => {
-  const unmodeled = ['\r', '\v', '\f', '\u0000', '\u0001', '\u001b', '\u007f', '\u0085', ' ', '­',
-    ' ', ' ', '​', '‎', ' ', ' ', '‮', '⁦', '　', '﻿'];
+  const unmodeled = ['\u000d', '\u000b', '\u000c', '\u0000', '\u0001', '\u001b', '\u007f', '\u0085', '\u00a0', '\u00ad',
+    '\u1680', '\u2000', '\u200b', '\u200e', '\u2028', '\u2029', '\u202e', '\u2066', '\u3000', '\ufeff'];
   for (const character of unmodeled) {
     const label = `U+${character.codePointAt(0).toString(16).padStart(4, '0')}`;
     for (const command of [`ls ${character} cat notes.md`, `ls${character}cat notes.md`, `${character}ls`, `ls${character}`,
