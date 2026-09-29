@@ -136,7 +136,11 @@ v3.9.87 hardens the authenticated control-path canary against single-sample tran
 
 v3.9.86 was published with the adapter version constant still at `3.9.85`, so the strict canary identity check rejected it; it is deprecated — use `3.9.87`. SDK `3.7.62` and installer `0.1.56` are unchanged; install MCP `3.9.87`, reload the host, review hook trust, and verify before claiming the updated client is active.
 
-## What's New in v3.9.96
+## What's New in v3.9.97
+
+v3.9.97 makes native hook control easier to live with. Free and starter gates are advisory again, so they no longer hard-block work; enforced tiers keep enforcing. In Claude Code, an action that needs owner approval now shows an owner-approval prompt instead of a silent denial. Read-only commands such as `git show`, `git log` and `ls` no longer trigger false blocks, and denial messages now say plainly why an action was stopped and what to do next. The hook sends `protocol_version` when it verifies an action permit, and an action that was denied is recorded as a closed outcome rather than left pending. Hooks return faster because telemetry is now delivered by a detached background process that honors opt-outs and never blocks the action. Pending writes are retried more reliably: the client honors `retry_after_ms` and the optional `lease_remaining_ms`, and resumes the same write instead of starting a new one. Policy decisions, proof requirements and fail-closed behavior for enforced actions are unchanged. Update, reload the host and review hook trust before relying on the new hook.
+
+### Previous release: v3.9.96
 
 v3.9.96 fixes native pre-action hooks that denied protected actions after the runtime gate allowed them. The hook sent `source_meta` fields that Think rejects, and without a risk level the runtime answered protected actions on its low-risk fast path, whose receipt cannot back an action permit. Protected actions now request a durable gate and create their decision with accepted metadata only; unprotected actions stop at the gate without creating a decision or permit. A rejected control call now names its HTTP status and failure code without echoing service text. Policy decisions, proof requirements and fail-closed behavior are unchanged. Update, reload the host and review hook trust before relying on the new hook.
 
