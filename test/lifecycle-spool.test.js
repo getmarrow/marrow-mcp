@@ -1923,7 +1923,8 @@ test('bounded delivery timeout cannot stall a hook when fetch ignores abort', as
     await withSpoolPath(path, async () => {
       const started = Date.now();
       const result = await recordLifecycleEvent(lifecycleInput({ event_id: 'timeout-event' }));
-      assert.ok(Date.now() - started < 1500);
+      assert.ok(Date.now() - started >= 2000, 'waits for the 2.2 s acknowledgement window');
+      assert.ok(Date.now() - started < 3500, 'and never longer than the bounded delivery timeout');
       assert.equal(result.queued, true);
       assert.match(readFileSync(path, 'utf8'), /timeout-event/);
       const status = lifecycleSpoolStatus({ apiKey: 'test-mcp-spool-key', agentId: 'agent-one' });

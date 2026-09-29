@@ -4,6 +4,9 @@ const assert = require('node:assert/strict');
 const { MarrowRequestError } = require('../dist/request-reliability.js');
 const { marrowCommit, marrowThink } = require('../dist/index.js');
 
+// 3 s budget with 1000 ms server guidance fits exactly three identical attempts.
+process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS = '3000';
+
 function response(data, status = 200) {
   return Response.json({ data }, { status });
 }
@@ -125,6 +128,7 @@ test('marrowThink exhausts a documented 202 after exactly three identical attemp
     return response({
       reconciliation_state: 'runtime_continuation_persistence_pending',
       retryable: true,
+      retry_after_ms: 1000,
       committed: false,
       decision_state: 'created',
       decision_id: 'decision-exhausted-think',
@@ -156,6 +160,7 @@ test('marrowCommit exhausts a documented 202 after exactly three identical attem
     return response({
       reconciliation_state: 'pending',
       retryable: true,
+      retry_after_ms: 1000,
       committed: false,
       decision_id: 'decision-exhausted-commit',
       idempotency_key: call.idempotencyKey,
