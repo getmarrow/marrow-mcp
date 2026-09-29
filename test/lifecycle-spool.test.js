@@ -593,22 +593,23 @@ test('pre-action policy maps block to deny, review to ask, and allow to native p
     protectedRisk: true,
   });
   assert.equal(block.hookSpecificOutput.permissionDecision, 'deny');
-  assert.equal(block.hookSpecificOutput.permissionDecisionReason, 'collect proof');
+  assert.equal(block.hookSpecificOutput.permissionDecisionReason, 'Marrow blocked this action under the current policy. Reason: proof missing. Next: collect proof');
 
+  const interactive = { available: true, unavailableReason: '' };
   const review = preActionHookOutput({
     runtime: { risk_gate: { allow: false, decision: 'review_required', reasons: [] }, exact_next_action: 'ask owner' },
     permit: { verified: true, permit_id: 'permit-review' },
     protectedRisk: true,
-  });
+  }, 'claude-code', interactive);
   assert.equal(review.hookSpecificOutput.permissionDecision, 'ask');
 
   const codexReview = preActionHookOutput({
     runtime: { risk_gate: { allow: false, decision: 'review_required', reasons: [] }, exact_next_action: 'ask owner' },
     permit: { verified: true, permit_id: 'permit-review' },
     protectedRisk: true,
-  }, 'codex');
+  }, 'codex', interactive);
   assert.equal(codexReview.hookSpecificOutput.permissionDecision, 'deny');
-  assert.equal(codexReview.hookSpecificOutput.permissionDecisionReason, 'ask owner');
+  assert.match(codexReview.hookSpecificOutput.permissionDecisionReason, /^Marrow requires owner review before this action.*Reason: ask owner$/);
 
   const allow = preActionHookOutput({
     runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] }, before_you_act: 'reuse the prior lesson' },

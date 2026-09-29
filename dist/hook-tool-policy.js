@@ -6,6 +6,14 @@ exports.isOfficialMarrowMcpEvent = isOfficialMarrowMcpEvent;
 exports.isMcpHookTool = isMcpHookTool;
 exports.isProtectedShellMutation = isProtectedShellMutation;
 exports.hookToolCommand = hookToolCommand;
+exports.parseShellSegments = parseShellSegments;
+exports.isSecretPath = isSecretPath;
+exports.isSecretVariableName = isSecretVariableName;
+exports.shellSegmentVerdict = shellSegmentVerdict;
+exports.toolTargetPaths = toolTargetPaths;
+exports.isSecretMaterialAccess = isSecretMaterialAccess;
+exports.toolClassificationText = toolClassificationText;
+exports.isShellGovernedTool = isShellGovernedTool;
 exports.isReadOnlyToolEvent = isReadOnlyToolEvent;
 const READ_ONLY_TOOLS = new Set([
     'read',
@@ -34,11 +42,47 @@ const READ_ONLY_TOOLS = new Set([
     'marrow_orient',
     'marrow_ask',
 ]);
+// Session-local planning state: no external side effect, so words in a task
+// subject such as "publish" never make the bookkeeping call itself protected.
+const LOCAL_TASK_TOOLS = new Set(['taskcreate', 'taskupdate', 'taskoutput', 'todowrite', 'tasklist', 'taskget', 'todoread']);
+// Tools that read file content; a secret target makes the read protected.
+const CONTENT_READ_TOOLS = new Set(['read', 'read_file', 'notebookread', 'grep']);
+// File-editing tools are judged by the file they write, never by the text they write.
+const FILE_EDIT_TOOLS = new Set(['edit', 'write', 'multiedit', 'search_replace', 'notebookedit', 'write_to_file', 'replace_in_file']);
+const SHELL_TOOLS = new Set(['bash', 'run_terminal_command', 'shell', 'execute_command', 'run_shell_command']);
 const READ_ONLY_BASH_COMMANDS = new Set([
     'read', 'grep', 'rg', 'ls', 'cat', 'find', 'tail', 'head', 'wc', 'file',
     'stat', 'which', 'type', 'echo', 'printf', 'pwd', 'date', 'env', 'printenv',
-    'whoami', 'uname',
+    'whoami', 'uname', 'jq', 'cd', 'sort', 'cut', 'tr', 'nl', 'du', 'basename',
+    'dirname', 'realpath', 'readlink', 'true',
 ]);
+// Read-only programs whose arguments are names, text, or metadata targets rather
+// than file content, so a secret-looking argument is not a secret read.
+const NON_CONTENT_BASH_COMMANDS = new Set([
+    'ls', 'find', 'stat', 'file', 'du', 'which', 'type', 'echo', 'printf', 'pwd',
+    'date', 'whoami', 'uname', 'cd', 'basename', 'dirname', 'realpath', 'readlink',
+    'true', 'tr', 'env', 'printenv',
+]);
+const READ_ONLY_TOOLCHAIN_COMMANDS = [
+    /^(?:node|npm)\s+(?:-v|--version)$/i,
+    /^(?:npm|pnpm|yarn)\s+(?:test|audit|run\s+(?:test|check|lint|typecheck|build))(?:\s|$)/i,
+    /^(?:node\s+--test|npx\s+(?:vitest|tsc\s+--noemit)|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest)|cargo\s+(?:test|check)|go\s+test)(?:\s|$)/i,
+    /^(?:npm|pnpm)\s+(?:view|info|show|ls|list|outdated|explain|why)(?:\s|$)/i,
+    /^yarn\s+(?:info|list|why|outdated)(?:\s|$)/i,
+];
+const READ_ONLY_GIT_SUBCOMMANDS = new Set(['status', 'diff', 'show', 'log', 'branch', 'rev-parse', 'ls-files', 'ls-remote']);
+const READ_ONLY_GH_COMMAND = /^(?:pr\s+(?:view|list|status|diff|checks)|issue\s+(?:view|list|status)|run\s+(?:view|list)|repo\s+view|release\s+(?:view|list)|workflow\s+(?:view|list))(?:\s|$)/i;
+const STANDARD_PROGRAM_PATH = /^\/(?:usr\/)?(?:local\/)?s?bin\/([A-Za-z0-9._-]+)$/;
+const SECRET_STORE_DIRECTORY = /^(?:\.ssh|\.gnupg|\.aws|\.azure|\.kube|\.docker|\.password-store|\.secrets?)$/i;
+// A plainly named secrets/credentials directory holds secret material, but source code may live in one too.
+const NAMED_SECRET_DIRECTORY = /^(?:secrets?|credentials?)$/i;
+const SECRET_FILE = /^(?:\.env(?:\..+)?|.+\.env|\.dev\.vars|\.git-credentials|\.netrc|_netrc|\.npmrc|\.yarnrc\.ya?ml|\.pypirc|\.pgpass|\.my\.cnf|\.htpasswd|\.?credentials\.(?:json|ya?ml|toml|ini|csv|txt|xml)|secrets?\.(?:json|ya?ml|toml|env|txt)|id_(?:rsa|dsa|ecdsa|ed25519)(?:_[A-Za-z0-9]+)?|.+\.(?:pem|key|p12|pfx|jks|keystore|kdbx|ppk))$/i;
+const ENV_TEMPLATE_FILE = /(?:^|\.)env\.(?:example|sample|template|dist|defaults?)$/i;
+const SECRET_KEYWORD_FILE = /(?:^|[._-])(?:secrets?|credentials?|tokens?|api[_-]?keys?|passwords?|private[_-]?keys?)(?:[._-]|$)/i;
+const SOURCE_OR_DOC_FILE = /\.(?:[cm]?[jt]sx?|md|mdx|rst|py|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|sh|bash|zsh|ps1|sql|html|css|scss|vue|svelte|map|snap|lock)$/i;
+const SECRET_VARIABLE_PART = new Set(['KEY', 'APIKEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PAT', 'CREDENTIAL', 'CREDENTIALS', 'AUTH']);
+const GOVERNANCE_CONTROL_FILE = /(?:^|\/)\.marrow\/control\.json$/;
+const MAX_SHELL_ANALYSIS_BYTES = 8192;
 const MUTATION_TOOL_VERB = /(?:^|__|_)(?:create|update|delete|remove|write|edit|send|post|put|patch|execute|run|deploy|publish|merge|push|commit|revoke|rotate|charge|refund|cancel|approve)(?:_|$)/;
 const READ_ONLY_TOOL_VERB = /(?:^|__|_)(?:get|list|read|search|find|fetch|status|inspect|query)(?:_|$)/;
 const PROTECTED_SHELL_MUTATION_FAMILIES = [
@@ -139,14 +183,447 @@ function hookToolCommand(event) {
         return '';
     }
 }
-function hasWriteLikeShellSyntax(command) {
-    return /(^|[^>])>(?!>)|>>|\b(?:tee|touch|mkdir|rm|mv|cp|install|uninstall|publish|deploy|release)\b|\bsed\s+-i\b|\bperl\s+-i\b/i.test(command)
-        || /\b(?:curl|wget|nc|ncat|netcat|scp|rsync|ssh|ftp|tftp)\b/i.test(command)
-        || /\bgit\s+(?:push|merge|commit|rebase|reset|checkout|switch|tag)\b/i.test(command)
-        || isProtectedShellMutation(command);
+/**
+ * Splits a shell command into simple commands at |, ||, &&, ;, & and newlines,
+ * honoring quotes. Returns null for syntax whose effect cannot be judged from
+ * the words alone (command or process substitution, subshells, heredocs,
+ * complex parameter expansion); callers then fall back to whole-command rules.
+ */
+function parseShellSegments(command) {
+    if (command.length > MAX_SHELL_ANALYSIS_BYTES)
+        return null;
+    const segments = [];
+    let segment = { words: [], outputs: [], inputs: [], expansions: [] };
+    let word = '';
+    let inWord = false;
+    let redirect = null;
+    const finishWord = () => {
+        if (!inWord)
+            return;
+        if (redirect === 'out' || redirect === 'in')
+            (redirect === 'out' ? segment.outputs : segment.inputs).push(word);
+        else if (redirect) {
+            // >&2 and <&0 duplicate descriptors; any other >&target names a file.
+            if (!/^(?:\d+|-|\d+-)$/.test(word))
+                (redirect === 'dup_out' ? segment.outputs : segment.inputs).push(word);
+        }
+        else
+            segment.words.push(word);
+        redirect = null;
+        word = '';
+        inWord = false;
+    };
+    const finishSegment = () => {
+        finishWord();
+        if (redirect)
+            return false;
+        if (segment.words.length || segment.outputs.length || segment.inputs.length)
+            segments.push(segment);
+        segment = { words: [], outputs: [], inputs: [], expansions: [] };
+        return true;
+    };
+    // Reads $NAME, ${NAME} or a special parameter at index; returns the consumed length, or -1 when unsupported.
+    const expansion = (index) => {
+        const rest = command.slice(index);
+        if (rest.startsWith('$('))
+            return -1;
+        const braced = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/.exec(rest);
+        if (braced) {
+            segment.expansions.push(braced[1]);
+            word += braced[0];
+            inWord = true;
+            return braced[0].length;
+        }
+        if (rest.startsWith('${'))
+            return -1;
+        const named = /^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(rest);
+        if (named) {
+            segment.expansions.push(named[1]);
+            word += named[0];
+            inWord = true;
+            return named[0].length;
+        }
+        word += '$';
+        inWord = true;
+        return 1;
+    };
+    let index = 0;
+    while (index < command.length) {
+        const char = command[index];
+        const next = command[index + 1];
+        if (char === "'") {
+            const end = command.indexOf("'", index + 1);
+            if (end < 0)
+                return null;
+            word += command.slice(index + 1, end);
+            inWord = true;
+            index = end + 1;
+            continue;
+        }
+        if (char === '"') {
+            inWord = true;
+            index += 1;
+            let closed = false;
+            while (index < command.length) {
+                const inner = command[index];
+                if (inner === '"') {
+                    closed = true;
+                    index += 1;
+                    break;
+                }
+                if (inner === '`')
+                    return null;
+                if (inner === '\\' && index + 1 < command.length && '$`"\\\n'.includes(command[index + 1])) {
+                    if (command[index + 1] !== '\n')
+                        word += command[index + 1];
+                    index += 2;
+                    continue;
+                }
+                if (inner === '$') {
+                    const consumed = expansion(index);
+                    if (consumed < 0)
+                        return null;
+                    index += consumed;
+                    continue;
+                }
+                word += inner;
+                index += 1;
+            }
+            if (!closed)
+                return null;
+            continue;
+        }
+        if (char === '\\') {
+            if (next === undefined)
+                return null;
+            if (next !== '\n') {
+                word += next;
+                inWord = true;
+            }
+            index += 2;
+            continue;
+        }
+        if (char === '`' || char === '(' || char === ')')
+            return null;
+        if (char === '$') {
+            const consumed = expansion(index);
+            if (consumed < 0)
+                return null;
+            index += consumed;
+            continue;
+        }
+        if (char === ' ' || char === '\t') {
+            finishWord();
+            index += 1;
+            continue;
+        }
+        if (char === '\n' || char === '\r' || char === ';') {
+            if (!finishSegment())
+                return null;
+            index += 1;
+            continue;
+        }
+        if (char === '|') {
+            if (!finishSegment())
+                return null;
+            index += next === '|' || next === '&' ? 2 : 1;
+            continue;
+        }
+        if (char === '&') {
+            if (next === '>') {
+                finishWord();
+                if (redirect)
+                    return null;
+                redirect = 'out';
+                index += command[index + 2] === '>' ? 3 : 2;
+                continue;
+            }
+            if (!finishSegment())
+                return null;
+            index += next === '&' ? 2 : 1;
+            continue;
+        }
+        if (char === '>' || char === '<') {
+            // A digits-only word directly before the operator is a descriptor (2>).
+            if (inWord && /^\d+$/.test(word)) {
+                word = '';
+                inWord = false;
+            }
+            else
+                finishWord();
+            if (redirect)
+                return null;
+            if (char === '<' && next === '<')
+                return null;
+            if (next === '(')
+                return null;
+            let cursor = index + 1;
+            if (char === '>' && (command[cursor] === '>' || command[cursor] === '|'))
+                cursor += 1;
+            if (command[cursor] === '&') {
+                redirect = char === '>' ? 'dup_out' : 'dup_in';
+                cursor += 1;
+            }
+            else if (char === '<' && command[cursor] === '>') {
+                redirect = 'out';
+                cursor += 1;
+            }
+            else {
+                redirect = char === '>' ? 'out' : 'in';
+            }
+            index = cursor;
+            continue;
+        }
+        if (char === '#' && !inWord) {
+            while (index < command.length && command[index] !== '\n')
+                index += 1;
+            continue;
+        }
+        word += char;
+        inWord = true;
+        index += 1;
+    }
+    if (!finishSegment())
+        return null;
+    return segments;
 }
-function hasCompoundShellSyntax(command) {
-    return /[|;&`\n\r]|\$\(|\$\{/.test(command);
+function pathCandidates(value) {
+    const candidates = [value];
+    const assigned = value.indexOf('=');
+    if (assigned >= 0)
+        candidates.push(value.slice(assigned + 1));
+    const revision = value.lastIndexOf(':');
+    if (revision >= 0)
+        candidates.push(value.slice(revision + 1));
+    return candidates.filter(Boolean);
+}
+function secretPath(value) {
+    const path = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!path)
+        return false;
+    const parts = path.split('/').filter(Boolean);
+    const name = parts[parts.length - 1] || '';
+    // A bare word such as "token" is usually a search term or argument, not a file.
+    const pathLike = path.includes('/') || name.startsWith('.') || /\.[A-Za-z0-9]+$/.test(name);
+    const directories = pathLike ? parts : parts.slice(0, -1);
+    if (directories.some((part) => SECRET_STORE_DIRECTORY.test(part)))
+        return true;
+    if (!SOURCE_OR_DOC_FILE.test(name) && directories.some((part) => NAMED_SECRET_DIRECTORY.test(part)))
+        return true;
+    if (/^\/proc\/[^/]+\/environ$/.test(path) || /^\/etc\/g?shadow$/.test(path))
+        return true;
+    if (ENV_TEMPLATE_FILE.test(name))
+        return false;
+    if (SECRET_FILE.test(name))
+        return true;
+    return pathLike && SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
+}
+/** True for a path that holds secret or credential material. */
+function isSecretPath(value) {
+    return pathCandidates(String(value || '')).some(secretPath);
+}
+function isProtectedWriteTarget(value) {
+    return pathCandidates(String(value || '')).some((path) => secretPath(path) || GOVERNANCE_CONTROL_FILE.test(path.trim()));
+}
+/** True for an environment variable name that conventionally holds a secret. */
+function isSecretVariableName(value) {
+    return String(value || '').toUpperCase().split('_').some((part) => SECRET_VARIABLE_PART.has(part));
+}
+function programName(value) {
+    if (!value.includes('/'))
+        return value.toLowerCase();
+    const standard = STANDARD_PROGRAM_PATH.exec(value);
+    return standard ? standard[1].toLowerCase() : null;
+}
+// Positional file arguments for content readers, skipping the pattern or filter
+// operand of grep, rg and jq, and option values that are not files.
+function contentReadTargets(program, args) {
+    const targets = [];
+    const patternFirst = ['grep', 'egrep', 'fgrep', 'rg', 'jq'].includes(program);
+    const valueOptions = program === 'jq'
+        ? new Set(['--indent', '--tab'])
+        : new Set(['-A', '-B', '-C', '-m', '-d', '-D', '-g', '-t', '-T', '-j', '-M', '--max-count', '--context', '--glob', '--type', '--type-not', '--threads', '--max-columns']);
+    let patternSeen = !patternFirst;
+    for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index];
+        if (program === 'jq' && (arg === '--arg' || arg === '--argjson')) {
+            index += 2;
+            continue;
+        }
+        if (program === 'jq' && (arg === '--slurpfile' || arg === '--rawfile')) {
+            if (args[index + 2] !== undefined)
+                targets.push(args[index + 2]);
+            index += 2;
+            continue;
+        }
+        if (['-e', '--regexp', '-f', '--file', '--from-file'].includes(arg)) {
+            if (arg !== '-e' && arg !== '--regexp' && args[index + 1] !== undefined)
+                targets.push(args[index + 1]);
+            patternSeen = true;
+            index += 1;
+            continue;
+        }
+        if (valueOptions.has(arg)) {
+            index += 1;
+            continue;
+        }
+        if (arg.startsWith('-')) {
+            if (arg.includes('='))
+                targets.push(arg);
+            continue;
+        }
+        if (!patternSeen) {
+            patternSeen = true;
+            continue;
+        }
+        targets.push(arg);
+    }
+    return targets;
+}
+function readOnlyProgramInvocation(program, args) {
+    if (program === 'git') {
+        let index = 0;
+        while (index < args.length) {
+            if (args[index] === '-C' && args[index + 1] !== undefined)
+                index += 2;
+            else if (args[index] === '--no-pager')
+                index += 1;
+            else
+                break;
+        }
+        return READ_ONLY_GIT_SUBCOMMANDS.has(args[index] || '')
+            && !args.slice(index + 1).some((arg) => /^--(?:output|ext-diff)(?:=|$)/.test(arg));
+    }
+    if (program === 'gh')
+        return READ_ONLY_GH_COMMAND.test(args.join(' '));
+    if (READ_ONLY_TOOLCHAIN_COMMANDS.some((pattern) => pattern.test([program, ...args].join(' '))))
+        return true;
+    if (!READ_ONLY_BASH_COMMANDS.has(program))
+        return false;
+    if (program === 'find')
+        return !args.some((arg) => /^-(?:exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/.test(arg));
+    if (program === 'rg')
+        return !args.some((arg) => /^--pre(?:=|$)/.test(arg));
+    if (program === 'sort')
+        return !args.some((arg) => /^(?:--output|--compress-program)(?:=|$)/.test(arg) || /^-[A-Za-z]*o/.test(arg));
+    if (program === 'env')
+        return args.every((arg) => arg === '-0' || arg === '--null');
+    if (program === 'date')
+        return !args.some((arg) => /^(?:-s|--set)/.test(arg));
+    return true;
+}
+/** Classifies one simple command: a read-only inspection, a secret access, or anything else. */
+function shellSegmentVerdict(segment) {
+    const writes = segment.outputs.filter((target) => !['/dev/null', '/dev/stdout', '/dev/stderr'].includes(target));
+    if (segment.inputs.some(isSecretPath) || writes.some(isProtectedWriteTarget))
+        return 'secret';
+    if (!segment.words.length)
+        return writes.length ? 'other' : 'read';
+    // A leading assignment can redirect a pager or helper into arbitrary code.
+    const program = /^[A-Za-z_][A-Za-z0-9_]*=/.test(segment.words[0]) ? null : programName(segment.words[0]);
+    const args = segment.words.slice(1);
+    if (program && readOnlyProgramInvocation(program, args)) {
+        // Printing a secret variable copies it into the agent transcript.
+        if (segment.expansions.some(isSecretVariableName))
+            return 'secret';
+        if (program === 'printenv' && args.some(isSecretVariableName))
+            return 'secret';
+        if (program === 'jq' && args.some((arg) => /\$ENV\b|(?:^|[^A-Za-z0-9_$.])env\b/.test(arg)))
+            return 'secret';
+        if (!NON_CONTENT_BASH_COMMANDS.has(program)) {
+            const targets = ['grep', 'egrep', 'fgrep', 'rg', 'jq'].includes(program) ? contentReadTargets(program, args) : args.filter((arg) => !arg.startsWith('-') || arg.includes('='));
+            if (targets.some(isSecretPath))
+                return 'secret';
+        }
+        return writes.length ? 'other' : 'read';
+    }
+    return segment.words.some(isProtectedWriteTarget) ? 'secret' : 'other';
+}
+function shellAnalysis(command) {
+    const segments = parseShellSegments(command);
+    return segments ? { segments, verdicts: segments.map(shellSegmentVerdict) } : null;
+}
+function stringLeaves(value, depth = 0, output = []) {
+    if (output.length >= 64 || depth > 4)
+        return output;
+    if (typeof value === 'string')
+        output.push(value);
+    else if (Array.isArray(value))
+        value.forEach((item) => stringLeaves(item, depth + 1, output));
+    else if (value && typeof value === 'object')
+        Object.values(value).forEach((item) => stringLeaves(item, depth + 1, output));
+    return output;
+}
+/** Files a file-reading or file-editing tool targets, including apply_patch file headers. */
+function toolTargetPaths(event) {
+    const paths = [];
+    const input = asRecord(event.tool_input);
+    if (input) {
+        for (const key of ['file_path', 'path', 'target_file', 'filename', 'notebook_path', 'glob']) {
+            const value = stringValue(input[key]);
+            if (value)
+                paths.push(value);
+        }
+    }
+    for (const leaf of stringLeaves(event.tool_input)) {
+        if (!leaf.includes('*** Begin Patch'))
+            continue;
+        for (const match of leaf.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm))
+            paths.push(match[1].trim());
+    }
+    return [...new Set(paths)];
+}
+/**
+ * True when a tool reads secret or credential material, or writes a secret file
+ * or Marrow's local control state. Unparseable shell falls back to a token scan.
+ */
+function isSecretMaterialAccess(event) {
+    const tool = normalizeHookToolName(event.tool_name);
+    if (CONTENT_READ_TOOLS.has(tool))
+        return toolTargetPaths(event).some(isSecretPath);
+    if (FILE_EDIT_TOOLS.has(tool))
+        return toolTargetPaths(event).some(isProtectedWriteTarget);
+    if (!SHELL_TOOLS.has(tool))
+        return false;
+    const command = hookToolCommand(event);
+    const analysis = shellAnalysis(command);
+    if (analysis)
+        return analysis.verdicts.includes('secret');
+    return command.split(/[\s'"`;&|<>()]+/).some(isProtectedWriteTarget);
+}
+/**
+ * The text whose words decide a tool's action type, surfaces and keyword
+ * protection. Read-only shell segments, task bookkeeping and the content an
+ * editing tool writes are excluded: naming a word is not performing it.
+ */
+function toolClassificationText(event) {
+    const tool = normalizeHookToolName(event.tool_name);
+    if (LOCAL_TASK_TOOLS.has(tool))
+        return tool;
+    if (FILE_EDIT_TOOLS.has(tool))
+        return [tool, ...toolTargetPaths(event)].join(' ');
+    const command = hookToolCommand(event);
+    if (SHELL_TOOLS.has(tool)) {
+        const analysis = shellAnalysis(command);
+        if (analysis) {
+            return [tool, ...analysis.segments
+                    .filter((_, index) => analysis.verdicts[index] !== 'read')
+                    .map((segment) => [...segment.words, ...segment.outputs].join(' '))].join(' ; ');
+        }
+    }
+    let serialized = '';
+    try {
+        serialized = JSON.stringify(event.tool_input || {});
+    }
+    catch {
+        serialized = '';
+    }
+    return `${tool} ${command} ${serialized}`;
+}
+/** Editing and task tools are judged by their target, not by shell-like text in their input. */
+function isShellGovernedTool(event) {
+    const tool = normalizeHookToolName(event.tool_name);
+    return !FILE_EDIT_TOOLS.has(tool) && !LOCAL_TASK_TOOLS.has(tool);
 }
 function pathOnlyInput(value) {
     const input = asRecord(value);
@@ -161,28 +638,24 @@ function isReadOnlyToolEvent(event) {
     const tool = normalizeHookToolName(event.tool_name);
     if (!tool)
         return false;
-    if (READ_ONLY_TOOLS.has(tool))
+    if (LOCAL_TASK_TOOLS.has(tool))
         return true;
+    if (READ_ONLY_TOOLS.has(tool))
+        return !isSecretMaterialAccess(event);
     if (['edit', 'write', 'multiedit', 'search_replace', 'run_terminal_command', 'spawn_subagent'].includes(tool))
         return false;
     if (MUTATION_TOOL_VERB.test(tool))
         return false;
     if (READ_ONLY_TOOL_VERB.test(tool))
         return true;
-    const command = hookToolCommand(event).replace(/\s+/g, ' ').trim();
-    if ((tool === 'bash' || tool === 'run_terminal_command') && command && !hasCompoundShellSyntax(command) && !hasWriteLikeShellSyntax(command)) {
-        if (/^(?:node|npm)\s+(?:-v|--version)$/i.test(command))
-            return true;
-        if (/^(?:npm|pnpm|yarn)\s+(?:test|audit|run\s+(?:test|check|lint|typecheck|build))(?:\s|$)/i.test(command))
-            return true;
-        if (/^(?:node\s+--test|npx\s+(?:vitest|tsc\s+--noemit)|pytest|python(?:3)?\s+-m\s+(?:pytest|unittest)|cargo\s+(?:test|check)|go\s+test)(?:\s|$)/i.test(command))
-            return true;
-        if (/^git\s+(?:status|diff|show|log|branch|rev-parse|ls-files|ls-remote)(?:\s|$)/i.test(command))
-            return true;
-        const firstToken = command.split(/[\s|;&]+/, 1)[0]?.toLowerCase();
-        if (firstToken && READ_ONLY_BASH_COMMANDS.has(firstToken))
-            return true;
+    const command = hookToolCommand(event);
+    if (tool === 'bash' && command) {
+        // A compound command is read-only only when every simple command in it is.
+        const analysis = shellAnalysis(command);
+        return Boolean(analysis?.segments.length && analysis.verdicts.every((verdict) => verdict === 'read'));
     }
-    return !['edit', 'write', 'multiedit', 'search_replace'].includes(tool) && pathOnlyInput(event.tool_input);
+    return !['edit', 'write', 'multiedit', 'search_replace'].includes(tool)
+        && pathOnlyInput(event.tool_input)
+        && !toolTargetPaths(event).some(isSecretPath);
 }
 //# sourceMappingURL=hook-tool-policy.js.map
