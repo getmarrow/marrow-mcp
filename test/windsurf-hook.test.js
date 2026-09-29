@@ -134,7 +134,7 @@ test('Windsurf native pre decision has exact private fail-closed output', () => 
     permit: { verified: true },
     runtime: {
       exact_next_action: 'synthetic-private-service-text',
-      risk_gate: { allow: false, decision: 'review_required', reasons: [] },
+      risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] },
     },
   }), { exitCode: 2, stderr: FIXED_DENIAL });
   assert.deepEqual(windsurfPreActionDecision({
@@ -146,7 +146,7 @@ test('Windsurf native pre decision has exact private fail-closed output', () => 
   assert.deepEqual(windsurfPreActionDecision({
     protectedRisk: true,
     permit: { verified: true },
-    runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] } },
+    runtime: { risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] } },
   }), { exitCode: 0, stderr: '' });
 });
 
