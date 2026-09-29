@@ -106,6 +106,8 @@ const PASSIVE_DELIVERY_REQUEST_TIMEOUT_MS = 750;
 // acceptance measured p50 551 ms / p90 755 ms, so 2.2 s covers p90 with ~3x margin.
 const PASSIVE_BACKGROUND_DELIVERY_TIMEOUT_MS = 2_200;
 const BACKGROUND_NUDGE_LOCK_STALE_MS = 30_000;
+// Child watchdog, below the stale threshold so a live nudge never has its lock reclaimed.
+export const BACKGROUND_NUDGE_MAX_LIFETIME_MS = 25_000;
 const DRAIN_REQUEST_TIMEOUT_MS = 4_000;
 const DELIVERY_DRAIN_BUDGET_MS = 30_000;
 const NUDGE_DRAIN_BUDGET_MS = 20_000;
@@ -1047,30 +1049,54 @@ export async function recordLifecycleEvent(input: {
   };
 }
 
+/** True when PostToolUse may defer delivery to a detached background nudge. */
+export function backgroundNudgeEnabled(): boolean {
+  return process.env.MARROW_HOOK_BACKGROUND_NUDGE !== 'false' && Boolean(process.argv[1]);
+}
+
+/** Cheap current-namespace check (no other-namespace inventory): any queued event due now? */
+export function hasDueLifecycleEvents(input: { apiKey: string; agentId?: string }): boolean {
+  try {
+    const location = spoolPath(input.apiKey, input.agentId);
+    return snapshot(location.path, location.ownsParent).events
+      .some((row) => row.delivery_state === 'queued' && dueAt(row) <= Date.now());
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Cross-process guard so a burst of hook invocations starts at most one detached
- * background nudge per credential namespace. Best effort: any filesystem problem
- * simply means no background nudge is started (the event stays spooled).
+ * background nudge per credential namespace. The lock file holds a random nonce
+ * (plus the claiming pid for diagnostics); only the holder of that nonce releases
+ * it. Returns the nonce, or null when not claimed. Best effort: any filesystem
+ * problem means no background nudge (the event stays spooled).
  */
-export function claimBackgroundNudgeLock(input: { apiKey: string; agentId?: string }): boolean {
+export function claimBackgroundNudgeLock(input: { apiKey: string; agentId?: string }): string | null {
   try {
     const lockPath = `${spoolPath(input.apiKey, input.agentId).path}.nudge.lock`;
+    const nonce = randomUUID();
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        closeSync(openSync(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600));
-        return true;
+        const fd = openSync(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+        try { writeFileSync(fd, `${process.pid}:${nonce}`); } finally { closeSync(fd); }
+        return nonce;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return false;
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return null;
         try {
-          if (Date.now() - statSync(lockPath).mtimeMs <= BACKGROUND_NUDGE_LOCK_STALE_MS) return false;
+          if (Date.now() - statSync(lockPath).mtimeMs <= BACKGROUND_NUDGE_LOCK_STALE_MS) return null;
           unlinkSync(lockPath);
-        } catch { return false; }
+        } catch { return null; }
       }
     }
   } catch { /* best effort */ }
-  return false;
+  return null;
 }
 
-export function releaseBackgroundNudgeLock(input: { apiKey: string; agentId?: string }): void {
-  try { unlinkSync(`${spoolPath(input.apiKey, input.agentId).path}.nudge.lock`); } catch { /* already gone */ }
+/** Release only when the lock still carries this nonce (a reclaimed lock is not ours). */
+export function releaseBackgroundNudgeLock(input: { apiKey: string; agentId?: string; nonce: string }): void {
+  try {
+    const lockPath = `${spoolPath(input.apiKey, input.agentId).path}.nudge.lock`;
+    if (readFileSync(lockPath, 'utf8').split(':')[1] === input.nonce) unlinkSync(lockPath);
+  } catch { /* already gone or not ours */ }
 }

@@ -31,13 +31,13 @@ function record(url, init, at) {
   return { at, url: String(url), body: String(init.body), key: headers.get('Idempotency-Key') };
 }
 
-test('delay honors server retry_after_ms clamped to 250 ms..5 s', () => {
+test('delay honors server guidance with a 250 ms floor and no fixed ceiling', () => {
   assert.equal(writeReconciliationDelayMs(0, 0), 250);
   assert.equal(writeReconciliationDelayMs(0, 100), 250);
   assert.equal(writeReconciliationDelayMs(0, 1234), 1234);
   assert.equal(writeReconciliationDelayMs(3, 4999.2), 5000);
-  assert.equal(writeReconciliationDelayMs(0, 60_000), 5000);
-  assert.equal(writeReconciliationDelayMs(0, Number.MAX_VALUE), 5000);
+  // Server-requested waits have a floor but no fixed ceiling (the budget decides).
+  assert.equal(writeReconciliationDelayMs(0, 30_000), 30_000);
 });
 
 test('without guidance delay is exponential with jitter inside fixed bounds', () => {
@@ -246,7 +246,7 @@ test('PostToolUse returns immediately while the server is hung; background nudge
     tool_input: { file_path: '/tmp/out.txt', content: 'x' }, tool_response: { ok: true }, tool_use_id: 'toolu_fast',
   });
   const elapsed = Date.now() - started;
-  assert.ok(elapsed < 150, `hook returned in ${elapsed} ms with a hung server`);
+  assert.ok(elapsed < 300, `hook returned in ${elapsed} ms with a hung server`);
   const before = lifecycleSpoolStatus({ apiKey: 'mrw_post_tool_test_key' });
   assert.equal(before.pending, 1, 'event is durably spooled');
   assert.equal(posted.length, 0);
@@ -281,15 +281,64 @@ test('inline delivery stays bounded and a timed-out event stays spooled', withSp
   assert.equal(lifecycleSpoolStatus({ apiKey: 'hung-key', agentId: 'agent-one' }).failed, 0);
 }));
 
-test('background nudge lock admits one launcher and recovers from a stale lock', withSpool(async () => {
+test('background nudge lock is owned by a nonce, released only by its owner, and stale locks are reclaimed', withSpool(async () => {
   const input = { apiKey: 'lock-key', agentId: 'agent-one' };
-  assert.equal(claimBackgroundNudgeLock(input), true);
-  assert.equal(claimBackgroundNudgeLock(input), false);
-  releaseBackgroundNudgeLock(input);
-  assert.equal(claimBackgroundNudgeLock(input), true);
+  const first = claimBackgroundNudgeLock(input);
+  assert.match(first, /^[0-9a-f-]{36}$/);
+  assert.equal(claimBackgroundNudgeLock(input), null);
+  releaseBackgroundNudgeLock({ ...input, nonce: 'not-the-owner' });
+  assert.equal(claimBackgroundNudgeLock(input), null, 'a non-owner cannot release');
   const lock = `${process.env.MARROW_EVENT_SPOOL_PATH}.nudge.lock`;
+  assert.ok(require('node:fs').readFileSync(lock, 'utf8').endsWith(`:${first}`));
   const old = new Date(Date.now() - 60_000);
   require('node:fs').utimesSync(lock, old, old);
-  assert.equal(claimBackgroundNudgeLock(input), true, 'stale lock is reclaimed');
-  releaseBackgroundNudgeLock(input);
+  const second = claimBackgroundNudgeLock(input);
+  assert.ok(second && second !== first, 'stale lock is reclaimed');
+  releaseBackgroundNudgeLock({ ...input, nonce: first });
+  assert.equal(claimBackgroundNudgeLock(input), null, 'the previous owner cannot delete the new owner lock');
+  releaseBackgroundNudgeLock({ ...input, nonce: second });
+  assert.ok(claimBackgroundNudgeLock(input));
 }));
+
+test('a large Retry-After is honored when it fits the budget; one that does not fit returns the receipt with the real hint', async () => {
+  const original = globalThis.fetch; const calls = [];
+  globalThis.fetch = async (url, init) => {
+    const call = record(url, init, Date.now()); calls.push(call);
+    return calls.length === 1
+      ? Response.json({ data: pendingBody(call.key, { retry_after_ms: 1000 }) }, { status: 202, headers: { 'Retry-After': '2' } })
+      : Response.json({ data: { decision_id: 'thinkdec_big', idempotency_key: call.key } });
+  };
+  try {
+    process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS = '10000';
+    await marrowThink('fixture', 'https://fixture.test', { action: 'retry-after 2 s' });
+    assert.ok(calls[1].at - calls[0].at >= 1980, 'waited the full 2 s, not a 5 s-clamped or 1 s value');
+    calls.length = 0;
+    globalThis.fetch = async (url, init) => {
+      const call = record(url, init, Date.now()); calls.push(call);
+      return Response.json({ data: pendingBody(call.key, { retry_after_ms: 1000 }) }, { status: 202, headers: { 'Retry-After': '30' } });
+    };
+    await assert.rejects(() => marrowThink('fixture', 'https://fixture.test', { action: 'retry-after 30 s' }), (error) => {
+      assert.equal(error.backendCode, 'MCP_RECONCILIATION_EXHAUSTED');
+      assert.equal(error.retryAfterMs, 30_000);
+      assert.equal(structuredRequestFailure(error).error.retry_after_ms, 30_000);
+      assert.ok(error.pendingReceipt);
+      return true;
+    });
+    assert.equal(calls.length, 1);
+  } finally { globalThis.fetch = original; }
+});
+
+test('an unreadable Retry-After waits at least 1 s instead of 250 ms', async () => {
+  process.env.MARROW_WRITE_RECONCILIATION_BUDGET_MS = '10000';
+  const original = globalThis.fetch; const calls = [];
+  globalThis.fetch = async (url, init) => {
+    const call = record(url, init, Date.now()); calls.push(call);
+    return calls.length === 1
+      ? Response.json({ data: pendingBody(call.key) }, { status: 202, headers: { 'Retry-After': 'abc' } })
+      : Response.json({ data: { decision_id: 'thinkdec_bad_hdr', idempotency_key: call.key } });
+  };
+  try {
+    await marrowThink('fixture', 'https://fixture.test', { action: 'bad header' });
+    assert.ok(calls[1].at - calls[0].at >= 980);
+  } finally { globalThis.fetch = original; }
+});

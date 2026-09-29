@@ -3,9 +3,11 @@ import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParam
 import { type LifecycleEvent } from './lifecycle-spool';
 export type { Narrative, CommitResult } from './types';
 /**
- * Delay before resuming a pending write. Honors the server's retry_after_ms (and
- * Retry-After header, whichever is larger) clamped to [250 ms, 5 s]. Without
- * guidance, exponential backoff (250 ms * 2^n, capped at 5 s) with 50-100% jitter.
+ * Delay before resuming a pending write. A server-requested wait (lease field,
+ * retry_after_ms or Retry-After, whichever is larger) is honored with a 250 ms floor
+ * and no fixed ceiling: the caller stops with the resumable receipt when it does not
+ * fit the remaining budget. Without guidance, exponential backoff (250 ms * 2^n,
+ * capped at 5 s) with 50-100% jitter.
  */
 export declare function writeReconciliationDelayMs(attemptIndex: number, requestedMs: number | null, random?: () => number): number;
 declare const AUTO_MANAGED_WRITE: unique symbol;

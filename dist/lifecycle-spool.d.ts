@@ -21,6 +21,7 @@ export type LifecycleEvent = {
     occurred_at?: string;
 };
 type RetryReason = 'network_error' | 'ack_timeout' | 'transient_http' | 'rate_limited' | 'authentication_rejected' | 'schema_rejected' | 'permanent_http' | 'retry_after_invalid';
+export declare const BACKGROUND_NUDGE_MAX_LIFETIME_MS = 25000;
 export type LifecycleSpoolStatus = {
     state: 'clear' | 'pending' | 'attention_required';
     pending: number;
@@ -102,18 +103,29 @@ export declare function recordLifecycleEvent(input: {
     pending: number;
     recovered_corruption: boolean;
 }>;
+/** True when PostToolUse may defer delivery to a detached background nudge. */
+export declare function backgroundNudgeEnabled(): boolean;
+/** Cheap current-namespace check (no other-namespace inventory): any queued event due now? */
+export declare function hasDueLifecycleEvents(input: {
+    apiKey: string;
+    agentId?: string;
+}): boolean;
 /**
  * Cross-process guard so a burst of hook invocations starts at most one detached
- * background nudge per credential namespace. Best effort: any filesystem problem
- * simply means no background nudge is started (the event stays spooled).
+ * background nudge per credential namespace. The lock file holds a random nonce
+ * (plus the claiming pid for diagnostics); only the holder of that nonce releases
+ * it. Returns the nonce, or null when not claimed. Best effort: any filesystem
+ * problem means no background nudge (the event stays spooled).
  */
 export declare function claimBackgroundNudgeLock(input: {
     apiKey: string;
     agentId?: string;
-}): boolean;
+}): string | null;
+/** Release only when the lock still carries this nonce (a reclaimed lock is not ours). */
 export declare function releaseBackgroundNudgeLock(input: {
     apiKey: string;
     agentId?: string;
+    nonce: string;
 }): void;
 export {};
 //# sourceMappingURL=lifecycle-spool.d.ts.map

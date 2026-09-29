@@ -1,7 +1,7 @@
 import { captureCodexNativeUsage } from './codex-native-usage';
 import { marrowModelUsage, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from './habit-loop-copy';
-import { recordLifecycleEvent } from './lifecycle-spool';
+import { backgroundNudgeEnabled, recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
 import { readLocalControlState } from './control-state';
 import { isOfficialMarrowMcpEvent, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
@@ -135,7 +135,14 @@ export function installPostToolUseHook(startDir: string = process.cwd()): HookIn
   };
 }
 
+let spooledLifecycleEvent = false;
+/** True only when the latest runHookCommand call spooled an event for background delivery. */
+export function hookSpooledLifecycleEvent(): boolean {
+  return spooledLifecycleEvent;
+}
+
 export async function runHookCommand(input?: unknown): Promise<void> {
+  spooledLifecycleEvent = false;
   const identity = resolveNativeHookIdentity(process.argv[2]);
   if (process.env.MARROW_AUTO_HOOK === 'false') {
     if (identity.harness === 'gemini') process.stdout.write('{}');
@@ -223,10 +230,12 @@ export async function runHookCommand(input?: unknown): Promise<void> {
     const lifecycleCorrelation = stableToolCorrelation({ ...event, session_id: sessionId });
     // Spool only: PostToolUse runs on every tool call, so it must add ~no latency.
     // cli.ts launches a detached background nudge that delivers the spooled event.
-    await recordLifecycleEvent({
+    // With the nudge disabled (MARROW_HOOK_BACKGROUND_NUDGE=false) keep bounded inline delivery.
+    const deferred = backgroundNudgeEnabled();
+    const receipt = await recordLifecycleEvent({
       apiKey,
       baseUrl,
-      deferDelivery: true,
+      deferDelivery: deferred,
       event: {
         event_id: `posttool-${lifecycleCorrelation}`,
         event_type: eventType,
@@ -242,6 +251,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
         outcome_state: 'pending',
       },
     });
+    spooledLifecycleEvent = deferred && receipt.queued;
 
     if (identity.harness !== 'grok' && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
       const capture = modelUsageCaptureContextFromEnv();
