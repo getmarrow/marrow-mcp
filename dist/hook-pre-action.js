@@ -6,6 +6,7 @@ exports.isMarrowOutage = isMarrowOutage;
 exports.controlFailureKind = controlFailureKind;
 exports.controlRejectionMessage = controlRejectionMessage;
 exports.ownerApprovalPrompt = ownerApprovalPrompt;
+exports.runtimeGateAdvisory = runtimeGateAdvisory;
 exports.runtimeGateEnforced = runtimeGateEnforced;
 exports.advisoryGateNotice = advisoryGateNotice;
 exports.runtimeGateVerdict = runtimeGateVerdict;
@@ -169,10 +170,44 @@ function arbitrationReview(runtime) {
         || approval?.dashboard_receipt_required === true
         || (approval?.mode !== undefined && approval.mode !== 'ordinary_non_arbitrated');
 }
-/** The runtime, not the hook, decides whether its gate is enforced (Team+ hard enforcement). */
-function runtimeGateEnforced(runtime) {
+/**
+ * True only for the runtime's positive advisory contract. On a plan without
+ * production_action_enforcement the backend gate (agent-runtime.service.ts,
+ * the hardGateEnforcement branch) carries enforced:false with
+ * enforcement_decision:'advisory', and gate_required, owner_approval_required
+ * and gate_receipt.required are false; the slim shape the MCP client receives
+ * carries risk_gate_enforced:false instead. Missing, malformed or conflicting
+ * enforcement fields are never advisory, so a protected action fails closed.
+ */
+function runtimeGateAdvisory(runtime) {
     const gate = runtime?.risk_gate;
-    return Boolean(gate && (gate.enforced === true || gate.gate_required === true || gate.permit_required === true));
+    if (!runtime || !gate)
+        return false;
+    const slim = runtime.response_mode === 'slim';
+    const completion = runtime.completion_contract;
+    const plan = runtime.plan_capability;
+    return gate.enforced === false
+        && gate.enforcement_decision === 'advisory'
+        && String(gate.decision) !== 'block'
+        // A slim response has no allow field; the client derives it from the decision.
+        && (slim ? runtime.risk_gate_enforced === false : gate.allow === true && runtime.risk_gate_enforced == null)
+        && (runtime.enforcement_decision == null || runtime.enforcement_decision === 'advisory')
+        && (runtime.authorization_state === undefined || runtime.authorization_state === 'advisory_only')
+        && runtime.hard_gate_obtained !== true
+        && gate.gate_required !== true
+        && gate.owner_approval_required !== true
+        && runtime.gate_receipt?.required !== true
+        && runtime.gate_receipt?.owner_approval_required !== true
+        && completion?.gate_receipt_required !== true
+        && completion?.owner_approval_required !== true
+        && completion?.owner_approval == null
+        && !arbitrationReview(runtime)
+        && plan?.production_enforcement_entitled !== true
+        && plan?.mode !== 'enforced';
+}
+/** Every gate is enforced unless the runtime positively declares it advisory. */
+function runtimeGateEnforced(runtime) {
+    return !runtimeGateAdvisory(runtime);
 }
 function gateReason(runtime) {
     const why = boundedText(runtime.risk_gate.reasons?.[0]?.message, 240);
@@ -182,7 +217,7 @@ function gateReason(runtime) {
 /** A warning for a non-allow gate the runtime does not enforce on this plan. */
 function advisoryGateNotice(runtime) {
     const gate = runtime?.risk_gate;
-    if (!runtime || !gate || runtimeGateEnforced(runtime) || gate.decision === 'block')
+    if (!runtime || !gate || !runtimeGateAdvisory(runtime))
         return null;
     const decision = String(gate.decision || '');
     if (gate.allow !== false && !['warn', 'review_required', 'owner_approval_required'].includes(decision))
@@ -199,7 +234,7 @@ function runtimeGateVerdict(runtime) {
     if (decision !== 'block' && !review && gate.allow !== false)
         return null;
     // An advisory gate warns; only an enforced gate (or any block) stops the action.
-    if (decision !== 'block' && !runtimeGateEnforced(runtime))
+    if (decision !== 'block' && runtimeGateAdvisory(runtime))
         return null;
     const reason = gateReason(runtime);
     if (decision === 'block')
@@ -772,9 +807,9 @@ async function runPreActionHookCommand(input) {
         const gate = runtime.risk_gate;
         if (gate?.decision === 'block')
             return { runtime, permit: null, protectedRisk: enforcementRequired };
-        // Free and starter plans get an advisory gate (enforced:false) that warns
-        // but never hard-stops, so no permit is demanded unless the runtime enforces.
-        if (!runtimeGateEnforced(runtime))
+        // Free and starter plans get a positively advisory gate that warns but never
+        // hard-stops; every other gate, including an unclear one, keeps enforcement.
+        if (runtimeGateAdvisory(runtime))
             return { runtime, permit: null, protectedRisk: false };
         if (runtimeGateVerdict(runtime)) {
             return { runtime, permit: null, protectedRisk: enforcementRequired };

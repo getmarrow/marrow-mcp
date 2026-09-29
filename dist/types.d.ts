@@ -166,10 +166,18 @@ export interface MarrowWorkflowGateResult {
         severity: string;
         message: string;
     }>;
+    /**
+     * 'advisory' on a plan without production_action_enforcement; otherwise the
+     * enforced receipt or baseline decision, or an arbitration resolution.
+     */
     enforcement_decision?: string;
+    /** true on an enforcing plan; false with enforcement_decision 'advisory' on an advisory plan. */
     enforced?: boolean;
     entitled?: boolean;
+    /** Enforcing plans only: the action needs its gate receipt (and a permit when protected). */
     gate_required?: boolean;
+    /** Enforcing plans only: the owner must approve before the action. */
+    owner_approval_required?: boolean;
     agent_id?: string | null;
     session_id?: string | null;
     gate_event_id?: string | null;
@@ -363,6 +371,12 @@ export interface MarrowAgentRuntimeResult {
     guidance_obtained?: boolean;
     authorization_state?: 'hard_gate' | 'advisory_only' | 'unverified';
     hard_gate_obtained?: boolean;
+    /** 'slim' for native MCP/SDK/installer clients unless expanded is requested. */
+    response_mode?: 'slim' | 'expanded' | string;
+    /** Slim shape: risk_gate.enforced as sent by the backend (null when absent). */
+    risk_gate_enforced?: boolean | null;
+    /** Slim shape: risk_gate.enforcement_decision as sent by the backend. */
+    enforcement_decision?: string | null;
     relevant_lessons: unknown[];
     deployment_playbooks: unknown[];
     template_suggestion: Record<string, unknown>;
