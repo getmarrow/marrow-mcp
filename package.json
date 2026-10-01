@@ -5,6 +5,7 @@
   "description": "Runtime control, proof, and fleet intelligence for MCP-compatible AI agents.",
   "bin": {
     "marrow-mcp": "dist/cli.js",
+    "mcp": "dist/cli.js",
     "marrow-mcp-canary": "scripts/control-path-canary.cjs"
   },
   "main": "dist/index.js",
@@ -14,6 +15,7 @@
     "dev": "tsc --watch",
     "test": "npm run build && node --test --require ./test/support/isolated-environment.cjs test/*.test.js",
     "registry:check": "node scripts/mcp-registry-check.cjs",
+    "npx:check": "node scripts/npx-executable-check.cjs",
     "registry:verify": "node scripts/mcp-registry-verify.cjs",
     "canary:control-path": "node scripts/control-path-canary.cjs"
   },
