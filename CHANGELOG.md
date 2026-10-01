@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.9.98
+
+- Fix `npx @getmarrow/mcp setup` and every other `npx @getmarrow/mcp …` command. Since 3.9.57 they failed with "could not determine executable to run", because the package had two executables and none named after the package. The package now also provides an executable named `mcp`, so those commands work again. `marrow-mcp` and `marrow-mcp-canary` are unchanged.
+- Note for global installs: `npm install -g @getmarrow/mcp` now also adds a command named `mcp`, which may share a name with other tools. `npx` users are unaffected.
+- Add the `npx:check` release check and a test that pack the package and run it through `npx`, so this cannot regress unnoticed.
+
 ## 3.9.97
 
 - Free and starter gates are advisory again: an advisory runtime gate no longer hard-blocks the action. Enforcement is skipped only on a positive advisory contract; enforced tiers are unchanged, and a `block` decision still denies on every plan.
