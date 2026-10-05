@@ -963,7 +963,7 @@ test('an ordinary review gate asks the operator in an interactive Claude Code se
   const decision = JSON.parse(output).hookSpecificOutput;
   assert.equal(decision.permissionDecision, 'ask');
   assert.equal(decision.permissionDecisionReason,
-    'Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt gate-review). Reason: Publishing needs owner review. Next: Obtain explicit owner approval.');
+    'Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt gate-review). Reason: Publishing needs owner review.');
   assert.deepEqual(commits, [], 'asking never closes or spends the held receipt');
 });
 

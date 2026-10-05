@@ -1008,7 +1008,9 @@ async function runPreActionHookCommand(input) {
             guidance,
             host: holdContext.host,
             hookEvent: typeof source.hook_event_name === 'string' ? source.hook_event_name : 'PreToolUse',
-            reason: verdict.reason,
+            // Only why it is held: the server's next-action text is written for agents
+            // and names endpoints, so it is not repeated in the operator's prompt.
+            reason: boundedText(result.runtime?.risk_gate?.reasons?.[0]?.message, 240),
             claudePrompt,
             cursorInteractive: cursor?.interactive ?? null,
             typedReply: (0, host_approval_1.typedReplyAvailable)(holdContext),

@@ -188,6 +188,17 @@ test('Claude Code allow: one click in the host dialog is reported with the Permi
   } finally { h.cleanup(); }
 });
 
+test('the server\'s agent-facing next-action text (endpoints, a dashboard session) never reaches the operator\'s prompt', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime('gate-held', {}, { exact_next_action: 'Obtain explicit owner approval: the account owner approves gate receipt gate-held from an authenticated Marrow dashboard session (POST /v1/dashboard/enforcement/owner-approval).' }) });
+    const out = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    assert.equal(out.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Reason: Production deploys need approval\.$/);
+    assert.doesNotMatch(out.stdout, /dashboard|\/v1\//i);
+  } finally { h.cleanup(); }
+});
+
 test('Claude Code allow without the dialog marker is reported as the asking event (labelled an allow rule by the server)', () => {
   const h = harness();
   try {
