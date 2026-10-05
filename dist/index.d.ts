@@ -163,6 +163,11 @@ export type MarrowAutoParams = {
     surfaces?: string[];
     auto_gate?: boolean;
     operation_id?: string;
+    /**
+     * Set only when the operator asked to ask the account owner (for example after
+     * the owner declined this action): Marrow then sends the owner a one-tap link.
+     */
+    request_owner_link?: boolean;
 };
 /**
  * The text an agent follows while auto waits on a held action. It never asks

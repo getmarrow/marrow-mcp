@@ -121,7 +121,21 @@ export const OWNER_APPROVAL_REQUEST_TEXT = 'The approval request goes to the acc
 
 export type HoldPlan =
   | { kind: 'ask'; promptText: string }
-  | { kind: 'deny'; agentText: string; userText: string; code: boolean; ownerRequest?: boolean };
+  | {
+    kind: 'deny';
+    agentText: string;
+    userText: string;
+    code: boolean;
+    /** The owner's one-tap link: request it now, or only when the operator asks by retrying. */
+    ownerLink?: 'now' | 'on_request';
+    /** Denied only because Claude Code showed no dialog; a retry where it can asks. */
+    dialogLater?: boolean;
+    /** Not remembered as waiting: the next attempt starts over (approval state unreadable). */
+    retryFresh?: boolean;
+  };
+
+/** Shown when the owner's link is sent only if the operator asks for it. */
+export const OWNER_LINK_ON_REQUEST_TEXT = 'To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link.';
 
 /** The sentence that replaces OWNER_APPROVAL_REQUEST_TEXT once Marrow sent the owner a one-tap link. */
 export function ownerLinkSentText(channel: string): string {
@@ -130,7 +144,7 @@ export function ownerLinkSentText(channel: string): string {
 
 /** Puts the link outcome into a plan that asked the owner. */
 export function withOwnerLink(plan: HoldPlan, channel: string | null): HoldPlan {
-  if (plan.kind !== 'deny' || !plan.ownerRequest || !channel) return plan;
+  if (plan.kind !== 'deny' || plan.ownerLink !== 'now' || !channel) return plan;
   const sent = ownerLinkSentText(channel);
   return { ...plan, agentText: plan.agentText.replace(OWNER_APPROVAL_REQUEST_TEXT, sent), userText: plan.userText.replace(OWNER_APPROVAL_REQUEST_TEXT, sent) };
 }
@@ -193,16 +207,35 @@ export function planHeldAction(input: {
       };
     }
   }
-  const operatorPresent = guidance.hostApprovalAccepted && host === 'claude-code';
-  const why = !guidance.hostApprovalAccepted
-    ? `${ownerOnlyReason(guidance)} ${OWNER_APPROVAL_REQUEST_TEXT}`
-    : operatorPresent
-    ? `Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you.`
-    : host === 'cursor'
+  if (!guidance.hostApprovalAccepted) {
+    if (guidance.hostApprovalRefusal === 'approval_state_unavailable'
+      || (guidance.hostApprovalRefusal === null && guidance.verifiedApprovalRequired === null)) {
+      // Nothing to wait for yet: the next attempt asks Marrow again.
+      const agentText = bounded(`${held} ${ownerOnlyReason(guidance)} Retry this exact action in a moment. Do not report or claim an approval yourself.`, 500);
+      return { kind: 'deny', agentText, userText: agentText, code: false, retryFresh: true };
+    }
+    if (guidance.hostApprovalRefusal === 'owner_decline_stands') {
+      // The owner just said no: the owner is asked again only when the operator asks.
+      const why = `${ownerOnlyReason(guidance)} Only the account owner can reverse that.`;
+      const ask = guidance.approvalLinkPath ? ` ${OWNER_LINK_ON_REQUEST_TEXT}` : '';
+      const agentText = bounded(`${held} ${why}${ask} Retry it only if the operator asks you to. Do not report or claim an approval yourself.`, 500);
+      return { kind: 'deny', agentText, userText: agentText, code: false, ...(guidance.approvalLinkPath ? { ownerLink: 'on_request' as const } : {}) };
+    }
+    const agentText = bounded(`${held} ${ownerOnlyReason(guidance)} ${OWNER_APPROVAL_REQUEST_TEXT}${tail}`, 500);
+    return { kind: 'deny', agentText, userText: agentText, code: false, ownerLink: 'now' };
+  }
+  if (host === 'claude-code') {
+    // The operator is present but this session shows no dialog: switching to a
+    // mode with the dialog approves it here; asking the owner is the operator's call.
+    const ask = guidance.approvalLinkPath ? ` Or, ${OWNER_LINK_ON_REQUEST_TEXT.charAt(0).toLowerCase()}${OWNER_LINK_ON_REQUEST_TEXT.slice(1)}` : '';
+    const agentText = bounded(`${held} Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you.${ask} Retry it only when the operator asks you to. Do not report or claim an approval yourself.`, 500);
+    return { kind: 'deny', agentText, userText: agentText, code: false, dialogLater: true, ...(guidance.approvalLinkPath ? { ownerLink: 'on_request' as const } : {}) };
+  }
+  const why = host === 'cursor'
     ? `Cursor asks for approval only for shell and MCP calls in a local interactive session. ${OWNER_APPROVAL_REQUEST_TEXT}`
     : `${HOST_LABEL[host]} cannot ask the operator in this session. ${OWNER_APPROVAL_REQUEST_TEXT}`;
   const agentText = bounded(`${held} ${why}${tail}`, 500);
-  return { kind: 'deny', agentText, userText: agentText, code: false, ownerRequest: !operatorPresent };
+  return { kind: 'deny', agentText, userText: agentText, code: false, ownerLink: 'now' };
 }
 
 /** User-only text with the typed-reply code (Cursor user_message, Codex and Gemini systemMessage). */
@@ -221,6 +254,9 @@ export type RecordHoldInput = {
   withCode: boolean;
   preActionEventId: string | null;
   action: { action: string; target: string; type: string; surfaces: string[] };
+  /** From the plan: whether and when the owner's one-tap link is requested. */
+  ownerLink?: 'now' | 'on_request';
+  dialogLater?: boolean;
 };
 
 const HOOK_EVENT_NAME = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
@@ -254,6 +290,11 @@ export function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldReco
       surfaces: input.action.surfaces.slice(0, 16),
     },
     withCode: input.withCode,
+    owner_link: !input.guidance.approvalLinkPath ? null
+      : input.ownerLink === 'now' ? 'unsent'
+      : input.ownerLink === 'on_request' ? 'on_request'
+      : null,
+    dialog_later: input.dialogLater === true,
   }, ctx.home);
 }
 
@@ -264,9 +305,8 @@ const OWNER_LINK_TIMEOUT_MS = 2_000;
  * (once; the server limits repeats). Returns the channel when it was sent.
  * The link itself never reaches this client or the agent.
  */
-export async function requestOwnerLink(ctx: HoldContext, hold: HoldRecord, guidance: OrdinaryApprovalGuidance | null): Promise<string | null> {
-  if (hold.owner_link === 'sent') return null;
-  if (!guidance?.approvalLinkPath && hold.owner_link !== 'unsent') return null;
+export async function requestOwnerLink(ctx: HoldContext, hold: HoldRecord): Promise<string | null> {
+  if (hold.owner_link !== 'unsent' && hold.owner_link !== 'on_request') return null;
   const timeout = statusTimeout(OWNER_LINK_TIMEOUT_MS);
   let channel: string | null = null;
   try {
@@ -318,6 +358,7 @@ function approvedByText(status: MarrowOwnerApprovalStatus): string {
 
 export type WaitingResolution =
   | { kind: 'allow'; hold: HoldRecord; contextText: string }
+  | { kind: 'ask'; hold: HoldRecord; promptText: string }
   | { kind: 'deny'; hold: HoldRecord; agentText: string; userText: string };
 
 /**
@@ -330,6 +371,8 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
   correlation: string;
   toolUseId: string | null;
   generationId: string | null;
+  /** Claude Code shows its dialog for this attempt (permission mode and version). */
+  dialogAvailable?: boolean;
 }): Promise<WaitingResolution | null> {
   let holds: HoldRecord[];
   try {
@@ -362,11 +405,33 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
       contextText: bounded(`Marrow: ${approvedByText(status)} approved this held action (gate receipt ${hold.gate_receipt_id}). Run only this exact action; Marrow records its outcome on that receipt.`, 400),
     };
   }
+  if (status.state === 'pending' && hold.dialog_later && input.dialogAvailable === true && ctx.host === 'claude-code') {
+    // The operator switched to a mode with the dialog: ask now, on the same gate receipt.
+    const asked = updateHold(scopeOf(ctx), hold.id, (current) => ({
+      ...current,
+      mode: 'ask',
+      dialog_later: false,
+      tool_use_id: input.toolUseId,
+      generation_id: input.generationId,
+      asked_at: new Date().toISOString(),
+      dialog_at: null,
+    }), ctx.home);
+    if (!asked) return null;
+    return {
+      kind: 'ask',
+      hold: asked,
+      promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${hold.gate_receipt_id}).`, 500),
+    };
+  }
   if (status.state === 'pending' || status.state === 'unavailable') {
-    const linkChannel = !hold.code && hold.owner_link === 'unsent' ? await requestOwnerLink(ctx, hold, null) : null;
+    // A retry is how the operator asks for the owner's link (sent once per hold).
+    const linkChannel = !hold.code && (hold.owner_link === 'unsent' || hold.owner_link === 'on_request') ? await requestOwnerLink(ctx, hold) : null;
+    const after = linkChannel ? null : findHolds(scopeOf(ctx), { id: hold.id }, ctx.home)[0] || hold;
     const waiting = hold.code ? 'The operator was asked to approve it here.'
       : linkChannel ? ownerLinkSentText(linkChannel)
-      : hold.owner_link === 'sent' ? 'An approval link was sent to the account owner.'
+      : after?.owner_link === 'sent' ? 'An approval link was sent to the account owner.'
+      : after?.owner_link === 'unsent' ? 'Marrow could not send the account owner an approval link; retrying this exact action tries again.'
+      : hold.dialog_later ? 'Claude Code shows no approval dialog in this session; switch to its default permission mode and retry this exact action.'
       : OWNER_APPROVAL_REQUEST_TEXT;
     const expires = status.expires_at || hold.expires_at;
     const text = bounded(`Marrow is still holding this action for approval (gate receipt ${hold.gate_receipt_id}), so it did not run. ${waiting} When it is approved${expires ? ` (before ${expires})` : ''}, retry this exact action. Do not report or claim an approval yourself.`, 500);

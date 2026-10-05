@@ -385,18 +385,18 @@ test('Claude Code auto mode asks only when the input proves a version whose hook
   }
 });
 
-test('a verified-only category and a standing owner decline deny before the tool runs; the request goes to the owner, never to a dashboard login', () => {
-  for (const [label, approval, pattern] of [
-    ['verified category', { host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'authenticated_dashboard_owner' },
-      /The account owner approves production_deploy actions personally\. The approval request goes to the account owner\./],
-    ['settings unreadable', { host_approval_accepted: false, verified_approval_required: null, approval_authority: 'authenticated_dashboard_owner' },
-      /Marrow could not read the account approval settings/],
-    ['owner decline stands', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', approval_authority: 'authenticated_dashboard_owner', verified_approval_required: null },
-      /The account owner declined this action earlier\. The approval request goes to the account owner\./],
-    ['owner decline stands with time', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', owner_declined_at: '2026-10-05T11:00:00.000Z', approval_authority: 'authenticated_dashboard_owner', verified_approval_required: null },
-      /The account owner declined this action at 2026-10-05T11:00:00\.000Z\./],
-    ['approval state unavailable', { host_approval_accepted: false, host_approval_refusal_reason: 'approval_state_unavailable', approval_authority: 'authenticated_dashboard_owner', verified_approval_required: null },
-      /Marrow could not check how this hold can be approved right now\./],
+test('a verified-only category and a standing owner decline deny before the tool runs; nobody is sent to a dashboard login', () => {
+  for (const [label, approval, pattern, next, remembered] of [
+    ['verified category', { host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'account_owner' },
+      /The account owner approves production_deploy actions personally\. The approval request goes to the account owner\./, /When it is approved, retry this exact action/, true],
+    ['settings unreadable', { host_approval_accepted: false, verified_approval_required: null, approval_authority: 'account_owner' },
+      /Marrow could not read the account approval settings\./, /Retry this exact action in a moment\./, false],
+    ['owner decline stands', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', approval_authority: 'account_owner', verified_approval_required: null },
+      /The account owner declined this action earlier\. Only the account owner can reverse that\./, /Retry it only if the operator asks you to\./, true],
+    ['owner decline stands with time', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', owner_declined_at: '2026-10-05T11:00:00.000Z', approval_authority: 'account_owner', verified_approval_required: null },
+      /The account owner declined this action at 2026-10-05T11:00:00\.000Z\. Only the account owner can reverse that\./, /Retry it only if the operator asks you to\./, true],
+    ['approval state unavailable', { host_approval_accepted: false, host_approval_refusal_reason: 'approval_state_unavailable', approval_authority: 'account_owner', verified_approval_required: null },
+      /Marrow could not check how this hold can be approved right now\./, /Retry this exact action in a moment\./, false],
   ]) {
     const h = harness();
     try {
@@ -405,10 +405,11 @@ test('a verified-only category and a standing owner decline deny before the tool
       const decision = out.json.hookSpecificOutput;
       assert.equal(decision.permissionDecision, 'deny', label);
       assert.match(decision.permissionDecisionReason, pattern, label);
-      assert.match(decision.permissionDecisionReason, /When it is approved, retry this exact action/, label);
+      assert.match(decision.permissionDecisionReason, next, label);
       assert.doesNotMatch(out.stdout, /dashboard/i, label);
       assert.deepEqual(commits(h), [], label);
       assert.deepEqual(hostReports(h), [], label);
+      assert.equal(Object.keys(h.state()?.holds || {}).length, remembered ? 1 : 0, `${label}: ${remembered ? 'waits on the receipt' : 'the next attempt starts over'}`);
     } finally { h.cleanup(); }
   }
 });
@@ -610,16 +611,64 @@ test('a link that could not be sent says the request goes to the owner, and is r
   const h = harness();
   try {
     h.setConfig({
-      runtime: withLink('gate-held', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', owner_declined_at: '2026-10-05T11:00:00.000Z', approval_authority: 'account_owner', verified_approval_required: null }),
+      runtime: withLink('gate-held', { host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'account_owner' }),
       status: { 'gate-held': 'pending' },
       approvalLink: [{ status: 409, body: { error: 'no channel', details: { code: 'MARROW_APPROVAL_CHANNEL_UNAVAILABLE' } } }, { status: 200 }],
     });
     const first = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
-    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /The account owner declined this action at 2026-10-05T11:00:00\.000Z\. The approval request goes to the account owner\./);
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /actions personally\. The approval request goes to the account owner\./);
     const again = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_retry' });
     assert.match(again.json.hookSpecificOutput.permissionDecisionReason, /An approval link was sent to the account owner \(email\)\./);
     assert.equal(linkRequests(h).length, 2);
   } finally { h.cleanup(); }
+});
+
+test('a standing owner decline: no link until the operator asks by retrying; then one link, and later retries send none', () => {
+  const h = harness();
+  try {
+    h.setConfig({
+      runtime: withLink('gate-held', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', owner_declined_at: '2026-10-05T11:00:00.000Z', approval_authority: 'account_owner', verified_approval_required: null }),
+      status: { 'gate-held': 'pending' },
+    });
+    const first = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    const reason = first.json.hookSpecificOutput.permissionDecisionReason;
+    assert.match(reason, /Only the account owner can reverse that\. To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link\. Retry it only if the operator asks you to\./);
+    assert.equal(linkRequests(h).length, 0, 'the owner is not asked again on their own decline');
+    const asked = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_ask_owner' });
+    assert.match(asked.json.hookSpecificOutput.permissionDecisionReason, /^Marrow is still holding this action for approval \(gate receipt gate-held\), so it did not run\. An approval link was sent to the account owner \(email\)\./);
+    assert.equal(linkRequests(h).length, 1);
+    assert.equal(runtimes(h).length, 1, 'the same gate receipt');
+    h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_again' });
+    assert.equal(linkRequests(h).length, 1, 'one link per hold');
+  } finally { h.cleanup(); }
+});
+
+test('Claude Code without a dialog: switching to the default mode asks on the same receipt; retrying in the same mode asks the owner', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: withLink('gate-held'), status: { 'gate-held': 'pending' } });
+    const bypass = { ...fixture('claude-pre-tool-use.json'), permission_mode: 'bypassPermissions' };
+    const first = h.run('claude-pre-action-hook', bypass);
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you\. Or, to ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link\./);
+    assert.equal(linkRequests(h).length, 0);
+    const asked = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_default_mode' });
+    assert.equal(asked.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.match(asked.json.hookSpecificOutput.permissionDecisionReason, /\(gate receipt gate-held\)/);
+    assert.equal(runtimes(h).length, 1, 'the same gate receipt, no new hold');
+    h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
+    h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), tool_use_id: 'toolu_default_mode' });
+    assert.equal(hostReports(h).length, 1);
+    assert.equal(hostReports(h)[0].body.hook_event, 'PermissionRequest');
+  } finally { h.cleanup(); }
+  const o = harness();
+  try {
+    o.setConfig({ runtime: withLink('gate-held'), status: { 'gate-held': 'pending' } });
+    const bypass = { ...fixture('claude-pre-tool-use.json'), permission_mode: 'bypassPermissions' };
+    o.run('claude-pre-action-hook', bypass);
+    const owner = o.run('claude-pre-action-hook', { ...bypass, tool_use_id: 'toolu_ask_owner' });
+    assert.match(owner.json.hookSpecificOutput.permissionDecisionReason, /An approval link was sent to the account owner \(email\)\./);
+    assert.equal(linkRequests(o).length, 1);
+  } finally { o.cleanup(); }
 });
 
 test('no operator in the session (codex exec) sends the owner a link; Claude Code with an operator present does not', () => {

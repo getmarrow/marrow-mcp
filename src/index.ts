@@ -1522,6 +1522,11 @@ export type MarrowAutoParams = {
   surfaces?: string[];
   auto_gate?: boolean;
   operation_id?: string;
+  /**
+   * Set only when the operator asked to ask the account owner (for example after
+   * the owner declined this action): Marrow then sends the owner a one-tap link.
+   */
+  request_owner_link?: boolean;
 };
 
 function autoPartial(input: {
@@ -1594,6 +1599,13 @@ function approvalDecidedBy(status: MarrowOwnerApprovalStatus): string {
  * the operator's host prompt can approve, and the server records it.
  */
 export function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance, linkChannel: string | null = null): string {
+  if (guidance.hostApprovalRefusal === 'owner_decline_stands' && !linkChannel) {
+    // The owner said no: the owner is asked again only when the operator asks.
+    const ask = guidance.approvalLinkPath
+      ? ' If the operator asks you to ask the owner again, call marrow_auto again with this same operation_id and request_owner_link: true; Marrow then sends the owner a one-tap approval link.'
+      : '';
+    return `Marrow is holding this action (gate receipt ${guidance.gateReceiptId}). Do not run it. The account owner declined this action${guidance.ownerDeclinedAt ? ` at ${guidance.ownerDeclinedAt}` : ' earlier'}, and only the owner can reverse that.${ask} Never write or claim an approval yourself.`;
+  }
   const why = guidance.verifiedApprovalRequired === true
     ? ` The account owner approves ${guidance.verifiedApprovalCategories.join(', ') || 'these'} actions personally.`
     : guidance.hostApprovalRefusal === 'owner_decline_stands'
@@ -1895,8 +1907,12 @@ async function marrowAutoWithTrace(
   if (genericReviewRequired && ordinaryGuidance && runtimeGate) {
     // No operator can answer an MCP tool call in a host dialog: once per
     // operation, ask Marrow to send the owner a one-tap link (no login).
+    // A standing owner decline: the owner is asked again only when the operator asks.
+    const linkWanted = ordinaryGuidance.hostApprovalRefusal === 'owner_decline_stands'
+      ? params.request_owner_link === true && !operationBinding.ownerLink?.sent
+      : !operationBinding.ownerLink;
     const linkBudget = responseBudgetMs - (Date.now() - startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS - 300;
-    if (ordinaryGuidance.approvalLinkPath && !operationBinding.ownerLink && linkBudget > 300) {
+    if (ordinaryGuidance.approvalLinkPath && linkWanted && linkBudget > 300) {
       const linkTimeout = createTimeoutSignal(Math.min(2_000, linkBudget));
       try {
         const link = await marrowRequestApprovalLink(apiKey, baseUrl, ordinaryGuidance.gateReceiptId, decisionId, sessionId, agentId, linkTimeout.signal);

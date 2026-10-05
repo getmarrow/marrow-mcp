@@ -48,8 +48,14 @@ export type HoldRecord = {
     proof_fields: string[];
     expires_at: string | null;
     code: string | null;
-    /** The owner's one-tap approval link: sent, requested but not sent, or not used for this hold. */
-    owner_link?: 'sent' | 'unsent' | null;
+    /**
+     * The owner's one-tap approval link: sent; to send (now, or again after a
+     * failed request); sent only when the operator asks by retrying the action
+     * (on_request); or not offered for this hold (null).
+     */
+    owner_link?: 'sent' | 'unsent' | 'on_request' | null;
+    /** Denied only because Claude Code showed no dialog; a retry where it can asks instead. */
+    dialog_later?: boolean;
     action: {
         action: string;
         target: string;

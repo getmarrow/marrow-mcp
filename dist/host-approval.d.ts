@@ -49,8 +49,15 @@ export type HoldPlan = {
     agentText: string;
     userText: string;
     code: boolean;
-    ownerRequest?: boolean;
+    /** The owner's one-tap link: request it now, or only when the operator asks by retrying. */
+    ownerLink?: 'now' | 'on_request';
+    /** Denied only because Claude Code showed no dialog; a retry where it can asks. */
+    dialogLater?: boolean;
+    /** Not remembered as waiting: the next attempt starts over (approval state unreadable). */
+    retryFresh?: boolean;
 };
+/** Shown when the owner's link is sent only if the operator asks for it. */
+export declare const OWNER_LINK_ON_REQUEST_TEXT = "To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link.";
 /** The sentence that replaces OWNER_APPROVAL_REQUEST_TEXT once Marrow sent the owner a one-tap link. */
 export declare function ownerLinkSentText(channel: string): string;
 /** Puts the link outcome into a plan that asked the owner. */
@@ -99,6 +106,9 @@ export type RecordHoldInput = {
         type: string;
         surfaces: string[];
     };
+    /** From the plan: whether and when the owner's one-tap link is requested. */
+    ownerLink?: 'now' | 'on_request';
+    dialogLater?: boolean;
 };
 export declare function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldRecord;
 /**
@@ -106,13 +116,17 @@ export declare function rememberHold(ctx: HoldContext, input: RecordHoldInput): 
  * (once; the server limits repeats). Returns the channel when it was sent.
  * The link itself never reaches this client or the agent.
  */
-export declare function requestOwnerLink(ctx: HoldContext, hold: HoldRecord, guidance: OrdinaryApprovalGuidance | null): Promise<string | null>;
+export declare function requestOwnerLink(ctx: HoldContext, hold: HoldRecord): Promise<string | null>;
 /** PermissionRequest (pass-through): the host is about to show its own dialog for an asked call. */
 export declare function noteDialogShown(ctx: HoldContext, correlation: string): HoldRecord | null;
 export type WaitingResolution = {
     kind: 'allow';
     hold: HoldRecord;
     contextText: string;
+} | {
+    kind: 'ask';
+    hold: HoldRecord;
+    promptText: string;
 } | {
     kind: 'deny';
     hold: HoldRecord;
@@ -129,6 +143,8 @@ export declare function resumeWaitingHold(ctx: HoldContext, input: {
     correlation: string;
     toolUseId: string | null;
     generationId: string | null;
+    /** Claude Code shows its dialog for this attempt (permission mode and version). */
+    dialogAvailable?: boolean;
 }): Promise<WaitingResolution | null>;
 export type DeliveryResult = {
     kind: 'recorded';

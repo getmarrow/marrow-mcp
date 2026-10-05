@@ -246,6 +246,32 @@ test('auto asks Marrow once per operation to send the owner a one-tap link, and 
   });
 });
 
+test('a standing owner decline: auto sends no link until the agent passes request_owner_link because the operator asked', async () => {
+  const runtime = runtimeFixture({ approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link', host_approval_accepted: false,
+    host_approval_refusal_reason: 'owner_decline_stands', owner_declined_at: '2026-10-05T11:00:00.000Z', approval_authority: 'account_owner', verified_approval_required: null });
+  const calls = [];
+  const fetch = async (url) => {
+    const path = new URL(String(url)).pathname;
+    calls.push(path);
+    if (path.endsWith('/runtime')) return Response.json({ data: runtime });
+    if (path.endsWith('/approval-link')) return Response.json({ data: { approval_link: { gate_receipt_id: 'ordinary-gate', channel: 'email', expires_at: '2030-01-01T00:10:00.000Z' } } });
+    if (path === statusPath) return Response.json({ data: statusView('pending') });
+    throw new Error(`unexpected ${path}`);
+  };
+  await withFetch(fetch, async () => {
+    const first = await invoke(marrowAuto, { ...baseParams, operation_id: 'ordinary_decline_stands', proof: measuredProof });
+    assert.equal(first.phase, 'owner_approval_required');
+    assert.match(first.exact_next_action, /Do not run it\. The account owner declined this action at 2026-10-05T11:00:00\.000Z, and only the owner can reverse that\. If the operator asks you to ask the owner again, call marrow_auto again with this same operation_id and request_owner_link: true/);
+    assert.equal(first.approval.approver, 'account_owner');
+    await invoke(marrowAuto, { ...baseParams, operation_id: 'ordinary_decline_stands', proof: measuredProof });
+    assert.equal(calls.filter((path) => path.endsWith('/approval-link')).length, 0, 'polling never asks the owner again');
+    const asked = await invoke(marrowAuto, { ...baseParams, operation_id: 'ordinary_decline_stands', proof: measuredProof, request_owner_link: true });
+    assert.match(asked.exact_next_action, /An approval link was sent to the account owner \(email\)\./);
+    await invoke(marrowAuto, { ...baseParams, operation_id: 'ordinary_decline_stands', proof: measuredProof, request_owner_link: true });
+    assert.equal(calls.filter((path) => path.endsWith('/approval-link')).length, 1, 'one link per operation');
+  });
+});
+
 test('a verified-only category tells the agent only the account owner can approve', async () => {
   const runtime = runtimeFixture({ host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'authenticated_dashboard_owner' });
   const mock = server(['pending'], runtime);

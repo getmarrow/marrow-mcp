@@ -849,9 +849,14 @@ async function runPreActionHookCommand(input) {
     const toolUseId = typeof source.tool_use_id === 'string' ? source.tool_use_id : null;
     const generationId = typeof source.generation_id === 'string' ? source.generation_id : null;
     // The same action retried after a hold that waited for approval: its status decides.
-    const waited = await (0, host_approval_1.resumeWaitingHold)(holdContext, { correlation, toolUseId, generationId }).catch(() => null);
+    const dialogAvailable = holdContext.host === 'claude-code' && ownerApprovalPrompt(identity.harness, source).available;
+    const waited = await (0, host_approval_1.resumeWaitingHold)(holdContext, { correlation, toolUseId, generationId, dialogAvailable }).catch(() => null);
     if (waited?.kind === 'allow') {
         emitHookOutput(identity.harness, approvedHoldHookOutput(identity.harness, waited.contextText));
+        return;
+    }
+    if (waited?.kind === 'ask') {
+        emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, { kind: 'ask', promptText: waited.promptText }, null));
         return;
     }
     if (waited?.kind === 'deny') {
@@ -1018,7 +1023,8 @@ async function runPreActionHookCommand(input) {
         let code = null;
         let effective = plan;
         try {
-            const hold = (0, host_approval_1.rememberHold)(holdContext, {
+            // An unreadable approval state leaves nothing to wait on: the next attempt starts over.
+            const hold = plan.kind === 'deny' && plan.retryFresh ? null : (0, host_approval_1.rememberHold)(holdContext, {
                 guidance,
                 correlation,
                 toolUseId,
@@ -1029,10 +1035,12 @@ async function runPreActionHookCommand(input) {
                 withCode: plan.kind === 'deny' && plan.code,
                 preActionEventId: `pretool-${correlation}`,
                 action: { action: classified.action, target: classified.target, type: classified.type, surfaces: classified.surfaces },
+                ...(plan.kind === 'deny' && plan.ownerLink ? { ownerLink: plan.ownerLink } : {}),
+                ...(plan.kind === 'deny' && plan.dialogLater ? { dialogLater: true } : {}),
             });
-            code = hold.code;
-            if (effective.kind === 'deny' && effective.ownerRequest) {
-                effective = (0, host_approval_1.withOwnerLink)(effective, await (0, host_approval_1.requestOwnerLink)(holdContext, hold, guidance));
+            code = hold?.code ?? null;
+            if (hold && effective.kind === 'deny' && effective.ownerLink === 'now') {
+                effective = (0, host_approval_1.withOwnerLink)(effective, await (0, host_approval_1.requestOwnerLink)(holdContext, hold));
             }
         }
         catch {

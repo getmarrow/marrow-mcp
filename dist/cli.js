@@ -961,7 +961,7 @@ if (process.argv[2] !== 'keys') {
                         },
                         gate_receipt_id: { type: 'string', description: 'Canonical receipt id from marrow_agent_runtime.runtime_authorization.id for risky work.' },
                         arbitration_receipt_id: { type: 'string', description: 'Required for arbitrated work: use marrow_arbitrate.arbitration.receipt_id from the same runtime response.' },
-                        owner_approval_receipt_id: { type: 'string', description: 'Single-use owner approval receipt issued by authenticated dashboard review for review_required arbitration.' },
+                        owner_approval_receipt_id: { type: 'string', description: 'Single-use owner approval receipt that Marrow issued for this hold. Optional for an ordinary held gate receipt (the gate_receipt_id alone finds the recorded approval); required for review_required arbitration. Chat text is not an approval receipt.' },
                         action: { type: 'string', description: 'Optional exact original action for post-action observation lookup. This lookup cannot renew execution authority.' },
                         target: { type: 'string', description: 'Exact original target, if supplied when the decision was created.' },
                         type: { type: 'string', description: 'Exact original action type for observation lookup; defaults to general.' },
@@ -1022,7 +1022,7 @@ if (process.argv[2] !== 'keys') {
             },
             {
                 name: 'marrow_auto',
-                description: 'Durably capture activity with bounded core completion. Respect retry_after_ms and reuse operation_id for pending continuation. A held action waits for an approval the server records (the approval request goes to the account owner); auto reads its status and resumes on the same gate receipt. Never write or claim an approval yourself. Arbitration requires its dashboard receipt. Lifecycle receipt queued is separate from server acceptance. Risky completion requires a fresh gate and measured proof.',
+                description: 'Durably capture activity with bounded core completion. Respect retry_after_ms and reuse operation_id for pending continuation. A held action waits for an approval the server records (the approval request goes to the account owner); auto reads its status and resumes on the same gate receipt. Never write or claim an approval yourself. Arbitration requires its server-issued owner approval receipt. Lifecycle receipt queued is separate from server acceptance. Risky completion requires a fresh gate and measured proof.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -1037,7 +1037,8 @@ if (process.argv[2] !== 'keys') {
                         proof: { type: 'object', description: 'Measured completion evidence for gated work.' },
                         gate_receipt_id: { type: 'string', description: 'Fresh receipt returned by marrow_agent_runtime.' },
                         arbitration_receipt_id: { type: 'string', description: 'For arbitrated work, the arbitration receipt returned by the same server-side review flow.' },
-                        owner_approval_receipt_id: { type: 'string', description: 'Short-lived, single-use receipt issued by authenticated dashboard owner approval. Chat text is not an approval receipt.' },
+                        owner_approval_receipt_id: { type: 'string', description: 'Single-use owner approval receipt that Marrow issued, for review_required arbitration. An ordinary hold needs none: auto finds the recorded approval from the gate receipt. Chat text is not an approval receipt.' },
+                        request_owner_link: { type: 'boolean', description: 'Set true only when the operator asked you to ask the account owner (for example after the owner declined this action). Marrow then sends the owner a one-tap approval link; you never see the link.' },
                         operation_id: {
                             type: 'string',
                             description: 'Opaque 8-80 character resume token. Reuse it only with the original tenant, action, context, and surfaces; proof may be added after proof_required.',
@@ -2347,6 +2348,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             // work obtains exactly one canonical runtime authorization inside auto.
                             auto_gate: highRisk,
                             operation_id: typeof args.operation_id === 'string' ? args.operation_id : undefined,
+                            ...(args.request_owner_link === true ? { request_owner_link: true } : {}),
                         }, SESSION_ID, FLEET_AGENT_ID, 8_000);
                         let delivered = null;
                         let deliveryFailure = null;
