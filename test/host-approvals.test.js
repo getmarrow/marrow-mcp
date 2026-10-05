@@ -934,9 +934,13 @@ test('L-2: a dialog marker that lands just after a fast click still counts as th
     assert.equal(h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json')).json.hookSpecificOutput.permissionDecision, 'ask');
     const post = h.runAsync('claude-hook', fixture('claude-post-tool-use.json'));
     await new Promise((resolve) => setTimeout(resolve, 600));
+    const markerAt = Date.now();
     h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
     await post;
-    assert.equal(hostReports(h)[0].body.hook_event, 'PermissionRequest');
+    const report = hostReports(h)[0].body;
+    assert.equal(report.hook_event, 'PermissionRequest');
+    // The late marker's write time is after the click; the honest bound is the time the hook asked.
+    assert.ok(Date.parse(report.asked_at) < markerAt, 'asked_at is the time the hook asked, not the late marker');
   } finally { h.cleanup(); }
 });
 

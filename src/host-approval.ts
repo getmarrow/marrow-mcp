@@ -583,7 +583,7 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
     const decision = claimed.decision_id ? `decision_id ${claimed.decision_id}, ` : '';
     const contextText = claimed.arbitration_receipt_id
       ? `Marrow: the account owner approved one proposal for this arbitrated action (gate receipt ${hold.gate_receipt_id}). Run only the approved proposal, then close it with marrow_commit: ${decision}gate_receipt_id ${hold.gate_receipt_id}, arbitration_receipt_id ${claimed.arbitration_receipt_id}${status.owner_approval_receipt_id ? `, owner_approval_receipt_id ${status.owner_approval_receipt_id}` : ''}, the real success and outcome${claimed.proof_required ? `, and proof with ${claimed.proof_fields.join(', ') || 'the required fields'}` : ''}.`
-      : `Marrow: ${approvalSentence(status)} (gate receipt ${hold.gate_receipt_id}). Run only this exact action; Marrow records its outcome on that receipt.`;
+      : `${approvalSentence(status).startsWith('Marrow ') ? '' : 'Marrow: '}${approvalSentence(status)} (gate receipt ${hold.gate_receipt_id}). Run only this exact action; Marrow records its outcome on that receipt.`;
     return { kind: 'allow', hold: claimed, contextText: bounded(contextText, 600) };
   }
   const waitingStates = new Set(['pending', 'arbitration_review']);
@@ -899,6 +899,7 @@ export async function settleAfterTool(ctx: HoldContext, input: {
   let hold = holds[0];
   if (!hold || hold.outbox) return null;
   const answeredAt = new Date().toISOString();
+  let lateMarker = false;
   if (hold.mode === 'ask' && hold.host === 'claude-code' && !hold.dialog_at) {
     // The marker hook runs async: after a fast click it can land just after
     // this hook starts. Wait briefly so a real click is not labelled an allow rule.
@@ -908,7 +909,7 @@ export async function settleAfterTool(ctx: HoldContext, input: {
       const latest = findHolds(scope, { id: hold.id }, ctx.home)[0];
       if (!latest || latest.state !== 'open' || latest.outbox) break;
       hold = latest;
-      if (latest.dialog_at) break;
+      if (latest.dialog_at) { lateMarker = true; break; }
     }
   }
   // An outcome the host does not report (null) is never committed as a success or a failure.
@@ -923,7 +924,9 @@ export async function settleAfterTool(ctx: HoldContext, input: {
       // and the server labels it an allow rule.
       hook_event: hold.host === 'claude-code' ? (hold.dialog_at ? 'PermissionRequest' : 'PreToolUse') : hold.hook_event,
       pre_action_event_id: hold.pre_action_event_id,
-      asked_at: hold.dialog_at || hold.asked_at,
+      // A marker that landed after the call ran was written late; the dialog was
+      // shown before the click, so the time the hook asked is the honest bound.
+      asked_at: lateMarker ? hold.asked_at : (hold.dialog_at || hold.asked_at),
       answered_at: answeredAt,
       ...(hold.decision_id ? { decision_id: hold.decision_id } : {}),
     }
