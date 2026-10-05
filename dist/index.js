@@ -1223,7 +1223,7 @@ function autoApprovalState(guidance, status, state) {
     return {
         state: state || status?.state || 'unavailable',
         gate_receipt_id: guidance.gateReceiptId,
-        approver: 'dashboard_owner',
+        approver: guidance.approvalAuthority,
         verified_approval_required: guidance.verifiedApprovalRequired,
         verified_approval_categories: guidance.verifiedApprovalCategories,
         approval_source: status?.approval_source ?? null,
@@ -1242,8 +1242,8 @@ function approvalDecidedBy(status) {
 }
 /**
  * The text an agent follows while auto waits on a held action. It never asks
- * the agent to write an approval: only the account owner (dashboard) or the
- * operator's host prompt can approve, and the server records it.
+ * the agent to write an approval: only the account owner (one-tap link) or
+ * the operator's host prompt can approve, and the server records it.
  */
 function ordinaryHoldWaitText(guidance, linkChannel = null) {
     const why = guidance.verifiedApprovalRequired === true
@@ -1499,8 +1499,8 @@ async function marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, 
             || params.arbitration_receipt_id === runtimeArbitrationReceiptId));
     // An ordinary hold: wait for the approval through the agent-key status read
     // (bounded by this call's budget), then resume on the same gate receipt.
-    // Approval comes only from the server (the account owner in the dashboard,
-    // or the operator's host prompt recorded by the host hook), never from proof.
+    // Approval comes only from the server (the account owner's one-tap link, or
+    // the operator's host prompt recorded by the host hook), never from proof.
     let ordinaryApproval = null;
     let ordinaryApprovalState;
     if (genericReviewRequired && ordinaryGuidance && runtimeGate) {

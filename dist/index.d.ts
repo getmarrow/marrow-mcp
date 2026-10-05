@@ -136,8 +136,11 @@ export type MarrowAutoResult = {
 export type MarrowAutoApprovalState = {
     state: 'pending' | 'approved' | 'declined' | 'expired' | 'used' | 'not_held' | 'arbitration_review' | 'unavailable' | 'not_found';
     gate_receipt_id: string;
-    /** Who can approve this hold: dashboard_owner (the account owner in the Marrow dashboard). */
-    approver: 'dashboard_owner';
+    /**
+     * Who can approve this hold: the operator in the host's own prompt or the
+     * account owner (one-tap link), or only the account owner. Never the agent.
+     */
+    approver: OrdinaryApprovalGuidance['approvalAuthority'];
     verified_approval_required: boolean | null;
     verified_approval_categories: string[];
     approval_source: string | null;
@@ -163,8 +166,8 @@ export type MarrowAutoParams = {
 };
 /**
  * The text an agent follows while auto waits on a held action. It never asks
- * the agent to write an approval: only the account owner (dashboard) or the
- * operator's host prompt can approve, and the server records it.
+ * the agent to write an approval: only the account owner (one-tap link) or
+ * the operator's host prompt can approve, and the server records it.
  */
 export declare function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance, linkChannel?: string | null): string;
 /**

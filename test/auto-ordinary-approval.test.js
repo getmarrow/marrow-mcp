@@ -101,6 +101,7 @@ test('a pending hold waits on the status read and asks to resume after retry_aft
     assert.equal(waiting.decision_id, 'ordinary-runtime-decision');
     assert.equal(waiting.approval.state, 'pending');
     assert.equal(waiting.approval.gate_receipt_id, 'ordinary-gate');
+    assert.equal(waiting.approval.approver, 'host_operator_or_account_owner');
     assert.match(waiting.exact_next_action, /Do not run it yet\. The approval request goes to the account owner\./);
     assert.doesNotMatch(waiting.exact_next_action, /dashboard/i, 'a dashboard login is never the step to take');
     assert.match(waiting.exact_next_action, /same operation_id after retry_after_ms/);
@@ -252,6 +253,7 @@ test('a verified-only category tells the agent only the account owner can approv
     const waiting = await invoke(marrowAuto, { ...baseParams, operation_id: 'ordinary_verified_only', proof: measuredProof });
     assert.equal(waiting.phase, 'owner_approval_required');
     assert.equal(waiting.approval.verified_approval_required, true);
+    assert.equal(waiting.approval.approver, 'account_owner');
     assert.deepEqual(waiting.approval.verified_approval_categories, ['production_deploy']);
     assert.match(waiting.exact_next_action, /The account owner approves production_deploy actions personally\. The approval request goes to the account owner\./);
   });

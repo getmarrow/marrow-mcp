@@ -1494,8 +1494,11 @@ export type MarrowAutoResult = {
 export type MarrowAutoApprovalState = {
   state: 'pending' | 'approved' | 'declined' | 'expired' | 'used' | 'not_held' | 'arbitration_review' | 'unavailable' | 'not_found';
   gate_receipt_id: string;
-  /** Who can approve this hold: dashboard_owner (the account owner in the Marrow dashboard). */
-  approver: 'dashboard_owner';
+  /**
+   * Who can approve this hold: the operator in the host's own prompt or the
+   * account owner (one-tap link), or only the account owner. Never the agent.
+   */
+  approver: OrdinaryApprovalGuidance['approvalAuthority'];
   verified_approval_required: boolean | null;
   verified_approval_categories: string[];
   approval_source: string | null;
@@ -1566,7 +1569,7 @@ function autoApprovalState(
   return {
     state: state || (status?.state as MarrowAutoApprovalState['state']) || 'unavailable',
     gate_receipt_id: guidance.gateReceiptId,
-    approver: 'dashboard_owner',
+    approver: guidance.approvalAuthority,
     verified_approval_required: guidance.verifiedApprovalRequired,
     verified_approval_categories: guidance.verifiedApprovalCategories,
     approval_source: status?.approval_source ?? null,
@@ -1587,8 +1590,8 @@ function approvalDecidedBy(status: MarrowOwnerApprovalStatus): string {
 
 /**
  * The text an agent follows while auto waits on a held action. It never asks
- * the agent to write an approval: only the account owner (dashboard) or the
- * operator's host prompt can approve, and the server records it.
+ * the agent to write an approval: only the account owner (one-tap link) or
+ * the operator's host prompt can approve, and the server records it.
  */
 export function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance, linkChannel: string | null = null): string {
   const why = guidance.verifiedApprovalRequired === true
@@ -1885,8 +1888,8 @@ async function marrowAutoWithTrace(
 
   // An ordinary hold: wait for the approval through the agent-key status read
   // (bounded by this call's budget), then resume on the same gate receipt.
-  // Approval comes only from the server (the account owner in the dashboard,
-  // or the operator's host prompt recorded by the host hook), never from proof.
+  // Approval comes only from the server (the account owner's one-tap link, or
+  // the operator's host prompt recorded by the host hook), never from proof.
   let ordinaryApproval: MarrowOwnerApprovalStatus | null = null;
   let ordinaryApprovalState: MarrowAutoApprovalState | undefined;
   if (genericReviewRequired && ordinaryGuidance && runtimeGate) {
