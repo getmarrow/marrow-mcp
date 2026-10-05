@@ -110,7 +110,8 @@ function harness() {
 
 const hostReports = (h) => h.requests().filter((r) => r.path.endsWith('/host-approval'));
 const commits = (h) => h.requests().filter((r) => r.path === '/v1/agent/commit');
-const runtimes = (h) => h.requests().filter((r) => r.path === '/v1/agent/runtime');
+// Pre-action gates only (a prompt hook may also ask the runtime for a brief).
+const runtimes = (h) => h.requests().filter((r) => r.path === '/v1/agent/runtime' && /^classified \S+ action: /.test(r.body?.action || ''));
 
 // ---------------------------------------------------------------- Claude Code
 
@@ -365,25 +366,26 @@ test('Claude Code auto mode asks only when the input proves a version whose hook
       const out = h.run('claude-pre-action-hook', payload);
       assert.equal(out.json.hookSpecificOutput.permissionDecision, expected, label);
       if (expected === 'deny') {
-        assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /The account owner can approve it in the Marrow dashboard/, label);
+        assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you\./, label);
+        assert.doesNotMatch(out.stdout, /dashboard/i, `${label}: the dashboard is never the step to take`);
         assert.deepEqual(commits(h), [], `${label}: a waiting hold is never closed by the hook`);
       }
     } finally { h.cleanup(); }
   }
 });
 
-test('a verified-only category and a standing owner decline deny before the tool runs and point to the dashboard', () => {
+test('a verified-only category and a standing owner decline deny before the tool runs; the request goes to the owner, never to a dashboard login', () => {
   for (const [label, approval, pattern] of [
     ['verified category', { host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'authenticated_dashboard_owner' },
-      /The owner requires a verified approval for production_deploy actions, so a chat or terminal approval does not count\./],
+      /The account owner approves production_deploy actions personally\. The approval request goes to the account owner\./],
     ['settings unreadable', { host_approval_accepted: false, verified_approval_required: null, approval_authority: 'authenticated_dashboard_owner' },
       /Marrow could not read the account approval settings/],
     ['owner decline stands', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', approval_authority: 'authenticated_dashboard_owner', verified_approval_required: null },
-      /The account owner declined this action earlier, so only the owner can approve it now\./],
+      /The account owner declined this action earlier\. The approval request goes to the account owner\./],
     ['owner decline stands with time', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', owner_declined_at: '2026-10-05T11:00:00.000Z', approval_authority: 'authenticated_dashboard_owner', verified_approval_required: null },
-      /The account owner declined this action at 2026-10-05T11:00:00\.000Z, so only the owner can approve it now\./],
+      /The account owner declined this action at 2026-10-05T11:00:00\.000Z\./],
     ['approval state unavailable', { host_approval_accepted: false, host_approval_refusal_reason: 'approval_state_unavailable', approval_authority: 'authenticated_dashboard_owner', verified_approval_required: null },
-      /Marrow could not check whether a chat or terminal approval counts for this hold/],
+      /Marrow could not check how this hold can be approved right now\./],
   ]) {
     const h = harness();
     try {
@@ -392,7 +394,8 @@ test('a verified-only category and a standing owner decline deny before the tool
       const decision = out.json.hookSpecificOutput;
       assert.equal(decision.permissionDecision, 'deny', label);
       assert.match(decision.permissionDecisionReason, pattern, label);
-      assert.match(decision.permissionDecisionReason, /The account owner can approve it in the Marrow dashboard/, label);
+      assert.match(decision.permissionDecisionReason, /When it is approved, retry this exact action/, label);
+      assert.doesNotMatch(out.stdout, /dashboard/i, label);
       assert.deepEqual(commits(h), [], label);
       assert.deepEqual(hostReports(h), [], label);
     } finally { h.cleanup(); }
@@ -599,7 +602,8 @@ test('Cursor never asks on preToolUse, in cloud agents (no sessionStart) or in b
       if (sessionFixture) h.run('cursor-session-hook', fixture(sessionFixture));
       const out = h.run('cursor-pre-action-hook', fixture(event));
       assert.equal(out.json.permission, 'deny', label);
-      assert.match(out.json.agent_message, /The account owner can approve it in the Marrow dashboard/, label);
+      assert.match(out.json.agent_message, /The approval request goes to the account owner\./, label);
+      assert.doesNotMatch(out.stdout, /dashboard/i, label);
       assert.doesNotMatch(out.json.user_message, /marrow approve/, `${label}: no typed approval offered`);
     } finally { h.cleanup(); }
   }
@@ -642,41 +646,134 @@ test('Cursor typed reply: code only in the user message, local interactive only,
 
 // ---------------------------------------------------------------- Codex, Gemini, Grok
 
-test('Codex never asks (it fails open): it denies, offers no typed code, and runs once after approval', () => {
+test('Codex never asks (it fails open); outside a local interactive session it offers no typed code', () => {
+  for (const [label, env] of [
+    ['no Codex process found', {}],
+    ['codex exec', { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex exec --json deploy' }],
+    ['no terminal', { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex', MARROW_TEST_HOST_TTY: '0' }],
+  ]) {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+      h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: 'deploy the worker' }, env);
+      const denied = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), env);
+      assert.equal(denied.json.hookSpecificOutput.permissionDecision, 'deny', label);
+      assert.equal(denied.json.systemMessage, undefined, label);
+      assert.doesNotMatch(denied.stdout, /marrow approve|dashboard/i, label);
+      assert.match(denied.json.hookSpecificOutput.permissionDecisionReason, /Codex cannot ask the operator in this session\. The approval request goes to the account owner\./, label);
+      h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: 'marrow approve ABCDEF' }, env);
+      assert.deepEqual(hostReports(h), [], `${label}: no typed approval is accepted`);
+      h.setConfig({ status: { 'gate-held': 'approved' } });
+      const retried = h.run('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_retry' }, env);
+      assert.equal(retried.json.hookSpecificOutput.permissionDecision, undefined, `${label}: approved, it runs once`);
+    } finally { h.cleanup(); }
+  }
+});
+
+test('Codex in a local interactive session: the code goes only to the user (systemMessage), the typed reply is recorded, the retry runs once', () => {
   const h = harness();
+  const env = { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex --model gpt-5-codex' };
   try {
     h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
-    h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: 'deploy the worker' });
-    const denied = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'));
-    assert.equal(denied.json.hookSpecificOutput.permissionDecision, 'deny');
-    assert.equal(denied.json.systemMessage, undefined);
-    assert.doesNotMatch(denied.stdout, /marrow approve/);
-    assert.match(denied.json.hookSpecificOutput.permissionDecisionReason, /Codex cannot show an approval prompt for a held action\. The account owner can approve it in the Marrow dashboard/);
-    h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: 'marrow approve ABCDEF' });
-    assert.deepEqual(hostReports(h), [], 'Codex typed approvals are not accepted (codex exec cannot be told apart)');
+    h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: 'deploy the worker' }, env);
+    const denied = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), env);
+    const decision = denied.json.hookSpecificOutput;
+    assert.equal(decision.permissionDecision, 'deny');
+    const code = denied.json.systemMessage.match(/marrow approve ([A-Z0-9]{6})/)[1];
+    assert.doesNotMatch(decision.permissionDecisionReason, new RegExp(code), 'the agent never reads the code');
+    assert.match(decision.permissionDecisionReason, /The operator was asked to approve it here\./);
+    assert.doesNotMatch(denied.stdout, /dashboard/i);
+    const reply = h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: `marrow approve ${code}` }, env);
+    assert.equal(reply.json.systemMessage, 'Marrow recorded your approval (client-attested).');
+    assert.match(reply.json.hookSpecificOutput.additionalContext, /^The operator approved the held action \(gate receipt gate-held\)\. Retry that exact action now/);
+    const [report] = hostReports(h);
+    assert.equal(report.body.host, 'codex');
+    assert.equal(report.body.hook_event, 'UserPromptSubmit');
+    assert.equal(report.body.verdict, 'approved');
     h.setConfig({ status: { 'gate-held': 'approved' } });
-    const retried = h.run('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_retry' });
+    const retried = h.run('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_retry' }, env);
     assert.equal(retried.json.hookSpecificOutput.permissionDecision, undefined);
-    assert.notEqual(retried.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(runtimes(h).length, 1, 'the retry runs on the same gate receipt');
   } finally { h.cleanup(); }
 });
 
-test('Gemini keeps its fixed denial and Grok points to the dashboard; both run once after a dashboard approval', () => {
+test('Codex typed decline records a decline and closes a denial', () => {
+  const h = harness();
+  const env = { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex resume' };
+  try {
+    h.setConfig({ runtime: hostRuntime() });
+    h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: 'deploy the worker' }, env);
+    const denied = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), env);
+    const code = denied.json.systemMessage.match(/marrow decline ([A-Z0-9]{6})/)[1];
+    const reply = h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: `marrow decline ${code}` }, env);
+    assert.equal(reply.json.systemMessage, 'Marrow recorded your decline. The held action will not run.');
+    assert.equal(hostReports(h)[0].body.verdict, 'declined');
+    assert.match(commits(h)[0].body.outcome, /^Denied by Marrow pre-action gate: the operator declined in Codex/);
+  } finally { h.cleanup(); }
+});
+
+test('Gemini keeps its fixed denial outside a local interactive session, and runs once after approval', () => {
   const h = harness();
   try {
     h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
-    const gemini = h.run('gemini-pre-action-hook', fixture('gemini-before-tool.json'));
+    const gemini = h.run('gemini-pre-action-hook', fixture('gemini-before-tool.json'), { MARROW_TEST_HOST_PROCESS: 'node /usr/lib/node_modules/@google/gemini-cli/dist/gemini.js -p deploy' });
     assert.deepEqual(gemini.json, { decision: 'deny', reason: 'Marrow blocked this action because required governance approval or proof is unavailable.' });
     h.setConfig({ status: { 'gate-held': 'approved' } });
     assert.deepEqual(h.run('gemini-pre-action-hook', fixture('gemini-before-tool.json')).json, { decision: 'allow' });
   } finally { h.cleanup(); }
+});
+
+test('Gemini CLI in a local interactive session: the code goes to systemMessage, a BeforeAgent typed reply is recorded', () => {
+  const h = harness();
+  const env = { MARROW_TEST_HOST_PROCESS: 'node /usr/lib/node_modules/@google/gemini-cli/bin/gemini' };
+  try {
+    h.setConfig({ runtime: hostRuntime() });
+    assert.deepEqual(h.run('gemini-context-hook', { session_id: 'gemini-session-0001', hook_event_name: 'BeforeAgent', prompt: 'deploy the worker' }, env).json, {});
+    const denied = h.run('gemini-pre-action-hook', fixture('gemini-before-tool.json'), env);
+    assert.equal(denied.json.decision, 'deny');
+    const code = denied.json.systemMessage.match(/marrow approve ([A-Z0-9]{6})/)[1];
+    assert.doesNotMatch(denied.json.reason, new RegExp(code));
+    assert.doesNotMatch(denied.stdout, /dashboard/i);
+    const reply = h.run('gemini-context-hook', { session_id: 'gemini-session-0001', hook_event_name: 'BeforeAgent', prompt: `marrow approve ${code}` }, env);
+    assert.equal(reply.json.systemMessage, 'Marrow recorded your approval (client-attested).');
+    assert.equal(reply.json.hookSpecificOutput.hookEventName, 'BeforeAgent');
+    const [report] = hostReports(h);
+    assert.equal(report.body.host, 'gemini');
+    assert.equal(report.body.hook_event, 'BeforeAgent');
+  } finally { h.cleanup(); }
+});
+
+test('Grok has no user-only channel: it denies and the request goes to the owner', () => {
   const g = harness();
   try {
     g.setConfig({ runtime: hostRuntime() });
     const grok = g.run('grok-pre-action-hook', fixture('grok-pre-tool-use.json'));
-    assert.deepEqual(grok.json, { decision: 'deny', reason: 'Marrow is holding this action for approval. The account owner can approve it in the Marrow dashboard; then retry it.' });
+    assert.deepEqual(grok.json, { decision: 'deny', reason: 'Marrow is holding this action for approval; the approval request goes to the account owner. Retry it after approval.' });
     assert.deepEqual(hostReports(g), []);
   } finally { g.cleanup(); }
+});
+
+test('a local interactive session is proven only by the nearest host process: a terminal and no scripted mode', () => {
+  const { localInteractiveSession } = require('../dist/host-session.js');
+  const table = (rows) => (pid) => rows[pid] || null;
+  const chain = (host, terminal = true) => table({
+    100: { pid: 100, ppid: 90, args: ['/bin/sh', '-c', 'npx marrow-mcp codex-pre-action-hook'], terminal: false },
+    90: { pid: 90, ppid: 1, args: host, terminal },
+  });
+  assert.equal(localInteractiveSession('codex', chain(['/opt/codex/bin/codex-x86_64-unknown-linux-musl', '--model', 'gpt-5-codex']), 100), true);
+  assert.equal(localInteractiveSession('codex', chain(['node', '/usr/lib/node_modules/@openai/codex/bin/codex.js', 'resume']), 100), true);
+  for (const args of [['codex', 'exec', 'deploy'], ['codex', 'e', 'x'], ['codex', 'app-server'], ['codex', 'mcp-server'], ['codex', 'exec', '--json']]) {
+    assert.equal(localInteractiveSession('codex', chain(args), 100), false, args.join(' '));
+  }
+  assert.equal(localInteractiveSession('codex', chain(['codex'], false), 100), false, 'no terminal');
+  assert.equal(localInteractiveSession('codex', chain(['claude']), 100), null, 'no Codex process');
+  assert.equal(localInteractiveSession('gemini', chain(['node', '/usr/bin/gemini']), 100), true);
+  assert.equal(localInteractiveSession('gemini', chain(['node', '/usr/bin/gemini', '-i', 'start']), 100), true);
+  for (const args of [['gemini', '-p', 'x'], ['gemini', '--prompt=x'], ['gemini', '--prompt', 'x'], ['gemini', '--experimental-acp']]) {
+    assert.equal(localInteractiveSession('gemini', chain(args), 100), false, args.join(' '));
+  }
+  assert.equal(localInteractiveSession('claude-code', chain(['claude']), 100), null, 'never typed in Claude Code');
+  assert.equal(localInteractiveSession('codex', () => null, 100), null, 'no process evidence');
 });
 
 // ---------------------------------------------------------------- guidance

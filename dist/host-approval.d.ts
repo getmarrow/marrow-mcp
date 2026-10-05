@@ -39,6 +39,8 @@ export type HoldContext = {
     home?: string;
 };
 export declare function hostSessionIdFor(candidates: unknown[], fallback: string): string;
+/** Where the approval request goes when no operator can answer here. Never a login step. */
+export declare const OWNER_APPROVAL_REQUEST_TEXT = "The approval request goes to the account owner.";
 export type HoldPlan = {
     kind: 'ask';
     promptText: string;
@@ -48,9 +50,16 @@ export type HoldPlan = {
     userText: string;
     code: boolean;
 };
+/** Hosts whose typed reply is a person-only marker, and that marker (backend OPERATOR_MARKER_BY_HOST). */
+export declare const TYPED_REPLY_MARKER: Readonly<Record<string, string>>;
 /**
- * Decides how a hook answers an ordinary held action. Model-facing text never
- * contains an approval code; a code goes only to a user-only channel.
+ * Decides how a hook answers an ordinary held action. The operator approves
+ * where they work: the host's own dialog (Claude Code, Cursor shell and MCP
+ * calls), or a typed reply in a local interactive session of a host without a
+ * dialog (Codex, Gemini CLI, Cursor otherwise). The approval code and its
+ * prompt go only to a user-only channel; model-facing text never contains it.
+ * When no operator can answer here, the request goes to the account owner.
+ * No text makes a dashboard login the step to take.
  */
 export declare function planHeldAction(input: {
     guidance: OrdinaryApprovalGuidance;
@@ -64,11 +73,11 @@ export declare function planHeldAction(input: {
     };
     /** Cursor: true only when sessionStart reported a local, non-background session. */
     cursorInteractive?: boolean | null;
-    /** Cursor: the beforeSubmitPrompt hook has run for this conversation. */
-    cursorPromptHook?: boolean | null;
+    /** A local interactive session whose typed-reply hook runs (see typedReplyAvailable). */
+    typedReply?: boolean;
 }): HoldPlan;
-/** User-only text with the typed-reply code (Cursor user_message). Never sent to the agent. */
-export declare function typedReplyUserText(agentText: string, code: string): string;
+/** User-only text with the typed-reply code (Cursor user_message, Codex and Gemini systemMessage). */
+export declare function typedReplyUserText(userText: string, code: string): string;
 export type RecordHoldInput = {
     guidance: OrdinaryApprovalGuidance;
     correlation: string;
@@ -200,6 +209,24 @@ export declare function cursorSessionEvidence(ctx: HoldContext): {
     interactive: boolean | null;
     promptHook: boolean | null;
 };
-/** Cursor beforeSubmitPrompt: records that the prompt hook runs, and handles "marrow approve CODE". */
-export declare function settleTypedReply(ctx: HoldContext, prompt: unknown): Promise<string | null>;
+/**
+ * A typed reply counts only from a person: the session must be local and
+ * interactive (Cursor: sessionStart says not a background agent; Codex and
+ * Gemini CLI: the host process has a terminal and no scripted subcommand or
+ * prompt flag), and its prompt hook must already have run, so the reply can
+ * reach Marrow at all.
+ */
+export declare function typedReplyAvailable(ctx: HoldContext, interactive?: (host: string) => boolean | null): boolean;
+export type TypedReplyResult = {
+    ok: boolean;
+    verdict: 'approved' | 'declined';
+    userText: string;
+    agentText: string | null;
+};
+/**
+ * The host's prompt hook (Codex UserPromptSubmit, Gemini BeforeAgent, Cursor
+ * beforeSubmitPrompt): records that the hook runs for this session, and records
+ * "marrow approve CODE" / "marrow decline CODE" typed by the operator.
+ */
+export declare function settleTypedReply(ctx: HoldContext, prompt: unknown, interactive?: (host: string) => boolean | null): Promise<TypedReplyResult | null>;
 //# sourceMappingURL=host-approval.d.ts.map

@@ -91,23 +91,58 @@ async function runCursorPromptHook(event: UserPromptSubmitEvent): Promise<void> 
   const context = promptHoldContext(identity, event);
   let output: Record<string, unknown> = { continue: true };
   if (context) {
-    const message = await settleTypedReply(context, event.prompt).catch(() => null);
-    if (message && !/^Marrow recorded your/.test(message)) output = { continue: false, user_message: message };
+    const result = await settleTypedReply(context, event.prompt).catch(() => null);
+    if (result && !result.ok) output = { continue: false, user_message: result.userText };
   }
   process.stdout.write(JSON.stringify(output));
 }
 
 /**
+ * Gemini CLI BeforeAgent: records that the prompt hook runs and handles a typed
+ * "marrow approve CODE" in a local interactive session. The confirmation goes
+ * to the user (systemMessage); the agent only learns that it may retry.
+ */
+async function runGeminiPromptHook(event: UserPromptSubmitEvent): Promise<void> {
+  const identity = resolveNativeHookIdentity(process.argv[2]);
+  const context = promptHoldContext(identity, event);
+  let output: Record<string, unknown> = {};
+  if (context) {
+    const result = await settleTypedReply(context, event.prompt).catch(() => null);
+    if (result) {
+      output = {
+        systemMessage: result.userText,
+        ...(result.agentText ? { hookSpecificOutput: { hookEventName: 'BeforeAgent', additionalContext: result.agentText } } : {}),
+      };
+    }
+    await flushHoldOutbox(context, 1, 1_500).catch(() => undefined);
+  }
+  process.stdout.write(JSON.stringify(output));
+}
+
+/** A typed reply's confirmation (user only) and retry note (agent), added to this hook's output. */
+let heldReplyUserText: string | null = null;
+let heldReplyAgentText: string | null = null;
+
+/**
  * UserPromptSubmit (Claude Code, Codex, Grok): settles held calls first.
  * Claude Code: a rejected dialog can end the turn before PostToolBatch, so the
- * still-open asked calls of this session are decided from the transcript. No
- * host here accepts a typed approval.
+ * still-open asked calls of this session are decided from the transcript;
+ * Claude Code never accepts a typed approval (its prompt hook also fires for
+ * scheduled tasks and other sessions). Codex: a typed reply in a local
+ * interactive session.
  */
 async function settleHeldCallsAtPrompt(event: UserPromptSubmitEvent): Promise<void> {
   const identity = resolveNativeHookIdentity(process.argv[2]);
   const context = promptHoldContext(identity, event);
   if (!context) return;
   if (context.host === 'claude-code') await settleAtPrompt(context, event.transcript_path).catch(() => 0);
+  if (context.host === 'codex') {
+    const result = await settleTypedReply(context, event.prompt).catch(() => null);
+    if (result) {
+      heldReplyUserText = result.userText;
+      heldReplyAgentText = result.agentText;
+    }
+  }
   await flushHoldOutbox(context, 2, 2_000).catch(() => undefined);
 }
 
@@ -585,15 +620,18 @@ export function buildCombinedContextBlock(
 }
 
 function emitNoContext(): void {
+  if (heldReplyUserText || heldReplyAgentText) {
+    emitContext('');
+    return;
+  }
   process.stdout.write('{}');
 }
 
 function emitContext(context: string): void {
+  const additional = [heldReplyAgentText, context].filter(Boolean).join('\n');
   process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: context,
-    },
+    ...(heldReplyUserText ? { systemMessage: heldReplyUserText } : {}),
+    ...(additional ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: additional } } : {}),
   }));
 }
 
@@ -693,8 +731,14 @@ export async function runContextHookCommand(): Promise<void> {
       return;
     }
 
-    if (resolveNativeHookIdentity(process.argv[2]).harness === 'cursor') {
+    const promptHarness = resolveNativeHookIdentity(process.argv[2]).harness;
+    if (promptHarness === 'cursor') {
       await runCursorPromptHook(event);
+      process.exit(0);
+      return;
+    }
+    if (promptHarness === 'gemini') {
+      await runGeminiPromptHook(event);
       process.exit(0);
       return;
     }

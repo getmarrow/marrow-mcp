@@ -58,6 +58,7 @@ export const WINDSURF_SESSION_END_HOOK_COMMAND = hookCommand('windsurf-session-h
 export const GEMINI_PRE_ACTION_HOOK_COMMAND = hookCommand('gemini-pre-action-hook');
 export const GEMINI_ACTION_RESULT_HOOK_COMMAND = hookCommand('gemini-hook');
 export const GEMINI_SESSION_END_HOOK_COMMAND = hookCommand('gemini-session-hook');
+export const GEMINI_CONTEXT_HOOK_COMMAND = hookCommand('gemini-context-hook');
 const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end', 'session_loop_guard'] as const;
 
 export type NativeHookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
@@ -97,6 +98,7 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, '
   'gemini-pre-action-hook': 'gemini',
   'gemini-hook': 'gemini',
   'gemini-session-hook': 'gemini',
+  'gemini-context-hook': 'gemini',
 };
 
 /**
@@ -222,11 +224,16 @@ function normalizeWindsurfHookEvent(source: Record<string, unknown>): Record<str
 
 function normalizeGeminiHookEvent(source: Record<string, unknown>): Record<string, unknown> {
   const hookEventName = typeof source.hook_event_name === 'string' ? source.hook_event_name.trim() : '';
-  if (!['BeforeTool', 'AfterTool', 'AfterAgent'].includes(hookEventName)) return {};
+  if (!['BeforeTool', 'AfterTool', 'AfterAgent', 'BeforeAgent'].includes(hookEventName)) return {};
   const normalized: Record<string, unknown> = { hook_event_name: hookEventName };
   const sessionId = boundedCorrelationId(source.session_id);
   if (sessionId) normalized.session_id = sessionId;
   if (hookEventName === 'AfterAgent') return normalized;
+  if (hookEventName === 'BeforeAgent') {
+    // Only a short typed reply is ever read from the prompt.
+    if (typeof source.prompt === 'string' && source.prompt.length <= 64) normalized.prompt = source.prompt;
+    return normalized;
+  }
   const toolName = typeof source.tool_name === 'string' ? source.tool_name.trim().slice(0, 256) : '';
   if (toolName && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
     normalized.tool_name = toolName === 'run_shell_command' ? 'Bash'
@@ -357,7 +364,7 @@ export function normalizeHookEventPayload(value: unknown): Record<string, unknow
   if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop'].includes(String(source.hookEventName || ''))) {
     return normalizeGrokHookEvent(source);
   }
-  if (['BeforeTool', 'AfterTool', 'AfterAgent'].includes(String(source.hook_event_name || ''))) {
+  if (['BeforeTool', 'AfterTool', 'AfterAgent', 'BeforeAgent'].includes(String(source.hook_event_name || ''))) {
     return normalizeGeminiHookEvent(source);
   }
   const normalized: Record<string, unknown> = { ...source };

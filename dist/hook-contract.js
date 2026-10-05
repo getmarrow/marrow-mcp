@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.GEMINI_SESSION_END_HOOK_COMMAND = exports.GEMINI_ACTION_RESULT_HOOK_COMMAND = exports.GEMINI_PRE_ACTION_HOOK_COMMAND = exports.WINDSURF_SESSION_END_HOOK_COMMAND = exports.WINDSURF_ACTION_RESULT_HOOK_COMMAND = exports.WINDSURF_PRE_ACTION_HOOK_COMMAND = exports.CLINE_SESSION_END_HOOK_COMMAND = exports.CLINE_ACTION_RESULT_HOOK_COMMAND = exports.CLINE_PRE_ACTION_HOOK_COMMAND = exports.CURSOR_CONTEXT_HOOK_COMMAND = exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_PRE_ACTION_GUARD_COMMAND = exports.MARROW_OUTAGE_WARNING = exports.GROK_LAUNCH_FAILURE = exports.GROK_FIXED_DENIAL = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.PERMISSION_REQUEST_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.GEMINI_CONTEXT_HOOK_COMMAND = exports.GEMINI_SESSION_END_HOOK_COMMAND = exports.GEMINI_ACTION_RESULT_HOOK_COMMAND = exports.GEMINI_PRE_ACTION_HOOK_COMMAND = exports.WINDSURF_SESSION_END_HOOK_COMMAND = exports.WINDSURF_ACTION_RESULT_HOOK_COMMAND = exports.WINDSURF_PRE_ACTION_HOOK_COMMAND = exports.CLINE_SESSION_END_HOOK_COMMAND = exports.CLINE_ACTION_RESULT_HOOK_COMMAND = exports.CLINE_PRE_ACTION_HOOK_COMMAND = exports.CURSOR_CONTEXT_HOOK_COMMAND = exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_PRE_ACTION_GUARD_COMMAND = exports.MARROW_OUTAGE_WARNING = exports.GROK_LAUNCH_FAILURE = exports.GROK_FIXED_DENIAL = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.PERMISSION_REQUEST_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
 exports.resolveNativeHookIdentity = resolveNativeHookIdentity;
 exports.clientReportedHookLifecycleIdentity = clientReportedHookLifecycleIdentity;
 exports.privateHookLoopGuardPayload = privateHookLoopGuardPayload;
@@ -75,6 +75,7 @@ exports.WINDSURF_SESSION_END_HOOK_COMMAND = hookCommand('windsurf-session-hook')
 exports.GEMINI_PRE_ACTION_HOOK_COMMAND = hookCommand('gemini-pre-action-hook');
 exports.GEMINI_ACTION_RESULT_HOOK_COMMAND = hookCommand('gemini-hook');
 exports.GEMINI_SESSION_END_HOOK_COMMAND = hookCommand('gemini-session-hook');
+exports.GEMINI_CONTEXT_HOOK_COMMAND = hookCommand('gemini-context-hook');
 const LOCAL_CONFIGURED_HOOK_STAGES = ['prompt', 'pre_action', 'action_result', 'session_end', 'session_loop_guard'];
 const RECOGNIZED_NATIVE_ENTRYPOINTS = {
     'claude-context-hook': 'claude-code',
@@ -103,6 +104,7 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS = {
     'gemini-pre-action-hook': 'gemini',
     'gemini-hook': 'gemini',
     'gemini-session-hook': 'gemini',
+    'gemini-context-hook': 'gemini',
 };
 /**
  * Label client-reported hook activity from the public CLI entrypoint. The
@@ -214,7 +216,7 @@ function normalizeWindsurfHookEvent(source) {
 }
 function normalizeGeminiHookEvent(source) {
     const hookEventName = typeof source.hook_event_name === 'string' ? source.hook_event_name.trim() : '';
-    if (!['BeforeTool', 'AfterTool', 'AfterAgent'].includes(hookEventName))
+    if (!['BeforeTool', 'AfterTool', 'AfterAgent', 'BeforeAgent'].includes(hookEventName))
         return {};
     const normalized = { hook_event_name: hookEventName };
     const sessionId = boundedCorrelationId(source.session_id);
@@ -222,6 +224,12 @@ function normalizeGeminiHookEvent(source) {
         normalized.session_id = sessionId;
     if (hookEventName === 'AfterAgent')
         return normalized;
+    if (hookEventName === 'BeforeAgent') {
+        // Only a short typed reply is ever read from the prompt.
+        if (typeof source.prompt === 'string' && source.prompt.length <= 64)
+            normalized.prompt = source.prompt;
+        return normalized;
+    }
     const toolName = typeof source.tool_name === 'string' ? source.tool_name.trim().slice(0, 256) : '';
     if (toolName && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
         normalized.tool_name = toolName === 'run_shell_command' ? 'Bash'
@@ -369,7 +377,7 @@ function normalizeHookEventPayload(value) {
     if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop'].includes(String(source.hookEventName || ''))) {
         return normalizeGrokHookEvent(source);
     }
-    if (['BeforeTool', 'AfterTool', 'AfterAgent'].includes(String(source.hook_event_name || ''))) {
+    if (['BeforeTool', 'AfterTool', 'AfterAgent', 'BeforeAgent'].includes(String(source.hook_event_name || ''))) {
         return normalizeGeminiHookEvent(source);
     }
     const normalized = { ...source };

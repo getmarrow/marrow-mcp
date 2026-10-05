@@ -11,6 +11,7 @@ import {
   planHeldAction,
   rememberHold,
   resumeWaitingHold,
+  typedReplyAvailable,
   typedReplyUserText,
   type HoldContext,
   type HoldPlan,
@@ -103,7 +104,7 @@ export type PreToolUseEvent = {
 type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
 
 /** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
-export const HOLD_DASHBOARD_DENIAL = 'Marrow is holding this action for approval. The account owner can approve it in the Marrow dashboard; then retry it.';
+export const HOLD_OWNER_DENIAL = 'Marrow is holding this action for approval; the approval request goes to the account owner. Retry it after approval.';
 
 /**
  * The hook's answer for an ordinary held action, per host. A Claude Code "ask"
@@ -120,6 +121,8 @@ export function heldActionHookOutput(
     if (harness === 'cursor') return { permission: 'ask', user_message: plan.promptText, agent_message: 'Marrow asked the user to approve this held action in Cursor.' };
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: plan.promptText } };
   }
+  // The approval code goes only to a user-only channel: Cursor user_message,
+  // Codex and Gemini CLI systemMessage. The agent's text never contains it.
   if (harness === 'cursor') {
     return {
       permission: 'deny',
@@ -127,11 +130,18 @@ export function heldActionHookOutput(
       agent_message: plan.agentText,
     };
   }
-  if (harness === 'cline') return { cancel: true, errorMessage: HOLD_DASHBOARD_DENIAL };
-  // The Gemini adapter accepts only its fixed denial text.
-  if (harness === 'gemini') return { decision: 'deny', reason: 'Marrow blocked this action because required governance approval or proof is unavailable.' };
-  if (harness === 'grok') return { decision: 'deny', reason: HOLD_DASHBOARD_DENIAL };
-  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: plan.agentText } };
+  if (harness === 'cline') return { cancel: true, errorMessage: HOLD_OWNER_DENIAL };
+  if (harness === 'gemini') {
+    // Without a typed reply the Gemini adapter's fixed denial text is kept.
+    return code
+      ? { decision: 'deny', reason: plan.agentText, systemMessage: typedReplyUserText(plan.userText, code) }
+      : { decision: 'deny', reason: 'Marrow blocked this action because required governance approval or proof is unavailable.' };
+  }
+  if (harness === 'grok') return { decision: 'deny', reason: HOLD_OWNER_DENIAL };
+  return {
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: plan.agentText },
+    ...(harness === 'codex' && code ? { systemMessage: typedReplyUserText(plan.userText, code) } : {}),
+  };
 }
 
 /** The hook's answer when a waited hold was approved and the same action is retried. */
@@ -899,8 +909,8 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     return;
   }
   if (waited?.kind === 'deny') {
-    const plan: HoldPlan = { kind: 'deny', agentText: waited.agentText, userText: waited.agentText, code: Boolean(waited.hold.code) };
-    emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, plan, waited.hold.code), HOLD_DASHBOARD_DENIAL);
+    const plan: HoldPlan = { kind: 'deny', agentText: waited.agentText, userText: waited.userText, code: Boolean(waited.hold.code) };
+    emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, plan, waited.hold.code), HOLD_OWNER_DENIAL);
     return;
   }
   const lifecycle = recordLifecycleEvent({
@@ -1054,7 +1064,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       reason: verdict.reason,
       claudePrompt,
       cursorInteractive: cursor?.interactive ?? null,
-      cursorPromptHook: cursor?.promptHook ?? null,
+      typedReply: typedReplyAvailable(holdContext),
     });
     let code: string | null = null;
     let effective: HoldPlan = plan;
@@ -1075,11 +1085,11 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     } catch {
       // Without local state the answer could not be linked to this hold, so it is not asked for.
       if (plan.kind === 'ask') {
-        const text = `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}), so it did not run. The account owner can approve it in the Marrow dashboard; then retry this exact action.`;
+        const text = `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}), so it did not run. The approval request goes to the account owner. When it is approved, retry this exact action.`;
         effective = { kind: 'deny', agentText: text, userText: text, code: false };
       }
     }
-    emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, effective, code), effective.kind === 'deny' ? HOLD_DASHBOARD_DENIAL : undefined);
+    emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, effective, code), effective.kind === 'deny' ? HOLD_OWNER_DENIAL : undefined);
     return;
   }
   const emitted = emitDecision(result, identity.harness, claudePrompt);

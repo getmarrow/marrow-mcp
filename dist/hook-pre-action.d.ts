@@ -23,7 +23,7 @@ export type PreToolUseEvent = {
 };
 type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
 /** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
-export declare const HOLD_DASHBOARD_DENIAL = "Marrow is holding this action for approval. The account owner can approve it in the Marrow dashboard; then retry it.";
+export declare const HOLD_OWNER_DENIAL = "Marrow is holding this action for approval; the approval request goes to the account owner. Retry it after approval.";
 /**
  * The hook's answer for an ordinary held action, per host. A Claude Code "ask"
  * reason is shown to the user only; a Cursor user_message is shown only in the

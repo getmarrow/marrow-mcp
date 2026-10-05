@@ -1246,11 +1246,11 @@ function approvalDecidedBy(status) {
  */
 function ordinaryHoldWaitText(guidance) {
     const why = guidance.verifiedApprovalRequired === true
-        ? ` The owner requires a verified approval for ${guidance.verifiedApprovalCategories.join(', ') || 'this kind of'} actions, so a chat or terminal approval does not count.`
-        : guidance.verifiedApprovalRequired === null
-            ? ' Marrow could not read the account approval settings, so only the account owner can approve it.'
+        ? ` The account owner approves ${guidance.verifiedApprovalCategories.join(', ') || 'these'} actions personally.`
+        : guidance.hostApprovalRefusal === 'owner_decline_stands'
+            ? ` The account owner declined this action${guidance.ownerDeclinedAt ? ` at ${guidance.ownerDeclinedAt}` : ' earlier'}.`
             : '';
-    return `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}). Do not run it yet. The account owner approves it in the Marrow dashboard.${why} Call marrow_auto again with this same operation_id after retry_after_ms; Marrow resumes on the same gate receipt once it is approved. Never write or claim an approval yourself.`;
+    return `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}). Do not run it yet.${why} The approval request goes to the account owner. Call marrow_auto again with this same operation_id after retry_after_ms; Marrow resumes on the same gate receipt once it is approved. Never write or claim an approval yourself.`;
 }
 async function readOrdinaryApprovalForAuto(input) {
     let status = null;

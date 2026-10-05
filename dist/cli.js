@@ -50,7 +50,7 @@ function parseArgs() {
         if (['permission-request-hook', 'claude-permission-request-hook'].includes(args[i])) {
             result.permissionRequestHook = true;
         }
-        if (['context-hook', '--context-hook', 'claude-context-hook', 'codex-context-hook', 'grok-context-hook', 'cursor-context-hook'].includes(args[i])) {
+        if (['context-hook', '--context-hook', 'claude-context-hook', 'codex-context-hook', 'grok-context-hook', 'cursor-context-hook', 'gemini-context-hook'].includes(args[i])) {
             result.contextHook = true;
         }
         if (['pre-action-hook', '--pre-action-hook', 'claude-pre-action-hook', 'cline-pre-action-hook', 'codex-pre-action-hook', 'cursor-pre-action-hook', 'gemini-pre-action-hook', 'grok-pre-action-hook', 'windsurf-pre-action-hook'].includes(args[i])) {
@@ -945,7 +945,7 @@ if (process.argv[2] !== 'keys') {
                 description: 'Close a recorded action with success/failure, a specific outcome, and required proof. ' +
                     'decision_id comes from marrow_think, marrow_auto, or a runtime that actually created a decision. ' +
                     'Use the gate receipt from marrow_agent_runtime for consequential work. ' +
-                    'A held action closes trusted only after the server records its approval (the operator in the host prompt, or the account owner in the dashboard); never write or claim an approval in proof. ' +
+                    'A held action closes trusted only after the server records its approval (the operator in the host\'s own prompt, or the account owner); never write or claim an approval in proof. ' +
                     'The exact non-authorizing outcome_observation_only runtime correlation may submit an observed_unverified result, but is never sent as receipt evidence and never authorizes action or trusted learning. ' +
                     'Only committed:true closes trusted outcome learning.',
                 inputSchema: {
@@ -1022,7 +1022,7 @@ if (process.argv[2] !== 'keys') {
             },
             {
                 name: 'marrow_auto',
-                description: 'Durably capture activity with bounded core completion. Respect retry_after_ms and reuse operation_id for pending continuation. A held action waits for an approval the server records (the account owner in the dashboard); auto reads its status and resumes on the same gate receipt. Never write or claim an approval yourself. Arbitration requires its dashboard receipt. Lifecycle receipt queued is separate from server acceptance. Risky completion requires a fresh gate and measured proof.',
+                description: 'Durably capture activity with bounded core completion. Respect retry_after_ms and reuse operation_id for pending continuation. A held action waits for an approval the server records (the approval request goes to the account owner); auto reads its status and resumes on the same gate receipt. Never write or claim an approval yourself. Arbitration requires its dashboard receipt. Lifecycle receipt queued is separate from server acceptance. Risky completion requires a fresh gate and measured proof.',
                 inputSchema: {
                     type: 'object',
                     properties: {

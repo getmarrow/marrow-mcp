@@ -8,6 +8,19 @@ const { appendFileSync, existsSync, readFileSync, writeFileSync } = require('nod
 const { join } = require('node:path');
 
 const directory = process.env.MARROW_TEST_MOCK_DIR;
+
+// A synthetic parent process for the interactive-session check (src/host-session.ts):
+// MARROW_TEST_HOST_PROCESS is the host command line, MARROW_TEST_HOST_TTY=0 removes its terminal.
+if (process.env.MARROW_TEST_HOST_PROCESS) {
+  globalThis[Symbol.for('marrow.test.processTable')] = {
+    [String(process.ppid)]: {
+      pid: process.ppid, ppid: 1, args: process.env.MARROW_TEST_HOST_PROCESS.split(' '),
+      terminal: process.env.MARROW_TEST_HOST_TTY !== '0',
+    },
+  };
+} else {
+  globalThis[Symbol.for('marrow.test.processTable')] = {};
+}
 const configPath = join(directory, 'config.json');
 const countersPath = join(directory, 'counters.json');
 

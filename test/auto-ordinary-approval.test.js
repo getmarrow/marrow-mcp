@@ -101,7 +101,8 @@ test('a pending hold waits on the status read and asks to resume after retry_aft
     assert.equal(waiting.decision_id, 'ordinary-runtime-decision');
     assert.equal(waiting.approval.state, 'pending');
     assert.equal(waiting.approval.gate_receipt_id, 'ordinary-gate');
-    assert.match(waiting.exact_next_action, /Do not run it yet\. The account owner approves it in the Marrow dashboard\./);
+    assert.match(waiting.exact_next_action, /Do not run it yet\. The approval request goes to the account owner\./);
+    assert.doesNotMatch(waiting.exact_next_action, /dashboard/i, 'a dashboard login is never the step to take');
     assert.match(waiting.exact_next_action, /same operation_id after retry_after_ms/);
     assert.match(waiting.exact_next_action, /Never write or claim an approval yourself\./);
     assert.doesNotMatch(waiting.exact_next_action, /proof\.owner_approval|approved-release-bundle|arbitrat/);
@@ -231,7 +232,7 @@ test('a verified-only category tells the agent only the account owner can approv
     assert.equal(waiting.phase, 'owner_approval_required');
     assert.equal(waiting.approval.verified_approval_required, true);
     assert.deepEqual(waiting.approval.verified_approval_categories, ['production_deploy']);
-    assert.match(waiting.exact_next_action, /The owner requires a verified approval for production_deploy actions, so a chat or terminal approval does not count\./);
+    assert.match(waiting.exact_next_action, /The account owner approves production_deploy actions personally\. The approval request goes to the account owner\./);
   });
 });
 
@@ -351,7 +352,8 @@ test('the CLI projects the wait and the closure, with the approval state and no 
       assert.equal(result.live_delivery.committed, approved);
       assert.equal(result.approval.state, approved ? 'used' : 'pending');
       assert.doesNotMatch(result.exact_next_action, /arbitrat|proof\.owner_approval|approved-release-bundle/i);
-      if (!approved) assert.match(result.exact_next_action, /Marrow dashboard/);
+      if (!approved) assert.match(result.exact_next_action, /The approval request goes to the account owner/);
+      assert.doesNotMatch(result.exact_next_action, /dashboard/i);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

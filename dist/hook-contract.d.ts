@@ -35,6 +35,7 @@ export declare const WINDSURF_SESSION_END_HOOK_COMMAND: string;
 export declare const GEMINI_PRE_ACTION_HOOK_COMMAND: string;
 export declare const GEMINI_ACTION_RESULT_HOOK_COMMAND: string;
 export declare const GEMINI_SESSION_END_HOOK_COMMAND: string;
+export declare const GEMINI_CONTEXT_HOOK_COMMAND: string;
 export type NativeHookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
 export interface NativeHookIdentity {
     harness: NativeHookHarness;

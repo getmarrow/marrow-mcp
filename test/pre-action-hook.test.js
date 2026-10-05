@@ -987,7 +987,8 @@ test('the installer generic entrypoint asks only when Claude Code spawned the ho
     const denied = JSON.parse(unknownHost.output).hookSpecificOutput;
     assert.equal(denied.permissionDecision, 'deny');
     assert.match(denied.permissionDecisionReason, /^Marrow is holding this action for approval \(gate receipt gate-review\), so it did not run\./);
-    assert.match(denied.permissionDecisionReason, /the host cannot show an approval prompt for a held action\. The account owner can approve it in the Marrow dashboard/);
+    assert.match(denied.permissionDecisionReason, /the host cannot ask the operator in this session\. The approval request goes to the account owner\./);
+    assert.doesNotMatch(denied.permissionDecisionReason, /dashboard/i);
     assert.deepEqual(unknownHost.commits, [], 'a waiting hold is never closed by the hook');
   } finally {
     if (previous === undefined) delete process.env.CLAUDE_CODE_CHILD_SESSION;

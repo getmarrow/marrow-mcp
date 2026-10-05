@@ -20,6 +20,7 @@ import {
   type HoldScope,
 } from './host-approval-state';
 import type { MarrowOwnerApprovalStatus } from './types';
+import { localInteractiveSession } from './host-session';
 
 /**
  * Chat and terminal approvals: the operator answers a held action in the
@@ -98,34 +99,45 @@ function bounded(value: string, limit: number): string {
   return value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);
 }
 
-function untilText(expiresAt: string | null): string {
-  return expiresAt ? ` until ${expiresAt}` : '';
-}
-
-/** Why only the account owner (dashboard) can approve this hold. */
-function dashboardOnlyReason(guidance: OrdinaryApprovalGuidance): string {
+/** Why the operator's own approval does not count for this hold (the server's refusal). */
+function ownerOnlyReason(guidance: OrdinaryApprovalGuidance): string {
   if (guidance.hostApprovalRefusal === 'owner_decline_stands') {
-    return `The account owner declined this action${guidance.ownerDeclinedAt ? ` at ${guidance.ownerDeclinedAt}` : ' earlier'}, so only the owner can approve it now.`;
+    return `The account owner declined this action${guidance.ownerDeclinedAt ? ` at ${guidance.ownerDeclinedAt}` : ' earlier'}.`;
   }
   if (guidance.hostApprovalRefusal === 'approval_state_unavailable') {
-    return 'Marrow could not check whether a chat or terminal approval counts for this hold, so only the account owner can approve it.';
+    return 'Marrow could not check how this hold can be approved right now.';
   }
   if (guidance.verifiedApprovalRequired === true) {
-    return `The owner requires a verified approval for ${guidance.verifiedApprovalCategories.join(', ') || 'this kind of'} actions, so a chat or terminal approval does not count.`;
+    return `The account owner approves ${guidance.verifiedApprovalCategories.join(', ') || 'these'} actions personally.`;
   }
   if (guidance.verifiedApprovalRequired === null) {
-    return 'Marrow could not read the account approval settings, so only the account owner can approve it.';
+    return 'Marrow could not read the account approval settings.';
   }
-  return 'A chat or terminal approval is not available for this hold.';
+  return 'An operator approval is not available for this hold.';
 }
+
+/** Where the approval request goes when no operator can answer here. Never a login step. */
+export const OWNER_APPROVAL_REQUEST_TEXT = 'The approval request goes to the account owner.';
 
 export type HoldPlan =
   | { kind: 'ask'; promptText: string }
   | { kind: 'deny'; agentText: string; userText: string; code: boolean };
 
+/** Hosts whose typed reply is a person-only marker, and that marker (backend OPERATOR_MARKER_BY_HOST). */
+export const TYPED_REPLY_MARKER: Readonly<Record<string, string>> = {
+  codex: 'UserPromptSubmit',
+  gemini: 'BeforeAgent',
+  cursor: 'beforeSubmitPrompt',
+};
+
 /**
- * Decides how a hook answers an ordinary held action. Model-facing text never
- * contains an approval code; a code goes only to a user-only channel.
+ * Decides how a hook answers an ordinary held action. The operator approves
+ * where they work: the host's own dialog (Claude Code, Cursor shell and MCP
+ * calls), or a typed reply in a local interactive session of a host without a
+ * dialog (Codex, Gemini CLI, Cursor otherwise). The approval code and its
+ * prompt go only to a user-only channel; model-facing text never contains it.
+ * When no operator can answer here, the request goes to the account owner.
+ * No text makes a dashboard login the step to take.
  */
 export function planHeldAction(input: {
   guidance: OrdinaryApprovalGuidance;
@@ -136,14 +148,16 @@ export function planHeldAction(input: {
   claudePrompt?: { available: boolean; unavailableReason: string };
   /** Cursor: true only when sessionStart reported a local, non-background session. */
   cursorInteractive?: boolean | null;
-  /** Cursor: the beforeSubmitPrompt hook has run for this conversation. */
-  cursorPromptHook?: boolean | null;
+  /** A local interactive session whose typed-reply hook runs (see typedReplyAvailable). */
+  typedReply?: boolean;
 }): HoldPlan {
   const { guidance, host } = input;
   const reason = input.reason ? ` Reason: ${bounded(input.reason, 200)}` : '';
   const id = guidance.gateReceiptId;
   // Shown in the host's own prompt (to the operator, never to the agent).
   const notice = guidance.operatorNotice ? ` Note: ${guidance.operatorNotice}` : '';
+  const held = `Marrow is holding this action for approval (gate receipt ${id}), so it did not run.${reason}`;
+  const tail = ' When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.';
   if (guidance.hostApprovalAccepted) {
     if (host === 'claude-code' && input.claudePrompt?.available) {
       return {
@@ -157,25 +171,29 @@ export function planHeldAction(input: {
         promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action (gate receipt ${id}).${notice}${reason}`, 500),
       };
     }
+    if (input.typedReply && TYPED_REPLY_MARKER[host]) {
+      return {
+        kind: 'deny',
+        agentText: bounded(`${held} The operator was asked to approve it here.${tail}`, 500),
+        userText: bounded(`Marrow holds this action for your approval (gate receipt ${id}).${notice}${reason}`, 400),
+        code: true,
+      };
+    }
   }
-  const noPrompt = !guidance.hostApprovalAccepted
-    ? dashboardOnlyReason(guidance)
+  const why = !guidance.hostApprovalAccepted
+    ? `${ownerOnlyReason(guidance)} ${OWNER_APPROVAL_REQUEST_TEXT}`
     : host === 'claude-code'
-    ? `No approval prompt is available here (${input.claudePrompt?.unavailableReason || 'this session cannot prompt'}).`
+    ? `Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you.`
     : host === 'cursor'
-    ? 'Cursor shows a Marrow approval prompt only for shell and MCP calls in a local interactive session.'
-    : `${HOST_LABEL[host]} cannot show an approval prompt for a held action.`;
-  const agentText = bounded(
-    `Marrow is holding this action for approval (gate receipt ${id}), so it did not run.${reason} ${noPrompt} The account owner can approve it in the Marrow dashboard${untilText(guidance.expiresAt)}. After approval, retry this exact action; Marrow checks the approval when it is retried. Do not report or claim an approval yourself.`,
-    500,
-  );
-  const typed = host === 'cursor' && guidance.hostApprovalAccepted && input.cursorInteractive === true && input.cursorPromptHook === true;
-  return { kind: 'deny', agentText, userText: agentText, code: typed };
+    ? `Cursor asks for approval only for shell and MCP calls in a local interactive session. ${OWNER_APPROVAL_REQUEST_TEXT}`
+    : `${HOST_LABEL[host]} cannot ask the operator in this session. ${OWNER_APPROVAL_REQUEST_TEXT}`;
+  const agentText = bounded(`${held} ${why}${tail}`, 500);
+  return { kind: 'deny', agentText, userText: agentText, code: false };
 }
 
-/** User-only text with the typed-reply code (Cursor user_message). Never sent to the agent. */
-export function typedReplyUserText(agentText: string, code: string): string {
-  return bounded(`${agentText} Or approve it here: send the message "marrow approve ${code}" (or "marrow decline ${code}"), then let the agent retry.`, 600);
+/** User-only text with the typed-reply code (Cursor user_message, Codex and Gemini systemMessage). */
+export function typedReplyUserText(userText: string, code: string): string {
+  return bounded(`${userText} To approve it, type: marrow approve ${code} (or: marrow decline ${code}). Then let the agent retry it.`, 600);
 }
 
 export type RecordHoldInput = {
@@ -305,12 +323,14 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
     };
   }
   if (status.state === 'pending' || status.state === 'unavailable') {
-    const text = bounded(`Marrow is still holding this action for approval (gate receipt ${hold.gate_receipt_id}), so it did not run. The account owner can approve it in the Marrow dashboard${untilText(status.expires_at || hold.expires_at)}; then retry this exact action. Do not report or claim an approval yourself.`, 500);
+    const waiting = hold.code ? 'The operator was asked to approve it here.' : OWNER_APPROVAL_REQUEST_TEXT;
+    const expires = status.expires_at || hold.expires_at;
+    const text = bounded(`Marrow is still holding this action for approval (gate receipt ${hold.gate_receipt_id}), so it did not run. ${waiting} When it is approved${expires ? ` (before ${expires})` : ''}, retry this exact action. Do not report or claim an approval yourself.`, 500);
     return {
       kind: 'deny',
       hold,
       agentText: text,
-      userText: hold.code ? typedReplyUserText(text, hold.code) : text,
+      userText: hold.code ? `Marrow still holds this action for your approval (gate receipt ${hold.gate_receipt_id}).` : text,
     };
   }
   if (status.state === 'declined') {
@@ -533,7 +553,7 @@ function handoffText(hold: HoldRecord, delivery: DeliveryResult | null): string 
     return bounded(`Marrow is recording the approval of this held action (gate receipt ${hold.gate_receipt_id}); the report is queued and retried automatically. Close it with marrow_commit as usual: ${decision}gate_receipt_id ${hold.gate_receipt_id}, the real success and outcome${hold.proof_required ? `, and proof with ${proof}` : ''}. Marrow sends the queued approval first.`, 600);
   }
   if (delivery.kind === 'refused') {
-    return bounded(`Marrow could not record an approval for this held action (${delivery.code || 'refused'}), so its outcome stays unverified. Do not retry it to get approval; the account owner can review it in the Marrow dashboard.`, 400);
+    return bounded(`Marrow could not record an approval for this held action (${delivery.code || 'refused'}), so its outcome stays unverified. Do not retry it to get approval; the account owner sees it with its receipts in Marrow.`, 400);
   }
   if (delivery.kind === 'dropped') return null;
   const approved = delivery.kind === 'already_approved' || (delivery.kind === 'recorded' && delivery.verdict === 'approved');
@@ -793,8 +813,8 @@ export async function settleAtPrompt(ctx: HoldContext, transcriptPath: unknown):
 }
 
 // ---------------------------------------------------------------------------
-// Typed replies: local interactive Cursor sessions only (never Claude Code,
-// cloud or background agents, codex exec or gemini -p).
+// Typed replies: local interactive Codex, Gemini CLI and Cursor sessions only
+// (never Claude Code, Cursor cloud or background agents, codex exec or gemini -p).
 // ---------------------------------------------------------------------------
 
 const TYPED_REPLY = /^\s*marrow\s+(approve|decline|deny)\s+([A-Za-z0-9]{6})\s*$/i;
@@ -823,13 +843,38 @@ export function cursorSessionEvidence(ctx: HoldContext): { interactive: boolean 
   }
 }
 
-/** Cursor beforeSubmitPrompt: records that the prompt hook runs, and handles "marrow approve CODE". */
-export async function settleTypedReply(ctx: HoldContext, prompt: unknown): Promise<string | null> {
+/**
+ * A typed reply counts only from a person: the session must be local and
+ * interactive (Cursor: sessionStart says not a background agent; Codex and
+ * Gemini CLI: the host process has a terminal and no scripted subcommand or
+ * prompt flag), and its prompt hook must already have run, so the reply can
+ * reach Marrow at all.
+ */
+export function typedReplyAvailable(ctx: HoldContext, interactive: (host: string) => boolean | null = localInteractiveSession): boolean {
+  if (!TYPED_REPLY_MARKER[ctx.host]) return false;
+  const evidence = cursorSessionEvidence(ctx);
+  if (evidence.promptHook !== true) return false;
+  if (ctx.host === 'cursor') return evidence.interactive === true;
+  return interactive(ctx.host) === true;
+}
+
+export type TypedReplyResult = { ok: boolean; verdict: 'approved' | 'declined'; userText: string; agentText: string | null };
+
+/**
+ * The host's prompt hook (Codex UserPromptSubmit, Gemini BeforeAgent, Cursor
+ * beforeSubmitPrompt): records that the hook runs for this session, and records
+ * "marrow approve CODE" / "marrow decline CODE" typed by the operator.
+ */
+export async function settleTypedReply(
+  ctx: HoldContext,
+  prompt: unknown,
+  interactive: (host: string) => boolean | null = localInteractiveSession,
+): Promise<TypedReplyResult | null> {
   const scope = scopeOf(ctx);
   try { setSessionMarker('prompt_hook', scope, ctx.hostSessionId, true, ctx.home); } catch { /* evidence is best effort */ }
   const typed = parseTypedReply(prompt);
-  if (!typed || ctx.host !== 'cursor') return null;
-  if (cursorSessionEvidence(ctx).interactive !== true) return null;
+  const marker = TYPED_REPLY_MARKER[ctx.host];
+  if (!typed || !marker || !typedReplyAvailable(ctx, interactive)) return null;
   let hold: HoldRecord | undefined;
   try {
     hold = findHolds(scope, { code: typed.code, hostSessionId: ctx.hostSessionId, mode: 'wait', states: ['open'] }, ctx.home)[0];
@@ -841,7 +886,7 @@ export async function settleTypedReply(ctx: HoldContext, prompt: unknown): Promi
     verdict: typed.verdict,
     host: hold.host,
     host_session_id: hold.host_session_id,
-    hook_event: 'beforeSubmitPrompt',
+    hook_event: marker,
     pre_action_event_id: hold.pre_action_event_id,
     asked_at: hold.asked_at,
     answered_at: new Date().toISOString(),
@@ -853,11 +898,22 @@ export async function settleTypedReply(ctx: HoldContext, prompt: unknown): Promi
   // An approval keeps the hold waiting: the retried action reads the status and runs once.
   updateHold(scope, hold.id, (current) => ({ ...current, state: typed.verdict === 'declined' ? 'resolved' : 'open', outbox: { report, commit, attempts: 0, next_at: 0 } }), ctx.home);
   const delivery = await deliverHold(ctx, hold.id);
-  if (!delivery || delivery.kind === 'queued') return 'Marrow is recording your answer; the report is queued and retried automatically.';
-  if (delivery.kind === 'recorded' || delivery.kind === 'already_approved') {
-    return typed.verdict === 'approved'
-      ? 'Marrow recorded your approval (client-attested). Ask the agent to retry the held action.'
-      : 'Marrow recorded your decline. The held action will not run.';
+  const approved = typed.verdict === 'approved';
+  if (!delivery || delivery.kind === 'queued') {
+    return {
+      ok: true, verdict: typed.verdict,
+      userText: 'Marrow is recording your answer; the report is queued and resent automatically.',
+      agentText: approved ? `The operator approved the held action (gate receipt ${hold.gate_receipt_id}); Marrow is recording it. Retry that exact action now.` : null,
+    };
   }
-  return `Marrow could not record your answer (${'code' in delivery && delivery.code ? delivery.code : 'refused'}). The account owner can approve it in the Marrow dashboard.`;
+  if (delivery.kind === 'recorded' || delivery.kind === 'already_approved') {
+    return approved
+      ? { ok: true, verdict: 'approved', userText: 'Marrow recorded your approval (client-attested).', agentText: `The operator approved the held action (gate receipt ${hold.gate_receipt_id}). Retry that exact action now; Marrow lets it run once.` }
+      : { ok: true, verdict: 'declined', userText: 'Marrow recorded your decline. The held action will not run.', agentText: `The operator declined the held action (gate receipt ${hold.gate_receipt_id}). Do not run it.` };
+  }
+  return {
+    ok: false, verdict: typed.verdict,
+    userText: `Marrow could not record your answer (${'code' in delivery && delivery.code ? delivery.code : 'refused'}). ${OWNER_APPROVAL_REQUEST_TEXT}`,
+    agentText: null,
+  };
 }
