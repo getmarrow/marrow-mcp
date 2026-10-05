@@ -476,27 +476,140 @@ export function highRiskRuntimeCanContinueWithProof(
   return highRiskRuntimeCanAttemptClosure(runtime, proof, explicitReceiptId, now, false);
 }
 
-/** Server-declared ordinary closure evidence, never action authorization. */
-export function runtimeDeclaresOrdinaryOwnerApproval(runtime: MarrowAgentRuntimeResult): boolean {
-  const completion = runtime.completion_contract;
-  const approval = optionalRecord(completion?.owner_approval);
-  const shape = optionalRecord(approval?.proof_shape);
-  return !runtime.arbitration
-    && completion?.arbitration_receipt_required === false
-    && completion.owner_approval_required === true
-    && approval?.mode === 'ordinary_non_arbitrated'
-    && approval.proof_path === 'proof.owner_approval'
-    && approval.dashboard_receipt_required === false
-    && shape?.approved_by === 'owner'
-    && shape.reference === 'approved-release-bundle';
+const HOLD_DECISIONS = new Set(['review_required', 'owner_approval_required']);
+const APPROVAL_CATEGORY = /^[a-z][a-z0-9_]{0,63}$/;
+const PROOF_FIELD = /^[a-z][a-z0-9_]{0,63}$/;
+export const OWNER_APPROVAL_STATUS_POLL_DEFAULT_MS = 5_000;
+export const OWNER_APPROVAL_STATUS_POLL_MIN_MS = 1_000;
+export const OWNER_APPROVAL_STATUS_POLL_MAX_MS = 60_000;
+
+/** The agent-key status read of one gate receipt; built from the receipt id, never taken from a response. */
+export function ownerApprovalStatusPath(gateReceiptId: string): string {
+  return `/v1/agent/gate-receipts/${gateReceiptId}/owner-approval`;
 }
 
-export function hasOrdinaryOwnerApprovalProof(proof: Record<string, unknown> | undefined): boolean {
-  const approval = optionalRecord(proof?.owner_approval);
-  return Boolean(approval
-    && Object.keys(approval).sort().join(',') === 'approved_by,reference'
-    && approval.approved_by === 'owner'
-    && approval.reference === 'approved-release-bundle');
+/** The agent-key route a host hook uses to record the operator's answer; built from the receipt id. */
+export function hostApprovalPath(gateReceiptId: string): string {
+  return `/v1/agent/gate-receipts/${gateReceiptId}/host-approval`;
+}
+
+export function boundedPollAfterMs(value: unknown): number {
+  const requested = typeof value === 'number' && Number.isFinite(value) ? Math.ceil(value) : OWNER_APPROVAL_STATUS_POLL_DEFAULT_MS;
+  return Math.min(OWNER_APPROVAL_STATUS_POLL_MAX_MS, Math.max(OWNER_APPROVAL_STATUS_POLL_MIN_MS, requested));
+}
+
+function boundedStrings(value: unknown, pattern: RegExp, limit: number): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.filter((item): item is string => typeof item === 'string' && pattern.test(item)))].slice(0, limit)
+    : [];
+}
+
+/**
+ * The server's approval contract for an ordinary (non-arbitrated) held action,
+ * read from completion_contract.owner_approval in the expanded or slim runtime
+ * shape. Null when the action is not an ordinary hold, when it is arbitrated,
+ * or when the server does not offer the agent-key approval status read (an
+ * older backend): then a hold is denied as before.
+ *
+ * Endpoints are rebuilt from the gate receipt id; a response that names a
+ * different path is not trusted. A chat or terminal (host) approval is offered
+ * only when the server says it counts for this hold: host_approval_accepted is
+ * true and verified_approval_required is false. A verified-only category, or
+ * settings Marrow could not read (null), means only the account owner's
+ * dashboard approval counts. A caller-written proof.owner_approval is never an
+ * approval and is never produced here.
+ */
+export type OrdinaryApprovalGuidance = {
+  gateReceiptId: string;
+  decisionId: string | null;
+  trustedCompletionReceiptRequired: boolean;
+  statusPath: string;
+  pollAfterMs: number;
+  /** Set only when a host (chat or terminal) approval counts for this hold. */
+  hostApprovalPath: string | null;
+  hostApprovalAccepted: boolean;
+  /**
+   * Why the server refuses a host approval for this hold: owner_decline_stands,
+   * verified_approval_required or approval_state_unavailable (null when it counts).
+   */
+  hostApprovalRefusal: string | null;
+  ownerDeclinedAt: string | null;
+  /** Server text for the host's own prompt (the owner declined a similar action); user-facing only. */
+  operatorNotice: string | null;
+  verifiedApprovalRequired: boolean | null;
+  verifiedApprovalCategories: string[];
+  approvalCategories: string[];
+  approvalAuthority: 'host_operator_or_dashboard_owner' | 'authenticated_dashboard_owner';
+  proofRequired: boolean;
+  proofFields: string[];
+  expiresAt: string | null;
+};
+
+export function ordinaryApprovalGuidance(
+  runtime: MarrowAgentRuntimeResult | null | undefined,
+): OrdinaryApprovalGuidance | null {
+  if (!runtime || runtime.arbitration) return null;
+  const completion = runtime.completion_contract;
+  const approval = optionalRecord(completion?.owner_approval);
+  if (!approval || approval.mode !== 'ordinary_non_arbitrated' || approval.dashboard_receipt_required === true) return null;
+  if (completion?.arbitration_receipt_required === true) return null;
+  const decision = String(runtime.risk_gate?.decision || '');
+  const receiptDecision = String(runtime.gate_receipt?.decision || '');
+  if (decision === 'block' || receiptDecision === 'block') return null;
+  if (!HOLD_DECISIONS.has(decision) && !HOLD_DECISIONS.has(receiptDecision)) return null;
+  const gateReceiptId = runtimeAuthorizationReceiptId(runtime);
+  if (!gateReceiptId) return null;
+  const statusPath = ownerApprovalStatusPath(gateReceiptId);
+  if (approval.approval_status_endpoint !== statusPath) return null;
+  const decisionIds = [runtime.decision_id, runtime.runtime_authorization?.decision_id, completion?.decision_id]
+    .map(safeRuntimeIdentifier)
+    .filter((id): id is string => Boolean(id));
+  if (new Set(decisionIds).size > 1) return null;
+  const verifiedApprovalRequired = approval.verified_approval_required === true
+    ? true
+    : approval.verified_approval_required === false ? false : null;
+  const serverHostPath = approval.host_approval_endpoint;
+  const hostApprovalAccepted = approval.host_approval_accepted === true
+    && verifiedApprovalRequired === false
+    && serverHostPath === hostApprovalPath(gateReceiptId)
+    && approval.host_approval_trust === 'client_attested'
+    && (approval.approval_authority === undefined || approval.approval_authority === 'host_operator_or_dashboard_owner');
+  const refusal = [
+    approval.host_approval_refusal_reason,
+    approval.host_approval_unavailable_reason,
+    approval.host_approval_reason,
+  ].find((value): value is string => typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value)) || null;
+  const proofFields = boundedStrings(
+    runtime.proof_pack?.fields?.length ? runtime.proof_pack.fields : completion?.required_proof_fields,
+    PROOF_FIELD,
+    24,
+  );
+  const expiresAt = typeof runtime.gate_receipt?.expires_at === 'string' && Number.isFinite(Date.parse(runtime.gate_receipt.expires_at))
+    ? new Date(Date.parse(runtime.gate_receipt.expires_at)).toISOString()
+    : null;
+  return {
+    gateReceiptId,
+    decisionId: decisionIds[0] || null,
+    trustedCompletionReceiptRequired: approval.trusted_completion_receipt_required === true,
+    statusPath,
+    pollAfterMs: boundedPollAfterMs(approval.approval_status_poll_after_ms),
+    hostApprovalPath: hostApprovalAccepted ? hostApprovalPath(gateReceiptId) : null,
+    hostApprovalAccepted,
+    hostApprovalRefusal: hostApprovalAccepted ? null : refusal,
+    ownerDeclinedAt: typeof approval.owner_declined_at === 'string' && Number.isFinite(Date.parse(approval.owner_declined_at))
+      ? new Date(Date.parse(approval.owner_declined_at)).toISOString()
+      : null,
+    operatorNotice: hostApprovalAccepted && typeof approval.operator_notice === 'string' && approval.operator_notice.trim()
+      ? approval.operator_notice.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)
+      : null,
+    verifiedApprovalRequired,
+    verifiedApprovalCategories: boundedStrings(approval.verified_approval_categories, APPROVAL_CATEGORY, 8),
+    approvalCategories: boundedStrings(approval.approval_categories, APPROVAL_CATEGORY, 8),
+    approvalAuthority: hostApprovalAccepted ? 'host_operator_or_dashboard_owner' : 'authenticated_dashboard_owner',
+    proofRequired: runtime.proof_pack?.required === true || completion?.proof_required_before_complete === true,
+    proofFields,
+    expiresAt,
+  };
 }
 
 /** Validate the server's existing decision before auto skips decision creation. */
@@ -530,25 +643,4 @@ export function runtimeDecisionMatchesAutoScope(
     && completion.decision_creation_required === false
     && Array.isArray(fields)
     && ['decision_id', 'success', 'outcome', 'gate_receipt_id'].every((field) => fields.includes(field)));
-}
-
-export function ordinaryOwnerApprovalCanAttemptCommit(
-  runtime: MarrowAgentRuntimeResult,
-  proof: Record<string, unknown> | undefined,
-  receiptId: unknown,
-  now: number = Date.now(),
-): boolean {
-  const expiry = Date.parse(runtime.gate_receipt?.expires_at || '');
-  return runtimeDeclaresOrdinaryOwnerApproval(runtime)
-    && hasOrdinaryOwnerApprovalProof(proof)
-    && runtimeAuthorizationReceiptId(runtime) === safeRuntimeIdentifier(receiptId)
-    && runtime.runtime_authorization?.durable === true
-    && runtime.risk_gate.enforced === true
-    && runtime.plan_capability?.production_enforcement_entitled !== false
-    && runtime.plan_capability?.mode !== 'advisory'
-    && runtime.plan_capability?.mode !== 'pilot'
-    && ['review_required', 'owner_approval_required'].includes(runtime.risk_gate.decision)
-    && ['review_required', 'owner_approval_required'].includes(runtime.gate_receipt?.decision || '')
-    && runtime.gate_receipt?.owner_approval_required === true
-    && Number.isFinite(expiry) && expiry > now;
 }

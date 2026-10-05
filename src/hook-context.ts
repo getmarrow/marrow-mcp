@@ -30,6 +30,14 @@ import {
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
 import { advanceSessionInstructionEpoch } from './session-loop-guard';
+import {
+  approvalHostFor,
+  flushHoldOutbox,
+  hostSessionIdFor,
+  settleAtPrompt,
+  settleTypedReply,
+  type HoldContext,
+} from './host-approval';
 
 export const CONTEXT_HOOK_COMMAND = CONTRACT_CONTEXT_HOOK_COMMAND;
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
@@ -44,8 +52,63 @@ const READ_ONLY_PROMPT_TERMS = /\b(?:analyze|assess|brainstorm|check|compare|des
 
 interface UserPromptSubmitEvent {
   session_id?: string;
+  conversation_id?: string;
   hook_event_name?: string;
   prompt?: string;
+  transcript_path?: string;
+}
+
+function promptHoldContext(identity: ReturnType<typeof resolveNativeHookIdentity>, event: UserPromptSubmitEvent): HoldContext | null {
+  const apiKey = identity.environment.apiKey || '';
+  if (!apiKey) return null;
+  let baseUrl: string;
+  try {
+    baseUrl = validateBaseUrl(identity.environment.baseUrl || 'https://api.getmarrow.ai');
+  } catch {
+    return null;
+  }
+  const sessionId = identity.environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
+    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+  return {
+    apiKey,
+    baseUrl,
+    sessionId,
+    agentId: identity.agent_id,
+    harness: identity.harness,
+    host: approvalHostFor(identity.harness),
+    hostSessionId: hostSessionIdFor([event.session_id, event.conversation_id], sessionId),
+  };
+}
+
+/**
+ * Cursor beforeSubmitPrompt: never adds context (Cursor cannot), only records
+ * that the prompt hook runs and handles a typed "marrow approve CODE" in a
+ * local interactive session. A failed typed answer blocks that one message so
+ * the user sees why; everything else continues unchanged.
+ */
+async function runCursorPromptHook(event: UserPromptSubmitEvent): Promise<void> {
+  const identity = resolveNativeHookIdentity(process.argv[2]);
+  const context = promptHoldContext(identity, event);
+  let output: Record<string, unknown> = { continue: true };
+  if (context) {
+    const message = await settleTypedReply(context, event.prompt).catch(() => null);
+    if (message && !/^Marrow recorded your/.test(message)) output = { continue: false, user_message: message };
+  }
+  process.stdout.write(JSON.stringify(output));
+}
+
+/**
+ * UserPromptSubmit (Claude Code, Codex, Grok): settles held calls first.
+ * Claude Code: a rejected dialog can end the turn before PostToolBatch, so the
+ * still-open asked calls of this session are decided from the transcript. No
+ * host here accepts a typed approval.
+ */
+async function settleHeldCallsAtPrompt(event: UserPromptSubmitEvent): Promise<void> {
+  const identity = resolveNativeHookIdentity(process.argv[2]);
+  const context = promptHoldContext(identity, event);
+  if (!context) return;
+  if (context.host === 'claude-code') await settleAtPrompt(context, event.transcript_path).catch(() => 0);
+  await flushHoldOutbox(context, 2, 2_000).catch(() => undefined);
 }
 
 interface InstallResult {
@@ -629,6 +692,13 @@ export async function runContextHookCommand(): Promise<void> {
       process.exit(0);
       return;
     }
+
+    if (resolveNativeHookIdentity(process.argv[2]).harness === 'cursor') {
+      await runCursorPromptHook(event);
+      process.exit(0);
+      return;
+    }
+    await settleHeldCallsAtPrompt(event).catch(() => undefined);
 
     const prompt = asString(event.prompt);
     if (!prompt) {

@@ -1,0 +1,20 @@
+{
+  "session_id": "3b1f0c2e-0000-4000-8000-00000000000a",
+  "transcript_path": "__TRANSCRIPT__",
+  "cwd": "/home/operator/project",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "wrangler deploy --env production",
+    "description": "Deploy the worker to production"
+  },
+  "tool_response": {
+    "stdout": "Deployed worker version 0000",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false
+  },
+  "tool_use_id": "toolu_01HELDDEPLOY0000000000001",
+  "duration_ms": 2412
+}

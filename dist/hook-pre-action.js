@@ -1,7 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.HOLD_DASHBOARD_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = void 0;
 exports.isMarrowControlOutage = isMarrowControlOutage;
+exports.heldActionHookOutput = heldActionHookOutput;
+exports.approvedHoldHookOutput = approvedHoldHookOutput;
 exports.isMarrowOutage = isMarrowOutage;
 exports.controlFailureKind = controlFailureKind;
 exports.controlRejectionMessage = controlRejectionMessage;
@@ -29,6 +31,7 @@ const request_reliability_1 = require("./request-reliability");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
+const host_approval_1 = require("./host-approval");
 const session_loop_guard_1 = require("./session-loop-guard");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
@@ -78,6 +81,59 @@ function isMarrowControlOutage(error) {
     if (typeof named.code === 'string' && NETWORK_ERROR_CODES.has(named.code))
         return true;
     return error instanceof TypeError && /fetch|network|getaddrinfo/i.test(String(named.message || ''));
+}
+/** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
+exports.HOLD_DASHBOARD_DENIAL = 'Marrow is holding this action for approval. The account owner can approve it in the Marrow dashboard; then retry it.';
+/**
+ * The hook's answer for an ordinary held action, per host. A Claude Code "ask"
+ * reason is shown to the user only; a Cursor user_message is shown only in the
+ * client; neither ever reaches the agent with an approval code.
+ */
+function heldActionHookOutput(harness, plan, code = null) {
+    if (harness === 'windsurf')
+        return null;
+    if (plan.kind === 'ask') {
+        if (harness === 'cursor')
+            return { permission: 'ask', user_message: plan.promptText, agent_message: 'Marrow asked the user to approve this held action in Cursor.' };
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: plan.promptText } };
+    }
+    if (harness === 'cursor') {
+        return {
+            permission: 'deny',
+            user_message: code ? (0, host_approval_1.typedReplyUserText)(plan.userText, code) : plan.userText,
+            agent_message: plan.agentText,
+        };
+    }
+    if (harness === 'cline')
+        return { cancel: true, errorMessage: exports.HOLD_DASHBOARD_DENIAL };
+    // The Gemini adapter accepts only its fixed denial text.
+    if (harness === 'gemini')
+        return { decision: 'deny', reason: 'Marrow blocked this action because required governance approval or proof is unavailable.' };
+    if (harness === 'grok')
+        return { decision: 'deny', reason: exports.HOLD_DASHBOARD_DENIAL };
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: plan.agentText } };
+}
+/** The hook's answer when a waited hold was approved and the same action is retried. */
+function approvedHoldHookOutput(harness, contextText) {
+    if (harness === 'windsurf')
+        return null;
+    if (harness === 'cursor')
+        return { permission: 'allow' };
+    if (harness === 'cline')
+        return { cancel: false };
+    if (harness === 'gemini' || harness === 'grok')
+        return { decision: 'allow' };
+    return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: contextText } };
+}
+function emitHookOutput(harness, output, deniedText) {
+    if (harness === 'windsurf') {
+        process.exitCode = deniedText ? 2 : 0;
+        if (deniedText)
+            process.stderr.write(`${deniedText}\n`);
+        return;
+    }
+    if (output)
+        process.stdout.write(JSON.stringify(output));
 }
 function isMarrowOutage(result) {
     return result.outage === true;
@@ -481,14 +537,17 @@ function preActionHookOutput(result, harness = 'claude-code', prompt = NO_OWNER_
     } : {};
     const verdict = runtimeGateVerdict(runtime);
     if (verdict) {
-        // Only an ordinary review in a session that shows the owner a prompt asks;
-        // block, arbitration and every host where no person would see it deny.
-        const ask = verdict.kind === 'review' && prompt.available && harness !== 'codex';
+        // An ordinary hold the server lets the host approve is answered by
+        // heldActionHookOutput. Here every gate denies: block, arbitration, and a
+        // review the server offered no chat or terminal approval for.
+        const reason = verdict.kind === 'review' && prompt.available
+            ? { available: false, unavailableReason: 'this Marrow service did not offer a chat or terminal approval for this hold' }
+            : prompt;
         return {
             hookSpecificOutput: {
                 hookEventName: 'PreToolUse',
-                permissionDecision: ask ? 'ask' : 'deny',
-                permissionDecisionReason: gateDecisionMessage(verdict, ask, prompt),
+                permissionDecision: 'deny',
+                permissionDecisionReason: gateDecisionMessage(verdict, false, reason),
                 ...context,
             },
         };
@@ -770,6 +829,28 @@ async function runPreActionHookCommand(input) {
         }, identity.harness);
         return;
     }
+    const holdContext = {
+        apiKey: resolved.apiKey,
+        baseUrl,
+        sessionId,
+        agentId,
+        harness: identity.harness,
+        host: (0, host_approval_1.approvalHostFor)(identity.harness),
+        hostSessionId: (0, host_approval_1.hostSessionIdFor)([source.session_id, source.conversation_id, source.task_id], sessionId),
+    };
+    const toolUseId = typeof source.tool_use_id === 'string' ? source.tool_use_id : null;
+    const generationId = typeof source.generation_id === 'string' ? source.generation_id : null;
+    // The same action retried after a hold that waited for approval: its status decides.
+    const waited = await (0, host_approval_1.resumeWaitingHold)(holdContext, { correlation, toolUseId, generationId }).catch(() => null);
+    if (waited?.kind === 'allow') {
+        emitHookOutput(identity.harness, approvedHoldHookOutput(identity.harness, waited.contextText));
+        return;
+    }
+    if (waited?.kind === 'deny') {
+        const plan = { kind: 'deny', agentText: waited.agentText, userText: waited.agentText, code: Boolean(waited.hold.code) };
+        emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, plan, waited.hold.code), exports.HOLD_DASHBOARD_DENIAL);
+        return;
+    }
     const lifecycle = (0, lifecycle_spool_1.recordLifecycleEvent)({
         apiKey: resolved.apiKey,
         baseUrl,
@@ -907,7 +988,51 @@ async function runPreActionHookCommand(input) {
             })),
         lifecycle,
     ]);
-    const emitted = emitDecision(result, identity.harness, ownerApprovalPrompt(identity.harness, source));
+    const claudePrompt = ownerApprovalPrompt(identity.harness, source);
+    const verdict = result.outage ? null : runtimeGateVerdict(result.runtime);
+    const guidance = verdict?.kind === 'review' ? (0, runtime_contract_1.ordinaryApprovalGuidance)(result.runtime) : null;
+    if (verdict && guidance) {
+        // An ordinary hold: ask in the host's own prompt where it counts and is
+        // shown, otherwise deny and wait for the approval. Never close the decision
+        // here; that would spend the receipt the operator or owner is about to approve.
+        const cursor = holdContext.host === 'cursor' ? (0, host_approval_1.cursorSessionEvidence)(holdContext) : null;
+        const plan = (0, host_approval_1.planHeldAction)({
+            guidance,
+            host: holdContext.host,
+            hookEvent: typeof source.hook_event_name === 'string' ? source.hook_event_name : 'PreToolUse',
+            reason: verdict.reason,
+            claudePrompt,
+            cursorInteractive: cursor?.interactive ?? null,
+            cursorPromptHook: cursor?.promptHook ?? null,
+        });
+        let code = null;
+        let effective = plan;
+        try {
+            const hold = (0, host_approval_1.rememberHold)(holdContext, {
+                guidance,
+                correlation,
+                toolUseId,
+                generationId,
+                toolName: String(source.tool_name || 'tool'),
+                hookEvent: typeof source.hook_event_name === 'string' ? source.hook_event_name : 'PreToolUse',
+                mode: plan.kind === 'ask' ? 'ask' : 'wait',
+                withCode: plan.kind === 'deny' && plan.code,
+                preActionEventId: `pretool-${correlation}`,
+                action: { action: classified.action, target: classified.target, type: classified.type, surfaces: classified.surfaces },
+            });
+            code = hold.code;
+        }
+        catch {
+            // Without local state the answer could not be linked to this hold, so it is not asked for.
+            if (plan.kind === 'ask') {
+                const text = `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}), so it did not run. The account owner can approve it in the Marrow dashboard; then retry this exact action.`;
+                effective = { kind: 'deny', agentText: text, userText: text, code: false };
+            }
+        }
+        emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, effective, code), effective.kind === 'deny' ? exports.HOLD_DASHBOARD_DENIAL : undefined);
+        return;
+    }
+    const emitted = emitDecision(result, identity.harness, claudePrompt);
     if (emitted.denied && !result.outage) {
         await closeDeniedDecision(resolved.apiKey, baseUrl, held, emitted.reason, sessionId, agentId);
     }

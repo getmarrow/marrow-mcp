@@ -1,0 +1,10 @@
+{
+  "session_id": "019a6f4e-0000-7000-8000-00000000000c",
+  "turn_id": "turn-8",
+  "transcript_path": null,
+  "cwd": "/home/operator/project",
+  "hook_event_name": "UserPromptSubmit",
+  "model": "gpt-5-codex",
+  "permission_mode": "default",
+  "prompt": "__PROMPT__"
+}

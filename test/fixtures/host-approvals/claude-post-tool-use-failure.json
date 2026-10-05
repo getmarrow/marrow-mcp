@@ -1,0 +1,16 @@
+{
+  "session_id": "3b1f0c2e-0000-4000-8000-00000000000a",
+  "transcript_path": "__TRANSCRIPT__",
+  "cwd": "/home/operator/project",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "wrangler deploy --env production",
+    "description": "Deploy the worker to production"
+  },
+  "tool_use_id": "toolu_01HELDDEPLOY0000000000001",
+  "error": "Exit code 1\nError: deployment failed",
+  "is_interrupt": false,
+  "duration_ms": 1180
+}

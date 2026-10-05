@@ -12,14 +12,59 @@ export declare function highRiskRuntimeCanClose(runtime: MarrowAgentRuntimeResul
  * gate; the backend still validates and binds the exact proof on commit.
  */
 export declare function highRiskRuntimeCanContinueWithProof(runtime: MarrowAgentRuntimeResult, proof: Record<string, unknown> | undefined, explicitReceiptId: unknown, now?: number): boolean;
-/** Server-declared ordinary closure evidence, never action authorization. */
-export declare function runtimeDeclaresOrdinaryOwnerApproval(runtime: MarrowAgentRuntimeResult): boolean;
-export declare function hasOrdinaryOwnerApprovalProof(proof: Record<string, unknown> | undefined): boolean;
+export declare const OWNER_APPROVAL_STATUS_POLL_DEFAULT_MS = 5000;
+export declare const OWNER_APPROVAL_STATUS_POLL_MIN_MS = 1000;
+export declare const OWNER_APPROVAL_STATUS_POLL_MAX_MS = 60000;
+/** The agent-key status read of one gate receipt; built from the receipt id, never taken from a response. */
+export declare function ownerApprovalStatusPath(gateReceiptId: string): string;
+/** The agent-key route a host hook uses to record the operator's answer; built from the receipt id. */
+export declare function hostApprovalPath(gateReceiptId: string): string;
+export declare function boundedPollAfterMs(value: unknown): number;
+/**
+ * The server's approval contract for an ordinary (non-arbitrated) held action,
+ * read from completion_contract.owner_approval in the expanded or slim runtime
+ * shape. Null when the action is not an ordinary hold, when it is arbitrated,
+ * or when the server does not offer the agent-key approval status read (an
+ * older backend): then a hold is denied as before.
+ *
+ * Endpoints are rebuilt from the gate receipt id; a response that names a
+ * different path is not trusted. A chat or terminal (host) approval is offered
+ * only when the server says it counts for this hold: host_approval_accepted is
+ * true and verified_approval_required is false. A verified-only category, or
+ * settings Marrow could not read (null), means only the account owner's
+ * dashboard approval counts. A caller-written proof.owner_approval is never an
+ * approval and is never produced here.
+ */
+export type OrdinaryApprovalGuidance = {
+    gateReceiptId: string;
+    decisionId: string | null;
+    trustedCompletionReceiptRequired: boolean;
+    statusPath: string;
+    pollAfterMs: number;
+    /** Set only when a host (chat or terminal) approval counts for this hold. */
+    hostApprovalPath: string | null;
+    hostApprovalAccepted: boolean;
+    /**
+     * Why the server refuses a host approval for this hold: owner_decline_stands,
+     * verified_approval_required or approval_state_unavailable (null when it counts).
+     */
+    hostApprovalRefusal: string | null;
+    ownerDeclinedAt: string | null;
+    /** Server text for the host's own prompt (the owner declined a similar action); user-facing only. */
+    operatorNotice: string | null;
+    verifiedApprovalRequired: boolean | null;
+    verifiedApprovalCategories: string[];
+    approvalCategories: string[];
+    approvalAuthority: 'host_operator_or_dashboard_owner' | 'authenticated_dashboard_owner';
+    proofRequired: boolean;
+    proofFields: string[];
+    expiresAt: string | null;
+};
+export declare function ordinaryApprovalGuidance(runtime: MarrowAgentRuntimeResult | null | undefined): OrdinaryApprovalGuidance | null;
 /** Validate the server's existing decision before auto skips decision creation. */
 export declare function runtimeDecisionMatchesAutoScope(runtime: MarrowAgentRuntimeResult, scope: {
     action: string;
     agentId?: string;
     sessionId?: string;
 }): boolean;
-export declare function ordinaryOwnerApprovalCanAttemptCommit(runtime: MarrowAgentRuntimeResult, proof: Record<string, unknown> | undefined, receiptId: unknown, now?: number): boolean;
 //# sourceMappingURL=runtime-contract.d.ts.map

@@ -14,6 +14,7 @@ const model_usage_1 = require("./model-usage");
 const index_1 = require("./index");
 const control_state_1 = require("./control-state");
 const hook_1 = require("./hook");
+const host_approval_1 = require("./host-approval");
 const hook_contract_1 = require("./hook-contract");
 const hook_context_1 = require("./hook-context");
 const hook_session_1 = require("./hook-session");
@@ -32,7 +33,6 @@ const status_cache_1 = require("./status-cache");
 const habit_loop_copy_1 = require("./habit-loop-copy");
 const host_capability_1 = require("./host-capability");
 const session_loop_guard_1 = require("./session-loop-guard");
-// Parse CLI args
 function parseArgs() {
     const args = process.argv.slice(2);
     const result = {};
@@ -47,7 +47,10 @@ function parseArgs() {
         if (['hook', '--hook', 'claude-hook', 'cline-hook', 'codex-hook', 'cursor-hook', 'gemini-hook', 'grok-hook', 'windsurf-hook'].includes(args[i])) {
             result.hook = true;
         }
-        if (['context-hook', '--context-hook', 'claude-context-hook', 'codex-context-hook', 'grok-context-hook'].includes(args[i])) {
+        if (['permission-request-hook', 'claude-permission-request-hook'].includes(args[i])) {
+            result.permissionRequestHook = true;
+        }
+        if (['context-hook', '--context-hook', 'claude-context-hook', 'codex-context-hook', 'grok-context-hook', 'cursor-context-hook'].includes(args[i])) {
             result.contextHook = true;
         }
         if (['pre-action-hook', '--pre-action-hook', 'claude-pre-action-hook', 'cline-pre-action-hook', 'codex-pre-action-hook', 'cursor-pre-action-hook', 'gemini-pre-action-hook', 'grok-pre-action-hook', 'windsurf-pre-action-hook'].includes(args[i])) {
@@ -306,6 +309,13 @@ ${MARROW_BLOCK_END}`;
     else {
         process.stdout.write('PreToolUse hook configuration is present. Activity is client-self-reported and does not certify pre-action control.\n');
     }
+    const permissionHookInstall = (0, hook_1.installPermissionRequestHook)(process.cwd());
+    if (permissionHookInstall.installed) {
+        process.stdout.write('Configured the pass-through PermissionRequest hook and the PostToolBatch hook (both async). They record when Claude Code shows its own permission dialog for a held action and whether the operator declined it; they never answer the dialog. Activity is client-self-reported.\n');
+    }
+    else {
+        process.stdout.write('PermissionRequest and PostToolBatch hook configuration is present. Activity is client-self-reported.\n');
+    }
     const sessionHookInstall = (0, hook_session_1.installSessionEndHook)(process.cwd());
     if (sessionHookInstall.installed) {
         process.stdout.write('Configured Stop hook. Activity is client-self-reported and does not certify session-end coverage.\n');
@@ -429,6 +439,10 @@ if (process.argv[2] !== 'keys') {
     }
     else if (cliArgs.backgroundNudge) {
         void runBackgroundNudge();
+    }
+    else if (cliArgs.permissionRequestHook) {
+        // Pass-through: exits 0 with no output, so it never answers the dialog.
+        void (0, hook_1.runPermissionRequestHookCommand)().finally(() => process.exit(0));
     }
     else if (cliArgs.contextHook) {
         void (0, hook_context_1.runContextHookCommand)();
@@ -931,6 +945,7 @@ if (process.argv[2] !== 'keys') {
                 description: 'Close a recorded action with success/failure, a specific outcome, and required proof. ' +
                     'decision_id comes from marrow_think, marrow_auto, or a runtime that actually created a decision. ' +
                     'Use the gate receipt from marrow_agent_runtime for consequential work. ' +
+                    'A held action closes trusted only after the server records its approval (the operator in the host prompt, or the account owner in the dashboard); never write or claim an approval in proof. ' +
                     'The exact non-authorizing outcome_observation_only runtime correlation may submit an observed_unverified result, but is never sent as receipt evidence and never authorizes action or trusted learning. ' +
                     'Only committed:true closes trusted outcome learning.',
                 inputSchema: {
@@ -1007,7 +1022,7 @@ if (process.argv[2] !== 'keys') {
             },
             {
                 name: 'marrow_auto',
-                description: 'Durably capture activity with bounded core completion. Respect retry_after_ms and reuse operation_id for pending continuation. Server-declared ordinary approval requires actual owner approval supplied in proof; arbitration requires its dashboard receipt. Lifecycle receipt queued is separate from server acceptance. Risky completion requires a fresh gate and measured proof.',
+                description: 'Durably capture activity with bounded core completion. Respect retry_after_ms and reuse operation_id for pending continuation. A held action waits for an approval the server records (the account owner in the dashboard); auto reads its status and resumes on the same gate receipt. Never write or claim an approval yourself. Arbitration requires its dashboard receipt. Lifecycle receipt queued is separate from server acceptance. Risky completion requires a fresh gate and measured proof.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -1367,6 +1382,7 @@ if (process.argv[2] !== 'keys') {
                     'template suggestion, required proof pack, before-you-act instruction, and exact next action. ' +
                     'Its runtime_authorization is the authoritative gate receipt; it returns decision_id only when runtime actually creates a decision. ' +
                     'Reuse its server-created decision_id for outcome closure; use marrow_auto or marrow_think only when the completion contract requires decision creation. ' +
+                    'A review_required hold does not permit the action: wait until the server records an approval, then commit with the same gate receipt. ' +
                     'Use this before meaningful work when you want Marrow to guide the whole action in one call.',
                 inputSchema: {
                     type: 'object',
@@ -2196,6 +2212,19 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         const decision_id = requireString(args, 'decision_id');
                         const outcome = requireString(args, 'outcome');
                         const commitSuccess = requireBoolean(args, 'success');
+                        // A host hook may still hold the operator's queued answer for this
+                        // receipt; send it first so the commit closes with that approval.
+                        if (typeof args.gate_receipt_id === 'string' && args.gate_receipt_id) {
+                            await (0, host_approval_1.deliverQueuedForReceipt)({
+                                apiKey: API_KEY,
+                                baseUrl: BASE_URL,
+                                sessionId: SESSION_ID || 'mcp-server',
+                                agentId: FLEET_AGENT_ID,
+                                harness: 'mcp-client',
+                                host: 'other',
+                                hostSessionId: SESSION_ID || 'mcp-server',
+                            }, args.gate_receipt_id).catch(() => undefined);
+                        }
                         const result = await withControlDeadline((signal) => (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
                             decision_id,
                             success: commitSuccess,
@@ -2369,17 +2398,19 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                         ? 'intent_confirmed'
                                         : 'durably_queued',
                             receipt,
-                            completion_state: delivered?.committed
-                                ? 'closed_with_proof'
-                                : delivered?.phase === 'review_required'
-                                    ? 'review_required_terminal'
-                                    : delivered?.phase === 'owner_approval_required'
-                                        ? 'pending_owner_approval'
-                                        : delivered?.phase === 'proof_required'
-                                            ? 'pending_required_proof'
-                                            : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
-                                                ? 'pending_evidence'
-                                                : 'delivery_pending',
+                            completion_state: delivered?.committed && delivered.closure === 'gate_denial'
+                                ? 'closed_as_denial'
+                                : delivered?.committed
+                                    ? 'closed_with_proof'
+                                    : delivered?.phase === 'review_required'
+                                        ? 'review_required_terminal'
+                                        : delivered?.phase === 'owner_approval_required'
+                                            ? 'pending_owner_approval'
+                                            : delivered?.phase === 'proof_required'
+                                                ? 'pending_required_proof'
+                                                : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
+                                                    ? 'pending_evidence'
+                                                    : 'delivery_pending',
                             decision_id: delivered?.decision_id || null,
                             operation_id: delivered?.operation_id || (typeof args.operation_id === 'string' ? args.operation_id : null),
                             phase: delivered?.phase || null,
@@ -2390,17 +2421,19 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 attempts: [],
                                 dropped_count: 0,
                             },
-                            exact_next_action: delivered?.committed
-                                ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
-                                : delivered?.exact_next_action
-                                    ? delivered.exact_next_action
-                                    : delivered?.phase === 'owner_approval_required'
-                                        ? 'Approve this exact arbitration decision in the authenticated Marrow dashboard, then call marrow_auto once with this same operation_id, arbitration_receipt_id, and the server-issued owner_approval_receipt_id. Do not retry proof or use chat approval text.'
-                                        : delivered?.phase === 'proof_required'
-                                            ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
-                                            : delivered?.resumable
-                                                ? 'Retry marrow_auto with this same operation_id. Do not start a new auto operation.'
-                                                : 'Close this decision after the real outcome is known.',
+                            exact_next_action: delivered?.committed && delivered.closure === 'gate_denial' && delivered.exact_next_action
+                                ? delivered.exact_next_action
+                                : delivered?.committed
+                                    ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
+                                    : delivered?.exact_next_action
+                                        ? delivered.exact_next_action
+                                        : delivered?.phase === 'owner_approval_required'
+                                            ? 'Approve this exact arbitration decision in the authenticated Marrow dashboard, then call marrow_auto once with this same operation_id, arbitration_receipt_id, and the server-issued owner_approval_receipt_id. Do not retry proof or use chat approval text.'
+                                            : delivered?.phase === 'proof_required'
+                                                ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
+                                                : delivered?.resumable
+                                                    ? 'Retry marrow_auto with this same operation_id. Do not start a new auto operation.'
+                                                    : 'Close this decision after the real outcome is known.',
                             live_delivery: {
                                 accepted: Boolean(delivered?.decision_id),
                                 committed: Boolean(delivered?.committed),
@@ -2408,6 +2441,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             },
                             host_capability: mcpHostCapability(),
                             client_update: (0, request_reliability_1.localClientUpdate)(),
+                            ...(delivered?.approval ? { approval: delivered.approval } : {}),
                             ...(runtimeGate ? { runtime_gate: runtimeGate } : {}),
                         };
                         // Measure through response construction; stdout/host consumption occurs

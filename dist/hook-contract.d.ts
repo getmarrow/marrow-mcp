@@ -7,6 +7,13 @@ export declare const CONTEXT_HOOK_COMMAND: string;
 export declare const PRE_ACTION_HOOK_COMMAND: string;
 export declare const ACTION_RESULT_HOOK_COMMAND: string;
 export declare const SESSION_END_HOOK_COMMAND: string;
+/**
+ * Pass-through PermissionRequest hook: notes that Claude Code is about to show
+ * its own permission dialog for a held call, so the operator's answer can be
+ * labelled an operator approval. It never returns a decision and is installed
+ * with async: true, so it cannot answer or delay the dialog.
+ */
+export declare const PERMISSION_REQUEST_HOOK_COMMAND: string;
 export declare const GROK_CONTEXT_HOOK_COMMAND: string;
 export declare const GROK_PRE_ACTION_HOOK_COMMAND: string;
 export declare const GROK_ACTION_RESULT_HOOK_COMMAND: string;
@@ -18,6 +25,7 @@ export declare const GROK_PRE_ACTION_GUARD_COMMAND: string;
 export declare const CURSOR_PRE_ACTION_HOOK_COMMAND: string;
 export declare const CURSOR_ACTION_RESULT_HOOK_COMMAND: string;
 export declare const CURSOR_SESSION_END_HOOK_COMMAND: string;
+export declare const CURSOR_CONTEXT_HOOK_COMMAND: string;
 export declare const CLINE_PRE_ACTION_HOOK_COMMAND: string;
 export declare const CLINE_ACTION_RESULT_HOOK_COMMAND: string;
 export declare const CLINE_SESSION_END_HOOK_COMMAND: string;
@@ -53,8 +61,8 @@ type HookSettings = Record<string, unknown>;
 export declare function findHookSettingsPath(startDir?: string): string;
 export declare function readHookSettings(startDir?: string): HookSettings;
 export declare function readHookSettingsForInstall(startDir?: string): HookSettings;
-export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' | 'session-hook';
-export declare function reconcileMarrowCommandHook(settings: HookSettings, eventName: string, subcommand: MarrowHookSubcommand, command: string, matcher?: string): {
+export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' | 'session-hook' | 'permission-request-hook';
+export declare function reconcileMarrowCommandHook(settings: HookSettings, eventName: string, subcommand: MarrowHookSubcommand, command: string, matcher?: string, handlerFields?: Record<string, unknown>): {
     entries: unknown[];
     changed: boolean;
 };

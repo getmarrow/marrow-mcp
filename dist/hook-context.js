@@ -26,6 +26,7 @@ const guidance_cache_1 = require("./guidance-cache");
 const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
 const session_loop_guard_1 = require("./session-loop-guard");
+const host_approval_1 = require("./host-approval");
 exports.CONTEXT_HOOK_COMMAND = hook_contract_1.CONTEXT_HOOK_COMMAND;
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 400;
@@ -35,6 +36,61 @@ const RISKY_PROMPT_TERMS = /\b(?:audit|auth|cloudflare|commit|config|credential|
 const MUTATING_PROMPT_TERMS = /\b(?:add|apply|change|commit|configure|create|delete|deploy|edit|fix|harden|merge|modify|patch|publish|push|release|remove|rollback|rotate|ship|update|upgrade|write)\b/i;
 const EXPLICIT_MUTATING_PROMPT_TERMS = /\b(?:add|apply|commit|configure|create|delete|edit|fix|harden|merge|modify|patch|publish|push|release|remove|rollback|rotate|ship|update|upgrade|write)\b|\bdeploy\s+(?:latest|release|to|worker|cloudflare|production|prod)\b/i;
 const READ_ONLY_PROMPT_TERMS = /\b(?:analyze|assess|brainstorm|check|compare|describe|explain|inspect|look at|plan only|read|report on|review|review only|summarize|tell me|what are|what is|why|without changing|without editing|no changes|do not edit)\b/i;
+function promptHoldContext(identity, event) {
+    const apiKey = identity.environment.apiKey || '';
+    if (!apiKey)
+        return null;
+    let baseUrl;
+    try {
+        baseUrl = (0, index_1.validateBaseUrl)(identity.environment.baseUrl || 'https://api.getmarrow.ai');
+    }
+    catch {
+        return null;
+    }
+    const sessionId = identity.environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
+        || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+    return {
+        apiKey,
+        baseUrl,
+        sessionId,
+        agentId: identity.agent_id,
+        harness: identity.harness,
+        host: (0, host_approval_1.approvalHostFor)(identity.harness),
+        hostSessionId: (0, host_approval_1.hostSessionIdFor)([event.session_id, event.conversation_id], sessionId),
+    };
+}
+/**
+ * Cursor beforeSubmitPrompt: never adds context (Cursor cannot), only records
+ * that the prompt hook runs and handles a typed "marrow approve CODE" in a
+ * local interactive session. A failed typed answer blocks that one message so
+ * the user sees why; everything else continues unchanged.
+ */
+async function runCursorPromptHook(event) {
+    const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+    const context = promptHoldContext(identity, event);
+    let output = { continue: true };
+    if (context) {
+        const message = await (0, host_approval_1.settleTypedReply)(context, event.prompt).catch(() => null);
+        if (message && !/^Marrow recorded your/.test(message))
+            output = { continue: false, user_message: message };
+    }
+    process.stdout.write(JSON.stringify(output));
+}
+/**
+ * UserPromptSubmit (Claude Code, Codex, Grok): settles held calls first.
+ * Claude Code: a rejected dialog can end the turn before PostToolBatch, so the
+ * still-open asked calls of this session are decided from the transcript. No
+ * host here accepts a typed approval.
+ */
+async function settleHeldCallsAtPrompt(event) {
+    const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+    const context = promptHoldContext(identity, event);
+    if (!context)
+        return;
+    if (context.host === 'claude-code')
+        await (0, host_approval_1.settleAtPrompt)(context, event.transcript_path).catch(() => 0);
+    await (0, host_approval_1.flushHoldOutbox)(context, 2, 2_000).catch(() => undefined);
+}
 function debug(msg) {
     if (HOOK_DEBUG)
         process.stderr.write(msg + '\n');
@@ -565,6 +621,12 @@ async function runContextHookCommand() {
             process.exit(0);
             return;
         }
+        if ((0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]).harness === 'cursor') {
+            await runCursorPromptHook(event);
+            process.exit(0);
+            return;
+        }
+        await settleHeldCallsAtPrompt(event).catch(() => undefined);
         const prompt = asString(event.prompt);
         if (!prompt) {
             debug('[marrow-context-hook] no prompt field');

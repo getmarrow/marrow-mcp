@@ -13,6 +13,13 @@ export const CONTEXT_HOOK_COMMAND = hookCommand('claude-context-hook');
 export const PRE_ACTION_HOOK_COMMAND = hookCommand('claude-pre-action-hook');
 export const ACTION_RESULT_HOOK_COMMAND = hookCommand('claude-hook');
 export const SESSION_END_HOOK_COMMAND = hookCommand('claude-session-hook');
+/**
+ * Pass-through PermissionRequest hook: notes that Claude Code is about to show
+ * its own permission dialog for a held call, so the operator's answer can be
+ * labelled an operator approval. It never returns a decision and is installed
+ * with async: true, so it cannot answer or delay the dialog.
+ */
+export const PERMISSION_REQUEST_HOOK_COMMAND = hookCommand('claude-permission-request-hook');
 export const GROK_CONTEXT_HOOK_COMMAND = hookCommand('grok-context-hook');
 export const GROK_PRE_ACTION_HOOK_COMMAND = hookCommand('grok-pre-action-hook');
 export const GROK_ACTION_RESULT_HOOK_COMMAND = hookCommand('grok-hook');
@@ -41,6 +48,7 @@ export const GROK_PRE_ACTION_GUARD_COMMAND = `node -e '${GROK_PRE_ACTION_GUARD_S
 export const CURSOR_PRE_ACTION_HOOK_COMMAND = hookCommand('cursor-pre-action-hook');
 export const CURSOR_ACTION_RESULT_HOOK_COMMAND = hookCommand('cursor-hook');
 export const CURSOR_SESSION_END_HOOK_COMMAND = hookCommand('cursor-session-hook');
+export const CURSOR_CONTEXT_HOOK_COMMAND = hookCommand('cursor-context-hook');
 export const CLINE_PRE_ACTION_HOOK_COMMAND = hookCommand('cline-pre-action-hook');
 export const CLINE_ACTION_RESULT_HOOK_COMMAND = hookCommand('cline-hook');
 export const CLINE_SESSION_END_HOOK_COMMAND = hookCommand('cline-session-hook');
@@ -67,6 +75,7 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, '
   'claude-pre-action-hook': 'claude-code',
   'claude-hook': 'claude-code',
   'claude-session-hook': 'claude-code',
+  'claude-permission-request-hook': 'claude-code',
   'codex-context-hook': 'codex',
   'codex-pre-action-hook': 'codex',
   'codex-hook': 'codex',
@@ -78,6 +87,7 @@ const RECOGNIZED_NATIVE_ENTRYPOINTS: Record<string, Exclude<NativeHookHarness, '
   'cursor-pre-action-hook': 'cursor',
   'cursor-hook': 'cursor',
   'cursor-session-hook': 'cursor',
+  'cursor-context-hook': 'cursor',
   'cline-pre-action-hook': 'cline',
   'cline-hook': 'cline',
   'cline-session-hook': 'cline',
@@ -298,9 +308,51 @@ function normalizeGrokHookEvent(source: Record<string, unknown>): Record<string,
   });
 }
 
+const CURSOR_EXECUTION_EVENTS = new Set(['beforeShellExecution', 'afterShellExecution', 'beforeMCPExecution', 'afterMCPExecution']);
+
+/**
+ * Cursor's shell and MCP execution hooks carry no tool_name/tool_input; map
+ * them onto the same tool shape as Cursor's preToolUse so the before and after
+ * events of one call correlate. Cursor gives no call id: correlation uses the
+ * conversation, the generation and the call itself.
+ */
+function normalizeCursorExecutionEvent(source: Record<string, unknown>): Record<string, unknown> {
+  const event = String(source.hook_event_name);
+  // Already normalized (hooks normalize once on read and again on use).
+  const raw = event.endsWith('ShellExecution') ? typeof source.command === 'string' : typeof source.mcp_server_name === 'string';
+  if (!raw && source.tool_name && source.tool_input && typeof source.tool_input === 'object') return { ...source };
+  const normalized: Record<string, unknown> = { hook_event_name: event };
+  for (const field of ['conversation_id', 'generation_id']) {
+    const bounded = boundedCorrelationId(source[field]);
+    if (bounded) normalized[field] = bounded;
+  }
+  if (normalized.conversation_id) normalized.session_id = normalized.conversation_id;
+  if (event.endsWith('ShellExecution')) {
+    normalized.tool_name = 'Shell';
+    normalized.tool_input = { command: typeof source.command === 'string' ? source.command.slice(0, 65_536) : '' };
+    if (event === 'afterShellExecution') normalized.success = true;
+    return normalized;
+  }
+  const server = boundedWindsurfName(source.mcp_server_name) || 'unknown';
+  const tool = boundedWindsurfName(source.tool_name) || 'unknown';
+  normalized.tool_name = server.toLowerCase() === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(tool)
+    ? `mcp__marrow__${tool}`
+    : `MCP:${server}:${tool}`;
+  let input: unknown = {};
+  if (typeof source.tool_input === 'string' && source.tool_input.length <= 262_144) {
+    try { input = JSON.parse(source.tool_input); } catch { input = { raw: source.tool_input.slice(0, 4096) }; }
+  } else if (source.tool_input && typeof source.tool_input === 'object') {
+    input = source.tool_input;
+  }
+  normalized.tool_input = input;
+  if (event === 'afterMCPExecution') normalized.success = true;
+  return normalized;
+}
+
 export function normalizeHookEventPayload(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const source = value as Record<string, unknown>;
+  if (CURSOR_EXECUTION_EVENTS.has(String(source.hook_event_name || ''))) return normalizeCursorExecutionEvent(source);
   if (typeof source.agent_action_name === 'string') return normalizeWindsurfHookEvent(source);
   if (['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Stop'].includes(String(source.hookEventName || ''))) {
     return normalizeGrokHookEvent(source);
@@ -390,12 +442,12 @@ export function readHookSettingsForInstall(startDir = process.cwd()): HookSettin
   return settings;
 }
 
-export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' | 'session-hook';
+export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' | 'session-hook' | 'permission-request-hook';
 
 function marrowHookSubcommand(command: unknown): MarrowHookSubcommand | null {
   if (typeof command !== 'string') return null;
   const match = command.trim().match(
-    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|cline|codex|cursor|gemini|grok|windsurf)-)?(context-hook|pre-action-hook|hook|session-hook)$/,
+    /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|cline|codex|cursor|gemini|grok|windsurf)-)?(context-hook|pre-action-hook|hook|session-hook|permission-request-hook)$/,
   );
   return match?.[1] as MarrowHookSubcommand | undefined || null;
 }
@@ -406,6 +458,7 @@ export function reconcileMarrowCommandHook(
   subcommand: MarrowHookSubcommand,
   command: string,
   matcher?: string,
+  handlerFields: Record<string, unknown> = {},
 ): { entries: unknown[]; changed: boolean } {
   const hooks = asRecord(settings.hooks);
   const original = Array.isArray(hooks?.[eventName]) ? hooks[eventName] as unknown[] : [];
@@ -436,7 +489,7 @@ export function reconcileMarrowCommandHook(
     if (remaining.length > 0) retained.push({ ...record, hooks: remaining });
   }
 
-  const handler = { ...(preferredHandler || {}), type: 'command', command };
+  const handler = { ...(preferredHandler || {}), ...handlerFields, type: 'command', command };
   const canonicalEntry: Record<string, unknown> = { hooks: [handler] };
   if (matcher !== undefined) canonicalEntry.matcher = matcher;
   retained.push(canonicalEntry);

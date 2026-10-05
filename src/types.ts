@@ -308,6 +308,98 @@ export interface MarrowBeforeActionIntervention {
   [key: string]: unknown;
 }
 
+/**
+ * Runtime guidance for a held action (completion_contract.owner_approval), in
+ * the expanded and slim runtime shapes. Read it with ordinaryApprovalGuidance();
+ * a caller-written proof.owner_approval is never an approval.
+ */
+export interface MarrowOwnerApprovalGuidance {
+  mode?: 'ordinary_non_arbitrated' | 'arbitration_review_required' | string;
+  proof_path?: string | null;
+  proof_shape?: Record<string, unknown> | null;
+  dashboard_receipt_required?: boolean;
+  /** Only an approval the server issued (host prompt or dashboard) closes the hold trusted. */
+  trusted_completion_receipt_required?: boolean;
+  receipt_field?: string;
+  /** Dashboard route the account owner uses (dashboard session only). */
+  approval_endpoint?: string;
+  approval_authority?: 'host_operator_or_dashboard_owner' | 'authenticated_dashboard_owner' | string;
+  /** Agent-key read of this receipt's approval state. */
+  approval_status_endpoint?: string;
+  approval_status_poll_after_ms?: number | null;
+  /** Agent-key route the host hook uses to record the operator's answer (client-attested). */
+  host_approval_endpoint?: string;
+  host_approval_accepted?: boolean;
+  host_approval_trust?: 'client_attested' | string;
+  approval_categories?: string[];
+  /** true: only a dashboard approval counts; null: settings unreadable (also dashboard only). */
+  verified_approval_required?: boolean | null;
+  verified_approval_categories?: string[];
+  arbitration_note?: string | null;
+  [key: string]: unknown;
+}
+
+/** GET /v1/agent/gate-receipts/:id/owner-approval */
+export interface MarrowOwnerApprovalStatus {
+  gate_receipt_id: string;
+  decision_id: string | null;
+  state: 'pending' | 'approved' | 'declined' | 'expired' | 'used' | 'not_held' | 'arbitration_review' | 'unavailable' | string;
+  gate_decision: string | null;
+  owner_approval_receipt_id: string | null;
+  decided_at: string | null;
+  approval_source: 'dashboard' | 'host_prompt' | 'one_tap' | string | null;
+  approval_trust: 'verified' | 'client_attested' | string | null;
+  approval_answered_by: 'account_owner' | 'host_operator' | 'host_allow_rule' | string | null;
+  expires_at: string | null;
+  terminal: boolean;
+  retryable: boolean;
+  poll_after_ms: number | null;
+  exact_next_action: string;
+}
+
+export interface MarrowOwnerApprovalStatusResult {
+  kind: 'found' | 'not_found';
+  status: MarrowOwnerApprovalStatus | null;
+}
+
+/** POST /v1/agent/gate-receipts/:id/host-approval request body (strict server schema). */
+export interface MarrowHostApprovalReport {
+  verdict: 'approved' | 'declined';
+  host: string;
+  host_session_id: string;
+  hook_event: string | null;
+  pre_action_event_id: string | null;
+  asked_at: string;
+  answered_at: string;
+  decision_id?: string;
+}
+
+export interface MarrowHostApprovalReceipt {
+  owner_approval_receipt_id: string | null;
+  owner_decline_receipt_id: string | null;
+  gate_receipt_id: string;
+  decision_id: string | null;
+  verdict: 'approved' | 'declined';
+  source: 'host_prompt';
+  trust: 'client_attested';
+  answered_by: 'host_operator' | 'host_allow_rule';
+  host: string;
+  recorded_at: string;
+  expires_at: string;
+}
+
+export type MarrowHostApprovalResult =
+  | { ok: true; receipt: MarrowHostApprovalReceipt; replayed: boolean }
+  | {
+      ok: false;
+      status: number | null;
+      code: string | null;
+      /** existing_verdict on MARROW_OWNER_APPROVAL_ALREADY_DECIDED / _DECLINED. */
+      existingVerdict: 'approved' | 'declined' | null;
+      retryable: boolean;
+      retryAfterMs: number | null;
+    };
+
 export interface MarrowAgentRuntimeResult {
   ok: boolean;
   decision_id?: string;
@@ -386,6 +478,7 @@ export interface MarrowAgentRuntimeResult {
     decision_creation_endpoint?: string | null;
     decision_state?: 'created' | 'not_created' | string;
     decision_id?: string;
+    owner_approval?: MarrowOwnerApprovalGuidance | null;
     [key: string]: unknown;
   };
   risk_gate_event?: {

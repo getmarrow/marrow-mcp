@@ -1,0 +1,25 @@
+{
+  "session_id": "3b1f0c2e-0000-4000-8000-00000000000a",
+  "transcript_path": "__TRANSCRIPT__",
+  "cwd": "/home/operator/project",
+  "permission_mode": "default",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "wrangler deploy --env production",
+    "description": "Deploy the worker to production"
+  },
+  "permission_suggestions": [
+    {
+      "type": "addRules",
+      "rules": [
+        {
+          "toolName": "Bash",
+          "ruleContent": "wrangler deploy --env production"
+        }
+      ],
+      "behavior": "allow",
+      "destination": "localSettings"
+    }
+  ]
+}

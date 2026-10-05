@@ -1,6 +1,7 @@
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowArbitrationRequest, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult, MarrowEnforcementRequest, MarrowEnforcementResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowArbitrationRequest, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult, MarrowEnforcementRequest, MarrowEnforcementResult, MarrowHostApprovalReport, MarrowHostApprovalResult, MarrowOwnerApprovalStatusResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 import { type LifecycleEvent } from './lifecycle-spool';
+import { type OrdinaryApprovalGuidance } from './runtime-contract';
 export type { Narrative, CommitResult } from './types';
 /**
  * Delay before resuming a pending write. A server-requested wait (lease field,
@@ -76,6 +77,12 @@ export declare function marrowThink(apiKey: string, baseUrl: string, params: {
 /**
  * Explicitly commit the result of an action to Marrow.
  */
+/**
+ * A caller-written proof.owner_approval is not an approval: the server issues
+ * approvals (host prompt or dashboard) and binds them to the gate receipt. The
+ * client never sends such a claim, so a model cannot approve its own hold.
+ */
+export declare function withoutOwnerApprovalClaim(proof: Record<string, unknown> | undefined): Record<string, unknown> | undefined;
 export declare function marrowCommit(apiKey: string, baseUrl: string, params: {
     decision_id: string;
     success: boolean;
@@ -114,6 +121,10 @@ export type MarrowAutoResult = {
     retry_after_ms: number | null;
     exact_next_action?: string | null;
     runtime_gate?: MarrowAgentRuntimeResult | null;
+    /** Present for an ordinary held action: where its approval stands. */
+    approval?: MarrowAutoApprovalState;
+    /** gate_denial: a declined hold was closed as a verified denial; the action did not run. */
+    closure?: 'gate_denial';
     phase_timings_ms: {
         runtime: number | null;
         think: number | null;
@@ -121,6 +132,18 @@ export type MarrowAutoResult = {
         total: number;
     };
     http_attempt_trace: MarrowAutoHttpTrace;
+};
+export type MarrowAutoApprovalState = {
+    state: 'pending' | 'approved' | 'declined' | 'expired' | 'used' | 'not_held' | 'arbitration_review' | 'unavailable' | 'not_found';
+    gate_receipt_id: string;
+    /** Who can approve this hold: dashboard_owner (the account owner in the Marrow dashboard). */
+    approver: 'dashboard_owner';
+    verified_approval_required: boolean | null;
+    verified_approval_categories: string[];
+    approval_source: string | null;
+    answered_by: string | null;
+    poll_after_ms: number;
+    expires_at: string | null;
 };
 export type MarrowAutoParams = {
     action: string;
@@ -138,6 +161,12 @@ export type MarrowAutoParams = {
     auto_gate?: boolean;
     operation_id?: string;
 };
+/**
+ * The text an agent follows while auto waits on a held action. It never asks
+ * the agent to write an approval: only the account owner (dashboard) or the
+ * operator's host prompt can approve, and the server records it.
+ */
+export declare function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance): string;
 /**
  * Bounded outcome logging helper for tool hooks and simple integrations.
  * One outer invocation logs intent and, when an outcome is supplied, continues
@@ -224,6 +253,21 @@ export declare function marrowValueReport(apiKey: string, baseUrl: string, perio
 export declare function marrowDecisionBrief(apiKey: string, baseUrl: string, input: MarrowDecisionBriefRequest, sessionId?: string, agentId?: string): Promise<MarrowDecisionBriefResult>;
 export declare function marrowWorkflowGate(apiKey: string, baseUrl: string, input: MarrowWorkflowGateRequest, sessionId?: string, agentId?: string): Promise<MarrowWorkflowGateResult>;
 export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, input: MarrowAgentRuntimeRequest, sessionId?: string, agentId?: string, signal?: AbortSignal, idempotencyKeyOverride?: string): Promise<MarrowAgentRuntimeResult>;
+/**
+ * GET /v1/agent/gate-receipts/:id/owner-approval with the agent's own key:
+ * whether a held gate receipt was approved (host prompt or dashboard),
+ * declined, expired or used. An unknown receipt, or one of another agent or
+ * session, answers not_found. Never authorizes anything by itself.
+ */
+export declare function marrowOwnerApprovalStatus(apiKey: string, baseUrl: string, gateReceiptId: string, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowOwnerApprovalStatusResult>;
+/**
+ * POST /v1/agent/gate-receipts/:id/host-approval: the host's Marrow hook
+ * records the operator's answer in the host's own permission prompt (or a
+ * typed reply). Recorded client-attested; the server labels it an operator
+ * answer only with a dialog or typed-reply marker at a human pace. Hooks call
+ * this only for an answer the host actually reported; the model never does.
+ */
+export declare function marrowHostApproval(apiKey: string, baseUrl: string, gateReceiptId: string, report: MarrowHostApprovalReport, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowHostApprovalResult>;
 export declare function marrowEnforcement(apiKey: string, baseUrl: string, input: MarrowEnforcementRequest, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowEnforcementResult>;
 /**
  * Resolve conflicting agent proposals through the existing runtime control

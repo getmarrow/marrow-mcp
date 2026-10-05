@@ -15,6 +15,7 @@ import {
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
 import { clearSessionLoopGuard } from './session-loop-guard';
+import { approvalHostFor, flushHoldOutbox, hostSessionIdFor, noteCursorSession, type HoldContext } from './host-approval';
 
 export const SESSION_HOOK_COMMAND = SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
@@ -115,6 +116,27 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     try { if (!readLocalControlState().enabled) return; } catch { return; }
     const resolved = identity.environment;
     const payload = readStopHookInput(input);
+    const raw = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
+    if (identity.harness === 'cursor' && raw.hook_event_name === 'sessionStart') {
+      // Evidence for Cursor approval prompts: only a local, non-background session is interactive.
+      const sessionKey = typeof raw.session_id === 'string' ? raw.session_id : typeof raw.conversation_id === 'string' ? raw.conversation_id : '';
+      if (resolved.apiKey && sessionKey) {
+        try {
+          const context: HoldContext = {
+            apiKey: resolved.apiKey,
+            baseUrl: validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai'),
+            sessionId: sessionKey,
+            agentId: identity.agent_id,
+            harness: identity.harness,
+            host: 'cursor',
+            hostSessionId: hostSessionIdFor([sessionKey], sessionKey),
+          };
+          noteCursorSession(context, { isBackgroundAgent: raw.is_background_agent });
+        } catch { /* without evidence Cursor holds are denied, not asked */ }
+      }
+      process.stdout.write('{}');
+      return;
+    }
     const source = readStopHookSource(payload);
     const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
       || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
@@ -168,6 +190,15 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     } catch {
       // The pending lifecycle receipt remains durable for later reconciliation.
     }
+    await flushHoldOutbox({
+      apiKey: resolved.apiKey,
+      baseUrl,
+      sessionId,
+      agentId,
+      harness: identity.harness,
+      host: approvalHostFor(identity.harness),
+      hostSessionId: hostSessionIdFor([source.session_id, source.conversation_id, source.task_id], sessionId),
+    }, 2, 2_000).catch(() => undefined);
 
     if (!['windsurf', 'gemini', 'grok'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
       const usage = extractModelUsageFromUnknown(payload, { ...modelUsageCaptureContextFromEnv(), usage_kind: 'cumulative' });

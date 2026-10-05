@@ -1,0 +1,8 @@
+{
+  "session_id": "gemini-session-0001",
+  "hook_event_name": "BeforeTool",
+  "tool_name": "run_shell_command",
+  "tool_input": {
+    "command": "wrangler deploy --env production"
+  }
+}

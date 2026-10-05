@@ -1,0 +1,9 @@
+{
+  "hookEventName": "PreToolUse",
+  "sessionId": "grok-session-0001",
+  "toolUseId": "grok-tool-0001",
+  "toolName": "run_terminal_command",
+  "toolInput": {
+    "command": "wrangler deploy --env production"
+  }
+}

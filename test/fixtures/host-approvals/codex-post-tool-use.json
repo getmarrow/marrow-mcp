@@ -1,0 +1,15 @@
+{
+  "session_id": "019a6f4e-0000-7000-8000-00000000000c",
+  "turn_id": "turn-7",
+  "transcript_path": null,
+  "cwd": "/home/operator/project",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-5-codex",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_use_id": "call_HELDDEPLOY0001",
+  "tool_input": {
+    "command": "wrangler deploy --env production"
+  },
+  "tool_response": "Deployed worker version 0000"
+}

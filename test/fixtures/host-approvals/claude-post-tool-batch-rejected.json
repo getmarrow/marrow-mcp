@@ -1,0 +1,18 @@
+{
+  "session_id": "3b1f0c2e-0000-4000-8000-00000000000a",
+  "transcript_path": "__TRANSCRIPT__",
+  "cwd": "/home/operator/project",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolBatch",
+  "tool_calls": [
+    {
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "wrangler deploy --env production",
+        "description": "Deploy the worker to production"
+      },
+      "tool_use_id": "toolu_01HELDDEPLOY0000000000001",
+      "tool_response": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed."
+    }
+  ]
+}

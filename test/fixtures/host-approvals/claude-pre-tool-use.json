@@ -1,0 +1,15 @@
+{
+  "session_id": "3b1f0c2e-0000-4000-8000-00000000000a",
+  "transcript_path": "__TRANSCRIPT__",
+  "cwd": "/home/operator/project",
+  "permission_mode": "default",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+  "scratchpad_dir": "/tmp/claude-1000/-home-operator-project/3b1f0c2e-0000-4000-8000-00000000000a/scratchpad",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "wrangler deploy --env production",
+    "description": "Deploy the worker to production"
+  },
+  "tool_use_id": "toolu_01HELDDEPLOY0000000000001"
+}

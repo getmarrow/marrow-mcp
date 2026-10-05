@@ -1,0 +1,16 @@
+{
+  "conversation_id": "c0ffee00-0000-4000-8000-00000000000d",
+  "generation_id": "gen-0001",
+  "model": "claude-opus",
+  "cursor_version": "2.4.0",
+  "workspace_roots": [
+    "/home/operator/project"
+  ],
+  "user_email": null,
+  "transcript_path": null,
+  "hook_event_name": "beforeMCPExecution",
+  "tool_name": "deploy_service",
+  "tool_input": "{\"environment\":\"production\",\"service\":\"worker\"}",
+  "mcp_server_name": "release-tools",
+  "command": "node release-tools.js"
+}

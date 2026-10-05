@@ -7,6 +7,8 @@ exports.deriveToolOutcome = deriveToolOutcome;
 exports.installPostToolUseHook = installPostToolUseHook;
 exports.hookSpooledLifecycleEvent = hookSpooledLifecycleEvent;
 exports.runHookCommand = runHookCommand;
+exports.runPermissionRequestHookCommand = runPermissionRequestHookCommand;
+exports.installPermissionRequestHook = installPermissionRequestHook;
 const codex_native_usage_1 = require("./codex-native-usage");
 const index_1 = require("./index");
 const habit_loop_copy_1 = require("./habit-loop-copy");
@@ -15,6 +17,7 @@ const hook_pre_action_1 = require("./hook-pre-action");
 const control_state_1 = require("./control-state");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const session_loop_guard_1 = require("./session-loop-guard");
+const host_approval_1 = require("./host-approval");
 const hook_contract_1 = require("./hook-contract");
 exports.AUTO_HOOK_COMMAND = hook_contract_1.ACTION_RESULT_HOOK_COMMAND;
 exports.AUTO_HOOK_MATCHER = hook_contract_1.NATIVE_HOOK_MATCHER;
@@ -97,8 +100,48 @@ let spooledLifecycleEvent = false;
 function hookSpooledLifecycleEvent() {
     return spooledLifecycleEvent;
 }
+function holdContextFor(identity, event, sessionIdOverride) {
+    const apiKey = identity.environment.apiKey || '';
+    if (!apiKey)
+        return null;
+    let baseUrl;
+    try {
+        baseUrl = (0, index_1.validateBaseUrl)(identity.environment.baseUrl || 'https://api.getmarrow.ai');
+    }
+    catch {
+        return null;
+    }
+    const sessionId = sessionIdOverride || identity.environment.sessionId || getString(event.session_id) || getString(event.conversation_id)
+        || getString(event.task_id) || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+    return {
+        apiKey,
+        baseUrl,
+        sessionId,
+        agentId: identity.agent_id,
+        harness: identity.harness,
+        host: (0, host_approval_1.approvalHostFor)(identity.harness),
+        hostSessionId: (0, host_approval_1.hostSessionIdFor)([event.session_id, event.conversation_id, event.task_id], sessionId),
+    };
+}
+/** Model-facing context for a held call that ran (never contains an approval code). */
+let heldActionContext = null;
+let lastHookEventName = null;
+function emitHeldActionContext(identity, eventName) {
+    const text = heldActionContext;
+    heldActionContext = null;
+    if (!text || !['claude-code', 'codex', 'mcp-client'].includes(identity.harness))
+        return;
+    process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+            hookEventName: eventName === 'PostToolUseFailure' ? 'PostToolUseFailure' : 'PostToolUse',
+            additionalContext: text,
+        },
+    }));
+}
 async function runHookCommand(input) {
     spooledLifecycleEvent = false;
+    heldActionContext = null;
+    lastHookEventName = null;
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     if (process.env.MARROW_AUTO_HOOK === 'false') {
         if (identity.harness === 'gemini')
@@ -134,6 +177,7 @@ async function runHookCommand(input) {
         else {
             event = (0, hook_contract_1.normalizeHookEventPayload)(input);
         }
+        lastHookEventName = event.hook_event_name;
         const resolvedEnv = identity.environment;
         if (identity.harness === 'codex' && resolvedEnv.apiKey && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
             const context = (0, habit_loop_copy_1.modelUsageCaptureContextFromEnv)();
@@ -143,6 +187,15 @@ async function runHookCommand(input) {
                 || (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event, context);
             if (!supplied)
                 await (0, codex_native_usage_1.captureCodexNativeUsage)(event, resolvedEnv.apiKey, (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai'), identity.agent_id);
+        }
+        if (event.hook_event_name === 'PostToolBatch') {
+            // Claude Code, installed async: decides still-open asked calls of the batch.
+            const batchContext = holdContextFor(identity, event);
+            if (batchContext) {
+                await (0, host_approval_1.settleToolBatch)(batchContext, { toolCalls: event.tool_calls, transcriptPath: event.transcript_path });
+                await (0, host_approval_1.flushHoldOutbox)(batchContext);
+            }
+            return;
         }
         if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)) {
             return;
@@ -168,6 +221,21 @@ async function runHookCommand(input) {
         }
         catch {
             debug('[marrow-hook] local loop guard state is unsafe');
+        }
+        // A held call that ran: the operator allowed it in the host prompt, or a
+        // waited hold was approved and retried. Report and close, or hand off.
+        const heldContext = holdContextFor(identity, event, sessionId);
+        if (heldContext) {
+            const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...event, session_id: sessionId });
+            const handoff = await (0, host_approval_1.settleAfterTool)(heldContext, {
+                correlation,
+                toolUseId: getString(event.tool_use_id) || null,
+                generationId: getString(event.generation_id) || null,
+                success: outcome.success,
+            }).catch(() => null);
+            if (handoff)
+                heldActionContext = handoff;
+            await (0, host_approval_1.flushHoldOutbox)(heldContext).catch(() => undefined);
         }
         if (shouldSkipAutoLog(event)) {
             debug('[marrow-hook] recorded read-only result locally; skipped network event');
@@ -236,6 +304,69 @@ async function runHookCommand(input) {
     finally {
         if (identity.harness === 'gemini')
             process.stdout.write('{}');
+        else
+            emitHeldActionContext(identity, lastHookEventName);
     }
+}
+/**
+ * Claude Code PermissionRequest, pass-through: notes that the host is about to
+ * show its own permission dialog for an asked (held) call. It never prints a
+ * decision, so it cannot answer the dialog; setup installs it with async: true.
+ * PermissionRequest input has no tool_use_id, so the call is matched on the
+ * session, the tool name and the tool input.
+ */
+async function runPermissionRequestHookCommand(input) {
+    try {
+        if (process.env.MARROW_AUTO_HOOK === 'false')
+            return;
+        try {
+            if (!(0, control_state_1.readLocalControlState)().enabled)
+                return;
+        }
+        catch {
+            return;
+        }
+        const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+        let event;
+        if (input === undefined) {
+            const raw = (await readStdin()).trim();
+            if (!raw || raw.length > 4 * 1024 * 1024)
+                return;
+            event = (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw));
+        }
+        else {
+            event = (0, hook_contract_1.normalizeHookEventPayload)(input);
+        }
+        if (event.hook_event_name !== undefined && event.hook_event_name !== 'PermissionRequest')
+            return;
+        if (!getString(event.tool_name))
+            return;
+        const context = holdContextFor(identity, event);
+        if (!context || context.host !== 'claude-code')
+            return;
+        (0, host_approval_1.noteDialogShown)(context, (0, hook_contract_1.stableToolCorrelation)({ ...event, session_id: context.sessionId }));
+    }
+    catch {
+        debug('[marrow-hook] permission request marker was not recorded');
+    }
+}
+function installPermissionRequestHook(startDir = process.cwd()) {
+    const fs = require('fs');
+    const path = require('path');
+    const settingsPath = (0, hook_contract_1.findHookSettingsPath)(startDir);
+    const settings = (0, hook_contract_1.readHookSettingsForInstall)(startDir);
+    const hooks = asRecord(settings.hooks) || {};
+    // async: the marker never delays or answers the dialog. PostToolBatch runs
+    // the result hook in the background to settle declines.
+    const permission = (0, hook_contract_1.reconcileMarrowCommandHook)(settings, 'PermissionRequest', 'permission-request-hook', hook_contract_1.PERMISSION_REQUEST_HOOK_COMMAND, exports.AUTO_HOOK_MATCHER, { async: true });
+    const batch = (0, hook_contract_1.reconcileMarrowCommandHook)(settings, 'PostToolBatch', 'hook', exports.AUTO_HOOK_COMMAND, undefined, { async: true });
+    settings.hooks = {
+        ...hooks,
+        PermissionRequest: permission.entries,
+        PostToolBatch: batch.entries,
+    };
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    return { settingsPath, installed: permission.changed || batch.changed };
 }
 //# sourceMappingURL=hook.js.map

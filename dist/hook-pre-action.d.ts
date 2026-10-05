@@ -1,4 +1,5 @@
 import { marrowAgentRuntime, marrowEnforcement } from './index';
+import { type HoldPlan } from './host-approval';
 import { MARROW_OUTAGE_WARNING } from './hook-contract';
 export { MARROW_OUTAGE_WARNING };
 export declare const MAX_PRE_ACTION_INPUT_BYTES: number;
@@ -20,6 +21,17 @@ export type PreToolUseEvent = {
     permission_mode?: string;
     scratchpad_dir?: string;
 };
+type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
+/** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
+export declare const HOLD_DASHBOARD_DENIAL = "Marrow is holding this action for approval. The account owner can approve it in the Marrow dashboard; then retry it.";
+/**
+ * The hook's answer for an ordinary held action, per host. A Claude Code "ask"
+ * reason is shown to the user only; a Cursor user_message is shown only in the
+ * client; neither ever reaches the agent with an approval code.
+ */
+export declare function heldActionHookOutput(harness: HookHarness, plan: HoldPlan, code?: string | null): Record<string, unknown> | null;
+/** The hook's answer when a waited hold was approved and the same action is retried. */
+export declare function approvedHoldHookOutput(harness: HookHarness, contextText: string): Record<string, unknown> | null;
 type PreActionControlResult = {
     runtime: Awaited<ReturnType<typeof marrowAgentRuntime>> | null;
     permit: Awaited<ReturnType<typeof marrowEnforcement>> | null;

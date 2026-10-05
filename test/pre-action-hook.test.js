@@ -885,6 +885,34 @@ const reviewRuntime = (extra = {}) => Response.json({ data: {
   exact_next_action: 'Obtain explicit owner approval.',
   ...extra,
 } });
+// The approvals backend's ordinary hold (expanded shape recorded from 42959f22):
+// the operator may approve it in the host prompt (host_approval_accepted).
+const hostReviewRuntime = (approval = {}) => Response.json({ data: {
+  ok: true,
+  decision_id: 'decision-review',
+  runtime_authorization: { id: 'gate-review', kind: 'durable_gate_receipt', durable: true, decision_state: 'created', decision_creation_required: false, decision_id: 'decision-review' },
+  gate_receipt: { id: 'gate-review', decision: 'review_required', required: true, owner_approval_required: true, expires_at: '2030-01-01T00:30:00.000Z' },
+  proof_pack: { required: true, fields: ['summary', 'checks', 'outcome'], complete: false },
+  completion_contract: {
+    decision_id: 'decision-review',
+    decision_creation_required: false,
+    owner_approval_required: true,
+    arbitration_receipt_required: false,
+    owner_approval: {
+      mode: 'ordinary_non_arbitrated', proof_path: null, proof_shape: null, dashboard_receipt_required: false,
+      trusted_completion_receipt_required: true, receipt_field: 'owner_approval_receipt_id',
+      approval_endpoint: '/v1/dashboard/enforcement/owner-approval', approval_authority: 'host_operator_or_dashboard_owner',
+      approval_status_endpoint: '/v1/agent/gate-receipts/gate-review/owner-approval', approval_status_poll_after_ms: 5000,
+      host_approval_endpoint: '/v1/agent/gate-receipts/gate-review/host-approval', host_approval_accepted: true,
+      host_approval_trust: 'client_attested', approval_categories: ['package_publish'],
+      verified_approval_required: false, verified_approval_categories: [],
+      ...approval,
+    },
+  },
+  risk_gate: { allow: true, decision: 'review_required', enforced: true, gate_required: true, gate_receipt_id: 'gate-review', reasons: [{ message: 'Publishing needs owner review.' }] },
+  gate_receipt_id: 'gate-review',
+  exact_next_action: 'Obtain explicit owner approval.',
+} });
 const noControlAfterGate = (respond) => (pathname, body) => {
   if (pathname !== '/v1/agent/runtime') throw new Error(`a review gate must not call ${pathname}`);
   return respond(pathname, body);
@@ -928,27 +956,39 @@ test('owner prompts are offered only where Claude Code shows the prompt to a per
   assert.match(ownerApprovalPrompt('codex', { permission_mode: 'default' }, {}).unavailableReason, /Codex/);
 });
 
-test('an ordinary review gate asks the owner in an interactive Claude Code session', async () => {
-  const { calls, output } = await runHookAgainst(noControlAfterGate(() => reviewRuntime()),
+test('an ordinary review gate asks the operator in an interactive Claude Code session when the server accepts a host approval', async () => {
+  const { calls, output, commits } = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()),
     publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
   assert.deepEqual(calls.map((entry) => entry.pathname), ['/v1/agent/runtime']);
   const decision = JSON.parse(output).hookSpecificOutput;
   assert.equal(decision.permissionDecision, 'ask');
   assert.equal(decision.permissionDecisionReason,
-    'Marrow requires owner review before this action. Approve only if you authorize this exact action. Reason: Publishing needs owner review. Next: Obtain explicit owner approval.');
+    'Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt gate-review). Reason: Publishing needs owner review. Next: Obtain explicit owner approval.');
+  assert.deepEqual(commits, [], 'asking never closes or spends the held receipt');
+});
+
+test('a review gate from a service that offers no host approval is denied, even in an interactive Claude Code session', async () => {
+  const { output, commits } = await runHookAgainst(noControlAfterGate(() => reviewRuntime()),
+    publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+  const decision = JSON.parse(output).hookSpecificOutput;
+  assert.equal(decision.permissionDecision, 'deny');
+  assert.match(decision.permissionDecisionReason, /^Marrow requires owner review before this action, and no owner approval prompt is available \(this Marrow service did not offer a chat or terminal approval for this hold\)/);
+  assert.equal(commits.length, 1, 'a hold the service cannot wait on is closed as before');
 });
 
 test('the installer generic entrypoint asks only when Claude Code spawned the hook', async () => {
   const previous = process.env.CLAUDE_CODE_CHILD_SESSION;
   try {
     process.env.CLAUDE_CODE_CHILD_SESSION = '1';
-    const spawned = await runHookAgainst(noControlAfterGate(() => reviewRuntime()), publishEvent({ permission_mode: 'acceptEdits' }));
+    const spawned = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()), publishEvent({ permission_mode: 'acceptEdits' }));
     assert.equal(JSON.parse(spawned.output).hookSpecificOutput.permissionDecision, 'ask');
     delete process.env.CLAUDE_CODE_CHILD_SESSION;
-    const unknownHost = await runHookAgainst(noControlAfterGate(() => reviewRuntime()), publishEvent({ permission_mode: 'acceptEdits' }));
+    const unknownHost = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()), publishEvent({ permission_mode: 'acceptEdits' }));
     const denied = JSON.parse(unknownHost.output).hookSpecificOutput;
     assert.equal(denied.permissionDecision, 'deny');
-    assert.match(denied.permissionDecisionReason, /^Marrow requires owner review before this action, and no owner approval prompt is available \(this agent host cannot prompt the owner\)/);
+    assert.match(denied.permissionDecisionReason, /^Marrow is holding this action for approval \(gate receipt gate-review\), so it did not run\./);
+    assert.match(denied.permissionDecisionReason, /the host cannot show an approval prompt for a held action\. The account owner can approve it in the Marrow dashboard/);
+    assert.deepEqual(unknownHost.commits, [], 'a waiting hold is never closed by the hook');
   } finally {
     if (previous === undefined) delete process.env.CLAUDE_CODE_CHILD_SESSION;
     else process.env.CLAUDE_CODE_CHILD_SESSION = previous;
@@ -1341,9 +1381,7 @@ test('a free or starter plan advisory gate warns and allows without demanding a 
 });
 
 test('an enforced review asks the owner and an enforced or advisory block denies', async () => {
-  const review = await runHookAgainst(noControlAfterGate(() => reviewRuntime({
-    risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [{ message: 'Publishing needs owner review.' }] },
-  })), publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
+  const review = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()), publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
   assert.equal(JSON.parse(review.output).hookSpecificOutput.permissionDecision, 'ask');
 
   for (const enforced of [true, false]) {
@@ -1413,7 +1451,7 @@ test('a denied action closes its held decision as a failure with the gate receip
 });
 
 test('an owner prompt, an advisory gate and an allowed action never close the decision', async () => {
-  const asked = await runHookAgainst(noControlAfterGate(() => reviewRuntime()),
+  const asked = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()),
     publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
   assert.equal(JSON.parse(asked.output).hookSpecificOutput.permissionDecision, 'ask');
   assert.deepEqual(asked.commits, []);

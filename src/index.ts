@@ -31,6 +31,11 @@ import type {
   MarrowNudgeResult,
   MarrowEnforcementRequest,
   MarrowEnforcementResult,
+  MarrowHostApprovalReceipt,
+  MarrowHostApprovalReport,
+  MarrowHostApprovalResult,
+  MarrowOwnerApprovalStatus,
+  MarrowOwnerApprovalStatusResult,
 } from './types';
 import {
   MarrowClient,
@@ -48,16 +53,18 @@ import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
 import { invalidResponseError, MarrowRequestError, type PendingWriteReceipt, privacySafeIdempotencyKey, normalizeRequestError, reliableFetch, requestErrorFromResponse, responseRetryAfter } from './request-reliability';
 import {
+  boundedPollAfterMs,
   highRiskRuntimeCanClose,
   highRiskRuntimeCanContinueWithProof,
-  hasOrdinaryOwnerApprovalProof,
-  ordinaryOwnerApprovalCanAttemptCommit,
-  runtimeDeclaresOrdinaryOwnerApproval,
+  hostApprovalPath,
+  ordinaryApprovalGuidance,
+  ownerApprovalStatusPath,
   runtimeDecisionMatchesAutoScope,
   isOutcomeObservationOnlyCorrelationId,
   isOutcomeObservationOnlyRuntime,
   normalizeRuntimeResult,
   runtimeAuthorizationReceiptId,
+  type OrdinaryApprovalGuidance,
 } from './runtime-contract';
 
 const fetch = reliableFetch;
@@ -1080,6 +1087,18 @@ export async function marrowThink(
 /**
  * Explicitly commit the result of an action to Marrow.
  */
+/**
+ * A caller-written proof.owner_approval is not an approval: the server issues
+ * approvals (host prompt or dashboard) and binds them to the gate receipt. The
+ * client never sends such a claim, so a model cannot approve its own hold.
+ */
+export function withoutOwnerApprovalClaim(proof: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(proof, 'owner_approval')) return proof;
+  const { owner_approval: _claim, ...rest } = proof;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
 export async function marrowCommit(
   apiKey: string,
   baseUrl: string,
@@ -1114,6 +1133,8 @@ export async function marrowCommit(
   let runtimeGate: MarrowAgentRuntimeResult | null = null;
   let gateReceiptId = params.gate_receipt_id || params.gate_receipt;
   let observationOnly = false;
+  // An approval is issued by the server (host prompt or dashboard), never written by the caller.
+  const commitProof = withoutOwnerApprovalClaim(params.proof);
 
   for (const [field, value] of [
     ['gate receipt', gateReceiptId],
@@ -1138,7 +1159,7 @@ export async function marrowCommit(
           target: params.target ? redactSensitiveText(params.target) : undefined,
           surfaces: params.surfaces || [],
           context: { mcp_commit_auto_gate: true },
-          proof: params.proof ? redactSensitiveValue(params.proof) as Record<string, unknown> : undefined,
+          proof: commitProof ? redactSensitiveValue(commitProof) as Record<string, unknown> : undefined,
         },
         sessionId,
         agentId,
@@ -1174,7 +1195,7 @@ export async function marrowCommit(
     outcome: redactSensitiveText(params.outcome),
     caused_by: params.caused_by ? redactSensitiveText(params.caused_by) : undefined,
   };
-  if (params.proof) body.proof = redactSensitiveValue(params.proof) as Record<string, unknown>;
+  if (commitProof) body.proof = redactSensitiveValue(commitProof) as Record<string, unknown>;
   if (gateReceiptId) body.gate_receipt_id = gateReceiptId;
   if (params.arbitration_receipt_id) body.arbitration_receipt_id = params.arbitration_receipt_id;
   if (params.owner_approval_receipt_id) body.owner_approval_receipt_id = params.owner_approval_receipt_id;
@@ -1453,6 +1474,10 @@ export type MarrowAutoResult = {
   retry_after_ms: number | null;
   exact_next_action?: string | null;
   runtime_gate?: MarrowAgentRuntimeResult | null;
+  /** Present for an ordinary held action: where its approval stands. */
+  approval?: MarrowAutoApprovalState;
+  /** gate_denial: a declined hold was closed as a verified denial; the action did not run. */
+  closure?: 'gate_denial';
   phase_timings_ms: {
     runtime: number | null;
     think: number | null;
@@ -1460,6 +1485,19 @@ export type MarrowAutoResult = {
     total: number;
   };
   http_attempt_trace: MarrowAutoHttpTrace;
+};
+
+export type MarrowAutoApprovalState = {
+  state: 'pending' | 'approved' | 'declined' | 'expired' | 'used' | 'not_held' | 'arbitration_review' | 'unavailable' | 'not_found';
+  gate_receipt_id: string;
+  /** Who can approve this hold: dashboard_owner (the account owner in the Marrow dashboard). */
+  approver: 'dashboard_owner';
+  verified_approval_required: boolean | null;
+  verified_approval_categories: string[];
+  approval_source: string | null;
+  answered_by: string | null;
+  poll_after_ms: number;
+  expires_at: string | null;
 };
 
 export type MarrowAutoParams = {
@@ -1489,6 +1527,7 @@ function autoPartial(input: {
   retryAfterMs?: number | null;
   resumable?: boolean;
   exactNextAction?: string | null;
+  approval?: MarrowAutoApprovalState;
   autoHttpTrace: AutoHttpTraceBuffer;
 }): MarrowAutoResult {
   const resumable = input.resumable !== false;
@@ -1506,12 +1545,88 @@ function autoPartial(input: {
         exact_next_action: 'Resume marrow_auto with this same operation_id, tenant, agent, session, action, surfaces, outcome, proof, and approval receipts after retry_after_ms. Pending is not confirmation of closure.',
       } : {}),
     ...(input.runtimeGate ? { runtime_gate: input.runtimeGate } : {}),
+    ...(input.approval ? { approval: input.approval } : {}),
     phase_timings_ms: {
       ...input.timings,
       total: Date.now() - input.startedAt,
     },
     http_attempt_trace: snapshotAutoHttpTrace(input.autoHttpTrace),
   };
+}
+
+function autoApprovalState(
+  guidance: OrdinaryApprovalGuidance,
+  status: MarrowOwnerApprovalStatus | null,
+  state?: MarrowAutoApprovalState['state'],
+): MarrowAutoApprovalState {
+  return {
+    state: state || (status?.state as MarrowAutoApprovalState['state']) || 'unavailable',
+    gate_receipt_id: guidance.gateReceiptId,
+    approver: 'dashboard_owner',
+    verified_approval_required: guidance.verifiedApprovalRequired,
+    verified_approval_categories: guidance.verifiedApprovalCategories,
+    approval_source: status?.approval_source ?? null,
+    answered_by: status?.approval_answered_by ?? null,
+    poll_after_ms: status?.poll_after_ms ?? guidance.pollAfterMs,
+    expires_at: status?.expires_at ?? guidance.expiresAt,
+  };
+}
+
+function approvalDecidedBy(status: MarrowOwnerApprovalStatus): string {
+  if (status.approval_source === 'host_prompt') {
+    return status.approval_answered_by === 'host_allow_rule' ? 'An allow rule in the host (client-attested)' : 'The operator in the host prompt (client-attested)';
+  }
+  return 'The account owner';
+}
+
+/**
+ * The text an agent follows while auto waits on a held action. It never asks
+ * the agent to write an approval: only the account owner (dashboard) or the
+ * operator's host prompt can approve, and the server records it.
+ */
+export function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance): string {
+  const why = guidance.verifiedApprovalRequired === true
+    ? ` The owner requires a verified approval for ${guidance.verifiedApprovalCategories.join(', ') || 'this kind of'} actions, so a chat or terminal approval does not count.`
+    : guidance.verifiedApprovalRequired === null
+    ? ' Marrow could not read the account approval settings, so only the account owner can approve it.'
+    : '';
+  return `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}). Do not run it yet. The account owner approves it in the Marrow dashboard.${why} Call marrow_auto again with this same operation_id after retry_after_ms; Marrow resumes on the same gate receipt once it is approved. Never write or claim an approval yourself.`;
+}
+
+async function readOrdinaryApprovalForAuto(input: {
+  apiKey: string;
+  baseUrl: string;
+  guidance: OrdinaryApprovalGuidance;
+  sessionId?: string;
+  agentId?: string;
+  startedAt: number;
+  responseBudgetMs: number;
+  autoHttpTrace: AutoHttpTraceBuffer;
+}): Promise<{ status: MarrowOwnerApprovalStatus | null; notFound: boolean }> {
+  let status: MarrowOwnerApprovalStatus | null = null;
+  // Poll as the server advises, inside auto's bounded response budget.
+  for (let reads = 0; reads < 3; reads += 1) {
+    const remaining = input.responseBudgetMs - (Date.now() - input.startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS;
+    if (remaining < 250) break;
+    const timeout = createTimeoutSignal(input.responseBudgetMs, input.startedAt);
+    try {
+      const result = await marrowOwnerApprovalStatus(
+        input.apiKey, input.baseUrl, input.guidance.gateReceiptId, input.sessionId, input.agentId, timeout.signal,
+      );
+      if (result.kind === 'not_found') return { status: null, notFound: true };
+      status = result.status;
+    } catch (error) {
+      const failure = normalizeRequestError(error);
+      if (failure.retryable || failure.code === 'request_timeout') break;
+      throw error;
+    } finally {
+      timeout.cancel();
+    }
+    if (!status || (status.state !== 'pending' && status.state !== 'unavailable')) break;
+    const waitMs = status.poll_after_ms ?? input.guidance.pollAfterMs;
+    if (!await waitForAutoContinuation({ retry_after_ms: waitMs }, input.startedAt, input.responseBudgetMs, input.autoHttpTrace)) break;
+  }
+  return { status, notFound: false };
 }
 
 /**
@@ -1624,7 +1739,8 @@ async function marrowAutoWithTrace(
 
   const thinkStarted = Date.now();
   let decisionId = operationBinding.decisionId || null;
-  const ordinaryApprovalDeclared = Boolean(runtimeGate && runtimeDeclaresOrdinaryOwnerApproval(runtimeGate));
+  const ordinaryGuidance = runtimeGate ? ordinaryApprovalGuidance(runtimeGate) : null;
+  const ordinaryApprovalDeclared = Boolean(ordinaryGuidance);
   if (runtimeGate && !runtimeGate.arbitration && (runtimeGate.decision_id || ordinaryApprovalDeclared)) {
     if (!runtimeDecisionMatchesAutoScope(runtimeGate, {
       action: redactSensitiveText(params.action_for_gate || params.action), agentId, sessionId,
@@ -1736,19 +1852,6 @@ async function marrowAutoWithTrace(
   }
   timings.think = reusedDecision ? 0 : Date.now() - thinkStarted;
 
-  if (params.outcome === undefined || typeof params.success !== 'boolean') {
-    return autoPartial({
-      operationId,
-      decisionId,
-      phase: 'decision_created',
-      runtimeGate,
-      timings,
-      startedAt,
-      autoHttpTrace,
-      retryAfterMs: null,
-    });
-  }
-
   const runtimeReviewRequired = Boolean(runtimeGate && (
     runtimeGate.risk_gate?.decision === 'review_required'
     || runtimeGate.gate_receipt?.decision === 'review_required'
@@ -1773,20 +1876,109 @@ async function marrowAutoWithTrace(
       || params.arbitration_receipt_id === runtimeArbitrationReceiptId)
   );
 
-  if (genericReviewRequired && ordinaryApprovalDeclared && runtimeGate) {
-    if (!hasOrdinaryOwnerApprovalProof(params.proof)) {
+  // An ordinary hold: wait for the approval through the agent-key status read
+  // (bounded by this call's budget), then resume on the same gate receipt.
+  // Approval comes only from the server (the account owner in the dashboard,
+  // or the operator's host prompt recorded by the host hook), never from proof.
+  let ordinaryApproval: MarrowOwnerApprovalStatus | null = null;
+  let ordinaryApprovalState: MarrowAutoApprovalState | undefined;
+  if (genericReviewRequired && ordinaryGuidance && runtimeGate) {
+    const read = await readOrdinaryApprovalForAuto({
+      apiKey, baseUrl, guidance: ordinaryGuidance, sessionId, agentId, startedAt, responseBudgetMs, autoHttpTrace,
+    });
+    const status = read.status;
+    ordinaryApprovalState = autoApprovalState(ordinaryGuidance, status, read.notFound ? 'not_found' : undefined);
+    const terminal = (exactNextAction: string) => autoPartial({
+      operationId, decisionId, phase: 'review_required', runtimeGate, timings, startedAt, autoHttpTrace,
+      resumable: false, exactNextAction, approval: ordinaryApprovalState,
+    });
+    if (read.notFound) {
+      return terminal(`Marrow could not find gate receipt ${ordinaryGuidance.gateReceiptId} for this agent and session. Do not run the action; request fresh runtime guidance for it.`);
+    }
+    if (!status || status.state === 'pending' || status.state === 'unavailable') {
       return autoPartial({
         operationId, decisionId, phase: 'owner_approval_required', runtimeGate, timings, startedAt, autoHttpTrace,
-        resumable: false,
-        exactNextAction: 'Wait for explicit owner approval of this exact work. Then supply the server-supported proof.owner_approval object with the required measured proof and call marrow_auto with this same operation_id. Preserve the original decision and gate receipt. Do not infer or manufacture approval.',
+        resumable: true,
+        retryAfterMs: status?.poll_after_ms ?? ordinaryGuidance.pollAfterMs,
+        exactNextAction: ordinaryHoldWaitText(ordinaryGuidance),
+        approval: ordinaryApprovalState,
       });
     }
-    proofCanClose = ordinaryOwnerApprovalCanAttemptCommit(runtimeGate, params.proof, gateReceiptId);
+    if (status.state === 'declined') {
+      const declinedBy = status.approval_source === 'host_prompt' ? 'The operator declined it in the host prompt' : 'The account owner declined it';
+      if (params.outcome === undefined && decisionId && Date.now() - startedAt < responseBudgetMs - 250) {
+        // The action has not run: close the decision as a verified gate denial.
+        const denialTimeout = createTimeoutSignal(responseBudgetMs, startedAt);
+        try {
+          const denial = await marrowCommit(apiKey, baseUrl, {
+            decision_id: decisionId,
+            success: false,
+            outcome: `Denied by Marrow pre-action gate: ${declinedBy.charAt(0).toLowerCase()}${declinedBy.slice(1)} (gate receipt ${ordinaryGuidance.gateReceiptId}); the action did not run.`,
+            gate_receipt_id: gateReceiptId,
+            auto_gate: false,
+            [AUTO_MANAGED_WRITE]: true,
+            [AUTO_HTTP_TRACE]: autoHttpTrace,
+          }, sessionId, agentId, denialTimeout.signal, autoIdempotencyKey(operationId, 'commit'));
+          if (denial.committed) {
+            return {
+              operation_id: operationId,
+              decision_id: decisionId,
+              committed: true,
+              phase: 'closed',
+              resumable: false,
+              retry_after_ms: null,
+              exact_next_action: `${declinedBy}. Marrow closed this decision as a denial. Do not run this action.`,
+              runtime_gate: runtimeGate,
+              approval: ordinaryApprovalState,
+              closure: 'gate_denial',
+              phase_timings_ms: { ...timings, total: Date.now() - startedAt },
+              http_attempt_trace: snapshotAutoHttpTrace(autoHttpTrace),
+            };
+          }
+        } catch { /* the decline stands; the denial closure stays open below */ } finally {
+          denialTimeout.cancel();
+        }
+      }
+      return terminal(`${declinedBy} (gate receipt ${ordinaryGuidance.gateReceiptId}). Do not run this action. If it has not run, close it with marrow_commit: success false, an outcome that starts "Denied by Marrow pre-action gate", and the same gate_receipt_id.`);
+    }
+    if (status.state === 'expired') {
+      return terminal(`Gate receipt ${ordinaryGuidance.gateReceiptId} expired before it was approved. Do not run the action on it. If the work is still needed and has not run, start a new marrow_auto operation for a fresh gate.`);
+    }
+    if (status.state === 'approved' || status.state === 'used') {
+      ordinaryApproval = status;
+    } else {
+      return terminal(status.exact_next_action || 'Stop this operation and follow the runtime guidance for this exact action; it is not waiting for an ordinary approval.');
+    }
+  }
+
+  if (params.outcome === undefined || typeof params.success !== 'boolean') {
+    return autoPartial({
+      operationId,
+      decisionId,
+      phase: 'decision_created',
+      runtimeGate,
+      timings,
+      startedAt,
+      autoHttpTrace,
+      retryAfterMs: null,
+      ...(ordinaryApproval && ordinaryGuidance ? {
+        exactNextAction: `${approvalDecidedBy(ordinaryApproval)} approved gate receipt ${ordinaryGuidance.gateReceiptId}. Run only this exact action now, then call marrow_auto with this same operation_id, the real outcome and success${ordinaryGuidance.proofRequired ? `, and proof with ${ordinaryGuidance.proofFields.join(', ') || 'the required fields'}` : ''}. Marrow closes it on the same gate receipt.`,
+        approval: ordinaryApprovalState,
+      } : {}),
+    });
+  }
+
+  if (ordinaryApproval && ordinaryGuidance) {
+    // A proof-required hold closes trusted only with its proof; committing
+    // without it would leave an unverified observation that blocks the later
+    // trusted close, so auto waits for the proof instead.
+    const commitProof = withoutOwnerApprovalClaim(params.proof);
+    proofCanClose = !ordinaryGuidance.proofRequired || Boolean(commitProof && Object.keys(commitProof).length > 0);
     if (!proofCanClose) {
       return autoPartial({
-        operationId, decisionId, phase: 'review_required', runtimeGate, timings, startedAt, autoHttpTrace,
-        resumable: false,
-        exactNextAction: 'The original ordinary approval receipt is expired or its enforced completion contract is not valid. Stop and reconcile fresh server guidance for this exact operation before attempting commit.',
+        operationId, decisionId, phase: 'proof_required', runtimeGate, timings, startedAt, autoHttpTrace,
+        retryAfterMs: null, approval: ordinaryApprovalState,
+        exactNextAction: `Approved. Attach measured proof with ${ordinaryGuidance.proofFields.join(', ') || 'the required fields'} and call marrow_auto again with this same operation_id; Marrow closes it on gate receipt ${ordinaryGuidance.gateReceiptId}.`,
       });
     }
   } else if (genericReviewRequired) {
@@ -1923,6 +2115,7 @@ async function marrowAutoWithTrace(
     resumable: false,
     retry_after_ms: null,
     ...(runtimeGate ? { runtime_gate: runtimeGate } : {}),
+    ...(ordinaryApprovalState ? { approval: { ...ordinaryApprovalState, state: 'used' as const } } : {}),
     phase_timings_ms: {
       ...timings,
       total: Date.now() - startedAt,
@@ -2463,6 +2656,159 @@ export async function marrowAgentRuntime(
     runtime.action = input.action;
   }
   return runtime;
+}
+
+const GATE_RECEIPT_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,199}$/;
+const OWNER_APPROVAL_STATES = new Set(['pending', 'approved', 'declined', 'expired', 'used', 'not_held', 'arbitration_review', 'unavailable']);
+const SAFE_STATUS_TEXT = (value: unknown, limit: number): string | null =>
+  typeof value === 'string' && value.trim() ? redactSensitiveText(value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()).slice(0, limit) : null;
+const SAFE_STATUS_ID = (value: unknown): string | null =>
+  typeof value === 'string' && GATE_RECEIPT_IDENTIFIER.test(value) ? value : null;
+const SAFE_STATUS_TIME = (value: unknown): string | null =>
+  typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value)) ? value : null;
+
+function normalizeOwnerApprovalStatus(value: unknown, gateReceiptId: string): MarrowOwnerApprovalStatus | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const view = value as Record<string, unknown>;
+  if (view.gate_receipt_id !== gateReceiptId) return null;
+  const state = typeof view.state === 'string' && OWNER_APPROVAL_STATES.has(view.state) ? view.state : 'unavailable';
+  return {
+    gate_receipt_id: gateReceiptId,
+    decision_id: SAFE_STATUS_ID(view.decision_id),
+    state,
+    gate_decision: SAFE_STATUS_TEXT(view.gate_decision, 64),
+    owner_approval_receipt_id: SAFE_STATUS_ID(view.owner_approval_receipt_id),
+    decided_at: SAFE_STATUS_TIME(view.decided_at),
+    approval_source: SAFE_STATUS_TEXT(view.approval_source, 32),
+    approval_trust: SAFE_STATUS_TEXT(view.approval_trust, 32),
+    approval_answered_by: SAFE_STATUS_TEXT(view.approval_answered_by, 32),
+    expires_at: SAFE_STATUS_TIME(view.expires_at),
+    terminal: view.terminal === true,
+    retryable: view.retryable === true,
+    poll_after_ms: typeof view.poll_after_ms === 'number' && Number.isFinite(view.poll_after_ms) ? boundedPollAfterMs(view.poll_after_ms) : null,
+    exact_next_action: SAFE_STATUS_TEXT(view.exact_next_action, 600) || '',
+  };
+}
+
+/**
+ * GET /v1/agent/gate-receipts/:id/owner-approval with the agent's own key:
+ * whether a held gate receipt was approved (host prompt or dashboard),
+ * declined, expired or used. An unknown receipt, or one of another agent or
+ * session, answers not_found. Never authorizes anything by itself.
+ */
+export async function marrowOwnerApprovalStatus(
+  apiKey: string,
+  baseUrl: string,
+  gateReceiptId: string,
+  sessionId?: string,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<MarrowOwnerApprovalStatusResult> {
+  if (!GATE_RECEIPT_IDENTIFIER.test(gateReceiptId)) throw new TypeError('gate_receipt_id is not a valid gate receipt identifier.');
+  return fetch(`${baseUrl}${ownerApprovalStatusPath(gateReceiptId)}`, {
+    method: 'GET',
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+    signal,
+  }, {
+    consumeResponse: async (response): Promise<MarrowOwnerApprovalStatusResult> => {
+      if (response.status === 404) {
+        await response.body?.cancel().catch(() => undefined);
+        return { kind: 'not_found', status: null };
+      }
+      const json = await safeJsonResponse(response);
+      const status = normalizeOwnerApprovalStatus(json.data, gateReceiptId);
+      if (!status) throw invalidResponseError();
+      return { kind: 'found', status };
+    },
+  });
+}
+
+function normalizeHostApprovalReceipt(value: unknown, gateReceiptId: string): MarrowHostApprovalReceipt | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const receipt = value as Record<string, unknown>;
+  if (receipt.gate_receipt_id !== gateReceiptId
+    || (receipt.verdict !== 'approved' && receipt.verdict !== 'declined')
+    || receipt.source !== 'host_prompt' || receipt.trust !== 'client_attested') return null;
+  return {
+    owner_approval_receipt_id: SAFE_STATUS_ID(receipt.owner_approval_receipt_id),
+    owner_decline_receipt_id: SAFE_STATUS_ID(receipt.owner_decline_receipt_id),
+    gate_receipt_id: gateReceiptId,
+    decision_id: SAFE_STATUS_ID(receipt.decision_id),
+    verdict: receipt.verdict,
+    source: 'host_prompt',
+    trust: 'client_attested',
+    answered_by: receipt.answered_by === 'host_allow_rule' ? 'host_allow_rule' : 'host_operator',
+    host: SAFE_STATUS_TEXT(receipt.host, 32) || 'other',
+    recorded_at: SAFE_STATUS_TIME(receipt.recorded_at) || '',
+    expires_at: SAFE_STATUS_TIME(receipt.expires_at) || '',
+  };
+}
+
+const HOST_APPROVAL_REPORT_FIELDS = ['verdict', 'host', 'host_session_id', 'hook_event', 'pre_action_event_id', 'asked_at', 'answered_at', 'decision_id'] as const;
+
+/**
+ * POST /v1/agent/gate-receipts/:id/host-approval: the host's Marrow hook
+ * records the operator's answer in the host's own permission prompt (or a
+ * typed reply). Recorded client-attested; the server labels it an operator
+ * answer only with a dialog or typed-reply marker at a human pace. Hooks call
+ * this only for an answer the host actually reported; the model never does.
+ */
+export async function marrowHostApproval(
+  apiKey: string,
+  baseUrl: string,
+  gateReceiptId: string,
+  report: MarrowHostApprovalReport,
+  sessionId?: string,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<MarrowHostApprovalResult> {
+  if (!GATE_RECEIPT_IDENTIFIER.test(gateReceiptId)) throw new TypeError('gate_receipt_id is not a valid gate receipt identifier.');
+  const body: Record<string, unknown> = {};
+  for (const field of HOST_APPROVAL_REPORT_FIELDS) {
+    const value = report[field];
+    if (field === 'decision_id' && (value === undefined || value === null)) continue;
+    body[field] = value ?? null;
+  }
+  return fetch(`${baseUrl}${hostApprovalPath(gateReceiptId)}`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    body: JSON.stringify(body),
+    signal,
+  }, {
+    // The caller resends the identical report; the server replays it.
+    retryOwner: 'caller',
+    consumeResponse: async (response): Promise<MarrowHostApprovalResult> => {
+      let json: Record<string, unknown> | null = null;
+      try {
+        if ((response.headers.get('content-type') || '').includes('json')) json = await response.json() as Record<string, unknown>;
+        else await response.body?.cancel().catch(() => undefined);
+      } catch (error) {
+        const failure = normalizeRequestError(error);
+        if (failure.code === 'request_timeout') throw failure;
+        json = null;
+      }
+      if (response.ok) {
+        const data = json?.data && typeof json.data === 'object' ? json.data as Record<string, unknown> : null;
+        const receipt = normalizeHostApprovalReceipt(data?.host_approval, gateReceiptId);
+        if (!receipt) throw invalidResponseError();
+        return { ok: true, receipt, replayed: data?.replayed === true };
+      }
+      const details = json?.details && typeof json.details === 'object' && !Array.isArray(json.details)
+        ? json.details as Record<string, unknown>
+        : {};
+      const code = typeof details.code === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(details.code) ? details.code : null;
+      const existing = details.existing_verdict === 'approved' || details.existing_verdict === 'declined' ? details.existing_verdict : null;
+      const retryAfter = responseRetryAfter(response);
+      return {
+        ok: false,
+        status: response.status,
+        code,
+        existingVerdict: existing,
+        retryable: response.status === 429 || response.status >= 500 || details.retryable === true,
+        retryAfterMs: retryAfter.valid ? retryAfter.delayMs : null,
+      };
+    },
+  });
 }
 
 export async function marrowEnforcement(
