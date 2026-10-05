@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.9.99
+
+- Chat and terminal approvals. Claude Code: one Allow click in the host's own dialog approves a held action (a pass-through `PermissionRequest` hook marks it; `marrow-mcp setup` adds it with an async `PostToolBatch` hook); the agent's `marrow_commit` closes it trusted. A decline is read from `PostToolBatch` or the transcript; an interruption is never a decline. Codex, Gemini CLI and Cursor: a typed reply in local interactive sessions, with the code shown only to the user. Cursor shell and MCP calls ask in Cursor's dialog.
+- The account owner's one-tap approval link: requested by the hook or `marrow_auto` when no operator can answer, for owner-protected categories, after the owner's standing decline (only when the operator asks), and for arbitration reviews. Texts say a link was sent only when it was.
+- `marrow_auto` waits on the approval status and resumes on the same gate receipt, stops on a decline or expiry, treats a spent receipt as final, and never writes `proof.owner_approval`; a caller-written `proof.owner_approval` is stripped from every commit. New `request_owner_link` parameter.
+- Held actions stay held when Marrow cannot be reached; owner-protected categories stay held during outages on every host. One approval lets exactly one call run.
+- Lifecycle records are per attempt (no payload conflicts on retries).
+- Headless Claude Code (`CLAUDE_CODE_ENTRYPOINT` `sdk-*`) routes to the owner link. Codex, Cursor and Grok hooks answer within 3 seconds.
+- Hooks never relay the runtime's `exact_next_action`. Cursor after-execution outcomes are recorded as unknown.
+- SDK `3.7.65`.
+
 ## 3.9.98
 
 - Fix `npx @getmarrow/mcp setup` and every other `npx @getmarrow/mcp …` command. Since 3.9.57 they failed with "could not determine executable to run", because the package had two executables and none named after the package. The package now also provides an executable named `mcp`, so those commands work again. `marrow-mcp` and `marrow-mcp-canary` are unchanged.
