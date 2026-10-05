@@ -379,6 +379,8 @@ async function closeAsDenial(ctx, hold, outcome) {
 const REFUSED_AFTER_RUN = new Set([
     'MARROW_OWNER_APPROVAL_DECLINED',
     'MARROW_OWNER_DECLINE_STANDS',
+    // An allow rule or automatic approval after the operator declined this action.
+    'MARROW_EARLIER_DECLINE_STANDS',
     'MARROW_VERIFIED_OWNER_APPROVAL_REQUIRED',
     'MARROW_PRE_ACTION_GATE_EXPIRED',
     'MARROW_PRE_ACTION_GATE_USED',

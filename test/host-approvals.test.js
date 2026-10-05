@@ -506,6 +506,15 @@ test('a refused report after the run commits the real outcome (unverified); a sc
     assert.equal(commits(h).length, 1);
     assert.equal(commits(h)[0].body.success, true);
   } finally { h.cleanup(); }
+  const e = harness();
+  try {
+    e.setConfig({ runtime: noProofRuntime(), hostApproval: [{ status: 409, body: { error: 'earlier decline', details: { code: 'MARROW_EARLIER_DECLINE_STANDS' } } }] });
+    e.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    const post = e.run('claude-hook', fixture('claude-post-tool-use.json'));
+    assert.match(post.json.hookSpecificOutput.additionalContext, /^Marrow could not record an approval for this held action \(MARROW_EARLIER_DECLINE_STANDS\)/);
+    assert.equal(hostReports(e)[0].body.hook_event, 'PreToolUse', 'no dialog marker: an allow rule, which an earlier operator decline does not let through');
+    assert.equal(commits(e).length, 1);
+  } finally { e.cleanup(); }
   const g = harness();
   try {
     g.setConfig({ runtime: noProofRuntime(), hostApproval: [{ status: 403, body: { error: 'scope', details: { code: 'MARROW_HOST_APPROVAL_SCOPE_MISMATCH' } } }] });
