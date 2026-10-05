@@ -382,7 +382,7 @@ export interface MarrowHostApprovalReceipt {
   verdict: 'approved' | 'declined';
   source: 'host_prompt';
   trust: 'client_attested';
-  answered_by: 'host_operator' | 'host_allow_rule';
+  answered_by: 'host_operator' | 'host_allow_rule' | 'owner_chat_preapproval';
   host: string;
   recorded_at: string;
   expires_at: string;

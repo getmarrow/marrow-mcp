@@ -59,7 +59,16 @@ export const CURSOR_ASK_EVENTS = new Set(['beforeShellExecution', 'beforeMCPExec
 
 const HOST_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 export const HOST_APPROVAL_REQUEST_TIMEOUT_MS = 4_000;
-const SETTLE_BUDGET_MS = 9_000;
+/** The status read is one key lookup; a slow read falls back to the normal flow. */
+const STATUS_READ_TIMEOUT_MS = 2_500;
+/**
+ * Work a post-tool hook does for a held call. Codex and Cursor run these hooks
+ * with a 5-second timeout (as @getmarrow/install configures them); a hook cut
+ * short keeps its queued report, which a later hook resends.
+ */
+export function settleBudgetMs(host: ApprovalHost): number {
+  return host === 'codex' || host === 'cursor' ? 4_000 : 9_000;
+}
 
 export type HoldContext = {
   apiKey: string;
@@ -229,7 +238,7 @@ function statusTimeout(ms = HOST_APPROVAL_REQUEST_TIMEOUT_MS): { signal: AbortSi
 }
 
 async function readStatus(ctx: HoldContext, hold: HoldRecord): Promise<{ status: MarrowOwnerApprovalStatus | null; notFound: boolean; failed: boolean }> {
-  const timeout = statusTimeout();
+  const timeout = statusTimeout(STATUS_READ_TIMEOUT_MS);
   try {
     const result = await marrowOwnerApprovalStatus(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, hold.session_id, hold.agent_id || undefined, timeout.signal);
     return result.kind === 'not_found' ? { status: null, notFound: true, failed: false } : { status: result.status, notFound: false, failed: false };
@@ -242,7 +251,9 @@ async function readStatus(ctx: HoldContext, hold: HoldRecord): Promise<{ status:
 
 function approvedByText(status: MarrowOwnerApprovalStatus): string {
   if (status.approval_source === 'host_prompt') {
-    return status.approval_answered_by === 'host_allow_rule' ? 'an allow rule in the host (client-attested)' : 'the operator (client-attested)';
+    return status.approval_answered_by === 'host_operator' ? 'the operator (client-attested)'
+      : status.approval_answered_by === 'owner_chat_preapproval' ? 'the account owner\'s chat pre-approval (client-attested)'
+      : 'an allow rule in the host (client-attested)';
   }
   return 'the account owner';
 }
@@ -360,7 +371,7 @@ async function closeAsDenial(ctx: HoldContext, hold: HoldRecord, outcome: string
 }
 
 export type DeliveryResult =
-  | { kind: 'recorded'; answeredBy: 'host_operator' | 'host_allow_rule'; verdict: 'approved' | 'declined'; committed: 'committed' | 'unverified' | 'failed' | 'skipped' }
+  | { kind: 'recorded'; answeredBy: 'host_operator' | 'host_allow_rule' | 'owner_chat_preapproval'; verdict: 'approved' | 'declined'; committed: 'committed' | 'unverified' | 'failed' | 'skipped' }
   | { kind: 'already_approved'; committed: 'committed' | 'unverified' | 'failed' | 'skipped' }
   | { kind: 'queued' }
   | { kind: 'refused'; code: string | null; committed: 'committed' | 'unverified' | 'failed' | 'skipped' }
@@ -386,7 +397,7 @@ function backoffMs(attempts: number, retryAfterMs: number | null): number {
  * identical body queued with backoff: the operator's answer is never dropped
  * while its gate receipt can still accept it.
  */
-export async function deliverHold(ctx: HoldContext, holdId: string, deadline = Date.now() + SETTLE_BUDGET_MS): Promise<DeliveryResult | null> {
+export async function deliverHold(ctx: HoldContext, holdId: string, deadline = Date.now() + settleBudgetMs(ctx.host)): Promise<DeliveryResult | null> {
   const scope = scopeOf(ctx);
   let hold = findHolds(scope, { id: holdId }, ctx.home)[0];
   if (!hold?.outbox) return null;

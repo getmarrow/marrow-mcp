@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CLAUDE_CODE_NOT_A_DECISION_PREFIXES = exports.CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK = exports.CLAUDE_CODE_USER_REJECTED = exports.HOST_APPROVAL_REQUEST_TIMEOUT_MS = exports.CURSOR_ASK_EVENTS = exports.HOST_LABEL = void 0;
 exports.approvalHostFor = approvalHostFor;
+exports.settleBudgetMs = settleBudgetMs;
 exports.hostSessionIdFor = hostSessionIdFor;
 exports.planHeldAction = planHeldAction;
 exports.typedReplyUserText = typedReplyUserText;
@@ -50,7 +51,16 @@ function approvalHostFor(harness, env = process.env) {
 exports.CURSOR_ASK_EVENTS = new Set(['beforeShellExecution', 'beforeMCPExecution']);
 const HOST_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 exports.HOST_APPROVAL_REQUEST_TIMEOUT_MS = 4_000;
-const SETTLE_BUDGET_MS = 9_000;
+/** The status read is one key lookup; a slow read falls back to the normal flow. */
+const STATUS_READ_TIMEOUT_MS = 2_500;
+/**
+ * Work a post-tool hook does for a held call. Codex and Cursor run these hooks
+ * with a 5-second timeout (as @getmarrow/install configures them); a hook cut
+ * short keeps its queued report, which a later hook resends.
+ */
+function settleBudgetMs(host) {
+    return host === 'codex' || host === 'cursor' ? 4_000 : 9_000;
+}
 function hostSessionIdFor(candidates, fallback) {
     for (const candidate of candidates) {
         if (typeof candidate === 'string' && HOST_SESSION_ID.test(candidate.trim()))
@@ -165,7 +175,7 @@ function statusTimeout(ms = exports.HOST_APPROVAL_REQUEST_TIMEOUT_MS) {
     return { signal: controller.signal, cancel: () => clearTimeout(timer) };
 }
 async function readStatus(ctx, hold) {
-    const timeout = statusTimeout();
+    const timeout = statusTimeout(STATUS_READ_TIMEOUT_MS);
     try {
         const result = await (0, index_1.marrowOwnerApprovalStatus)(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, hold.session_id, hold.agent_id || undefined, timeout.signal);
         return result.kind === 'not_found' ? { status: null, notFound: true, failed: false } : { status: result.status, notFound: false, failed: false };
@@ -179,7 +189,9 @@ async function readStatus(ctx, hold) {
 }
 function approvedByText(status) {
     if (status.approval_source === 'host_prompt') {
-        return status.approval_answered_by === 'host_allow_rule' ? 'an allow rule in the host (client-attested)' : 'the operator (client-attested)';
+        return status.approval_answered_by === 'host_operator' ? 'the operator (client-attested)'
+            : status.approval_answered_by === 'owner_chat_preapproval' ? 'the account owner\'s chat pre-approval (client-attested)'
+                : 'an allow rule in the host (client-attested)';
     }
     return 'the account owner';
 }
@@ -310,7 +322,7 @@ function backoffMs(attempts, retryAfterMs) {
  * identical body queued with backoff: the operator's answer is never dropped
  * while its gate receipt can still accept it.
  */
-async function deliverHold(ctx, holdId, deadline = Date.now() + SETTLE_BUDGET_MS) {
+async function deliverHold(ctx, holdId, deadline = Date.now() + settleBudgetMs(ctx.host)) {
     const scope = scopeOf(ctx);
     let hold = (0, host_approval_state_1.findHolds)(scope, { id: holdId }, ctx.home)[0];
     if (!hold?.outbox)

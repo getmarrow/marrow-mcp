@@ -20,6 +20,12 @@ export declare function approvalHostFor(harness: NativeHookHarness, env?: NodeJS
 /** Cursor events on which a hook "ask" is enforced (never preToolUse). */
 export declare const CURSOR_ASK_EVENTS: Set<string>;
 export declare const HOST_APPROVAL_REQUEST_TIMEOUT_MS = 4000;
+/**
+ * Work a post-tool hook does for a held call. Codex and Cursor run these hooks
+ * with a 5-second timeout (as @getmarrow/install configures them); a hook cut
+ * short keeps its queued report, which a later hook resends.
+ */
+export declare function settleBudgetMs(host: ApprovalHost): number;
 export type HoldContext = {
     apiKey: string;
     baseUrl: string;
@@ -106,7 +112,7 @@ export declare function resumeWaitingHold(ctx: HoldContext, input: {
 }): Promise<WaitingResolution | null>;
 export type DeliveryResult = {
     kind: 'recorded';
-    answeredBy: 'host_operator' | 'host_allow_rule';
+    answeredBy: 'host_operator' | 'host_allow_rule' | 'owner_chat_preapproval';
     verdict: 'approved' | 'declined';
     committed: 'committed' | 'unverified' | 'failed' | 'skipped';
 } | {

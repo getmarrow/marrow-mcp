@@ -235,7 +235,9 @@ async function runHookCommand(input) {
             }).catch(() => null);
             if (handoff)
                 heldActionContext = handoff;
-            await (0, host_approval_1.flushHoldOutbox)(heldContext).catch(() => undefined);
+            // Resend due queued reports only when this call did no held-call work (hook time limits).
+            else
+                await (0, host_approval_1.flushHoldOutbox)(heldContext, 1, 2_000).catch(() => undefined);
         }
         if (shouldSkipAutoLog(event)) {
             debug('[marrow-hook] recorded read-only result locally; skipped network event');

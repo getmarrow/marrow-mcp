@@ -1233,7 +1233,9 @@ function autoApprovalState(guidance, status, state) {
 }
 function approvalDecidedBy(status) {
     if (status.approval_source === 'host_prompt') {
-        return status.approval_answered_by === 'host_allow_rule' ? 'An allow rule in the host (client-attested)' : 'The operator in the host prompt (client-attested)';
+        return status.approval_answered_by === 'host_operator' ? 'The operator in the host prompt (client-attested)'
+            : status.approval_answered_by === 'owner_chat_preapproval' ? 'The account owner\'s chat pre-approval (client-attested)'
+                : 'An allow rule in the host (client-attested)';
     }
     return 'The account owner';
 }
@@ -2213,7 +2215,7 @@ function normalizeHostApprovalReceipt(value, gateReceiptId) {
         verdict: receipt.verdict,
         source: 'host_prompt',
         trust: 'client_attested',
-        answered_by: receipt.answered_by === 'host_allow_rule' ? 'host_allow_rule' : 'host_operator',
+        answered_by: receipt.answered_by === 'host_operator' || receipt.answered_by === 'owner_chat_preapproval' ? receipt.answered_by : 'host_allow_rule',
         host: SAFE_STATUS_TEXT(receipt.host, 32) || 'other',
         recorded_at: SAFE_STATUS_TIME(receipt.recorded_at) || '',
         expires_at: SAFE_STATUS_TIME(receipt.expires_at) || '',

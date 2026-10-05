@@ -284,7 +284,8 @@ export async function runHookCommand(input?: unknown): Promise<void> {
         success: outcome.success,
       }).catch(() => null);
       if (handoff) heldActionContext = handoff;
-      await flushHoldOutbox(heldContext).catch(() => undefined);
+      // Resend due queued reports only when this call did no held-call work (hook time limits).
+      else await flushHoldOutbox(heldContext, 1, 2_000).catch(() => undefined);
     }
 
     if (shouldSkipAutoLog(event)) {
