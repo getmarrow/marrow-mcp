@@ -542,6 +542,27 @@ test('setup installs the pass-through PermissionRequest and PostToolBatch hooks 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('the local hold store is owner-only, holds no command text, and drops a record it cannot read', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime() });
+    h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    const statePath = join(h.home, '.marrow', 'host-approvals', 'state.json');
+    const { statSync } = require('node:fs');
+    assert.equal(statSync(statePath).mode & 0o777, 0o600);
+    assert.equal(statSync(join(h.home, '.marrow', 'host-approvals')).mode & 0o777, 0o700);
+    const raw = readFileSync(statePath, 'utf8');
+    assert.doesNotMatch(raw, /wrangler deploy|Deploy the worker/, 'no command or tool input is stored');
+    const state = JSON.parse(raw);
+    state.holds.hold_000000000000000000000000 = { id: 'hold_000000000000000000000000', broken: true };
+    writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
+    h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
+    const after = h.state();
+    assert.equal(after.holds.hold_000000000000000000000000, undefined);
+    assert.notEqual(Object.values(after.holds)[0].dialog_at, null, 'the valid hold still works');
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------------- Cursor
 
 test('Cursor asks only on beforeShellExecution/beforeMCPExecution in a local interactive session', () => {

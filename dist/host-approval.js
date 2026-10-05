@@ -122,18 +122,21 @@ function planHeldAction(input) {
 function typedReplyUserText(agentText, code) {
     return bounded(`${agentText} Or approve it here: send the message "marrow approve ${code}" (or "marrow decline ${code}"), then let the agent retry.`, 600);
 }
+const HOOK_EVENT_NAME = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
+const BOUNDED_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 function rememberHold(ctx, input) {
     return (0, host_approval_state_1.recordHold)(scopeOf(ctx), {
         host: ctx.host,
         harness: ctx.harness,
-        session_id: ctx.sessionId,
+        // The same bound buildHeaders applies to X-Marrow-Session-Id.
+        session_id: (0, host_approval_state_1.boundSessionId)(ctx.sessionId),
         host_session_id: ctx.hostSessionId,
-        agent_id: ctx.agentId || null,
+        agent_id: ctx.agentId && ctx.agentId.length <= 128 ? ctx.agentId : null,
         correlation: input.correlation,
-        tool_use_id: input.toolUseId,
-        generation_id: input.generationId,
+        tool_use_id: input.toolUseId && BOUNDED_ID.test(input.toolUseId) ? input.toolUseId : null,
+        generation_id: input.generationId && BOUNDED_ID.test(input.generationId) ? input.generationId : null,
         tool_name: input.toolName.slice(0, 256),
-        hook_event: input.hookEvent,
+        hook_event: HOOK_EVENT_NAME.test(input.hookEvent) ? input.hookEvent : 'PreToolUse',
         mode: input.mode,
         gate_receipt_id: input.guidance.gateReceiptId,
         decision_id: input.guidance.decisionId,

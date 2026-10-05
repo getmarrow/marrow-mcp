@@ -82,6 +82,8 @@ export type HoldQuery = {
     code?: string;
     id?: string;
 };
+/** The stored form of a Marrow session id (the bound buildHeaders applies to X-Marrow-Session-Id). */
+export declare function boundSessionId(value: string): string;
 export declare function findHolds(scope: HoldScope, query: HoldQuery, home?: string): HoldRecord[];
 /** Applies a change to one hold under the lock; returns the updated hold, or null when it is gone. */
 export declare function updateHold(scope: HoldScope, id: string, change: (hold: HoldRecord) => HoldRecord | null, home?: string): HoldRecord | null;

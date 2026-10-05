@@ -251,7 +251,9 @@ function validateState(value: unknown): ApprovalState {
     || !state.holds || typeof state.holds !== 'object' || Array.isArray(state.holds)
     || !validMarkers(state.interactive) || !validMarkers(state.prompt_hook)) return unsafe();
   const holds = Object.entries(state.holds);
-  if (holds.length > MAX_HOLDS || holds.some(([key, hold]) => !validHold(hold) || hold.id !== key)) return unsafe();
+  if (holds.length > MAX_HOLDS) return unsafe();
+  // A record this client cannot read is dropped, so one bad record never blocks later hooks.
+  for (const [key, hold] of holds) if (!validHold(hold) || hold.id !== key) delete state.holds[key];
   return state;
 }
 
@@ -376,12 +378,17 @@ export type HoldQuery = {
   id?: string;
 };
 
+/** The stored form of a Marrow session id (the bound buildHeaders applies to X-Marrow-Session-Id). */
+export function boundSessionId(value: string): string {
+  return value.replace(/[^\x20-\x7E]/g, '').slice(0, 256);
+}
+
 function matches(hold: HoldRecord, ref: string, query: HoldQuery): boolean {
   if (hold.key_ref !== ref) return false;
   if (query.id && hold.id !== query.id) return false;
   if (query.correlation && hold.correlation !== query.correlation) return false;
   if (query.toolUseId && hold.tool_use_id && hold.tool_use_id !== query.toolUseId) return false;
-  if (query.sessionId !== undefined && hold.session_id !== query.sessionId) return false;
+  if (query.sessionId !== undefined && hold.session_id !== boundSessionId(query.sessionId)) return false;
   if (query.hostSessionId !== undefined && hold.host_session_id !== query.hostSessionId) return false;
   if (query.generationId && hold.generation_id && hold.generation_id !== query.generationId) return false;
   if (query.mode && hold.mode !== query.mode) return false;

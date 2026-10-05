@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UnsafeHostApprovalStateError = exports.APPROVAL_CODE = exports.HOLD_RECORD_TTL_MS = void 0;
 exports.recordHold = recordHold;
+exports.boundSessionId = boundSessionId;
 exports.findHolds = findHolds;
 exports.updateHold = updateHold;
 exports.markDialogShown = markDialogShown;
@@ -192,8 +193,12 @@ function validateState(value) {
         || !validMarkers(state.interactive) || !validMarkers(state.prompt_hook))
         return unsafe();
     const holds = Object.entries(state.holds);
-    if (holds.length > MAX_HOLDS || holds.some(([key, hold]) => !validHold(hold) || hold.id !== key))
+    if (holds.length > MAX_HOLDS)
         return unsafe();
+    // A record this client cannot read is dropped, so one bad record never blocks later hooks.
+    for (const [key, hold] of holds)
+        if (!validHold(hold) || hold.id !== key)
+            delete state.holds[key];
     return state;
 }
 function readState(home) {
@@ -313,6 +318,10 @@ function recordHold(scope, input, home) {
         return record;
     });
 }
+/** The stored form of a Marrow session id (the bound buildHeaders applies to X-Marrow-Session-Id). */
+function boundSessionId(value) {
+    return value.replace(/[^\x20-\x7E]/g, '').slice(0, 256);
+}
 function matches(hold, ref, query) {
     if (hold.key_ref !== ref)
         return false;
@@ -322,7 +331,7 @@ function matches(hold, ref, query) {
         return false;
     if (query.toolUseId && hold.tool_use_id && hold.tool_use_id !== query.toolUseId)
         return false;
-    if (query.sessionId !== undefined && hold.session_id !== query.sessionId)
+    if (query.sessionId !== undefined && hold.session_id !== boundSessionId(query.sessionId))
         return false;
     if (query.hostSessionId !== undefined && hold.host_session_id !== query.hostSessionId)
         return false;
