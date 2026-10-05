@@ -566,6 +566,80 @@ test('the local hold store is owner-only, holds no command text, and drops a rec
   } finally { h.cleanup(); }
 });
 
+const linkRequests = (h) => h.requests().filter((r) => r.path.endsWith('/approval-link'));
+const withLink = (receipt = 'gate-held', approval = {}) => hostRuntime(receipt, { approval_link_endpoint: `/v1/agent/gate-receipts/${receipt}/approval-link`, ...approval });
+
+test('an owner-only hold sends the owner a one-tap link once, and says so; nobody is sent to a dashboard', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: withLink('gate-held', { host_approval_accepted: false, host_approval_refusal_reason: 'verified_approval_required', verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'account_owner' }), status: { 'gate-held': 'pending' } });
+    const first = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    const reason = first.json.hookSpecificOutput.permissionDecisionReason;
+    assert.equal(first.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(reason, /The account owner approves production_deploy actions personally\. An approval link was sent to the account owner \(email\)\./);
+    assert.doesNotMatch(first.stdout, /dashboard|o\*\*\*@/i, 'no dashboard step and no recipient details');
+    assert.equal(linkRequests(h).length, 1);
+    assert.deepEqual(linkRequests(h)[0].body, { decision_id: 'decision-review' });
+    const again = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_retry' });
+    assert.match(again.json.hookSpecificOutput.permissionDecisionReason, /An approval link was sent to the account owner\./);
+    assert.equal(linkRequests(h).length, 1, 'one link per hold');
+  } finally { h.cleanup(); }
+});
+
+test('a link that could not be sent says the request goes to the owner, and is retried once on the next attempt', () => {
+  const h = harness();
+  try {
+    h.setConfig({
+      runtime: withLink('gate-held', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', owner_declined_at: '2026-10-05T11:00:00.000Z', approval_authority: 'account_owner', verified_approval_required: null }),
+      status: { 'gate-held': 'pending' },
+      approvalLink: [{ status: 409, body: { error: 'no channel', details: { code: 'MARROW_APPROVAL_CHANNEL_UNAVAILABLE' } } }, { status: 200 }],
+    });
+    const first = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /The account owner declined this action at 2026-10-05T11:00:00\.000Z\. The approval request goes to the account owner\./);
+    const again = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_retry' });
+    assert.match(again.json.hookSpecificOutput.permissionDecisionReason, /An approval link was sent to the account owner \(email\)\./);
+    assert.equal(linkRequests(h).length, 2);
+  } finally { h.cleanup(); }
+});
+
+test('no operator in the session (codex exec) sends the owner a link; Claude Code with an operator present does not', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: withLink() });
+    const codex = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex exec deploy' });
+    assert.match(codex.json.hookSpecificOutput.permissionDecisionReason, /Codex cannot ask the operator in this session\. An approval link was sent to the account owner \(email\)\./);
+    assert.equal(linkRequests(h).length, 1);
+  } finally { h.cleanup(); }
+  const c = harness();
+  try {
+    c.setConfig({ runtime: withLink() });
+    const out = c.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'bypassPermissions' });
+    assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /switch Claude Code to its default permission mode/);
+    assert.equal(linkRequests(c).length, 0, 'the operator is present; no link to the owner');
+    const asked = c.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'another-session' });
+    assert.equal(asked.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(linkRequests(c).length, 0);
+  } finally { c.cleanup(); }
+});
+
+test('after an operator decline only a marked answer counts: Claude Code still asks (with the notice), Cursor shell does not', () => {
+  const operatorOnly = { host_approval_operator_only: true, earlier_decline_at: '2026-10-05T11:30:00.000Z', operator_notice: 'This action was declined in a host prompt at 2026-10-05T11:30:00.000Z. Approve here only to change that answer; the owner will see it.' };
+  const h = harness();
+  try {
+    h.setConfig({ runtime: withLink('gate-held', operatorOnly) });
+    const out = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    assert.equal(out.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Note: This action was declined in a host prompt at 2026-10-05T11:30:00\.000Z\. Approve here only to change that answer; the owner will see it\./);
+  } finally { h.cleanup(); }
+  const c = harness();
+  try {
+    c.setConfig({ runtime: withLink('gate-held', operatorOnly) });
+    c.run('cursor-session-hook', fixture('cursor-session-start.json'));
+    const shell = c.run('cursor-pre-action-hook', fixture('cursor-before-shell.json'));
+    assert.equal(shell.json.permission, 'deny', 'Cursor\'s dialog carries no marker, so it cannot change an earlier decline');
+  } finally { c.cleanup(); }
+});
+
 // ---------------------------------------------------------------- Cursor
 
 test('Cursor asks only on beforeShellExecution/beforeMCPExecution in a local interactive session', () => {

@@ -70,6 +70,15 @@ globalThis.fetch = async (url, init = {}) => {
       poll_after_ms: state === 'pending' ? 5000 : null, exact_next_action: `fixture ${state}`,
     } });
   }
+  const link = path.match(/^\/v1\/agent\/gate-receipts\/([^/]+)\/approval-link$/);
+  if (link && method === 'POST') {
+    const scripted = Array.isArray(config.approvalLink) && config.approvalLink.length ? next('approvalLink', config.approvalLink) : null;
+    if (scripted && scripted.status !== 200) return json(scripted.body, scripted.status, scripted.headers || {});
+    return json({ data: {
+      approval_link: { id: 'link-1', gate_receipt_id: link[1], channel: 'email', recipient_hint: 'o***@example.test', expires_at: '2030-01-01T00:10:00.000Z', delivered_at: new Date().toISOString() },
+      exact_next_action: 'fixture link sent',
+    } });
+  }
   const host = path.match(/^\/v1\/agent\/gate-receipts\/([^/]+)\/host-approval$/);
   if (host && method === 'POST') {
     const scripted = Array.isArray(config.hostApproval) && config.hostApproval.length ? next('hostApproval', config.hostApproval) : null;

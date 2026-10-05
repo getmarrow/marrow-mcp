@@ -10,6 +10,7 @@ exports.normalizeRuntimeResult = normalizeRuntimeResult;
 exports.highRiskRuntimeCanClose = highRiskRuntimeCanClose;
 exports.highRiskRuntimeCanContinueWithProof = highRiskRuntimeCanContinueWithProof;
 exports.ownerApprovalStatusPath = ownerApprovalStatusPath;
+exports.approvalLinkPath = approvalLinkPath;
 exports.hostApprovalPath = hostApprovalPath;
 exports.boundedPollAfterMs = boundedPollAfterMs;
 exports.ordinaryApprovalGuidance = ordinaryApprovalGuidance;
@@ -432,6 +433,10 @@ exports.OWNER_APPROVAL_STATUS_POLL_MAX_MS = 60_000;
 function ownerApprovalStatusPath(gateReceiptId) {
     return `/v1/agent/gate-receipts/${gateReceiptId}/owner-approval`;
 }
+/** The agent-key route that asks Marrow to send the owner a one-tap approval link; built from the receipt id. */
+function approvalLinkPath(gateReceiptId) {
+    return `/v1/agent/gate-receipts/${gateReceiptId}/approval-link`;
+}
 /** The agent-key route a host hook uses to record the operator's answer; built from the receipt id. */
 function hostApprovalPath(gateReceiptId) {
     return `/v1/agent/gate-receipts/${gateReceiptId}/host-approval`;
@@ -479,7 +484,9 @@ function ordinaryApprovalGuidance(runtime) {
         && verifiedApprovalRequired === false
         && serverHostPath === hostApprovalPath(gateReceiptId)
         && approval.host_approval_trust === 'client_attested'
-        && (approval.approval_authority === undefined || approval.approval_authority === 'host_operator_or_dashboard_owner');
+        && (approval.approval_authority === undefined
+            || approval.approval_authority === 'host_operator_or_account_owner'
+            || approval.approval_authority === 'host_operator_or_dashboard_owner');
     const refusal = [
         approval.host_approval_refusal_reason,
         approval.host_approval_unavailable_reason,
@@ -501,13 +508,18 @@ function ordinaryApprovalGuidance(runtime) {
         ownerDeclinedAt: typeof approval.owner_declined_at === 'string' && Number.isFinite(Date.parse(approval.owner_declined_at))
             ? new Date(Date.parse(approval.owner_declined_at)).toISOString()
             : null,
+        operatorOnly: hostApprovalAccepted && approval.host_approval_operator_only === true,
+        earlierDeclineAt: typeof approval.earlier_decline_at === 'string' && Number.isFinite(Date.parse(approval.earlier_decline_at))
+            ? new Date(Date.parse(approval.earlier_decline_at)).toISOString()
+            : null,
+        approvalLinkPath: approval.approval_link_endpoint === approvalLinkPath(gateReceiptId) ? approvalLinkPath(gateReceiptId) : null,
         operatorNotice: hostApprovalAccepted && typeof approval.operator_notice === 'string' && approval.operator_notice.trim()
             ? approval.operator_notice.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)
             : null,
         verifiedApprovalRequired,
         verifiedApprovalCategories: boundedStrings(approval.verified_approval_categories, APPROVAL_CATEGORY, 8),
         approvalCategories: boundedStrings(approval.approval_categories, APPROVAL_CATEGORY, 8),
-        approvalAuthority: hostApprovalAccepted ? 'host_operator_or_dashboard_owner' : 'authenticated_dashboard_owner',
+        approvalAuthority: hostApprovalAccepted ? 'host_operator_or_account_owner' : 'account_owner',
         proofRequired: runtime.proof_pack?.required === true || completion?.proof_required_before_complete === true,
         proofFields,
         expiresAt,

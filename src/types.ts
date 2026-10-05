@@ -327,8 +327,16 @@ export interface MarrowOwnerApprovalGuidance {
   /** Agent-key read of this receipt's approval state. */
   approval_status_endpoint?: string;
   approval_status_poll_after_ms?: number | null;
+  /** Agent-key route that asks Marrow to send the account owner a one-tap approval link (no login). */
+  approval_link_endpoint?: string;
   /** Agent-key route the host hook uses to record the operator's answer (client-attested). */
   host_approval_endpoint?: string;
+  /** The operator declined this action in a host prompt earlier: only a marked operator answer counts. */
+  host_approval_operator_only?: boolean;
+  earlier_decline_at?: string | null;
+  host_approval_refusal_reason?: string | null;
+  owner_declined_at?: string | null;
+  operator_notice?: string | null;
   host_approval_accepted?: boolean;
   host_approval_trust?: 'client_attested' | string;
   approval_categories?: string[];
@@ -387,6 +395,15 @@ export interface MarrowHostApprovalReceipt {
   recorded_at: string;
   expires_at: string;
 }
+
+export interface MarrowApprovalLink {
+  channel: string;
+  expires_at: string | null;
+}
+
+export type MarrowApprovalLinkResult =
+  | { ok: true; link: MarrowApprovalLink }
+  | { ok: false; status: number | null; code: string | null; retryable: boolean };
 
 export type MarrowHostApprovalResult =
   | { ok: true; receipt: MarrowHostApprovalReceipt; replayed: boolean }

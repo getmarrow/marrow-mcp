@@ -31,6 +31,7 @@ import type {
   MarrowNudgeResult,
   MarrowEnforcementRequest,
   MarrowEnforcementResult,
+  MarrowApprovalLinkResult,
   MarrowHostApprovalReceipt,
   MarrowHostApprovalReport,
   MarrowHostApprovalResult,
@@ -53,6 +54,7 @@ import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
 import { invalidResponseError, MarrowRequestError, type PendingWriteReceipt, privacySafeIdempotencyKey, normalizeRequestError, reliableFetch, requestErrorFromResponse, responseRetryAfter } from './request-reliability';
 import {
+  approvalLinkPath,
   boundedPollAfterMs,
   highRiskRuntimeCanClose,
   highRiskRuntimeCanContinueWithProof,
@@ -1317,6 +1319,8 @@ type AutoOperationBinding = {
   runtimeGate?: MarrowAgentRuntimeResult;
   decisionId?: string;
   pendingThinkDecisionId?: string;
+  /** The owner's one-tap approval link for this operation's hold (sent once). */
+  ownerLink?: { sent: boolean; channel: string | null };
 };
 
 const autoOperationBindings = new Map<string, AutoOperationBinding>();
@@ -1586,13 +1590,14 @@ function approvalDecidedBy(status: MarrowOwnerApprovalStatus): string {
  * the agent to write an approval: only the account owner (dashboard) or the
  * operator's host prompt can approve, and the server records it.
  */
-export function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance): string {
+export function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance, linkChannel: string | null = null): string {
   const why = guidance.verifiedApprovalRequired === true
     ? ` The account owner approves ${guidance.verifiedApprovalCategories.join(', ') || 'these'} actions personally.`
     : guidance.hostApprovalRefusal === 'owner_decline_stands'
     ? ` The account owner declined this action${guidance.ownerDeclinedAt ? ` at ${guidance.ownerDeclinedAt}` : ' earlier'}.`
     : '';
-  return `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}). Do not run it yet.${why} The approval request goes to the account owner. Call marrow_auto again with this same operation_id after retry_after_ms; Marrow resumes on the same gate receipt once it is approved. Never write or claim an approval yourself.`;
+  const request = linkChannel ? `An approval link was sent to the account owner (${linkChannel}).` : 'The approval request goes to the account owner.';
+  return `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}). Do not run it yet.${why} ${request} Call marrow_auto again with this same operation_id after retry_after_ms; Marrow resumes on the same gate receipt once it is approved. Never write or claim an approval yourself.`;
 }
 
 async function readOrdinaryApprovalForAuto(input: {
@@ -1885,6 +1890,20 @@ async function marrowAutoWithTrace(
   let ordinaryApproval: MarrowOwnerApprovalStatus | null = null;
   let ordinaryApprovalState: MarrowAutoApprovalState | undefined;
   if (genericReviewRequired && ordinaryGuidance && runtimeGate) {
+    // No operator can answer an MCP tool call in a host dialog: once per
+    // operation, ask Marrow to send the owner a one-tap link (no login).
+    const linkBudget = responseBudgetMs - (Date.now() - startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS - 300;
+    if (ordinaryGuidance.approvalLinkPath && !operationBinding.ownerLink && linkBudget > 300) {
+      const linkTimeout = createTimeoutSignal(Math.min(2_000, linkBudget));
+      try {
+        const link = await marrowRequestApprovalLink(apiKey, baseUrl, ordinaryGuidance.gateReceiptId, decisionId, sessionId, agentId, linkTimeout.signal);
+        operationBinding.ownerLink = { sent: link.ok, channel: link.ok ? link.link.channel : null };
+      } catch {
+        operationBinding.ownerLink = { sent: false, channel: null };
+      } finally {
+        linkTimeout.cancel();
+      }
+    }
     const read = await readOrdinaryApprovalForAuto({
       apiKey, baseUrl, guidance: ordinaryGuidance, sessionId, agentId, startedAt, responseBudgetMs, autoHttpTrace,
     });
@@ -1902,7 +1921,7 @@ async function marrowAutoWithTrace(
         operationId, decisionId, phase: 'owner_approval_required', runtimeGate, timings, startedAt, autoHttpTrace,
         resumable: true,
         retryAfterMs: status?.poll_after_ms ?? ordinaryGuidance.pollAfterMs,
-        exactNextAction: ordinaryHoldWaitText(ordinaryGuidance),
+        exactNextAction: ordinaryHoldWaitText(ordinaryGuidance, operationBinding.ownerLink?.channel ?? null),
         approval: ordinaryApprovalState,
       });
     }
@@ -2744,6 +2763,57 @@ function normalizeHostApprovalReceipt(value: unknown, gateReceiptId: string): Ma
     recorded_at: SAFE_STATUS_TIME(receipt.recorded_at) || '',
     expires_at: SAFE_STATUS_TIME(receipt.expires_at) || '',
   };
+}
+
+/**
+ * POST /v1/agent/gate-receipts/:id/approval-link: asks Marrow to send the
+ * account owner a one-tap approval link for one held receipt, to the owner's
+ * own channel. The response never contains the link; the owner approves
+ * without a login. Returns the channel only (no recipient details).
+ */
+export async function marrowRequestApprovalLink(
+  apiKey: string,
+  baseUrl: string,
+  gateReceiptId: string,
+  decisionId: string | null,
+  sessionId?: string,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<MarrowApprovalLinkResult> {
+  if (!GATE_RECEIPT_IDENTIFIER.test(gateReceiptId)) throw new TypeError('gate_receipt_id is not a valid gate receipt identifier.');
+  return fetch(`${baseUrl}${approvalLinkPath(gateReceiptId)}`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
+    body: JSON.stringify(decisionId && GATE_RECEIPT_IDENTIFIER.test(decisionId) ? { decision_id: decisionId } : {}),
+    signal,
+  }, {
+    retryOwner: 'caller',
+    consumeResponse: async (response): Promise<MarrowApprovalLinkResult> => {
+      let json: Record<string, unknown> | null = null;
+      try {
+        if ((response.headers.get('content-type') || '').includes('json')) json = await response.json() as Record<string, unknown>;
+        else await response.body?.cancel().catch(() => undefined);
+      } catch (error) {
+        const failure = normalizeRequestError(error);
+        if (failure.code === 'request_timeout') throw failure;
+        json = null;
+      }
+      if (response.ok) {
+        const data = json?.data && typeof json.data === 'object' ? json.data as Record<string, unknown> : null;
+        const link = data?.approval_link && typeof data.approval_link === 'object' ? data.approval_link as Record<string, unknown> : null;
+        if (!link || link.gate_receipt_id !== gateReceiptId) throw invalidResponseError();
+        return { ok: true, link: {
+          channel: typeof link.channel === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(link.channel) ? link.channel : 'owner channel',
+          expires_at: SAFE_STATUS_TIME(link.expires_at),
+        } };
+      }
+      const details = json?.details && typeof json.details === 'object' && !Array.isArray(json.details)
+        ? json.details as Record<string, unknown>
+        : {};
+      const code = typeof details.code === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(details.code) ? details.code : null;
+      return { ok: false, status: response.status, code, retryable: response.status === 429 || response.status >= 500 || details.retryable === true };
+    },
+  });
 }
 
 const HOST_APPROVAL_REPORT_FIELDS = ['verdict', 'host', 'host_session_id', 'hook_event', 'pre_action_event_id', 'asked_at', 'answered_at', 'decision_id'] as const;

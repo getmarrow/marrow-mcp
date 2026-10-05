@@ -10,8 +10,10 @@ import {
   hostSessionIdFor,
   planHeldAction,
   rememberHold,
+  requestOwnerLink,
   resumeWaitingHold,
   typedReplyAvailable,
+  withOwnerLink,
   typedReplyUserText,
   type HoldContext,
   type HoldPlan,
@@ -1082,6 +1084,9 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
         action: { action: classified.action, target: classified.target, type: classified.type, surfaces: classified.surfaces },
       });
       code = hold.code;
+      if (effective.kind === 'deny' && effective.ownerRequest) {
+        effective = withOwnerLink(effective, await requestOwnerLink(holdContext, hold, guidance));
+      }
     } catch {
       // Without local state the answer could not be linked to this hold, so it is not asked for.
       if (plan.kind === 'ask') {

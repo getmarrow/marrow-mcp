@@ -49,7 +49,12 @@ export type HoldPlan = {
     agentText: string;
     userText: string;
     code: boolean;
+    ownerRequest?: boolean;
 };
+/** The sentence that replaces OWNER_APPROVAL_REQUEST_TEXT once Marrow sent the owner a one-tap link. */
+export declare function ownerLinkSentText(channel: string): string;
+/** Puts the link outcome into a plan that asked the owner. */
+export declare function withOwnerLink(plan: HoldPlan, channel: string | null): HoldPlan;
 /** Hosts whose typed reply is a person-only marker, and that marker (backend OPERATOR_MARKER_BY_HOST). */
 export declare const TYPED_REPLY_MARKER: Readonly<Record<string, string>>;
 /**
@@ -96,6 +101,12 @@ export type RecordHoldInput = {
     };
 };
 export declare function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldRecord;
+/**
+ * Asks Marrow to send the account owner a one-tap approval link for this hold
+ * (once; the server limits repeats). Returns the channel when it was sent.
+ * The link itself never reaches this client or the agent.
+ */
+export declare function requestOwnerLink(ctx: HoldContext, hold: HoldRecord, guidance: OrdinaryApprovalGuidance | null): Promise<string | null>;
 /** PermissionRequest (pass-through): the host is about to show its own dialog for an asked call. */
 export declare function noteDialogShown(ctx: HoldContext, correlation: string): HoldRecord | null;
 export type WaitingResolution = {

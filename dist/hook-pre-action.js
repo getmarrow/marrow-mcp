@@ -1029,6 +1029,9 @@ async function runPreActionHookCommand(input) {
                 action: { action: classified.action, target: classified.target, type: classified.type, surfaces: classified.surfaces },
             });
             code = hold.code;
+            if (effective.kind === 'deny' && effective.ownerRequest) {
+                effective = (0, host_approval_1.withOwnerLink)(effective, await (0, host_approval_1.requestOwnerLink)(holdContext, hold, guidance));
+            }
         }
         catch {
             // Without local state the answer could not be linked to this hold, so it is not asked for.

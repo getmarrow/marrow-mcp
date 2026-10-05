@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { marrowCommit, marrowHostApproval, marrowOwnerApprovalStatus, marrowThink } from './index';
+import { marrowCommit, marrowHostApproval, marrowOwnerApprovalStatus, marrowRequestApprovalLink, marrowThink } from './index';
 import { isMcpHookTool } from './hook-tool-policy';
 import { stableToolCorrelation, type NativeHookHarness } from './hook-contract';
 import type { OrdinaryApprovalGuidance } from './runtime-contract';
@@ -121,7 +121,19 @@ export const OWNER_APPROVAL_REQUEST_TEXT = 'The approval request goes to the acc
 
 export type HoldPlan =
   | { kind: 'ask'; promptText: string }
-  | { kind: 'deny'; agentText: string; userText: string; code: boolean };
+  | { kind: 'deny'; agentText: string; userText: string; code: boolean; ownerRequest?: boolean };
+
+/** The sentence that replaces OWNER_APPROVAL_REQUEST_TEXT once Marrow sent the owner a one-tap link. */
+export function ownerLinkSentText(channel: string): string {
+  return `An approval link was sent to the account owner (${channel}).`;
+}
+
+/** Puts the link outcome into a plan that asked the owner. */
+export function withOwnerLink(plan: HoldPlan, channel: string | null): HoldPlan {
+  if (plan.kind !== 'deny' || !plan.ownerRequest || !channel) return plan;
+  const sent = ownerLinkSentText(channel);
+  return { ...plan, agentText: plan.agentText.replace(OWNER_APPROVAL_REQUEST_TEXT, sent), userText: plan.userText.replace(OWNER_APPROVAL_REQUEST_TEXT, sent) };
+}
 
 /** Hosts whose typed reply is a person-only marker, and that marker (backend OPERATOR_MARKER_BY_HOST). */
 export const TYPED_REPLY_MARKER: Readonly<Record<string, string>> = {
@@ -165,7 +177,8 @@ export function planHeldAction(input: {
         promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${id}).${notice}${reason}`, 500),
       };
     }
-    if (host === 'cursor' && CURSOR_ASK_EVENTS.has(input.hookEvent) && input.cursorInteractive === true) {
+    // After an operator decline only a marked answer counts; Cursor's dialog carries no marker.
+    if (host === 'cursor' && CURSOR_ASK_EVENTS.has(input.hookEvent) && input.cursorInteractive === true && !guidance.operatorOnly) {
       return {
         kind: 'ask',
         promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action (gate receipt ${id}).${notice}${reason}`, 500),
@@ -180,15 +193,16 @@ export function planHeldAction(input: {
       };
     }
   }
+  const operatorPresent = guidance.hostApprovalAccepted && host === 'claude-code';
   const why = !guidance.hostApprovalAccepted
     ? `${ownerOnlyReason(guidance)} ${OWNER_APPROVAL_REQUEST_TEXT}`
-    : host === 'claude-code'
+    : operatorPresent
     ? `Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you.`
     : host === 'cursor'
     ? `Cursor asks for approval only for shell and MCP calls in a local interactive session. ${OWNER_APPROVAL_REQUEST_TEXT}`
     : `${HOST_LABEL[host]} cannot ask the operator in this session. ${OWNER_APPROVAL_REQUEST_TEXT}`;
   const agentText = bounded(`${held} ${why}${tail}`, 500);
-  return { kind: 'deny', agentText, userText: agentText, code: false };
+  return { kind: 'deny', agentText, userText: agentText, code: false, ownerRequest: !operatorPresent };
 }
 
 /** User-only text with the typed-reply code (Cursor user_message, Codex and Gemini systemMessage). */
@@ -241,6 +255,32 @@ export function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldReco
     },
     withCode: input.withCode,
   }, ctx.home);
+}
+
+const OWNER_LINK_TIMEOUT_MS = 2_000;
+
+/**
+ * Asks Marrow to send the account owner a one-tap approval link for this hold
+ * (once; the server limits repeats). Returns the channel when it was sent.
+ * The link itself never reaches this client or the agent.
+ */
+export async function requestOwnerLink(ctx: HoldContext, hold: HoldRecord, guidance: OrdinaryApprovalGuidance | null): Promise<string | null> {
+  if (hold.owner_link === 'sent') return null;
+  if (!guidance?.approvalLinkPath && hold.owner_link !== 'unsent') return null;
+  const timeout = statusTimeout(OWNER_LINK_TIMEOUT_MS);
+  let channel: string | null = null;
+  try {
+    const result = await marrowRequestApprovalLink(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, hold.decision_id, hold.session_id, hold.agent_id || undefined, timeout.signal);
+    channel = result.ok ? result.link.channel : null;
+  } catch {
+    channel = null;
+  } finally {
+    timeout.cancel();
+  }
+  try {
+    updateHold(scopeOf(ctx), hold.id, (current) => ({ ...current, owner_link: channel ? 'sent' : 'unsent' }), ctx.home);
+  } catch { /* the link state is a convenience; the hold stands */ }
+  return channel;
 }
 
 /** PermissionRequest (pass-through): the host is about to show its own dialog for an asked call. */
@@ -323,7 +363,11 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
     };
   }
   if (status.state === 'pending' || status.state === 'unavailable') {
-    const waiting = hold.code ? 'The operator was asked to approve it here.' : OWNER_APPROVAL_REQUEST_TEXT;
+    const linkChannel = !hold.code && hold.owner_link === 'unsent' ? await requestOwnerLink(ctx, hold, null) : null;
+    const waiting = hold.code ? 'The operator was asked to approve it here.'
+      : linkChannel ? ownerLinkSentText(linkChannel)
+      : hold.owner_link === 'sent' ? 'An approval link was sent to the account owner.'
+      : OWNER_APPROVAL_REQUEST_TEXT;
     const expires = status.expires_at || hold.expires_at;
     const text = bounded(`Marrow is still holding this action for approval (gate receipt ${hold.gate_receipt_id}), so it did not run. ${waiting} When it is approved${expires ? ` (before ${expires})` : ''}, retry this exact action. Do not report or claim an approval yourself.`, 500);
     return {

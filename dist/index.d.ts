@@ -1,4 +1,4 @@
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowArbitrationRequest, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult, MarrowEnforcementRequest, MarrowEnforcementResult, MarrowHostApprovalReport, MarrowHostApprovalResult, MarrowOwnerApprovalStatusResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowArbitrationRequest, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult, MarrowEnforcementRequest, MarrowEnforcementResult, MarrowApprovalLinkResult, MarrowHostApprovalReport, MarrowHostApprovalResult, MarrowOwnerApprovalStatusResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 import { type LifecycleEvent } from './lifecycle-spool';
 import { type OrdinaryApprovalGuidance } from './runtime-contract';
@@ -166,7 +166,7 @@ export type MarrowAutoParams = {
  * the agent to write an approval: only the account owner (dashboard) or the
  * operator's host prompt can approve, and the server records it.
  */
-export declare function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance): string;
+export declare function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance, linkChannel?: string | null): string;
 /**
  * Bounded outcome logging helper for tool hooks and simple integrations.
  * One outer invocation logs intent and, when an outcome is supplied, continues
@@ -260,6 +260,13 @@ export declare function marrowAgentRuntime(apiKey: string, baseUrl: string, inpu
  * session, answers not_found. Never authorizes anything by itself.
  */
 export declare function marrowOwnerApprovalStatus(apiKey: string, baseUrl: string, gateReceiptId: string, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowOwnerApprovalStatusResult>;
+/**
+ * POST /v1/agent/gate-receipts/:id/approval-link: asks Marrow to send the
+ * account owner a one-tap approval link for one held receipt, to the owner's
+ * own channel. The response never contains the link; the owner approves
+ * without a login. Returns the channel only (no recipient details).
+ */
+export declare function marrowRequestApprovalLink(apiKey: string, baseUrl: string, gateReceiptId: string, decisionId: string | null, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowApprovalLinkResult>;
 /**
  * POST /v1/agent/gate-receipts/:id/host-approval: the host's Marrow hook
  * records the operator's answer in the host's own permission prompt (or a

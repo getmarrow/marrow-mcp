@@ -17,6 +17,8 @@ export declare const OWNER_APPROVAL_STATUS_POLL_MIN_MS = 1000;
 export declare const OWNER_APPROVAL_STATUS_POLL_MAX_MS = 60000;
 /** The agent-key status read of one gate receipt; built from the receipt id, never taken from a response. */
 export declare function ownerApprovalStatusPath(gateReceiptId: string): string;
+/** The agent-key route that asks Marrow to send the owner a one-tap approval link; built from the receipt id. */
+export declare function approvalLinkPath(gateReceiptId: string): string;
 /** The agent-key route a host hook uses to record the operator's answer; built from the receipt id. */
 export declare function hostApprovalPath(gateReceiptId: string): string;
 export declare function boundedPollAfterMs(value: unknown): number;
@@ -50,12 +52,21 @@ export type OrdinaryApprovalGuidance = {
      */
     hostApprovalRefusal: string | null;
     ownerDeclinedAt: string | null;
-    /** Server text for the host's own prompt (the owner declined a similar action); user-facing only. */
+    /**
+     * The operator declined this action in a host prompt earlier: only the
+     * operator's own marked answer (the host's dialog or a typed reply) counts
+     * now, never an allow rule.
+     */
+    operatorOnly: boolean;
+    earlierDeclineAt: string | null;
+    /** Set when the server can send the account owner a one-tap approval link (no login). */
+    approvalLinkPath: string | null;
+    /** Server text for the host's own prompt (an earlier decline); user-facing only. */
     operatorNotice: string | null;
     verifiedApprovalRequired: boolean | null;
     verifiedApprovalCategories: string[];
     approvalCategories: string[];
-    approvalAuthority: 'host_operator_or_dashboard_owner' | 'authenticated_dashboard_owner';
+    approvalAuthority: 'host_operator_or_account_owner' | 'account_owner';
     proofRequired: boolean;
     proofFields: string[];
     expiresAt: string | null;

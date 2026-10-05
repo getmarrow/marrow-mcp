@@ -224,6 +224,27 @@ test('a declined hold with a claimed outcome and an expired hold stop without co
   }
 });
 
+test('auto asks Marrow once per operation to send the owner a one-tap link, and says so', async () => {
+  const runtime = runtimeFixture({ approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link' });
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    calls.push(path);
+    if (path.endsWith('/runtime')) return Response.json({ data: runtime });
+    if (path.endsWith('/approval-link')) return Response.json({ data: { approval_link: { gate_receipt_id: 'ordinary-gate', channel: 'email', expires_at: '2030-01-01T00:10:00.000Z' } } });
+    if (path === statusPath) return Response.json({ data: statusView('pending') });
+    throw new Error(`unexpected ${path}`);
+  };
+  await withFetch(fetch, async () => {
+    const first = await invoke(marrowAuto, { ...baseParams, operation_id: 'ordinary_owner_link', proof: measuredProof });
+    assert.equal(first.phase, 'owner_approval_required');
+    assert.match(first.exact_next_action, /An approval link was sent to the account owner \(email\)\./);
+    assert.doesNotMatch(first.exact_next_action, /dashboard/i);
+    await invoke(marrowAuto, { ...baseParams, operation_id: 'ordinary_owner_link', proof: measuredProof });
+    assert.equal(calls.filter((path) => path.endsWith('/approval-link')).length, 1);
+  });
+});
+
 test('a verified-only category tells the agent only the account owner can approve', async () => {
   const runtime = runtimeFixture({ host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'authenticated_dashboard_owner' });
   const mock = server(['pending'], runtime);

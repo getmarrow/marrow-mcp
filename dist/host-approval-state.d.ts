@@ -48,6 +48,8 @@ export type HoldRecord = {
     proof_fields: string[];
     expires_at: string | null;
     code: string | null;
+    /** The owner's one-tap approval link: sent, requested but not sent, or not used for this hold. */
+    owner_link?: 'sent' | 'unsent' | null;
     action: {
         action: string;
         target: string;

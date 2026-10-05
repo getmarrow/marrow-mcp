@@ -92,6 +92,8 @@ export type HoldRecord = {
   proof_fields: string[];
   expires_at: string | null;
   code: string | null;
+  /** The owner's one-tap approval link: sent, requested but not sent, or not used for this hold. */
+  owner_link?: 'sent' | 'unsent' | null;
   action: { action: string; target: string; type: string; surfaces: string[] };
   outbox: HoldOutbox | null;
   created_at: number;
@@ -224,6 +226,7 @@ function validHold(value: unknown): value is HoldRecord {
     && Array.isArray(hold.proof_fields) && hold.proof_fields.length <= 24 && hold.proof_fields.every((field) => typeof field === 'string' && field.length <= 64)
     && (hold.expires_at === null || isIso(hold.expires_at))
     && (hold.code === null || (typeof hold.code === 'string' && APPROVAL_CODE.test(hold.code)))
+    && (hold.owner_link === undefined || hold.owner_link === null || hold.owner_link === 'sent' || hold.owner_link === 'unsent')
     && Boolean(hold.action) && typeof hold.action.action === 'string' && hold.action.action.length <= 512
     && typeof hold.action.target === 'string' && hold.action.target.length <= 256
     && typeof hold.action.type === 'string' && hold.action.type.length <= 64

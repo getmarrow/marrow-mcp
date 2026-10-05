@@ -165,6 +165,7 @@ function validHold(value) {
         && Array.isArray(hold.proof_fields) && hold.proof_fields.length <= 24 && hold.proof_fields.every((field) => typeof field === 'string' && field.length <= 64)
         && (hold.expires_at === null || isIso(hold.expires_at))
         && (hold.code === null || (typeof hold.code === 'string' && exports.APPROVAL_CODE.test(hold.code)))
+        && (hold.owner_link === undefined || hold.owner_link === null || hold.owner_link === 'sent' || hold.owner_link === 'unsent')
         && Boolean(hold.action) && typeof hold.action.action === 'string' && hold.action.action.length <= 512
         && typeof hold.action.target === 'string' && hold.action.target.length <= 256
         && typeof hold.action.type === 'string' && hold.action.type.length <= 64

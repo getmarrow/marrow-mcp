@@ -4,9 +4,12 @@ exports.CLAUDE_CODE_NOT_A_DECISION_PREFIXES = exports.CLAUDE_CODE_USER_REJECTED_
 exports.approvalHostFor = approvalHostFor;
 exports.settleBudgetMs = settleBudgetMs;
 exports.hostSessionIdFor = hostSessionIdFor;
+exports.ownerLinkSentText = ownerLinkSentText;
+exports.withOwnerLink = withOwnerLink;
 exports.planHeldAction = planHeldAction;
 exports.typedReplyUserText = typedReplyUserText;
 exports.rememberHold = rememberHold;
+exports.requestOwnerLink = requestOwnerLink;
 exports.noteDialogShown = noteDialogShown;
 exports.resumeWaitingHold = resumeWaitingHold;
 exports.deliverHold = deliverHold;
@@ -94,6 +97,17 @@ function ownerOnlyReason(guidance) {
 }
 /** Where the approval request goes when no operator can answer here. Never a login step. */
 exports.OWNER_APPROVAL_REQUEST_TEXT = 'The approval request goes to the account owner.';
+/** The sentence that replaces OWNER_APPROVAL_REQUEST_TEXT once Marrow sent the owner a one-tap link. */
+function ownerLinkSentText(channel) {
+    return `An approval link was sent to the account owner (${channel}).`;
+}
+/** Puts the link outcome into a plan that asked the owner. */
+function withOwnerLink(plan, channel) {
+    if (plan.kind !== 'deny' || !plan.ownerRequest || !channel)
+        return plan;
+    const sent = ownerLinkSentText(channel);
+    return { ...plan, agentText: plan.agentText.replace(exports.OWNER_APPROVAL_REQUEST_TEXT, sent), userText: plan.userText.replace(exports.OWNER_APPROVAL_REQUEST_TEXT, sent) };
+}
 /** Hosts whose typed reply is a person-only marker, and that marker (backend OPERATOR_MARKER_BY_HOST). */
 exports.TYPED_REPLY_MARKER = {
     codex: 'UserPromptSubmit',
@@ -124,7 +138,8 @@ function planHeldAction(input) {
                 promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${id}).${notice}${reason}`, 500),
             };
         }
-        if (host === 'cursor' && exports.CURSOR_ASK_EVENTS.has(input.hookEvent) && input.cursorInteractive === true) {
+        // After an operator decline only a marked answer counts; Cursor's dialog carries no marker.
+        if (host === 'cursor' && exports.CURSOR_ASK_EVENTS.has(input.hookEvent) && input.cursorInteractive === true && !guidance.operatorOnly) {
             return {
                 kind: 'ask',
                 promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action (gate receipt ${id}).${notice}${reason}`, 500),
@@ -139,15 +154,16 @@ function planHeldAction(input) {
             };
         }
     }
+    const operatorPresent = guidance.hostApprovalAccepted && host === 'claude-code';
     const why = !guidance.hostApprovalAccepted
         ? `${ownerOnlyReason(guidance)} ${exports.OWNER_APPROVAL_REQUEST_TEXT}`
-        : host === 'claude-code'
+        : operatorPresent
             ? `Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you.`
             : host === 'cursor'
                 ? `Cursor asks for approval only for shell and MCP calls in a local interactive session. ${exports.OWNER_APPROVAL_REQUEST_TEXT}`
                 : `${exports.HOST_LABEL[host]} cannot ask the operator in this session. ${exports.OWNER_APPROVAL_REQUEST_TEXT}`;
     const agentText = bounded(`${held} ${why}${tail}`, 500);
-    return { kind: 'deny', agentText, userText: agentText, code: false };
+    return { kind: 'deny', agentText, userText: agentText, code: false, ownerRequest: !operatorPresent };
 }
 /** User-only text with the typed-reply code (Cursor user_message, Codex and Gemini systemMessage). */
 function typedReplyUserText(userText, code) {
@@ -184,6 +200,35 @@ function rememberHold(ctx, input) {
         },
         withCode: input.withCode,
     }, ctx.home);
+}
+const OWNER_LINK_TIMEOUT_MS = 2_000;
+/**
+ * Asks Marrow to send the account owner a one-tap approval link for this hold
+ * (once; the server limits repeats). Returns the channel when it was sent.
+ * The link itself never reaches this client or the agent.
+ */
+async function requestOwnerLink(ctx, hold, guidance) {
+    if (hold.owner_link === 'sent')
+        return null;
+    if (!guidance?.approvalLinkPath && hold.owner_link !== 'unsent')
+        return null;
+    const timeout = statusTimeout(OWNER_LINK_TIMEOUT_MS);
+    let channel = null;
+    try {
+        const result = await (0, index_1.marrowRequestApprovalLink)(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, hold.decision_id, hold.session_id, hold.agent_id || undefined, timeout.signal);
+        channel = result.ok ? result.link.channel : null;
+    }
+    catch {
+        channel = null;
+    }
+    finally {
+        timeout.cancel();
+    }
+    try {
+        (0, host_approval_state_1.updateHold)(scopeOf(ctx), hold.id, (current) => ({ ...current, owner_link: channel ? 'sent' : 'unsent' }), ctx.home);
+    }
+    catch { /* the link state is a convenience; the hold stands */ }
+    return channel;
 }
 /** PermissionRequest (pass-through): the host is about to show its own dialog for an asked call. */
 function noteDialogShown(ctx, correlation) {
@@ -259,7 +304,11 @@ async function resumeWaitingHold(ctx, input) {
         };
     }
     if (status.state === 'pending' || status.state === 'unavailable') {
-        const waiting = hold.code ? 'The operator was asked to approve it here.' : exports.OWNER_APPROVAL_REQUEST_TEXT;
+        const linkChannel = !hold.code && hold.owner_link === 'unsent' ? await requestOwnerLink(ctx, hold, null) : null;
+        const waiting = hold.code ? 'The operator was asked to approve it here.'
+            : linkChannel ? ownerLinkSentText(linkChannel)
+                : hold.owner_link === 'sent' ? 'An approval link was sent to the account owner.'
+                    : exports.OWNER_APPROVAL_REQUEST_TEXT;
         const expires = status.expires_at || hold.expires_at;
         const text = bounded(`Marrow is still holding this action for approval (gate receipt ${hold.gate_receipt_id}), so it did not run. ${waiting} When it is approved${expires ? ` (before ${expires})` : ''}, retry this exact action. Do not report or claim an approval yourself.`, 500);
         return {
