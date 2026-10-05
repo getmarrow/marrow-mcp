@@ -1,11 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = void 0;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.isMarrowOutage = isMarrowOutage;
 exports.controlFailureKind = controlFailureKind;
 exports.controlRejectionMessage = controlRejectionMessage;
 exports.ownerApprovalPrompt = ownerApprovalPrompt;
+exports.runtimeGateAdvisory = runtimeGateAdvisory;
+exports.runtimeGateEnforced = runtimeGateEnforced;
+exports.advisoryGateNotice = advisoryGateNotice;
 exports.runtimeGateVerdict = runtimeGateVerdict;
 exports.gateDecisionMessage = gateDecisionMessage;
 exports.localControlAllowOutput = localControlAllowOutput;
@@ -17,8 +20,10 @@ exports.windsurfPreActionDecision = windsurfPreActionDecision;
 exports.geminiPreActionHookOutput = geminiPreActionHookOutput;
 exports.grokPreActionHookOutput = grokPreActionHookOutput;
 exports.preActionHookOutput = preActionHookOutput;
+exports.closeDeniedDecision = closeDeniedDecision;
 exports.installPreActionHook = installPreActionHook;
 exports.runPreActionHookCommand = runPreActionHookCommand;
+const node_crypto_1 = require("node:crypto");
 const index_1 = require("./index");
 const request_reliability_1 = require("./request-reliability");
 const lifecycle_spool_1 = require("./lifecycle-spool");
@@ -165,6 +170,61 @@ function arbitrationReview(runtime) {
         || approval?.dashboard_receipt_required === true
         || (approval?.mode !== undefined && approval.mode !== 'ordinary_non_arbitrated');
 }
+/**
+ * True only for the runtime's positive advisory contract. On a plan without
+ * production_action_enforcement the backend gate (agent-runtime.service.ts,
+ * the hardGateEnforcement branch) carries enforced:false with
+ * enforcement_decision:'advisory', and gate_required, owner_approval_required
+ * and gate_receipt.required are false; the slim shape the MCP client receives
+ * carries risk_gate_enforced:false instead. Missing, malformed or conflicting
+ * enforcement fields are never advisory, so a protected action fails closed.
+ */
+function runtimeGateAdvisory(runtime) {
+    const gate = runtime?.risk_gate;
+    if (!runtime || !gate)
+        return false;
+    const slim = runtime.response_mode === 'slim';
+    const completion = runtime.completion_contract;
+    const plan = runtime.plan_capability;
+    return gate.enforced === false
+        && gate.enforcement_decision === 'advisory'
+        && String(gate.decision) !== 'block'
+        // A slim response has no allow field; the client derives it from the decision.
+        && (slim ? runtime.risk_gate_enforced === false : gate.allow === true && runtime.risk_gate_enforced == null)
+        && (runtime.enforcement_decision == null || runtime.enforcement_decision === 'advisory')
+        && (runtime.authorization_state === undefined || runtime.authorization_state === 'advisory_only')
+        && runtime.hard_gate_obtained !== true
+        && gate.gate_required !== true
+        && gate.owner_approval_required !== true
+        && runtime.gate_receipt?.required !== true
+        && runtime.gate_receipt?.owner_approval_required !== true
+        && completion?.gate_receipt_required !== true
+        && completion?.owner_approval_required !== true
+        && completion?.owner_approval == null
+        && !arbitrationReview(runtime)
+        && plan?.production_enforcement_entitled !== true
+        && plan?.mode !== 'enforced';
+}
+/** Every gate is enforced unless the runtime positively declares it advisory. */
+function runtimeGateEnforced(runtime) {
+    return !runtimeGateAdvisory(runtime);
+}
+function gateReason(runtime) {
+    const why = boundedText(runtime.risk_gate.reasons?.[0]?.message, 240);
+    const next = boundedText(runtime.exact_next_action, 240);
+    return why && next && why !== next ? `${why}${/[.!?]$/.test(why) ? '' : '.'} Next: ${next}` : why || next;
+}
+/** A warning for a non-allow gate the runtime does not enforce on this plan. */
+function advisoryGateNotice(runtime) {
+    const gate = runtime?.risk_gate;
+    if (!runtime || !gate || !runtimeGateAdvisory(runtime))
+        return null;
+    const decision = String(gate.decision || '');
+    if (gate.allow !== false && !['warn', 'review_required', 'owner_approval_required'].includes(decision))
+        return null;
+    const reason = gateReason(runtime);
+    return boundedText(`Marrow advisory: this plan does not enforce the pre-action gate, so the action is allowed. Gate decision: ${decision}.${reason ? ` Reason: ${reason}` : ''}`, 500);
+}
 function runtimeGateVerdict(runtime) {
     const gate = runtime?.risk_gate;
     if (!runtime || !gate)
@@ -173,9 +233,10 @@ function runtimeGateVerdict(runtime) {
     const review = decision === 'review_required' || decision === 'owner_approval_required';
     if (decision !== 'block' && !review && gate.allow !== false)
         return null;
-    const why = boundedText(gate.reasons?.[0]?.message, 240);
-    const next = boundedText(runtime.exact_next_action, 240);
-    const reason = why && next && why !== next ? `${why}${/[.!?]$/.test(why) ? '' : '.'} Next: ${next}` : why || next;
+    // An advisory gate warns; only an enforced gate (or any block) stops the action.
+    if (decision !== 'block' && runtimeGateAdvisory(runtime))
+        return null;
+    const reason = gateReason(runtime);
     if (decision === 'block')
         return { kind: 'block', reason };
     if (review)
@@ -329,7 +390,8 @@ function cursorPreActionHookOutput(result) {
             agent_message: denial,
         };
     }
-    return { permission: 'allow' };
+    const advisory = advisoryGateNotice(runtime);
+    return advisory ? { permission: 'allow', user_message: advisory, agent_message: advisory } : { permission: 'allow' };
 }
 function clinePreActionHookOutput(result) {
     if (isMarrowOutage(result))
@@ -362,11 +424,7 @@ function windsurfPreActionDecision(result) {
     if (isMarrowOutage(result))
         return { exitCode: 0, stderr: `${hook_contract_1.MARROW_OUTAGE_WARNING}\n` };
     const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
-    const gate = result.runtime?.risk_gate;
-    const denied = unavailable
-        || gate?.decision === 'review_required'
-        || gate?.decision === 'block'
-        || gate?.allow === false;
+    const denied = unavailable || runtimeGateVerdict(result.runtime) !== null;
     return denied
         ? {
             exitCode: 2,
@@ -378,11 +436,7 @@ function geminiPreActionHookOutput(result) {
     if (isMarrowOutage(result))
         return { decision: 'allow' };
     const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
-    const gate = result.runtime?.risk_gate;
-    const denied = unavailable
-        || gate?.decision === 'review_required'
-        || gate?.decision === 'block'
-        || gate?.allow === false;
+    const denied = unavailable || runtimeGateVerdict(result.runtime) !== null;
     return denied
         ? {
             decision: 'deny',
@@ -394,11 +448,7 @@ function grokPreActionHookOutput(result) {
     if (isMarrowOutage(result))
         return { decision: 'allow' };
     const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
-    const gate = result.runtime?.risk_gate;
-    const denied = unavailable
-        || gate?.decision === 'review_required'
-        || gate?.decision === 'block'
-        || gate?.allow === false;
+    const denied = unavailable || runtimeGateVerdict(result.runtime) !== null;
     return denied
         ? { decision: 'deny', reason: 'Marrow blocked this protected action.' }
         : { decision: 'allow' };
@@ -421,8 +471,10 @@ function preActionHookOutput(result, harness = 'claude-code', prompt = NO_OWNER_
         };
     }
     const { runtime, permit, protectedRisk } = result;
-    const context = runtime?.before_you_act || permit?.permit_id ? {
+    const advisory = advisoryGateNotice(runtime);
+    const context = runtime?.before_you_act || permit?.permit_id || advisory ? {
         additionalContext: [
+            advisory,
             runtime?.before_you_act,
             permit?.permit_id ? `Marrow action permit verified: ${permit.permit_id}. Evidence and outcome closure remain required.` : null,
         ].filter(Boolean).join('\n'),
@@ -466,11 +518,61 @@ function emitDecision(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT)
         process.exitCode = decision.exitCode;
         if (decision.stderr)
             process.stderr.write(decision.stderr);
-        return;
+        return { denied: decision.exitCode === 2, reason: decision.stderr.trim() };
     }
     if (result.outage)
         process.stderr.write(`${hook_contract_1.MARROW_OUTAGE_WARNING}\n`);
-    process.stdout.write(JSON.stringify(preActionHookOutput(result, harness, prompt)));
+    const output = preActionHookOutput(result, harness, prompt);
+    process.stdout.write(JSON.stringify(output));
+    const specific = asRecord(output.hookSpecificOutput);
+    if (specific?.permissionDecision === 'deny')
+        return { denied: true, reason: String(specific.permissionDecisionReason || '') };
+    if (output.permission === 'deny')
+        return { denied: true, reason: String(output.agent_message || '') };
+    if (output.cancel === true)
+        return { denied: true, reason: String(output.errorMessage || '') };
+    if (output.decision === 'deny')
+        return { denied: true, reason: String(output.reason || '') };
+    return { denied: false, reason: '' };
+}
+// Closing is best effort: the denial already stands, and the hook must not hang.
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = 2_500;
+/**
+ * Records a decision the hook denied as a failed outcome, so it carries real
+ * outcome data instead of being swept to a NULL outcome later. Never called for
+ * an "ask": an approved prompt runs the action and its outcome is still open.
+ */
+async function closeDeniedDecision(apiKey, baseUrl, held, reason, sessionId, agentId) {
+    if (!held.decisionId)
+        return false;
+    const outcome = boundedText(`denied by Marrow pre-action gate: ${reason || 'no reason was returned'}`, 500);
+    const controller = new AbortController();
+    let timer;
+    try {
+        const committed = await Promise.race([
+            (0, index_1.marrowCommit)(apiKey, baseUrl, {
+                decision_id: held.decisionId,
+                success: false,
+                outcome,
+                auto_gate: false,
+                ...(held.gateReceiptId ? { gate_receipt_id: held.gateReceiptId } : {}),
+            }, sessionId, agentId, controller.signal, `mcp-hook-deny:${(0, node_crypto_1.createHash)('sha256').update(`${held.decisionId}\n${outcome}`).digest('hex').slice(0, 40)}`),
+            new Promise((resolve) => {
+                timer = setTimeout(() => {
+                    controller.abort();
+                    resolve(null);
+                }, exports.DENIED_DECISION_CLOSE_TIMEOUT_MS);
+            }),
+        ]);
+        return committed?.committed === true;
+    }
+    catch {
+        return false;
+    }
+    finally {
+        if (timer)
+            clearTimeout(timer);
+    }
 }
 async function withTimeout(operation) {
     const controller = new AbortController();
@@ -685,6 +787,8 @@ async function runPreActionHookCommand(input) {
             outcome_state: 'pending',
         },
     }).catch(() => null);
+    // The decision and gate receipt this control path holds, so a denial can close them.
+    const held = { decisionId: null, gateReceiptId: null };
     const control = async (signal) => {
         const runtime = await (0, index_1.marrowAgentRuntime)(resolved.apiKey, baseUrl, {
             action: classified.action,
@@ -696,8 +800,18 @@ async function runPreActionHookCommand(input) {
             // non-durable fast_gate receipt can never back an action permit.
             ...(enforcementRequired ? { risk_level: classified.risk } : {}),
         }, sessionId, agentId, signal);
+        const heldIds = [...new Set([runtime.decision_id, runtime.completion_contract?.decision_id, runtime.runtime_authorization?.decision_id]
+                .filter((value) => typeof value === 'string' && SAFE_DECISION_ID.test(value)))];
+        held.decisionId = heldIds.length === 1 ? heldIds[0] : null;
+        held.gateReceiptId = (0, runtime_contract_1.runtimeAuthorizationReceiptId)(runtime) || null;
         const gate = runtime.risk_gate;
-        if (gate?.decision === 'block' || gate?.decision === 'review_required' || gate?.allow === false) {
+        if (gate?.decision === 'block')
+            return { runtime, permit: null, protectedRisk: enforcementRequired };
+        // Free and starter plans get a positively advisory gate that warns but never
+        // hard-stops; every other gate, including an unclear one, keeps enforcement.
+        if (runtimeGateAdvisory(runtime))
+            return { runtime, permit: null, protectedRisk: false };
+        if (runtimeGateVerdict(runtime)) {
             return { runtime, permit: null, protectedRisk: enforcementRequired };
         }
         // Only enforced actions need a decision and permit; creating them for every
@@ -726,6 +840,9 @@ async function runPreActionHookCommand(input) {
                 ...(identity.harness !== 'mcp-client' ? { source_meta: { client: identity.harness } } : {}),
             }, sessionId, agentId, signal);
             decisionId = SAFE_DECISION_ID.test(decision.decision_id) ? decision.decision_id : null;
+            // The runtime receipt is not bound to a decision Think creates; closing with it is a scope mismatch.
+            held.decisionId = decisionId;
+            held.gateReceiptId = null;
         }
         if (!decisionId) {
             return {
@@ -753,6 +870,8 @@ async function runPreActionHookCommand(input) {
         }
         const verified = await (0, index_1.marrowEnforcement)(resolved.apiKey, baseUrl, {
             operation: 'verify',
+            // Verify must declare the permit's protocol; issue defaults to version 1.
+            protocol_version: issued.protocol_version === 2 ? 2 : 1,
             permit: issued.permit,
             action: classified.action,
             action_type: classified.type,
@@ -788,6 +907,9 @@ async function runPreActionHookCommand(input) {
             })),
         lifecycle,
     ]);
-    emitDecision(result, identity.harness, ownerApprovalPrompt(identity.harness, source));
+    const emitted = emitDecision(result, identity.harness, ownerApprovalPrompt(identity.harness, source));
+    if (emitted.denied && !result.outage) {
+        await closeDeniedDecision(resolved.apiKey, baseUrl, held, emitted.reason, sessionId, agentId);
+    }
 }
 //# sourceMappingURL=hook-pre-action.js.map

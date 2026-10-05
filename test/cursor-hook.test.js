@@ -77,7 +77,7 @@ test('Cursor native pre-action denies review and unavailable proof, never asks',
     permit: { verified: true },
     runtime: {
       exact_next_action: 'owner approval required',
-      risk_gate: { allow: false, decision: 'review_required', reasons: [] },
+      risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] },
     },
   });
   const reviewMessage = 'Marrow requires owner review before this action, and no owner approval prompt is available (this agent host cannot prompt the owner), so it was denied. Ask the owner to approve or run it. Reason: owner approval required';
@@ -94,7 +94,7 @@ test('Cursor native pre-action denies review and unavailable proof, never asks',
     permit: null,
     runtime: {
       exact_next_action: 'owner approval required',
-      risk_gate: { allow: false, decision: 'review_required', reasons: [] },
+      risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] },
     },
   }), review);
   assert.deepEqual(cursorPreActionHookOutput({
@@ -110,7 +110,7 @@ test('Cursor native pre-action denies review and unavailable proof, never asks',
   assert.deepEqual(cursorPreActionHookOutput({
     protectedRisk: false,
     permit: null,
-    runtime: { risk_gate: { allow: true, decision: 'allow', reasons: [] } },
+    runtime: { risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] } },
   }), { permission: 'allow' });
 });
 

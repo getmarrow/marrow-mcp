@@ -45,6 +45,20 @@ type GateVerdict = {
     kind: 'block' | 'review' | 'arbitration_review' | 'denied';
     reason: string;
 };
+/**
+ * True only for the runtime's positive advisory contract. On a plan without
+ * production_action_enforcement the backend gate (agent-runtime.service.ts,
+ * the hardGateEnforcement branch) carries enforced:false with
+ * enforcement_decision:'advisory', and gate_required, owner_approval_required
+ * and gate_receipt.required are false; the slim shape the MCP client receives
+ * carries risk_gate_enforced:false instead. Missing, malformed or conflicting
+ * enforcement fields are never advisory, so a protected action fails closed.
+ */
+export declare function runtimeGateAdvisory(runtime: PreActionControlResult['runtime']): boolean;
+/** Every gate is enforced unless the runtime positively declares it advisory. */
+export declare function runtimeGateEnforced(runtime: PreActionControlResult['runtime']): boolean;
+/** A warning for a non-allow gate the runtime does not enforce on this plan. */
+export declare function advisoryGateNotice(runtime: PreActionControlResult['runtime']): string | null;
 export declare function runtimeGateVerdict(runtime: PreActionControlResult['runtime']): GateVerdict | null;
 export declare function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt?: OwnerApprovalPrompt): string;
 export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
@@ -74,6 +88,17 @@ export declare function grokPreActionHookOutput(result: PreActionControlResult):
     reason?: string;
 };
 export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', prompt?: OwnerApprovalPrompt): Record<string, unknown>;
+type HeldDecision = {
+    decisionId: string | null;
+    gateReceiptId: string | null;
+};
+export declare const DENIED_DECISION_CLOSE_TIMEOUT_MS = 2500;
+/**
+ * Records a decision the hook denied as a failed outcome, so it carries real
+ * outcome data instead of being swept to a NULL outcome later. Never called for
+ * an "ask": an approved prompt runs the action and its outcome is still open.
+ */
+export declare function closeDeniedDecision(apiKey: string, baseUrl: string, held: HeldDecision, reason: string, sessionId: string, agentId?: string): Promise<boolean>;
 export declare function installPreActionHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;
