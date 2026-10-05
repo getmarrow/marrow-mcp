@@ -1287,7 +1287,8 @@ test('review-required marrowAuto waits for dashboard approval then forwards serv
       assert.equal(body.gate_receipt_id, 'gate-owner-approval');
       assert.equal(body.arbitration_receipt_id, 'arbitration-owner-approval');
       assert.equal(body.owner_approval_receipt_id, 'dashboard-owner-approval');
-      assert.deepEqual(body.proof, { checks: ['build', 'security'], owner_approval: 'chat text is not a receipt' });
+      // A caller-written approval claim is never sent; only the server receipts are.
+      assert.deepEqual(body.proof, { checks: ['build', 'security'] });
       return Response.json({ data: { committed: true, decision_id: body.decision_id } });
     }
     throw new Error(`unexpected URL ${target}`);

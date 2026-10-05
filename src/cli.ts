@@ -67,7 +67,7 @@ import {
 } from './index';
 import { localControlEvidence } from './control-state';
 import { hookSpooledLifecycleEvent, installPermissionRequestHook, installPostToolUseHook, runHookCommand, runPermissionRequestHookCommand } from './hook';
-import { deliverQueuedForReceipt } from './host-approval';
+import { deliverQueuedForReceipt, holdSessionForReceipt, type HoldContext } from './host-approval';
 import { installGrokNativeHooks } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
@@ -2434,10 +2434,12 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
         const decision_id = requireString(args, 'decision_id');
         const outcome = requireString(args, 'outcome');
         const commitSuccess = requireBoolean(args, 'success');
-        // A host hook may still hold the operator's queued answer for this
-        // receipt; send it first so the commit closes with that approval.
+        // A receipt a host hook held: commit in the session it was issued to,
+        // and send the operator's queued answer first so the commit closes
+        // with that approval.
+        let commitSessionId = SESSION_ID;
         if (typeof args.gate_receipt_id === 'string' && args.gate_receipt_id) {
-          await deliverQueuedForReceipt({
+          const holdContext: HoldContext = {
             apiKey: API_KEY,
             baseUrl: BASE_URL,
             sessionId: SESSION_ID || 'mcp-server',
@@ -2445,7 +2447,9 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
             harness: 'mcp-client',
             host: 'other',
             hostSessionId: SESSION_ID || 'mcp-server',
-          }, args.gate_receipt_id).catch(() => undefined);
+          };
+          commitSessionId = holdSessionForReceipt(holdContext, args.gate_receipt_id) || SESSION_ID;
+          await deliverQueuedForReceipt(holdContext, args.gate_receipt_id).catch(() => undefined);
         }
 
         const result = await withControlDeadline(
@@ -2468,7 +2472,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
               auto_gate: args.auto_gate as boolean,
               model_usage: args.model_usage as any,
             },
-            SESSION_ID,
+            commitSessionId,
             FLEET_AGENT_ID,
             signal,
           ),

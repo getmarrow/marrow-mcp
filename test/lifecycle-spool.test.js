@@ -586,7 +586,7 @@ test('tool correlation is stable across host tool-use ids and changes with canon
   assert.equal(stableSessionWorkflowId('session-one'), stableSessionWorkflowId('session-one', 'other'));
 });
 
-test('pre-action policy maps block to deny, review to ask, and allow to native permission flow', () => {
+test('pre-action policy maps block to deny, a review without a host-approval contract to deny, and allow to native permission flow', () => {
   const block = preActionHookOutput({
     runtime: { risk_gate: { allow: false, decision: 'block', enforced: true, reasons: [{ message: 'proof missing' }] }, exact_next_action: 'collect proof' },
     permit: { verified: true, permit_id: 'permit-block' },
@@ -601,7 +601,9 @@ test('pre-action policy maps block to deny, review to ask, and allow to native p
     permit: { verified: true, permit_id: 'permit-review' },
     protectedRisk: true,
   }, 'claude-code', interactive);
-  assert.equal(review.hookSpecificOutput.permissionDecision, 'ask');
+  // Asking happens only through a server-declared host approval (heldActionHookOutput).
+  assert.equal(review.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(review.hookSpecificOutput.permissionDecisionReason, /this Marrow service did not offer a chat or terminal approval for this hold/);
 
   const codexReview = preActionHookOutput({
     runtime: { risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] }, exact_next_action: 'ask owner' },

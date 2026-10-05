@@ -131,6 +131,13 @@ export type DeliveryResult = {
 export declare function deliverHold(ctx: HoldContext, holdId: string, deadline?: number): Promise<DeliveryResult | null>;
 /** Delivers due queued reports for this key (bounded); called at the start of later hooks. */
 export declare function flushHoldOutbox(ctx: HoldContext, limit?: number, budgetMs?: number): Promise<void>;
+/**
+ * marrow_commit from the MCP server: the hooks bound this gate receipt to the
+ * host session (for example Claude Code's session_id), which the MCP server
+ * process does not know. The receipt stays the authority; the session only has
+ * to match it.
+ */
+export declare function holdSessionForReceipt(ctx: HoldContext, gateReceiptId: string): string | null;
 /** marrow_commit: send a queued host approval for this receipt before the agent's own commit. */
 export declare function deliverQueuedForReceipt(ctx: HoldContext, gateReceiptId: string): Promise<void>;
 /**

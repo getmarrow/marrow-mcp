@@ -10,6 +10,7 @@ exports.noteDialogShown = noteDialogShown;
 exports.resumeWaitingHold = resumeWaitingHold;
 exports.deliverHold = deliverHold;
 exports.flushHoldOutbox = flushHoldOutbox;
+exports.holdSessionForReceipt = holdSessionForReceipt;
 exports.deliverQueuedForReceipt = deliverQueuedForReceipt;
 exports.settleAfterTool = settleAfterTool;
 exports.toolResultText = toolResultText;
@@ -408,6 +409,21 @@ async function flushHoldOutbox(ctx, limit = 2, budgetMs = 4_000) {
         if (Date.now() >= deadline)
             break;
         await deliverHold(ctx, hold.id, deadline).catch(() => null);
+    }
+}
+/**
+ * marrow_commit from the MCP server: the hooks bound this gate receipt to the
+ * host session (for example Claude Code's session_id), which the MCP server
+ * process does not know. The receipt stays the authority; the session only has
+ * to match it.
+ */
+function holdSessionForReceipt(ctx, gateReceiptId) {
+    try {
+        const holds = (0, host_approval_state_1.findHolds)(scopeOf(ctx), {}, ctx.home).filter((hold) => hold.gate_receipt_id === gateReceiptId);
+        return holds.length ? holds[holds.length - 1].session_id : null;
+    }
+    catch {
+        return null;
     }
 }
 /** marrow_commit: send a queued host approval for this receipt before the agent's own commit. */

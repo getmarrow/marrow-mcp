@@ -2212,10 +2212,12 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         const decision_id = requireString(args, 'decision_id');
                         const outcome = requireString(args, 'outcome');
                         const commitSuccess = requireBoolean(args, 'success');
-                        // A host hook may still hold the operator's queued answer for this
-                        // receipt; send it first so the commit closes with that approval.
+                        // A receipt a host hook held: commit in the session it was issued to,
+                        // and send the operator's queued answer first so the commit closes
+                        // with that approval.
+                        let commitSessionId = SESSION_ID;
                         if (typeof args.gate_receipt_id === 'string' && args.gate_receipt_id) {
-                            await (0, host_approval_1.deliverQueuedForReceipt)({
+                            const holdContext = {
                                 apiKey: API_KEY,
                                 baseUrl: BASE_URL,
                                 sessionId: SESSION_ID || 'mcp-server',
@@ -2223,7 +2225,9 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                 harness: 'mcp-client',
                                 host: 'other',
                                 hostSessionId: SESSION_ID || 'mcp-server',
-                            }, args.gate_receipt_id).catch(() => undefined);
+                            };
+                            commitSessionId = (0, host_approval_1.holdSessionForReceipt)(holdContext, args.gate_receipt_id) || SESSION_ID;
+                            await (0, host_approval_1.deliverQueuedForReceipt)(holdContext, args.gate_receipt_id).catch(() => undefined);
                         }
                         const result = await withControlDeadline((signal) => (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
                             decision_id,
@@ -2240,7 +2244,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             surfaces: args.surfaces,
                             auto_gate: args.auto_gate,
                             model_usage: args.model_usage,
-                        }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: true, cacheAware: false, toolName: 'marrow_commit' });
+                        }, commitSessionId, FLEET_AGENT_ID, signal), { highRisk: true, cacheAware: false, toolName: 'marrow_commit' });
                         const commitResult = { ...result, narrative: result.narrative ?? null };
                         lastCommitted = result.committed;
                         lastDecisionId = result.committed ? null : decision_id;

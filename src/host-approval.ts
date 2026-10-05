@@ -479,6 +479,21 @@ export async function flushHoldOutbox(ctx: HoldContext, limit = 2, budgetMs = 4_
   }
 }
 
+/**
+ * marrow_commit from the MCP server: the hooks bound this gate receipt to the
+ * host session (for example Claude Code's session_id), which the MCP server
+ * process does not know. The receipt stays the authority; the session only has
+ * to match it.
+ */
+export function holdSessionForReceipt(ctx: HoldContext, gateReceiptId: string): string | null {
+  try {
+    const holds = findHolds(scopeOf(ctx), {}, ctx.home).filter((hold) => hold.gate_receipt_id === gateReceiptId);
+    return holds.length ? holds[holds.length - 1].session_id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** marrow_commit: send a queued host approval for this receipt before the agent's own commit. */
 export async function deliverQueuedForReceipt(ctx: HoldContext, gateReceiptId: string): Promise<void> {
   let holds: HoldRecord[];

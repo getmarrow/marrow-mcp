@@ -306,7 +306,7 @@ test('Claude Code: rejection text from an MCP tool is not a decline without the 
   } finally { h.cleanup(); }
 });
 
-test('marrow_commit sends a queued host approval for its gate receipt before the commit', () => {
+test('marrow_commit sends a queued host approval for its gate receipt before the commit, in the hold\'s session', () => {
   const h = harness();
   try {
     h.setConfig({
@@ -327,13 +327,15 @@ test('marrow_commit sends a queued host approval for its gate receipt before the
         proof: { summary: 'Deployed.', checks: ['smoke'], outcome: 'success' },
       } } },
     ].map(JSON.stringify).join('\n') + '\n';
-    const server = h.run('marrow-mcp-server-placeholder', input, { MARROW_AUTO_ENROLL: 'false', MARROW_SESSION_ID: '3b1f0c2e-0000-4000-8000-00000000000a' });
+    // The MCP server process does not know Claude Code's session; the hold record links it.
+    const server = h.run('marrow-mcp-server-placeholder', input, { MARROW_AUTO_ENROLL: 'false' });
     assert.equal(server.status, 0, server.stderr);
     const order = h.requests().map((r) => r.path).filter((path) => path.endsWith('/host-approval') || path === '/v1/agent/commit');
     assert.deepEqual(order, ['/v1/agent/gate-receipts/gate-held/host-approval', '/v1/agent/gate-receipts/gate-held/host-approval', '/v1/agent/commit']);
     const reports = hostReports(h);
     assert.deepEqual(reports[1].body, reports[0].body);
     assert.equal(reports[1].body.hook_event, 'PermissionRequest');
+    assert.equal(commits(h)[0].session, '3b1f0c2e-0000-4000-8000-00000000000a', 'the commit uses the session the receipt was issued to');
   } finally { h.cleanup(); }
 });
 
