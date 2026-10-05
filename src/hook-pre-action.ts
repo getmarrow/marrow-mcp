@@ -1,23 +1,33 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { marrowAgentRuntime, marrowCommit, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { MarrowRequestError } from './request-reliability';
 import { recordLifecycleEvent } from './lifecycle-spool';
 import { CONTROL_BYPASS_ACTION, readLocalControlState } from './control-state';
-import { ordinaryApprovalGuidance, runtimeAuthorizationReceiptId } from './runtime-contract';
+import { arbitrationApprovalGuidance, ordinaryApprovalGuidance, runtimeAuthorizationReceiptId } from './runtime-contract';
 import {
   approvalHostFor,
+  arbitrationHoldGuidance,
   cursorSessionEvidence,
+  finalizeOwnerRequest,
+  flushHoldOutbox,
+  HELD_UNREACHABLE_TEXT,
   hostSessionIdFor,
+  planArbitrationHold,
   planHeldAction,
+  preToolDeadline,
+  protectedAmong,
+  remainingMs,
   rememberHold,
+  rememberProtection,
   requestOwnerLink,
   resumeWaitingHold,
   typedReplyAvailable,
-  withOwnerLink,
   typedReplyUserText,
   type HoldContext,
   type HoldPlan,
+  type OwnerLinkOutcome,
 } from './host-approval';
+import type { HoldRecord } from './host-approval-state';
 import { consultSessionLoopGuard, type LoopGuardOperation } from './session-loop-guard';
 import {
   hookToolCommand,
@@ -106,7 +116,9 @@ export type PreToolUseEvent = {
 type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
 
 /** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
-export const HOLD_OWNER_DENIAL = 'Marrow is holding this action for approval; the approval request goes to the account owner. Retry it after approval.';
+export const HOLD_OWNER_DENIAL = 'Marrow is holding this action for approval. Retry it after approval.';
+/** The only denial @getmarrow/install's Grok guard passes through (any other output blocks with a launch failure). */
+export const GROK_FIXED_DENIAL = 'Marrow blocked this protected action.';
 
 /**
  * The hook's answer for an ordinary held action, per host. A Claude Code "ask"
@@ -132,14 +144,14 @@ export function heldActionHookOutput(
       agent_message: plan.agentText,
     };
   }
-  if (harness === 'cline') return { cancel: true, errorMessage: HOLD_OWNER_DENIAL };
+  if (harness === 'cline') return { cancel: true, errorMessage: plan.agentText };
   if (harness === 'gemini') {
     // Without a typed reply the Gemini adapter's fixed denial text is kept.
     return code
       ? { decision: 'deny', reason: plan.agentText, systemMessage: typedReplyUserText(plan.userText, code) }
       : { decision: 'deny', reason: 'Marrow blocked this action because required governance approval or proof is unavailable.' };
   }
-  if (harness === 'grok') return { decision: 'deny', reason: HOLD_OWNER_DENIAL };
+  if (harness === 'grok') return { decision: 'deny', reason: GROK_FIXED_DENIAL };
   return {
     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: plan.agentText },
     ...(harness === 'codex' && code ? { systemMessage: typedReplyUserText(plan.userText, code) } : {}),
@@ -220,7 +232,10 @@ export function controlRejectionMessage(error: unknown, agentId?: string): strin
 // https://code.claude.com/docs/en/permission-modes
 const OWNER_PROMPT_PERMISSION_MODES = new Set(['default', 'acceptEdits', 'auto']);
 
-export type OwnerApprovalPrompt = { available: boolean; unavailableReason: string };
+export type OwnerApprovalPrompt = { available: boolean; unavailableReason: string; headless?: boolean };
+
+/** Claude Code entrypoints with no one at a dialog (claude -p and the Agent SDKs); hooks inherit it. */
+const HEADLESS_CLAUDE_ENTRYPOINTS = new Set(['sdk-cli', 'sdk-ts', 'sdk-py']);
 
 const NO_OWNER_PROMPT: OwnerApprovalPrompt = { available: false, unavailableReason: 'this agent host cannot prompt the owner' };
 
@@ -239,6 +254,10 @@ export function ownerApprovalPrompt(
     return harness === 'codex'
       ? { available: false, unavailableReason: 'Codex hooks cannot prompt the owner' }
       : NO_OWNER_PROMPT;
+  }
+  const entrypoint = typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' ? env.CLAUDE_CODE_ENTRYPOINT : '';
+  if (HEADLESS_CLAUDE_ENTRYPOINTS.has(entrypoint)) {
+    return { available: false, unavailableReason: `${entrypoint}, no one sees a dialog`, headless: true };
   }
   const mode = typeof event.permission_mode === 'string' && /^[A-Za-z]{1,32}$/.test(event.permission_mode) ? event.permission_mode : '';
   if (!OWNER_PROMPT_PERMISSION_MODES.has(mode)) {
@@ -267,8 +286,8 @@ function asOptionalRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-// Arbitration review is satisfied only by an authenticated-dashboard receipt,
-// never by a host prompt, so any arbitration signal keeps the denial.
+// Arbitration review is satisfied only by the account owner's choice of a
+// proposal (one-tap link), never by a host prompt, so any arbitration signal keeps the denial.
 function arbitrationReview(runtime: NonNullable<PreActionControlResult['runtime']>): boolean {
   const completion = runtime.completion_contract;
   const approval = asOptionalRecord(completion?.owner_approval);
@@ -318,10 +337,10 @@ export function runtimeGateEnforced(runtime: PreActionControlResult['runtime']):
   return !runtimeGateAdvisory(runtime);
 }
 
+// Why the gate held or blocked the action. The runtime's exact_next_action is
+// written for API clients (endpoints to call) and is never relayed by a hook.
 function gateReason(runtime: NonNullable<PreActionControlResult['runtime']>): string {
-  const why = boundedText(runtime.risk_gate.reasons?.[0]?.message, 240);
-  const next = boundedText(runtime.exact_next_action, 240);
-  return why && next && why !== next ? `${why}${/[.!?]$/.test(why) ? '' : '.'} Next: ${next}` : why || next;
+  return boundedText(runtime.risk_gate.reasons?.[0]?.message, 240);
 }
 
 /** A warning for a non-allow gate the runtime does not enforce on this plan. */
@@ -353,12 +372,12 @@ export function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt: 
   const headline = verdict.kind === 'block'
     ? 'Marrow blocked this action under the current policy.'
     : verdict.kind === 'arbitration_review'
-    ? 'Marrow arbitration requires owner approval in the authenticated Marrow dashboard before this action.'
+    ? 'Marrow is holding this action for arbitration review: the account owner picks and approves one proposal before it runs. Do not run it yet.'
     : verdict.kind === 'denied'
     ? 'Marrow did not allow this action.'
     : ask
     ? 'Marrow requires owner review before this action. Approve only if you authorize this exact action.'
-    : `Marrow requires owner review before this action, and no owner approval prompt is available (${prompt.unavailableReason}), so it was denied. Ask the owner to approve or run it.`;
+    : `Marrow requires owner review before this action, and no owner approval prompt is available (${prompt.unavailableReason}), so it was denied. Tell the operator it is waiting for the account owner's approval.`;
   return boundedText(verdict.reason ? `${headline} Reason: ${verdict.reason}` : headline, 500);
 }
 
@@ -703,7 +722,7 @@ export async function closeDeniedDecision(
   }
 }
 
-async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs = PRE_ACTION_CONTROL_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -713,12 +732,47 @@ async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): P
         timer = setTimeout(() => {
           controller.abort();
           reject(new PreActionControlTimeoutError());
-        }, PRE_ACTION_CONTROL_TIMEOUT_MS);
+        }, timeoutMs);
       }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * The gate's risk categories for this classified action, as the server
+ * derives them from the same action, type and surfaces (risk-categories.ts).
+ * Used only while Marrow cannot be reached, to keep owner-protected actions held.
+ */
+const LOCAL_CATEGORY_PATTERNS: Array<[string, RegExp]> = [
+  ['production_deploy', /\b(deploy|release|rollback|rollout|production|prod)\b/i],
+  ['source_control', /\b(merge|pull request|pr|github|main|master)\b/i],
+  ['data_migration', /\b(migration|migrate|schema|database|sql|table|column)\b/i],
+  ['secrets_security', /\b(secret|token|key|credential|rotate|revoke|security|waf|auth)\b/i],
+  ['billing_access', /\b(billing|payment|invoice|subscription|plan|tier|permission|access)\b/i],
+  ['destructive_action', /\b(?:delete|drop|truncate|purge|destroy|remove all|wipe)\b/i],
+];
+
+export function localApprovalCategories(action: { action: string; type: string; surfaces: string[] }): string[] {
+  const text = `${action.action} ${action.type} ${action.surfaces.join(' ')}`;
+  const categories = LOCAL_CATEGORY_PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([category]) => category);
+  // Broader than the server's package-publish check on purpose: it only keeps an action held.
+  if (action.type.toLowerCase() === 'publish' || /\bpublish\b/i.test(text)) categories.unshift('package_publish');
+  return categories;
+}
+
+/** The hook's answer for a held action on any host (Windsurf answers through its exit code). */
+function emitHeldPlan(harness: HookHarness, plan: HoldPlan, code: string | null = null): void {
+  emitHookOutput(harness, heldActionHookOutput(harness, plan, code), plan.kind === 'deny' ? plan.agentText : undefined);
+}
+
+/** Work that does not decide the answer, done after it is written and inside the hook's budget. */
+async function afterAnswer(ctx: HoldContext, work: { link?: HoldRecord | null }): Promise<void> {
+  try {
+    if (work.link) await requestOwnerLink(ctx, work.link, 0);
+    if (remainingMs(ctx) > 800) await flushHoldOutbox(ctx, 2, Math.min(4_000, remainingMs(ctx) - 200));
+  } catch { /* best effort: a later hook resends queued work */ }
 }
 
 export function installPreActionHook(startDir = process.cwd()): { settingsPath: string; installed: boolean } {
@@ -901,6 +955,8 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     harness: identity.harness,
     host: approvalHostFor(identity.harness),
     hostSessionId: hostSessionIdFor([source.session_id, source.conversation_id, source.task_id], sessionId),
+    // One total budget for this hook's answer and its follow-up work.
+    deadlineAt: preToolDeadline(approvalHostFor(identity.harness)),
   };
   const toolUseId = typeof source.tool_use_id === 'string' ? source.tool_use_id : null;
   const generationId = typeof source.generation_id === 'string' ? source.generation_id : null;
@@ -909,22 +965,28 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   const waited = await resumeWaitingHold(holdContext, { correlation, toolUseId, generationId, dialogAvailable }).catch(() => null);
   if (waited?.kind === 'allow') {
     emitHookOutput(identity.harness, approvedHoldHookOutput(identity.harness, waited.contextText));
+    await afterAnswer(holdContext, {});
     return;
   }
   if (waited?.kind === 'ask') {
     emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, { kind: 'ask', promptText: waited.promptText }, null));
+    await afterAnswer(holdContext, {});
     return;
   }
   if (waited?.kind === 'deny') {
-    const plan: HoldPlan = { kind: 'deny', agentText: waited.agentText, userText: waited.userText, code: Boolean(waited.hold.code) };
-    emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, plan, waited.hold.code), HOLD_OWNER_DENIAL);
+    emitHeldPlan(identity.harness, { kind: 'deny', agentText: waited.agentText, userText: waited.userText, code: Boolean(waited.hold.code) }, waited.hold.code);
+    await afterAnswer(holdContext, { link: waited.deferredLink ? waited.hold : null });
     return;
   }
+  // One lifecycle record per attempt: a retried action is a new attempt, and a
+  // hold names the record of the attempt that created it.
+  const attempt = createHash('sha256').update(toolUseId || generationId || randomUUID()).digest('hex').slice(0, 12);
+  const preActionEventId = `pretool-${correlation}-${attempt}`;
   const lifecycle = recordLifecycleEvent({
     apiKey: resolved.apiKey,
     baseUrl,
     event: {
-      event_id: `pretool-${correlation}`,
+      event_id: preActionEventId,
       event_type: 'pre_action_checked',
       ...clientReportedHookLifecycleIdentity(identity),
       session_id: sessionId,
@@ -1036,8 +1098,11 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       ...(verifiedExactly ? {} : { enforcementError: 'Marrow permit verification did not match the issued permit.' }),
     };
   };
+  // Codex and Cursor stop the hook at 5 s (and Codex then lets the call run):
+  // the control path ends inside the hook's budget, leaving time to answer.
+  const controlTimeoutMs = Math.max(1_000, Math.min(PRE_ACTION_CONTROL_TIMEOUT_MS, remainingMs(holdContext) - 700));
   const [result] = await Promise.all([
-    withTimeout(control).catch((error: unknown): PreActionControlResult => (
+    withTimeout(control, controlTimeoutMs).catch((error: unknown): PreActionControlResult => (
       isMarrowControlOutage(error)
         ? {
           runtime: null,
@@ -1057,54 +1122,76 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     lifecycle,
   ]);
   const claudePrompt = ownerApprovalPrompt(identity.harness, source);
+  if (result.outage) {
+    // Marrow cannot be reached. An action in a category the account owner
+    // protects stays held on every host; everything else keeps the outage policy.
+    const protectedNow = protectedAmong(holdContext, localApprovalCategories(classified));
+    if (protectedNow.length) {
+      emitHeldPlan(identity.harness, { kind: 'deny', agentText: HELD_UNREACHABLE_TEXT, userText: HELD_UNREACHABLE_TEXT, code: false });
+      return;
+    }
+  }
   const verdict = result.outage ? null : runtimeGateVerdict(result.runtime);
   const guidance = verdict?.kind === 'review' ? ordinaryApprovalGuidance(result.runtime) : null;
-  if (verdict && guidance) {
-    // An ordinary hold: ask in the host's own prompt where it counts and is
-    // shown, otherwise deny and wait for the approval. Never close the decision
-    // here; that would spend the receipt the operator or owner is about to approve.
-    const cursor = holdContext.host === 'cursor' ? cursorSessionEvidence(holdContext) : null;
-    const plan = planHeldAction({
-      guidance,
-      host: holdContext.host,
-      hookEvent: typeof source.hook_event_name === 'string' ? source.hook_event_name : 'PreToolUse',
-      // Only why it is held: the server's next-action text is written for agents
-      // and names endpoints, so it is not repeated in the operator's prompt.
-      reason: boundedText(result.runtime?.risk_gate?.reasons?.[0]?.message, 240),
-      claudePrompt,
-      cursorInteractive: cursor?.interactive ?? null,
-      typedReply: typedReplyAvailable(holdContext),
-    });
+  const arbitration = verdict?.kind === 'arbitration_review' ? arbitrationApprovalGuidance(result.runtime) : null;
+  if (verdict && (guidance || arbitration)) {
+    // A hold: ask in the host's own prompt where it counts and is shown,
+    // otherwise deny and wait for the approval. Never close the decision here;
+    // that would spend the receipt the operator or owner is about to approve.
+    const hookEvent = typeof source.hook_event_name === 'string' ? source.hook_event_name : 'PreToolUse';
+    let plan: HoldPlan;
+    if (guidance) {
+      rememberProtection(holdContext, guidance);
+      const cursor = holdContext.host === 'cursor' ? cursorSessionEvidence(holdContext) : null;
+      plan = planHeldAction({
+        guidance,
+        host: holdContext.host,
+        hookEvent,
+        // Only why it is held: the server's next-action text is written for API
+        // clients and names endpoints, so it is never relayed.
+        reason: boundedText(result.runtime?.risk_gate?.reasons?.[0]?.message, 240),
+        claudePrompt,
+        cursorInteractive: cursor?.interactive ?? null,
+        typedReply: typedReplyAvailable(holdContext),
+      });
+    } else {
+      plan = planArbitrationHold(arbitration!);
+    }
     let code: string | null = null;
     let effective: HoldPlan = plan;
+    let linkOutcome: OwnerLinkOutcome = { kind: 'none' };
+    let laterLink: HoldRecord | null = null;
     try {
       // An unreadable approval state leaves nothing to wait on: the next attempt starts over.
       const hold = plan.kind === 'deny' && plan.retryFresh ? null : rememberHold(holdContext, {
-        guidance,
+        guidance: guidance || arbitrationHoldGuidance(arbitration!),
         correlation,
         toolUseId,
         generationId,
         toolName: String(source.tool_name || 'tool'),
-        hookEvent: typeof source.hook_event_name === 'string' ? source.hook_event_name : 'PreToolUse',
+        hookEvent,
         mode: plan.kind === 'ask' ? 'ask' : 'wait',
         withCode: plan.kind === 'deny' && plan.code,
-        preActionEventId: `pretool-${correlation}`,
+        preActionEventId,
         action: { action: classified.action, target: classified.target, type: classified.type, surfaces: classified.surfaces },
         ...(plan.kind === 'deny' && plan.ownerLink ? { ownerLink: plan.ownerLink } : {}),
-        ...(plan.kind === 'deny' && plan.dialogLater ? { dialogLater: true } : {}),
+        ...(plan.kind === 'deny' && plan.dialogLater ? { dialogLater: true, laterPrompt: plan.laterPrompt } : {}),
       });
       code = hold?.code ?? null;
-      if (hold && effective.kind === 'deny' && effective.ownerLink === 'now') {
-        effective = withOwnerLink(effective, await requestOwnerLink(holdContext, hold));
+      if (hold && plan.kind === 'deny' && plan.ownerLink === 'now') {
+        linkOutcome = await requestOwnerLink(holdContext, hold);
+        if (linkOutcome.kind === 'deferred') laterLink = hold;
       }
     } catch {
       // Without local state the answer could not be linked to this hold, so it is not asked for.
       if (plan.kind === 'ask') {
-        const text = `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}), so it did not run. The approval request goes to the account owner. When it is approved, retry this exact action.`;
+        const text = `Marrow is holding this action for approval (gate receipt ${guidance?.gateReceiptId || arbitration?.gateReceiptId}), so it did not run. Tell the operator it is waiting for approval; local approval state is unavailable on this machine.`;
         effective = { kind: 'deny', agentText: text, userText: text, code: false };
       }
     }
-    emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, effective, code), effective.kind === 'deny' ? HOLD_OWNER_DENIAL : undefined);
+    effective = finalizeOwnerRequest(effective, linkOutcome);
+    emitHeldPlan(identity.harness, effective, code);
+    await afterAnswer(holdContext, { link: laterLink });
     return;
   }
   const emitted = emitDecision(result, identity.harness, claudePrompt);

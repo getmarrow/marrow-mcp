@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { captureCodexNativeUsage } from './codex-native-usage';
 import { marrowModelUsage, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from './habit-loop-copy';
@@ -90,7 +91,7 @@ export function deriveAction(event: HookEvent): string | null {
   return classifyTool(event).action;
 }
 
-export function deriveToolOutcome(event: HookEvent): { success: boolean; duration_ms?: number } {
+export function deriveToolOutcome(event: HookEvent): { success: boolean; unknown?: boolean; duration_ms?: number } {
   const response = event.tool_output ?? event.tool_response ?? event.tool_result;
   const responseRecord = asRecord(response);
   const errorValue = responseRecord?.error;
@@ -109,7 +110,9 @@ export function deriveToolOutcome(event: HookEvent): { success: boolean; duratio
   const duration = typeof event.duration_ms === 'number' && Number.isFinite(event.duration_ms)
     ? Math.max(0, Math.min(300_000, Math.round(event.duration_ms)))
     : undefined;
-  return { success: !failed, ...(duration === undefined ? {} : { duration_ms: duration }) };
+  // A host that does not report the result (Cursor's after-execution events): unknown, unless it says it failed.
+  const unknown = !failed && (event as Record<string, unknown>).outcome_unknown === true;
+  return { success: !failed, ...(unknown ? { unknown: true } : {}), ...(duration === undefined ? {} : { duration_ms: duration }) };
 }
 
 async function readStdin(): Promise<string> {
@@ -281,7 +284,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
         correlation,
         toolUseId: getString(event.tool_use_id) || null,
         generationId: getString(event.generation_id) || null,
-        success: outcome.success,
+        success: outcome.unknown ? null : outcome.success,
       }).catch(() => null);
       if (handoff) heldActionContext = handoff;
       // Resend due queued reports only when this call did no held-call work (hook time limits).
@@ -310,6 +313,9 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       ? success ? 'command_completed' : 'command_failed'
       : success ? 'tool_completed' : 'tool_failed';
     const lifecycleCorrelation = stableToolCorrelation({ ...event, session_id: sessionId });
+    // One record per attempt: the same action run again in a session is a new attempt.
+    const attemptSource = getString(event.tool_use_id) || getString(event.generation_id);
+    const attempt = createHash('sha256').update(attemptSource || randomUUID()).digest('hex').slice(0, 12);
     // Spool only: PostToolUse runs on every tool call, so it must add ~no latency.
     // cli.ts launches a detached background nudge that delivers the spooled event.
     // With the nudge disabled (MARROW_HOOK_BACKGROUND_NUDGE=false) keep bounded inline delivery.
@@ -319,8 +325,8 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       baseUrl,
       deferDelivery: deferred,
       event: {
-        event_id: `posttool-${lifecycleCorrelation}`,
-        event_type: eventType,
+        event_id: `posttool-${lifecycleCorrelation}-${attempt}`,
+        event_type: outcome.unknown ? 'tool_completed' : eventType,
         ...clientReportedHookLifecycleIdentity(identity),
         session_id: sessionId,
         workflow_id: stableSessionWorkflowId(sessionId, event.generation_id || event.tool_use_id || event.task_id),
@@ -329,8 +335,8 @@ export async function runHookCommand(input?: unknown): Promise<void> {
         target: classified.target,
         surfaces: classified.surfaces,
         risk_level: classified.risk,
-        success,
-        outcome_state: 'pending',
+        // An unknown result is recorded as unknown, never as a success.
+        ...(outcome.unknown ? { outcome_state: 'unknown' as const } : { success, outcome_state: 'pending' as const }),
       },
     });
     spooledLifecycleEvent = deferred && receipt.queued;

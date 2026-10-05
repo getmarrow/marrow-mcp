@@ -47,6 +47,12 @@ export type OrdinaryApprovalGuidance = {
     hostApprovalPath: string | null;
     hostApprovalAccepted: boolean;
     /**
+     * The service reports host (chat or terminal) approvals at all. An older
+     * service sends no host-approval fields: only the account owner can approve
+     * there, and the status read still shows that approval.
+     */
+    hostApprovalSupported: boolean;
+    /**
      * Why the server refuses a host approval for this hold: owner_decline_stands,
      * verified_approval_required or approval_state_unavailable (null when it counts).
      */
@@ -72,6 +78,23 @@ export type OrdinaryApprovalGuidance = {
     expiresAt: string | null;
 };
 export declare function ordinaryApprovalGuidance(runtime: MarrowAgentRuntimeResult | null | undefined): OrdinaryApprovalGuidance | null;
+/**
+ * Arbitration review_required where the server lets the account owner pick and
+ * approve a proposal through a one-tap link; the status read then hands over
+ * the owner_approval_receipt_id. Null for a service without that path.
+ */
+export type ArbitrationApprovalGuidance = {
+    gateReceiptId: string;
+    decisionId: string;
+    arbitrationReceiptId: string;
+    statusPath: string;
+    linkPath: string;
+    pollAfterMs: number;
+    proofRequired: boolean;
+    proofFields: string[];
+    expiresAt: string | null;
+};
+export declare function arbitrationApprovalGuidance(runtime: MarrowAgentRuntimeResult | null | undefined): ArbitrationApprovalGuidance | null;
 /** Validate the server's existing decision before auto skips decision creation. */
 export declare function runtimeDecisionMatchesAutoScope(runtime: MarrowAgentRuntimeResult, scope: {
     action: string;

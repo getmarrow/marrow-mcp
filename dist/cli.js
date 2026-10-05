@@ -10,6 +10,7 @@
  *   MARROW_API_KEY=mrw_abc123 npx @getmarrow/mcp
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+const node_crypto_1 = require("node:crypto");
 const model_usage_1 = require("./model-usage");
 const index_1 = require("./index");
 const control_state_1 = require("./control-state");
@@ -2372,7 +2373,10 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             deferDelivery: true,
                             event: {
                                 ...(delivered?.operation_id ? {
-                                    event_id: `auto_${delivered.committed ? 'closed' : 'pending'}_${delivered.operation_id}`,
+                                    // A closed operation has one record; each pending call is its own attempt.
+                                    event_id: delivered.committed
+                                        ? `auto_closed_${delivered.operation_id}`
+                                        : `auto_pending_${delivered.operation_id}_${(0, node_crypto_1.randomUUID)().replace(/-/g, '').slice(0, 12)}`,
                                 } : {}),
                                 event_type: delivered?.committed
                                     ? 'outcome_committed'
@@ -2406,17 +2410,21 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             receipt,
                             completion_state: delivered?.committed && delivered.closure === 'gate_denial'
                                 ? 'closed_as_denial'
-                                : delivered?.committed
-                                    ? 'closed_with_proof'
-                                    : delivered?.phase === 'review_required'
-                                        ? 'review_required_terminal'
-                                        : delivered?.phase === 'owner_approval_required'
-                                            ? 'pending_owner_approval'
-                                            : delivered?.phase === 'proof_required'
-                                                ? 'pending_required_proof'
-                                                : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
-                                                    ? 'pending_evidence'
-                                                    : 'delivery_pending',
+                                : delivered?.closure === 'already_closed_denial'
+                                    ? 'closed_earlier_as_denial'
+                                    : delivered?.closure === 'already_closed'
+                                        ? 'closed_earlier'
+                                        : delivered?.committed
+                                            ? 'closed_with_proof'
+                                            : delivered?.phase === 'review_required'
+                                                ? 'review_required_terminal'
+                                                : delivered?.phase === 'owner_approval_required'
+                                                    ? 'pending_owner_approval'
+                                                    : delivered?.phase === 'proof_required'
+                                                        ? 'pending_required_proof'
+                                                        : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
+                                                            ? 'pending_evidence'
+                                                            : 'delivery_pending',
                             decision_id: delivered?.decision_id || null,
                             operation_id: delivered?.operation_id || (typeof args.operation_id === 'string' ? args.operation_id : null),
                             phase: delivered?.phase || null,
@@ -2434,7 +2442,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                     : delivered?.exact_next_action
                                         ? delivered.exact_next_action
                                         : delivered?.phase === 'owner_approval_required'
-                                            ? 'Approve this exact arbitration decision in the authenticated Marrow dashboard, then call marrow_auto once with this same operation_id, arbitration_receipt_id, and the server-issued owner_approval_receipt_id. Do not retry proof or use chat approval text.'
+                                            ? 'The account owner must approve one proposal of this arbitration before it runs; Marrow then issues an owner_approval_receipt_id. Do not run any proposal or write an approval yourself. Once Marrow issues the receipt, call marrow_auto once with this same operation_id, arbitration_receipt_id and owner_approval_receipt_id.'
                                             : delivered?.phase === 'proof_required'
                                                 ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
                                                 : delivered?.resumable

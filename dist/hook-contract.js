@@ -340,8 +340,9 @@ function normalizeCursorExecutionEvent(source) {
     if (event.endsWith('ShellExecution')) {
         normalized.tool_name = 'Shell';
         normalized.tool_input = { command: typeof source.command === 'string' ? source.command.slice(0, 65_536) : '' };
+        // Cursor reports no exit status: the outcome is unknown, never assumed to be a success.
         if (event === 'afterShellExecution')
-            normalized.success = true;
+            normalized.outcome_unknown = true;
         return normalized;
     }
     const server = boundedWindsurfName(source.mcp_server_name) || 'unknown';
@@ -363,7 +364,7 @@ function normalizeCursorExecutionEvent(source) {
     }
     normalized.tool_input = input;
     if (event === 'afterMCPExecution')
-        normalized.success = true;
+        normalized.outcome_unknown = true;
     return normalized;
 }
 function normalizeHookEventPayload(value) {

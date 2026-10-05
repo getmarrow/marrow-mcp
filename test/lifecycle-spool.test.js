@@ -460,8 +460,10 @@ test('passive hooks use joinable action bindings without treating tool exits as 
 
   assert.match(hook, /stableToolCorrelation/);
   assert.match(preAction, /stableToolCorrelation/);
-  assert.match(hook, /event_id: `posttool-\$\{lifecycleCorrelation\}`/);
-  assert.match(preAction, /event_id: `pretool-\$\{correlation\}`/);
+  // One lifecycle record per attempt (a retried action is a new attempt; no payload conflicts).
+  assert.match(hook, /event_id: `posttool-\$\{lifecycleCorrelation\}-\$\{attempt\}`/);
+  assert.match(preAction, /const preActionEventId = `pretool-\$\{correlation\}-\$\{attempt\}`/);
+  assert.match(preAction, /event_id: preActionEventId/);
   assert.match(hook, /return classifyTool\(event\)\.action/);
   assert.match(hook, /outcome_state: 'pending'/);
   assert.doesNotMatch(hook, /marrowAuto\(/);
@@ -593,7 +595,7 @@ test('pre-action policy maps block to deny, a review without a host-approval con
     protectedRisk: true,
   });
   assert.equal(block.hookSpecificOutput.permissionDecision, 'deny');
-  assert.equal(block.hookSpecificOutput.permissionDecisionReason, 'Marrow blocked this action under the current policy. Reason: proof missing. Next: collect proof');
+  assert.equal(block.hookSpecificOutput.permissionDecisionReason, 'Marrow blocked this action under the current policy. Reason: proof missing', 'the runtime exact_next_action is never relayed');
 
   const interactive = { available: true, unavailableReason: '' };
   const review = preActionHookOutput({
@@ -611,7 +613,8 @@ test('pre-action policy maps block to deny, a review without a host-approval con
     protectedRisk: true,
   }, 'codex', interactive);
   assert.equal(codexReview.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(codexReview.hookSpecificOutput.permissionDecisionReason, /^Marrow requires owner review before this action.*Reason: ask owner$/);
+  assert.match(codexReview.hookSpecificOutput.permissionDecisionReason, /^Marrow requires owner review before this action/);
+  assert.doesNotMatch(codexReview.hookSpecificOutput.permissionDecisionReason, /ask owner/, 'the runtime exact_next_action is never relayed');
 
   const allow = preActionHookOutput({
     runtime: { risk_gate: { allow: true, decision: 'allow', enforced: true, reasons: [] }, before_you_act: 'reuse the prior lesson' },

@@ -23,7 +23,9 @@ export type PreToolUseEvent = {
 };
 type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
 /** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
-export declare const HOLD_OWNER_DENIAL = "Marrow is holding this action for approval; the approval request goes to the account owner. Retry it after approval.";
+export declare const HOLD_OWNER_DENIAL = "Marrow is holding this action for approval. Retry it after approval.";
+/** The only denial @getmarrow/install's Grok guard passes through (any other output blocks with a launch failure). */
+export declare const GROK_FIXED_DENIAL = "Marrow blocked this protected action.";
 /**
  * The hook's answer for an ordinary held action, per host. A Claude Code "ask"
  * reason is shown to the user only; a Cursor user_message is shown only in the
@@ -46,6 +48,7 @@ export declare function controlRejectionMessage(error: unknown, agentId?: string
 export type OwnerApprovalPrompt = {
     available: boolean;
     unavailableReason: string;
+    headless?: boolean;
 };
 /**
  * Whether a PreToolUse "ask" from this hook reaches a person who can approve.
@@ -111,6 +114,11 @@ export declare const DENIED_DECISION_CLOSE_TIMEOUT_MS = 2500;
  * an "ask": an approved prompt runs the action and its outcome is still open.
  */
 export declare function closeDeniedDecision(apiKey: string, baseUrl: string, held: HeldDecision, reason: string, sessionId: string, agentId?: string): Promise<boolean>;
+export declare function localApprovalCategories(action: {
+    action: string;
+    type: string;
+    surfaces: string[];
+}): string[];
 export declare function installPreActionHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;

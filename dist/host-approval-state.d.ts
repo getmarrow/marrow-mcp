@@ -50,12 +50,21 @@ export type HoldRecord = {
     code: string | null;
     /**
      * The owner's one-tap approval link: sent; to send (now, or again after a
-     * failed request); sent only when the operator asks by retrying the action
-     * (on_request); or not offered for this hold (null).
+     * retryable failure); sent only when the operator asks by retrying the action
+     * (on_request); could not be sent and will not be retried (failed); or not
+     * offered for this hold (null).
      */
-    owner_link?: 'sent' | 'unsent' | 'on_request' | null;
+    owner_link?: 'sent' | 'unsent' | 'on_request' | 'failed' | null;
+    /** Link requests made for this hold (the server allows a few per receipt). */
+    link_attempts?: number;
     /** Denied only because Claude Code showed no dialog; a retry where it can asks instead. */
     dialog_later?: boolean;
+    /** The host's own prompt text for a later ask (the notice and the reason). */
+    ask_text?: string | null;
+    /** An older Marrow service without chat or terminal approvals: only the owner approves. */
+    legacy_service?: boolean;
+    /** Arbitration review: the owner picks a proposal; the commit needs these receipts. */
+    arbitration_receipt_id?: string | null;
     action: {
         action: string;
         target: string;
@@ -95,6 +104,20 @@ export declare function boundSessionId(value: string): string;
 export declare function findHolds(scope: HoldScope, query: HoldQuery, home?: string): HoldRecord[];
 /** Applies a change to one hold under the lock; returns the updated hold, or null when it is gone. */
 export declare function updateHold(scope: HoldScope, id: string, change: (hold: HoldRecord) => HoldRecord | null, home?: string): HoldRecord | null;
+/**
+ * Compare-and-set under the lock: takes an open hold for one run. Returns the
+ * claimed hold, or null when another call already claimed or settled it, so
+ * one approval never lets two identical calls run.
+ */
+export declare function claimHold(scope: HoldScope, id: string, change: (hold: HoldRecord) => HoldRecord, home?: string): HoldRecord | null;
+/**
+ * Remembers which categories the account owner protects, as Marrow reported
+ * them for this key: added when a hold says they need the owner's verified
+ * approval, removed when a readable answer says they do not.
+ */
+export declare function noteProtectedCategories(scope: HoldScope, protectedNow: string[], notProtected: string[], home?: string): void;
+/** The categories (of those given) this key last saw the account owner protect. */
+export declare function protectedCategoriesAmong(scope: HoldScope, categories: string[], home?: string): string[];
 /** Marks the oldest matching open ask whose dialog was not yet seen; returns it, if any. */
 export declare function markDialogShown(scope: HoldScope, query: HoldQuery, at: string, home?: string): HoldRecord | null;
 export declare function setSessionMarker(kind: 'interactive' | 'prompt_hook', scope: HoldScope, hostSessionId: string, value: boolean, home?: string): void;

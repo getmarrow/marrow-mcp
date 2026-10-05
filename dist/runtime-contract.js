@@ -14,6 +14,7 @@ exports.approvalLinkPath = approvalLinkPath;
 exports.hostApprovalPath = hostApprovalPath;
 exports.boundedPollAfterMs = boundedPollAfterMs;
 exports.ordinaryApprovalGuidance = ordinaryApprovalGuidance;
+exports.arbitrationApprovalGuidance = arbitrationApprovalGuidance;
 exports.runtimeDecisionMatchesAutoScope = runtimeDecisionMatchesAutoScope;
 const RUNTIME_GATE_DECISIONS = new Set([
     'allow',
@@ -504,6 +505,7 @@ function ordinaryApprovalGuidance(runtime) {
         pollAfterMs: boundedPollAfterMs(approval.approval_status_poll_after_ms),
         hostApprovalPath: hostApprovalAccepted ? hostApprovalPath(gateReceiptId) : null,
         hostApprovalAccepted,
+        hostApprovalSupported: typeof approval.host_approval_accepted === 'boolean',
         hostApprovalRefusal: hostApprovalAccepted ? null : refusal,
         ownerDeclinedAt: typeof approval.owner_declined_at === 'string' && Number.isFinite(Date.parse(approval.owner_declined_at))
             ? new Date(Date.parse(approval.owner_declined_at)).toISOString()
@@ -522,6 +524,39 @@ function ordinaryApprovalGuidance(runtime) {
         approvalAuthority: hostApprovalAccepted ? 'host_operator_or_account_owner' : 'account_owner',
         proofRequired: runtime.proof_pack?.required === true || completion?.proof_required_before_complete === true,
         proofFields,
+        expiresAt,
+    };
+}
+function arbitrationApprovalGuidance(runtime) {
+    const arbitration = runtime?.arbitration;
+    if (!runtime || !arbitration)
+        return null;
+    const completion = runtime.completion_contract;
+    const approval = optionalRecord(completion?.owner_approval);
+    if (!approval || approval.mode !== 'arbitration_review_required')
+        return null;
+    if (arbitration.resolution !== 'review_required' && arbitration.owner_approval_required !== true)
+        return null;
+    const gateReceiptId = runtimeAuthorizationReceiptId(runtime);
+    const decisionId = safeRuntimeIdentifier(arbitration.decision_id);
+    const arbitrationReceiptId = safeRuntimeIdentifier(arbitration.receipt_id);
+    if (!gateReceiptId || !decisionId || !arbitrationReceiptId)
+        return null;
+    if (approval.approval_link_endpoint !== approvalLinkPath(gateReceiptId)
+        || approval.approval_status_endpoint !== ownerApprovalStatusPath(gateReceiptId))
+        return null;
+    const expiresAt = typeof runtime.gate_receipt?.expires_at === 'string' && Number.isFinite(Date.parse(runtime.gate_receipt.expires_at))
+        ? new Date(Date.parse(runtime.gate_receipt.expires_at)).toISOString()
+        : null;
+    return {
+        gateReceiptId,
+        decisionId,
+        arbitrationReceiptId,
+        statusPath: ownerApprovalStatusPath(gateReceiptId),
+        linkPath: approvalLinkPath(gateReceiptId),
+        pollAfterMs: boundedPollAfterMs(approval.approval_status_poll_after_ms),
+        proofRequired: runtime.proof_pack?.required === true || completion?.proof_required_before_complete === true,
+        proofFields: boundedStrings(runtime.proof_pack?.fields?.length ? runtime.proof_pack.fields : completion?.required_proof_fields, PROOF_FIELD, 24),
         expiresAt,
     };
 }

@@ -90,7 +90,8 @@ test('Cursor native pre-action denies review and unavailable proof, never asks',
       risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] },
     },
   });
-  const reviewMessage = 'Marrow requires owner review before this action, and no owner approval prompt is available (this agent host cannot prompt the owner), so it was denied. Ask the owner to approve or run it. Reason: owner approval required';
+  // The runtime's exact_next_action is never relayed.
+  const reviewMessage = 'Marrow requires owner review before this action, and no owner approval prompt is available (this agent host cannot prompt the owner), so it was denied. Tell the operator it is waiting for the account owner\'s approval.';
   assert.deepEqual(review, {
     permission: 'deny',
     user_message: reviewMessage,

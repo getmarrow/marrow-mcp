@@ -1812,7 +1812,7 @@ test('marrow_auto never closes or emits outcome_committed when HTTP 200 says com
     assert.equal(payload.completion_state, 'delivery_pending');
     assert.equal(payload.phase, 'commit_pending');
     assert.equal(payload.resumable, true);
-    assert.equal(payload.receipt.event_id, `auto_pending_${payload.operation_id}`);
+    assert.match(payload.receipt.event_id, new RegExp(`^auto_pending_${payload.operation_id}_[a-f0-9]{12}$`), 'each pending call is its own lifecycle record');
     assert.equal(payload.receipt.queued, true, 'the lifecycle receipt is queued separately from governed commit');
     assert.doesNotMatch(text, /closed_with_proof|outcome_committed/);
   } finally {

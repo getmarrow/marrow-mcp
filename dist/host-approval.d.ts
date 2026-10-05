@@ -1,6 +1,7 @@
 import { type NativeHookHarness } from './hook-contract';
-import type { OrdinaryApprovalGuidance } from './runtime-contract';
+import type { ArbitrationApprovalGuidance, OrdinaryApprovalGuidance } from './runtime-contract';
 import { type HoldRecord } from './host-approval-state';
+import type { MarrowOwnerApprovalStatus } from './types';
 /**
  * Chat and terminal approvals: the operator answers a held action in the
  * host's own permission prompt, and the host's Marrow hook records that answer
@@ -21,6 +22,24 @@ export declare function approvalHostFor(harness: NativeHookHarness, env?: NodeJS
 export declare const CURSOR_ASK_EVENTS: Set<string>;
 export declare const HOST_APPROVAL_REQUEST_TIMEOUT_MS = 4000;
 /**
+ * One total time budget for a pre-tool hook, counted from the start of the
+ * hook process. Codex and Cursor stop a hook after 5 seconds (as
+ * @getmarrow/install configures them) and Codex then lets the call run, so
+ * their budget leaves room for npx start-up; slow work that does not decide
+ * the answer runs after the answer is written, inside the same budget.
+ */
+export declare function preToolBudgetMs(host: ApprovalHost): number;
+/** The hook process's deadline for its pre-tool answer and any follow-up work. */
+export declare function preToolDeadline(host: ApprovalHost): number;
+/** Time left before the hook must have written its answer (Infinity without a deadline). */
+export declare function remainingMs(ctx: {
+    deadlineAt?: number;
+}): number;
+/** A step's timeout inside the budget, or null when there is no time for it before the answer. */
+export declare function stepTimeoutMs(ctx: {
+    deadlineAt?: number;
+}, max: number, reserve?: number): number | null;
+/**
  * Work a post-tool hook does for a held call. Codex and Cursor run these hooks
  * with a 5-second timeout (as @getmarrow/install configures them); a hook cut
  * short keeps its queued report, which a later hook resends.
@@ -37,10 +56,37 @@ export type HoldContext = {
     /** The host's own session or conversation id, as reported to the server. */
     hostSessionId: string;
     home?: string;
+    /** Pre-tool hooks: when the answer must be written (see preToolBudgetMs). */
+    deadlineAt?: number;
 };
 export declare function hostSessionIdFor(candidates: unknown[], fallback: string): string;
-/** Where the approval request goes when no operator can answer here. Never a login step. */
-export declare const OWNER_APPROVAL_REQUEST_TEXT = "The approval request goes to the account owner.";
+/**
+ * Stands in a plan's text for what happened to the owner's one-tap link; it is
+ * always replaced (finalizeOwnerRequest) before anyone sees the text, so no
+ * text says a request was sent when none was.
+ */
+export declare const OWNER_APPROVAL_REQUEST_TEXT = "[owner-request]";
+/** An older Marrow service: no host approvals and no links; only the account owner can approve. */
+export declare const LEGACY_SERVICE_TEXT = "This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it.";
+/** Marrow could not be read while this action waits for an approval: it stays held. */
+export declare const HELD_UNREACHABLE_TEXT = "Marrow could not confirm the owner's approval; this action stays held. Retry when Marrow is reachable.";
+export type OwnerLinkOutcome = {
+    kind: 'sent';
+    channel: string;
+} | {
+    kind: 'already_sent';
+} | {
+    kind: 'deferred';
+} | {
+    kind: 'retryable';
+} | {
+    kind: 'failed';
+    code: string | null;
+} | {
+    kind: 'none';
+};
+/** The sentence for what happened to the owner's link. Never claims a send that did not happen. */
+export declare function ownerRequestText(outcome: OwnerLinkOutcome): string;
 export type HoldPlan = {
     kind: 'ask';
     promptText: string;
@@ -55,13 +101,15 @@ export type HoldPlan = {
     dialogLater?: boolean;
     /** Not remembered as waiting: the next attempt starts over (approval state unreadable). */
     retryFresh?: boolean;
+    /** The prompt to show if a retry can ask in the host's own dialog (keeps the notice and reason). */
+    laterPrompt?: string;
 };
 /** Shown when the owner's link is sent only if the operator asks for it. */
 export declare const OWNER_LINK_ON_REQUEST_TEXT = "To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link.";
 /** The sentence that replaces OWNER_APPROVAL_REQUEST_TEXT once Marrow sent the owner a one-tap link. */
 export declare function ownerLinkSentText(channel: string): string;
-/** Puts the link outcome into a plan that asked the owner. */
-export declare function withOwnerLink(plan: HoldPlan, channel: string | null): HoldPlan;
+/** Puts what happened to the owner's link into the plan's text (always, before output). */
+export declare function finalizeOwnerRequest(plan: HoldPlan, outcome: OwnerLinkOutcome): HoldPlan;
 /** Hosts whose typed reply is a person-only marker, and that marker (backend OPERATOR_MARKER_BY_HOST). */
 export declare const TYPED_REPLY_MARKER: Readonly<Record<string, string>>;
 /**
@@ -82,16 +130,29 @@ export declare function planHeldAction(input: {
     claudePrompt?: {
         available: boolean;
         unavailableReason: string;
+        headless?: boolean;
     };
     /** Cursor: true only when sessionStart reported a local, non-background session. */
     cursorInteractive?: boolean | null;
     /** A local interactive session whose typed-reply hook runs (see typedReplyAvailable). */
     typedReply?: boolean;
 }): HoldPlan;
+/**
+ * Arbitration review_required with the server's one-tap path: the owner picks
+ * and approves one proposal. The hook denies, asks Marrow to send the owner a
+ * link, and the retried action reads the status. Nobody is told to log in.
+ */
+export declare function planArbitrationHold(guidance: ArbitrationApprovalGuidance): HoldPlan;
 /** User-only text with the typed-reply code (Cursor user_message, Codex and Gemini systemMessage). */
 export declare function typedReplyUserText(userText: string, code: string): string;
+/** What a hold record needs from the runtime's guidance (ordinary or arbitration). */
+export type HoldGuidance = Pick<OrdinaryApprovalGuidance, 'gateReceiptId' | 'decisionId' | 'proofRequired' | 'proofFields' | 'expiresAt' | 'approvalLinkPath'> & {
+    hostApprovalSupported?: boolean;
+    arbitrationReceiptId?: string | null;
+};
+export declare function arbitrationHoldGuidance(guidance: ArbitrationApprovalGuidance): HoldGuidance;
 export type RecordHoldInput = {
-    guidance: OrdinaryApprovalGuidance;
+    guidance: HoldGuidance;
     correlation: string;
     toolUseId: string | null;
     generationId: string | null;
@@ -109,16 +170,30 @@ export type RecordHoldInput = {
     /** From the plan: whether and when the owner's one-tap link is requested. */
     ownerLink?: 'now' | 'on_request';
     dialogLater?: boolean;
+    laterPrompt?: string;
 };
 export declare function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldRecord;
 /**
- * Asks Marrow to send the account owner a one-tap approval link for this hold
- * (once; the server limits repeats). Returns the channel when it was sent.
- * The link itself never reaches this client or the agent.
+ * Remembers the categories the account owner protects, from a hold's guidance,
+ * so an owner-protected action stays held while Marrow cannot be reached.
  */
-export declare function requestOwnerLink(ctx: HoldContext, hold: HoldRecord): Promise<string | null>;
+export declare function rememberProtection(ctx: HoldContext, guidance: OrdinaryApprovalGuidance): void;
+/** Of these categories, the ones this key last saw the account owner protect. */
+export declare function protectedAmong(ctx: HoldContext, categories: string[]): string[];
+/**
+ * Asks Marrow to send the account owner a one-tap approval link for this hold.
+ * A retryable failure (network, rate limit, undelivered) is tried again on a
+ * later attempt, up to the server's per-receipt limit; a final refusal is not.
+ * Returns what happened. The link itself never reaches this client or the agent.
+ */
+export declare function requestOwnerLink(ctx: HoldContext, hold: HoldRecord, reserve?: number): Promise<OwnerLinkOutcome>;
 /** PermissionRequest (pass-through): the host is about to show its own dialog for an asked call. */
 export declare function noteDialogShown(ctx: HoldContext, correlation: string): HoldRecord | null;
+/**
+ * Who approved, as the status says it. "The account owner" only for the
+ * owner's verified approval; anything else is named for what it is.
+ */
+export declare function approvalSentence(status: MarrowOwnerApprovalStatus): string;
 export type WaitingResolution = {
     kind: 'allow';
     hold: HoldRecord;
@@ -132,12 +207,14 @@ export type WaitingResolution = {
     hold: HoldRecord;
     agentText: string;
     userText: string;
+    deferredLink?: boolean;
 };
 /**
  * The same action, retried after a hold that waited (denied while it waited
  * for an approval). Reads the hold's status first: approved allows it once on
- * the same gate receipt; pending denies again without a new hold; declined,
- * expired or used fall back to the normal flow (null).
+ * the same gate receipt (compare-and-set: a second identical call is denied);
+ * pending denies again without a new hold; a status Marrow cannot give keeps
+ * it held; declined, expired or used fall back to the normal flow (null).
  */
 export declare function resumeWaitingHold(ctx: HoldContext, input: {
     correlation: string;
@@ -182,17 +259,23 @@ export declare function flushHoldOutbox(ctx: HoldContext, limit?: number, budget
 export declare function holdSessionForReceipt(ctx: HoldContext, gateReceiptId: string): string | null;
 /** marrow_commit: send a queued host approval for this receipt before the agent's own commit. */
 export declare function deliverQueuedForReceipt(ctx: HoldContext, gateReceiptId: string): Promise<void>;
+/** How long a post-tool hook waits for Claude Code's async PermissionRequest marker. */
+export declare const LATE_MARKER_WAIT_MS = 1500;
 /**
  * After the tool ran (PostToolUse/PostToolUseFailure, Cursor after*Execution):
  * the operator allowed an asked call, or a waited hold was approved and retried.
  * Reports the approval (asked calls only), then commits the real outcome when
- * no proof is required; otherwise tells the agent how to close it with proof.
+ * no proof is required and the host reported it; otherwise tells the agent how
+ * to close it.
  */
 export declare function settleAfterTool(ctx: HoldContext, input: {
     correlation: string;
     toolUseId: string | null;
     generationId: string | null;
-    success: boolean;
+    /** null when the host does not say whether the call succeeded (Cursor's after-execution events). */
+    success: boolean | null;
+    /** Test seam: how long to wait for a late dialog marker. */
+    markerWaitMs?: number;
 }): Promise<string | null>;
 export declare const CLAUDE_CODE_USER_REJECTED = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
 export declare const CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\n";

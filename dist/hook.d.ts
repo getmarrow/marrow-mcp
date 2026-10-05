@@ -29,6 +29,7 @@ export declare function shouldSkipAutoLog(event: HookEvent): boolean;
 export declare function deriveAction(event: HookEvent): string | null;
 export declare function deriveToolOutcome(event: HookEvent): {
     success: boolean;
+    unknown?: boolean;
     duration_ms?: number;
 };
 export declare function installPostToolUseHook(startDir?: string): HookInstallResult;

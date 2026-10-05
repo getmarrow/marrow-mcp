@@ -53,25 +53,56 @@ globalThis.fetch = async (url, init = {}) => {
   const json = (value, status = 200, extra = {}) => new Response(JSON.stringify(value), {
     status, headers: { 'content-type': 'application/json', ...extra },
   });
-  if (path === '/v1/agent/integrations/events') return json({ data: { accepted: true } });
-  if (path === '/v1/agent/runtime') return json({ data: config.runtime });
+  // A slow Marrow, cancelled like a real request when the caller aborts.
+  const sleep = (ms) => new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    init.signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      const error = new Error('This operation was aborted');
+      error.name = 'AbortError';
+      reject(error);
+    }, { once: true });
+  });
+  // Marrow unreachable for one route family: a network failure, as fetch reports it.
+  const unreachable = () => { const error = new TypeError('fetch failed'); error.cause = { code: 'ECONNREFUSED' }; throw error; };
+  if (path === '/v1/agent/integrations/events') {
+    const events = load(join(directory, 'events.json'), []);
+    if (body?.event_id) {
+      const previous = events.find((event) => event.event_id === body.event_id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(body)) {
+        return json({ error: 'Lifecycle event conflicts with its original durable evidence', details: { code: 'lifecycle_event_payload_conflict' } }, 409);
+      }
+      if (!previous) writeFileSync(join(directory, 'events.json'), JSON.stringify([...events, body]));
+    }
+    return json({ data: { accepted: true } });
+  }
+  if (path === '/v1/agent/runtime') {
+    if (config.runtimeDelayMs) await sleep(config.runtimeDelayMs);
+    if (config.runtimeUnreachable) unreachable();
+    return json({ data: config.runtime });
+  }
   if (path === '/v1/agent/think') return json({ data: { decision_id: 'decision-think' } });
   if (path === '/v1/agent/commit') return json({ data: config.commit || { committed: true, decision_id: body.decision_id } });
   const status = path.match(/^\/v1\/agent\/gate-receipts\/([^/]+)\/owner-approval$/);
   if (status && method === 'GET') {
+    if (config.statusDelayMs) await sleep(config.statusDelayMs);
+    if (config.statusUnreachable) unreachable();
     const state = (config.status || {})[status[1]] || 'pending';
     if (state === 'not_found') return json({ error: 'Gate receipt not found.', details: { code: 'MARROW_GATE_RECEIPT_NOT_FOUND' } }, 404);
     return json({ data: {
       gate_receipt_id: status[1], decision_id: 'decision-review', state, gate_decision: 'owner_approval_required',
-      owner_approval_receipt_id: state === 'approved' ? 'oar-fixture' : null, decided_at: null,
-      approval_source: ['approved', 'declined'].includes(state) ? (config.statusSource || 'dashboard') : null,
-      approval_trust: null, approval_answered_by: ['approved', 'declined'].includes(state) ? 'account_owner' : null,
+      owner_approval_receipt_id: state === 'approved' || (state === 'used' && config.usedAfterApproval) ? 'oar-fixture' : null, decided_at: null,
+      approval_source: ['approved', 'declined', 'used'].includes(state) ? (config.statusSource || 'dashboard') : null,
+      approval_trust: ['approved', 'declined', 'used'].includes(state) ? ((config.statusSource || 'dashboard') === 'host_prompt' ? 'client_attested' : 'verified') : null,
+      approval_answered_by: ['approved', 'declined', 'used'].includes(state)
+        ? ((config.statusSource || 'dashboard') === 'host_prompt' ? (config.statusAnsweredBy || 'host_operator') : 'account_owner') : null,
       expires_at: '2030-01-01T00:30:00.000Z', terminal: state !== 'pending', retryable: state === 'pending',
       poll_after_ms: state === 'pending' ? 5000 : null, exact_next_action: `fixture ${state}`,
     } });
   }
   const link = path.match(/^\/v1\/agent\/gate-receipts\/([^/]+)\/approval-link$/);
   if (link && method === 'POST') {
+    if (config.linkDelayMs) await sleep(config.linkDelayMs);
     const scripted = Array.isArray(config.approvalLink) && config.approvalLink.length ? next('approvalLink', config.approvalLink) : null;
     if (scripted && scripted.status !== 200) return json(scripted.body, scripted.status, scripted.headers || {});
     return json({ data: {

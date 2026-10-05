@@ -987,7 +987,7 @@ test('the installer generic entrypoint asks only when Claude Code spawned the ho
     const denied = JSON.parse(unknownHost.output).hookSpecificOutput;
     assert.equal(denied.permissionDecision, 'deny');
     assert.match(denied.permissionDecisionReason, /^Marrow is holding this action for approval \(gate receipt gate-review\), so it did not run\./);
-    assert.match(denied.permissionDecisionReason, /the host cannot ask the operator in this session\. The approval request goes to the account owner\./);
+    assert.match(denied.permissionDecisionReason, /The host cannot ask the operator in this session\. Tell the operator this action is waiting for the account owner's approval\./);
     assert.doesNotMatch(denied.permissionDecisionReason, /dashboard/i);
     assert.deepEqual(unknownHost.commits, [], 'a waiting hold is never closed by the hook');
   } finally {
@@ -1035,7 +1035,8 @@ test('block and arbitration review never ask, even in an interactive session', a
     const { output } = await runHookAgainst(noControlAfterGate(() => reviewRuntime(arbitration)), interactive, 'claude-pre-action-hook');
     const decision = JSON.parse(output).hookSpecificOutput;
     assert.equal(decision.permissionDecision, 'deny', JSON.stringify(arbitration));
-    assert.match(decision.permissionDecisionReason, /^Marrow arbitration requires owner approval in the authenticated Marrow dashboard/);
+    assert.match(decision.permissionDecisionReason, /^Marrow is holding this action for arbitration review: the account owner picks and approves one proposal before it runs\. Do not run it yet\./);
+    assert.doesNotMatch(decision.permissionDecisionReason, /dashboard|log ?in/i);
   }
 });
 

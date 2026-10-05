@@ -5,6 +5,9 @@ exports.recordHold = recordHold;
 exports.boundSessionId = boundSessionId;
 exports.findHolds = findHolds;
 exports.updateHold = updateHold;
+exports.claimHold = claimHold;
+exports.noteProtectedCategories = noteProtectedCategories;
+exports.protectedCategoriesAmong = protectedCategoriesAmong;
 exports.markDialogShown = markDialogShown;
 exports.setSessionMarker = setSessionMarker;
 exports.sessionMarker = sessionMarker;
@@ -32,6 +35,10 @@ const MAX_MARKERS = 128;
 /** A hold outlives its 30-minute gate receipt only long enough to settle a late report. */
 exports.HOLD_RECORD_TTL_MS = 2 * 60 * 60 * 1000;
 const MARKER_TTL_MS = 24 * 60 * 60 * 1000;
+/** How long an owner-protected category seen from Marrow is remembered for outages. */
+const PROTECTED_CATEGORY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_PROTECTED = 64;
+const CATEGORY = /^[a-z][a-z0-9_]{0,63}$/;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 exports.APPROVAL_CODE = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -118,7 +125,7 @@ function withLock(home, callback) {
     }
 }
 function emptyState() {
-    return { version: STATE_VERSION, secret: (0, node_crypto_1.randomBytes)(32).toString('base64url'), holds: {}, interactive: {}, prompt_hook: {} };
+    return { version: STATE_VERSION, secret: (0, node_crypto_1.randomBytes)(32).toString('base64url'), holds: {}, interactive: {}, prompt_hook: {}, protected_categories: {} };
 }
 function isIso(value) {
     return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value));
@@ -165,8 +172,13 @@ function validHold(value) {
         && Array.isArray(hold.proof_fields) && hold.proof_fields.length <= 24 && hold.proof_fields.every((field) => typeof field === 'string' && field.length <= 64)
         && (hold.expires_at === null || isIso(hold.expires_at))
         && (hold.code === null || (typeof hold.code === 'string' && exports.APPROVAL_CODE.test(hold.code)))
-        && (hold.owner_link === undefined || hold.owner_link === null || hold.owner_link === 'sent' || hold.owner_link === 'unsent' || hold.owner_link === 'on_request')
+        && (hold.owner_link === undefined || hold.owner_link === null || ['sent', 'unsent', 'on_request', 'failed'].includes(hold.owner_link))
+        && (hold.link_attempts === undefined || (Number.isSafeInteger(hold.link_attempts) && hold.link_attempts >= 0 && hold.link_attempts <= 100))
         && (hold.dialog_later === undefined || typeof hold.dialog_later === 'boolean')
+        && (hold.ask_text === undefined || hold.ask_text === null || (typeof hold.ask_text === 'string' && hold.ask_text.length <= 600))
+        && (hold.legacy_service === undefined || typeof hold.legacy_service === 'boolean')
+        && (hold.arbitration_receipt_id === undefined || hold.arbitration_receipt_id === null
+            || (typeof hold.arbitration_receipt_id === 'string' && IDENTIFIER.test(hold.arbitration_receipt_id)))
         && Boolean(hold.action) && typeof hold.action.action === 'string' && hold.action.action.length <= 512
         && typeof hold.action.target === 'string' && hold.action.target.length <= 256
         && typeof hold.action.type === 'string' && hold.action.type.length <= 64
@@ -194,6 +206,10 @@ function validateState(value) {
         || !state.holds || typeof state.holds !== 'object' || Array.isArray(state.holds)
         || !validMarkers(state.interactive) || !validMarkers(state.prompt_hook))
         return unsafe();
+    if (state.protected_categories === undefined)
+        state.protected_categories = {};
+    if (!validMarkers(state.protected_categories))
+        state.protected_categories = {};
     const holds = Object.entries(state.holds);
     if (holds.length > MAX_HOLDS)
         return unsafe();
@@ -248,6 +264,13 @@ function prune(state, now) {
         for (const [key] of ordered.slice(MAX_MARKERS))
             delete markers[key];
     }
+    const protectedCategories = state.protected_categories || {};
+    for (const [key, marker] of Object.entries(protectedCategories))
+        if (now - marker.at > PROTECTED_CATEGORY_TTL_MS)
+            delete protectedCategories[key];
+    for (const [key] of Object.entries(protectedCategories).sort((a, b) => b[1].at - a[1].at).slice(MAX_PROTECTED))
+        delete protectedCategories[key];
+    state.protected_categories = protectedCategories;
 }
 function writeState(state, target, directory) {
     prune(state, Date.now());
@@ -374,6 +397,69 @@ function updateHold(scope, id, change, home) {
         writeState(state, target, directory);
         return next === null ? null : state.holds[id];
     });
+}
+/**
+ * Compare-and-set under the lock: takes an open hold for one run. Returns the
+ * claimed hold, or null when another call already claimed or settled it, so
+ * one approval never lets two identical calls run.
+ */
+function claimHold(scope, id, change, home) {
+    return withLock(home, () => {
+        const { state, target, directory } = readState(home);
+        const ref = keyRef(state, scope);
+        const current = state.holds[id];
+        if (!current || current.key_ref !== ref || current.state !== 'open')
+            return null;
+        const next = change(structuredClone(current));
+        state.holds[id] = { ...next, id: current.id, key_ref: current.key_ref, updated_at: Date.now() };
+        writeState(state, target, directory);
+        return state.holds[id];
+    });
+}
+/**
+ * Remembers which categories the account owner protects, as Marrow reported
+ * them for this key: added when a hold says they need the owner's verified
+ * approval, removed when a readable answer says they do not.
+ */
+function noteProtectedCategories(scope, protectedNow, notProtected, home) {
+    const add = protectedNow.filter((category) => CATEGORY.test(category)).slice(0, 16);
+    const remove = notProtected.filter((category) => CATEGORY.test(category) && !add.includes(category)).slice(0, 16);
+    if (add.length === 0 && remove.length === 0)
+        return;
+    withLock(home, () => {
+        const { state, target, directory } = readState(home);
+        const ref = keyRef(state, scope);
+        const map = state.protected_categories || {};
+        let changed = false;
+        for (const category of add) {
+            map[keyed(state.secret, ['protected', ref, category])] = { at: Date.now(), value: true };
+            changed = true;
+        }
+        for (const category of remove) {
+            const key = keyed(state.secret, ['protected', ref, category]);
+            if (map[key]) {
+                delete map[key];
+                changed = true;
+            }
+        }
+        state.protected_categories = map;
+        if (changed)
+            writeState(state, target, directory);
+    });
+}
+/** The categories (of those given) this key last saw the account owner protect. */
+function protectedCategoriesAmong(scope, categories, home) {
+    try {
+        const state = peekState(home);
+        const ref = keyRef(state, scope);
+        const map = state.protected_categories || {};
+        return categories.filter((category) => CATEGORY.test(category)
+            && map[keyed(state.secret, ['protected', ref, category])]?.value === true
+            && Date.now() - map[keyed(state.secret, ['protected', ref, category])].at <= PROTECTED_CATEGORY_TTL_MS);
+    }
+    catch {
+        return [];
+    }
 }
 /** Marks the oldest matching open ask whose dialog was not yet seen; returns it, if any. */
 function markDialogShown(scope, query, at, home) {

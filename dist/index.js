@@ -15,6 +15,7 @@ exports.marrowThink = marrowThink;
 exports.withoutOwnerApprovalClaim = withoutOwnerApprovalClaim;
 exports.marrowCommit = marrowCommit;
 exports.marrowModelUsage = marrowModelUsage;
+exports.approvalStatement = approvalStatement;
 exports.ordinaryHoldWaitText = ordinaryHoldWaitText;
 exports.marrowAuto = marrowAuto;
 exports.marrowAgentPatterns = marrowAgentPatterns;
@@ -1195,6 +1196,14 @@ async function waitForAutoContinuation(pending, startedAt, responseBudgetMs, aut
     }
     return responseBudgetMs - (Date.now() - startedAt) > AUTO_RESPONSE_DEADLINE_MARGIN_MS;
 }
+/** Link refusals that another request cannot change. */
+const FINAL_OWNER_LINK_CODES = new Set([
+    'MARROW_APPROVAL_CHANNEL_UNAVAILABLE', 'MARROW_APPROVAL_LINK_LIMITED', 'MARROW_APPROVAL_LINK_NOT_HELD',
+    'MARROW_APPROVAL_LINK_SCOPE_MISMATCH', 'MARROW_APPROVAL_LINK_INVALID', 'MARROW_APPROVAL_LINK_DECISION_REQUIRED',
+    'MARROW_PRE_ACTION_GATE_USED', 'MARROW_PRE_ACTION_GATE_EXPIRED', 'MARROW_OWNER_APPROVAL_ALREADY_DECIDED',
+    'MARROW_GATE_RECEIPT_NOT_FOUND',
+]);
+const MAX_OWNER_LINK_ATTEMPTS = 3;
 function autoPartial(input) {
     const resumable = input.resumable !== false;
     return {
@@ -1232,24 +1241,49 @@ function autoApprovalState(guidance, status, state) {
         expires_at: status?.expires_at ?? guidance.expiresAt,
     };
 }
-function approvalDecidedBy(status) {
+/**
+ * What the status says about an approval of this receipt. "The account owner"
+ * only for the owner's verified approval; anything else is named for what it is.
+ */
+function approvalStatement(status, gateReceiptId) {
     if (status.approval_source === 'host_prompt') {
-        return status.approval_answered_by === 'host_operator' ? 'The operator in the host prompt (client-attested)'
-            : status.approval_answered_by === 'owner_chat_preapproval' ? 'The account owner\'s chat pre-approval (client-attested)'
-                : 'An allow rule in the host (client-attested)';
+        return status.approval_answered_by === 'host_operator' ? `The operator approved gate receipt ${gateReceiptId} in the host prompt (client-attested).`
+            : status.approval_answered_by === 'owner_chat_preapproval' ? `The account owner's chat pre-approval covers gate receipt ${gateReceiptId} (client-attested).`
+                : `An allow rule in the host approved gate receipt ${gateReceiptId} (client-attested).`;
     }
-    return 'The account owner';
+    if (status.approval_trust === 'verified'
+        && (status.approval_answered_by === 'account_owner' || status.approval_source === 'dashboard' || status.approval_source === 'one_tap')) {
+        return `The account owner approved gate receipt ${gateReceiptId}.`;
+    }
+    return `Marrow recorded an approval for gate receipt ${gateReceiptId}.`;
+}
+/** What happened to the owner's one-tap link in this operation. Never claims a send that did not happen. */
+function ownerLinkSentence(guidance, link) {
+    if (!guidance.hostApprovalSupported) {
+        return 'This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it.';
+    }
+    if (link?.sent)
+        return `An approval link was sent to the account owner${link.channel ? ` (${link.channel})` : ''}.`;
+    if (link?.final) {
+        return `Marrow could not send the account owner an approval link${link.finalCode ? ` (${link.finalCode})` : ''}; tell the operator this action is waiting for the account owner's approval.`;
+    }
+    if (link && link.attempts > 0) {
+        return 'Marrow could not send the account owner an approval link yet; calling marrow_auto again with this same operation_id tries again.';
+    }
+    return 'Tell the operator this action is waiting for approval.';
 }
 /**
  * The text an agent follows while auto waits on a held action. It never asks
  * the agent to write an approval: only the account owner (one-tap link) or
  * the operator's host prompt can approve, and the server records it.
  */
-function ordinaryHoldWaitText(guidance, linkChannel = null) {
-    if (guidance.hostApprovalRefusal === 'owner_decline_stands' && !linkChannel) {
+function ordinaryHoldWaitText(guidance, link) {
+    if (guidance.hostApprovalRefusal === 'owner_decline_stands' && !link?.sent) {
         // The owner said no: the owner is asked again only when the operator asks.
         const ask = guidance.approvalLinkPath
-            ? ' If the operator asks you to ask the owner again, call marrow_auto again with this same operation_id and request_owner_link: true; Marrow then sends the owner a one-tap approval link.'
+            ? link && link.attempts > 0
+                ? ` ${ownerLinkSentence(guidance, link)}`
+                : ' If the operator asks you to ask the owner again, call marrow_auto again with this same operation_id and request_owner_link: true; Marrow then sends the owner a one-tap approval link.'
             : '';
         return `Marrow is holding this action (gate receipt ${guidance.gateReceiptId}). Do not run it. The account owner declined this action${guidance.ownerDeclinedAt ? ` at ${guidance.ownerDeclinedAt}` : ' earlier'}, and only the owner can reverse that.${ask} Never write or claim an approval yourself.`;
     }
@@ -1258,8 +1292,34 @@ function ordinaryHoldWaitText(guidance, linkChannel = null) {
         : guidance.hostApprovalRefusal === 'owner_decline_stands'
             ? ` The account owner declined this action${guidance.ownerDeclinedAt ? ` at ${guidance.ownerDeclinedAt}` : ' earlier'}.`
             : '';
-    const request = linkChannel ? `An approval link was sent to the account owner (${linkChannel}).` : 'The approval request goes to the account owner.';
-    return `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}). Do not run it yet.${why} ${request} Call marrow_auto again with this same operation_id after retry_after_ms; Marrow resumes on the same gate receipt once it is approved. Never write or claim an approval yourself.`;
+    return `Marrow is holding this action for approval (gate receipt ${guidance.gateReceiptId}). Do not run it yet.${why} ${ownerLinkSentence(guidance, link)} Call marrow_auto again with this same operation_id after retry_after_ms; Marrow resumes on the same gate receipt once it is approved. Never write or claim an approval yourself.`;
+}
+/**
+ * Asks Marrow to send the account owner a one-tap link once per operation; a
+ * retryable failure is tried again on a later call, within the server's limit.
+ */
+async function requestAutoOwnerLink(input) {
+    const previous = input.binding.ownerLink;
+    if (previous?.sent || previous?.final || (previous?.attempts ?? 0) >= MAX_OWNER_LINK_ATTEMPTS)
+        return;
+    const attempts = (previous?.attempts ?? 0) + 1;
+    const timeout = createTimeoutSignal(input.timeoutMs);
+    try {
+        const link = await marrowRequestApprovalLink(input.apiKey, input.baseUrl, input.gateReceiptId, input.decisionId, input.sessionId, input.agentId, timeout.signal);
+        if (link.ok) {
+            input.binding.ownerLink = { sent: true, channel: link.link.channel, attempts, finalCode: null, final: false };
+        }
+        else {
+            const final = (!link.retryable && Boolean(link.code && FINAL_OWNER_LINK_CODES.has(link.code))) || attempts >= MAX_OWNER_LINK_ATTEMPTS;
+            input.binding.ownerLink = { sent: false, channel: null, attempts, finalCode: link.code, final };
+        }
+    }
+    catch {
+        input.binding.ownerLink = { sent: false, channel: null, attempts, finalCode: null, final: attempts >= MAX_OWNER_LINK_ATTEMPTS };
+    }
+    finally {
+        timeout.cancel();
+    }
 }
 async function readOrdinaryApprovalForAuto(input) {
     let status = null;
@@ -1284,7 +1344,7 @@ async function readOrdinaryApprovalForAuto(input) {
         finally {
             timeout.cancel();
         }
-        if (!status || (status.state !== 'pending' && status.state !== 'unavailable'))
+        if (!status || (status.state !== 'pending' && status.state !== 'unavailable' && status.state !== 'arbitration_review'))
             break;
         const waitMs = status.poll_after_ms ?? input.guidance.pollAfterMs;
         if (!await waitForAutoContinuation({ retry_after_ms: waitMs }, input.startedAt, input.responseBudgetMs, input.autoHttpTrace))
@@ -1414,7 +1474,7 @@ async function marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, 
                 message: 'marrow_auto operation is already bound to a different decision than the runtime arbitration receipt.',
                 status: 409,
                 retryable: false,
-                exactFix: 'Stop this operation. Start a new arbitrated marrow_auto operation and preserve the arbitration decision_id, gate receipt, arbitration receipt, and dashboard approval receipt together.',
+                exactFix: 'Stop this operation. Start a new arbitrated marrow_auto operation and preserve the arbitration decision_id, gate receipt, arbitration receipt, and owner approval receipt together.',
             });
         }
         decisionId = arbitrationDecisionId;
@@ -1501,9 +1561,62 @@ async function marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, 
             || runtimeGate.arbitration.owner_approval_required === true));
     const genericReviewRequired = runtimeReviewRequired && !runtimeGate?.arbitration;
     const runtimeArbitrationReceiptId = runtimeGate?.arbitration?.receipt_id;
-    const matchingRequiredApprovalReceipts = Boolean(params.owner_approval_receipt_id
+    // Arbitration review with the server's one-tap path: the owner picks a
+    // proposal through a link, and the status read hands over the owner's receipt.
+    let ownerApprovalReceiptForCommit = params.owner_approval_receipt_id;
+    let arbitrationReceiptForCommit = params.arbitration_receipt_id;
+    const arbitrationGuidance = arbitrationRequiresOwnerApproval && !params.owner_approval_receipt_id
+        ? (0, runtime_contract_1.arbitrationApprovalGuidance)(runtimeGate)
+        : null;
+    if (arbitrationGuidance) {
+        const arbitrationWait = (exactNextAction, retryAfterMs, resumable = true) => autoPartial({
+            operationId, decisionId, phase: 'owner_approval_required', runtimeGate, timings, startedAt, autoHttpTrace,
+            resumable, retryAfterMs: retryAfterMs ?? undefined, exactNextAction,
+        });
+        const linkBudget = responseBudgetMs - (Date.now() - startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS - 300;
+        if (linkBudget > 300) {
+            await requestAutoOwnerLink({
+                apiKey, baseUrl, gateReceiptId: arbitrationGuidance.gateReceiptId, decisionId, sessionId, agentId,
+                binding: operationBinding, timeoutMs: Math.min(2_000, linkBudget),
+            });
+        }
+        const read = await readOrdinaryApprovalForAuto({
+            apiKey, baseUrl, guidance: arbitrationGuidance, sessionId, agentId, startedAt, responseBudgetMs, autoHttpTrace,
+        });
+        const status = read.status;
+        const link = operationBinding.ownerLink;
+        const linkText = link?.sent ? `An approval link was sent to the account owner${link.channel ? ` (${link.channel})` : ''}.`
+            : link?.final ? `Marrow could not send the account owner an approval link${link.finalCode ? ` (${link.finalCode})` : ''}; tell the operator this action is waiting for the account owner's choice.`
+                : link && link.attempts > 0 ? 'Marrow could not send the account owner an approval link yet; calling marrow_auto again with this same operation_id tries again.'
+                    : 'Tell the operator this action is waiting for the account owner\'s choice.';
+        if (read.notFound) {
+            return arbitrationWait(`Marrow could not find gate receipt ${arbitrationGuidance.gateReceiptId} for this agent and session. Do not run any proposal; request fresh runtime guidance for it.`, null, false);
+        }
+        if (!status || status.state === 'arbitration_review' || status.state === 'pending' || status.state === 'unavailable') {
+            return arbitrationWait(`Marrow is holding this action for arbitration review (gate receipt ${arbitrationGuidance.gateReceiptId}). Do not run any proposal yet. The account owner picks and approves one proposal. ${linkText} Call marrow_auto again with this same operation_id after retry_after_ms. Never write or claim an approval yourself.`, status?.poll_after_ms ?? arbitrationGuidance.pollAfterMs);
+        }
+        if (status.state === 'approved' && status.owner_approval_receipt_id) {
+            ownerApprovalReceiptForCommit = status.owner_approval_receipt_id;
+            arbitrationReceiptForCommit = arbitrationGuidance.arbitrationReceiptId;
+        }
+        else if (status.state === 'used') {
+            return {
+                operation_id: operationId, decision_id: decisionId, committed: false, phase: 'closed', resumable: false, retry_after_ms: null,
+                exact_next_action: `Gate receipt ${arbitrationGuidance.gateReceiptId} is already used: this operation is closed. Do not run this action again.`,
+                runtime_gate: runtimeGate, closure: status.owner_approval_receipt_id ? 'already_closed' : 'already_closed_denial',
+                phase_timings_ms: { ...timings, total: Date.now() - startedAt }, http_attempt_trace: snapshotAutoHttpTrace(autoHttpTrace),
+            };
+        }
+        else if (status.state === 'declined') {
+            return arbitrationWait(`The account owner approved none of the proposals (gate receipt ${arbitrationGuidance.gateReceiptId}). Do not run any proposal. If nothing ran, close it with marrow_commit: success false, an outcome that starts "Denied by Marrow pre-action gate", and the same gate_receipt_id.`, null, false);
+        }
+        else {
+            return arbitrationWait(`Gate receipt ${arbitrationGuidance.gateReceiptId} is not waiting for the owner's choice (${status.state}). Do not run any proposal; request fresh runtime guidance for this exact action.`, null, false);
+        }
+    }
+    const matchingRequiredApprovalReceipts = Boolean(ownerApprovalReceiptForCommit
         && (!runtimeArbitrationReceiptId
-            || params.arbitration_receipt_id === runtimeArbitrationReceiptId));
+            || arbitrationReceiptForCommit === runtimeArbitrationReceiptId));
     // An ordinary hold: wait for the approval through the agent-key status read
     // (bounded by this call's budget), then resume on the same gate receipt.
     // Approval comes only from the server (the account owner's one-tap link, or
@@ -1515,21 +1628,14 @@ async function marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, 
         // operation, ask Marrow to send the owner a one-tap link (no login).
         // A standing owner decline: the owner is asked again only when the operator asks.
         const linkWanted = ordinaryGuidance.hostApprovalRefusal === 'owner_decline_stands'
-            ? params.request_owner_link === true && !operationBinding.ownerLink?.sent
-            : !operationBinding.ownerLink;
+            ? params.request_owner_link === true
+            : true;
         const linkBudget = responseBudgetMs - (Date.now() - startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS - 300;
         if (ordinaryGuidance.approvalLinkPath && linkWanted && linkBudget > 300) {
-            const linkTimeout = createTimeoutSignal(Math.min(2_000, linkBudget));
-            try {
-                const link = await marrowRequestApprovalLink(apiKey, baseUrl, ordinaryGuidance.gateReceiptId, decisionId, sessionId, agentId, linkTimeout.signal);
-                operationBinding.ownerLink = { sent: link.ok, channel: link.ok ? link.link.channel : null };
-            }
-            catch {
-                operationBinding.ownerLink = { sent: false, channel: null };
-            }
-            finally {
-                linkTimeout.cancel();
-            }
+            await requestAutoOwnerLink({
+                apiKey, baseUrl, gateReceiptId: ordinaryGuidance.gateReceiptId, decisionId, sessionId, agentId,
+                binding: operationBinding, timeoutMs: Math.min(2_000, linkBudget),
+            });
         }
         const read = await readOrdinaryApprovalForAuto({
             apiKey, baseUrl, guidance: ordinaryGuidance, sessionId, agentId, startedAt, responseBudgetMs, autoHttpTrace,
@@ -1548,7 +1654,7 @@ async function marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, 
                 operationId, decisionId, phase: 'owner_approval_required', runtimeGate, timings, startedAt, autoHttpTrace,
                 resumable: true,
                 retryAfterMs: status?.poll_after_ms ?? ordinaryGuidance.pollAfterMs,
-                exactNextAction: ordinaryHoldWaitText(ordinaryGuidance, operationBinding.ownerLink?.channel ?? null),
+                exactNextAction: ordinaryHoldWaitText(ordinaryGuidance, operationBinding.ownerLink),
                 approval: ordinaryApprovalState,
             });
         }
@@ -1594,11 +1700,31 @@ async function marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, 
         if (status.state === 'expired') {
             return terminal(`Gate receipt ${ordinaryGuidance.gateReceiptId} expired before it was approved. Do not run the action on it. If the work is still needed and has not run, start a new marrow_auto operation for a fresh gate.`);
         }
-        if (status.state === 'approved' || status.state === 'used') {
+        if (status.state === 'used') {
+            // A spent receipt is final: never resume from it, and never call it approved now.
+            const approvedBefore = Boolean(status.owner_approval_receipt_id);
+            return {
+                operation_id: operationId,
+                decision_id: decisionId,
+                committed: false,
+                phase: 'closed',
+                resumable: false,
+                retry_after_ms: null,
+                exact_next_action: approvedBefore
+                    ? `Gate receipt ${ordinaryGuidance.gateReceiptId} was approved and is already used: this operation is closed. Do not run this action again.`
+                    : `The approval request for gate receipt ${ordinaryGuidance.gateReceiptId} was declined, and the decision is closed as a denial. Do not run this action.`,
+                runtime_gate: runtimeGate,
+                approval: ordinaryApprovalState,
+                closure: approvedBefore ? 'already_closed' : 'already_closed_denial',
+                phase_timings_ms: { ...timings, total: Date.now() - startedAt },
+                http_attempt_trace: snapshotAutoHttpTrace(autoHttpTrace),
+            };
+        }
+        if (status.state === 'approved') {
             ordinaryApproval = status;
         }
         else {
-            return terminal(status.exact_next_action || 'Stop this operation and follow the runtime guidance for this exact action; it is not waiting for an ordinary approval.');
+            return terminal(`Gate receipt ${ordinaryGuidance.gateReceiptId} is not waiting for an approval (${status.state}). Do not run the action on it; stop this operation and request fresh runtime guidance for this exact action.`);
         }
     }
     if (params.outcome === undefined || typeof params.success !== 'boolean') {
@@ -1611,8 +1737,11 @@ async function marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, 
             startedAt,
             autoHttpTrace,
             retryAfterMs: null,
+            ...(arbitrationGuidance && ownerApprovalReceiptForCommit ? {
+                exactNextAction: `The account owner approved one proposal for arbitration receipt ${arbitrationGuidance.arbitrationReceiptId} (owner_approval_receipt_id ${ownerApprovalReceiptForCommit}). Run only the approved proposal now, then call marrow_auto with this same operation_id, the real outcome and success${arbitrationGuidance.proofRequired ? `, and proof with ${arbitrationGuidance.proofFields.join(', ') || 'the required fields'}` : ''}. Marrow closes it with that receipt.`,
+            } : {}),
             ...(ordinaryApproval && ordinaryGuidance ? {
-                exactNextAction: `${approvalDecidedBy(ordinaryApproval)} approved gate receipt ${ordinaryGuidance.gateReceiptId}. Run only this exact action now, then call marrow_auto with this same operation_id, the real outcome and success${ordinaryGuidance.proofRequired ? `, and proof with ${ordinaryGuidance.proofFields.join(', ') || 'the required fields'}` : ''}. Marrow closes it on the same gate receipt.`,
+                exactNextAction: `${approvalStatement(ordinaryApproval, ordinaryGuidance.gateReceiptId)} Run only this exact action now, then call marrow_auto with this same operation_id, the real outcome and success${ordinaryGuidance.proofRequired ? `, and proof with ${ordinaryGuidance.proofFields.join(', ') || 'the required fields'}` : ''}. Marrow closes it on the same gate receipt.`,
                 approval: ordinaryApprovalState,
             } : {}),
         });
@@ -1703,8 +1832,8 @@ async function marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, 
                 outcome: params.outcome,
                 proof: params.proof,
                 gate_receipt_id: gateReceiptId,
-                arbitration_receipt_id: params.arbitration_receipt_id,
-                owner_approval_receipt_id: params.owner_approval_receipt_id,
+                arbitration_receipt_id: arbitrationReceiptForCommit,
+                owner_approval_receipt_id: ownerApprovalReceiptForCommit,
                 action: params.action_for_gate || params.action,
                 type: params.type || 'general',
                 surfaces: params.surfaces,

@@ -4,11 +4,14 @@ import { isAbsolute } from 'node:path';
 import { marrowCommit, marrowHostApproval, marrowOwnerApprovalStatus, marrowRequestApprovalLink, marrowThink } from './index';
 import { isMcpHookTool } from './hook-tool-policy';
 import { stableToolCorrelation, type NativeHookHarness } from './hook-contract';
-import type { OrdinaryApprovalGuidance } from './runtime-contract';
+import type { ArbitrationApprovalGuidance, OrdinaryApprovalGuidance } from './runtime-contract';
 import {
   boundSessionId,
+  claimHold,
   findHolds,
   markDialogShown,
+  noteProtectedCategories,
+  protectedCategoriesAmong,
   recordHold,
   sessionMarker,
   setSessionMarker,
@@ -60,8 +63,41 @@ export const CURSOR_ASK_EVENTS = new Set(['beforeShellExecution', 'beforeMCPExec
 
 const HOST_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 export const HOST_APPROVAL_REQUEST_TIMEOUT_MS = 4_000;
-/** The status read is one key lookup; a slow read falls back to the normal flow. */
+/** The status read is one key lookup. */
 const STATUS_READ_TIMEOUT_MS = 2_500;
+/** Time kept back for writing the hook's answer. */
+const OUTPUT_RESERVE_MS = 400;
+/** Below this, a network step is not started before the answer is written. */
+const MIN_STEP_MS = 600;
+
+/**
+ * One total time budget for a pre-tool hook, counted from the start of the
+ * hook process. Codex and Cursor stop a hook after 5 seconds (as
+ * @getmarrow/install configures them) and Codex then lets the call run, so
+ * their budget leaves room for npx start-up; slow work that does not decide
+ * the answer runs after the answer is written, inside the same budget.
+ */
+export function preToolBudgetMs(host: ApprovalHost): number {
+  // Codex and Cursor stop hooks at 5 s; the installer's Grok guard stops at 5 s and blocks.
+  return host === 'codex' || host === 'cursor' || host === 'grok' ? 3_000 : 14_000;
+}
+
+/** The hook process's deadline for its pre-tool answer and any follow-up work. */
+export function preToolDeadline(host: ApprovalHost): number {
+  return Date.now() - Math.round(process.uptime() * 1000) + preToolBudgetMs(host);
+}
+
+/** Time left before the hook must have written its answer (Infinity without a deadline). */
+export function remainingMs(ctx: { deadlineAt?: number }): number {
+  return ctx.deadlineAt ? ctx.deadlineAt - Date.now() : Number.POSITIVE_INFINITY;
+}
+
+/** A step's timeout inside the budget, or null when there is no time for it before the answer. */
+export function stepTimeoutMs(ctx: { deadlineAt?: number }, max: number, reserve = OUTPUT_RESERVE_MS): number | null {
+  const left = remainingMs(ctx) - reserve;
+  if (left < MIN_STEP_MS) return null;
+  return Math.min(max, left);
+}
 /**
  * Work a post-tool hook does for a held call. Codex and Cursor run these hooks
  * with a 5-second timeout (as @getmarrow/install configures them); a hook cut
@@ -82,6 +118,8 @@ export type HoldContext = {
   /** The host's own session or conversation id, as reported to the server. */
   hostSessionId: string;
   home?: string;
+  /** Pre-tool hooks: when the answer must be written (see preToolBudgetMs). */
+  deadlineAt?: number;
 };
 
 export function hostSessionIdFor(candidates: unknown[], fallback: string): string {
@@ -101,6 +139,7 @@ function bounded(value: string, limit: number): string {
 
 /** Why the operator's own approval does not count for this hold (the server's refusal). */
 function ownerOnlyReason(guidance: OrdinaryApprovalGuidance): string {
+  if (!guidance.hostApprovalSupported) return LEGACY_SERVICE_TEXT;
   if (guidance.hostApprovalRefusal === 'owner_decline_stands') {
     return `The account owner declined this action${guidance.ownerDeclinedAt ? ` at ${guidance.ownerDeclinedAt}` : ' earlier'}.`;
   }
@@ -116,8 +155,39 @@ function ownerOnlyReason(guidance: OrdinaryApprovalGuidance): string {
   return 'An operator approval is not available for this hold.';
 }
 
-/** Where the approval request goes when no operator can answer here. Never a login step. */
-export const OWNER_APPROVAL_REQUEST_TEXT = 'The approval request goes to the account owner.';
+/**
+ * Stands in a plan's text for what happened to the owner's one-tap link; it is
+ * always replaced (finalizeOwnerRequest) before anyone sees the text, so no
+ * text says a request was sent when none was.
+ */
+export const OWNER_APPROVAL_REQUEST_TEXT = '[owner-request]';
+
+/** An older Marrow service: no host approvals and no links; only the account owner can approve. */
+export const LEGACY_SERVICE_TEXT = 'This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it.';
+
+/** Marrow could not be read while this action waits for an approval: it stays held. */
+export const HELD_UNREACHABLE_TEXT = 'Marrow could not confirm the owner\'s approval; this action stays held. Retry when Marrow is reachable.';
+
+export type OwnerLinkOutcome =
+  | { kind: 'sent'; channel: string }
+  | { kind: 'already_sent' }
+  | { kind: 'deferred' }
+  | { kind: 'retryable' }
+  | { kind: 'failed'; code: string | null }
+  | { kind: 'none' };
+
+/** The sentence for what happened to the owner's link. Never claims a send that did not happen. */
+export function ownerRequestText(outcome: OwnerLinkOutcome): string {
+  switch (outcome.kind) {
+    case 'sent': return ownerLinkSentText(outcome.channel);
+    case 'already_sent': return 'An approval link was sent to the account owner.';
+    // Deferred: tried right after this answer is written; until a retry confirms it, it is not "sent".
+    case 'deferred':
+    case 'retryable': return 'Marrow could not send the account owner an approval link yet; retrying this exact action tries again.';
+    case 'failed': return `Marrow could not send the account owner an approval link${outcome.code ? ` (${outcome.code})` : ''}; tell the operator this action is waiting for the account owner's approval.`;
+    default: return 'Tell the operator this action is waiting for the account owner\'s approval.';
+  }
+}
 
 export type HoldPlan =
   | { kind: 'ask'; promptText: string }
@@ -132,6 +202,8 @@ export type HoldPlan =
     dialogLater?: boolean;
     /** Not remembered as waiting: the next attempt starts over (approval state unreadable). */
     retryFresh?: boolean;
+    /** The prompt to show if a retry can ask in the host's own dialog (keeps the notice and reason). */
+    laterPrompt?: string;
   };
 
 /** Shown when the owner's link is sent only if the operator asks for it. */
@@ -142,11 +214,11 @@ export function ownerLinkSentText(channel: string): string {
   return `An approval link was sent to the account owner (${channel}).`;
 }
 
-/** Puts the link outcome into a plan that asked the owner. */
-export function withOwnerLink(plan: HoldPlan, channel: string | null): HoldPlan {
-  if (plan.kind !== 'deny' || plan.ownerLink !== 'now' || !channel) return plan;
-  const sent = ownerLinkSentText(channel);
-  return { ...plan, agentText: plan.agentText.replace(OWNER_APPROVAL_REQUEST_TEXT, sent), userText: plan.userText.replace(OWNER_APPROVAL_REQUEST_TEXT, sent) };
+/** Puts what happened to the owner's link into the plan's text (always, before output). */
+export function finalizeOwnerRequest(plan: HoldPlan, outcome: OwnerLinkOutcome): HoldPlan {
+  if (plan.kind !== 'deny') return plan;
+  const text = ownerRequestText(outcome);
+  return { ...plan, agentText: plan.agentText.replace(OWNER_APPROVAL_REQUEST_TEXT, text), userText: plan.userText.replace(OWNER_APPROVAL_REQUEST_TEXT, text) };
 }
 
 /** Hosts whose typed reply is a person-only marker, and that marker (backend OPERATOR_MARKER_BY_HOST). */
@@ -171,7 +243,7 @@ export function planHeldAction(input: {
   hookEvent: string;
   reason: string;
   /** Claude Code: whether a hook "ask" reaches a person in this permission mode and version. */
-  claudePrompt?: { available: boolean; unavailableReason: string };
+  claudePrompt?: { available: boolean; unavailableReason: string; headless?: boolean };
   /** Cursor: true only when sessionStart reported a local, non-background session. */
   cursorInteractive?: boolean | null;
   /** A local interactive session whose typed-reply hook runs (see typedReplyAvailable). */
@@ -184,12 +256,10 @@ export function planHeldAction(input: {
   const notice = guidance.operatorNotice ? ` Note: ${guidance.operatorNotice}` : '';
   const held = `Marrow is holding this action for approval (gate receipt ${id}), so it did not run.${reason}`;
   const tail = ' When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.';
+  const claudePrompt = bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${id}).${notice}${reason}`, 500);
   if (guidance.hostApprovalAccepted) {
     if (host === 'claude-code' && input.claudePrompt?.available) {
-      return {
-        kind: 'ask',
-        promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${id}).${notice}${reason}`, 500),
-      };
+      return { kind: 'ask', promptText: claudePrompt };
     }
     // After an operator decline only a marked answer counts; Cursor's dialog carries no marker.
     if (host === 'cursor' && CURSOR_ASK_EVENTS.has(input.hookEvent) && input.cursorInteractive === true && !guidance.operatorOnly) {
@@ -206,6 +276,12 @@ export function planHeldAction(input: {
         code: true,
       };
     }
+  }
+  if (!guidance.hostApprovalSupported) {
+    // An older service: no host approvals and no links. The hold waits, and
+    // the retried action reads its status, so an owner's approval still counts.
+    const agentText = bounded(`${held} ${LEGACY_SERVICE_TEXT} Retry this exact action after the owner approves it; Marrow checks the approval then. Do not report or claim an approval yourself.`, 500);
+    return { kind: 'deny', agentText, userText: agentText, code: false };
   }
   if (!guidance.hostApprovalAccepted) {
     if (guidance.hostApprovalRefusal === 'approval_state_unavailable'
@@ -224,17 +300,32 @@ export function planHeldAction(input: {
     const agentText = bounded(`${held} ${ownerOnlyReason(guidance)} ${OWNER_APPROVAL_REQUEST_TEXT}${tail}`, 500);
     return { kind: 'deny', agentText, userText: agentText, code: false, ownerLink: 'now' };
   }
-  if (host === 'claude-code') {
+  if (host === 'claude-code' && !input.claudePrompt?.headless) {
     // The operator is present but this session shows no dialog: switching to a
     // mode with the dialog approves it here; asking the owner is the operator's call.
     const ask = guidance.approvalLinkPath ? ` Or, ${OWNER_LINK_ON_REQUEST_TEXT.charAt(0).toLowerCase()}${OWNER_LINK_ON_REQUEST_TEXT.slice(1)}` : '';
     const agentText = bounded(`${held} Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you.${ask} Retry it only when the operator asks you to. Do not report or claim an approval yourself.`, 500);
-    return { kind: 'deny', agentText, userText: agentText, code: false, dialogLater: true, ...(guidance.approvalLinkPath ? { ownerLink: 'on_request' as const } : {}) };
+    return {
+      kind: 'deny', agentText, userText: agentText, code: false, dialogLater: true, laterPrompt: claudePrompt,
+      ...(guidance.approvalLinkPath ? { ownerLink: 'on_request' as const } : {}),
+    };
   }
-  const why = host === 'cursor'
+  const why = host === 'claude-code'
+    ? `Claude Code runs headless here (${input.claudePrompt?.unavailableReason || 'no one sees a dialog'}), so no one can answer a dialog. ${OWNER_APPROVAL_REQUEST_TEXT}`
+    : host === 'cursor'
     ? `Cursor asks for approval only for shell and MCP calls in a local interactive session. ${OWNER_APPROVAL_REQUEST_TEXT}`
-    : `${HOST_LABEL[host]} cannot ask the operator in this session. ${OWNER_APPROVAL_REQUEST_TEXT}`;
+    : `${HOST_LABEL[host].charAt(0).toUpperCase()}${HOST_LABEL[host].slice(1)} cannot ask the operator in this session. ${OWNER_APPROVAL_REQUEST_TEXT}`;
   const agentText = bounded(`${held} ${why}${tail}`, 500);
+  return { kind: 'deny', agentText, userText: agentText, code: false, ...(guidance.approvalLinkPath ? { ownerLink: 'now' as const } : {}) };
+}
+
+/**
+ * Arbitration review_required with the server's one-tap path: the owner picks
+ * and approves one proposal. The hook denies, asks Marrow to send the owner a
+ * link, and the retried action reads the status. Nobody is told to log in.
+ */
+export function planArbitrationHold(guidance: ArbitrationApprovalGuidance): HoldPlan {
+  const agentText = bounded(`Marrow is holding this action for arbitration review (gate receipt ${guidance.gateReceiptId}), so it did not run. The account owner picks and approves one proposal. ${OWNER_APPROVAL_REQUEST_TEXT} When the owner has answered, retry this exact action; Marrow checks the answer then. Do not report or claim an approval yourself.`, 500);
   return { kind: 'deny', agentText, userText: agentText, code: false, ownerLink: 'now' };
 }
 
@@ -243,8 +334,27 @@ export function typedReplyUserText(userText: string, code: string): string {
   return bounded(`${userText} To approve it, type: marrow approve ${code} (or: marrow decline ${code}). Then let the agent retry it.`, 600);
 }
 
+/** What a hold record needs from the runtime's guidance (ordinary or arbitration). */
+export type HoldGuidance = Pick<OrdinaryApprovalGuidance, 'gateReceiptId' | 'decisionId' | 'proofRequired' | 'proofFields' | 'expiresAt' | 'approvalLinkPath'> & {
+  hostApprovalSupported?: boolean;
+  arbitrationReceiptId?: string | null;
+};
+
+export function arbitrationHoldGuidance(guidance: ArbitrationApprovalGuidance): HoldGuidance {
+  return {
+    gateReceiptId: guidance.gateReceiptId,
+    decisionId: guidance.decisionId,
+    proofRequired: guidance.proofRequired,
+    proofFields: guidance.proofFields,
+    expiresAt: guidance.expiresAt,
+    approvalLinkPath: guidance.linkPath,
+    hostApprovalSupported: true,
+    arbitrationReceiptId: guidance.arbitrationReceiptId,
+  };
+}
+
 export type RecordHoldInput = {
-  guidance: OrdinaryApprovalGuidance;
+  guidance: HoldGuidance;
   correlation: string;
   toolUseId: string | null;
   generationId: string | null;
@@ -257,6 +367,7 @@ export type RecordHoldInput = {
   /** From the plan: whether and when the owner's one-tap link is requested. */
   ownerLink?: 'now' | 'on_request';
   dialogLater?: boolean;
+  laterPrompt?: string;
 };
 
 const HOOK_EVENT_NAME = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
@@ -294,33 +405,85 @@ export function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldReco
       : input.ownerLink === 'now' ? 'unsent'
       : input.ownerLink === 'on_request' ? 'on_request'
       : null,
+    link_attempts: 0,
     dialog_later: input.dialogLater === true,
+    ask_text: input.dialogLater && input.laterPrompt ? bounded(input.laterPrompt, 500) : null,
+    legacy_service: input.guidance.hostApprovalSupported === false,
+    arbitration_receipt_id: input.guidance.arbitrationReceiptId && BOUNDED_ID.test(input.guidance.arbitrationReceiptId) ? input.guidance.arbitrationReceiptId : null,
   }, ctx.home);
 }
 
+/**
+ * Remembers the categories the account owner protects, from a hold's guidance,
+ * so an owner-protected action stays held while Marrow cannot be reached.
+ */
+export function rememberProtection(ctx: HoldContext, guidance: OrdinaryApprovalGuidance): void {
+  try {
+    if (guidance.verifiedApprovalRequired === true) {
+      noteProtectedCategories(scopeOf(ctx), guidance.verifiedApprovalCategories, [], ctx.home);
+    } else if (guidance.verifiedApprovalRequired === false) {
+      noteProtectedCategories(scopeOf(ctx), [], guidance.approvalCategories, ctx.home);
+    }
+  } catch { /* a convenience for outages; the server stays the authority */ }
+}
+
+/** Of these categories, the ones this key last saw the account owner protect. */
+export function protectedAmong(ctx: HoldContext, categories: string[]): string[] {
+  return protectedCategoriesAmong(scopeOf(ctx), categories, ctx.home);
+}
+
 const OWNER_LINK_TIMEOUT_MS = 2_000;
+/** The server allows three links per gate receipt. */
+const MAX_LINK_ATTEMPTS = 3;
+/** Link refusals that another request cannot change. */
+const FINAL_LINK_CODES = new Set([
+  'MARROW_APPROVAL_CHANNEL_UNAVAILABLE',
+  'MARROW_APPROVAL_LINK_LIMITED',
+  'MARROW_APPROVAL_LINK_NOT_HELD',
+  'MARROW_APPROVAL_LINK_SCOPE_MISMATCH',
+  'MARROW_APPROVAL_LINK_INVALID',
+  'MARROW_APPROVAL_LINK_DECISION_REQUIRED',
+  'MARROW_PRE_ACTION_GATE_USED',
+  'MARROW_PRE_ACTION_GATE_EXPIRED',
+  'MARROW_OWNER_APPROVAL_ALREADY_DECIDED',
+  'MARROW_GATE_RECEIPT_NOT_FOUND',
+]);
 
 /**
- * Asks Marrow to send the account owner a one-tap approval link for this hold
- * (once; the server limits repeats). Returns the channel when it was sent.
- * The link itself never reaches this client or the agent.
+ * Asks Marrow to send the account owner a one-tap approval link for this hold.
+ * A retryable failure (network, rate limit, undelivered) is tried again on a
+ * later attempt, up to the server's per-receipt limit; a final refusal is not.
+ * Returns what happened. The link itself never reaches this client or the agent.
  */
-export async function requestOwnerLink(ctx: HoldContext, hold: HoldRecord): Promise<string | null> {
-  if (hold.owner_link !== 'unsent' && hold.owner_link !== 'on_request') return null;
-  const timeout = statusTimeout(OWNER_LINK_TIMEOUT_MS);
-  let channel: string | null = null;
+export async function requestOwnerLink(ctx: HoldContext, hold: HoldRecord, reserve = OUTPUT_RESERVE_MS): Promise<OwnerLinkOutcome> {
+  if (hold.owner_link === 'sent') return { kind: 'already_sent' };
+  if (hold.owner_link === 'failed') return { kind: 'failed', code: null };
+  if (hold.owner_link !== 'unsent' && hold.owner_link !== 'on_request') return { kind: 'none' };
+  if ((hold.link_attempts || 0) >= MAX_LINK_ATTEMPTS) return { kind: 'failed', code: 'MARROW_APPROVAL_LINK_LIMITED' };
+  const budget = stepTimeoutMs(ctx, OWNER_LINK_TIMEOUT_MS, reserve);
+  if (budget === null) return { kind: 'deferred' };
+  const timeout = statusTimeout(budget);
+  let outcome: OwnerLinkOutcome;
   try {
     const result = await marrowRequestApprovalLink(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, hold.decision_id, hold.session_id, hold.agent_id || undefined, timeout.signal);
-    channel = result.ok ? result.link.channel : null;
+    outcome = result.ok ? { kind: 'sent', channel: result.link.channel }
+      : !result.retryable && result.code && FINAL_LINK_CODES.has(result.code) ? { kind: 'failed', code: result.code }
+      : result.retryable ? { kind: 'retryable' }
+      : { kind: 'failed', code: result.code };
   } catch {
-    channel = null;
+    outcome = { kind: 'retryable' };
   } finally {
     timeout.cancel();
   }
+  const attempts = (hold.link_attempts || 0) + 1;
+  const state: HoldRecord['owner_link'] = outcome.kind === 'sent' ? 'sent'
+    : outcome.kind === 'failed' || attempts >= MAX_LINK_ATTEMPTS ? 'failed'
+    : 'unsent';
   try {
-    updateHold(scopeOf(ctx), hold.id, (current) => ({ ...current, owner_link: channel ? 'sent' : 'unsent' }), ctx.home);
+    updateHold(scopeOf(ctx), hold.id, (current) => ({ ...current, owner_link: state, link_attempts: attempts }), ctx.home);
   } catch { /* the link state is a convenience; the hold stands */ }
-  return channel;
+  if (outcome.kind === 'retryable' && state === 'failed') return { kind: 'failed', code: null };
+  return outcome;
 }
 
 /** PermissionRequest (pass-through): the host is about to show its own dialog for an asked call. */
@@ -336,7 +499,9 @@ function statusTimeout(ms = HOST_APPROVAL_REQUEST_TIMEOUT_MS): { signal: AbortSi
 }
 
 async function readStatus(ctx: HoldContext, hold: HoldRecord): Promise<{ status: MarrowOwnerApprovalStatus | null; notFound: boolean; failed: boolean }> {
-  const timeout = statusTimeout(STATUS_READ_TIMEOUT_MS);
+  const budget = stepTimeoutMs(ctx, STATUS_READ_TIMEOUT_MS);
+  if (budget === null) return { status: null, notFound: false, failed: true };
+  const timeout = statusTimeout(budget);
   try {
     const result = await marrowOwnerApprovalStatus(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, hold.session_id, hold.agent_id || undefined, timeout.signal);
     return result.kind === 'not_found' ? { status: null, notFound: true, failed: false } : { status: result.status, notFound: false, failed: false };
@@ -347,25 +512,35 @@ async function readStatus(ctx: HoldContext, hold: HoldRecord): Promise<{ status:
   }
 }
 
-function approvedByText(status: MarrowOwnerApprovalStatus): string {
+/**
+ * Who approved, as the status says it. "The account owner" only for the
+ * owner's verified approval; anything else is named for what it is.
+ */
+export function approvalSentence(status: MarrowOwnerApprovalStatus): string {
   if (status.approval_source === 'host_prompt') {
-    return status.approval_answered_by === 'host_operator' ? 'the operator (client-attested)'
-      : status.approval_answered_by === 'owner_chat_preapproval' ? 'the account owner\'s chat pre-approval (client-attested)'
-      : 'an allow rule in the host (client-attested)';
+    const who = status.approval_answered_by === 'host_operator' ? 'The operator approved'
+      : status.approval_answered_by === 'owner_chat_preapproval' ? 'The account owner\'s chat pre-approval approved'
+      : 'An allow rule in the host approved';
+    return `${who} this held action (client-attested)`;
   }
-  return 'the account owner';
+  if (status.approval_trust === 'verified'
+    && (status.approval_answered_by === 'account_owner' || status.approval_source === 'dashboard' || status.approval_source === 'one_tap')) {
+    return 'The account owner approved this held action';
+  }
+  return 'Marrow recorded an approval for this held action';
 }
 
 export type WaitingResolution =
   | { kind: 'allow'; hold: HoldRecord; contextText: string }
   | { kind: 'ask'; hold: HoldRecord; promptText: string }
-  | { kind: 'deny'; hold: HoldRecord; agentText: string; userText: string };
+  | { kind: 'deny'; hold: HoldRecord; agentText: string; userText: string; deferredLink?: boolean };
 
 /**
  * The same action, retried after a hold that waited (denied while it waited
  * for an approval). Reads the hold's status first: approved allows it once on
- * the same gate receipt; pending denies again without a new hold; declined,
- * expired or used fall back to the normal flow (null).
+ * the same gate receipt (compare-and-set: a second identical call is denied);
+ * pending denies again without a new hold; a status Marrow cannot give keeps
+ * it held; declined, expired or used fall back to the normal flow (null).
  */
 export async function resumeWaitingHold(ctx: HoldContext, input: {
   correlation: string;
@@ -374,40 +549,47 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
   /** Claude Code shows its dialog for this attempt (permission mode and version). */
   dialogAvailable?: boolean;
 }): Promise<WaitingResolution | null> {
+  const scope = scopeOf(ctx);
   let holds: HoldRecord[];
   try {
-    holds = findHolds(scopeOf(ctx), { correlation: input.correlation, sessionId: ctx.sessionId, mode: 'wait', states: ['open'] }, ctx.home);
+    holds = findHolds(scope, { correlation: input.correlation, sessionId: ctx.sessionId, mode: 'wait', states: ['open'] }, ctx.home);
   } catch {
     return null;
   }
   const hold = holds[holds.length - 1];
   if (!hold) return null;
   const read = await readStatus(ctx, hold);
-  // Marrow unreachable: the normal flow decides (its outage policy applies).
-  if (read.failed) return null;
+  if (read.failed || read.status?.state === 'unavailable') {
+    // This exact action is waiting for an approval: it stays held until Marrow answers.
+    return { kind: 'deny', hold, agentText: HELD_UNREACHABLE_TEXT, userText: HELD_UNREACHABLE_TEXT };
+  }
   const status = read.status;
   if (!status || read.notFound) {
-    updateHold(scopeOf(ctx), hold.id, () => null, ctx.home);
+    updateHold(scope, hold.id, () => null, ctx.home);
     return null;
   }
   if (status.state === 'approved') {
-    const allowed = updateHold(scopeOf(ctx), hold.id, (current) => ({
+    const claimed = claimHold(scope, hold.id, (current) => ({
       ...current,
       state: 'allowed',
       tool_use_id: input.toolUseId,
       generation_id: input.generationId,
       decision_id: current.decision_id || status.decision_id,
     }), ctx.home);
-    if (!allowed) return null;
-    return {
-      kind: 'allow',
-      hold: allowed,
-      contextText: bounded(`Marrow: ${approvedByText(status)} approved this held action (gate receipt ${hold.gate_receipt_id}). Run only this exact action; Marrow records its outcome on that receipt.`, 400),
-    };
+    if (!claimed) {
+      const text = bounded(`Marrow approved this held action once (gate receipt ${hold.gate_receipt_id}), and an identical call is already running on that approval, so this repeat did not run. If it is still needed, retry it after that call finishes. Do not report or claim an approval yourself.`, 500);
+      return { kind: 'deny', hold, agentText: text, userText: text };
+    }
+    const decision = claimed.decision_id ? `decision_id ${claimed.decision_id}, ` : '';
+    const contextText = claimed.arbitration_receipt_id
+      ? `Marrow: the account owner approved one proposal for this arbitrated action (gate receipt ${hold.gate_receipt_id}). Run only the approved proposal, then close it with marrow_commit: ${decision}gate_receipt_id ${hold.gate_receipt_id}, arbitration_receipt_id ${claimed.arbitration_receipt_id}${status.owner_approval_receipt_id ? `, owner_approval_receipt_id ${status.owner_approval_receipt_id}` : ''}, the real success and outcome${claimed.proof_required ? `, and proof with ${claimed.proof_fields.join(', ') || 'the required fields'}` : ''}.`
+      : `Marrow: ${approvalSentence(status)} (gate receipt ${hold.gate_receipt_id}). Run only this exact action; Marrow records its outcome on that receipt.`;
+    return { kind: 'allow', hold: claimed, contextText: bounded(contextText, 600) };
   }
-  if (status.state === 'pending' && hold.dialog_later && input.dialogAvailable === true && ctx.host === 'claude-code') {
+  const waitingStates = new Set(['pending', 'arbitration_review']);
+  if (waitingStates.has(status.state) && hold.dialog_later && input.dialogAvailable === true && ctx.host === 'claude-code') {
     // The operator switched to a mode with the dialog: ask now, on the same gate receipt.
-    const asked = updateHold(scopeOf(ctx), hold.id, (current) => ({
+    const asked = claimHold(scope, hold.id, (current) => ({
       ...current,
       mode: 'ask',
       dialog_later: false,
@@ -420,33 +602,40 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
     return {
       kind: 'ask',
       hold: asked,
-      promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${hold.gate_receipt_id}).`, 500),
+      promptText: hold.ask_text || bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${hold.gate_receipt_id}).`, 500),
     };
   }
-  if (status.state === 'pending' || status.state === 'unavailable') {
-    // A retry is how the operator asks for the owner's link (sent once per hold).
-    const linkChannel = !hold.code && (hold.owner_link === 'unsent' || hold.owner_link === 'on_request') ? await requestOwnerLink(ctx, hold) : null;
-    const after = linkChannel ? null : findHolds(scopeOf(ctx), { id: hold.id }, ctx.home)[0] || hold;
+  if (waitingStates.has(status.state)) {
+    // A retry is how the operator asks for the owner's link (sent once per hold;
+    // a retryable failure is tried again within the server's per-receipt limit).
+    const link = !hold.code && hold.owner_link ? await requestOwnerLink(ctx, hold) : { kind: 'none' as const };
     const waiting = hold.code ? 'The operator was asked to approve it here.'
-      : linkChannel ? ownerLinkSentText(linkChannel)
-      : after?.owner_link === 'sent' ? 'An approval link was sent to the account owner.'
-      : after?.owner_link === 'unsent' ? 'Marrow could not send the account owner an approval link; retrying this exact action tries again.'
+      : hold.legacy_service ? `${LEGACY_SERVICE_TEXT} The account owner has not approved it yet.`
+      : hold.owner_link ? ownerRequestText(link)
       : hold.dialog_later ? 'Claude Code shows no approval dialog in this session; switch to its default permission mode and retry this exact action.'
-      : OWNER_APPROVAL_REQUEST_TEXT;
+      : ownerRequestText({ kind: 'none' });
     const expires = status.expires_at || hold.expires_at;
-    const text = bounded(`Marrow is still holding this action for approval (gate receipt ${hold.gate_receipt_id}), so it did not run. ${waiting} When it is approved${expires ? ` (before ${expires})` : ''}, retry this exact action. Do not report or claim an approval yourself.`, 500);
+    const what = hold.arbitration_receipt_id ? 'for arbitration review' : 'for approval';
+    const text = bounded(`Marrow is still holding this action ${what} (gate receipt ${hold.gate_receipt_id}), so it did not run. ${waiting} When it is approved${expires ? ` (before ${expires})` : ''}, retry this exact action. Do not report or claim an approval yourself.`, 500);
     return {
       kind: 'deny',
       hold,
       agentText: text,
       userText: hold.code ? `Marrow still holds this action for your approval (gate receipt ${hold.gate_receipt_id}).` : text,
+      ...(link.kind === 'deferred' ? { deferredLink: true } : {}),
     };
   }
   if (status.state === 'declined') {
     const who = status.approval_source === 'host_prompt' ? `the operator declined it in ${HOST_LABEL[ctx.host]}` : 'the account owner declined it';
-    await closeAsDenial(ctx, hold, `Denied by Marrow pre-action gate: ${who} (gate receipt ${hold.gate_receipt_id}); the action did not run.`);
+    // The action did not run: close it as a denial after the hook answers (queued, resent if needed).
+    updateHold(scope, hold.id, (current) => ({
+      ...current,
+      state: 'resolved',
+      outbox: { report: null, commit: { success: false, outcome: bounded(`Denied by Marrow pre-action gate: ${who} (gate receipt ${hold.gate_receipt_id}); the action did not run.`, 480) }, attempts: 0, next_at: 0 },
+    }), ctx.home);
+    return null;
   }
-  updateHold(scopeOf(ctx), hold.id, () => null, ctx.home);
+  updateHold(scope, hold.id, () => null, ctx.home);
   return null;
 }
 
@@ -487,15 +676,6 @@ async function commitHold(ctx: HoldContext, hold: HoldRecord, commit: HoldCommit
     return result.committed === true ? 'committed' : 'unverified';
   } catch {
     return 'failed';
-  }
-}
-
-async function closeAsDenial(ctx: HoldContext, hold: HoldRecord, outcome: string): Promise<void> {
-  const timeout = statusTimeout(3_000);
-  try {
-    await commitHold(ctx, hold, { success: false, outcome: bounded(outcome, 480) }, timeout.signal);
-  } finally {
-    timeout.cancel();
   }
 }
 
@@ -669,26 +849,39 @@ function handoffText(hold: HoldRecord, delivery: DeliveryResult | null): string 
   if (delivery.kind === 'dropped') return null;
   const approved = delivery.kind === 'already_approved' || (delivery.kind === 'recorded' && delivery.verdict === 'approved');
   if (!approved) return null;
+  // A waited hold was approved on the server (by the owner, or a typed reply):
+  // only an answer from this host's own prompt is the hook's client-attested record.
+  const recorded = hold.mode === 'ask'
+    ? 'Marrow recorded the approval of this held action (client-attested).'
+    : `This held action was approved (gate receipt ${hold.gate_receipt_id}).`;
   if (delivery.committed === 'committed') {
-    return bounded(`Marrow recorded the approval (client-attested) and closed this held action on gate receipt ${hold.gate_receipt_id}.`, 300);
+    return bounded(`${hold.mode === 'ask' ? 'Marrow recorded the approval (client-attested) and closed' : 'Marrow closed'} this held action on gate receipt ${hold.gate_receipt_id}.`, 300);
   }
+  const arbitration = hold.arbitration_receipt_id ? `, arbitration_receipt_id ${hold.arbitration_receipt_id} and the owner_approval_receipt_id Marrow gave when it allowed the action` : '';
   if (hold.proof_required) {
-    return bounded(`Marrow recorded the approval of this held action (client-attested). Close it with marrow_commit: ${decision}gate_receipt_id ${hold.gate_receipt_id}, the real success and outcome, and proof with ${proof}. Do not call marrow_agent_runtime or marrow_think again for it.`, 600);
+    return bounded(`${recorded} Close it with marrow_commit: ${decision}gate_receipt_id ${hold.gate_receipt_id}${arbitration}, the real success and outcome, and proof with ${proof}. Do not call marrow_agent_runtime or marrow_think again for it.`, 600);
   }
-  return bounded(`Marrow recorded the approval of this held action (client-attested). Close it with marrow_commit: ${decision}gate_receipt_id ${hold.gate_receipt_id}, and the real success and outcome.`, 500);
+  return bounded(`${recorded} Close it with marrow_commit: ${decision}gate_receipt_id ${hold.gate_receipt_id}${arbitration}, and the real success and outcome.`, 500);
 }
+
+/** How long a post-tool hook waits for Claude Code's async PermissionRequest marker. */
+export const LATE_MARKER_WAIT_MS = 1_500;
 
 /**
  * After the tool ran (PostToolUse/PostToolUseFailure, Cursor after*Execution):
  * the operator allowed an asked call, or a waited hold was approved and retried.
  * Reports the approval (asked calls only), then commits the real outcome when
- * no proof is required; otherwise tells the agent how to close it with proof.
+ * no proof is required and the host reported it; otherwise tells the agent how
+ * to close it.
  */
 export async function settleAfterTool(ctx: HoldContext, input: {
   correlation: string;
   toolUseId: string | null;
   generationId: string | null;
-  success: boolean;
+  /** null when the host does not say whether the call succeeded (Cursor's after-execution events). */
+  success: boolean | null;
+  /** Test seam: how long to wait for a late dialog marker. */
+  markerWaitMs?: number;
 }): Promise<string | null> {
   const scope = scopeOf(ctx);
   let holds: HoldRecord[];
@@ -703,10 +896,23 @@ export async function settleAfterTool(ctx: HoldContext, input: {
   } catch {
     return null;
   }
-  const hold = holds[0];
+  let hold = holds[0];
   if (!hold || hold.outbox) return null;
   const answeredAt = new Date().toISOString();
-  const commit = hold.proof_required ? null : { success: input.success, outcome: outcomeText(hold, input.success, ctx.host) };
+  if (hold.mode === 'ask' && hold.host === 'claude-code' && !hold.dialog_at) {
+    // The marker hook runs async: after a fast click it can land just after
+    // this hook starts. Wait briefly so a real click is not labelled an allow rule.
+    const waitUntil = Date.now() + (input.markerWaitMs ?? LATE_MARKER_WAIT_MS);
+    while (Date.now() < waitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const latest = findHolds(scope, { id: hold.id }, ctx.home)[0];
+      if (!latest || latest.state !== 'open' || latest.outbox) break;
+      hold = latest;
+      if (latest.dialog_at) break;
+    }
+  }
+  // An outcome the host does not report (null) is never committed as a success or a failure.
+  const commit = hold.proof_required || input.success === null ? null : { success: input.success, outcome: outcomeText(hold, input.success, ctx.host) };
   const report: HoldReport | null = hold.mode === 'ask'
     ? {
       verdict: 'approved',

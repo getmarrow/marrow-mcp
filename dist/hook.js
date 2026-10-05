@@ -9,6 +9,7 @@ exports.hookSpooledLifecycleEvent = hookSpooledLifecycleEvent;
 exports.runHookCommand = runHookCommand;
 exports.runPermissionRequestHookCommand = runPermissionRequestHookCommand;
 exports.installPermissionRequestHook = installPermissionRequestHook;
+const node_crypto_1 = require("node:crypto");
 const codex_native_usage_1 = require("./codex-native-usage");
 const index_1 = require("./index");
 const habit_loop_copy_1 = require("./habit-loop-copy");
@@ -65,7 +66,9 @@ function deriveToolOutcome(event) {
     const duration = typeof event.duration_ms === 'number' && Number.isFinite(event.duration_ms)
         ? Math.max(0, Math.min(300_000, Math.round(event.duration_ms)))
         : undefined;
-    return { success: !failed, ...(duration === undefined ? {} : { duration_ms: duration }) };
+    // A host that does not report the result (Cursor's after-execution events): unknown, unless it says it failed.
+    const unknown = !failed && event.outcome_unknown === true;
+    return { success: !failed, ...(unknown ? { unknown: true } : {}), ...(duration === undefined ? {} : { duration_ms: duration }) };
 }
 async function readStdin() {
     const chunks = [];
@@ -231,7 +234,7 @@ async function runHookCommand(input) {
                 correlation,
                 toolUseId: getString(event.tool_use_id) || null,
                 generationId: getString(event.generation_id) || null,
-                success: outcome.success,
+                success: outcome.unknown ? null : outcome.success,
             }).catch(() => null);
             if (handoff)
                 heldActionContext = handoff;
@@ -258,6 +261,9 @@ async function runHookCommand(input) {
             ? success ? 'command_completed' : 'command_failed'
             : success ? 'tool_completed' : 'tool_failed';
         const lifecycleCorrelation = (0, hook_contract_1.stableToolCorrelation)({ ...event, session_id: sessionId });
+        // One record per attempt: the same action run again in a session is a new attempt.
+        const attemptSource = getString(event.tool_use_id) || getString(event.generation_id);
+        const attempt = (0, node_crypto_1.createHash)('sha256').update(attemptSource || (0, node_crypto_1.randomUUID)()).digest('hex').slice(0, 12);
         // Spool only: PostToolUse runs on every tool call, so it must add ~no latency.
         // cli.ts launches a detached background nudge that delivers the spooled event.
         // With the nudge disabled (MARROW_HOOK_BACKGROUND_NUDGE=false) keep bounded inline delivery.
@@ -267,8 +273,8 @@ async function runHookCommand(input) {
             baseUrl,
             deferDelivery: deferred,
             event: {
-                event_id: `posttool-${lifecycleCorrelation}`,
-                event_type: eventType,
+                event_id: `posttool-${lifecycleCorrelation}-${attempt}`,
+                event_type: outcome.unknown ? 'tool_completed' : eventType,
                 ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                 session_id: sessionId,
                 workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, event.generation_id || event.tool_use_id || event.task_id),
@@ -277,8 +283,8 @@ async function runHookCommand(input) {
                 target: classified.target,
                 surfaces: classified.surfaces,
                 risk_level: classified.risk,
-                success,
-                outcome_state: 'pending',
+                // An unknown result is recorded as unknown, never as a success.
+                ...(outcome.unknown ? { outcome_state: 'unknown' } : { success, outcome_state: 'pending' }),
             },
         });
         spooledLifecycleEvent = deferred && receipt.queued;

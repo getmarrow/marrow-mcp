@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
@@ -96,6 +96,30 @@ function harness() {
     try { json = output ? JSON.parse(output) : null; } catch { json = null; }
     return { status: result.status, stdout: output, stderr: result.stderr, json };
   };
+  // The same as run, without blocking: for calls a host makes at the same time.
+  const runAsync = (entrypoint, payload, env = {}) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, entrypoint], {
+      env: {
+        PATH: process.env.PATH, HOME: home, MARROW_API_KEY: apiKey, MARROW_BASE_URL: 'https://api.example.test',
+        MARROW_AGENT_ID: 'agent-one', MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false',
+        MARROW_TEST_MOCK_DIR: mockDir, NODE_OPTIONS: `--require=${MOCK}`, ...env,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const started = Date.now();
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (status) => {
+      const output = stdout.trim();
+      let json = null;
+      try { json = output ? JSON.parse(output) : null; } catch { json = null; }
+      resolve({ status, stdout: output, stderr, json, ms: Date.now() - started });
+    });
+    child.stdin.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  });
   const transcript = (name) => {
     const target = join(dir, name);
     copyFileSync(join(FIXTURES, name), target);
@@ -105,7 +129,7 @@ function harness() {
     const path = join(home, '.marrow', 'host-approvals', 'state.json');
     return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null;
   };
-  return { dir, home, run, setConfig, requests, transcript, state, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, home, run, runAsync, setConfig, requests, transcript, state, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 const hostReports = (h) => h.requests().filter((r) => r.path.endsWith('/host-approval'));
@@ -119,13 +143,15 @@ test('Claude Code texts are pinned to the 2.1.289 bundle', () => {
   assert.equal(CLAUDE_CODE_USER_REJECTED, "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.");
   assert.equal(CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK, "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\n");
   assert.ok(CLAUDE_CODE_NOT_A_DECISION_PREFIXES.includes('[Request interrupted by user'));
-  // When a Claude Code bundle is available, every pinned text must still be in it.
+  // When a Claude Code bundle is available, every pinned text must still be in it,
+  // byte for byte (the native 2.1.289 binary stores the feedback text with a real newline).
   const bundle = process.env.MARROW_TEST_CLAUDE_CODE_BUNDLE;
   if (bundle && existsSync(bundle)) {
     const bytes = readFileSync(bundle);
-    for (const text of [CLAUDE_CODE_USER_REJECTED, CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK.replace('\n', '\\n'), ...CLAUDE_CODE_NOT_A_DECISION_PREFIXES]) {
+    for (const text of [CLAUDE_CODE_USER_REJECTED, CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK, ...CLAUDE_CODE_NOT_A_DECISION_PREFIXES]) {
       assert.ok(bytes.includes(Buffer.from(text)), `missing from the Claude Code bundle: ${text.slice(0, 60)}`);
     }
+    assert.ok(!bytes.includes(Buffer.from(CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK.replace('\n', '\\n'))), 'the escaped form would not match the bundle');
   }
 });
 
@@ -176,7 +202,9 @@ test('Claude Code allow: one click in the host dialog is reported with the Permi
     assert.equal(report.body.hook_event, 'PermissionRequest');
     assert.equal(report.body.host_session_id, '3b1f0c2e-0000-4000-8000-00000000000a');
     assert.equal(report.body.decision_id, 'decision-review');
-    assert.match(report.body.pre_action_event_id, /^pretool-[a-f0-9]{32}$/);
+    assert.match(report.body.pre_action_event_id, /^pretool-[a-f0-9]{32}-[a-f0-9]{12}$/);
+    const preEvents = h.requests().filter((r) => r.path === '/v1/agent/integrations/events' && /^pretool-/.test(r.body?.event_id || ''));
+    assert.deepEqual(preEvents.map((r) => r.body.event_id), [report.body.pre_action_event_id], 'the report names the lifecycle record of the attempt that held it');
     assert.ok(Date.parse(report.body.answered_at) >= Date.parse(report.body.asked_at));
     assert.equal(report.session, '3b1f0c2e-0000-4000-8000-00000000000a');
     // Proof is required: the hook never commits without it (that would block the trusted close).
@@ -388,7 +416,7 @@ test('Claude Code auto mode asks only when the input proves a version whose hook
 test('a verified-only category and a standing owner decline deny before the tool runs; nobody is sent to a dashboard login', () => {
   for (const [label, approval, pattern, next, remembered] of [
     ['verified category', { host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'account_owner' },
-      /The account owner approves production_deploy actions personally\. The approval request goes to the account owner\./, /When it is approved, retry this exact action/, true],
+      /The account owner approves production_deploy actions personally\. Tell the operator this action is waiting for the account owner's approval\./, /When it is approved, retry this exact action/, true],
     ['settings unreadable', { host_approval_accepted: false, verified_approval_required: null, approval_authority: 'account_owner' },
       /Marrow could not read the account approval settings\./, /Retry this exact action in a moment\./, false],
     ['owner decline stands', { host_approval_accepted: false, host_approval_refusal_reason: 'owner_decline_stands', approval_authority: 'account_owner', verified_approval_required: null },
@@ -439,7 +467,7 @@ test('a waiting hold is re-checked on retry: pending denies again, approved runs
     h.setConfig({ status: { 'gate-wait': 'approved' } });
     const approved = h.run('claude-pre-action-hook', { ...payload, tool_use_id: 'toolu_retry_2' });
     assert.equal(approved.json.hookSpecificOutput.permissionDecision, undefined, 'normal host permission rules apply');
-    assert.match(approved.json.hookSpecificOutput.additionalContext, /^Marrow: the account owner approved this held action \(gate receipt gate-wait\)\. Run only this exact action/);
+    assert.match(approved.json.hookSpecificOutput.additionalContext, /^Marrow: The account owner approved this held action \(gate receipt gate-wait\)\. Run only this exact action/);
     assert.equal(runtimes(h).length, 1);
     const post = h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), tool_use_id: 'toolu_retry_2' });
     assert.deepEqual(hostReports(h), [], 'a dashboard approval is not reported again by the host');
@@ -607,20 +635,33 @@ test('an owner-only hold sends the owner a one-tap link once, and says so; nobod
   } finally { h.cleanup(); }
 });
 
-test('a link that could not be sent says the request goes to the owner, and is retried once on the next attempt', () => {
+test('a link Marrow could not send is never called sent: a retryable failure is tried again on the next attempt, a final one is not', () => {
   const h = harness();
   try {
     h.setConfig({
       runtime: withLink('gate-held', { host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'account_owner' }),
       status: { 'gate-held': 'pending' },
-      approvalLink: [{ status: 409, body: { error: 'no channel', details: { code: 'MARROW_APPROVAL_CHANNEL_UNAVAILABLE' } } }, { status: 200 }],
+      approvalLink: [{ status: 409, body: { error: 'not delivered', details: { code: 'MARROW_APPROVAL_LINK_UNDELIVERED', retryable: true } } }, { status: 200 }],
     });
     const first = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
-    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /actions personally\. The approval request goes to the account owner\./);
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /actions personally\. Marrow could not send the account owner an approval link yet; retrying this exact action tries again\./);
+    assert.doesNotMatch(first.stdout, /link was sent|request goes to/);
     const again = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_retry' });
     assert.match(again.json.hookSpecificOutput.permissionDecisionReason, /An approval link was sent to the account owner \(email\)\./);
     assert.equal(linkRequests(h).length, 2);
   } finally { h.cleanup(); }
+  const f = harness();
+  try {
+    f.setConfig({
+      runtime: withLink('gate-held', { host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'account_owner' }),
+      status: { 'gate-held': 'pending' },
+      approvalLink: [{ status: 409, body: { error: 'no channel', details: { code: 'MARROW_APPROVAL_CHANNEL_UNAVAILABLE' } } }],
+    });
+    const first = f.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /Marrow could not send the account owner an approval link \(MARROW_APPROVAL_CHANNEL_UNAVAILABLE\); tell the operator this action is waiting for the account owner's approval\./);
+    f.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_retry' });
+    assert.equal(linkRequests(f).length, 1, 'a final refusal is not retried');
+  } finally { f.cleanup(); }
 });
 
 test('a standing owner decline: no link until the operator asks by retrying; then one link, and later retries send none', () => {
@@ -709,6 +750,264 @@ test('after an operator decline only a marked answer counts: Claude Code still a
   } finally { c.cleanup(); }
 });
 
+
+// ---------------------------------------------------------------- Fix round 1 (audit of 0bfc055)
+
+const verifiedRuntime = (receipt = 'gate-held') => withLink(receipt, { host_approval_accepted: false, verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'account_owner' });
+
+test('MEDIUM-1: one approval lets exactly one of two identical parallel calls run', async () => {
+  for (let round = 0; round < 3; round += 1) {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: verifiedRuntime(), status: { 'gate-held': 'pending' } });
+      assert.equal(h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json')).json.hookSpecificOutput.permissionDecision, 'deny');
+      h.setConfig({ status: { 'gate-held': 'approved' } });
+      const [one, two] = await Promise.all([
+        h.runAsync('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_parallel_1' }),
+        h.runAsync('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_parallel_2' }),
+      ]);
+      const decisions = [one, two].map((run) => run.json.hookSpecificOutput.permissionDecision ?? 'allow').sort();
+      assert.deepEqual(decisions, ['allow', 'deny'], `round ${round}: exactly one call runs on one approval`);
+      const denied = [one, two].find((run) => run.json.hookSpecificOutput.permissionDecision === 'deny');
+      // The loser either lost the compare-and-set on the approved hold, or found it already taken and was held anew.
+      assert.match(denied.json.hookSpecificOutput.permissionDecisionReason, /an identical call is already running on that approval, so this repeat did not run|^Marrow is holding this action for approval/);
+    } finally { h.cleanup(); }
+  }
+});
+
+test('MEDIUM-1: the compare-and-set itself: a hold already claimed is never claimed again', () => {
+  const { claimHold, recordHold } = require('../dist/host-approval-state.js');
+  const dir = mkdtempSync(join(tmpdir(), 'marrow-claim-'));
+  const home = join(dir, 'home');
+  mkdirSync(home, { mode: 0o700 });
+  try {
+    const scope = { apiKey: 'dummy-claim-key', baseUrl: 'https://api.example.test', agentId: 'agent-one' };
+    const hold = recordHold(scope, {
+      host: 'claude-code', harness: 'claude-code', session_id: 'session-claim', host_session_id: 'session-claim', agent_id: 'agent-one',
+      correlation: 'a'.repeat(32), tool_use_id: null, generation_id: null, tool_name: 'Bash', hook_event: 'PreToolUse', mode: 'wait',
+      gate_receipt_id: 'gate-claim', decision_id: 'decision-claim', asked_at: new Date().toISOString(), pre_action_event_id: null,
+      proof_required: false, proof_fields: [], expires_at: null, action: { action: 'a', target: 't', type: 'deploy', surfaces: [] }, withCode: false,
+    }, home);
+    const first = claimHold(scope, hold.id, (current) => ({ ...current, state: 'allowed' }), home);
+    const second = claimHold(scope, hold.id, (current) => ({ ...current, state: 'allowed' }), home);
+    assert.equal(first.state, 'allowed');
+    assert.equal(second, null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('MEDIUM-2: a waiting hold stays held when Marrow cannot be read, on Claude Code and Codex', () => {
+  for (const [entrypoint, payload, env] of [
+    ['claude-pre-action-hook', fixture('claude-pre-tool-use.json'), {}],
+    ['codex-pre-action-hook', fixture('codex-pre-tool-use.json'), { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex exec deploy' }],
+  ]) {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: verifiedRuntime(), status: { 'gate-held': 'pending' } });
+      assert.equal(h.run(entrypoint, payload, env).json.hookSpecificOutput.permissionDecision, 'deny');
+      h.setConfig({ statusUnreachable: true, runtimeUnreachable: true });
+      const retried = h.run(entrypoint, { ...payload, tool_use_id: 'retry_unreachable' }, env);
+      assert.equal(retried.json.hookSpecificOutput.permissionDecision, 'deny', entrypoint);
+      assert.equal(retried.json.hookSpecificOutput.permissionDecisionReason, "Marrow could not confirm the owner's approval; this action stays held. Retry when Marrow is reachable.");
+      assert.doesNotMatch(retried.stdout, /offline|allowed/i);
+      assert.equal(runtimes(h).length, 1, 'no new hold while it waits');
+    } finally { h.cleanup(); }
+  }
+});
+
+test('MEDIUM-2: an owner-protected category stays held during an outage on every host; other actions keep the outage policy', () => {
+  const learn = (h) => {
+    h.setConfig({ runtime: verifiedRuntime('gate-learn'), status: { 'gate-learn': 'pending' } });
+    h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'learning-session' });
+    h.setConfig({ runtimeUnreachable: true, statusUnreachable: true });
+  };
+  const hosts = [
+    ['claude-pre-action-hook', fixture('claude-pre-tool-use.json'), (out) => out.json.hookSpecificOutput.permissionDecision === 'deny' && /could not confirm the owner's approval/.test(out.json.hookSpecificOutput.permissionDecisionReason)],
+    ['codex-pre-action-hook', fixture('codex-pre-tool-use.json'), (out) => out.json.hookSpecificOutput.permissionDecision === 'deny'],
+    ['cursor-pre-action-hook', fixture('cursor-before-shell.json'), (out) => out.json.permission === 'deny' && /could not confirm the owner's approval/.test(out.json.agent_message)],
+    ['gemini-pre-action-hook', fixture('gemini-before-tool.json'), (out) => out.json.decision === 'deny'],
+    ['grok-pre-action-hook', fixture('grok-pre-tool-use.json'), (out) => out.json.decision === 'deny'],
+    ['cline-pre-action-hook', { hookName: 'PreToolUse', taskId: 'task-outage', preToolUse: { toolName: 'execute_command', parameters: { command: 'wrangler deploy --env production' } } }, (out) => out.json.cancel === true && /could not confirm the owner's approval/.test(out.json.errorMessage)],
+    ['windsurf-pre-action-hook', { agent_action_name: 'pre_run_command', trajectory_id: 'traj-outage', execution_id: 'exec-outage', tool_info: { command_line: 'wrangler deploy --env production', cwd: '/home/operator/project' } }, (out) => out.status === 2 && /could not confirm the owner's approval/.test(out.stderr)],
+  ];
+  for (const [entrypoint, payload, denied] of hosts) {
+    const h = harness();
+    try {
+      learn(h);
+      const out = h.run(entrypoint, payload);
+      assert.ok(denied(out), `${entrypoint}: ${out.stdout || out.stderr}`);
+    } finally { h.cleanup(); }
+  }
+  // Not protected (the owner removed it): the existing outage policy applies.
+  const u = harness();
+  try {
+    u.setConfig({ runtime: verifiedRuntime('gate-learn'), status: { 'gate-learn': 'pending' } });
+    u.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'learning-session' });
+    u.setConfig({ runtime: hostRuntime('gate-later'), status: { 'gate-later': 'pending' } });
+    u.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'later-session' });
+    u.setConfig({ runtimeUnreachable: true, statusUnreachable: true });
+    const out = u.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'outage-session' });
+    assert.equal(out.json.hookSpecificOutput.permissionDecision, undefined);
+    assert.match(out.json.hookSpecificOutput.additionalContext, /offline/i);
+  } finally { u.cleanup(); }
+});
+
+test('MEDIUM-3: an older service without host-approval fields keeps one waiting hold, says so plainly, and lets an owner approval through', () => {
+  const legacy = hostRuntime('gate-legacy');
+  const approval = legacy.completion_contract.owner_approval;
+  for (const field of ['host_approval_endpoint', 'host_approval_accepted', 'host_approval_trust', 'approval_categories', 'verified_approval_required', 'verified_approval_categories']) delete approval[field];
+  approval.approval_authority = 'authenticated_dashboard_owner';
+  const h = harness();
+  try {
+    h.setConfig({ runtime: legacy, status: { 'gate-legacy': 'pending' } });
+    const first = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    assert.equal(first.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it\. Retry this exact action after the owner approves it/);
+    assert.doesNotMatch(first.stdout, /dashboard|log ?in|could not read/i);
+    for (const id of ['toolu_legacy_1', 'toolu_legacy_2', 'toolu_legacy_3']) {
+      const retry = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: id });
+      assert.match(retry.json.hookSpecificOutput.permissionDecisionReason, /^Marrow is still holding this action for approval \(gate receipt gate-legacy\).*does not support chat or terminal approvals yet/);
+    }
+    assert.equal(runtimes(h).length, 1, 'never a new pending receipt on each retry');
+    h.setConfig({ status: { 'gate-legacy': 'approved' } });
+    const allowed = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_legacy_4' });
+    assert.equal(allowed.json.hookSpecificOutput.permissionDecision, undefined);
+    assert.match(allowed.json.hookSpecificOutput.additionalContext, /^Marrow: The account owner approved this held action \(gate receipt gate-legacy\)/);
+  } finally { h.cleanup(); }
+});
+
+test('lifecycle records are per attempt: a retried action never reuses an event id, and the report names the attempt that held it', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime('gate-a') });
+    h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    h.run('claude-hook', { ...fixture('claude-post-tool-batch-rejected.json'), transcript_path: null });
+    h.setConfig({ runtime: hostRuntime('gate-b') });
+    h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_second_attempt' });
+    h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
+    h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), tool_use_id: 'toolu_second_attempt' });
+    const pre = h.requests().filter((r) => r.path === '/v1/agent/integrations/events' && /^pretool-/.test(r.body?.event_id || ''));
+    assert.equal(pre.length, 2);
+    assert.notEqual(pre[0].body.event_id, pre[1].body.event_id);
+    const approvedReport = hostReports(h).find((r) => r.body.verdict === 'approved');
+    assert.equal(approvedReport.body.pre_action_event_id, pre[1].body.event_id);
+    const post = h.requests().filter((r) => r.path === '/v1/agent/integrations/events' && /^posttool-/.test(r.body?.event_id || ''));
+    assert.equal(new Set(post.map((r) => r.body.event_id)).size, post.length);
+  } finally { h.cleanup(); }
+});
+
+test('L-1: Codex answers inside its hook budget when Marrow is slow (an owner-protected action stays held, others keep the outage policy)', async () => {
+  const codex = { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex exec deploy' };
+  const h = harness();
+  try {
+    h.setConfig({ runtime: verifiedRuntime(), status: { 'gate-held': 'pending' } });
+    h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), codex);
+    // Marrow now answers too slowly: the hook stops at its own budget, not at Codex's 5-second kill (which lets the call run).
+    h.setConfig({ runtimeDelayMs: 8_000, statusDelayMs: 8_000, linkDelayMs: 8_000 });
+    const held = await h.runAsync('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), session_id: 'codex-slow', tool_use_id: 'call_slow' }, codex);
+    assert.ok(held.ms < 4_200, `the Codex hook took ${held.ms} ms`);
+    assert.equal(held.json.hookSpecificOutput.permissionDecision, 'deny');
+    const waiting = await h.runAsync('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_wait' }, codex);
+    assert.ok(waiting.ms < 4_200, `the waiting Codex hook took ${waiting.ms} ms`);
+    assert.equal(waiting.json.hookSpecificOutput.permissionDecisionReason, "Marrow could not confirm the owner's approval; this action stays held. Retry when Marrow is reachable.");
+  } finally { h.cleanup(); }
+});
+
+test('L-1: a link step that does not fit before the answer is deferred, and its text never claims a send', async () => {
+  const { requestOwnerLink, finalizeOwnerRequest, OWNER_APPROVAL_REQUEST_TEXT } = require('../dist/host-approval.js');
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new Error('not expected'); };
+  try {
+    const hold = { id: 'hold_' + 'a'.repeat(24), owner_link: 'unsent', link_attempts: 0, gate_receipt_id: 'gate-x', decision_id: null, session_id: 's', agent_id: null };
+    const outcome = await requestOwnerLink({ apiKey: 'dummy', baseUrl: 'https://api.example.test', sessionId: 's', harness: 'codex', host: 'codex', hostSessionId: 's', deadlineAt: Date.now() + 500 }, hold);
+    assert.deepEqual(outcome, { kind: 'deferred' });
+    assert.equal(calls, 0, 'no request is started without time to finish it');
+    const plan = finalizeOwnerRequest({ kind: 'deny', agentText: `Held. ${OWNER_APPROVAL_REQUEST_TEXT}`, userText: `Held. ${OWNER_APPROVAL_REQUEST_TEXT}`, code: false }, outcome);
+    assert.equal(plan.agentText, 'Held. Marrow could not send the account owner an approval link yet; retrying this exact action tries again.');
+  } finally { globalThis.fetch = original; }
+});
+
+test('L-2: a dialog marker that lands just after a fast click still counts as the operator\'s answer', async () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime() });
+    assert.equal(h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json')).json.hookSpecificOutput.permissionDecision, 'ask');
+    const post = h.runAsync('claude-hook', fixture('claude-post-tool-use.json'));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
+    await post;
+    assert.equal(hostReports(h)[0].body.hook_event, 'PermissionRequest');
+  } finally { h.cleanup(); }
+});
+
+test('L-3: headless Claude Code (CLAUDE_CODE_ENTRYPOINT sdk-cli, inherited by hooks) goes straight to the owner link', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: withLink(), status: { 'gate-held': 'pending' } });
+    const out = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'), { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' });
+    assert.equal(out.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Claude Code runs headless here \(sdk-cli, no one sees a dialog\), so no one can answer a dialog\. An approval link was sent to the account owner \(email\)\./);
+    assert.equal(linkRequests(h).length, 1);
+    const interactive = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'interactive-session' }, { CLAUDE_CODE_ENTRYPOINT: 'cli' });
+    assert.equal(interactive.json.hookSpecificOutput.permissionDecision, 'ask');
+  } finally { h.cleanup(); }
+});
+
+test('L-4: after a mode switch the dialog still shows the server notice and the reason', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: withLink('gate-held', { operator_notice: 'The account owner declined a similar action at 2026-10-05T10:00:00.000Z.' }), status: { 'gate-held': 'pending' } });
+    h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'bypassPermissions' });
+    const asked = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_switched' });
+    assert.equal(asked.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.match(asked.json.hookSpecificOutput.permissionDecisionReason, /Note: The account owner declined a similar action at 2026-10-05T10:00:00\.000Z\. Reason: Production deploys need approval\./);
+  } finally { h.cleanup(); }
+});
+
+test('L-8: Cursor\'s after-execution events carry no result, so the outcome is unknown and never committed as completed', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: noProofRuntime() });
+    h.run('cursor-session-hook', fixture('cursor-session-start.json'));
+    assert.equal(h.run('cursor-pre-action-hook', fixture('cursor-before-shell.json')).json.permission, 'ask');
+    h.run('cursor-hook', fixture('cursor-after-shell.json'));
+    assert.equal(hostReports(h).length, 1, 'the allow is still reported');
+    assert.deepEqual(commits(h), [], 'no outcome is invented');
+    const post = h.requests().find((r) => r.path === '/v1/agent/integrations/events' && /^posttool-/.test(r.body?.event_id || ''));
+    assert.equal(post.body.outcome_state, 'unknown');
+    assert.equal('success' in post.body, false);
+  } finally { h.cleanup(); }
+});
+
+test('arbitration review: the hook sends the owner a one-tap link, waits on the same receipt, and hands over the owner receipt when approved', () => {
+  const runtime = hostRuntime('gate-arb');
+  runtime.arbitration = { receipt_id: 'arb-receipt-1', decision_id: 'decision-review', resolution: 'review_required', owner_approval_required: true };
+  runtime.completion_contract.arbitration_receipt_required = true;
+  runtime.completion_contract.owner_approval = {
+    mode: 'arbitration_review_required', proof_path: null, proof_shape: null, dashboard_receipt_required: true,
+    receipt_field: 'owner_approval_receipt_id',
+    approval_link_endpoint: '/v1/agent/gate-receipts/gate-arb/approval-link',
+    approval_status_endpoint: '/v1/agent/gate-receipts/gate-arb/owner-approval',
+  };
+  const h = harness();
+  try {
+    h.setConfig({ runtime, status: { 'gate-arb': 'arbitration_review' } });
+    const first = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    assert.equal(first.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /^Marrow is holding this action for arbitration review \(gate receipt gate-arb\), so it did not run\. The account owner picks and approves one proposal\. An approval link was sent to the account owner \(email\)\./);
+    assert.doesNotMatch(first.stdout, /dashboard|log ?in/i);
+    assert.deepEqual(commits(h), [], 'the receipt the owner is about to answer is never spent by the hook');
+    const waiting = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_arb_2' });
+    assert.match(waiting.json.hookSpecificOutput.permissionDecisionReason, /^Marrow is still holding this action for arbitration review/);
+    assert.equal(runtimes(h).length, 1);
+    h.setConfig({ status: { 'gate-arb': 'approved' } });
+    const allowed = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_arb_3' });
+    assert.equal(allowed.json.hookSpecificOutput.permissionDecision, undefined);
+    assert.match(allowed.json.hookSpecificOutput.additionalContext, /arbitration_receipt_id arb-receipt-1, owner_approval_receipt_id oar-fixture/);
+    assert.equal(linkRequests(h).length, 1);
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------------- Cursor
 
 test('Cursor asks only on beforeShellExecution/beforeMCPExecution in a local interactive session', () => {
@@ -745,7 +1044,8 @@ test('Cursor never asks on preToolUse, in cloud agents (no sessionStart) or in b
       if (sessionFixture) h.run('cursor-session-hook', fixture(sessionFixture));
       const out = h.run('cursor-pre-action-hook', fixture(event));
       assert.equal(out.json.permission, 'deny', label);
-      assert.match(out.json.agent_message, /The approval request goes to the account owner\./, label);
+      assert.match(out.json.agent_message, /Tell the operator this action is waiting for the account owner's approval\./, label);
+      assert.doesNotMatch(out.stdout, /request goes to|link was sent/, `${label}: no link was sent, so none is claimed`);
       assert.doesNotMatch(out.stdout, /dashboard/i, label);
       assert.doesNotMatch(out.json.user_message, /marrow approve/, `${label}: no typed approval offered`);
     } finally { h.cleanup(); }
@@ -803,7 +1103,7 @@ test('Codex never asks (it fails open); outside a local interactive session it o
       assert.equal(denied.json.hookSpecificOutput.permissionDecision, 'deny', label);
       assert.equal(denied.json.systemMessage, undefined, label);
       assert.doesNotMatch(denied.stdout, /marrow approve|dashboard/i, label);
-      assert.match(denied.json.hookSpecificOutput.permissionDecisionReason, /Codex cannot ask the operator in this session\. The approval request goes to the account owner\./, label);
+      assert.match(denied.json.hookSpecificOutput.permissionDecisionReason, /Codex cannot ask the operator in this session\. Tell the operator this action is waiting for the account owner's approval\./, label);
       h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: 'marrow approve ABCDEF' }, env);
       assert.deepEqual(hostReports(h), [], `${label}: no typed approval is accepted`);
       h.setConfig({ status: { 'gate-held': 'approved' } });
@@ -886,12 +1186,13 @@ test('Gemini CLI in a local interactive session: the code goes to systemMessage,
   } finally { h.cleanup(); }
 });
 
-test('Grok has no user-only channel: it denies and the request goes to the owner', () => {
+test('Grok has no user-only channel: it denies with the only text the installer\'s Grok guard passes, and the owner gets the link', () => {
   const g = harness();
   try {
-    g.setConfig({ runtime: hostRuntime() });
+    g.setConfig({ runtime: withLink(), status: { 'gate-held': 'pending' } });
     const grok = g.run('grok-pre-action-hook', fixture('grok-pre-tool-use.json'));
-    assert.deepEqual(grok.json, { decision: 'deny', reason: 'Marrow is holding this action for approval; the approval request goes to the account owner. Retry it after approval.' });
+    assert.deepEqual(grok.json, { decision: 'deny', reason: 'Marrow blocked this protected action.' });
+    assert.equal(linkRequests(g).length, 1);
     assert.deepEqual(hostReports(g), []);
   } finally { g.cleanup(); }
 });

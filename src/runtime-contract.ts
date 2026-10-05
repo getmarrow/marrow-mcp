@@ -534,6 +534,12 @@ export type OrdinaryApprovalGuidance = {
   hostApprovalPath: string | null;
   hostApprovalAccepted: boolean;
   /**
+   * The service reports host (chat or terminal) approvals at all. An older
+   * service sends no host-approval fields: only the account owner can approve
+   * there, and the status read still shows that approval.
+   */
+  hostApprovalSupported: boolean;
+  /**
    * Why the server refuses a host approval for this hold: owner_decline_stands,
    * verified_approval_required or approval_state_unavailable (null when it counts).
    */
@@ -611,6 +617,7 @@ export function ordinaryApprovalGuidance(
     pollAfterMs: boundedPollAfterMs(approval.approval_status_poll_after_ms),
     hostApprovalPath: hostApprovalAccepted ? hostApprovalPath(gateReceiptId) : null,
     hostApprovalAccepted,
+    hostApprovalSupported: typeof approval.host_approval_accepted === 'boolean',
     hostApprovalRefusal: hostApprovalAccepted ? null : refusal,
     ownerDeclinedAt: typeof approval.owner_declined_at === 'string' && Number.isFinite(Date.parse(approval.owner_declined_at))
       ? new Date(Date.parse(approval.owner_declined_at)).toISOString()
@@ -629,6 +636,58 @@ export function ordinaryApprovalGuidance(
     approvalAuthority: hostApprovalAccepted ? 'host_operator_or_account_owner' : 'account_owner',
     proofRequired: runtime.proof_pack?.required === true || completion?.proof_required_before_complete === true,
     proofFields,
+    expiresAt,
+  };
+}
+
+/**
+ * Arbitration review_required where the server lets the account owner pick and
+ * approve a proposal through a one-tap link; the status read then hands over
+ * the owner_approval_receipt_id. Null for a service without that path.
+ */
+export type ArbitrationApprovalGuidance = {
+  gateReceiptId: string;
+  decisionId: string;
+  arbitrationReceiptId: string;
+  statusPath: string;
+  linkPath: string;
+  pollAfterMs: number;
+  proofRequired: boolean;
+  proofFields: string[];
+  expiresAt: string | null;
+};
+
+export function arbitrationApprovalGuidance(
+  runtime: MarrowAgentRuntimeResult | null | undefined,
+): ArbitrationApprovalGuidance | null {
+  const arbitration = runtime?.arbitration;
+  if (!runtime || !arbitration) return null;
+  const completion = runtime.completion_contract;
+  const approval = optionalRecord(completion?.owner_approval);
+  if (!approval || approval.mode !== 'arbitration_review_required') return null;
+  if (arbitration.resolution !== 'review_required' && arbitration.owner_approval_required !== true) return null;
+  const gateReceiptId = runtimeAuthorizationReceiptId(runtime);
+  const decisionId = safeRuntimeIdentifier(arbitration.decision_id);
+  const arbitrationReceiptId = safeRuntimeIdentifier(arbitration.receipt_id);
+  if (!gateReceiptId || !decisionId || !arbitrationReceiptId) return null;
+  if (approval.approval_link_endpoint !== approvalLinkPath(gateReceiptId)
+    || approval.approval_status_endpoint !== ownerApprovalStatusPath(gateReceiptId)) return null;
+  const expiresAt = typeof runtime.gate_receipt?.expires_at === 'string' && Number.isFinite(Date.parse(runtime.gate_receipt.expires_at))
+    ? new Date(Date.parse(runtime.gate_receipt.expires_at)).toISOString()
+    : null;
+  return {
+    gateReceiptId,
+    decisionId,
+    arbitrationReceiptId,
+    statusPath: ownerApprovalStatusPath(gateReceiptId),
+    linkPath: approvalLinkPath(gateReceiptId),
+    pollAfterMs: boundedPollAfterMs(approval.approval_status_poll_after_ms),
+    proofRequired: runtime.proof_pack?.required === true || completion?.proof_required_before_complete === true,
+    proofFields: boundedStrings(
+      runtime.proof_pack?.fields?.length ? runtime.proof_pack.fields : completion?.required_proof_fields,
+      PROOF_FIELD,
+      24,
+    ),
     expiresAt,
   };
 }

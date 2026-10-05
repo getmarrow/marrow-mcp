@@ -518,9 +518,8 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
   if (runtime.before_you_act) {
     lines.push(`- Before you act: ${runtime.before_you_act}`);
   }
-  if (runtime.exact_next_action) {
-    lines.push(`- Next: ${runtime.exact_next_action}`);
-  }
+  // The runtime's exact_next_action is written for API clients (endpoints to
+  // call, such as an approval-link request) and is never relayed to the agent.
   const identified = asRecord(runtime.identified_workflow);
   if (identified?.skip_rediscovery === true || identified?.matched === true) {
     lines.push(`- Identified workflow: ${asString(identified.name) || asString(identified.id) || 'reuse the known path'}`);
@@ -679,7 +678,8 @@ export function compactRuntimeContext(runtime: MarrowAgentRuntimeResult): string
   if (steps.length) lines.push(`- Apply: ${steps.slice(0, 2).join('; ').slice(0, 360)}`);
   const proof = runtime.proof_pack?.fields || intervention?.playbook?.required_proof || [];
   if (proof.length) lines.push(`- Proof: ${proof.slice(0, 4).join(', ')}`);
-  const next = intervention?.exact_next_action || runtime.exact_next_action || runtime.decision_brief?.next_actions?.[0];
+  // Never the runtime's exact_next_action: it is written for API clients, not agents.
+  const next = runtime.decision_brief?.next_actions?.[0];
   if (next) lines.push(`- Next: ${String(next).slice(0, 320)}`);
   lines.push('- Record the measured outcome after meaningful work.');
   return lines.slice(0, 8).join('\n').slice(0, 1_600);

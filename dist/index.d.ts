@@ -1,4 +1,4 @@
-import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowArbitrationRequest, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult, MarrowEnforcementRequest, MarrowEnforcementResult, MarrowApprovalLinkResult, MarrowHostApprovalReport, MarrowHostApprovalResult, MarrowOwnerApprovalStatusResult } from './types';
+import type { ThinkResult, CommitResult, StatusResult, AgentPatternsResult, OrientResult, MarrowAskResult, WorkflowResult, MarrowDashboardResult, MarrowDecisionBriefRequest, MarrowDecisionBriefResult, MarrowAgentRuntimeRequest, MarrowAgentRuntimeResult, MarrowArbitrationRequest, MarrowFirstValueRequest, MarrowFirstValueResult, MarrowWorkflowGateRequest, MarrowWorkflowGateResult, MarrowDigestResult, MarrowAgentStatusResult, MarrowValueReportResult, MarrowModelUsageInput, MarrowModelUsageResult, MarrowNudgeResult, MarrowEnforcementRequest, MarrowEnforcementResult, MarrowApprovalLinkResult, MarrowHostApprovalReport, MarrowHostApprovalResult, MarrowOwnerApprovalStatus, MarrowOwnerApprovalStatusResult } from './types';
 import { type CreateApiKeyParams, type CreateApiKeyResult, type GetKeyAuditParams, type GetKeyAuditResult, type ListApiKeysResult, type MarrowApiKey, type RevokeApiKeyResult, type RotateApiKeyResult } from '@getmarrow/sdk';
 import { type LifecycleEvent } from './lifecycle-spool';
 import { type OrdinaryApprovalGuidance } from './runtime-contract';
@@ -124,7 +124,12 @@ export type MarrowAutoResult = {
     /** Present for an ordinary held action: where its approval stands. */
     approval?: MarrowAutoApprovalState;
     /** gate_denial: a declined hold was closed as a verified denial; the action did not run. */
-    closure?: 'gate_denial';
+    /**
+     * gate_denial: this call closed the decision as a denial. already_closed /
+     * already_closed_denial: the gate receipt was spent earlier (approved and
+     * used, or declined and closed); nothing was committed by this call.
+     */
+    closure?: 'gate_denial' | 'already_closed' | 'already_closed_denial';
     phase_timings_ms: {
         runtime: number | null;
         think: number | null;
@@ -148,6 +153,15 @@ export type MarrowAutoApprovalState = {
     poll_after_ms: number;
     expires_at: string | null;
 };
+/** The owner's one-tap link for one marrow_auto operation. */
+export type AutoOwnerLinkState = {
+    sent: boolean;
+    channel: string | null;
+    attempts: number;
+    /** A refusal another request cannot change (no channel, limit reached, receipt not held). */
+    finalCode: string | null;
+    final: boolean;
+};
 export type MarrowAutoParams = {
     action: string;
     outcome?: string;
@@ -170,11 +184,16 @@ export type MarrowAutoParams = {
     request_owner_link?: boolean;
 };
 /**
+ * What the status says about an approval of this receipt. "The account owner"
+ * only for the owner's verified approval; anything else is named for what it is.
+ */
+export declare function approvalStatement(status: MarrowOwnerApprovalStatus, gateReceiptId: string): string;
+/**
  * The text an agent follows while auto waits on a held action. It never asks
  * the agent to write an approval: only the account owner (one-tap link) or
  * the operator's host prompt can approve, and the server records it.
  */
-export declare function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance, linkChannel?: string | null): string;
+export declare function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance, link?: AutoOwnerLinkState): string;
 /**
  * Bounded outcome logging helper for tool hooks and simple integrations.
  * One outer invocation logs intent and, when an outcome is supplied, continues

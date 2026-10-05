@@ -102,7 +102,7 @@ test('a pending hold waits on the status read and asks to resume after retry_aft
     assert.equal(waiting.approval.state, 'pending');
     assert.equal(waiting.approval.gate_receipt_id, 'ordinary-gate');
     assert.equal(waiting.approval.approver, 'host_operator_or_account_owner');
-    assert.match(waiting.exact_next_action, /Do not run it yet\. The approval request goes to the account owner\./);
+    assert.match(waiting.exact_next_action, /Do not run it yet\. Tell the operator this action is waiting for approval\./);
     assert.doesNotMatch(waiting.exact_next_action, /dashboard/i, 'a dashboard login is never the step to take');
     assert.match(waiting.exact_next_action, /same operation_id after retry_after_ms/);
     assert.match(waiting.exact_next_action, /Never write or claim an approval yourself\./);
@@ -281,7 +281,7 @@ test('a verified-only category tells the agent only the account owner can approv
     assert.equal(waiting.approval.verified_approval_required, true);
     assert.equal(waiting.approval.approver, 'account_owner');
     assert.deepEqual(waiting.approval.verified_approval_categories, ['production_deploy']);
-    assert.match(waiting.exact_next_action, /The account owner approves production_deploy actions personally\. The approval request goes to the account owner\./);
+    assert.match(waiting.exact_next_action, /The account owner approves production_deploy actions personally\. Tell the operator this action is waiting for approval\./);
   });
 });
 
@@ -401,7 +401,7 @@ test('the CLI projects the wait and the closure, with the approval state and no 
       assert.equal(result.live_delivery.committed, approved);
       assert.equal(result.approval.state, approved ? 'used' : 'pending');
       assert.doesNotMatch(result.exact_next_action, /arbitrat|proof\.owner_approval|approved-release-bundle/i);
-      if (!approved) assert.match(result.exact_next_action, /The approval request goes to the account owner/);
+      if (!approved) assert.match(result.exact_next_action, /Tell the operator this action is waiting for approval/);
       assert.doesNotMatch(result.exact_next_action, /dashboard/i);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -413,4 +413,151 @@ test('the marrow_auto tool description never tells an agent to write its own app
   const description = source.slice(start, source.indexOf('inputSchema', start));
   assert.match(description, /Never write or claim an approval yourself\./);
   assert.doesNotMatch(description, /approval supplied in proof|proof\.owner_approval/);
+});
+
+// ---------------------------------------------------------------- Fix round 1 (audit of 0bfc055)
+
+function scriptedServer(states, runtime = runtimeFixture(), { links = [] } = {}) {
+  const calls = [];
+  const queue = [...states];
+  const linkQueue = [...links];
+  const fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push({ path, body, method: init.method || 'GET' });
+    if (path.endsWith('/runtime')) return Response.json({ data: runtime });
+    if (path.endsWith('/approval-link')) {
+      const next = linkQueue.length > 1 ? linkQueue.shift() : linkQueue[0] || { status: 200 };
+      if (next.status !== 200) return Response.json(next.body, { status: next.status });
+      return Response.json({ data: { approval_link: { gate_receipt_id: 'ordinary-gate', channel: 'email', expires_at: '2030-01-01T00:10:00.000Z' } } });
+    }
+    if (path === statusPath) {
+      const next = queue.length > 1 ? queue.shift() : queue[0];
+      const [state, extra] = Array.isArray(next) ? next : [next, {}];
+      return Response.json({ data: statusView(state, extra) });
+    }
+    if (path.endsWith('/commit')) return Response.json({ data: { committed: true, decision_id: body.decision_id } });
+    throw new Error(`unexpected ${path}`);
+  };
+  return { calls, fetch };
+}
+
+test('HIGH-1: declined, auto closes the denial, then called again: the spent receipt is final and never "approved"', async () => {
+  const mock = scriptedServer(['declined', ['used', { owner_approval_receipt_id: null, approval_source: 'one_tap', approval_trust: 'verified', approval_answered_by: 'account_owner' }]]);
+  await withFetch(mock.fetch, async () => {
+    const args = { ...baseParams, outcome: undefined, success: undefined, operation_id: 'high1_decline_autoclose' };
+    const closed = await invoke(marrowAuto, args);
+    assert.equal(closed.closure, 'gate_denial');
+    const again = await invoke(marrowAuto, args);
+    assert.equal(again.phase, 'closed');
+    assert.equal(again.committed, false);
+    assert.equal(again.resumable, false);
+    assert.equal(again.closure, 'already_closed_denial');
+    assert.match(again.exact_next_action, /was declined, and the decision is closed as a denial\. Do not run this action\./);
+    assert.doesNotMatch(again.exact_next_action, /approved|Run only/i);
+    assert.equal(mock.calls.filter((call) => call.path.endsWith('/commit')).length, 1, 'no second commit');
+  });
+});
+
+test('HIGH-1: declined, the agent closes the denial itself with marrow_commit, then auto is called again', async () => {
+  const mock = scriptedServer(['declined', ['used', { owner_approval_receipt_id: null }]]);
+  await withFetch(mock.fetch, async () => {
+    const args = { ...baseParams, operation_id: 'high1_decline_agentclose', proof: measuredProof };
+    const first = await invoke(marrowAuto, args);
+    assert.equal(first.phase, 'review_required');
+    assert.match(first.exact_next_action, /Do not run this action/);
+    // (the agent commits the denial with marrow_commit; the receipt is now used)
+    const again = await invoke(marrowAuto, { ...args, outcome: undefined, success: undefined, proof: undefined });
+    assert.equal(again.phase, 'closed');
+    assert.equal(again.closure, 'already_closed_denial');
+    assert.doesNotMatch(again.exact_next_action, /approved|Run only/i);
+    assert.equal(mock.calls.filter((call) => call.path.endsWith('/commit')).length, 0);
+  });
+});
+
+test('HIGH-1: approved and closed, then called again: closed, and never run the action a second time', async () => {
+  const mock = scriptedServer(['approved', ['used', { owner_approval_receipt_id: 'oar-1' }]]);
+  await withFetch(mock.fetch, async () => {
+    const args = { ...baseParams, operation_id: 'high1_success_again', proof: measuredProof };
+    const closed = await invoke(marrowAuto, args);
+    assert.equal(closed.committed, true);
+    const again = await invoke(marrowAuto, args);
+    assert.equal(again.phase, 'closed');
+    assert.equal(again.committed, false);
+    assert.equal(again.closure, 'already_closed');
+    assert.match(again.exact_next_action, /was approved and is already used: this operation is closed\. Do not run this action again\./);
+    assert.equal(mock.calls.filter((call) => call.path.endsWith('/commit')).length, 1);
+  });
+});
+
+test('"the account owner approved" only for the owner\'s verified approval', async () => {
+  const unverified = scriptedServer([['approved', { approval_source: 'dashboard', approval_trust: null, approval_answered_by: null }]]);
+  await withFetch(unverified.fetch, async () => {
+    const waiting = await invoke(marrowAuto, { ...baseParams, outcome: undefined, success: undefined, operation_id: 'approver_unverified' });
+    assert.match(waiting.exact_next_action, /^Marrow recorded an approval for gate receipt ordinary-gate\./);
+  });
+  const owner = scriptedServer([['approved', { approval_source: 'one_tap', approval_trust: 'verified', approval_answered_by: 'account_owner' }]]);
+  await withFetch(owner.fetch, async () => {
+    const waiting = await invoke(marrowAuto, { ...baseParams, outcome: undefined, success: undefined, operation_id: 'approver_verified' });
+    assert.match(waiting.exact_next_action, /^The account owner approved gate receipt ordinary-gate\./);
+  });
+});
+
+test('L-5: auto says a link was sent only when it was, and retries a retryable failure within the operation', async () => {
+  const runtime = runtimeFixture({ approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link' });
+  const mock = scriptedServer(['pending'], runtime, { links: [{ status: 409, body: { error: 'undelivered', details: { code: 'MARROW_APPROVAL_LINK_UNDELIVERED', retryable: true } } }, { status: 200 }] });
+  await withFetch(mock.fetch, async () => {
+    const first = await invoke(marrowAuto, { ...baseParams, operation_id: 'link_retry_op', proof: measuredProof });
+    assert.match(first.exact_next_action, /Marrow could not send the account owner an approval link yet; calling marrow_auto again with this same operation_id tries again\./);
+    assert.doesNotMatch(first.exact_next_action, /link was sent|request goes to/);
+    const second = await invoke(marrowAuto, { ...baseParams, operation_id: 'link_retry_op', proof: measuredProof });
+    assert.match(second.exact_next_action, /An approval link was sent to the account owner \(email\)\./);
+    await invoke(marrowAuto, { ...baseParams, operation_id: 'link_retry_op', proof: measuredProof });
+    assert.equal(mock.calls.filter((call) => call.path.endsWith('/approval-link')).length, 2);
+  });
+  const final = scriptedServer(['pending'], runtime, { links: [{ status: 409, body: { error: 'no channel', details: { code: 'MARROW_APPROVAL_CHANNEL_UNAVAILABLE' } } }] });
+  await withFetch(final.fetch, async () => {
+    const first = await invoke(marrowAuto, { ...baseParams, operation_id: 'link_final_op', proof: measuredProof });
+    assert.match(first.exact_next_action, /could not send the account owner an approval link \(MARROW_APPROVAL_CHANNEL_UNAVAILABLE\); tell the operator/);
+    await invoke(marrowAuto, { ...baseParams, operation_id: 'link_final_op', proof: measuredProof });
+    assert.equal(final.calls.filter((call) => call.path.endsWith('/approval-link')).length, 1, 'a final refusal is not retried');
+  });
+});
+
+test('MEDIUM-3: on an older service auto says plainly that chat approvals are not supported yet', async () => {
+  const runtime = runtimeFixture();
+  const approval = runtime.completion_contract.owner_approval;
+  for (const field of ['host_approval_endpoint', 'host_approval_accepted', 'host_approval_trust', 'approval_categories', 'verified_approval_required', 'verified_approval_categories']) delete approval[field];
+  approval.approval_authority = 'authenticated_dashboard_owner';
+  const mock = scriptedServer(['pending'], runtime);
+  await withFetch(mock.fetch, async () => {
+    const waiting = await invoke(marrowAuto, { ...baseParams, operation_id: 'legacy_service_op', proof: measuredProof });
+    assert.equal(waiting.phase, 'owner_approval_required');
+    assert.match(waiting.exact_next_action, /This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it\./);
+    assert.doesNotMatch(waiting.exact_next_action, /dashboard|log ?in/i);
+  });
+});
+
+test('arbitration review: auto asks Marrow for the owner\'s one-tap link, waits, then commits with the owner receipt from the status read', async () => {
+  const runtime = runtimeFixture();
+  runtime.arbitration = { receipt_id: 'arb-1', decision_id: 'ordinary-runtime-decision', resolution: 'review_required', owner_approval_required: true };
+  runtime.completion_contract.arbitration_receipt_required = true;
+  runtime.completion_contract.owner_approval = {
+    mode: 'arbitration_review_required', proof_path: null, proof_shape: null, dashboard_receipt_required: true, receipt_field: 'owner_approval_receipt_id',
+    approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link', approval_status_endpoint: statusPath,
+  };
+  const mock = scriptedServer(['arbitration_review', ['approved', { owner_approval_receipt_id: 'arb-owner-1', approval_source: 'one_tap', approval_trust: 'verified', approval_answered_by: 'account_owner' }]], runtime);
+  await withFetch(mock.fetch, async () => {
+    const waiting = await invoke(marrowAuto, { ...baseParams, operation_id: 'arbitration_link_op', proof: measuredProof });
+    assert.equal(waiting.phase, 'owner_approval_required');
+    assert.equal(waiting.resumable, true);
+    assert.match(waiting.exact_next_action, /arbitration review \(gate receipt ordinary-gate\)\. Do not run any proposal yet\. The account owner picks and approves one proposal\. An approval link was sent to the account owner \(email\)\./);
+    assert.doesNotMatch(waiting.exact_next_action, /dashboard|log ?in/i);
+    const closed = await invoke(marrowAuto, { ...baseParams, operation_id: 'arbitration_link_op', proof: measuredProof });
+    assert.equal(closed.committed, true);
+    const commit = mock.calls.find((call) => call.path.endsWith('/commit')).body;
+    assert.equal(commit.owner_approval_receipt_id, 'arb-owner-1');
+    assert.equal(commit.arbitration_receipt_id, 'arb-1');
+    assert.equal(mock.calls.filter((call) => call.path.endsWith('/approval-link')).length, 1);
+  });
 });
