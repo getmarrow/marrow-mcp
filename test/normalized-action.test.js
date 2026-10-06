@@ -61,6 +61,7 @@ test('the arbitration receipt field is read under both names and never treated a
 test('the raw runtime_gate marrow_auto returns carries no server next-step text at any depth', () => {
   const stripped = withoutServerNextActions({
     exact_next_action: 'POST /v1/agent/gate-receipts/g1/approval-link',
+    decision_brief: { exact_next_actions: ['POST /v1/agent/gate-receipts/g1/approval-link'] },
     intervention: { exact_next_action: 'POST ...', headline: 'held' },
     arbitration: { proposals: [{ exact_next_action: 'x', id: 'p1' }] },
   });

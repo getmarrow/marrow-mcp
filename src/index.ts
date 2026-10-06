@@ -1763,13 +1763,13 @@ export async function marrowAuto(
   }
 }
 
-/** Removes every exact_next_action from a server response (bounded depth). */
+/** Removes every exact_next_action(s) from a server response (bounded depth). */
 export function withoutServerNextActions(value: unknown, depth = 0): unknown {
-  if (depth > 6 || !value || typeof value !== 'object') return value;
+  if (depth > 16 || !value || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map((item) => withoutServerNextActions(item, depth + 1));
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (key === 'exact_next_action') continue;
+    if (key === 'exact_next_action' || key === 'exact_next_actions') continue;
     out[key] = withoutServerNextActions(item, depth + 1);
   }
   return out;

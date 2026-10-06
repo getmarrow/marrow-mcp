@@ -204,7 +204,7 @@ export declare function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance,
  * another decision.
  */
 export declare function marrowAuto(apiKey: string, baseUrl: string, params: MarrowAutoParams, sessionId?: string, agentId?: string, timeoutMs?: number, options?: MarrowAutoOptions): Promise<MarrowAutoResult>;
-/** Removes every exact_next_action from a server response (bounded depth). */
+/** Removes every exact_next_action(s) from a server response (bounded depth). */
 export declare function withoutServerNextActions(value: unknown, depth?: number): unknown;
 /** What a client can do for marrow_auto beyond HTTP: ask its user in its own dialog (MCP elicitation). */
 export type MarrowAutoOptions = {

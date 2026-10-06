@@ -1380,15 +1380,15 @@ async function marrowAuto(apiKey, baseUrl, params, sessionId, agentId, timeoutMs
         throw attachAutoHttpTrace(error, autoHttpTrace);
     }
 }
-/** Removes every exact_next_action from a server response (bounded depth). */
+/** Removes every exact_next_action(s) from a server response (bounded depth). */
 function withoutServerNextActions(value, depth = 0) {
-    if (depth > 6 || !value || typeof value !== 'object')
+    if (depth > 16 || !value || typeof value !== 'object')
         return value;
     if (Array.isArray(value))
         return value.map((item) => withoutServerNextActions(item, depth + 1));
     const out = {};
     for (const [key, item] of Object.entries(value)) {
-        if (key === 'exact_next_action')
+        if (key === 'exact_next_action' || key === 'exact_next_actions')
             continue;
         out[key] = withoutServerNextActions(item, depth + 1);
     }
