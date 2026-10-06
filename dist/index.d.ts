@@ -156,6 +156,8 @@ export type MarrowAutoApprovalState = {
 /** The owner's one-tap link for one marrow_auto operation. */
 export type AutoOwnerLinkState = {
     sent: boolean;
+    /** The service sent nothing on purpose (owner_ping_off): quiet by default. */
+    notSent?: boolean;
     channel: string | null;
     attempts: number;
     /** A refusal another request cannot change (no channel, limit reached, receipt not held). */
@@ -201,7 +203,26 @@ export declare function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance,
  * caller's deadline is reached, the same operation ID resumes without opening
  * another decision.
  */
-export declare function marrowAuto(apiKey: string, baseUrl: string, params: MarrowAutoParams, sessionId?: string, agentId?: string, timeoutMs?: number): Promise<MarrowAutoResult>;
+export declare function marrowAuto(apiKey: string, baseUrl: string, params: MarrowAutoParams, sessionId?: string, agentId?: string, timeoutMs?: number, options?: MarrowAutoOptions): Promise<MarrowAutoResult>;
+/** Removes every exact_next_action from a server response (bounded depth). */
+export declare function withoutServerNextActions(value: unknown, depth?: number): unknown;
+/** What a client can do for marrow_auto beyond HTTP: ask its user in its own dialog (MCP elicitation). */
+export type MarrowAutoOptions = {
+    /**
+     * Shows the client's own dialog to its user (never to the agent) and returns
+     * the person's answer: approved, declined, or null (cancelled, no answer).
+     */
+    elicitApproval?: (request: {
+        message: string;
+        gateReceiptId: string;
+    }) => Promise<'approved' | 'declined' | null>;
+    /** The host this MCP client is, for the client-attested report (claude-code, cursor, hermes or other). */
+    elicitHost?: string;
+    /** The host's session id for the report (the MCP session). */
+    elicitHostSessionId?: string;
+};
+/** The operator marker the backend needs to count an elicitation answer as the operator's. */
+export declare const ELICITATION_HOOK_EVENT = "mcp_elicitation";
 /**
  * Get agent patterns and failure history.
  */
@@ -294,6 +315,39 @@ export declare function marrowOwnerApprovalStatus(apiKey: string, baseUrl: strin
  * without a login. Returns the channel only (no recipient details).
  */
 export declare function marrowRequestApprovalLink(apiKey: string, baseUrl: string, gateReceiptId: string, decisionId: string | null, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowApprovalLinkResult>;
+/** One held action waiting for a person (no action text, link or token). */
+export type MarrowHeldAction = {
+    gate_receipt_id: string;
+    agent_id: string | null;
+    decision_type: string | null;
+    age_seconds: number;
+    expired: boolean;
+};
+/**
+ * GET /v1/agent/held-actions: the held actions still waiting for a person, for
+ * the next interactive session's "N held actions are waiting for you". null
+ * on a service without the read (404).
+ */
+export declare function marrowHeldActions(apiKey: string, baseUrl: string, query?: {
+    scope?: 'agent' | 'account';
+    limit?: number;
+}, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<{
+    count: number;
+    more: boolean;
+    holds: MarrowHeldAction[];
+} | null>;
+/**
+ * The account's owner-locked categories, for keeping those actions held on a
+ * machine that has not seen them yet while Marrow cannot be reached. Agent
+ * key; null on a service without the read (404). Proposed route:
+ * GET /v1/agent/approval-settings -> { verified_approval_categories, unattended_owner_ping }.
+ */
+export declare function marrowAgentApprovalSettings(apiKey: string, baseUrl: string, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<{
+    verified_approval_categories: string[];
+    unattended_owner_ping: boolean | null;
+} | null>;
+export declare const HELD_ACTIONS_PATH = "/v1/agent/held-actions";
+export declare const AGENT_APPROVAL_SETTINGS_PATH = "/v1/agent/approval-settings";
 /**
  * POST /v1/agent/gate-receipts/:id/host-approval: the host's Marrow hook
  * records the operator's answer in the host's own permission prompt (or a

@@ -13,7 +13,10 @@ const { join } = require('node:path');
 const home = mkdtempSync(join(tmpdir(), 'marrow-mcp-test-home-'));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
+// Kept: the path of an installed Claude Code bundle, for the pinned-texts check (a file path, not an identity).
+const keep = new Set(['MARROW_TEST_CLAUDE_CODE_BUNDLE']);
 for (const key of Object.keys(process.env)) {
+  if (keep.has(key)) continue;
   if (/^(?:MARROW_|CLAUDE_CODE_)/.test(key) || key === 'CLAUDECODE' || key === 'CODEX_HOME') delete process.env[key];
 }
 process.on('exit', () => {

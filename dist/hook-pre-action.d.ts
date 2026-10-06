@@ -8,6 +8,11 @@ export declare class PreActionControlTimeoutError extends Error {
     readonly code = "request_timeout";
     constructor();
 }
+/**
+ * A timeout (the hook's own budget, or a request that did not answer in time):
+ * Marrow is slow, not known to be down. It is never treated as an outage.
+ */
+export declare function isMarrowControlTimeout(error: unknown): boolean;
 export declare function isMarrowControlOutage(error: unknown): boolean;
 export type PreToolUseEvent = {
     session_id?: string;
@@ -24,6 +29,8 @@ export type PreToolUseEvent = {
 type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
 /** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
 export declare const HOLD_OWNER_DENIAL = "Marrow is holding this action for approval. Retry it after approval.";
+/** Marrow did not answer within the hook's time limit: an action that can be held stays held. */
+export declare const HELD_SLOW_TEXT = "Marrow did not answer in time, so this action is held. Retry it in a moment.";
 /** The only denial @getmarrow/install's Grok guard passes through (any other output blocks with a launch failure). */
 export declare const GROK_FIXED_DENIAL = "Marrow blocked this protected action.";
 /**
@@ -41,6 +48,8 @@ type PreActionControlResult = {
     enforcementError?: string;
     failure?: 'credential_scope' | 'unavailable';
     outage?: boolean;
+    /** Marrow did not answer inside the hook's time budget (slow, not down). */
+    timedOut?: boolean;
 };
 export declare function isMarrowOutage(result: PreActionControlResult): boolean;
 export declare function controlFailureKind(error: unknown): PreActionControlResult['failure'];
@@ -102,7 +111,9 @@ export declare function grokPreActionHookOutput(result: PreActionControlResult):
     decision: 'allow' | 'deny';
     reason?: string;
 };
-export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', prompt?: OwnerApprovalPrompt): Record<string, unknown>;
+export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', prompt?: OwnerApprovalPrompt, 
+/** An older service without host approvals: Claude Code asks in its dialog exactly as 3.9.98 did. */
+legacyServiceAsk?: boolean): Record<string, unknown>;
 type HeldDecision = {
     decisionId: string | null;
     gateReceiptId: string | null;

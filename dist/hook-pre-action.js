@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.GROK_FIXED_DENIAL = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.GROK_FIXED_DENIAL = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = void 0;
+exports.isMarrowControlTimeout = isMarrowControlTimeout;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.heldActionHookOutput = heldActionHookOutput;
 exports.approvedHoldHookOutput = approvedHoldHookOutput;
@@ -33,6 +34,8 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
 const host_approval_1 = require("./host-approval");
+const host_session_1 = require("./host-session");
+const normalized_action_1 = require("./normalized-action");
 const session_loop_guard_1 = require("./session-loop-guard");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
@@ -69,6 +72,20 @@ class PreActionControlTimeoutError extends Error {
     }
 }
 exports.PreActionControlTimeoutError = PreActionControlTimeoutError;
+/**
+ * A timeout (the hook's own budget, or a request that did not answer in time):
+ * Marrow is slow, not known to be down. It is never treated as an outage.
+ */
+function isMarrowControlTimeout(error) {
+    if (error instanceof PreActionControlTimeoutError)
+        return true;
+    if (error instanceof request_reliability_1.MarrowRequestError)
+        return error.code === 'request_timeout';
+    if (!error || typeof error !== 'object')
+        return false;
+    const named = error;
+    return named.name === 'AbortError' || named.name === 'TimeoutError';
+}
 function isMarrowControlOutage(error) {
     if (error instanceof PreActionControlTimeoutError)
         return true;
@@ -85,6 +102,8 @@ function isMarrowControlOutage(error) {
 }
 /** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
 exports.HOLD_OWNER_DENIAL = 'Marrow is holding this action for approval. Retry it after approval.';
+/** Marrow did not answer within the hook's time limit: an action that can be held stays held. */
+exports.HELD_SLOW_TEXT = 'Marrow did not answer in time, so this action is held. Retry it in a moment.';
 /** The only denial @getmarrow/install's Grok guard passes through (any other output blocks with a launch failure). */
 exports.GROK_FIXED_DENIAL = 'Marrow blocked this protected action.';
 /**
@@ -193,7 +212,7 @@ function controlRejectionMessage(error, agentId) {
 // https://code.claude.com/docs/en/permission-modes
 const OWNER_PROMPT_PERMISSION_MODES = new Set(['default', 'acceptEdits', 'auto']);
 /** Claude Code entrypoints with no one at a dialog (claude -p and the Agent SDKs); hooks inherit it. */
-const HEADLESS_CLAUDE_ENTRYPOINTS = new Set(['sdk-cli', 'sdk-ts', 'sdk-py']);
+const HEADLESS_CLAUDE_ENTRYPOINTS = host_approval_1.HEADLESS_CLAUDE_ENTRYPOINTS;
 const NO_OWNER_PROMPT = { available: false, unavailableReason: 'this agent host cannot prompt the owner' };
 /**
  * Whether a PreToolUse "ask" from this hook reaches a person who can approve.
@@ -240,7 +259,7 @@ function arbitrationReview(runtime) {
     const approval = asOptionalRecord(completion?.owner_approval);
     return Boolean(runtime.arbitration)
         || completion?.arbitration_receipt_required === true
-        || approval?.dashboard_receipt_required === true
+        || (0, runtime_contract_1.ownerReceiptRequired)(approval)
         || (approval?.mode !== undefined && approval.mode !== 'ordinary_non_arbitrated');
 }
 /**
@@ -526,7 +545,9 @@ function grokPreActionHookOutput(result) {
         ? { decision: 'deny', reason: 'Marrow blocked this protected action.' }
         : { decision: 'allow' };
 }
-function preActionHookOutput(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT) {
+function preActionHookOutput(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT, 
+/** An older service without host approvals: Claude Code asks in its dialog exactly as 3.9.98 did. */
+legacyServiceAsk = false) {
     if (harness === 'cursor')
         return cursorPreActionHookOutput(result);
     if (harness === 'cline')
@@ -553,11 +574,21 @@ function preActionHookOutput(result, harness = 'claude-code', prompt = NO_OWNER_
         ].filter(Boolean).join('\n'),
     } : {};
     const verdict = runtimeGateVerdict(runtime);
+    if (verdict && legacyServiceAsk && verdict.kind === 'review' && prompt.available && harness !== 'codex') {
+        return {
+            hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'ask',
+                permissionDecisionReason: gateDecisionMessage(verdict, true, prompt),
+                ...context,
+            },
+        };
+    }
     if (verdict) {
         // An ordinary hold the server lets the host approve is answered by
         // heldActionHookOutput. Here every gate denies: block, arbitration, and a
         // review the server offered no chat or terminal approval for.
-        const reason = verdict.kind === 'review' && prompt.available
+        const reason = verdict.kind === 'review' && prompt.available && !legacyServiceAsk
             ? { available: false, unavailableReason: 'this Marrow service did not offer a chat or terminal approval for this hold' }
             : prompt;
         return {
@@ -588,7 +619,7 @@ function preActionHookOutput(result, harness = 'claude-code', prompt = NO_OWNER_
         },
     };
 }
-function emitDecision(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT) {
+function emitDecision(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT, legacyServiceAsk = false) {
     if (harness === 'windsurf') {
         const decision = windsurfPreActionDecision(result);
         process.exitCode = decision.exitCode;
@@ -598,7 +629,7 @@ function emitDecision(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT)
     }
     if (result.outage)
         process.stderr.write(`${hook_contract_1.MARROW_OUTAGE_WARNING}\n`);
-    const output = preActionHookOutput(result, harness, prompt);
+    const output = preActionHookOutput(result, harness, prompt, legacyServiceAsk);
     process.stdout.write(JSON.stringify(output));
     const specific = asRecord(output.hookSpecificOutput);
     if (specific?.permissionDecision === 'deny')
@@ -689,6 +720,21 @@ function localApprovalCategories(action) {
     if (action.type.toLowerCase() === 'publish' || /\bpublish\b/i.test(text))
         categories.unshift('package_publish');
     return categories;
+}
+/**
+ * Nobody is in this run: headless Claude Code (sdk-*, its GitHub Action), a
+ * scripted Codex or Gemini CLI run (`codex exec`, `gemini -p`), or a Cursor
+ * background agent. Missing evidence is not unattended.
+ */
+function unattendedRun(ctx, claudePrompt, cursorInteractive) {
+    if (ctx.host === 'claude-code')
+        return claudePrompt.headless === true;
+    if (ctx.host === 'codex' || ctx.host === 'gemini')
+        return (0, host_session_1.localInteractiveSession)(ctx.host) === false;
+    // Cursor: sessionStart reports local sessions; without it (cloud agents) or as a background agent, nobody is there.
+    if (ctx.host === 'cursor')
+        return cursorInteractive !== true;
+    return false;
 }
 /** The hook's answer for a held action on any host (Windsurf answers through its exit code). */
 function emitHeldPlan(harness, plan, code = null) {
@@ -894,6 +940,16 @@ async function runPreActionHookCommand(input) {
     };
     const toolUseId = typeof source.tool_use_id === 'string' ? source.tool_use_id : null;
     const generationId = typeof source.generation_id === 'string' ? source.generation_id : null;
+    // Cursor runs an MCP call through preToolUse and then beforeMCPExecution, the
+    // only event where Cursor shows its own approval prompt. In a local
+    // interactive session preToolUse defers to it; cloud agents never run
+    // beforeMCPExecution, so there preToolUse is the gate and holds quietly.
+    const cursorMcpPreToolUse = holdContext.host === 'cursor' && String(source.hook_event_name || '').toLowerCase() === 'pretooluse'
+        && /^MCP:/i.test(String(source.tool_name || ''));
+    if (cursorMcpPreToolUse && (0, host_approval_1.cursorSessionEvidence)(holdContext).interactive === true) {
+        process.stdout.write(JSON.stringify({ permission: 'allow' }));
+        return;
+    }
     // The same action retried after a hold that waited for approval: its status decides.
     const dialogAvailable = holdContext.host === 'claude-code' && ownerApprovalPrompt(identity.harness, source).available;
     const waited = await (0, host_approval_1.resumeWaitingHold)(holdContext, { correlation, toolUseId, generationId, dialogAvailable }).catch(() => null);
@@ -933,6 +989,7 @@ async function runPreActionHookCommand(input) {
             outcome_state: 'pending',
         },
     }).catch(() => null);
+    const normalizedAction = (0, normalized_action_1.normalizedHookAction)(source);
     // The decision and gate receipt this control path holds, so a denial can close them.
     const held = { decisionId: null, gateReceiptId: null };
     const control = async (signal) => {
@@ -942,6 +999,9 @@ async function runPreActionHookCommand(input) {
             type: classified.type,
             role: classified.role,
             surfaces: classified.surfaces,
+            // The exact command or tool call (secrets removed), so Marrow binds the
+            // gate and any approval to this action, not to its coarse class.
+            normalized_action: normalizedAction,
             // Without a risk level the runtime may take its low-risk fast path, whose
             // non-durable fast_gate receipt can never back an action permit.
             ...(enforcementRequired ? { risk_level: classified.risk } : {}),
@@ -1037,26 +1097,46 @@ async function runPreActionHookCommand(input) {
     };
     // Codex and Cursor stop the hook at 5 s (and Codex then lets the call run):
     // the control path ends inside the hook's budget, leaving time to answer.
-    const controlTimeoutMs = Math.max(1_000, Math.min(exports.PRE_ACTION_CONTROL_TIMEOUT_MS, (0, host_approval_1.remainingMs)(holdContext) - 700));
+    const controlTimeoutMs = Math.max(1_000, Math.min(exports.PRE_ACTION_CONTROL_TIMEOUT_MS, (0, host_approval_1.remainingMs)(holdContext) - 400));
     const [result] = await Promise.all([
-        withTimeout(control, controlTimeoutMs).catch((error) => (isMarrowControlOutage(error)
+        withTimeout(control, controlTimeoutMs).catch((error) => (isMarrowControlTimeout(error)
             ? {
                 runtime: null,
                 permit: null,
                 protectedRisk: enforcementRequired,
-                outage: true,
+                timedOut: true,
                 enforcementError: hook_contract_1.MARROW_OUTAGE_WARNING,
             }
-            : {
-                runtime: null,
-                permit: null,
-                protectedRisk: enforcementRequired,
-                enforcementError: controlRejectionMessage(error, agentId),
-                ...(controlFailureKind(error) ? { failure: controlFailureKind(error) } : {}),
-            })),
+            : isMarrowControlOutage(error)
+                ? {
+                    runtime: null,
+                    permit: null,
+                    protectedRisk: enforcementRequired,
+                    outage: true,
+                    enforcementError: hook_contract_1.MARROW_OUTAGE_WARNING,
+                }
+                : {
+                    runtime: null,
+                    permit: null,
+                    protectedRisk: enforcementRequired,
+                    enforcementError: controlRejectionMessage(error, agentId),
+                    ...(controlFailureKind(error) ? { failure: controlFailureKind(error) } : {}),
+                })),
         lifecycle,
     ]);
     const claudePrompt = ownerApprovalPrompt(identity.harness, source);
+    if (result.timedOut) {
+        // Marrow is slow, not down: a self-imposed budget is never an outage. An
+        // action that can be held stays held; routine actions keep flowing.
+        const holdable = classified.protected || classified.risk === 'high'
+            || (0, host_approval_1.protectedAmong)(holdContext, localApprovalCategories(classified)).length > 0;
+        if (holdable) {
+            emitHeldPlan(identity.harness, { kind: 'deny', agentText: exports.HELD_SLOW_TEXT, userText: exports.HELD_SLOW_TEXT, code: false });
+            return;
+        }
+        emitDecision({ ...result, outage: true, timedOut: false }, identity.harness, claudePrompt);
+        return;
+    }
     if (result.outage) {
         // Marrow cannot be reached. An action in a category the account owner
         // protects stays held on every host; everything else keeps the outage policy.
@@ -1069,6 +1149,14 @@ async function runPreActionHookCommand(input) {
     const verdict = result.outage ? null : runtimeGateVerdict(result.runtime);
     const guidance = verdict?.kind === 'review' ? (0, runtime_contract_1.ordinaryApprovalGuidance)(result.runtime) : null;
     const arbitration = verdict?.kind === 'arbitration_review' ? (0, runtime_contract_1.arbitrationApprovalGuidance)(result.runtime) : null;
+    if (verdict && guidance && !guidance.hostApprovalSupported && holdContext.host === 'claude-code') {
+        // An older service without host approvals: exactly as released 3.9.98 —
+        // ask in Claude Code's dialog (the close stays unverified), never wait.
+        const emitted = emitDecision(result, identity.harness, claudePrompt, true);
+        if (emitted.denied)
+            await closeDeniedDecision(resolved.apiKey, baseUrl, held, emitted.reason, sessionId, agentId);
+        return;
+    }
     if (verdict && (guidance || arbitration)) {
         // A hold: ask in the host's own prompt where it counts and is shown,
         // otherwise deny and wait for the approval. Never close the decision here;
@@ -1079,6 +1167,7 @@ async function runPreActionHookCommand(input) {
             (0, host_approval_1.rememberProtection)(holdContext, guidance);
             const cursor = holdContext.host === 'cursor' ? (0, host_approval_1.cursorSessionEvidence)(holdContext) : null;
             plan = (0, host_approval_1.planHeldAction)({
+                unattended: cursorMcpPreToolUse || unattendedRun(holdContext, claudePrompt, cursor?.interactive ?? null),
                 guidance,
                 host: holdContext.host,
                 hookEvent,
@@ -1112,6 +1201,7 @@ async function runPreActionHookCommand(input) {
                 action: { action: classified.action, target: classified.target, type: classified.type, surfaces: classified.surfaces },
                 ...(plan.kind === 'deny' && plan.ownerLink ? { ownerLink: plan.ownerLink } : {}),
                 ...(plan.kind === 'deny' && plan.dialogLater ? { dialogLater: true, laterPrompt: plan.laterPrompt } : {}),
+                ...(plan.kind === 'deny' && plan.quiet ? { quiet: plan.quiet } : {}),
             });
             code = hold?.code ?? null;
             if (hold && plan.kind === 'deny' && plan.ownerLink === 'now') {

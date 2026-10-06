@@ -987,7 +987,7 @@ test('the installer generic entrypoint asks only when Claude Code spawned the ho
     const denied = JSON.parse(unknownHost.output).hookSpecificOutput;
     assert.equal(denied.permissionDecision, 'deny');
     assert.match(denied.permissionDecisionReason, /^Marrow is holding this action for approval \(gate receipt gate-review\), so it did not run\./);
-    assert.match(denied.permissionDecisionReason, /The host cannot ask the operator in this session\. Tell the operator this action is waiting for the account owner's approval\./);
+    assert.match(denied.permissionDecisionReason, /The host cannot ask for approval in this session\. It stays held until the operator approves it: tell them it is held, and that they approve it by retrying it in a session with Marrow's prompt/);
     assert.doesNotMatch(denied.permissionDecisionReason, /dashboard/i);
     assert.deepEqual(unknownHost.commits, [], 'a waiting hold is never closed by the hook');
   } finally {

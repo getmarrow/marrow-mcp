@@ -2,13 +2,14 @@
 
 ## 3.9.99
 
-- Chat and terminal approvals. Claude Code: one Allow click in the host's own dialog approves a held action (a pass-through `PermissionRequest` hook marks it; `marrow-mcp setup` adds it with an async `PostToolBatch` hook); the agent's `marrow_commit` closes it trusted. A decline is read from `PostToolBatch` or the transcript; an interruption is never a decline. Codex, Gemini CLI and Cursor: a typed reply in local interactive sessions, with the code shown only to the user. Cursor shell and MCP calls ask in Cursor's dialog.
-- The account owner's one-tap approval link: requested by the hook or `marrow_auto` when no operator can answer, for owner-protected categories, after the owner's standing decline (only when the operator asks), and for arbitration reviews. Texts say a link was sent only when it was.
-- `marrow_auto` waits on the approval status and resumes on the same gate receipt, stops on a decline or expiry, treats a spent receipt as final, and never writes `proof.owner_approval`; a caller-written `proof.owner_approval` is stripped from every commit. New `request_owner_link` parameter.
-- Held actions stay held when Marrow cannot be reached; owner-protected categories stay held during outages on every host. One approval lets exactly one call run.
-- Lifecycle records are per attempt (no payload conflicts on retries).
-- Headless Claude Code (`CLAUDE_CODE_ENTRYPOINT` `sdk-*`) routes to the owner link. Codex, Cursor and Grok hooks answer within 3 seconds.
-- Hooks never relay the runtime's `exact_next_action`. Cursor after-execution outcomes are recorded as unknown.
+- Chat and terminal approvals: one click in the host's own permission prompt (Claude Code with a pass-through `PermissionRequest` marker hook and an async `PostToolBatch` hook that `marrow-mcp setup` adds; Cursor shell and MCP calls; MCP clients with elicitation through `marrow_auto`), or a typed reply in local interactive Codex, Gemini CLI and Cursor sessions, with the code shown only to the person. A decline is a permission rejection, never an interruption.
+- Quiet by default: an ordinary hold never emails anyone. Attended hosts that cannot ask, and unattended runs (headless Claude Code including its GitHub Action, `codex exec`, `gemini -p`, Cursor cloud and background agents), hold the action and the agent carries on. The account owner's one-tap link only for owner-locked categories, the owner's standing decline when the operator asks, or unattended runs with the owner's pings on.
+- The first prompt of an interactive session shows "N held actions are waiting for you" (action type and agent only), and refreshes the owner-locked categories for outages.
+- `marrow_auto` waits on the approval status and resumes on the same gate receipt, treats a spent receipt as final, strips the server's `exact_next_action` from the `runtime_gate` it returns, and never writes `proof.owner_approval`; a caller-written `proof.owner_approval` is stripped from every commit. New `request_owner_link` parameter.
+- A slow Marrow is not an outage: a holdable action stays held, routine actions keep flowing. Per-host budgets from the hosts' real 5 s limits. Real outages keep the outage policy; a waiting hold and owner-locked categories stay held on every host.
+- One approval lets exactly one call run. Lifecycle records are per attempt.
+- Hook-classified calls send `normalized_action` (the exact command or tool call, secrets removed) with the runtime call and the host-approval report.
+- On a service without host approvals, Claude Code behaves as 3.9.98 (asks in its dialog).
 - SDK `3.7.65`.
 
 ## 3.9.98

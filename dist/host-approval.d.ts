@@ -1,5 +1,5 @@
 import { type NativeHookHarness } from './hook-contract';
-import type { ArbitrationApprovalGuidance, OrdinaryApprovalGuidance } from './runtime-contract';
+import { type ArbitrationApprovalGuidance, type OrdinaryApprovalGuidance } from './runtime-contract';
 import { type HoldRecord } from './host-approval-state';
 import type { MarrowOwnerApprovalStatus } from './types';
 /**
@@ -18,15 +18,21 @@ import type { MarrowOwnerApprovalStatus } from './types';
 export type ApprovalHost = 'claude-code' | 'codex' | 'cursor' | 'cline' | 'windsurf' | 'gemini' | 'grok' | 'other';
 export declare const HOST_LABEL: Record<ApprovalHost, string>;
 export declare function approvalHostFor(harness: NativeHookHarness, env?: NodeJS.ProcessEnv): ApprovalHost;
+/** Claude Code entrypoints with no one at a dialog (claude -p, the Agent SDKs, its GitHub Action); hooks inherit it. */
+export declare const HEADLESS_CLAUDE_ENTRYPOINTS: Set<string>;
+export declare function claudeCodeHeadless(env?: NodeJS.ProcessEnv): boolean;
 /** Cursor events on which a hook "ask" is enforced (never preToolUse). */
 export declare const CURSOR_ASK_EVENTS: Set<string>;
 export declare const HOST_APPROVAL_REQUEST_TIMEOUT_MS = 4000;
 /**
  * One total time budget for a pre-tool hook, counted from the start of the
- * hook process. Codex and Cursor stop a hook after 5 seconds (as
- * @getmarrow/install configures them) and Codex then lets the call run, so
- * their budget leaves room for npx start-up; slow work that does not decide
- * the answer runs after the answer is written, inside the same budget.
+ * hook process and set from each host's real kill timeout as
+ * @getmarrow/install configures it: Codex 5 s (it then lets the call run),
+ * Cursor 5 s with failClosed, the installer's Grok guard 5 s (it then blocks),
+ * Gemini CLI 5 s. The margin covers npx start-up before the process starts.
+ * Cold auth can take 900 ms plus a 1.6 s grace, so the control path keeps
+ * room for a slow but healthy Marrow; when the budget still runs out, an
+ * action that can be held stays held (never an outage allow).
  */
 export declare function preToolBudgetMs(host: ApprovalHost): number;
 /** The hook process's deadline for its pre-tool answer and any follow-up work. */
@@ -82,6 +88,10 @@ export type OwnerLinkOutcome = {
 } | {
     kind: 'failed';
     code: string | null;
+}
+/** The service sent nothing on purpose (owner_ping_off): the hold waits quietly. */
+ | {
+    kind: 'not_sent';
 } | {
     kind: 'none';
 };
@@ -103,6 +113,8 @@ export type HoldPlan = {
     retryFresh?: boolean;
     /** The prompt to show if a retry can ask in the host's own dialog (keeps the notice and reason). */
     laterPrompt?: string;
+    /** Waits quietly: nobody can be asked here (attended) or nobody is here (unattended). */
+    quiet?: 'attended' | 'unattended';
 };
 /** Shown when the owner's link is sent only if the operator asks for it. */
 export declare const OWNER_LINK_ON_REQUEST_TEXT = "To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link.";
@@ -118,7 +130,9 @@ export declare const TYPED_REPLY_MARKER: Readonly<Record<string, string>>;
  * calls), or a typed reply in a local interactive session of a host without a
  * dialog (Codex, Gemini CLI, Cursor otherwise). The approval code and its
  * prompt go only to a user-only channel; model-facing text never contains it.
- * When no operator can answer here, the request goes to the account owner.
+ * When no one can answer here, the action waits quietly (the owner's link only
+ * for owner-locked categories, the owner's own decline when the operator asks,
+ * or unattended runs with the owner's pings on).
  * No text makes a dashboard login the step to take.
  */
 export declare function planHeldAction(input: {
@@ -136,7 +150,11 @@ export declare function planHeldAction(input: {
     cursorInteractive?: boolean | null;
     /** A local interactive session whose typed-reply hook runs (see typedReplyAvailable). */
     typedReply?: boolean;
+    /** No person is in this run (headless, `codex exec`, `gemini -p`, a background agent). */
+    unattended?: boolean;
 }): HoldPlan;
+/** What the person sees when this host cannot ask them: the action waits for them. */
+export declare const HELD_FOR_YOU_TEXT = "This action is held until you approve it. Approve it by retrying it in a session with Marrow's prompt.";
 /**
  * Arbitration review_required with the server's one-tap path: the owner picks
  * and approves one proposal. The hook denies, asks Marrow to send the owner a
@@ -171,6 +189,7 @@ export type RecordHoldInput = {
     ownerLink?: 'now' | 'on_request';
     dialogLater?: boolean;
     laterPrompt?: string;
+    quiet?: 'attended' | 'unattended';
 };
 export declare function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldRecord;
 /**
@@ -187,8 +206,21 @@ export declare function protectedAmong(ctx: HoldContext, categories: string[]): 
  * Returns what happened. The link itself never reaches this client or the agent.
  */
 export declare function requestOwnerLink(ctx: HoldContext, hold: HoldRecord, reserve?: number): Promise<OwnerLinkOutcome>;
+/**
+ * Once per interactive host session (its first prompt): tells the person how
+ * many held actions are waiting for them, with the action type and agent only,
+ * and refreshes this machine's copy of the owner-locked categories (so they
+ * stay held during an outage on a fresh machine). Returns user-only text, or null.
+ */
+export declare function heldActionsNotice(ctx: HoldContext, budgetMs?: number): Promise<string | null>;
 /** PermissionRequest (pass-through): the host is about to show its own dialog for an asked call. */
 export declare function noteDialogShown(ctx: HoldContext, correlation: string): HoldRecord | null;
+/**
+ * Whether Claude Code runs Marrow's pass-through PermissionRequest hook here:
+ * seen on this machine for this key, or configured in the user's or the
+ * project's Claude Code settings. Without it there is no marker to wait for.
+ */
+export declare function permissionMarkerHookPresent(ctx: HoldContext, cwd?: string): boolean;
 /**
  * Who approved, as the status says it. "The account owner" only for the
  * owner's verified approval; anything else is named for what it is.
@@ -276,6 +308,8 @@ export declare function settleAfterTool(ctx: HoldContext, input: {
     success: boolean | null;
     /** Test seam: how long to wait for a late dialog marker. */
     markerWaitMs?: number;
+    /** The exact action from this hook event, for the report (never stored). */
+    normalizedAction?: Record<string, unknown> | null;
 }): Promise<string | null>;
 export declare const CLAUDE_CODE_USER_REJECTED = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
 export declare const CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\n";

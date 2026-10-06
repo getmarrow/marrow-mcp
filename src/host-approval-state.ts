@@ -22,8 +22,9 @@ import { join } from 'node:path';
  * the later hook processes that see the operator's answer (PermissionRequest,
  * PostToolUse, PostToolBatch, a typed reply) and keeps an unsent report so it
  * is resent unchanged. It stores identifiers, timestamps and Marrow's own
- * coarse action classification only: no prompts, commands, tool output or
- * credentials. Records are bound to the API key, base URL and agent by a keyed
+ * coarse action classification; an undelivered report also carries the
+ * normalized action it answers for (secrets removed) until it is delivered.
+ * No prompts, tool output or credentials. Records are bound to the API key, base URL and agent by a keyed
  * hash, so another key on the same machine never sees them.
  */
 
@@ -57,6 +58,8 @@ export type HoldReport = {
   asked_at: string;
   answered_at: string;
   decision_id?: string;
+  /** The exact action answered for (secrets removed); kept only until the report is delivered. */
+  normalized_action?: Record<string, unknown>;
 };
 
 export type HoldCommit = {
@@ -113,6 +116,8 @@ export type HoldRecord = {
   legacy_service?: boolean;
   /** Arbitration review: the owner picks a proposal; the commit needs these receipts. */
   arbitration_receipt_id?: string | null;
+  /** A hold that waits quietly: a person is here but cannot be asked, or nobody is (unattended). */
+  quiet?: 'attended' | 'unattended' | null;
   action: { action: string; target: string; type: string; surfaces: string[] };
   outbox: HoldOutbox | null;
   created_at: number;
@@ -217,7 +222,9 @@ function validReport(value: unknown): value is HoldReport | null {
     && (report.hook_event === null || (typeof report.hook_event === 'string' && /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/.test(report.hook_event)))
     && (report.pre_action_event_id === null || (typeof report.pre_action_event_id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(report.pre_action_event_id)))
     && isIso(report.asked_at) && isIso(report.answered_at)
-    && (report.decision_id === undefined || (typeof report.decision_id === 'string' && IDENTIFIER.test(report.decision_id)));
+    && (report.decision_id === undefined || (typeof report.decision_id === 'string' && IDENTIFIER.test(report.decision_id)))
+    && (report.normalized_action === undefined || (Boolean(report.normalized_action) && typeof report.normalized_action === 'object'
+      && !Array.isArray(report.normalized_action) && JSON.stringify(report.normalized_action).length <= 16_384));
 }
 
 function validHold(value: unknown): value is HoldRecord {
@@ -254,6 +261,7 @@ function validHold(value: unknown): value is HoldRecord {
     && (hold.legacy_service === undefined || typeof hold.legacy_service === 'boolean')
     && (hold.arbitration_receipt_id === undefined || hold.arbitration_receipt_id === null
       || (typeof hold.arbitration_receipt_id === 'string' && IDENTIFIER.test(hold.arbitration_receipt_id)))
+    && (hold.quiet === undefined || hold.quiet === null || hold.quiet === 'attended' || hold.quiet === 'unattended')
     && Boolean(hold.action) && typeof hold.action.action === 'string' && hold.action.action.length <= 512
     && typeof hold.action.target === 'string' && hold.action.target.length <= 256
     && typeof hold.action.type === 'string' && hold.action.type.length <= 64

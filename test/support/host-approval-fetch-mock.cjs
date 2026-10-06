@@ -87,6 +87,16 @@ globalThis.fetch = async (url, init = {}) => {
   if (status && method === 'GET') {
     if (config.statusDelayMs) await sleep(config.statusDelayMs);
     if (config.statusUnreachable) unreachable();
+    // A status that follows the host-approval report (as the service records it).
+    const recorded = config.statusFollowsHostReport ? load(join(directory, 'host-verdicts.json'), {})[status[1]] : null;
+    if (recorded) {
+      return json({ data: {
+        gate_receipt_id: status[1], decision_id: 'decision-review', state: recorded.verdict, gate_decision: 'owner_approval_required',
+        owner_approval_receipt_id: recorded.verdict === 'approved' ? 'oar-host' : null, decided_at: null,
+        approval_source: 'host_prompt', approval_trust: 'client_attested', approval_answered_by: recorded.answered_by,
+        expires_at: '2030-01-01T00:30:00.000Z', terminal: true, retryable: false, poll_after_ms: null, exact_next_action: 'fixture recorded',
+      } });
+    }
     const state = (config.status || {})[status[1]] || 'pending';
     if (state === 'not_found') return json({ error: 'Gate receipt not found.', details: { code: 'MARROW_GATE_RECEIPT_NOT_FOUND' } }, 404);
     return json({ data: {
@@ -100,9 +110,20 @@ globalThis.fetch = async (url, init = {}) => {
       poll_after_ms: state === 'pending' ? 5000 : null, exact_next_action: `fixture ${state}`,
     } });
   }
+  if (path === '/v1/agent/held-actions' && method === 'GET') {
+    if (!config.heldActions) return json({ error: 'Not found' }, 404);
+    return json({ data: { scope: 'agent', count: config.heldActions.length, more: false, holds: config.heldActions, exact_next_action: 'fixture held' } });
+  }
+  if (path === '/v1/agent/approval-settings' && method === 'GET') {
+    if (!config.approvalSettings) return json({ error: 'Not found' }, 404);
+    return json({ data: config.approvalSettings });
+  }
   const link = path.match(/^\/v1\/agent\/gate-receipts\/([^/]+)\/approval-link$/);
   if (link && method === 'POST') {
     if (config.linkDelayMs) await sleep(config.linkDelayMs);
+    if (config.approvalLinkNotSent) {
+      return json({ data: { sent: false, state: 'not_sent', reason: 'owner_ping_off', approval_link: null, exact_next_action: 'fixture not sent' } });
+    }
     const scripted = Array.isArray(config.approvalLink) && config.approvalLink.length ? next('approvalLink', config.approvalLink) : null;
     if (scripted && scripted.status !== 200) return json(scripted.body, scripted.status, scripted.headers || {});
     return json({ data: {
@@ -112,9 +133,18 @@ globalThis.fetch = async (url, init = {}) => {
   }
   const host = path.match(/^\/v1\/agent\/gate-receipts\/([^/]+)\/host-approval$/);
   if (host && method === 'POST') {
+    // A service whose host route does not take normalized_action yet (strict body).
+    if (config.hostRouteStrict && body && 'normalized_action' in body) {
+      return json({ error: 'Host approval report is invalid.', details: { code: 'MARROW_HOST_APPROVAL_INVALID', fields: ['normalized_action'], reason: 'unknown_fields' } }, 400);
+    }
     const scripted = Array.isArray(config.hostApproval) && config.hostApproval.length ? next('hostApproval', config.hostApproval) : null;
     if (scripted && scripted.status !== 200) return json(scripted.body, scripted.status, scripted.headers || {});
     const marker = body.hook_event === 'PermissionRequest' || (body.host === 'cursor' && body.hook_event === 'beforeSubmitPrompt');
+    if (config.statusFollowsHostReport) {
+      const verdicts = load(join(directory, 'host-verdicts.json'), {});
+      verdicts[host[1]] = { verdict: body.verdict, answered_by: body.verdict === 'approved' && !marker ? 'host_allow_rule' : 'host_operator' };
+      writeFileSync(join(directory, 'host-verdicts.json'), JSON.stringify(verdicts));
+    }
     return json({ data: {
       host_approval: {
         owner_approval_receipt_id: body.verdict === 'approved' ? 'oar-host' : null,

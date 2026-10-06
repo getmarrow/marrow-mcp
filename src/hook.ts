@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { normalizedHookAction } from './normalized-action';
 import { captureCodexNativeUsage } from './codex-native-usage';
 import { marrowModelUsage, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from './habit-loop-copy';
@@ -285,6 +286,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
         toolUseId: getString(event.tool_use_id) || null,
         generationId: getString(event.generation_id) || null,
         success: outcome.unknown ? null : outcome.success,
+        normalizedAction: normalizedHookAction(event),
       }).catch(() => null);
       if (handoff) heldActionContext = handoff;
       // Resend due queued reports only when this call did no held-call work (hook time limits).

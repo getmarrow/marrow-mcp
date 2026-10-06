@@ -159,6 +159,8 @@ export interface MarrowAgentRuntimeRequest extends MarrowDecisionBriefRequest {
   risk_tolerance?: 'low' | 'medium' | 'high';
   requires_approval?: boolean;
   coordination?: MarrowArbitrationRequest;
+  /** The exact action (marrow.gate.v1 `action` shape), secrets removed; hook-classified calls send it. */
+  normalized_action?: Record<string, unknown>;
 }
 
 export interface MarrowEnforcementRequest {
@@ -329,6 +331,14 @@ export interface MarrowOwnerApprovalGuidance {
   approval_status_poll_after_ms?: number | null;
   /** Agent-key route that asks Marrow to send the account owner a one-tap approval link (no login). */
   approval_link_endpoint?: string;
+  /** Whether a link request would send, and why (owner_locked, owner_decline_stands, unattended_owner_ping). */
+  approval_link_available?: boolean;
+  approval_link_reason?: string | null;
+  /** The owner opted in to one-tap pings for unattended runs. */
+  unattended_owner_ping?: boolean | null;
+  held_actions_endpoint?: string;
+  /** The owner's server-issued receipt is required (arbitration; the field is being renamed). */
+  owner_receipt_required?: boolean;
   /** Agent-key route the host hook uses to record the operator's answer (client-attested). */
   host_approval_endpoint?: string;
   /** The operator declined this action in a host prompt earlier: only a marked operator answer counts. */
@@ -380,6 +390,8 @@ export interface MarrowHostApprovalReport {
   asked_at: string;
   answered_at: string;
   decision_id?: string;
+  /** The exact action the operator answered for (never stored locally); a service that does not take it gets the report without it. */
+  normalized_action?: Record<string, unknown>;
 }
 
 export interface MarrowHostApprovalReceipt {
@@ -403,7 +415,7 @@ export interface MarrowApprovalLink {
 
 export type MarrowApprovalLinkResult =
   | { ok: true; link: MarrowApprovalLink }
-  | { ok: false; status: number | null; code: string | null; retryable: boolean };
+  | { ok: false; status: number | null; code: string | null; retryable: boolean; notSent?: boolean };
 
 export type MarrowHostApprovalResult =
   | { ok: true; receipt: MarrowHostApprovalReceipt; replayed: boolean }
@@ -415,6 +427,8 @@ export type MarrowHostApprovalResult =
       existingVerdict: 'approved' | 'declined' | null;
       retryable: boolean;
       retryAfterMs: number | null;
+      /** The request fields the service rejected (400 invalid). */
+      fields?: string[];
     };
 
 export interface MarrowAgentRuntimeResult {

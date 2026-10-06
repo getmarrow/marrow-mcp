@@ -501,6 +501,92 @@ if (process.argv[2] !== 'keys') {
         let thinkCallCount = 0;
         let orientCallCount = 0;
         let initialized = false;
+        // ---------------------------------------------------------------------------
+        // MCP elicitation: where the client can ask its user mid-task, a held
+        // marrow_auto action is approved in the client's own dialog (one click). The
+        // request goes to the client UI, never to the model; the answer is reported to
+        // Marrow as client-attested.
+        // ---------------------------------------------------------------------------
+        const ELICITATION_PROTOCOL_VERSIONS = ['2025-06-18', '2025-11-25'];
+        const ELICITATION_TIMEOUT_MS = 120_000;
+        let clientElicitation = false;
+        let clientHost = 'other';
+        let serverRequestSeq = 0;
+        const pendingClientRequests = new Map();
+        function noteClientCapabilities(params) {
+            const record = params && typeof params === 'object' ? params : {};
+            const capabilities = record.capabilities && typeof record.capabilities === 'object' ? record.capabilities : {};
+            const requested = typeof record.protocolVersion === 'string' ? record.protocolVersion : '';
+            const info = record.clientInfo && typeof record.clientInfo === 'object' ? record.clientInfo : {};
+            const name = typeof info.name === 'string' ? info.name.toLowerCase() : '';
+            clientHost = /claude/.test(name) ? 'claude-code' : /cursor/.test(name) ? 'cursor' : /hermes/.test(name) ? 'hermes'
+                : /codex/.test(name) ? 'codex' : /gemini/.test(name) ? 'gemini' : 'other';
+            clientElicitation = Boolean(capabilities.elicitation && typeof capabilities.elicitation === 'object')
+                && ELICITATION_PROTOCOL_VERSIONS.includes(requested);
+            // Elicitation needs the protocol version that defines it; otherwise keep the version this server always spoke.
+            return clientElicitation ? requested : '2024-11-05';
+        }
+        function requestClient(method, params, timeoutMs) {
+            serverRequestSeq += 1;
+            const id = `marrow-server-${serverRequestSeq}`;
+            return new Promise((resolve) => {
+                const timer = setTimeout(() => {
+                    pendingClientRequests.delete(id);
+                    resolve({ error: { code: 'timeout' } });
+                }, timeoutMs);
+                timer.unref?.();
+                pendingClientRequests.set(id, { resolve, timer });
+                send({ jsonrpc: '2.0', id, method, params });
+            });
+        }
+        /** A response from the client to one of this server's requests (elicitation). */
+        function settleClientResponse(message) {
+            if (typeof message.id !== 'string' || message.method !== undefined)
+                return false;
+            const pending = pendingClientRequests.get(message.id);
+            if (!pending)
+                return false;
+            pendingClientRequests.delete(message.id);
+            clearTimeout(pending.timer);
+            pending.resolve({ result: message.result, error: message.error });
+            return true;
+        }
+        /** Asks the user in the client's own dialog; approved, declined, or null (cancelled, timed out, unsupported). */
+        async function elicitApproval(request) {
+            if (!clientElicitation)
+                return null;
+            const answer = await requestClient('elicitation/create', {
+                message: request.message,
+                requestedSchema: {
+                    type: 'object',
+                    properties: {
+                        decision: {
+                            type: 'string',
+                            title: 'Your answer',
+                            description: 'Approve only if you authorize this exact action.',
+                            enum: ['approve', 'decline'],
+                            enumNames: ['Approve this action', 'Decline it'],
+                        },
+                    },
+                    required: ['decision'],
+                },
+            }, ELICITATION_TIMEOUT_MS);
+            const result = answer.result && typeof answer.result === 'object' ? answer.result : null;
+            if (!result)
+                return null;
+            if (result.action === 'decline')
+                return 'declined';
+            if (result.action !== 'accept')
+                return null;
+            const content = result.content && typeof result.content === 'object' ? result.content : {};
+            return content.decision === 'approve' ? 'approved' : content.decision === 'decline' ? 'declined' : null;
+        }
+        function autoElicitationOptions() {
+            if (!clientElicitation)
+                return undefined;
+            const hostSessionId = typeof SESSION_ID === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(SESSION_ID) ? SESSION_ID : `mcp-${process.pid}`;
+            return { elicitApproval, elicitHost: clientHost, elicitHostSessionId: hostSessionId };
+        }
         function formatWarningActionably(w) {
             const pct = Math.round(w.failureRate * 100);
             return `⚠️ ${w.type} has ${pct}% failure rate — check what went wrong last time before proceeding`;
@@ -1023,7 +1109,7 @@ if (process.argv[2] !== 'keys') {
             },
             {
                 name: 'marrow_auto',
-                description: 'Durably capture activity with bounded core completion. Respect retry_after_ms and reuse operation_id for pending continuation. A held action waits for an approval the server records (the approval request goes to the account owner); auto reads its status and resumes on the same gate receipt. Never write or claim an approval yourself. Arbitration requires its server-issued owner approval receipt. Lifecycle receipt queued is separate from server acceptance. Risky completion requires a fresh gate and measured proof.',
+                description: 'Durably capture activity with bounded core completion. Respect retry_after_ms and reuse operation_id for pending continuation. A held action waits for an approval the server records (the answer of the person in the dialog of this client when it supports elicitation; otherwise it waits quietly while you carry on with other work); auto reads its status and resumes on the same gate receipt. Never write or claim an approval yourself. Arbitration requires its server-issued owner approval receipt. Lifecycle receipt queued is separate from server acceptance. Risky completion requires a fresh gate and measured proof.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -2029,8 +2115,9 @@ if (process.argv[2] !== 'keys') {
                 if (method === 'initialize') {
                     initialized = true;
                     const hostCapability = mcpHostCapability();
+                    const protocolVersion = noteClientCapabilities(params);
                     success(id, {
-                        protocolVersion: '2024-11-05',
+                        protocolVersion,
                         capabilities: { tools: {}, prompts: {} },
                         serverInfo: { name: 'marrow', version: hook_contract_2.MCP_ADAPTER_VERSION },
                         ...(AUTO_ENROLL ? {
@@ -2350,7 +2437,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             auto_gate: highRisk,
                             operation_id: typeof args.operation_id === 'string' ? args.operation_id : undefined,
                             ...(args.request_owner_link === true ? { request_owner_link: true } : {}),
-                        }, SESSION_ID, FLEET_AGENT_ID, 8_000);
+                        }, SESSION_ID, FLEET_AGENT_ID, 8_000, autoElicitationOptions());
                         let delivered = null;
                         let deliveryFailure = null;
                         let failedHttpAttemptTrace = null;
@@ -3029,6 +3116,9 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                 }
                 // MCP notifications (no id) must be silently ignored per spec
                 if (msg.id === undefined || msg.id === null)
+                    continue;
+                // The client's answer to this server's own request (elicitation).
+                if (settleClientResponse(msg))
                     continue;
                 pendingRequests++;
                 handleRequest(msg)

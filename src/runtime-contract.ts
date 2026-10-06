@@ -554,6 +554,15 @@ export type OrdinaryApprovalGuidance = {
   earlierDeclineAt: string | null;
   /** Set when the server can send the account owner a one-tap approval link (no login). */
   approvalLinkPath: string | null;
+  /**
+   * Whether a link request would send (approval_link_available) and why
+   * (approval_link_reason: owner_locked, owner_decline_stands or
+   * unattended_owner_ping). null on a service that does not report it.
+   */
+  linkAvailable: boolean | null;
+  linkReason: 'owner_locked' | 'owner_decline_stands' | 'unattended_owner_ping' | null;
+  /** The owner opted in to one-tap pings for unattended runs (null when not reported). */
+  unattendedOwnerPing: boolean | null;
   /** Server text for the host's own prompt (an earlier decline); user-facing only. */
   operatorNotice: string | null;
   verifiedApprovalRequired: boolean | null;
@@ -571,7 +580,7 @@ export function ordinaryApprovalGuidance(
   if (!runtime || runtime.arbitration) return null;
   const completion = runtime.completion_contract;
   const approval = optionalRecord(completion?.owner_approval);
-  if (!approval || approval.mode !== 'ordinary_non_arbitrated' || approval.dashboard_receipt_required === true) return null;
+  if (!approval || approval.mode !== 'ordinary_non_arbitrated' || ownerReceiptRequired(approval)) return null;
   if (completion?.arbitration_receipt_required === true) return null;
   const decision = String(runtime.risk_gate?.decision || '');
   const receiptDecision = String(runtime.gate_receipt?.decision || '');
@@ -627,6 +636,11 @@ export function ordinaryApprovalGuidance(
       ? new Date(Date.parse(approval.earlier_decline_at)).toISOString()
       : null,
     approvalLinkPath: approval.approval_link_endpoint === approvalLinkPath(gateReceiptId) ? approvalLinkPath(gateReceiptId) : null,
+    linkAvailable: typeof approval.approval_link_available === 'boolean' ? approval.approval_link_available : null,
+    linkReason: ['owner_locked', 'owner_decline_stands', 'unattended_owner_ping'].includes(String(approval.approval_link_reason))
+      ? approval.approval_link_reason as OrdinaryApprovalGuidance['linkReason']
+      : null,
+    unattendedOwnerPing: typeof approval.unattended_owner_ping === 'boolean' ? approval.unattended_owner_ping : null,
     operatorNotice: hostApprovalAccepted && typeof approval.operator_notice === 'string' && approval.operator_notice.trim()
       ? approval.operator_notice.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)
       : null,
@@ -638,6 +652,39 @@ export function ordinaryApprovalGuidance(
     proofFields,
     expiresAt,
   };
+}
+
+/**
+ * Whether the owner's server-issued receipt is required (arbitration). The
+ * service names it dashboard_receipt_required today and will rename it; both
+ * shapes are read, and neither is ever shown as a dashboard step.
+ */
+export function ownerReceiptRequired(approval: Record<string, unknown> | null | undefined): boolean {
+  return Boolean(approval) && (approval!.dashboard_receipt_required === true
+    || approval!.owner_receipt_required === true
+    || approval!.server_receipt_required === true);
+}
+
+/**
+ * When the owner's one-tap link is requested (owner rule: approvals keep people
+ * and agents in flow). Only (a) an owner-locked category, (b) the owner's own
+ * standing decline once the operator asks to reverse it, or (c) an unattended
+ * run when the owner turned on unattended pings. Never for an ordinary hold
+ * a person can answer, or one that waits quietly.
+ */
+export function ownerLinkPolicy(
+  guidance: Pick<OrdinaryApprovalGuidance, 'approvalLinkPath' | 'linkAvailable' | 'linkReason' | 'unattendedOwnerPing' | 'verifiedApprovalRequired' | 'hostApprovalRefusal'>,
+  presence: { unattended: boolean },
+): 'now' | 'on_request' | null {
+  if (!guidance.approvalLinkPath) return null;
+  const ownerLocked = guidance.linkReason === 'owner_locked'
+    || (guidance.linkAvailable === null && guidance.verifiedApprovalRequired === true);
+  if (ownerLocked) return 'now';
+  const declineStands = guidance.linkReason === 'owner_decline_stands'
+    || (guidance.linkAvailable === null && guidance.hostApprovalRefusal === 'owner_decline_stands');
+  if (declineStands) return 'on_request';
+  if (presence.unattended && (guidance.linkReason === 'unattended_owner_ping' || guidance.unattendedOwnerPing === true)) return 'now';
+  return null;
 }
 
 /**

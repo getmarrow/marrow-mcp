@@ -27,6 +27,17 @@ const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
+const host_session_1 = require("./host-session");
+/** Held actions waiting for the person, shown once at an interactive session's first prompt. */
+async function interactiveHeldActionsNotice(context) {
+    const interactive = context.host === 'claude-code' ? !(0, host_approval_1.claudeCodeHeadless)()
+        : context.host === 'codex' || context.host === 'gemini' ? (0, host_session_1.localInteractiveSession)(context.host) === true
+            : context.host === 'cursor' ? (0, host_approval_1.cursorSessionEvidence)(context).interactive === true
+                : false;
+    if (!interactive)
+        return null;
+    return (0, host_approval_1.heldActionsNotice)(context).catch(() => null);
+}
 exports.CONTEXT_HOOK_COMMAND = hook_contract_1.CONTEXT_HOOK_COMMAND;
 const HOOK_DEBUG = process.env.MARROW_CONTEXT_HOOK_DEBUG === 'true' || process.env.MARROW_HOOK_DEBUG === 'true';
 const MARROW_API_TIMEOUT_MS = 400;
@@ -73,6 +84,11 @@ async function runCursorPromptHook(event) {
         const result = await (0, host_approval_1.settleTypedReply)(context, event.prompt).catch(() => null);
         if (result && !result.ok)
             output = { continue: false, user_message: result.userText };
+        else {
+            const notice = await interactiveHeldActionsNotice(context);
+            if (notice)
+                output = { continue: true, user_message: notice };
+        }
     }
     process.stdout.write(JSON.stringify(output));
 }
@@ -87,11 +103,15 @@ async function runGeminiPromptHook(event) {
     let output = {};
     if (context) {
         const result = await (0, host_approval_1.settleTypedReply)(context, event.prompt).catch(() => null);
+        const notice = result ? null : await interactiveHeldActionsNotice(context);
         if (result) {
             output = {
                 systemMessage: result.userText,
                 ...(result.agentText ? { hookSpecificOutput: { hookEventName: 'BeforeAgent', additionalContext: result.agentText } } : {}),
             };
+        }
+        else if (notice) {
+            output = { systemMessage: notice };
         }
         await (0, host_approval_1.flushHoldOutbox)(context, 1, 1_500).catch(() => undefined);
     }
@@ -122,6 +142,8 @@ async function settleHeldCallsAtPrompt(event) {
             heldReplyAgentText = result.agentText;
         }
     }
+    if (!heldReplyUserText)
+        heldReplyUserText = await interactiveHeldActionsNotice(context);
     await (0, host_approval_1.flushHoldOutbox)(context, 2, 2_000).catch(() => undefined);
 }
 function debug(msg) {

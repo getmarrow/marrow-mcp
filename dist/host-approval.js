@@ -1,7 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CLAUDE_CODE_NOT_A_DECISION_PREFIXES = exports.CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK = exports.CLAUDE_CODE_USER_REJECTED = exports.LATE_MARKER_WAIT_MS = exports.TYPED_REPLY_MARKER = exports.OWNER_LINK_ON_REQUEST_TEXT = exports.HELD_UNREACHABLE_TEXT = exports.LEGACY_SERVICE_TEXT = exports.OWNER_APPROVAL_REQUEST_TEXT = exports.HOST_APPROVAL_REQUEST_TIMEOUT_MS = exports.CURSOR_ASK_EVENTS = exports.HOST_LABEL = void 0;
+exports.CLAUDE_CODE_NOT_A_DECISION_PREFIXES = exports.CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK = exports.CLAUDE_CODE_USER_REJECTED = exports.LATE_MARKER_WAIT_MS = exports.HELD_FOR_YOU_TEXT = exports.TYPED_REPLY_MARKER = exports.OWNER_LINK_ON_REQUEST_TEXT = exports.HELD_UNREACHABLE_TEXT = exports.LEGACY_SERVICE_TEXT = exports.OWNER_APPROVAL_REQUEST_TEXT = exports.HOST_APPROVAL_REQUEST_TIMEOUT_MS = exports.CURSOR_ASK_EVENTS = exports.HEADLESS_CLAUDE_ENTRYPOINTS = exports.HOST_LABEL = void 0;
 exports.approvalHostFor = approvalHostFor;
+exports.claudeCodeHeadless = claudeCodeHeadless;
 exports.preToolBudgetMs = preToolBudgetMs;
 exports.preToolDeadline = preToolDeadline;
 exports.remainingMs = remainingMs;
@@ -19,7 +20,9 @@ exports.rememberHold = rememberHold;
 exports.rememberProtection = rememberProtection;
 exports.protectedAmong = protectedAmong;
 exports.requestOwnerLink = requestOwnerLink;
+exports.heldActionsNotice = heldActionsNotice;
 exports.noteDialogShown = noteDialogShown;
+exports.permissionMarkerHookPresent = permissionMarkerHookPresent;
 exports.approvalSentence = approvalSentence;
 exports.resumeWaitingHold = resumeWaitingHold;
 exports.deliverHold = deliverHold;
@@ -39,12 +42,15 @@ exports.typedReplyAvailable = typedReplyAvailable;
 exports.settleTypedReply = settleTypedReply;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
+const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const index_1 = require("./index");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
+const runtime_contract_1 = require("./runtime-contract");
 const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
+const normalized_action_1 = require("./normalized-action");
 exports.HOST_LABEL = {
     'claude-code': 'Claude Code',
     codex: 'Codex',
@@ -62,6 +68,11 @@ function approvalHostFor(harness, env = process.env) {
         return 'other';
     return harness;
 }
+/** Claude Code entrypoints with no one at a dialog (claude -p, the Agent SDKs, its GitHub Action); hooks inherit it. */
+exports.HEADLESS_CLAUDE_ENTRYPOINTS = new Set(['sdk-cli', 'sdk-ts', 'sdk-py', 'claude-code-github-action']);
+function claudeCodeHeadless(env = process.env) {
+    return exports.HEADLESS_CLAUDE_ENTRYPOINTS.has(String(env.CLAUDE_CODE_ENTRYPOINT || ''));
+}
 /** Cursor events on which a hook "ask" is enforced (never preToolUse). */
 exports.CURSOR_ASK_EVENTS = new Set(['beforeShellExecution', 'beforeMCPExecution']);
 const HOST_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -74,14 +85,20 @@ const OUTPUT_RESERVE_MS = 400;
 const MIN_STEP_MS = 600;
 /**
  * One total time budget for a pre-tool hook, counted from the start of the
- * hook process. Codex and Cursor stop a hook after 5 seconds (as
- * @getmarrow/install configures them) and Codex then lets the call run, so
- * their budget leaves room for npx start-up; slow work that does not decide
- * the answer runs after the answer is written, inside the same budget.
+ * hook process and set from each host's real kill timeout as
+ * @getmarrow/install configures it: Codex 5 s (it then lets the call run),
+ * Cursor 5 s with failClosed, the installer's Grok guard 5 s (it then blocks),
+ * Gemini CLI 5 s. The margin covers npx start-up before the process starts.
+ * Cold auth can take 900 ms plus a 1.6 s grace, so the control path keeps
+ * room for a slow but healthy Marrow; when the budget still runs out, an
+ * action that can be held stays held (never an outage allow).
  */
 function preToolBudgetMs(host) {
-    // Codex and Cursor stop hooks at 5 s; the installer's Grok guard stops at 5 s and blocks.
-    return host === 'codex' || host === 'cursor' || host === 'grok' ? 3_000 : 14_000;
+    if (host === 'codex')
+        return 3_800;
+    if (host === 'cursor' || host === 'grok' || host === 'gemini')
+        return 4_000;
+    return 14_000;
 }
 /** The hook process's deadline for its pre-tool answer and any follow-up work. */
 function preToolDeadline(host) {
@@ -152,6 +169,7 @@ function ownerRequestText(outcome) {
     switch (outcome.kind) {
         case 'sent': return ownerLinkSentText(outcome.channel);
         case 'already_sent': return 'An approval link was sent to the account owner.';
+        case 'not_sent': return 'Nothing was sent to anyone; it waits quietly until a person approves it.';
         // Deferred: tried right after this answer is written; until a retry confirms it, it is not "sent".
         case 'deferred':
         case 'retryable': return 'Marrow could not send the account owner an approval link yet; retrying this exact action tries again.';
@@ -184,11 +202,14 @@ exports.TYPED_REPLY_MARKER = {
  * calls), or a typed reply in a local interactive session of a host without a
  * dialog (Codex, Gemini CLI, Cursor otherwise). The approval code and its
  * prompt go only to a user-only channel; model-facing text never contains it.
- * When no operator can answer here, the request goes to the account owner.
+ * When no one can answer here, the action waits quietly (the owner's link only
+ * for owner-locked categories, the owner's own decline when the operator asks,
+ * or unattended runs with the owner's pings on).
  * No text makes a dashboard login the step to take.
  */
 function planHeldAction(input) {
     const { guidance, host } = input;
+    const unattended = input.unattended === true;
     const reason = input.reason ? ` Reason: ${bounded(input.reason, 200)}` : '';
     const id = guidance.gateReceiptId;
     // Shown in the host's own prompt (to the operator, never to the agent).
@@ -196,6 +217,9 @@ function planHeldAction(input) {
     const held = `Marrow is holding this action for approval (gate receipt ${id}), so it did not run.${reason}`;
     const tail = ' When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.';
     const claudePrompt = bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${id}).${notice}${reason}`, 500);
+    // Owner rule: the owner's link only for (a) an owner-locked category, (b) the
+    // owner's standing decline once the operator asks, (c) an unattended run with pings on.
+    const policy = (0, runtime_contract_1.ownerLinkPolicy)(guidance, { unattended });
     if (guidance.hostApprovalAccepted) {
         if (host === 'claude-code' && input.claudePrompt?.available) {
             return { kind: 'ask', promptText: claudePrompt };
@@ -207,7 +231,7 @@ function planHeldAction(input) {
                 promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action (gate receipt ${id}).${notice}${reason}`, 500),
             };
         }
-        if (input.typedReply && exports.TYPED_REPLY_MARKER[host]) {
+        if (input.typedReply && exports.TYPED_REPLY_MARKER[host] && !unattended) {
             return {
                 kind: 'deny',
                 agentText: bounded(`${held} The operator was asked to approve it here.${tail}`, 500),
@@ -232,31 +256,39 @@ function planHeldAction(input) {
         if (guidance.hostApprovalRefusal === 'owner_decline_stands') {
             // The owner just said no: the owner is asked again only when the operator asks.
             const why = `${ownerOnlyReason(guidance)} Only the account owner can reverse that.`;
-            const ask = guidance.approvalLinkPath ? ` ${exports.OWNER_LINK_ON_REQUEST_TEXT}` : '';
-            const agentText = bounded(`${held} ${why}${ask} Retry it only if the operator asks you to. Do not report or claim an approval yourself.`, 500);
-            return { kind: 'deny', agentText, userText: agentText, code: false, ...(guidance.approvalLinkPath ? { ownerLink: 'on_request' } : {}) };
+            const ask = policy === 'on_request' ? ` ${exports.OWNER_LINK_ON_REQUEST_TEXT}` : '';
+            const agentText = bounded(`${held} ${why}${ask} Retry it only if the operator asks you to; otherwise carry on with other work. Do not report or claim an approval yourself.`, 500);
+            return { kind: 'deny', agentText, userText: agentText, code: false, ...(policy === 'on_request' ? { ownerLink: 'on_request' } : {}) };
         }
-        const agentText = bounded(`${held} ${ownerOnlyReason(guidance)} ${exports.OWNER_APPROVAL_REQUEST_TEXT}${tail}`, 500);
-        return { kind: 'deny', agentText, userText: agentText, code: false, ownerLink: 'now' };
+        // An owner-locked category: the owner's one-tap link is how it is approved.
+        const request = policy === 'now' ? exports.OWNER_APPROVAL_REQUEST_TEXT : ownerRequestText({ kind: 'none' });
+        const agentText = bounded(`${held} ${ownerOnlyReason(guidance)} ${request} Carry on with other work meanwhile.${tail}`, 500);
+        return { kind: 'deny', agentText, userText: agentText, code: false, ...(policy === 'now' ? { ownerLink: 'now' } : {}) };
     }
-    if (host === 'claude-code' && !input.claudePrompt?.headless) {
+    if (host === 'claude-code' && !input.claudePrompt?.headless && !unattended) {
         // The operator is present but this session shows no dialog: switching to a
-        // mode with the dialog approves it here; asking the owner is the operator's call.
-        const ask = guidance.approvalLinkPath ? ` Or, ${exports.OWNER_LINK_ON_REQUEST_TEXT.charAt(0).toLowerCase()}${exports.OWNER_LINK_ON_REQUEST_TEXT.slice(1)}` : '';
-        const agentText = bounded(`${held} Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you.${ask} Retry it only when the operator asks you to. Do not report or claim an approval yourself.`, 500);
-        return {
-            kind: 'deny', agentText, userText: agentText, code: false, dialogLater: true, laterPrompt: claudePrompt,
-            ...(guidance.approvalLinkPath ? { ownerLink: 'on_request' } : {}),
-        };
+        // mode with the dialog approves it here (the host's own prompt, one click).
+        const agentText = bounded(`${held} Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you. Until then carry on with other work. Do not report or claim an approval yourself.`, 500);
+        return { kind: 'deny', agentText, userText: agentText, code: false, dialogLater: true, laterPrompt: claudePrompt };
     }
-    const why = host === 'claude-code'
-        ? `Claude Code runs headless here (${input.claudePrompt?.unavailableReason || 'no one sees a dialog'}), so no one can answer a dialog. ${exports.OWNER_APPROVAL_REQUEST_TEXT}`
-        : host === 'cursor'
-            ? `Cursor asks for approval only for shell and MCP calls in a local interactive session. ${exports.OWNER_APPROVAL_REQUEST_TEXT}`
-            : `${exports.HOST_LABEL[host].charAt(0).toUpperCase()}${exports.HOST_LABEL[host].slice(1)} cannot ask the operator in this session. ${exports.OWNER_APPROVAL_REQUEST_TEXT}`;
-    const agentText = bounded(`${held} ${why}${tail}`, 500);
-    return { kind: 'deny', agentText, userText: agentText, code: false, ...(guidance.approvalLinkPath ? { ownerLink: 'now' } : {}) };
+    if (unattended || (host === 'claude-code' && input.claudePrompt?.headless)) {
+        // Unattended: the action waits quietly and the agent carries on. The person
+        // sees it at their next interactive session; the owner is pinged only on opt-in.
+        const pinged = policy === 'now';
+        const agentText = pinged
+            ? bounded(`${held} Nobody can approve it in this run. ${exports.OWNER_APPROVAL_REQUEST_TEXT} If it is approved, retrying this exact action runs it once; meanwhile carry on with other work. Do not report or claim an approval yourself.`, 500)
+            : bounded(`${held} Nobody can approve it in this run, so it waits quietly; nothing was sent to anyone. Carry on with other work and do not retry it in this run. A person sees it at their next interactive session and approves it there by retrying it where the host's prompt asks. Do not report or claim an approval yourself.`, 500);
+        return { kind: 'deny', agentText, userText: agentText, code: false, quiet: 'unattended', ...(pinged ? { ownerLink: 'now' } : {}) };
+    }
+    // A person is here, but this host has no prompt Marrow can use for this call: hold quietly.
+    const why = host === 'cursor'
+        ? 'Cursor asks for approval only for shell and MCP calls in a local session.'
+        : `${exports.HOST_LABEL[host].charAt(0).toUpperCase()}${exports.HOST_LABEL[host].slice(1)} cannot ask for approval in this session.`;
+    const agentText = bounded(`${held} ${why} It stays held until the operator approves it: tell them it is held, and that they approve it by retrying it in a session with Marrow's prompt (a host permission dialog, or a typed reply). Carry on with other work. Do not report or claim an approval yourself.`, 500);
+    return { kind: 'deny', agentText, userText: exports.HELD_FOR_YOU_TEXT, code: false, quiet: 'attended' };
 }
+/** What the person sees when this host cannot ask them: the action waits for them. */
+exports.HELD_FOR_YOU_TEXT = 'This action is held until you approve it. Approve it by retrying it in a session with Marrow\'s prompt.';
 /**
  * Arbitration review_required with the server's one-tap path: the owner picks
  * and approves one proposal. The hook denies, asks Marrow to send the owner a
@@ -321,6 +353,7 @@ function rememberHold(ctx, input) {
         ask_text: input.dialogLater && input.laterPrompt ? bounded(input.laterPrompt, 500) : null,
         legacy_service: input.guidance.hostApprovalSupported === false,
         arbitration_receipt_id: input.guidance.arbitrationReceiptId && BOUNDED_ID.test(input.guidance.arbitrationReceiptId) ? input.guidance.arbitrationReceiptId : null,
+        quiet: input.quiet ?? null,
     }, ctx.home);
 }
 /**
@@ -381,9 +414,10 @@ async function requestOwnerLink(ctx, hold, reserve = OUTPUT_RESERVE_MS) {
     try {
         const result = await (0, index_1.marrowRequestApprovalLink)(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, hold.decision_id, hold.session_id, hold.agent_id || undefined, timeout.signal);
         outcome = result.ok ? { kind: 'sent', channel: result.link.channel }
-            : !result.retryable && result.code && FINAL_LINK_CODES.has(result.code) ? { kind: 'failed', code: result.code }
-                : result.retryable ? { kind: 'retryable' }
-                    : { kind: 'failed', code: result.code };
+            : result.notSent ? { kind: 'not_sent' }
+                : !result.retryable && result.code && FINAL_LINK_CODES.has(result.code) ? { kind: 'failed', code: result.code }
+                    : result.retryable ? { kind: 'retryable' }
+                        : { kind: 'failed', code: result.code };
     }
     catch {
         outcome = { kind: 'retryable' };
@@ -393,8 +427,9 @@ async function requestOwnerLink(ctx, hold, reserve = OUTPUT_RESERVE_MS) {
     }
     const attempts = (hold.link_attempts || 0) + 1;
     const state = outcome.kind === 'sent' ? 'sent'
-        : outcome.kind === 'failed' || attempts >= MAX_LINK_ATTEMPTS ? 'failed'
-            : 'unsent';
+        : outcome.kind === 'not_sent' ? null
+            : outcome.kind === 'failed' || attempts >= MAX_LINK_ATTEMPTS ? 'failed'
+                : 'unsent';
     try {
         (0, host_approval_state_1.updateHold)(scopeOf(ctx), hold.id, (current) => ({ ...current, owner_link: state, link_attempts: attempts }), ctx.home);
     }
@@ -403,9 +438,116 @@ async function requestOwnerLink(ctx, hold, reserve = OUTPUT_RESERVE_MS) {
         return { kind: 'failed', code: null };
     return outcome;
 }
+/** The categories an owner can lock (risk-categories.ts on the service). */
+const OWNER_LOCKABLE_CATEGORIES = ['production_deploy', 'package_publish', 'secrets_security', 'data_migration', 'billing_access', 'destructive_action', 'source_control'];
+/**
+ * Once per interactive host session (its first prompt): tells the person how
+ * many held actions are waiting for them, with the action type and agent only,
+ * and refreshes this machine's copy of the owner-locked categories (so they
+ * stay held during an outage on a fresh machine). Returns user-only text, or null.
+ */
+async function heldActionsNotice(ctx, budgetMs = 1_500) {
+    const scope = scopeOf(ctx);
+    const marker = `held-actions-surfaced:${ctx.hostSessionId}`;
+    try {
+        if ((0, host_approval_state_1.sessionMarker)('prompt_hook', scope, marker, ctx.home) === true)
+            return null;
+        (0, host_approval_state_1.setSessionMarker)('prompt_hook', scope, marker, true, ctx.home);
+    }
+    catch {
+        return null;
+    }
+    const timeout = statusTimeout(budgetMs);
+    let items = null;
+    try {
+        const [held, settings] = await Promise.all([
+            (0, index_1.marrowHeldActions)(ctx.apiKey, ctx.baseUrl, { scope: 'agent', limit: 20 }, ctx.sessionId, ctx.agentId, timeout.signal).catch(() => undefined),
+            (0, index_1.marrowAgentApprovalSettings)(ctx.apiKey, ctx.baseUrl, ctx.sessionId, ctx.agentId, timeout.signal).catch(() => undefined),
+        ]);
+        if (settings) {
+            (0, host_approval_state_1.noteProtectedCategories)(scope, settings.verified_approval_categories, OWNER_LOCKABLE_CATEGORIES.filter((category) => !settings.verified_approval_categories.includes(category)), ctx.home);
+        }
+        if (held)
+            items = held.holds.map((hold) => ({ type: hold.decision_type || 'action', agent: hold.agent_id }));
+    }
+    finally {
+        timeout.cancel();
+    }
+    if (!items) {
+        // A service without the read: this machine's own waiting holds.
+        try {
+            const now = Date.now();
+            items = (0, host_approval_state_1.findHolds)(scope, { mode: 'wait', states: ['open'] }, ctx.home)
+                .filter((hold) => !hold.expires_at || Date.parse(hold.expires_at) > now)
+                .map((hold) => ({ type: hold.action.type || 'action', agent: hold.agent_id }));
+        }
+        catch {
+            items = [];
+        }
+    }
+    if (!items.length)
+        return null;
+    const groups = new Map();
+    for (const item of items) {
+        const label = `${bounded(item.type, 40)}${item.agent ? ` by agent ${bounded(item.agent, 64)}` : ''}`;
+        groups.set(label, (groups.get(label) || 0) + 1);
+    }
+    const list = [...groups.entries()].slice(0, 5).map(([label, count]) => (count > 1 ? `${label} (${count})` : label)).join('; ');
+    const n = items.length;
+    return bounded(`Marrow: ${n} held action${n === 1 ? ' is' : 's are'} waiting for you: ${list}. Nothing ran. To approve one, retry it here and answer Marrow's prompt.`, 500);
+}
 /** PermissionRequest (pass-through): the host is about to show its own dialog for an asked call. */
 function noteDialogShown(ctx, correlation) {
+    try {
+        // This machine runs the marker hook: a post-tool hook may wait for a late marker.
+        (0, host_approval_state_1.setSessionMarker)('prompt_hook', scopeOf(ctx), PERMISSION_HOOK_SEEN, true, ctx.home);
+    }
+    catch { /* a convenience; the marker below is what counts */ }
     return (0, host_approval_state_1.markDialogShown)(scopeOf(ctx), { correlation, sessionId: ctx.sessionId }, new Date().toISOString(), ctx.home);
+}
+const PERMISSION_HOOK_SEEN = 'claude-permission-request-hook-seen';
+const NORMALIZED_ACTION_REFUSED = 'host-route-refuses-normalized-action';
+/**
+ * The exact action the operator answered for, carried with the report (it is
+ * kept with the queued report so a resend is byte-identical, secrets removed),
+ * unless this service refused the field recently.
+ */
+function reportAction(ctx, normalizedAction) {
+    if (!normalizedAction)
+        return {};
+    try {
+        if ((0, host_approval_state_1.sessionMarker)('prompt_hook', scopeOf(ctx), NORMALIZED_ACTION_REFUSED, ctx.home) === true)
+            return {};
+    }
+    catch {
+        return {};
+    }
+    return { normalized_action: normalizedAction };
+}
+/**
+ * Whether Claude Code runs Marrow's pass-through PermissionRequest hook here:
+ * seen on this machine for this key, or configured in the user's or the
+ * project's Claude Code settings. Without it there is no marker to wait for.
+ */
+function permissionMarkerHookPresent(ctx, cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd()) {
+    try {
+        if ((0, host_approval_state_1.sessionMarker)('prompt_hook', scopeOf(ctx), PERMISSION_HOOK_SEEN, ctx.home) === true)
+            return true;
+    }
+    catch { /* fall through to the settings */ }
+    const home = ctx.home || process.env.HOME || (0, node_os_1.homedir)();
+    for (const path of [(0, node_path_1.join)(home, '.claude', 'settings.json'), (0, node_path_1.join)(cwd, '.claude', 'settings.json')]) {
+        try {
+            const stat = (0, node_fs_1.lstatSync)(path);
+            if (!stat.isFile() || stat.size > 1_048_576)
+                continue;
+            const hooks = JSON.parse((0, node_fs_1.readFileSync)(path, 'utf8'))?.hooks?.PermissionRequest;
+            if (Array.isArray(hooks) && JSON.stringify(hooks).includes('claude-permission-request-hook'))
+                return true;
+        }
+        catch { /* unreadable or absent: no evidence */ }
+    }
+    return false;
 }
 function statusTimeout(ms = exports.HOST_APPROVAL_REQUEST_TIMEOUT_MS) {
     const controller = new AbortController();
@@ -521,7 +663,9 @@ async function resumeWaitingHold(ctx, input) {
             : hold.legacy_service ? `${exports.LEGACY_SERVICE_TEXT} The account owner has not approved it yet.`
                 : hold.owner_link ? ownerRequestText(link)
                     : hold.dialog_later ? 'Claude Code shows no approval dialog in this session; switch to its default permission mode and retry this exact action.'
-                        : ownerRequestText({ kind: 'none' });
+                        : hold.quiet === 'unattended' ? 'Nobody can approve it in this run, so it waits quietly. Carry on with other work; a person approves it at their next interactive session.'
+                            : hold.quiet === 'attended' ? 'It stays held until the operator approves it by retrying it in a session with Marrow\'s prompt. Carry on with other work.'
+                                : ownerRequestText({ kind: 'none' });
         const expires = status.expires_at || hold.expires_at;
         const what = hold.arbitration_receipt_id ? 'for arbitration review' : 'for approval';
         const text = bounded(`Marrow is still holding this action ${what} (gate receipt ${hold.gate_receipt_id}), so it did not run. ${waiting} When it is approved${expires ? ` (before ${expires})` : ''}, retry this exact action. Do not report or claim an approval yourself.`, 500);
@@ -529,7 +673,9 @@ async function resumeWaitingHold(ctx, input) {
             kind: 'deny',
             hold,
             agentText: text,
-            userText: hold.code ? `Marrow still holds this action for your approval (gate receipt ${hold.gate_receipt_id}).` : text,
+            userText: hold.code ? `Marrow still holds this action for your approval (gate receipt ${hold.gate_receipt_id}).`
+                : hold.quiet === 'attended' ? exports.HELD_FOR_YOU_TEXT
+                    : text,
             ...(link.kind === 'deferred' ? { deferredLink: true } : {}),
         };
     }
@@ -653,6 +799,18 @@ async function deliverHold(ctx, holdId, deadline = Date.now() + settleBudgetMs(c
     let result;
     try {
         result = await (0, index_1.marrowHostApproval)(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, report, hold.session_id, hold.agent_id || undefined, timeout.signal);
+        // A service that does not take normalized_action yet rejected the report
+        // before recording it: store it without the field (remembered for a day) and send that.
+        if (report.normalized_action && result && !result.ok && result.status === 400 && result.fields?.includes('normalized_action')) {
+            try {
+                (0, host_approval_state_1.setSessionMarker)('prompt_hook', scope, NORMALIZED_ACTION_REFUSED, true, ctx.home);
+            }
+            catch { /* resent below either way */ }
+            const { normalized_action: _dropped, ...plain } = report;
+            report = plain;
+            hold = (0, host_approval_state_1.updateHold)(scope, hold.id, (current) => ({ ...current, outbox: current.outbox && { ...current.outbox, report: plain } }), ctx.home) || hold;
+            result = await (0, index_1.marrowHostApproval)(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, report, hold.session_id, hold.agent_id || undefined, timeout.signal);
+        }
     }
     catch {
         result = null;
@@ -801,7 +959,7 @@ async function settleAfterTool(ctx, input) {
         return null;
     const answeredAt = new Date().toISOString();
     let lateMarker = false;
-    if (hold.mode === 'ask' && hold.host === 'claude-code' && !hold.dialog_at) {
+    if (hold.mode === 'ask' && hold.host === 'claude-code' && !hold.dialog_at && permissionMarkerHookPresent(ctx)) {
         // The marker hook runs async: after a fast click it can land just after
         // this hook starts. Wait briefly so a real click is not labelled an allow rule.
         const waitUntil = Date.now() + (input.markerWaitMs ?? exports.LATE_MARKER_WAIT_MS);
@@ -834,6 +992,7 @@ async function settleAfterTool(ctx, input) {
             asked_at: lateMarker ? hold.asked_at : (hold.dialog_at || hold.asked_at),
             answered_at: answeredAt,
             ...(hold.decision_id ? { decision_id: hold.decision_id } : {}),
+            ...reportAction(ctx, input.normalizedAction),
         }
         : null;
     if (!report && !commit) {
@@ -949,7 +1108,7 @@ function transcriptToolResults(path, toolUseIds) {
     }
     return found;
 }
-async function settleClaudeResolution(ctx, hold, resolution, hookEvent) {
+async function settleClaudeResolution(ctx, hold, resolution, hookEvent, normalizedAction) {
     const scope = scopeOf(ctx);
     if (resolution === 'unknown')
         return;
@@ -963,6 +1122,7 @@ async function settleClaudeResolution(ctx, hold, resolution, hookEvent) {
             asked_at: hold.dialog_at || hold.asked_at,
             answered_at: new Date().toISOString(),
             ...(hold.decision_id ? { decision_id: hold.decision_id } : {}),
+            ...reportAction(ctx, normalizedAction),
         };
         const commit = {
             success: false,
@@ -1015,7 +1175,7 @@ async function settleToolBatch(ctx, input) {
         });
         if (resolution === 'unknown')
             continue;
-        await settleClaudeResolution(ctx, hold, resolution, 'PostToolBatch');
+        await settleClaudeResolution(ctx, hold, resolution, 'PostToolBatch', (0, normalized_action_1.normalizedHookAction)({ tool_name: toolName, tool_input: call.tool_input }));
         settled += 1;
     }
     return settled;

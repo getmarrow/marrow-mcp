@@ -12,6 +12,8 @@ export type HoldReport = {
     asked_at: string;
     answered_at: string;
     decision_id?: string;
+    /** The exact action answered for (secrets removed); kept only until the report is delivered. */
+    normalized_action?: Record<string, unknown>;
 };
 export type HoldCommit = {
     success: boolean;
@@ -65,6 +67,8 @@ export type HoldRecord = {
     legacy_service?: boolean;
     /** Arbitration review: the owner picks a proposal; the commit needs these receipts. */
     arbitration_receipt_id?: string | null;
+    /** A hold that waits quietly: a person is here but cannot be asked, or nobody is (unattended). */
+    quiet?: 'attended' | 'unattended' | null;
     action: {
         action: string;
         target: string;

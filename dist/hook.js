@@ -10,6 +10,7 @@ exports.runHookCommand = runHookCommand;
 exports.runPermissionRequestHookCommand = runPermissionRequestHookCommand;
 exports.installPermissionRequestHook = installPermissionRequestHook;
 const node_crypto_1 = require("node:crypto");
+const normalized_action_1 = require("./normalized-action");
 const codex_native_usage_1 = require("./codex-native-usage");
 const index_1 = require("./index");
 const habit_loop_copy_1 = require("./habit-loop-copy");
@@ -235,6 +236,7 @@ async function runHookCommand(input) {
                 toolUseId: getString(event.tool_use_id) || null,
                 generationId: getString(event.generation_id) || null,
                 success: outcome.unknown ? null : outcome.success,
+                normalizedAction: (0, normalized_action_1.normalizedHookAction)(event),
             }).catch(() => null);
             if (handoff)
                 heldActionContext = handoff;

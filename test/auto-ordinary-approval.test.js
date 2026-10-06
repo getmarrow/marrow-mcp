@@ -102,7 +102,7 @@ test('a pending hold waits on the status read and asks to resume after retry_aft
     assert.equal(waiting.approval.state, 'pending');
     assert.equal(waiting.approval.gate_receipt_id, 'ordinary-gate');
     assert.equal(waiting.approval.approver, 'host_operator_or_account_owner');
-    assert.match(waiting.exact_next_action, /Do not run it yet\. Tell the operator this action is waiting for approval\./);
+    assert.match(waiting.exact_next_action, /Do not run it yet\. Nobody can approve it from this tool call, so it waits quietly; nothing was sent to anyone\. Carry on with other work/);
     assert.doesNotMatch(waiting.exact_next_action, /dashboard/i, 'a dashboard login is never the step to take');
     assert.match(waiting.exact_next_action, /same operation_id after retry_after_ms/);
     assert.match(waiting.exact_next_action, /Never write or claim an approval yourself\./);
@@ -225,8 +225,23 @@ test('a declined hold with a claimed outcome and an expired hold stop without co
   }
 });
 
-test('auto asks Marrow once per operation to send the owner a one-tap link, and says so', async () => {
-  const runtime = runtimeFixture({ approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link' });
+test('an ordinary hold emails nobody; an owner-locked category gets the owner\'s one-tap link once per operation', async () => {
+  const quiet = runtimeFixture({ approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link' });
+  const quietCalls = [];
+  await withFetch(async (url) => {
+    const path = new URL(String(url)).pathname;
+    quietCalls.push(path);
+    if (path.endsWith('/runtime')) return Response.json({ data: quiet });
+    if (path === statusPath) return Response.json({ data: statusView('pending') });
+    throw new Error(`unexpected ${path}`);
+  }, async () => {
+    const first = await invoke(marrowAuto, { ...baseParams, operation_id: 'ordinary_quiet_op', proof: measuredProof });
+    assert.match(first.exact_next_action, /waits quietly; nothing was sent to anyone/);
+    assert.equal(quietCalls.filter((path) => path.endsWith('/approval-link')).length, 0);
+  });
+  const runtime = runtimeFixture({ approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link', host_approval_accepted: false,
+    verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'account_owner',
+    approval_link_available: true, approval_link_reason: 'owner_locked' });
   const calls = [];
   const fetch = async (url, init = {}) => {
     const path = new URL(String(url)).pathname;
@@ -281,7 +296,7 @@ test('a verified-only category tells the agent only the account owner can approv
     assert.equal(waiting.approval.verified_approval_required, true);
     assert.equal(waiting.approval.approver, 'account_owner');
     assert.deepEqual(waiting.approval.verified_approval_categories, ['production_deploy']);
-    assert.match(waiting.exact_next_action, /The account owner approves production_deploy actions personally\. Tell the operator this action is waiting for approval\./);
+    assert.match(waiting.exact_next_action, /The account owner approves production_deploy actions personally\. Nobody can approve it from this tool call, so it waits quietly/);
   });
 });
 
@@ -401,7 +416,7 @@ test('the CLI projects the wait and the closure, with the approval state and no 
       assert.equal(result.live_delivery.committed, approved);
       assert.equal(result.approval.state, approved ? 'used' : 'pending');
       assert.doesNotMatch(result.exact_next_action, /arbitrat|proof\.owner_approval|approved-release-bundle/i);
-      if (!approved) assert.match(result.exact_next_action, /Tell the operator this action is waiting for approval/);
+      if (!approved) assert.match(result.exact_next_action, /waits quietly; nothing was sent to anyone/);
       assert.doesNotMatch(result.exact_next_action, /dashboard/i);
     }
   } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -504,7 +519,8 @@ test('"the account owner approved" only for the owner\'s verified approval', asy
 });
 
 test('L-5: auto says a link was sent only when it was, and retries a retryable failure within the operation', async () => {
-  const runtime = runtimeFixture({ approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link' });
+  const runtime = runtimeFixture({ approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link', host_approval_accepted: false,
+    verified_approval_required: true, verified_approval_categories: ['production_deploy'], approval_authority: 'account_owner' });
   const mock = scriptedServer(['pending'], runtime, { links: [{ status: 409, body: { error: 'undelivered', details: { code: 'MARROW_APPROVAL_LINK_UNDELIVERED', retryable: true } } }, { status: 200 }] });
   await withFetch(mock.fetch, async () => {
     const first = await invoke(marrowAuto, { ...baseParams, operation_id: 'link_retry_op', proof: measuredProof });
