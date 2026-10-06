@@ -459,6 +459,7 @@ async function heldActionsNotice(ctx, budgetMs = 1_500) {
     }
     const timeout = statusTimeout(budgetMs);
     let items = null;
+    let total = null;
     try {
         const [held, settings] = await Promise.all([
             (0, index_1.marrowHeldActions)(ctx.apiKey, ctx.baseUrl, { scope: 'agent', limit: 20 }, ctx.sessionId, ctx.agentId, timeout.signal).catch(() => undefined),
@@ -467,8 +468,10 @@ async function heldActionsNotice(ctx, budgetMs = 1_500) {
         if (settings) {
             (0, host_approval_state_1.noteProtectedCategories)(scope, settings.verified_approval_categories, OWNER_LOCKABLE_CATEGORIES.filter((category) => !settings.verified_approval_categories.includes(category)), ctx.home);
         }
-        if (held)
+        if (held) {
             items = held.holds.map((hold) => ({ type: hold.decision_type || 'action', agent: hold.agent_id }));
+            total = { n: held.count, capped: held.countCapped };
+        }
     }
     finally {
         timeout.cancel();
@@ -493,8 +496,9 @@ async function heldActionsNotice(ctx, budgetMs = 1_500) {
         groups.set(label, (groups.get(label) || 0) + 1);
     }
     const list = [...groups.entries()].slice(0, 5).map(([label, count]) => (count > 1 ? `${label} (${count})` : label)).join('; ');
-    const n = items.length;
-    return bounded(`Marrow: ${n} held action${n === 1 ? ' is' : 's are'} waiting for you: ${list}. Nothing ran. To approve one, retry it here and answer Marrow's prompt.`, 500);
+    const n = total?.n ?? items.length;
+    const plus = total?.capped ? '+' : '';
+    return bounded(`Marrow: ${n}${plus} held action${n === 1 && !plus ? ' is' : 's are'} waiting for you: ${list}. Nothing ran. To approve one, retry it here and answer Marrow's prompt.`, 500);
 }
 /** PermissionRequest (pass-through): the host is about to show its own dialog for an asked call. */
 function noteDialogShown(ctx, correlation) {

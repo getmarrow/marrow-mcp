@@ -2555,7 +2555,8 @@ async function marrowHeldActions(apiKey, baseUrl, query = {}, sessionId, agentId
                         expired: hold.expired === true,
                     }];
             });
-            return { count: holds.length, more: data.more === true, holds };
+            const count = typeof data.count === 'number' && Number.isInteger(data.count) && data.count >= holds.length ? Math.min(data.count, 500) : holds.length;
+            return { count, countCapped: data.count_capped === true, more: data.more === true, holds };
         },
     });
 }

@@ -3105,7 +3105,7 @@ export async function marrowHeldActions(
   sessionId?: string,
   agentId?: string,
   signal?: AbortSignal,
-): Promise<{ count: number; more: boolean; holds: MarrowHeldAction[] } | null> {
+): Promise<{ count: number; countCapped: boolean; more: boolean; holds: MarrowHeldAction[] } | null> {
   const params = new URLSearchParams({ scope: query.scope || 'agent', limit: String(Math.min(Math.max(Math.trunc(query.limit || 20), 1), 50)) });
   return fetch(`${baseUrl}${HELD_ACTIONS_PATH}?${params}`, {
     method: 'GET',
@@ -3135,7 +3135,8 @@ export async function marrowHeldActions(
           expired: hold.expired === true,
         }];
       });
-      return { count: holds.length, more: data.more === true, holds };
+      const count = typeof data.count === 'number' && Number.isInteger(data.count) && data.count >= holds.length ? Math.min(data.count, 500) : holds.length;
+      return { count, countCapped: data.count_capped === true, more: data.more === true, holds };
     },
   });
 }

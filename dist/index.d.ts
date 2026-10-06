@@ -333,6 +333,7 @@ export declare function marrowHeldActions(apiKey: string, baseUrl: string, query
     limit?: number;
 }, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<{
     count: number;
+    countCapped: boolean;
     more: boolean;
     holds: MarrowHeldAction[];
 } | null>;
