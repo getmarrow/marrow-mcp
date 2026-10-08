@@ -1394,7 +1394,13 @@ function withoutServerNextActions(value, depth = 0) {
     }
     return out;
 }
-/** The operator marker the backend needs to count an elicitation answer as the operator's. */
+/**
+ * The operator marker the backend needs to count an elicitation answer as the
+ * operator's. Client-attested: Marrow trusts the MCP client to show the dialog
+ * to a person (the agent cannot answer it through any tool argument). A client
+ * that let the model answer elicitation requests would make the agent's own
+ * answer count as the operator's.
+ */
 exports.ELICITATION_HOOK_EVENT = 'mcp_elicitation';
 async function elicitAutoApproval(input) {
     const askedAt = new Date().toISOString();

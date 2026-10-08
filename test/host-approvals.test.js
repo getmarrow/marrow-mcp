@@ -58,6 +58,12 @@ function hostRuntime(receipt = 'gate-held', approval = {}, extra = {}) {
   };
 }
 
+// The normalized action of the fixture's deploy: program names and a hash, never the command text.
+const DEPLOY_NORMALIZED = {
+  tool_kind: 'shell', tool_name: 'Bash', programs: ['wrangler'],
+  tool_input: { command_sha256: require('node:crypto').createHash('sha256').update('marrow-normalized-action-v2\nshell\nwrangler deploy --env production').digest('hex') },
+};
+
 function noProofRuntime(receipt = 'gate-held') {
   const runtime = hostRuntime(receipt);
   runtime.proof_pack = { required: false, fields: [], complete: true };
@@ -197,7 +203,7 @@ test('Claude Code allow: one click in the host dialog is reported with the Permi
     assert.ok(report, 'the click was reported');
     assert.equal(report.path, '/v1/agent/gate-receipts/gate-held/host-approval');
     assert.deepEqual(Object.keys(report.body).sort(), ['answered_at', 'asked_at', 'decision_id', 'hook_event', 'host', 'host_session_id', 'normalized_action', 'pre_action_event_id', 'verdict']);
-    assert.deepEqual(report.body.normalized_action, { tool_kind: 'shell', tool_name: 'Bash', commands: ['wrangler deploy --env production'], programs: ['wrangler'] });
+    assert.deepEqual(report.body.normalized_action, DEPLOY_NORMALIZED);
     assert.equal(report.body.verdict, 'approved');
     assert.equal(report.body.host, 'claude-code');
     assert.equal(report.body.hook_event, 'PermissionRequest');
@@ -1211,7 +1217,7 @@ test('normalized_action: sent on the runtime call and the report; a service that
     h.setConfig({ runtime: hostRuntime(), hostRouteStrict: true });
     h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
     const runtimeBody = runtimes(h)[0].body;
-    assert.deepEqual(runtimeBody.normalized_action, { tool_kind: 'shell', tool_name: 'Bash', commands: ['wrangler deploy --env production'], programs: ['wrangler'] });
+    assert.deepEqual(runtimeBody.normalized_action, DEPLOY_NORMALIZED);
     h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
     h.run('claude-hook', fixture('claude-post-tool-use.json'));
     const reports = hostReports(h);
@@ -1293,6 +1299,60 @@ test('MCP elicitation: a client that can ask its user approves a held marrow_aut
   assert.equal(none.elicitations.length, 0);
   assert.equal(none.reports.length, 0);
   assert.match(none.result.exact_next_action, /waits quietly; nothing was sent to anyone/);
+});
+
+
+// ---------------------------------------------------------------- Fix round 3 (audit of b78b2b9)
+
+test('HIGH-R3-1: a held command with a secret: the secret is in no request body, no local state and no hook output', () => {
+  const secret = `ZZQSYNTH${randomBytes(6).toString('hex').toUpperCase()}`;
+  const commands = [
+    `npm publish --otp ${secret}`,
+    `mysql -u root -p${secret} prod`,
+    `docker login -u bob -p ${secret} registry.example.com`,
+    `echo ${secret} | wrangler secret put API_KEY`,
+    `curl -u admin:${secret} https://api.example.com/deploy`,
+    `aws configure set aws_secret_access_key ${secret}`,
+    `sshpass -p ${secret} ssh root@prod`,
+    `redis-cli -a ${secret} FLUSHALL`,
+  ];
+  for (const command of commands) {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+      const event = { ...fixture('claude-pre-tool-use.json'), tool_input: { command, description: 'held call' } };
+      const outputs = [];
+      outputs.push(h.run('claude-pre-action-hook', event));
+      outputs.push(h.run('claude-permission-request-hook', { ...fixture('claude-permission-request.json'), tool_input: { command, description: 'held call' } }));
+      outputs.push(h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), tool_input: { command, description: 'held call' } }));
+      outputs.push(h.run('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_input: { command } }, { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex exec deploy' }));
+      const program = command.split(' ')[0];
+      const bodies = JSON.stringify(h.requests().map((request) => request.body));
+      assert.equal(bodies.includes(secret), false, `${program}: request bodies`);
+      assert.ok(h.requests().some((request) => request.body?.normalized_action), `${program}: the normalized action was sent`);
+      assert.equal(JSON.stringify(h.state() || {}).includes(secret), false, `${program}: local state`);
+      for (const out of outputs) assert.equal(`${out.stdout}${out.stderr}`.includes(secret), false, `${program}: hook output`);
+    } finally { h.cleanup(); }
+  }
+});
+
+test('L-R3-2: an answer the service refuses as a different action (MARROW_HOST_APPROVAL_ACTION_MISMATCH) commits the observed outcome and says so plainly', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: noProofRuntime(), hostApproval: [{ status: 409, body: { error: 'mismatch', details: { code: 'MARROW_HOST_APPROVAL_ACTION_MISMATCH' } } }] });
+    h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
+    const post = h.run('claude-hook', fixture('claude-post-tool-use.json'));
+    assert.equal(hostReports(h).length, 1, 'not retried');
+    assert.equal(commits(h).length, 1, 'the observed outcome is committed (it stays unverified)');
+    assert.match(post.json.hookSpecificOutput.additionalContext, /^Marrow could not record an approval for this held action: the action that ran is not the one Marrow held \(MARROW_HOST_APPROVAL_ACTION_MISMATCH\), so its outcome stays unverified\./);
+  } finally { h.cleanup(); }
+});
+
+test('L-R3-1: Codex has a 3 s pre-tool budget, so npx start-up still fits under its 5 s kill', () => {
+  const { preToolBudgetMs } = require('../dist/host-approval.js');
+  assert.equal(preToolBudgetMs('codex'), 3_000);
+  assert.ok(preToolBudgetMs('codex') + 1_300 < 5_000, 'the measured cold npx overhead fits');
 });
 
 // ---------------------------------------------------------------- Cursor

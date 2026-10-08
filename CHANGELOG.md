@@ -8,7 +8,7 @@
 - `marrow_auto` waits on the approval status and resumes on the same gate receipt, treats a spent receipt as final, strips the server's `exact_next_action` from the `runtime_gate` it returns, and never writes `proof.owner_approval`; a caller-written `proof.owner_approval` is stripped from every commit. New `request_owner_link` parameter.
 - A slow Marrow is not an outage: a holdable action stays held, routine actions keep flowing. Per-host budgets from the hosts' real 5 s limits. Real outages keep the outage policy; a waiting hold and owner-locked categories stay held on every host.
 - One approval lets exactly one call run. Lifecycle records are per attempt.
-- Hook-classified calls send `normalized_action` (the exact command or tool call, secrets removed) with the runtime call and the host-approval report.
+- Hook-classified calls send `normalized_action` with the runtime call and the host-approval report: the tool kind and name, program names (and edit paths) and a SHA-256 of the secret-free command or tool input. The command text is never sent. An `mcp_elicitation` answer is client-attested.
 - On a service without host approvals, Claude Code behaves as 3.9.98 (asks in its dialog).
 - SDK `3.7.65`.
 

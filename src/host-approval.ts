@@ -90,7 +90,8 @@ const MIN_STEP_MS = 600;
  * action that can be held stays held (never an outage allow).
  */
 export function preToolBudgetMs(host: ApprovalHost): number {
-  if (host === 'codex') return 3_800;
+  // Codex: 5 s kill, then it runs the call; npx start-up before this process can take ~1.3 s cold.
+  if (host === 'codex') return 3_000;
   if (host === 'cursor' || host === 'grok' || host === 'gemini') return 4_000;
   return 14_000;
 }
@@ -836,6 +837,8 @@ const REFUSED_AFTER_RUN = new Set([
   // An allow rule or automatic approval after the operator declined this action.
   'MARROW_EARLIER_DECLINE_STANDS',
   'MARROW_VERIFIED_OWNER_APPROVAL_REQUIRED',
+  // The answer was reported for a different normalized action than the held one.
+  'MARROW_HOST_APPROVAL_ACTION_MISMATCH',
   'MARROW_PRE_ACTION_GATE_EXPIRED',
   'MARROW_PRE_ACTION_GATE_USED',
   'MARROW_ARBITRATION_OWNER_APPROVAL_REQUIRED',
@@ -999,6 +1002,9 @@ function handoffText(hold: HoldRecord, delivery: DeliveryResult | null): string 
   if (!delivery) return null;
   if (delivery.kind === 'queued') {
     return bounded(`Marrow is recording the approval of this held action (gate receipt ${hold.gate_receipt_id}); the report is queued and retried automatically. Close it with marrow_commit as usual: ${decision}gate_receipt_id ${hold.gate_receipt_id}, the real success and outcome${hold.proof_required ? `, and proof with ${proof}` : ''}. Marrow sends the queued approval first.`, 600);
+  }
+  if (delivery.kind === 'refused' && delivery.code === 'MARROW_HOST_APPROVAL_ACTION_MISMATCH') {
+    return bounded(`Marrow could not record an approval for this held action: the action that ran is not the one Marrow held (${delivery.code}), so its outcome stays unverified. Do not retry it to get approval; a new attempt is held and asked again.`, 400);
   }
   if (delivery.kind === 'refused') {
     return bounded(`Marrow could not record an approval for this held action (${delivery.code || 'refused'}), so its outcome stays unverified. Do not retry it to get approval; the account owner sees it with its receipts in Marrow.`, 400);

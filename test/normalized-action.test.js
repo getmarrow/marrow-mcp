@@ -1,50 +1,123 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { normalizedHookAction, normalizeShellCommand } = require('../dist/normalized-action.js');
+const { randomBytes, randomInt } = require('node:crypto');
+const { normalizedHookAction, normalizeShellCommand, looksLikeKey } = require('../dist/normalized-action.js');
 const { ordinaryApprovalGuidance } = require('../dist/runtime-contract.js');
 const { withoutServerNextActions } = require('../dist/index.js');
 
-const bash = (command) => normalizedHookAction({ tool_name: 'Bash', tool_input: { command, description: 'held' } });
+// Dummy secrets generated at runtime, in the shapes real ones have. None is printed.
+const b64 = (n) => randomBytes(n).toString('base64').replace(/[+/=]/g, 'A').slice(0, n);
+const mark = () => `ZZQSYNTH${randomBytes(5).toString('hex').toUpperCase()}`;
 
-test('the five commands one coarse "deploy on production" class used to merge are five different normalized actions', () => {
-  const commands = [
-    'wrangler deploy',
-    'wrangler delete --force',
-    'terraform destroy -auto-approve',
-    'kubectl delete namespace prod',
-    'wrangler rollback',
-  ];
-  const values = commands.map((command) => JSON.stringify(bash(command)));
-  assert.equal(new Set(values).size, 5);
-  assert.deepEqual(bash('terraform destroy -auto-approve'), {
-    tool_kind: 'shell', tool_name: 'Bash', commands: ['terraform destroy -auto-approve'], programs: ['terraform'],
-  });
+const bash = (command) => normalizedHookAction({ tool_name: 'Bash', tool_input: { command, description: 'held' } });
+const leaks = (value, secret) => JSON.stringify(value).includes(secret);
+
+test('only program names and a hash leave the machine: no command text', () => {
+  const value = bash('wrangler deploy --env production');
+  assert.deepEqual(Object.keys(value).sort(), ['programs', 'tool_input', 'tool_kind', 'tool_name']);
+  assert.deepEqual(value.programs, ['wrangler']);
+  assert.match(value.tool_input.command_sha256, /^[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(value), /deploy|production/);
 });
 
-test('a retry of the same command produces the same normalized action, whitespace and description aside', () => {
+test('HIGH-R3-1: the realistic secret forms never leave, in the normalized action or anywhere in its JSON', () => {
+  const aws = b64(40), pw = b64(16), otp = String(randomInt(100000, 999999)), hex = randomBytes(20).toString('hex');
+  const cases = [
+    [`aws configure set aws_secret_access_key ${aws}`, aws],
+    [`mysql -u root -p${pw} prod`, pw],
+    [`docker login -u bob -p ${pw} registry.example.com`, pw],
+    [`npm publish --otp ${otp}`, otp],
+    [`PGPASSWORD=${pw} psql -h db -c 'select 1'`, pw],
+    [`curl -u admin:${pw} https://api.example.com/deploy`, pw],
+    [`echo ${hex} | wrangler secret put API_KEY`, hex],
+    [`gh auth login --with-token ${hex}`, hex],
+    [`sshpass -p ${pw} ssh root@prod`, pw],
+    [`redis-cli -a ${pw} FLUSHALL`, pw],
+  ];
+  for (const [command, secret] of cases) {
+    const value = bash(command);
+    assert.equal(leaks(value, secret), false, command.split(' ').slice(0, 2).join(' '));
+    assert.equal(normalizeShellCommand(command).text.includes(secret), false, `normalized form of ${command.split(' ')[0]}`);
+  }
+});
+
+test('HIGH-R3-1: the audit\'s synthetic set, and more forms (plain-word secrets, attached flags, here-strings, heredocs, files)', () => {
+  const M = mark();
+  const cases = {
+    env_assign: `API_TOKEN=${M} npm publish`,
+    export_assign: `export DEPLOY_KEY=${M}; wrangler deploy`,
+    export_neutral_name: `export FOO=${M}; wrangler deploy`,
+    url_creds: `git push https://x-access-token:${M}@github.com/o/r.git main`,
+    flag_otp: `npm publish --otp ${M}`,
+    flag_otp_eq: `npm publish --otp=${M}`,
+    flag_password_eq: `mysql --password=${M} -e 'drop table x'`,
+    flag_passwd: `tool --passwd ${M} run`,
+    flag_token: `deploy --token ${M}`,
+    flag_secret_x: `deploy --secret-value ${M}`,
+    flag_api_key: `deploy --api-key ${M}`,
+    short_p: `mysql -u root -p${M} prod`,
+    docker_login: `docker login -u bob -p ${M} registry.example.com`,
+    docker_login_attached: `docker login -u bob -p${M} registry.example.com`,
+    bearer_header: `curl -H "Authorization: Bearer ${M}" https://api.example.com/deploy`,
+    x_api_key_header: `curl -H "X-Api-Key: ${M}" https://api.example.com`,
+    curl_user: `curl --user admin:${M} https://api.example.com`,
+    gh_token_like: `gh secret set FOO --body ghp_${M}abcdefghijklmnopqrstuv`,
+    gh_secret_body: `gh secret set FOO --body ${M}`,
+    aws_configure: `aws configure set aws_secret_access_key ${M}`,
+    echo_pipe: `echo ${M} | wrangler secret put API_KEY`,
+    printf_pipe: `printf '%s' "${M}" | vercel env add API_KEY production`,
+    echo_to_file: `echo ${M} > .env.local`,
+    here_string: `wrangler secret put API_KEY <<< "${M}"`,
+    heredoc: `cat <<EOF > .env\nSECRET=${M}\nEOF`,
+    heredoc_quoted: `kubectl apply -f - <<'YAML'\ndata: ${M}\nYAML`,
+    stripe: `stripe refunds create --api-key sk_live_${M}0123456789abcdef`,
+    sshpass: `sshpass -p ${M} ssh root@prod`,
+    redis_a: `redis-cli -a ${M} FLUSHALL`,
+    k8s_literal: `kubectl create secret generic app --from-literal=db=${M}`,
+    doppler: `doppler secrets set NAME ${M}`,
+    openssl: `openssl enc -aes-256-cbc -pass pass:${M} -in a -out b`,
+    vault_kv: `vault kv put secret/app password=${M}`,
+    sudo_env: `sudo env TOKEN=${M} ./deploy.sh`,
+  };
+  for (const [name, command] of Object.entries(cases)) {
+    assert.equal(leaks(bash(command), M), false, name);
+    assert.equal(normalizeShellCommand(command).text.includes(M), false, `${name} (normalized form)`);
+  }
+  assert.equal(leaks(normalizedHookAction({ tool_name: 'Bash', tool_input: { command: ['bash', '-lc', `npm publish --otp ${M}`] } }), M), false, 'codex argv');
+});
+
+test('MCP and other tool inputs are hashed: no field value leaves, secret-named or not', () => {
+  const M = mark();
+  const mcp = normalizedHookAction({ tool_name: 'mcp__stripe__create_refund', tool_input: { amount: 10, api_key: M, note: `token ${M}`, nested: { password: M }, free: M } });
+  assert.equal(leaks(mcp, M), false);
+  assert.deepEqual(Object.keys(mcp.tool_input), ['input_sha256']);
+  const same = normalizedHookAction({ tool_name: 'mcp__stripe__create_refund', tool_input: { free: M, nested: { password: M }, note: `token ${M}`, api_key: M, amount: 10 } });
+  assert.deepEqual(mcp, same, 'key order does not matter');
+});
+
+test('the five commands one coarse class used to merge give five different hashes; a retry gives the same hash', () => {
+  const commands = ['wrangler deploy', 'wrangler delete --force', 'terraform destroy -auto-approve', 'kubectl delete namespace prod', 'wrangler rollback'];
+  const hashes = commands.map((command) => bash(command).tool_input.command_sha256);
+  assert.equal(new Set(hashes).size, 5);
+  assert.deepEqual(bash('terraform destroy -auto-approve').programs, ['terraform']);
   const first = normalizedHookAction({ tool_name: 'Bash', tool_input: { command: 'kubectl delete namespace prod', description: 'first try' } });
   const retry = normalizedHookAction({ tool_name: 'Bash', tool_input: { command: '  kubectl   delete namespace prod ', description: 'second try' } });
   assert.deepEqual(first, retry);
-  const mcp = { tool_name: 'mcp__github__merge_pull_request', tool_input: { number: 7, repo: 'getmarrow/demo' } };
-  assert.deepEqual(normalizedHookAction(mcp), normalizedHookAction({ ...mcp, tool_input: { repo: 'getmarrow/demo', number: 7 } }), 'key order does not matter');
+  assert.notEqual(bash('wrangler deploy --env production').tool_input.command_sha256, bash('wrangler deploy --env staging').tool_input.command_sha256);
 });
 
-test('no secrets leave: environment values, URL credentials and tokens are removed', () => {
-  const dummy = `ghp_${'a'.repeat(36)}`;
-  const { text } = normalizeShellCommand(`API_TOKEN=s3cretvalue123 DEPLOY_ENV=prod wrangler deploy --token=${dummy} && curl https://deploy:hunter2pass@example.test/hook?token=abcdef123456`);
-  assert.doesNotMatch(text, /s3cretvalue123|hunter2pass|abcdef123456|aaaaaaaaaaaa/);
-  assert.match(text, /^API_TOKEN=\[redacted\] DEPLOY_ENV=\[redacted\] wrangler deploy --token=\[redacted\] && curl https:\/\/\[redacted\]@example\.test\/hook\?token=\[redacted\]$/i);
-  const mcp = normalizedHookAction({ tool_name: 'mcp__vault__write', tool_input: { path: 'kv/app', api_key: 'live-value-1234567890', note: 'rotate' } });
-  assert.equal(mcp.tool_input.api_key, '[redacted]');
-  assert.doesNotMatch(JSON.stringify(mcp), /live-value-1234567890/);
+test('the hash is the same on every machine: it depends only on the secret-free command (pinned)', () => {
+  assert.equal(bash('wrangler deploy --env production').tool_input.command_sha256,
+    require('node:crypto').createHash('sha256').update('marrow-normalized-action-v2\nshell\nwrangler deploy --env production').digest('hex'));
+  // Two commands that differ only in a secret value are the same action.
+  assert.equal(bash(`npm publish --otp ${randomInt(100000, 999999)}`).tool_input.command_sha256, bash(`npm publish --otp ${randomInt(100000, 999999)}`).tool_input.command_sha256);
+  // Codex's argument vector and the string form are the same action.
+  assert.deepEqual(normalizedHookAction({ tool_name: 'Bash', tool_input: { command: ['bash', '-lc', 'wrangler deploy --env production'] } }), bash('wrangler deploy --env production'));
 });
 
-test('edits name their paths; large tool inputs are represented by a hash, not their content', () => {
-  assert.deepEqual(normalizedHookAction({ tool_name: 'Edit', tool_input: { file_path: '/repo/wrangler.toml', old_string: 'a', new_string: 'b' } }),
-    { tool_kind: 'edit', tool_name: 'Edit', paths: ['/repo/wrangler.toml'] });
-  const big = normalizedHookAction({ tool_name: 'mcp__docs__write', tool_input: { body: 'x'.repeat(20_000) } });
-  assert.equal(big.truncated, true);
-  assert.match(big.tool_input.input_sha256, /^[a-f0-9]{64}$/);
+test('key-shaped values are recognized; ordinary words, paths, versions and digests are not', () => {
+  for (const key of [b64(40), randomBytes(32).toString('hex'), `ghp_${b64(36)}`, `AKIA${b64(16).toUpperCase().replace(/[^A-Z0-9]/g, 'Q')}`, `xoxb-${randomBytes(12).toString('hex')}`]) assert.equal(looksLikeKey(key), true);
+  for (const word of ['production', '/home/operator/project/src/index.ts', 'v3.9.99', 'sha256:' + randomBytes(32).toString('hex'), 'wrangler', 'getmarrow/marrow-mcp']) assert.equal(looksLikeKey(word), false, word);
 });
 
 test('the arbitration receipt field is read under both names and never treated as an ordinary hold', () => {
