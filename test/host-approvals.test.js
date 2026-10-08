@@ -1361,23 +1361,29 @@ test('L-R3-1: Codex has a 3 s pre-tool budget, so npx start-up still fits under 
 
 // ---------------------------------------------------------------- Owner decision MEDIUM-R3-1: the host's own prompt decides
 
-test('MEDIUM-R3-1: attended hosts Marrow cannot ask leave an ordinary hold to the host\'s own approval step, and record it as not observed', () => {
-  const deploy = 'wrangler deploy --env production';
-  const codexTui = { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex --model gpt-5-codex' };
-  const geminiTui = { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/gemini' };
+const deployCmd = 'wrangler deploy --env production';
+const editorProcess = { MARROW_TEST_HOST_PROCESS: '/usr/share/code/code --type=extensionHost' };
+const windsurfProcess = { MARROW_TEST_HOST_PROCESS: '/usr/share/windsurf/windsurf' };
+const codexTuiProcess = { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex --model gpt-5-codex' };
+const clinePre = (task) => ({ hookName: 'PreToolUse', taskId: task, preToolUse: { toolName: 'execute_command', parameters: { command: deployCmd } } });
+const windsurfPre = (traj) => ({ agent_action_name: 'pre_run_command', trajectory_id: traj, execution_id: `${traj}-1`, tool_info: { command_line: deployCmd, cwd: '/home/operator/project' } });
+
+/** True when a pre-tool answer explicitly allows the call (which would skip the host's own prompt). */
+function explicitAllow(out) {
+  const json = out.json || {};
+  return json.decision === 'allow' || json.permission === 'allow' || json.hookSpecificOutput?.permissionDecision === 'allow';
+}
+
+test('MEDIUM-R3-1: where Marrow can neither ask nor observe, the hook answers neutrally (never an explicit allow), and the outcome is recorded as not observed', () => {
   const hosts = [
-    ['grok', 'grok-pre-action-hook', fixture('grok-pre-tool-use.json'), {}, (out) => assert.deepEqual(out.json, { decision: 'allow' }),
-      'grok-hook', { hookEventName: 'PostToolUse', sessionId: 'grok-session-0001', toolUseId: 'grok-tool-0001', toolName: 'run_terminal_command', toolInput: { command: deploy }, toolResult: 'Deployed' }],
-    ['cline', 'cline-pre-action-hook', { hookName: 'PreToolUse', taskId: 'task-pass', preToolUse: { toolName: 'execute_command', parameters: { command: deploy } } }, {}, (out) => assert.deepEqual(out.json, { cancel: false }),
-      'cline-hook', { hookName: 'PostToolUse', taskId: 'task-pass', postToolUse: { toolName: 'execute_command', parameters: { command: deploy }, result: 'Deployed', success: true } }],
-    ['windsurf', 'windsurf-pre-action-hook', { agent_action_name: 'pre_run_command', trajectory_id: 'traj-pass', execution_id: 'exec-pass', tool_info: { command_line: deploy, cwd: '/home/operator/project' } }, {}, (out) => { assert.equal(out.status, 0); assert.equal(out.stderr.includes('held'), false); },
-      'windsurf-hook', { agent_action_name: 'post_run_command', trajectory_id: 'traj-pass', execution_id: 'exec-pass', tool_info: { command_line: deploy, cwd: '/home/operator/project' } }],
-    ['gemini (no BeforeAgent hook)', 'gemini-pre-action-hook', fixture('gemini-before-tool.json'), geminiTui, (out) => assert.deepEqual(out.json, { decision: 'allow' }),
-      'gemini-hook', { session_id: 'gemini-session-0001', hook_event_name: 'AfterTool', tool_name: 'run_shell_command', tool_input: { command: deploy }, tool_response: { llmContent: 'Deployed' } }],
-    ['codex (prompt hook not yet run)', 'codex-pre-action-hook', fixture('codex-pre-tool-use.json'), codexTui, (out) => {
-      assert.equal(out.json.hookSpecificOutput.permissionDecision, undefined);
+    ['codex (local TUI, prompt hook not yet run)', 'codex-pre-action-hook', fixture('codex-pre-tool-use.json'), codexTuiProcess, (out) => {
+      assert.equal(out.json.hookSpecificOutput.permissionDecision, undefined, 'no decision: Codex\'s own approval policy applies');
       assert.match(out.json.hookSpecificOutput.additionalContext, /^Marrow did not block this held action \(gate receipt gate-held\)\. Codex's own approval step decides; Marrow cannot ask here and does not observe that answer\./);
     }, 'codex-hook', fixture('codex-post-tool-use.json')],
+    ['cline (in the editor)', 'cline-pre-action-hook', clinePre('task-pass'), editorProcess, (out) => assert.deepEqual(out.json, { cancel: false }),
+      'cline-hook', { hookName: 'PostToolUse', taskId: 'task-pass', postToolUse: { toolName: 'execute_command', parameters: { command: deployCmd }, result: 'Deployed', success: true } }],
+    ['windsurf (in the editor)', 'windsurf-pre-action-hook', windsurfPre('traj-pass'), windsurfProcess, (out) => { assert.equal(out.status, 0); assert.equal(out.stdout, ''); assert.equal(out.stderr, ''); },
+      'windsurf-hook', { agent_action_name: 'post_run_command', trajectory_id: 'traj-pass', execution_id: 'traj-pass-1', tool_info: { command_line: deployCmd, cwd: '/home/operator/project' } }],
   ];
   for (const [label, pre, payload, env, check, post, postPayload] of hosts) {
     const h = harness();
@@ -1385,6 +1391,7 @@ test('MEDIUM-R3-1: attended hosts Marrow cannot ask leave an ordinary hold to th
       h.setConfig({ runtime: noProofRuntime(), status: { 'gate-held': 'pending' } });
       const out = h.run(pre, payload, env);
       check(out);
+      assert.equal(explicitAllow(out), false, `${label}: never an explicit allow for a held action`);
       assert.equal(linkRequests(h).length, 0, label);
       h.run(post, postPayload, env);
       const reports = hostReports(h);
@@ -1396,26 +1403,38 @@ test('MEDIUM-R3-1: attended hosts Marrow cannot ask leave an ordinary hold to th
   }
 });
 
-test('MEDIUM-R3-1: Cursor in a local session leaves a non-shell held call to Cursor\'s own step, and records it as not observed', () => {
-  const h = harness();
-  try {
-    h.setConfig({ runtime: noProofRuntime(), status: { 'gate-held': 'pending' } });
-    h.run('cursor-session-hook', fixture('cursor-session-start.json'));
-    const write = { ...fixture('cursor-pre-tool-use.json'), tool_name: 'Write', tool_input: { file_path: '/home/operator/project/wrangler.toml', contents: 'x' } };
-    const out = h.run('cursor-pre-action-hook', write);
-    assert.equal(out.json.permission, 'allow');
-    h.run('cursor-hook', { ...write, hook_event_name: 'postToolUse', tool_output: 'ok' });
-    assert.equal(hostReports(h)[0]?.body.hook_event, 'host_prompt_not_observed');
-  } finally { h.cleanup(); }
+test('MEDIUM-R3-1: hosts without a neutral answer, and hosts without evidence of a person, hold quietly; no held action is ever explicitly allowed', () => {
+  const cases = [
+    ['grok in its TUI (guard accepts only allow or deny)', 'grok-pre-action-hook', fixture('grok-pre-tool-use.json'), { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/grok' }],
+    ['grok with no evidence', 'grok-pre-action-hook', fixture('grok-pre-tool-use.json'), {}],
+    ['gemini interactive without BeforeAgent (wrapper accepts only allow or deny)', 'gemini-pre-action-hook', fixture('gemini-before-tool.json'), { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/gemini' }],
+    ['cursor local, preToolUse (no neutral answer there)', 'cursor-pre-action-hook', fixture('cursor-pre-tool-use.json'), {}, 'cursor-session-start.json'],
+    ['cursor local, non-shell tool', 'cursor-pre-action-hook', { ...fixture('cursor-pre-tool-use.json'), tool_name: 'Write', tool_input: { file_path: '/home/operator/project/wrangler.toml', contents: 'x' } }, {}, 'cursor-session-start.json'],
+    ['cline with no evidence of a person', 'cline-pre-action-hook', clinePre('task-none'), {}],
+    ['windsurf with no evidence of a person', 'windsurf-pre-action-hook', windsurfPre('traj-none'), {}],
+    ['codex with no process evidence', 'codex-pre-action-hook', fixture('codex-pre-tool-use.json'), {}],
+    ['codex exec', 'codex-pre-action-hook', fixture('codex-pre-tool-use.json'), { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex exec deploy' }],
+  ];
+  for (const [label, entrypoint, payload, env, session] of cases) {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: withLink(), status: { 'gate-held': 'pending' } });
+      if (session) h.run('cursor-session-hook', fixture(session));
+      const out = h.run(entrypoint, payload, env);
+      assert.equal(explicitAllow(out), false, `${label}: ${out.stdout}`);
+      const held = out.json?.decision === 'deny' || out.json?.permission === 'deny' || out.json?.cancel === true
+        || out.json?.hookSpecificOutput?.permissionDecision === 'deny' || out.status === 2;
+      assert.ok(held, `${label}: held (${out.stdout || out.stderr})`);
+      assert.equal(linkRequests(h).length, 0, `${label}: no email`);
+    } finally { h.cleanup(); }
+  }
 });
 
-test('MEDIUM-R3-1: what stays held: owner-locked categories, unattended runs, missing evidence of a person, an earlier operator decline, and Claude Code\'s observed paths', () => {
+test('MEDIUM-R3-1: what else stays held: owner-locked categories (also in outages), an earlier operator decline, and Claude Code\'s observed paths', () => {
   const cases = [
-    ['owner-locked on grok', verifiedRuntime(), 'grok-pre-action-hook', fixture('grok-pre-tool-use.json'), {}, (out) => out.json.decision === 'deny'],
-    ['codex exec', withLink(), 'codex-pre-action-hook', fixture('codex-pre-tool-use.json'), { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex exec deploy' }, (out) => out.json.hookSpecificOutput.permissionDecision === 'deny'],
-    ['codex with no process evidence', withLink(), 'codex-pre-action-hook', fixture('codex-pre-tool-use.json'), {}, (out) => out.json.hookSpecificOutput.permissionDecision === 'deny'],
-    ['cursor without sessionStart (cloud)', withLink(), 'cursor-pre-action-hook', fixture('cursor-pre-tool-use.json'), {}, (out) => out.json.permission === 'deny'],
-    ['grok after an operator decline', withLink('gate-held', { host_approval_operator_only: true, earlier_decline_at: '2026-10-07T10:00:00.000Z' }), 'grok-pre-action-hook', fixture('grok-pre-tool-use.json'), {}, (out) => out.json.decision === 'deny'],
+    ['owner-locked on cline in the editor', verifiedRuntime(), 'cline-pre-action-hook', clinePre('task-locked'), editorProcess, (out) => out.json.cancel === true],
+    ['owner-locked on codex TUI', verifiedRuntime(), 'codex-pre-action-hook', fixture('codex-pre-tool-use.json'), codexTuiProcess, (out) => out.json.hookSpecificOutput.permissionDecision === 'deny'],
+    ['cline after an operator decline', withLink('gate-held', { host_approval_operator_only: true, earlier_decline_at: '2026-10-07T10:00:00.000Z' }), 'cline-pre-action-hook', clinePre('task-declined'), editorProcess, (out) => out.json.cancel === true],
     ['claude code bypass', withLink(), 'claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'bypassPermissions' }, {}, (out) => out.json.hookSpecificOutput.permissionDecision === 'deny'],
     ['claude code default', withLink(), 'claude-pre-action-hook', fixture('claude-pre-tool-use.json'), {}, (out) => out.json.hookSpecificOutput.permissionDecision === 'ask'],
   ];
@@ -1425,17 +1444,34 @@ test('MEDIUM-R3-1: what stays held: owner-locked categories, unattended runs, mi
       h.setConfig({ runtime, status: { 'gate-held': 'pending' } });
       const out = h.run(entrypoint, payload, env);
       assert.ok(held(out), `${label}: ${out.stdout}`);
+      assert.equal(explicitAllow(out), false, label);
     } finally { h.cleanup(); }
   }
   const outage = harness();
   try {
-    // An owner-locked category stays held when Marrow cannot be reached (remembered from an earlier answer).
     outage.setConfig({ runtime: verifiedRuntime('gate-learn'), status: { 'gate-learn': 'pending' } });
-    outage.run('grok-pre-action-hook', fixture('grok-pre-tool-use.json'));
+    outage.run('cline-pre-action-hook', clinePre('task-learn'), editorProcess);
     outage.setConfig({ runtimeUnreachable: true, statusUnreachable: true });
-    const out = outage.run('grok-pre-action-hook', { ...fixture('grok-pre-tool-use.json'), sessionId: 'grok-session-0002', toolUseId: 'grok-tool-0002' });
-    assert.equal(out.json.decision, 'deny');
+    const out = outage.run('cline-pre-action-hook', clinePre('task-outage'), editorProcess);
+    assert.equal(out.json.cancel, true, 'an owner-locked category stays held when Marrow cannot be reached');
   } finally { outage.cleanup(); }
+});
+
+test('Evidence of a person for Cline, Windsurf and Grok comes from the process tree, never from the host name', () => {
+  const { localInteractiveSession } = require('../dist/host-session.js');
+  const table = (rows) => (pid) => rows[pid] || null;
+  const chain = (args, terminal = false) => table({
+    100: { pid: 100, ppid: 90, args: ['/bin/sh', '-c', 'npx marrow-mcp cline-pre-action-hook'], terminal: false },
+    90: { pid: 90, ppid: 1, args, terminal },
+  });
+  assert.equal(localInteractiveSession('cline', chain(['/usr/share/code/code', '--type=extensionHost']), 100), true);
+  assert.equal(localInteractiveSession('windsurf', chain(['/Applications/Windsurf.app/Contents/MacOS/Electron', '/Applications/Windsurf.app/Contents/Resources/app']), 100), true);
+  assert.equal(localInteractiveSession('cline', chain(['/usr/local/bin/cline'], true), 100), true);
+  assert.equal(localInteractiveSession('cline', chain(['/usr/local/bin/cline', '--yolo', 'task'], true), 100), false);
+  assert.equal(localInteractiveSession('cline', chain(['/usr/bin/node', '/srv/ci/run.js']), 100), null);
+  assert.equal(localInteractiveSession('grok', chain(['/usr/local/bin/grok'], true), 100), true);
+  assert.equal(localInteractiveSession('grok', chain(['/usr/local/bin/grok', '-p', 'deploy'], true), 100), false);
+  assert.equal(localInteractiveSession('windsurf', chain(['/usr/bin/node', 'server.js']), 100), null);
 });
 
 // ---------------------------------------------------------------- Cursor
@@ -1473,14 +1509,8 @@ test('Cursor never asks on preToolUse, in cloud agents (no sessionStart) or in b
       h.setConfig({ runtime: hostRuntime() });
       if (sessionFixture) h.run('cursor-session-hook', fixture(sessionFixture));
       const out = h.run('cursor-pre-action-hook', fixture(event));
-      if (label === 'preToolUse') {
-        // A local session without Cursor's prompt hooks: Cursor's own approval step decides (owner rule).
-        assert.equal(out.json.permission, 'allow', label);
-        assert.equal(linkRequests(h).length, 0, label);
-        continue;
-      }
       assert.equal(out.json.permission, 'deny', label);
-      assert.match(out.json.agent_message, /waits quietly; nothing was sent to anyone/, label);
+      assert.match(out.json.agent_message, label === 'preToolUse' ? /It stays held until the operator approves it/ : /waits quietly; nothing was sent to anyone/, label);
       assert.doesNotMatch(out.stdout, /request goes to|link was sent/, `${label}: no link was sent, so none is claimed`);
       assert.equal(linkRequests(h).length, 0, `${label}: an ordinary hold never emails the owner`);
       assert.doesNotMatch(out.stdout, /dashboard/i, label);
@@ -1630,13 +1660,14 @@ test('Grok has no user-only channel: it denies with the only text the installer\
   const g = harness();
   try {
     g.setConfig({ runtime: withLink(), status: { 'gate-held': 'pending' } });
-    // An ordinary hold is left to Grok's own approval step (owner rule); an owner-locked one is denied with the guard's text.
+    // Grok's installed guard accepts only an explicit allow or its fixed denial, so a held action is denied (never allowed).
     const grok = g.run('grok-pre-action-hook', fixture('grok-pre-tool-use.json'));
-    assert.deepEqual(grok.json, { decision: 'allow' });
+    assert.deepEqual(grok.json, { decision: 'deny', reason: 'Marrow blocked this protected action.' });
     g.setConfig({ runtime: verifiedRuntime('gate-locked'), status: { 'gate-locked': 'pending' } });
     const locked = g.run('grok-pre-action-hook', { ...fixture('grok-pre-tool-use.json'), sessionId: 'grok-session-0002', toolUseId: 'grok-tool-0002' });
     assert.deepEqual(locked.json, { decision: 'deny', reason: 'Marrow blocked this protected action.' });
     assert.equal(linkRequests(g).length, 1, 'only the owner-locked hold emails the owner');
+    void grok;
     assert.deepEqual(hostReports(g), []);
   } finally { g.cleanup(); }
 });

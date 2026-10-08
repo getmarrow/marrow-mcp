@@ -4,6 +4,7 @@ exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.GROK_FIXED_DENIAL = exports.H
 exports.isMarrowControlTimeout = isMarrowControlTimeout;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.heldActionHookOutput = heldActionHookOutput;
+exports.passHookOutput = passHookOutput;
 exports.approvedHoldHookOutput = approvedHoldHookOutput;
 exports.isMarrowOutage = isMarrowOutage;
 exports.controlFailureKind = controlFailureKind;
@@ -115,7 +116,7 @@ function heldActionHookOutput(harness, plan, code = null) {
     if (harness === 'windsurf')
         return null;
     if (plan.kind === 'pass')
-        return approvedHoldHookOutput(harness, plan.contextText);
+        return passHookOutput(harness, plan.contextText);
     if (plan.kind === 'ask') {
         if (harness === 'cursor')
             return { permission: 'ask', user_message: plan.promptText, agent_message: 'Marrow asked the user to approve this held action in Cursor.' };
@@ -144,6 +145,22 @@ function heldActionHookOutput(harness, plan, code = null) {
         hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: plan.agentText },
         ...(harness === 'codex' && code ? { systemMessage: (0, host_approval_1.typedReplyUserText)(plan.userText, code) } : {}),
     };
+}
+/**
+ * The hook's answer when the host's own approval step decides (owner rule):
+ * neutral, never an explicit allow, so the host's normal permission flow runs.
+ * Codex: no permissionDecision (only context for the agent); Cline: not
+ * cancelled; Windsurf: exit 0 (emitted by the caller). Any other host has no
+ * neutral answer here and never gets a pass plan.
+ */
+function passHookOutput(harness, contextText) {
+    if (harness === 'windsurf')
+        return null;
+    if (harness === 'cline')
+        return { cancel: false };
+    if (harness === 'codex')
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: contextText } };
+    throw new Error(`no neutral pre-tool answer for ${harness}`);
 }
 /** The hook's answer when a waited hold was approved and the same action is retried. */
 function approvedHoldHookOutput(harness, contextText) {
@@ -725,16 +742,16 @@ function localApprovalCategories(action) {
 }
 /**
  * Positive evidence that a person is at this host for a call Marrow cannot ask
- * about: a local interactive Codex or Gemini CLI process, a local Cursor
- * session (sessionStart), or Grok, Cline and Windsurf (they run where their
- * user works). Missing evidence is not attended.
+ * about: a local interactive Codex, Gemini CLI or Cline CLI process, Cline or
+ * Windsurf inside the editor app, or a local Cursor session (sessionStart).
+ * Missing evidence is not attended.
  */
 function attendedConfirmed(ctx, cursorInteractive) {
-    if (ctx.host === 'codex' || ctx.host === 'gemini')
+    if (ctx.host === 'codex' || ctx.host === 'gemini' || ctx.host === 'cline' || ctx.host === 'windsurf')
         return (0, host_session_1.localInteractiveSession)(ctx.host) === true;
     if (ctx.host === 'cursor')
         return cursorInteractive === true;
-    return ctx.host === 'grok' || ctx.host === 'cline' || ctx.host === 'windsurf';
+    return false;
 }
 /**
  * Nobody is in this run: headless Claude Code (sdk-*, its GitHub Action), a
@@ -749,6 +766,9 @@ function unattendedRun(ctx, claudePrompt, cursorInteractive) {
     // Cursor: sessionStart reports local sessions; without it (cloud agents) or as a background agent, nobody is there.
     if (ctx.host === 'cursor')
         return cursorInteractive !== true;
+    // Grok, Cline, Windsurf: attended only with positive evidence of a person's session.
+    if (ctx.host === 'grok' || ctx.host === 'cline' || ctx.host === 'windsurf')
+        return (0, host_session_1.localInteractiveSession)(ctx.host) !== true;
     return false;
 }
 /** The hook's answer for a held action on any host (Windsurf answers through its exit code). */
@@ -1237,8 +1257,8 @@ async function runPreActionHookCommand(input) {
         }
         effective = (0, host_approval_1.finalizeOwnerRequest)(effective, linkOutcome);
         if (effective.kind === 'pass') {
-            // The hook does not block: the host's own approval step decides.
-            emitHookOutput(identity.harness, approvedHoldHookOutput(identity.harness, effective.contextText));
+            // The hook does not block and does not allow: the host's own approval step decides.
+            emitHookOutput(identity.harness, passHookOutput(identity.harness, effective.contextText));
             await afterAnswer(holdContext, {});
             return;
         }

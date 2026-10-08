@@ -39,6 +39,14 @@ export declare const GROK_FIXED_DENIAL = "Marrow blocked this protected action."
  * client; neither ever reaches the agent with an approval code.
  */
 export declare function heldActionHookOutput(harness: HookHarness, plan: HoldPlan, code?: string | null): Record<string, unknown> | null;
+/**
+ * The hook's answer when the host's own approval step decides (owner rule):
+ * neutral, never an explicit allow, so the host's normal permission flow runs.
+ * Codex: no permissionDecision (only context for the agent); Cline: not
+ * cancelled; Windsurf: exit 0 (emitted by the caller). Any other host has no
+ * neutral answer here and never gets a pass plan.
+ */
+export declare function passHookOutput(harness: HookHarness, contextText: string): Record<string, unknown> | null;
 /** The hook's answer when a waited hold was approved and the same action is retried. */
 export declare function approvedHoldHookOutput(harness: HookHarness, contextText: string): Record<string, unknown> | null;
 type PreActionControlResult = {

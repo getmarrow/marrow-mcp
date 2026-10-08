@@ -298,8 +298,16 @@ function planHeldAction(input) {
     const agentText = bounded(`${held} ${why} It stays held until the operator approves it: tell them it is held, and that they approve it by retrying it in a session with Marrow's prompt (a host permission dialog, or a typed reply). Carry on with other work. Do not report or claim an approval yourself.`, 500);
     return { kind: 'deny', agentText, userText: exports.HELD_FOR_YOU_TEXT, code: false, quiet: 'attended' };
 }
-/** Hosts where an ordinary hold Marrow cannot ask about is left to the host's own approval step. */
-exports.PASS_THROUGH_HOSTS = new Set(['grok', 'cline', 'windsurf', 'gemini', 'cursor', 'codex']);
+/**
+ * Hosts where an ordinary hold Marrow cannot ask about is left to the host's
+ * own approval step: those whose hook can answer neutrally (no decision), so
+ * the host's normal permission flow runs. A hook never emits an explicit
+ * allow for a held action. Gemini CLI and Grok are not here (their installed
+ * guards accept only an explicit allow or a fixed denial), nor is Cursor
+ * (preToolUse has no neutral answer and "ask" is not enforced there): those
+ * hold quietly.
+ */
+exports.PASS_THROUGH_HOSTS = new Set(['codex', 'cline', 'windsurf']);
 /** The hook_event of an answer given in a host prompt Marrow did not observe (labelled an allow rule). */
 exports.HOST_PROMPT_NOT_OBSERVED = 'host_prompt_not_observed';
 /** What the person sees when this host cannot ask them: the action waits for them. */

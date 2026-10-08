@@ -169,7 +169,15 @@ export declare function planHeldAction(input: {
      */
     attendedConfirmed?: boolean;
 }): HoldPlan;
-/** Hosts where an ordinary hold Marrow cannot ask about is left to the host's own approval step. */
+/**
+ * Hosts where an ordinary hold Marrow cannot ask about is left to the host's
+ * own approval step: those whose hook can answer neutrally (no decision), so
+ * the host's normal permission flow runs. A hook never emits an explicit
+ * allow for a held action. Gemini CLI and Grok are not here (their installed
+ * guards accept only an explicit allow or a fixed denial), nor is Cursor
+ * (preToolUse has no neutral answer and "ask" is not enforced there): those
+ * hold quietly.
+ */
 export declare const PASS_THROUGH_HOSTS: ReadonlySet<ApprovalHost>;
 /** The hook_event of an answer given in a host prompt Marrow did not observe (labelled an allow rule). */
 export declare const HOST_PROMPT_NOT_OBSERVED = "host_prompt_not_observed";

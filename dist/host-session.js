@@ -66,6 +66,19 @@ function isCodex(args) {
 function isGemini(args) {
     return programNames(args).some((name) => /^gemini(?:\.exe|\.js|\.mjs)?$/.test(name));
 }
+/** The editor app (VS Code and its forks) or its extension host, where Cline and Windsurf's Cascade run for a person. */
+function isEditorApp(args) {
+    const names = programNames(args);
+    if (names.some((name) => /^(?:code|code-insiders|codium|vscodium|windsurf|windsurf-next|code helper(?: \(plugin\))?)(?:\.exe)?$/.test(name)))
+        return true;
+    return args.slice(0, 8).some((arg) => /^--type=extensionHost$/.test(arg) || /[/\\](?:Visual Studio Code|VSCodium|Windsurf)(?:\.app)?[/\\]/i.test(arg));
+}
+function isGrokCli(args) {
+    return programNames(args).some((name) => /^grok(?:\.exe|\.js|\.mjs)?$/.test(name));
+}
+function isClineCli(args) {
+    return programNames(args).some((name) => /^cline(?:\.exe|\.js|\.mjs)?$/.test(name));
+}
 function findHostProcess(match, reader, startPid) {
     let pid = startPid;
     for (let depth = 0; depth < MAX_DEPTH && pid > 1; depth += 1) {
@@ -86,6 +99,27 @@ function localInteractiveSession(host, reader = defaultReader(), startPid = proc
             return null;
         const tokens = codex.args.slice(1).map((arg) => arg.toLowerCase());
         return codex.terminal && !tokens.some((token) => CODEX_NON_INTERACTIVE.has(token));
+    }
+    if (host === 'grok') {
+        const grok = findHostProcess(isGrokCli, reader, startPid);
+        if (!grok)
+            return null;
+        const tokens = grok.args.slice(1).map((arg) => arg.toLowerCase());
+        return grok.terminal && !tokens.some((token) => ['-p', '--prompt', '--print', '--headless', '--json'].includes(token) || token.startsWith('--prompt='));
+    }
+    if (host === 'cline' || host === 'windsurf') {
+        // In the editor a person is at the session; the Cline CLI counts only with a terminal and no scripted mode.
+        const editor = findHostProcess(isEditorApp, reader, startPid);
+        if (editor)
+            return true;
+        if (host === 'cline') {
+            const cli = findHostProcess(isClineCli, reader, startPid);
+            if (!cli)
+                return null;
+            const tokens = cli.args.slice(1).map((arg) => arg.toLowerCase());
+            return cli.terminal && !tokens.some((token) => ['-p', '--prompt', '--yolo', '--json', '--headless', '--oneshot', 'task'].includes(token));
+        }
+        return null;
     }
     if (host === 'gemini') {
         const gemini = findHostProcess(isGemini, reader, startPid);
