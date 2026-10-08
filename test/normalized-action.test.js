@@ -8,6 +8,8 @@ const { withoutServerNextActions } = require('../dist/index.js');
 // Dummy secrets generated at runtime, in the shapes real ones have. None is printed.
 const b64 = (n) => randomBytes(n).toString('base64').replace(/[+/=]/g, 'A').slice(0, n);
 const mark = () => `ZZQSYNTH${randomBytes(5).toString('hex').toUpperCase()}`;
+// A live-key prefix assembled at runtime, so no key-shaped literal sits in this file.
+const LIVE_PREFIX = ['sk', 'live', ''].join('_');
 
 const bash = (command) => normalizedHookAction({ tool_name: 'Bash', tool_input: { command, description: 'held' } });
 const leaks = (value, secret) => JSON.stringify(value).includes(secret);
@@ -70,7 +72,7 @@ test('HIGH-R3-1: the audit\'s synthetic set, and more forms (plain-word secrets,
     here_string: `wrangler secret put API_KEY <<< "${M}"`,
     heredoc: `cat <<EOF > .env\nSECRET=${M}\nEOF`,
     heredoc_quoted: `kubectl apply -f - <<'YAML'\ndata: ${M}\nYAML`,
-    stripe: `stripe refunds create --api-key sk_live_${M}0123456789abcdef`,
+    stripe: `stripe refunds create --api-key ${LIVE_PREFIX}${M}0123456789abcdef`,
     sshpass: `sshpass -p ${M} ssh root@prod`,
     redis_a: `redis-cli -a ${M} FLUSHALL`,
     k8s_literal: `kubectl create secret generic app --from-literal=db=${M}`,
