@@ -722,7 +722,7 @@ async function runContextHookCommand() {
         const baseUrl = (0, index_1.validateBaseUrl)(resolvedEnv.baseUrl || 'https://api.getmarrow.ai');
         const passiveBriefInput = inferPassiveBriefInput(prompt);
         const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
-        const requestCorrelation = (0, hook_contract_1.stablePromptCorrelation)({ session_id: sessionId, prompt });
+        const requestCorrelation = (0, hook_contract_1.stablePromptCorrelation)({ session_id: sessionId, prompt_id: event.prompt_id, turn_id: event.turn_id, generation_id: event.generation_id });
         const workflowId = (0, hook_contract_1.stableSessionWorkflowId)(sessionId, requestCorrelation);
         void (0, lifecycle_spool_1.recordLifecycleEvent)({
             apiKey,

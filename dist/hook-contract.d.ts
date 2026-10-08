@@ -69,15 +69,27 @@ export declare function reconcileMarrowCommandHook(settings: HookSettings, event
 };
 export declare function hasExactCommandHook(settings: HookSettings, eventName: string, command: string, matcher?: string): boolean;
 export declare function localHookConfigurationFingerprint(startDir?: string): string;
+/**
+ * The correlation of one tool call (pre- and post-tool events, holds): the
+ * session, the tool and the call's normalized action. Calls that differ only
+ * in a secret share it; a retry of the same call keeps it.
+ */
 export declare function stableToolCorrelation(event: {
     session_id?: string;
     tool_use_id?: string;
     tool_name?: string;
     tool_input?: unknown;
 }): string;
+/**
+ * The correlation of one submitted prompt: the session and the host's own
+ * prompt, turn or generation id, never the prompt text (it may hold a secret). A host
+ * that gives no id gets a fresh one per prompt event.
+ */
 export declare function stablePromptCorrelation(event: {
     session_id?: string;
-    prompt?: string;
+    prompt_id?: unknown;
+    turn_id?: unknown;
+    generation_id?: unknown;
 }): string;
 export declare function stableSessionWorkflowId(sessionId?: string, fallback?: unknown): string;
 export declare function grokHookSettingsPath(home?: string): string;

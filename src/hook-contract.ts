@@ -1,8 +1,9 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
+import { normalizedHookAction } from './normalized-action';
 
 export const MCP_ADAPTER_VERSION = '3.9.99';
 export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*';
@@ -642,6 +643,36 @@ function stableHash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(stableCanonical(value))).digest('hex').slice(0, 32);
 }
 
+let lastIdentity: { toolName: unknown; toolInput: unknown; value: unknown } | null = null;
+
+function lengthOf(value: unknown): number {
+  try { return JSON.stringify(value)?.length ?? 0; } catch { return 0; }
+}
+
+/**
+ * What identifies a tool call in ids sent to Marrow: its normalized action
+ * (secrets replaced by markers, data hashed), never the raw input, which may
+ * hold a secret. No deadline (only the size caps), so every hook process
+ * derives the same identity for the same call.
+ */
+function actionIdentity(toolName: unknown, toolInput: unknown): unknown {
+  if (lastIdentity && lastIdentity.toolName === toolName && lastIdentity.toolInput === toolInput) return lastIdentity.value;
+  const action = normalizedHookAction({ tool_name: toolName, tool_input: toolInput }, { deadlineAt: Number.POSITIVE_INFINITY });
+  // A placeholder (input over the size caps) keeps the input's length, so two such calls rarely share it.
+  const placeholder = Object.keys(action.tool_input).length === 0;
+  const value = {
+    kind: action.tool_kind, programs: action.programs ?? null, paths: action.paths ?? null, input: action.tool_input,
+    ...(placeholder ? { size: lengthOf(toolInput) } : {}),
+  };
+  lastIdentity = { toolName, toolInput, value };
+  return value;
+}
+
+/**
+ * The correlation of one tool call (pre- and post-tool events, holds): the
+ * session, the tool and the call's normalized action. Calls that differ only
+ * in a secret share it; a retry of the same call keeps it.
+ */
 export function stableToolCorrelation(event: {
   session_id?: string;
   tool_use_id?: string;
@@ -651,19 +682,36 @@ export function stableToolCorrelation(event: {
   return stableHash([
     event.session_id || '',
     event.tool_name || 'tool',
-    event.tool_input ?? null,
+    actionIdentity(event.tool_name, event.tool_input ?? null),
   ]);
 }
 
+/**
+ * The correlation of one submitted prompt: the session and the host's own
+ * prompt, turn or generation id, never the prompt text (it may hold a secret). A host
+ * that gives no id gets a fresh one per prompt event.
+ */
 export function stablePromptCorrelation(event: {
   session_id?: string;
-  prompt?: string;
+  prompt_id?: unknown;
+  turn_id?: unknown;
+  generation_id?: unknown;
 }): string {
-  return stableHash([event.session_id || '', event.prompt || '']);
+  const turn = [event.prompt_id, event.turn_id, event.generation_id].find((value) => typeof value === 'string' && value.trim());
+  return stableHash([event.session_id || '', turn ?? randomUUID()]);
+}
+
+/** A local path with the person's home directory as `~`, so no user name is hashed into an id. */
+function withoutHomeDirectory(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const home = homedir();
+  if (home && home !== '/' && (value === home || value.startsWith(`${home}/`))) return `~${value.slice(home.length)}`;
+  return value;
 }
 
 export function stableSessionWorkflowId(sessionId?: string, fallback?: unknown): string {
-  return `session-${stableHash([sessionId || '', sessionId ? null : fallback ?? null])}`;
+  const local = Array.isArray(fallback) ? fallback.map(withoutHomeDirectory) : withoutHomeDirectory(fallback);
+  return `session-${stableHash([sessionId || '', sessionId ? null : local ?? null])}`;
 }
 
 export function grokHookSettingsPath(home = process.env.HOME || homedir()): string {

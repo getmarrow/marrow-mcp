@@ -6,6 +6,7 @@ exports.classifySecretName = classifySecretName;
 exports.normalizeShellCommand = normalizeShellCommand;
 exports.normalizedHookAction = normalizedHookAction;
 const node_crypto_1 = require("node:crypto");
+const node_os_1 = require("node:os");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const SECRET = '[secret]';
 const HASH_VERSION = 'marrow-normalized-action-v2';
@@ -942,6 +943,21 @@ function shellCommand(event) {
     }
     return (0, hook_tool_policy_1.hookToolCommand)(event);
 }
+/**
+ * An edit path as sent: the person's home directory as `~`, and another
+ * user's home as `/home/[user]` (marked truncated, since it no longer names
+ * one path), so no user name leaves the machine.
+ */
+function withoutUserName(path, state) {
+    const home = (0, node_os_1.homedir)();
+    if (home && home !== '/' && (path === home || path.startsWith(`${home}/`)))
+        return `~${path.slice(home.length)}`;
+    const other = /^(\/(?:home|Users))\/[^/]+(?=\/|$)/.exec(path);
+    if (!other)
+        return path;
+    state.truncated = true;
+    return `${other[1]}/[user]${path.slice(other[0].length)}`;
+}
 function inputHash(input, state) {
     if (input === undefined || input === null)
         return {};
@@ -1002,7 +1018,7 @@ function normalizedOfKind(event, kind, hostToolName, state) {
         if (targets.length > 64)
             state.truncated = true;
         const paths = targets.slice(0, 64).map((path) => {
-            const redacted = redactText(path, state);
+            const redacted = redactText(withoutUserName(path, state), state);
             if (redacted.length > 512 || redacted.includes(SECRET))
                 state.truncated = true;
             return redacted.slice(0, 512);

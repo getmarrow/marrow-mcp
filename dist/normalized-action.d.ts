@@ -5,7 +5,8 @@
  * coarse classification ("deploy on production") the hook also sends.
  *
  * What leaves the machine: the tool kind, the host's tool name, the program
- * names of a shell command, the file paths of an edit, a SHA-256 of the
+ * names of a shell command, the file paths of an edit (the home directory as
+ * `~`, another user's home as `/home/[user]`), a SHA-256 of the
  * command or tool input, and `truncated: true` when that hash could not cover
  * everything that decides what the action does. The command text and the
  * tool input themselves are never sent.

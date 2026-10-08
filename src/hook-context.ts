@@ -70,6 +70,10 @@ interface UserPromptSubmitEvent {
   hook_event_name?: string;
   prompt?: string;
   transcript_path?: string;
+  /** The host's own id for this prompt, turn or generation (Claude Code, Codex, Cursor). */
+  prompt_id?: string;
+  turn_id?: string;
+  generation_id?: string;
 }
 
 function promptHoldContext(identity: ReturnType<typeof resolveNativeHookIdentity>, event: UserPromptSubmitEvent): HoldContext | null {
@@ -799,7 +803,7 @@ export async function runContextHookCommand(): Promise<void> {
 
     const passiveBriefInput = inferPassiveBriefInput(prompt);
     const runtimeInput = passiveBriefInput || defaultRuntimeInput(prompt);
-    const requestCorrelation = stablePromptCorrelation({ session_id: sessionId, prompt });
+    const requestCorrelation = stablePromptCorrelation({ session_id: sessionId, prompt_id: event.prompt_id, turn_id: event.turn_id, generation_id: event.generation_id });
     const workflowId = stableSessionWorkflowId(sessionId, requestCorrelation);
     void recordLifecycleEvent({
       apiKey,

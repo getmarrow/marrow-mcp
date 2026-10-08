@@ -2125,3 +2125,92 @@ test('A replaced secret marks the action truncated and changes nothing else: eve
   assert.ok(sentTruncated.length > 0);
   assert.equal(sentTruncated.every((flag) => flag === true), true);
 });
+
+// ---------------------------------------------------------------- Ids from the normalized action, never raw input
+
+const rawInputHash = (value) => {
+  const canonical = (item, depth = 0) => {
+    if (depth > 8) return '[depth]';
+    if (Array.isArray(item)) return item.slice(0, 128).map((entry) => canonical(entry, depth + 1));
+    if (item && typeof item === 'object') return Object.fromEntries(Object.keys(item).sort().slice(0, 128).map((key) => [key, canonical(item[key], depth + 1)]));
+    return typeof item === 'string' ? item.slice(0, 16_384) : item;
+  };
+  return require('node:crypto').createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex').slice(0, 32);
+};
+
+test('Correlation and event ids come from the normalized action: only-the-secret variants share them, a retry keeps them, and no hash of the raw input is sent', () => {
+  const base = fixture('claude-pre-tool-use.json');
+  const s1 = `pw-${randomBytes(6).toString('hex')}`;
+  const s2 = `pw-${randomBytes(6).toString('hex')}`;
+  const command = (secret, env) => `API_TOKEN=${secret} wrangler deploy --env ${env}`;
+  const run = (secret, env, toolUseId = 'toolu_corr_1') => {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+      const toolInput = { command: command(secret, env), description: 'held call' };
+      h.run('claude-pre-action-hook', { ...base, tool_use_id: toolUseId, tool_input: toolInput });
+      const bodies = h.requests().map((request) => JSON.stringify(request.body ?? null)).join('\n');
+      const event = h.requests().map((request) => request.body).find((body) => body?.event_type === 'pre_action_checked');
+      assert.ok(event, 'a pre-action event was recorded');
+      // The id the client sent before this fix: a hash of the session, tool and raw input.
+      const old = rawInputHash([base.session_id, 'Bash', toolInput]);
+      assert.equal(bodies.includes(old), false, 'no hash of the raw input is sent');
+      assert.equal(bodies.includes(secret), false, 'the secret is in no request');
+      return { correlation: event.correlation_id, eventId: event.event_id };
+    } finally { h.cleanup(); }
+  };
+  const first = run(s1, 'production');
+  const otherSecret = run(s2, 'production');
+  const otherTarget = run(s1, 'staging');
+  const retry = run(s1, 'production');
+  assert.equal(first.correlation, otherSecret.correlation, 'only the secret differs: the same correlation');
+  assert.notEqual(first.correlation, otherTarget.correlation, 'a different target: a different correlation');
+  assert.equal(retry.correlation, first.correlation, 'a retry keeps the correlation');
+  assert.equal(retry.eventId, first.eventId, 'a retry of the same call keeps the event id');
+  assert.match(first.eventId, new RegExp(`^pretool-${first.correlation}-[0-9a-f]{12}$`));
+});
+
+test('Prompt events: the id comes from the host prompt id (stable on a retry), never from the prompt text', () => {
+  const secret = `pw-${randomBytes(6).toString('hex')}`;
+  const base = fixture('claude-user-prompt-submit.json');
+  const prompt = `deploy the worker with token ${secret} to production`;
+  const { readdirSync, statSync } = require('node:fs');
+  const filesUnder = (root) => readdirSync(root).flatMap((name) => {
+    const path = join(root, name);
+    return statSync(path).isDirectory() ? filesUnder(path) : [path];
+  });
+  const run = (payload) => {
+    const h = harness();
+    try {
+      h.run('claude-context-hook', payload);
+      // Prompt events are spooled for later delivery: read what was sent and what waits in the spool.
+      const spooled = filesUnder(h.home).map((file) => readFileSync(file, 'utf8'));
+      const bodies = [...h.requests().map((request) => JSON.stringify(request.body ?? null)), ...spooled].join('\n');
+      const match = /"event_type":"prompt_submitted"[^]*?"correlation_id":"([0-9a-f]{32})"/.exec(bodies)
+        || /"correlation_id":"([0-9a-f]{32})"[^]*?"event_type":"prompt_submitted"/.exec(bodies);
+      const event = match ? { correlation_id: match[1] } : null;
+      assert.ok(event, 'a prompt event was recorded');
+      assert.equal(bodies.includes(secret), false, 'the prompt text is in no request');
+      assert.equal(bodies.includes(rawInputHash([payload.session_id, prompt])), false, 'no hash of the prompt text is sent');
+      return event.correlation_id;
+    } finally { h.cleanup(); }
+  };
+  const withId = { ...base, prompt, prompt_id: 'prompt-0001' };
+  assert.equal(run(withId), run(withId), 'the same host prompt id: the same correlation');
+  const { prompt_id: _drop, ...noId } = withId;
+  assert.notEqual(run(noId), run(noId), 'no host id: a fresh id per event, never one derived from the text');
+});
+
+test('Edit paths are sent without a user name: the home directory as ~, another user\'s home as /home/[user] (never bound)', () => {
+  const { homedir } = require('node:os');
+  const { normalizedHookAction } = require('../dist/normalized-action.js');
+  const edit = (path) => normalizedHookAction({ tool_name: 'Write', tool_input: { file_path: path, content: 'x' } });
+  const own = edit(`${homedir()}/project/src/a.ts`);
+  assert.deepEqual(own.paths, ['~/project/src/a.ts']);
+  assert.equal(own.truncated, undefined);
+  const other = edit('/home/someone-else/.config/app.toml');
+  assert.deepEqual(other.paths, ['/home/[user]/.config/app.toml']);
+  assert.equal(other.truncated, true);
+  assert.deepEqual(edit('/srv/app/src/a.ts').paths, ['/srv/app/src/a.ts']);
+  assert.deepEqual(edit('src/a.ts').paths, ['src/a.ts']);
+});

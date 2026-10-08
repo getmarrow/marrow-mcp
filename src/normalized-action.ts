@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
 import {
   hookToolCommand,
   isMcpHookTool,
@@ -14,7 +15,8 @@ import {
  * coarse classification ("deploy on production") the hook also sends.
  *
  * What leaves the machine: the tool kind, the host's tool name, the program
- * names of a shell command, the file paths of an edit, a SHA-256 of the
+ * names of a shell command, the file paths of an edit (the home directory as
+ * `~`, another user's home as `/home/[user]`), a SHA-256 of the
  * command or tool input, and `truncated: true` when that hash could not cover
  * everything that decides what the action does. The command text and the
  * tool input themselves are never sent.
@@ -984,6 +986,20 @@ function shellCommand(event: ToolEvent): string {
   return hookToolCommand(event as Parameters<typeof hookToolCommand>[0]);
 }
 
+/**
+ * An edit path as sent: the person's home directory as `~`, and another
+ * user's home as `/home/[user]` (marked truncated, since it no longer names
+ * one path), so no user name leaves the machine.
+ */
+function withoutUserName(path: string, state: Exactness): string {
+  const home = homedir();
+  if (home && home !== '/' && (path === home || path.startsWith(`${home}/`))) return `~${path.slice(home.length)}`;
+  const other = /^(\/(?:home|Users))\/[^/]+(?=\/|$)/.exec(path);
+  if (!other) return path;
+  state.truncated = true;
+  return `${other[1]}/[user]${path.slice(other[0].length)}`;
+}
+
 function inputHash(input: unknown, state: Exactness): { input_sha256: string } | Record<string, never> {
   if (input === undefined || input === null) return {};
   const text = JSON.stringify(sortedValue(redactedInput(input, state)));
@@ -1040,7 +1056,7 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     const targets = toolTargetPaths(event as Parameters<typeof toolTargetPaths>[0]);
     if (targets.length > 64) state.truncated = true;
     const paths = targets.slice(0, 64).map((path) => {
-      const redacted = redactText(path, state);
+      const redacted = redactText(withoutUserName(path, state), state);
       if (redacted.length > 512 || redacted.includes(SECRET)) state.truncated = true;
       return redacted.slice(0, 512);
     });
