@@ -138,6 +138,8 @@ A saved `observed_unverified` outcome is terminal observation evidence, not a co
 
 v3.9.99 lets people approve held actions where they already work, and nobody has to log in. See [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
 
+These approvals turn on when the Marrow service update ships; until then held actions work as in 3.9.98: Claude Code asks in its dialog and other hosts hold for the account owner.
+
 - **Approvals in the host prompt:** one click in the host's own permission prompt, a short typed reply where a host has no dialog, or no ask at all for routine work. `marrow-mcp setup` adds Claude Code's `PermissionRequest` and `PostToolBatch` hooks.
 - **Quiet holds:** unattended runs, and hosts that cannot ask, hold the action without emailing anyone; the person sees the waiting actions at their next interactive session.
 - **The exact action, never its text:** `normalized_action` binds an approval to the exact command; only program names and a SHA-256 of a normalized, secret-free form leave the machine.
@@ -280,6 +282,8 @@ it does not run models, retain prompts, or infer a winner from labels.
 
 ## Approvals in the Host Prompt
 
+These approvals turn on when the Marrow service update ships; until then held actions work as in 3.9.98: Claude Code asks in its dialog and other hosts hold for the account owner.
+
 When Marrow holds an action for approval (`review_required`), the person approves it where they already work, and nobody has to log in. The hooks record the answer with Marrow; the agent never reports or claims an approval. The Marrow dashboard shows receipts and history; it is not where approvals happen.
 
 | Host and session | What the person does |
@@ -288,17 +292,17 @@ When Marrow holds an action for approval (`review_required`), the person approve
 | Cursor shell and MCP calls, local session | Answers Cursor's own approval prompt |
 | Codex, Gemini CLI and Cursor's other tools, local interactive session | Types the reply the hook showed them only, such as `marrow approve CODE` |
 | MCP clients with elicitation (`marrow_auto`) | Answers the client's own dialog (client-attested) |
-| Codex TUI before its prompt hook, Cline and Windsurf in the editor | Uses the host's own approval step: the hook answers neutrally, never with an explicit allow, and Marrow records the result as not observed by Marrow |
+| Codex TUI before its prompt hook, Cline and Windsurf in the editor | Uses the host's own approval step, if they have it on: the hook answers neutrally, never with an explicit allow, and Marrow records the result as not observed by Marrow |
 | Grok, Gemini without its prompt hook, Cursor at `preToolUse`, or no evidence of a person | Retries in a session with Marrow's prompt; the action waits quietly |
 | Unattended runs (headless Claude Code, `codex exec`, `gemini -p`, Cursor cloud) | Nothing in the run: the action waits quietly and the agent carries on |
 | Arbitration review | The account owner picks one proposal through a one-tap link |
 
 - **The owner's email link is the exception.** It is sent only for a category the owner locked, for the owner's own standing decline once the operator asks to reverse it (retrying, or `request_owner_link: true` on `marrow_auto`), for an unattended run when the owner turned on unattended pings, or for an arbitration review when the operator asks. An ordinary hold never emails anyone.
-- **Codex with its approval prompt off holds quietly** (`--yolo`, `-a never`, `--full-auto`, `--approve-for-me`, `-s danger-full-access`, the same through `-c` or `$CODEX_HOME` config), so a held action never runs with nobody asked.
+- **Codex with its approval prompt off holds quietly** (`--yolo`, `-a never`, `--full-auto`, `--approve-for-me`, `-s danger-full-access`, the same through `-c` or `$CODEX_HOME` config). Not read: Codex settings from managed or project configs. Not detected: Cline's auto-approve and Windsurf's Turbo mode (they live in editor state with no reliable signal). With those on, the host runs the action without asking; Marrow records it as not observed by Marrow, never as the person's answer. Owner-locked categories still hold.
 - **Held actions at the next session.** At the first prompt of an interactive session the person sees "N held actions are waiting for you", with the action type and agent only, and approves one by retrying it there.
 - **One approval, one run.** Of two identical calls on one approval, one runs and the other is denied.
-- **The exact action, never its text.** Hook-classified calls send `normalized_action`: the tool kind and name, program names (and edit paths) and a SHA-256 of a normalized form. Credentials are replaced, data a command reads is hashed so `SELECT` and `DROP` are different actions, and anything else that may be secret is withheld and marked `truncated: true`, which Marrow never binds, so it always asks.
-- **Slow and down are different.** Codex and the 5-second hosts answer within their hook limits (Codex within 2 s of starting, and on Linux about 2.6 s from launch). A slow Marrow keeps a holdable action held; a real outage keeps the outage policy, and a waiting hold or owner-locked category stays held.
+- **The exact action, never its text.** Hook-classified calls send `normalized_action`: the tool kind and name, program names (and edit paths) and a SHA-256 of a normalized form. Credentials are replaced, data a command reads is hashed so `SELECT` and `DROP` are different actions, and anything else that may be secret is withheld and marked `truncated: true`, which Marrow never binds, so it always asks. A credential value ends at the next field of a query, form body, cookie or JSON, so actions that differ after it stay different actions. A password given as a plain argument to an unknown program (`./deploy.sh hunter2`) cannot be recognized; it stays only inside the hash.
+- **Slow and down are different.** Codex and the 5-second hosts answer within their hook limits (Codex within 2 s of starting, and on Linux about 2.6 s from launch when npx starts in under about 1.6 s). A slow Marrow keeps a holdable action held; a real outage keeps the outage policy, and a waiting hold or owner-locked category stays held.
 - **Honest labels and texts.** Without a dialog or typed-reply marker an approval is recorded as the host's allow rule. Text a person reads names no receipt ids. A refused action names a plain fix.
 
 ## Passive Use
