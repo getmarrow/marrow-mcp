@@ -230,13 +230,16 @@ async function runHookCommand(input) {
         // waited hold was approved and retried. Report and close, or hand off.
         const heldContext = holdContextFor(identity, event, sessionId);
         if (heldContext) {
-            const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...event, session_id: sessionId });
+            // Gemini and Grok after-events keep the tool input only in the private
+            // (never sent) payload: the call is matched with the input it ran with.
+            const ranWith = privateLoopPayload.toolInput !== undefined ? { ...event, tool_input: privateLoopPayload.toolInput } : event;
+            const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...ranWith, session_id: sessionId });
             const handoff = await (0, host_approval_1.settleAfterTool)(heldContext, {
                 correlation,
                 toolUseId: getString(event.tool_use_id) || null,
                 generationId: getString(event.generation_id) || null,
                 success: outcome.unknown ? null : outcome.success,
-                normalizedAction: (0, normalized_action_1.normalizedHookAction)(event),
+                normalizedAction: (0, normalized_action_1.normalizedHookAction)(ranWith),
             }).catch(() => null);
             if (handoff)
                 heldActionContext = handoff;

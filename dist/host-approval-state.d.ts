@@ -69,6 +69,8 @@ export type HoldRecord = {
     arbitration_receipt_id?: string | null;
     /** A hold that waits quietly: a person is here but cannot be asked, or nobody is (unattended). */
     quiet?: 'attended' | 'unattended' | null;
+    /** Left to the host's own approval step, which Marrow does not observe. */
+    not_observed?: boolean;
     action: {
         action: string;
         target: string;

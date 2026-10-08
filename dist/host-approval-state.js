@@ -183,6 +183,7 @@ function validHold(value) {
         && (hold.arbitration_receipt_id === undefined || hold.arbitration_receipt_id === null
             || (typeof hold.arbitration_receipt_id === 'string' && IDENTIFIER.test(hold.arbitration_receipt_id)))
         && (hold.quiet === undefined || hold.quiet === null || hold.quiet === 'attended' || hold.quiet === 'unattended')
+        && (hold.not_observed === undefined || typeof hold.not_observed === 'boolean')
         && Boolean(hold.action) && typeof hold.action.action === 'string' && hold.action.action.length <= 512
         && typeof hold.action.target === 'string' && hold.action.target.length <= 256
         && typeof hold.action.type === 'string' && hold.action.type.length <= 64

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CLAUDE_CODE_NOT_A_DECISION_PREFIXES = exports.CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK = exports.CLAUDE_CODE_USER_REJECTED = exports.LATE_MARKER_WAIT_MS = exports.HELD_FOR_YOU_TEXT = exports.TYPED_REPLY_MARKER = exports.OWNER_LINK_ON_REQUEST_TEXT = exports.HELD_UNREACHABLE_TEXT = exports.LEGACY_SERVICE_TEXT = exports.OWNER_APPROVAL_REQUEST_TEXT = exports.HOST_APPROVAL_REQUEST_TIMEOUT_MS = exports.CURSOR_ASK_EVENTS = exports.HEADLESS_CLAUDE_ENTRYPOINTS = exports.HOST_LABEL = void 0;
+exports.CLAUDE_CODE_NOT_A_DECISION_PREFIXES = exports.CLAUDE_CODE_USER_REJECTED_WITH_FEEDBACK = exports.CLAUDE_CODE_USER_REJECTED = exports.LATE_MARKER_WAIT_MS = exports.HELD_FOR_YOU_TEXT = exports.HOST_PROMPT_NOT_OBSERVED = exports.PASS_THROUGH_HOSTS = exports.TYPED_REPLY_MARKER = exports.OWNER_LINK_ON_REQUEST_TEXT = exports.HELD_UNREACHABLE_TEXT = exports.LEGACY_SERVICE_TEXT = exports.OWNER_APPROVAL_REQUEST_TEXT = exports.HOST_APPROVAL_REQUEST_TIMEOUT_MS = exports.CURSOR_ASK_EVENTS = exports.HEADLESS_CLAUDE_ENTRYPOINTS = exports.HOST_LABEL = void 0;
 exports.approvalHostFor = approvalHostFor;
 exports.claudeCodeHeadless = claudeCodeHeadless;
 exports.preToolBudgetMs = preToolBudgetMs;
@@ -281,13 +281,27 @@ function planHeldAction(input) {
             : bounded(`${held} Nobody can approve it in this run, so it waits quietly; nothing was sent to anyone. Carry on with other work and do not retry it in this run. A person sees it at their next interactive session and approves it there by retrying it where the host's prompt asks. Do not report or claim an approval yourself.`, 500);
         return { kind: 'deny', agentText, userText: agentText, code: false, quiet: 'unattended', ...(pinged ? { ownerLink: 'now' } : {}) };
     }
-    // A person is here, but this host has no prompt Marrow can use for this call: hold quietly.
+    // A person is here, but Marrow can neither ask in this host nor observe the
+    // answer: the host's own approval step decides (owner rule). Not after an
+    // operator decline (only a marked answer counts then), and not without
+    // positive evidence that a person is here.
+    if (input.attendedConfirmed === true && !guidance.operatorOnly && exports.PASS_THROUGH_HOSTS.has(host)) {
+        return {
+            kind: 'pass',
+            contextText: bounded(`Marrow did not block this held action (gate receipt ${id}). ${exports.HOST_LABEL[host].charAt(0).toUpperCase()}${exports.HOST_LABEL[host].slice(1)}'s own approval step decides; Marrow cannot ask here and does not observe that answer. If it runs, Marrow records it as approved through the host's own prompt (client-attested, not an operator answer). Do not report or claim an approval yourself.${reason}`, 500),
+        };
+    }
+    // Otherwise: hold quietly.
     const why = host === 'cursor'
         ? 'Cursor asks for approval only for shell and MCP calls in a local session.'
         : `${exports.HOST_LABEL[host].charAt(0).toUpperCase()}${exports.HOST_LABEL[host].slice(1)} cannot ask for approval in this session.`;
     const agentText = bounded(`${held} ${why} It stays held until the operator approves it: tell them it is held, and that they approve it by retrying it in a session with Marrow's prompt (a host permission dialog, or a typed reply). Carry on with other work. Do not report or claim an approval yourself.`, 500);
     return { kind: 'deny', agentText, userText: exports.HELD_FOR_YOU_TEXT, code: false, quiet: 'attended' };
 }
+/** Hosts where an ordinary hold Marrow cannot ask about is left to the host's own approval step. */
+exports.PASS_THROUGH_HOSTS = new Set(['grok', 'cline', 'windsurf', 'gemini', 'cursor', 'codex']);
+/** The hook_event of an answer given in a host prompt Marrow did not observe (labelled an allow rule). */
+exports.HOST_PROMPT_NOT_OBSERVED = 'host_prompt_not_observed';
 /** What the person sees when this host cannot ask them: the action waits for them. */
 exports.HELD_FOR_YOU_TEXT = 'This action is held until you approve it. Approve it by retrying it in a session with Marrow\'s prompt.';
 /**
@@ -355,6 +369,7 @@ function rememberHold(ctx, input) {
         legacy_service: input.guidance.hostApprovalSupported === false,
         arbitration_receipt_id: input.guidance.arbitrationReceiptId && BOUNDED_ID.test(input.guidance.arbitrationReceiptId) ? input.guidance.arbitrationReceiptId : null,
         quiet: input.quiet ?? null,
+        not_observed: input.notObserved === true,
     }, ctx.home);
 }
 /**
@@ -928,10 +943,15 @@ function handoffText(hold, delivery) {
         return null;
     // A waited hold was approved on the server (by the owner, or a typed reply):
     // only an answer from this host's own prompt is the hook's client-attested record.
-    const recorded = hold.mode === 'ask'
-        ? 'Marrow recorded the approval of this held action (client-attested).'
-        : `This held action was approved (gate receipt ${hold.gate_receipt_id}).`;
+    const recorded = hold.not_observed
+        ? 'Marrow recorded this held action as approved through the host\'s own prompt, which Marrow did not observe (client-attested, not an operator answer).'
+        : hold.mode === 'ask'
+            ? 'Marrow recorded the approval of this held action (client-attested).'
+            : `This held action was approved (gate receipt ${hold.gate_receipt_id}).`;
     if (delivery.committed === 'committed') {
+        if (hold.not_observed) {
+            return bounded(`Marrow recorded this held action as approved through the host's own prompt, which Marrow did not observe (client-attested), and closed it on gate receipt ${hold.gate_receipt_id}.`, 300);
+        }
         return bounded(`${hold.mode === 'ask' ? 'Marrow recorded the approval (client-attested) and closed' : 'Marrow closed'} this held action on gate receipt ${hold.gate_receipt_id}.`, 300);
     }
     const arbitration = hold.arbitration_receipt_id ? `, arbitration_receipt_id ${hold.arbitration_receipt_id} and the owner_approval_receipt_id Marrow gave when it allowed the action` : '';
@@ -995,7 +1015,8 @@ async function settleAfterTool(ctx, input) {
             // Claude Code's operator marker is the pass-through PermissionRequest
             // hook only. Without it the answer is reported as the event that asked
             // and the server labels it an allow rule.
-            hook_event: hold.host === 'claude-code' ? (hold.dialog_at ? 'PermissionRequest' : 'PreToolUse') : hold.hook_event,
+            hook_event: hold.not_observed ? exports.HOST_PROMPT_NOT_OBSERVED
+                : hold.host === 'claude-code' ? (hold.dialog_at ? 'PermissionRequest' : 'PreToolUse') : hold.hook_event,
             pre_action_event_id: hold.pre_action_event_id,
             // A marker that landed after the call ran was written late; the dialog was
             // shown before the click, so the time the hook asked is the honest bound.

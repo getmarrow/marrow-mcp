@@ -100,6 +100,16 @@ export declare function ownerRequestText(outcome: OwnerLinkOutcome): string;
 export type HoldPlan = {
     kind: 'ask';
     promptText: string;
+}
+/**
+ * Marrow does not block: a person is here but Marrow can neither ask in this
+ * host nor observe its answer, so the host's own approval step decides (owner
+ * rule). The outcome is recorded as approved through the host's own prompt,
+ * not observed by Marrow (an allow rule, client-attested), never as the operator's answer.
+ */
+ | {
+    kind: 'pass';
+    contextText: string;
 } | {
     kind: 'deny';
     agentText: string;
@@ -152,7 +162,17 @@ export declare function planHeldAction(input: {
     typedReply?: boolean;
     /** No person is in this run (headless, `codex exec`, `gemini -p`, a background agent). */
     unattended?: boolean;
+    /**
+     * There is positive evidence that a person is at this host (a local
+     * interactive Codex, Gemini CLI or Cursor session; Grok, Cline and Windsurf
+     * run where their user works). Without it a hold that cannot be asked waits quietly.
+     */
+    attendedConfirmed?: boolean;
 }): HoldPlan;
+/** Hosts where an ordinary hold Marrow cannot ask about is left to the host's own approval step. */
+export declare const PASS_THROUGH_HOSTS: ReadonlySet<ApprovalHost>;
+/** The hook_event of an answer given in a host prompt Marrow did not observe (labelled an allow rule). */
+export declare const HOST_PROMPT_NOT_OBSERVED = "host_prompt_not_observed";
 /** What the person sees when this host cannot ask them: the action waits for them. */
 export declare const HELD_FOR_YOU_TEXT = "This action is held until you approve it. Approve it by retrying it in a session with Marrow's prompt.";
 /**
@@ -190,6 +210,8 @@ export type RecordHoldInput = {
     dialogLater?: boolean;
     laterPrompt?: string;
     quiet?: 'attended' | 'unattended';
+    /** Left to the host's own approval step, which Marrow does not observe. */
+    notObserved?: boolean;
 };
 export declare function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldRecord;
 /**

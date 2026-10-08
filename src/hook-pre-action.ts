@@ -148,6 +148,7 @@ export function heldActionHookOutput(
   code: string | null = null,
 ): Record<string, unknown> | null {
   if (harness === 'windsurf') return null;
+  if (plan.kind === 'pass') return approvedHoldHookOutput(harness, plan.contextText);
   if (plan.kind === 'ask') {
     if (harness === 'cursor') return { permission: 'ask', user_message: plan.promptText, agent_message: 'Marrow asked the user to approve this held action in Cursor.' };
     return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: plan.promptText } };
@@ -795,6 +796,18 @@ export function localApprovalCategories(action: { action: string; type: string; 
 }
 
 /**
+ * Positive evidence that a person is at this host for a call Marrow cannot ask
+ * about: a local interactive Codex or Gemini CLI process, a local Cursor
+ * session (sessionStart), or Grok, Cline and Windsurf (they run where their
+ * user works). Missing evidence is not attended.
+ */
+function attendedConfirmed(ctx: HoldContext, cursorInteractive: boolean | null): boolean {
+  if (ctx.host === 'codex' || ctx.host === 'gemini') return localInteractiveSession(ctx.host) === true;
+  if (ctx.host === 'cursor') return cursorInteractive === true;
+  return ctx.host === 'grok' || ctx.host === 'cline' || ctx.host === 'windsurf';
+}
+
+/**
  * Nobody is in this run: headless Claude Code (sdk-*, its GitHub Action), a
  * scripted Codex or Gemini CLI run (`codex exec`, `gemini -p`), or a Cursor
  * background agent. Missing evidence is not unattended.
@@ -1231,6 +1244,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       const cursor = holdContext.host === 'cursor' ? cursorSessionEvidence(holdContext) : null;
       plan = planHeldAction({
         unattended: cursorMcpPreToolUse || unattendedRun(holdContext, claudePrompt, cursor?.interactive ?? null),
+        attendedConfirmed: !cursorMcpPreToolUse && attendedConfirmed(holdContext, cursor?.interactive ?? null),
         guidance,
         host: holdContext.host,
         hookEvent,
@@ -1257,13 +1271,15 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
         generationId,
         toolName: String(source.tool_name || 'tool'),
         hookEvent,
-        mode: plan.kind === 'ask' ? 'ask' : 'wait',
+        // ask and pass: the host decides now; deny: the hold waits for an approval.
+        mode: plan.kind === 'deny' ? 'wait' : 'ask',
         withCode: plan.kind === 'deny' && plan.code,
         preActionEventId,
         action: { action: classified.action, target: classified.target, type: classified.type, surfaces: classified.surfaces },
         ...(plan.kind === 'deny' && plan.ownerLink ? { ownerLink: plan.ownerLink } : {}),
         ...(plan.kind === 'deny' && plan.dialogLater ? { dialogLater: true, laterPrompt: plan.laterPrompt } : {}),
         ...(plan.kind === 'deny' && plan.quiet ? { quiet: plan.quiet } : {}),
+        ...(plan.kind === 'pass' ? { notObserved: true } : {}),
       });
       code = hold?.code ?? null;
       if (hold && plan.kind === 'deny' && plan.ownerLink === 'now') {
@@ -1272,12 +1288,18 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       }
     } catch {
       // Without local state the answer could not be linked to this hold, so it is not asked for.
-      if (plan.kind === 'ask') {
+      if (plan.kind === 'ask' || plan.kind === 'pass') {
         const text = `Marrow is holding this action for approval (gate receipt ${guidance?.gateReceiptId || arbitration?.gateReceiptId}), so it did not run. Tell the operator it is waiting for approval; local approval state is unavailable on this machine.`;
         effective = { kind: 'deny', agentText: text, userText: text, code: false };
       }
     }
     effective = finalizeOwnerRequest(effective, linkOutcome);
+    if (effective.kind === 'pass') {
+      // The hook does not block: the host's own approval step decides.
+      emitHookOutput(identity.harness, approvedHoldHookOutput(identity.harness, effective.contextText));
+      await afterAnswer(holdContext, {});
+      return;
+    }
     emitHeldPlan(identity.harness, effective, code);
     await afterAnswer(holdContext, { link: laterLink });
     return;

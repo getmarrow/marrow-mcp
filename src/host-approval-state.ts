@@ -118,6 +118,8 @@ export type HoldRecord = {
   arbitration_receipt_id?: string | null;
   /** A hold that waits quietly: a person is here but cannot be asked, or nobody is (unattended). */
   quiet?: 'attended' | 'unattended' | null;
+  /** Left to the host's own approval step, which Marrow does not observe. */
+  not_observed?: boolean;
   action: { action: string; target: string; type: string; surfaces: string[] };
   outbox: HoldOutbox | null;
   created_at: number;
@@ -262,6 +264,7 @@ function validHold(value: unknown): value is HoldRecord {
     && (hold.arbitration_receipt_id === undefined || hold.arbitration_receipt_id === null
       || (typeof hold.arbitration_receipt_id === 'string' && IDENTIFIER.test(hold.arbitration_receipt_id)))
     && (hold.quiet === undefined || hold.quiet === null || hold.quiet === 'attended' || hold.quiet === 'unattended')
+    && (hold.not_observed === undefined || typeof hold.not_observed === 'boolean')
     && Boolean(hold.action) && typeof hold.action.action === 'string' && hold.action.action.length <= 512
     && typeof hold.action.target === 'string' && hold.action.target.length <= 256
     && typeof hold.action.type === 'string' && hold.action.type.length <= 64
