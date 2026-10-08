@@ -2205,7 +2205,14 @@ test('Edit paths are sent without a user name: the home directory as ~, another 
   const { homedir } = require('node:os');
   const { normalizedHookAction } = require('../dist/normalized-action.js');
   const edit = (path) => normalizedHookAction({ tool_name: 'Write', tool_input: { file_path: path, content: 'x' } });
-  const own = edit(`${homedir()}/project/src/a.ts`);
+  // A plain home directory (a random temp HOME would itself look key-shaped inside the hashed input).
+  const savedHome = process.env.HOME;
+  process.env.HOME = '/home/tester';
+  let own;
+  try {
+    assert.equal(homedir(), '/home/tester');
+    own = edit('/home/tester/project/src/a.ts');
+  } finally { process.env.HOME = savedHome; }
   assert.deepEqual(own.paths, ['~/project/src/a.ts']);
   assert.equal(own.truncated, undefined);
   const other = edit('/home/someone-else/.config/app.toml');
