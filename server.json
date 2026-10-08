@@ -1,11 +1,22 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.getmarrow/marrow",
-  "description": "Runtime governance, proof, outcome closure, and fleet intelligence for MCP-compatible AI agents.",
+  "name": "ai.getmarrow/marrow",
+  "title": "Marrow AI: Control Layer for AI Agents",
+  "description": "A named yes before your AI agent acts, plus proof the next agent can reuse. Works in any MCP client.",
+  "websiteUrl": "https://getmarrow.ai/marrow-for-mcp",
   "repository": {
     "url": "https://github.com/getmarrow/marrow-mcp",
     "source": "github"
   },
+  "icons": [
+    {
+      "src": "https://getmarrow.ai/favicon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": [
+        "any"
+      ]
+    }
+  ],
   "version": "3.9.99",
   "packages": [
     {

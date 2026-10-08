@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { endpoint, verifyRegistry } = require('../scripts/mcp-registry-verify.cjs');
 
-const expectedName = 'io.github.getmarrow/marrow';
+const expectedName = 'ai.getmarrow/marrow';
 const expectedVersion = require('../package.json').version;
 
 function fixtureFetch(scenario, calls) {
