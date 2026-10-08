@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: publish-mcp-registry
@@ -17,6 +16,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: mcp-registry-publish
     timeout-minutes: 10
     steps:
       - name: Check out exact source
@@ -42,8 +42,10 @@ jobs:
       - name: Validate registry metadata
         run: ./mcp-publisher validate
 
-      - name: Authenticate with GitHub OIDC
-        run: ./mcp-publisher login github-oidc
+      - name: Authenticate with getmarrow.ai DNS (ai.getmarrow/* namespace)
+        env:
+          MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
+        run: ./mcp-publisher login dns --domain getmarrow.ai --private-key "$MCP_PRIVATE_KEY"
 
       - name: Publish registry metadata
         run: ./mcp-publisher publish

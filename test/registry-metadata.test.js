@@ -12,7 +12,7 @@ test('MCP registry metadata matches the npm package contract', () => {
   assert.equal(typeof server.description, 'string')
   assert.ok(server.description.length > 0)
   assert.ok(server.description.length <= 100, 'MCP Registry server descriptions are limited to 100 characters')
-  assert.equal(pkg.mcpName, 'io.github.getmarrow/marrow')
+  assert.equal(pkg.mcpName, 'ai.getmarrow/marrow')
   assert.equal(server.name, pkg.mcpName)
   assert.equal(server.version, pkg.version)
   assert.equal(server.packages.length, 1)

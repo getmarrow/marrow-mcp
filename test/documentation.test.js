@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
 const cliSource = fs.readFileSync(path.join(root, 'src/cli.ts'), 'utf8');
-const canonical = 'Marrow is the runtime control and proof layer for teams running AI agents.';
+const canonical = 'Marrow AI is the runtime control and proof layer for teams running AI agents.';
 const governanceSignals = [
   'multiple_autonomous_agents',
   'production_or_privileged_access',
@@ -21,7 +21,7 @@ const governanceSignals = [
 ];
 
 test('npm entry point matches the product positioning contract', () => {
-  assert.match(pkg.description, /runtime control/i);
+  assert.match(pkg.description, /^Marrow AI MCP server/);
   assert.match(pkg.description, /proof/i);
   assert.ok(readme.includes(canonical));
   assert.ok(readme.includes(`## What's New in v${pkg.version}`));

@@ -258,7 +258,8 @@ test('README documents the model-neutral capability matrix and independent certi
   assert.match(readme, /\| Custom host \| Requires a bounded event adapter/);
   assert.match(readme, /model-neutral/);
   assert.match(readme, /client-self-reported lifecycle callback does not certify passive coverage or enforcement/);
-  assert.match(readme, /seven-tool default surface/);
+  const changelog = readFileSync(join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
+  assert.match(changelog, /seven-tool default surface/);
   assert.match(readme, /Public lifecycle callbacks and hook activity are client-self-reported and cannot verify or certify passive coverage/);
   assert.match(readme, /npx @getmarrow\/install run --agent <agent-id> -- -- <command>/);
   assert.doesNotMatch(readme, /MCP-only hosts receive the same model-neutral control instructions and six-tool default surface/);
