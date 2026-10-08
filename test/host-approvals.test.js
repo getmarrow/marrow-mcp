@@ -2121,7 +2121,7 @@ const rawInputHash = (value) => {
   return require('node:crypto').createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex').slice(0, 32);
 };
 
-test('Correlation and event ids come from the normalized action: only-the-secret variants share them, a retry keeps them, and no hash of the raw input is sent', () => {
+test('Correlation and event ids come from the normalized action: only-the-secret variants share the correlation, a retry keeps it, and no hash of the raw input is sent', () => {
   const base = fixture('claude-pre-tool-use.json');
   const s1 = `pw-${randomBytes(6).toString('hex')}`;
   const s2 = `pw-${randomBytes(6).toString('hex')}`;
@@ -2149,7 +2149,8 @@ test('Correlation and event ids come from the normalized action: only-the-secret
   assert.equal(first.correlation, otherSecret.correlation, 'only the secret differs: the same correlation');
   assert.notEqual(first.correlation, otherTarget.correlation, 'a different target: a different correlation');
   assert.equal(retry.correlation, first.correlation, 'a retry keeps the correlation');
-  assert.equal(retry.eventId, first.eventId, 'a retry of the same call keeps the event id');
+  // 3.9.100: an event id names its payload, so a new run of the hook is a new record (never one id with two payloads).
+  assert.notEqual(retry.eventId, first.eventId, 'a new run of the hook is a new attempt with its own id');
   assert.match(first.eventId, new RegExp(`^pretool-${first.correlation}-[0-9a-f]{12}$`));
 });
 
@@ -2267,4 +2268,73 @@ test('HIGH-R7-1: with the host\'s own prompt off (Codex yolo/full-auto/never/con
   assert.equal(geminiApprovalPromptOff(['gemini', '--approval-mode', 'default']), false);
   assert.equal(typedReplyPromptOff('cursor', () => null, 1), true, 'Cursor: always');
   assert.equal(typedReplyPromptOff('codex', () => null, 1), true, 'no host process found: off');
+});
+
+// ---------------------------------------------------------------- 3.9.100: no key, and the owner's ~/.marrow/env
+
+test('No key: a protected action names the one fix; a key in an owner-only ~/.marrow/env is used, a readable-by-others one is not', () => {
+  const { chmodSync } = require('node:fs');
+  const { NO_KEY_TEXT } = require('../dist/hook-pre-action.js');
+  assert.equal(NO_KEY_TEXT, 'Marrow can\'t find your key: run `npx @getmarrow/install` once in this machine\'s terminal.');
+  const deploy = { ...fixture('claude-pre-tool-use.json'), tool_input: { command: 'wrangler deploy --env production', description: 'x' } };
+  const run = (mode) => {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+      const key = `mrw_test_${randomBytes(16).toString('hex')}`;
+      if (mode !== null) {
+        mkdirSync(join(h.home, '.marrow'), { mode: 0o700 });
+        writeFileSync(join(h.home, '.marrow', 'env'), `MARROW_API_KEY=${key}\n`, { mode: 0o600 });
+        chmodSync(join(h.home, '.marrow', 'env'), mode);
+      }
+      const out = h.run('claude-pre-action-hook', deploy, { MARROW_API_KEY: '' });
+      assert.equal((out.stdout + out.stderr).includes(key), false, 'the key never appears in output');
+      return { out, runtimeCalls: runtimes(h).length };
+    } finally { h.cleanup(); }
+  };
+  const none = run(null);
+  assert.equal(none.runtimeCalls, 0);
+  assert.equal(none.out.json.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(none.out.json.hookSpecificOutput.permissionDecisionReason.includes(NO_KEY_TEXT), true);
+  const owner = run(0o600);
+  assert.ok(owner.runtimeCalls > 0, 'the owner-only key file is read');
+  assert.notEqual(owner.out.json?.hookSpecificOutput?.permissionDecisionReason || '', NO_KEY_TEXT);
+  const shared = run(0o644);
+  assert.equal(shared.runtimeCalls, 0, 'a key file others can read is ignored');
+  assert.equal(shared.out.json.hookSpecificOutput.permissionDecisionReason.includes(NO_KEY_TEXT), true);
+});
+
+test('First-prompt brief: the prompt hook flags it (context.prompt_brief: true); a hook action never carries the flag', () => {
+  const h = harness();
+  try {
+    h.run('claude-context-hook', { ...fixture('claude-user-prompt-submit.json'), prompt: 'deploy the worker to production please' });
+    const briefs = h.requests().filter((request) => request.path === '/v1/agent/runtime' && /^classified agent request: /.test(request.body?.action || ''));
+    assert.equal(briefs.length, 1, 'one brief');
+    assert.deepEqual(briefs[0].body.context, { prompt_brief: true });
+    h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+    h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_input: { command: 'wrangler deploy --env production', description: 'x' } });
+    const actions = runtimes(h);
+    assert.ok(actions.length > 0);
+    assert.equal(actions.some((request) => request.body?.context?.prompt_brief !== undefined), false, 'a hook action is never a brief');
+  } finally { h.cleanup(); }
+});
+
+test('3.9.100: no free-text word of a command leaves the machine; only an allowed deploy grammar sends its words', () => {
+  const word = `w${randomBytes(5).toString('hex')}`;
+  const run = (command) => {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+      h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_input: { command, description: 'x' } });
+      return { bodies: JSON.stringify(h.requests().map((request) => request.body)), actions: h.requests().map((request) => request.body?.normalized_action).filter(Boolean) };
+    } finally { h.cleanup(); }
+  };
+  for (const command of [`./deploy.sh ${word}`, `vercel deploy ./${word}.txt --target staging`, `mysql -p${word} prod`, `wrangler deploy --env ${word}`]) {
+    const { bodies, actions } = run(command);
+    assert.ok(actions.length > 0);
+    assert.equal(bodies.includes(word), false, `${command.replace(word, '<word>')}: the word never leaves the machine`);
+    assert.equal(actions.some((action) => action.tool_input?.command !== undefined), false);
+  }
+  const { actions } = run('vercel deploy --target staging');
+  assert.equal(actions[0].tool_input.command, 'vercel deploy --target staging');
 });

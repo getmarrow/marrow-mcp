@@ -4,6 +4,7 @@ exports.MAX_SCAN_CHARS = void 0;
 exports.looksLikeKey = looksLikeKey;
 exports.classifySecretName = classifySecretName;
 exports.normalizeShellCommand = normalizeShellCommand;
+exports.deployCommandText = deployCommandText;
 exports.normalizedHookAction = normalizedHookAction;
 const node_crypto_1 = require("node:crypto");
 const node_os_1 = require("node:os");
@@ -1037,6 +1038,75 @@ function withoutUserName(path, state) {
     state.truncated = true;
     return `${other[1]}/[user]${path.slice(other[0].length)}`;
 }
+// ---------------------------------------------------------------------------
+// Deploy command text (the only command text ever sent)
+// ---------------------------------------------------------------------------
+/** A launcher that may stand directly before the tool: one word, or two. */
+const DEPLOY_LAUNCHERS = [['npx'], ['pnpx'], ['bunx'], ['npm', 'exec'], ['pnpm', 'dlx']];
+/** An environment value the service may read: lower-case letters, digits and dashes. */
+const DEPLOY_ENV_VALUE = /^[a-z0-9-]{1,32}$/;
+/**
+ * The deploy tools whose non-production target can never fall back to
+ * production, word for word (mirrors the service's allow-list): the tool and
+ * its subcommand(s), the one environment flag it must carry (or none), and
+ * the flags that make it production. Wrangler is not here: `--env staging`
+ * deploys production when the project has no such environment.
+ */
+const DEPLOY_GRAMMARS = [
+    { tools: ['vercel'], subcommands: [[], ['deploy']], envFlag: '--target' },
+    { tools: ['netlify'], subcommands: [['deploy']], envFlag: null },
+    { tools: ['serverless', 'sls', 'sst'], subcommands: [['deploy']], envFlag: '--stage' },
+    { tools: ['railway'], subcommands: [['up']], envFlag: '--environment' },
+];
+/**
+ * The command text, only when the whole command is one of the deploy
+ * grammars word for word: a single clause of plain ASCII words separated by
+ * spaces or tabs (no operator, newline, quote, escape, variable, substitution,
+ * subshell or wrapper such as bash -c, eval or xargs), an optional single
+ * launcher, the tool and subcommand, exactly one environment flag with a
+ * value matching DEPLOY_ENV_VALUE (or none, where the grammar has none), and
+ * no other word. Anything else sends no text, only the hash, so no free-text
+ * word ever leaves the machine.
+ */
+function deployCommandText(command) {
+    if (typeof command !== 'string' || command.length > 512)
+        return null;
+    const trimmed = command.replace(/^[ \t]+|[ \t]+$/g, '');
+    if (!trimmed || !/^[A-Za-z0-9 \t._=/:@-]+$/.test(trimmed))
+        return null;
+    let words = trimmed.split(/[ \t]+/);
+    for (const launcher of DEPLOY_LAUNCHERS) {
+        if (launcher.every((word, index) => words[index] === word)) {
+            words = words.slice(launcher.length);
+            break;
+        }
+    }
+    const tool = words[0];
+    const grammar = DEPLOY_GRAMMARS.find((entry) => entry.tools.includes(tool));
+    if (!grammar)
+        return null;
+    const rest = words.slice(1);
+    // The longest subcommand that matches.
+    const subcommand = [...grammar.subcommands].sort((a, b) => b.length - a.length)
+        .find((sub) => sub.every((word, index) => rest[index] === word));
+    if (!subcommand)
+        return null;
+    const flags = rest.slice(subcommand.length);
+    if (grammar.envFlag === null)
+        return flags.length === 0 ? normalizedWords(words, trimmed) : null;
+    let value = null;
+    if (flags.length === 2 && flags[0] === grammar.envFlag)
+        value = flags[1];
+    else if (flags.length === 1 && flags[0].startsWith(`${grammar.envFlag}=`))
+        value = flags[0].slice(grammar.envFlag.length + 1);
+    if (value === null || !DEPLOY_ENV_VALUE.test(value))
+        return null;
+    return normalizedWords(words, trimmed);
+}
+/** The words as the normalized form writes them (single spaces), launcher included. */
+function normalizedWords(_toolWords, trimmed) {
+    return trimmed.split(/[ \t]+/).join(' ');
+}
 function inputHash(input, state) {
     if (input === undefined || input === null)
         return {};
@@ -1081,15 +1151,24 @@ function normalizedOfKind(event, kind, hostToolName, state) {
         return withExactness({ tool_kind: 'mcp', tool_name: hostToolName, tool_input: inputHash(event.tool_input, state) }, state);
     }
     if (kind === 'shell') {
-        const { text, programs } = normalizeInner(shellCommand(event), state, 0);
+        const raw = shellCommand(event);
+        const { text, programs } = normalizeInner(raw, state, 0);
         // A secret was replaced: the action is never bound or reused (it asks each time).
         if (text.includes(SECRET))
             state.truncated = true;
+        // The command text itself only for a deploy the service can judge word for word (see deployCommandText).
+        // Judged on the host's exact text (a trimmed non-ASCII space must not slip through).
+        const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input : null;
+        const exact = typeof input?.command === 'string' ? input.command : typeof input?.cmd === 'string' ? input.cmd : raw;
+        const deployText = state.truncated ? null : deployCommandText(exact);
         return withExactness({
             tool_kind: 'shell',
             tool_name: hostToolName,
             programs,
-            tool_input: { command_sha256: sha256(`${HASH_VERSION}\nshell\n${text}`) },
+            tool_input: {
+                command_sha256: sha256(`${HASH_VERSION}\nshell\n${text}`),
+                ...(deployText !== null && deployText === text ? { command: deployText } : {}),
+            },
         }, state);
     }
     if (kind === 'edit') {

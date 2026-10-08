@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.GROK_FIXED_DENIAL = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.GROK_FIXED_DENIAL = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.NO_KEY_TEXT = void 0;
 exports.isMarrowControlTimeout = isMarrowControlTimeout;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.heldActionHookOutput = heldActionHookOutput;
@@ -41,6 +41,8 @@ const session_loop_guard_1 = require("./session-loop-guard");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 Object.defineProperty(exports, "MARROW_OUTAGE_WARNING", { enumerable: true, get: function () { return hook_contract_1.MARROW_OUTAGE_WARNING; } });
+/** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
+exports.NO_KEY_TEXT = 'Marrow can\'t find your key: run `npx @getmarrow/install` once in this machine\'s terminal.';
 // Claude Code sends the whole tool input, and a Write of a long document grows
 // further once JSON-escaped, so tens of kilobytes of markdown must still parse.
 exports.MAX_PRE_ACTION_INPUT_BYTES = 4 * 1024 * 1024;
@@ -544,11 +546,11 @@ function clinePreActionHookOutput(result) {
         };
     }
     if (result.protectedRisk && (!result.runtime || !result.permit?.verified)) {
-        const credentialsUnavailable = /credentials are unavailable/i.test(String(result.enforcementError || ''));
+        const credentialsUnavailable = result.enforcementError === exports.NO_KEY_TEXT;
         return {
             cancel: true,
             errorMessage: credentialsUnavailable
-                ? 'Marrow credentials are unavailable for this protected action. Restore the configured agent key and retry.'
+                ? exports.NO_KEY_TEXT
                 : result.failure === 'credential_scope'
                     ? 'This Marrow API key is not authorized to obtain action permits for this agent. Use the API key issued to this agent and retry.'
                     : result.failure === 'unavailable'
@@ -887,8 +889,7 @@ async function runPreActionHookCommand(input) {
         if (resolved.apiKey) {
             try {
                 const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
-                await (0, lifecycle_spool_1.recordLifecycleEvent)({ apiKey: resolved.apiKey, baseUrl, event: {
-                        event_id: `owner-bypass-${correlation}`,
+                await (0, lifecycle_spool_1.recordLifecycleEvent)({ apiKey: resolved.apiKey, baseUrl, event: (0, lifecycle_spool_1.payloadBoundEvent)(`owner-bypass-${correlation}`, {
                         event_type: 'pre_action_checked',
                         ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                         session_id: sessionId,
@@ -900,7 +901,7 @@ async function runPreActionHookCommand(input) {
                         outcome_state: 'pending',
                         intervention_disposition: 'overridden',
                         action_changed: false,
-                    } }).catch(() => null);
+                    }) }).catch(() => null);
             }
             catch { /* owner bypass is not trapped by telemetry configuration */ }
         }
@@ -938,8 +939,7 @@ async function runPreActionHookCommand(input) {
         if (resolved.apiKey) {
             try {
                 const loopBaseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
-                await (0, lifecycle_spool_1.recordLifecycleEvent)({ apiKey: resolved.apiKey, baseUrl: loopBaseUrl, event: {
-                        event_id: `loop-block-${loopDecision.receipt.slice(4)}`,
+                await (0, lifecycle_spool_1.recordLifecycleEvent)({ apiKey: resolved.apiKey, baseUrl: loopBaseUrl, event: (0, lifecycle_spool_1.payloadBoundEvent)(`loop-block-${loopDecision.receipt.slice(4)}`, {
                         event_type: 'pre_action_checked',
                         ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                         session_id: sessionId,
@@ -952,7 +952,7 @@ async function runPreActionHookCommand(input) {
                         outcome_state: 'pending',
                         intervention_disposition: 'followed',
                         action_changed: true,
-                    } }).catch(() => null);
+                    }) }).catch(() => null);
             }
             catch { /* local denial remains authoritative when telemetry is unavailable */ }
         }
@@ -985,7 +985,7 @@ async function runPreActionHookCommand(input) {
             runtime: null,
             permit: null,
             protectedRisk: enforcementRequired,
-            enforcementError: 'Marrow credentials are unavailable for this protected action. Restore the configured agent key before retrying.',
+            enforcementError: exports.NO_KEY_TEXT,
         }, identity.harness);
         return;
     }
@@ -1030,27 +1030,22 @@ async function runPreActionHookCommand(input) {
         await afterAnswer(holdContext, { link: waited.deferredLink ? waited.hold : null });
         return;
     }
-    // One lifecycle record per attempt: a retried action is a new attempt, and a
-    // hold names the record of the attempt that created it.
-    const attempt = (0, node_crypto_1.createHash)('sha256').update(toolUseId || generationId || (0, node_crypto_1.randomUUID)()).digest('hex').slice(0, 12);
-    const preActionEventId = `pretool-${correlation}-${attempt}`;
-    const lifecycle = (0, lifecycle_spool_1.recordLifecycleEvent)({
-        apiKey: resolved.apiKey,
-        baseUrl,
-        event: {
-            event_id: preActionEventId,
-            event_type: 'pre_action_checked',
-            ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
-            session_id: sessionId,
-            workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.generation_id || source.tool_use_id || source.task_id),
-            correlation_id: correlation,
-            action: classified.action,
-            target: classified.target,
-            surfaces: classified.surfaces,
-            risk_level: classified.risk,
-            outcome_state: 'pending',
-        },
-    }).catch(() => null);
+    // One lifecycle record per attempt: its id names its payload (a retried action
+    // is a new attempt), and a hold names the record of the attempt that created it.
+    const preActionEvent = (0, lifecycle_spool_1.payloadBoundEvent)(`pretool-${correlation}`, {
+        event_type: 'pre_action_checked',
+        ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
+        session_id: sessionId,
+        workflow_id: (0, hook_contract_1.stableSessionWorkflowId)(sessionId, source.generation_id || source.tool_use_id || source.task_id),
+        correlation_id: correlation,
+        action: classified.action,
+        target: classified.target,
+        surfaces: classified.surfaces,
+        risk_level: classified.risk,
+        outcome_state: 'pending',
+    });
+    const preActionEventId = preActionEvent.event_id;
+    const lifecycle = (0, lifecycle_spool_1.recordLifecycleEvent)({ apiKey: resolved.apiKey, baseUrl, event: preActionEvent }).catch(() => null);
     // Normalizing has its own share of the host's budget: past it the action is
     // a truncated placeholder, so the hook still answers (deny first) in time.
     const normalizedAction = (0, normalized_action_1.normalizedHookAction)(source, {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.9.100
+
+- `marrow-mcp setup` recognizes the installer's local-runtime hook commands (`/bin/sh -c 'M="$HOME/.marrow/runtime/mcp/<version>/run"; …'`, the `{ M=…; }` block inside `sh -c`, and the node guard) only in their exact generated shape with the same version throughout. An entry for the same command keeps its form, so Claude Code and Grok get one Marrow entry per event in either order; an older version's local form is replaced; a look-alike (another path, a suffix, mixed versions) is left alone as the person's own hook. Doctor and coverage read the local form too. Setup still never writes Codex, Cursor, Gemini or Windsurf hook files.
+- No key: a protected action says "Marrow can't find your key: run `npx @getmarrow/install` once in this machine's terminal." Keys are read from `MARROW_API_KEY`, then an owner-only `~/.marrow/env.local` or `~/.marrow/env`.
+- The first-prompt brief carries `context.prompt_brief: true`; the service treats only flagged requests as briefs.
+- `normalized_action.tool_input.command` (the normalized words) is sent only for a whole command in an allowed deploy grammar: `vercel [deploy] --target V`, `netlify deploy` (no `--prod`), `serverless|sls|sst deploy --stage V`, `railway up --environment V`, optionally after one `npx`, `pnpx`, `bunx`, `npm exec` or `pnpm dlx`; one value matching `^[a-z0-9-]{1,32}$`; a single clause of ASCII words with no operator, quote, variable, substitution, subshell or wrapper; no other word; not truncated. Wrangler is excluded (`--env staging` deploys production when that environment is missing). Everything else sends the hash only. No environment label is added; the service decides.
+- Lifecycle event ids name their payload (`<kind>-<correlation>-<12 hex>` of the stored fields and time), so the service never receives one id with two payloads; a quick retry of the Stop hook reuses its queued record.
+- Version 3.9.100 in `package.json`, `server.json` and the hook commands.
+
 ## 3.9.99
 
 These approvals turn on when the Marrow service update ships; until then held actions work as in 3.9.98: Claude Code asks in its dialog and other hosts hold for the account owner.

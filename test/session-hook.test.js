@@ -50,7 +50,8 @@ test('Stop hook retries use deterministic source correlation without an environm
       await runSessionHookCommand(source);
       const events = JSON.parse(readFileSync(spoolPath, 'utf8'));
       assert.equal(events.length, 1);
-      assert.match(events[0].event_id, /^session-stop-[a-f0-9]{32}$/);
+      // The id names its payload; a quick retry reuses the queued record (no second record, no conflict).
+      assert.match(events[0].event_id, /^session-stop-[a-f0-9]{32}-[a-f0-9]{12}$/);
       assert.equal(events[0].session_id, 'claude-source-session');
     });
   } finally {

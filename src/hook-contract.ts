@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 import { normalizedHookAction } from './normalized-action';
 
-export const MCP_ADAPTER_VERSION = '3.9.99';
+export const MCP_ADAPTER_VERSION = '3.9.100';
 export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*';
 export const GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
@@ -464,11 +464,66 @@ export function readHookSettingsForInstall(startDir = process.cwd()): HookSettin
   return settings;
 }
 
+// ---------------------------------------------------------------------------
+// The installer's local-runtime hook forms (@getmarrow/install, src/mcp-runtime.js):
+// the same entrypoint run from ~/.marrow/runtime/mcp/<version>/run when present,
+// else through npx. Recognized only in their exact generated shape, and only
+// when every version in them is the same; anything else is not Marrow's.
+// ---------------------------------------------------------------------------
+
+const LOCAL_ARGS = '--package=@getmarrow/mcp@(\\d+\\.\\d+\\.\\d+) marrow-mcp ([a-z][a-z-]{0,63})';
+const LOCAL_PLAIN_RE = new RegExp(`^/bin/sh -c 'M="\\$HOME/\\.marrow/runtime/mcp/(\\d+\\.\\d+\\.\\d+)/run"; if \\[ -x "\\$M" \\]; then exec "\\$M" ${LOCAL_ARGS}; fi; exec npx -y --package=@getmarrow/mcp@\\2 marrow-mcp \\3'$`);
+const LOCAL_INNER_RE = new RegExp(`\\{ M="\\$HOME/\\.marrow/runtime/mcp/(\\d+\\.\\d+\\.\\d+)/run"; if \\[ -x "\\$M" \\]; then "\\$M" ${LOCAL_ARGS}; else npx -y --package=@getmarrow/mcp@\\2 marrow-mcp \\3; fi; \\}`, 'g');
+const LOCAL_SPAWN_RE = /spawn\(\.\.\.\(\(f,m,a\)=>f\.existsSync\(m\)\?\[m,a\.slice\(1\)\]:\[process\.platform==="win32"\?"npx\.cmd":"npx",a\]\)\(require\("node:fs"\),\(process\.env\.HOME\|\|""\)\+"\/\.marrow\/runtime\/mcp\/(\d+\.\d+\.\d+)\/run",(\["-y","--package=@getmarrow\/mcp@(\d+\.\d+\.\d+)","marrow-mcp","[a-z-]+"\])\),/g;
+const LOCAL_GUARD_PREFIX_RE = /^N="\$HOME\/\.marrow\/runtime\/mcp\/(\d+\.\d+\.\d+)\/node"; \[ -x "\$N" \] \|\| N=node; exec "\$N" -e '/;
+const SPAWN_NPX = 'spawn(process.platform==="win32"?"npx.cmd":"npx",';
+
+/**
+ * The npx form of an installer local-runtime hook command, or the command
+ * unchanged when it is not exactly one (another shape, a suffix, a different
+ * runtime path, or versions that differ anywhere in it).
+ */
+export function delocalizeMarrowHookCommand(command: unknown): unknown {
+  if (typeof command !== 'string') return command;
+  const plain = LOCAL_PLAIN_RE.exec(command);
+  if (plain) return plain[1] === plain[2] ? `npx -y --package=@getmarrow/mcp@${plain[2]} marrow-mcp ${plain[3]}` : command;
+  const guard = LOCAL_GUARD_PREFIX_RE.exec(command);
+  if (guard) {
+    let consistent = true;
+    let spawns = 0;
+    const body = command.slice(guard[0].length).replace(LOCAL_SPAWN_RE, (_match, runVersion: string, argsJson: string, packageVersion: string) => {
+      spawns += 1;
+      if (runVersion !== guard[1] || packageVersion !== guard[1]) consistent = false;
+      return `${SPAWN_NPX}${argsJson},`;
+    });
+    return consistent && spawns > 0 ? `node -e '${body}` : command;
+  }
+  if (command.startsWith('/bin/sh -c \'')) {
+    let consistent = true;
+    let blocks = 0;
+    const body = command.slice('/bin/sh -c \''.length).replace(LOCAL_INNER_RE, (_match, runVersion: string, version: string, sub: string) => {
+      blocks += 1;
+      if (runVersion !== version) consistent = false;
+      return `npx -y --package=@getmarrow/mcp@${version} marrow-mcp ${sub}`;
+    });
+    return consistent && blocks > 0 ? `sh -c '${body}` : command;
+  }
+  return command;
+}
+
+/** Whether a hook command is `canonical` itself or the installer's local form of it. */
+export function isMarrowHookCommand(command: unknown, canonical: string): boolean {
+  if (typeof command !== 'string') return false;
+  const trimmed = command.trim();
+  return trimmed === canonical || delocalizeMarrowHookCommand(trimmed) === canonical;
+}
+
 export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' | 'session-hook' | 'permission-request-hook';
 
 function marrowHookSubcommand(command: unknown): MarrowHookSubcommand | null {
   if (typeof command !== 'string') return null;
-  const match = command.trim().match(
+  const npxForm = delocalizeMarrowHookCommand(command.trim()) as string;
+  const match = npxForm.match(
     /^npx\s+(?:-y\s+)?(?:--package=@getmarrow\/mcp(?:@[^\s]+)?\s+marrow-mcp|@getmarrow\/mcp(?:@[^\s]+)?)\s+(?:(?:claude|cline|codex|cursor|gemini|grok|windsurf)-)?(context-hook|pre-action-hook|hook|session-hook|permission-request-hook)$/,
   );
   return match?.[1] as MarrowHookSubcommand | undefined || null;
@@ -501,7 +556,7 @@ export function reconcileMarrowCommandHook(
         const exactMatcher = matcher === undefined
           ? record.matcher === undefined
           : record.matcher === matcher;
-        if (detected === subcommand && (!preferredHandler || (handler.command === command && exactMatcher))) {
+        if (detected === subcommand && (!preferredHandler || (isMarrowHookCommand(handler.command, command) && exactMatcher))) {
           preferredHandler = handler;
         }
         continue;
@@ -511,7 +566,11 @@ export function reconcileMarrowCommandHook(
     if (remaining.length > 0) retained.push({ ...record, hooks: remaining });
   }
 
-  const handler = { ...(preferredHandler || {}), ...handlerFields, type: 'command', command };
+  // An existing entry for this exact command keeps its form (the installer's local runtime or npx).
+  const keptCommand = preferredHandler && isMarrowHookCommand(preferredHandler.command, command)
+    ? String(preferredHandler.command).trim()
+    : command;
+  const handler = { ...(preferredHandler || {}), ...handlerFields, type: 'command', command: keptCommand };
   const canonicalEntry: Record<string, unknown> = { hooks: [handler] };
   if (matcher !== undefined) canonicalEntry.matcher = matcher;
   retained.push(canonicalEntry);
@@ -563,8 +622,7 @@ export function hasExactCommandHook(
     return record.hooks.some((hook) => {
       const handler = asRecord(hook);
       return handler?.type === 'command'
-        && typeof handler.command === 'string'
-        && handler.command.trim() === command;
+        && isMarrowHookCommand(handler.command, command);
     });
   });
 }
@@ -583,7 +641,7 @@ function exactHookDescriptors(
     if (!record || (matcher !== undefined && record.matcher !== matcher) || !Array.isArray(record.hooks)) return [];
     return record.hooks.flatMap((hook) => {
       const handler = asRecord(hook);
-      if (handler?.type !== 'command' || typeof handler.command !== 'string' || handler.command.trim() !== command) return [];
+      if (handler?.type !== 'command' || !isMarrowHookCommand(handler.command, command)) return [];
       return [{
         matcher: typeof record.matcher === 'string' ? record.matcher : null,
         command,
@@ -756,16 +814,27 @@ export function installGrokNativeHooks(home = process.env.HOME || homedir()): { 
   ): unknown[] => {
     const original = Array.isArray(hooks[eventName]) ? hooks[eventName] as unknown[] : [];
     const retained: unknown[] = [];
+    const canonicalCommand = canonical && Array.isArray(canonical.hooks) ? asRecord(canonical.hooks[0])?.command : undefined;
+    let keptCommand: string | null = null;
     for (const entry of original) {
       const record = asRecord(entry);
       if (!record || !Array.isArray(record.hooks)) {
         retained.push(entry);
         continue;
       }
+      for (const hook of record.hooks) {
+        const command = asRecord(hook)?.command;
+        // An entry already running this exact command keeps its form (the installer's local runtime or npx).
+        if (!keptCommand && typeof canonicalCommand === 'string' && isMarrowHookCommand(command, canonicalCommand)) keptCommand = String(command).trim();
+      }
       const remaining = record.hooks.filter((hook) => grokSubcommand(asRecord(hook)?.command) !== subcommand);
       if (remaining.length > 0) retained.push({ ...record, hooks: remaining });
     }
-    return canonical ? [...retained, canonical] : retained;
+    if (!canonical) return retained;
+    const kept = keptCommand && Array.isArray(canonical.hooks)
+      ? { ...canonical, hooks: [{ ...(asRecord(canonical.hooks[0]) || {}), command: keptCommand }] }
+      : canonical;
+    return [...retained, kept];
   };
   const context = { hooks: [{ type: 'command', command: GROK_CONTEXT_HOOK_COMMAND, timeout: 5 }] };
   const pre = { matcher: GROK_NATIVE_HOOK_MATCHER, hooks: [{ type: 'command', command: GROK_PRE_ACTION_GUARD_COMMAND, timeout: 7 }] };

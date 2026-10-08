@@ -90,11 +90,28 @@ export declare function drainLifecycleSpool(input: {
     /** Used by the finite background owner; explicit drains attempt each ID once. */
     retryWithinBudget?: boolean;
 }): Promise<LifecycleSpoolStatus>;
+/**
+ * A lifecycle event whose id names exactly its payload: `${base}-${12 hex}`
+ * of the fields the service stores, with its time fixed. A resend of the
+ * stored event carries the same bytes under the same id; a changed payload
+ * (another attempt, another turn) gets a new id, so the service never sees one
+ * id with two payloads.
+ */
+export declare function payloadBoundEvent<E extends Omit<LifecycleEvent, 'event_id'>>(base: string, event: E): E & {
+    event_id: string;
+    occurred_at: string;
+};
 export declare function recordLifecycleEvent(input: {
     apiKey: string;
     baseUrl: string;
     event: LifecycleEvent;
     deferDelivery?: boolean;
+    /**
+     * With a payload-bound id (payloadBoundEvent): a still-queued event under the
+     * same base (`${base}-…`) stands for this one, so a quick retry of the same
+     * hook adds nothing; once delivered, a new payload is a new record.
+     */
+    reuseQueuedBase?: string;
 }): Promise<{
     event_id: string;
     accepted: boolean;

@@ -106,6 +106,17 @@ export declare function normalizeShellCommand(command: string, deadline?: number
     truncated: boolean;
 };
 /**
+ * The command text, only when the whole command is one of the deploy
+ * grammars word for word: a single clause of plain ASCII words separated by
+ * spaces or tabs (no operator, newline, quote, escape, variable, substitution,
+ * subshell or wrapper such as bash -c, eval or xargs), an optional single
+ * launcher, the tool and subcommand, exactly one environment flag with a
+ * value matching DEPLOY_ENV_VALUE (or none, where the grammar has none), and
+ * no other word. Anything else sends no text, only the hash, so no free-text
+ * word ever leaves the machine.
+ */
+export declare function deployCommandText(command: string): string | null;
+/**
  * The normalized action of a hook event. `deadlineAt` bounds the time it may
  * take (default one second from now): past it, or past the size limits, the
  * action is a truncated placeholder (kind and tool name only), which the

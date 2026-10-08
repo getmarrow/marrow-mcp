@@ -1,8 +1,8 @@
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
-export declare const MCP_ADAPTER_VERSION = "3.9.99";
+export declare const MCP_ADAPTER_VERSION = "3.9.100";
 export declare const NATIVE_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*";
 export declare const GROK_NATIVE_HOOK_MATCHER = "run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video";
-export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.99";
+export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.100";
 export declare const CONTEXT_HOOK_COMMAND: string;
 export declare const PRE_ACTION_HOOK_COMMAND: string;
 export declare const ACTION_RESULT_HOOK_COMMAND: string;
@@ -62,6 +62,14 @@ type HookSettings = Record<string, unknown>;
 export declare function findHookSettingsPath(startDir?: string): string;
 export declare function readHookSettings(startDir?: string): HookSettings;
 export declare function readHookSettingsForInstall(startDir?: string): HookSettings;
+/**
+ * The npx form of an installer local-runtime hook command, or the command
+ * unchanged when it is not exactly one (another shape, a suffix, a different
+ * runtime path, or versions that differ anywhere in it).
+ */
+export declare function delocalizeMarrowHookCommand(command: unknown): unknown;
+/** Whether a hook command is `canonical` itself or the installer's local form of it. */
+export declare function isMarrowHookCommand(command: unknown, canonical: string): boolean;
 export type MarrowHookSubcommand = 'context-hook' | 'pre-action-hook' | 'hook' | 'session-hook' | 'permission-request-hook';
 export declare function reconcileMarrowCommandHook(settings: HookSettings, eventName: string, subcommand: MarrowHookSubcommand, command: string, matcher?: string, handlerFields?: Record<string, unknown>): {
     entries: unknown[];

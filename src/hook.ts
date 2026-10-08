@@ -1,9 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto';
 import { normalizedHookAction } from './normalized-action';
 import { captureCodexNativeUsage } from './codex-native-usage';
 import { marrowModelUsage, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from './habit-loop-copy';
-import { backgroundNudgeEnabled, recordLifecycleEvent } from './lifecycle-spool';
+import { backgroundNudgeEnabled, payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
 import { readLocalControlState } from './control-state';
 import { isOfficialMarrowMcpEvent, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
@@ -318,9 +317,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       ? success ? 'command_completed' : 'command_failed'
       : success ? 'tool_completed' : 'tool_failed';
     const lifecycleCorrelation = stableToolCorrelation({ ...event, session_id: sessionId });
-    // One record per attempt: the same action run again in a session is a new attempt.
-    const attemptSource = getString(event.tool_use_id) || getString(event.generation_id);
-    const attempt = createHash('sha256').update(attemptSource || randomUUID()).digest('hex').slice(0, 12);
+    // One record per attempt: its id names its payload, so the same action run again is a new record.
     // Spool only: PostToolUse runs on every tool call, so it must add ~no latency.
     // cli.ts launches a detached background nudge that delivers the spooled event.
     // With the nudge disabled (MARROW_HOOK_BACKGROUND_NUDGE=false) keep bounded inline delivery.
@@ -329,8 +326,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       apiKey,
       baseUrl,
       deferDelivery: deferred,
-      event: {
-        event_id: `posttool-${lifecycleCorrelation}-${attempt}`,
+      event: payloadBoundEvent(`posttool-${lifecycleCorrelation}`, {
         event_type: outcome.unknown ? 'tool_completed' : eventType,
         ...clientReportedHookLifecycleIdentity(identity),
         session_id: sessionId,
@@ -342,7 +338,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
         risk_level: classified.risk,
         // An unknown result is recorded as unknown, never as a success.
         ...(outcome.unknown ? { outcome_state: 'unknown' as const } : { success, outcome_state: 'pending' as const }),
-      },
+      }),
     });
     spooledLifecycleEvent = deferred && receipt.queued;
 

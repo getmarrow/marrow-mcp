@@ -993,11 +993,42 @@ export async function drainLifecycleSpool(input: {
   return lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
 }
 
+/** The stored fields a lifecycle event id is bound to. */
+const PAYLOAD_FIELDS = [
+  'event_type', 'harness', 'agent_id', 'action', 'target', 'surfaces', 'workflow_id', 'session_id', 'decision_id',
+  'correlation_id', 'intervention_disposition', 'action_changed', 'risk_level', 'outcome_state', 'success', 'occurred_at',
+] as const;
+
+/**
+ * A lifecycle event whose id names exactly its payload: `${base}-${12 hex}`
+ * of the fields the service stores, with its time fixed. A resend of the
+ * stored event carries the same bytes under the same id; a changed payload
+ * (another attempt, another turn) gets a new id, so the service never sees one
+ * id with two payloads.
+ */
+export function payloadBoundEvent<E extends Omit<LifecycleEvent, 'event_id'>>(base: string, event: E): E & { event_id: string; occurred_at: string } {
+  const occurredAt = typeof event.occurred_at === 'string' && event.occurred_at ? event.occurred_at : new Date().toISOString();
+  let digest: string;
+  try {
+    const stored = compact({ ...event, occurred_at: occurredAt, event_id: `${base}-000000000000` } as LifecycleEvent) as unknown as Record<string, unknown>;
+    digest = createHash('sha256').update(JSON.stringify(PAYLOAD_FIELDS.map((field) => [field, stored[field] ?? null]))).digest('hex').slice(0, 12);
+  } catch {
+    digest = randomUUID().replace(/-/g, '').slice(0, 12);
+  }
+  return { ...event, occurred_at: occurredAt, event_id: `${base}-${digest}` };
+}
+
 export async function recordLifecycleEvent(input: {
   apiKey: string;
   baseUrl: string;
   event: LifecycleEvent;
   deferDelivery?: boolean;
+  /**
+   * With a payload-bound id (payloadBoundEvent): a still-queued event under the
+   * same base (`${base}-…`) stands for this one, so a quick retry of the same
+   * hook adds nothing; once delivered, a new payload is a new record.
+   */
+  reuseQueuedBase?: string;
 }): Promise<{
   event_id: string;
   accepted: boolean;
@@ -1014,7 +1045,10 @@ export async function recordLifecycleEvent(input: {
   let rows: StoredEvent[] = [];
   const queued = mutate(location.path, location.ownsParent, (events) => {
     rows = events;
-    const index = events.findIndex((row) => row.event_id === event.event_id);
+    const reusePrefix = input.reuseQueuedBase ? `${input.reuseQueuedBase}-` : null;
+    const index = events.findIndex((row) => row.event_id === event.event_id
+      || (reusePrefix !== null && row.delivery_state === 'queued' && row.event_id.startsWith(reusePrefix)
+        && row.event_id.length === reusePrefix.length + 12));
     if (index < 0) {
       if (reservedSpoolBytes([...events, event]) > MAX_SPOOL_BYTES) {
         throw new Error('lifecycle spool capacity insufficient for durable retry metadata; receipt was not accepted');
@@ -1043,7 +1077,7 @@ export async function recordLifecycleEvent(input: {
   }
   if (deliveryStatus >= 200 && deliveryStatus < 300) {
     const previous = rows.find((row) => (
-      row.delivery_state === 'queued' && row.event_id !== event.event_id && dueAt(row) <= Date.now()
+      row.delivery_state === 'queued' && row.event_id !== queued.result.event_id && dueAt(row) <= Date.now()
     ));
     if (previous) {
       try {
@@ -1063,9 +1097,10 @@ export async function recordLifecycleEvent(input: {
       }
     }
   }
-  const current = rows.find((row) => row.event_id === event.event_id);
+  const recordedId = queued.result.event_id;
+  const current = rows.find((row) => row.event_id === recordedId);
   return {
-    event_id: event.event_id,
+    event_id: recordedId,
     accepted: !current,
     queued: current?.delivery_state === 'queued',
     failed: current?.delivery_state === 'dead_letter',

@@ -1,6 +1,8 @@
 import { marrowAgentRuntime, marrowEnforcement } from './index';
 import { type HoldPlan } from './host-approval';
 import { MARROW_OUTAGE_WARNING } from './hook-contract';
+/** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
+export declare const NO_KEY_TEXT = "Marrow can't find your key: run `npx @getmarrow/install` once in this machine's terminal.";
 export { MARROW_OUTAGE_WARNING };
 export declare const MAX_PRE_ACTION_INPUT_BYTES: number;
 export declare const PRE_ACTION_CONTROL_TIMEOUT_MS = 8000;

@@ -1,5 +1,5 @@
 import { captureCodexNativeUsage } from './codex-native-usage';
-import { recordLifecycleEvent } from './lifecycle-spool';
+import { payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
 import { marrowModelUsage, marrowSessionEnd, validateBaseUrl } from './index';
 import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from './habit-loop-copy';
 import { readFileSync } from 'node:fs';
@@ -166,8 +166,8 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     await recordLifecycleEvent({
       apiKey: resolved.apiKey,
       baseUrl,
-      event: {
-        event_id: `session-stop-${correlation}`,
+      reuseQueuedBase: `session-stop-${correlation}`,
+      event: payloadBoundEvent(`session-stop-${correlation}`, {
         event_type: 'session_completed',
         ...clientReportedHookLifecycleIdentity(identity),
         session_id: sessionId,
@@ -183,7 +183,7 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
           ? 'agent turn completed'
           : 'agent session ended',
         outcome_state: 'pending',
-      },
+      }),
     });
     try {
       await boundedSessionEnd(resolved.apiKey, baseUrl, sessionId, agentId);

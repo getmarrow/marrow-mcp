@@ -157,8 +157,8 @@ async function runSessionHookCommand(input) {
         await (0, lifecycle_spool_1.recordLifecycleEvent)({
             apiKey: resolved.apiKey,
             baseUrl,
-            event: {
-                event_id: `session-stop-${correlation}`,
+            reuseQueuedBase: `session-stop-${correlation}`,
+            event: (0, lifecycle_spool_1.payloadBoundEvent)(`session-stop-${correlation}`, {
                 event_type: 'session_completed',
                 ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                 session_id: sessionId,
@@ -174,7 +174,7 @@ async function runSessionHookCommand(input) {
                                 ? 'agent turn completed'
                                 : 'agent session ended',
                 outcome_state: 'pending',
-            },
+            }),
         });
         try {
             await boundedSessionEnd(resolved.apiKey, baseUrl, sessionId, agentId);

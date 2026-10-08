@@ -460,17 +460,17 @@ test('passive hooks use joinable action bindings without treating tool exits as 
 
   assert.match(hook, /stableToolCorrelation/);
   assert.match(preAction, /stableToolCorrelation/);
-  // One lifecycle record per attempt (a retried action is a new attempt; no payload conflicts).
-  assert.match(hook, /event_id: `posttool-\$\{lifecycleCorrelation\}-\$\{attempt\}`/);
-  assert.match(preAction, /const preActionEventId = `pretool-\$\{correlation\}-\$\{attempt\}`/);
-  assert.match(preAction, /event_id: preActionEventId/);
+  // One lifecycle record per attempt, its id bound to its payload (a retried action is a new attempt; no payload conflicts).
+  assert.match(hook, /payloadBoundEvent\(`posttool-\$\{lifecycleCorrelation\}`/);
+  assert.match(preAction, /payloadBoundEvent\(`pretool-\$\{correlation\}`/);
+  assert.match(preAction, /const preActionEventId = preActionEvent\.event_id;/);
   assert.match(hook, /return classifyTool\(event\)\.action/);
   assert.match(hook, /outcome_state: 'pending'/);
   assert.doesNotMatch(hook, /marrowAuto\(/);
   assert.doesNotMatch(hook, /outcome_committed/);
   assert.match(context, /classified agent request:/);
   assert.doesNotMatch(context, /const action = redactedPrompt|action: redactedPrompt/);
-  assert.match(context, /event_id: `prompt-\$\{requestCorrelation\}`/);
+  assert.match(context, /payloadBoundEvent\(`prompt-\$\{requestCorrelation\}`/);
   assert.match(hook, /clientReportedHookLifecycleIdentity\(identity\)/);
   assert.match(hook, /target: classified\.target/);
   assert.match(hook, /surfaces: classified\.surfaces/);
@@ -2051,4 +2051,19 @@ test('Day one (bug 8): an event with no agent is stored and sent without agent_i
     globalThis.fetch = originalFetch;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('3.9.100 event ids: an id names its payload, so one id never carries two payloads; a resend carries the stored bytes', async () => {
+  const { payloadBoundEvent } = require('../dist/lifecycle-spool.js');
+  const base = { event_type: 'session_completed', harness: 'claude', action: 'agent session ended', session_id: 's1', correlation_id: 'c1', outcome_state: 'pending' };
+  const a = payloadBoundEvent('session-stop-c1', { ...base, occurred_at: '2026-10-08T10:00:00.000Z' });
+  const same = payloadBoundEvent('session-stop-c1', { ...base, occurred_at: '2026-10-08T10:00:00.000Z' });
+  const later = payloadBoundEvent('session-stop-c1', { ...base, occurred_at: '2026-10-08T10:05:00.000Z' });
+  const other = payloadBoundEvent('session-stop-c1', { ...base, occurred_at: '2026-10-08T10:00:00.000Z', outcome_state: 'unknown' });
+  assert.match(a.event_id, /^session-stop-c1-[0-9a-f]{12}$/);
+  assert.equal(a.event_id, same.event_id, 'the same payload: the same id');
+  assert.notEqual(a.event_id, later.event_id, 'another turn: another id');
+  assert.notEqual(a.event_id, other.event_id, 'another payload: another id');
+  const fresh = payloadBoundEvent('pretool-x', { ...base });
+  assert.match(fresh.occurred_at, /^\d{4}-\d{2}-\d{2}T/, 'the time is fixed when the id is made');
 });

@@ -138,7 +138,7 @@ test('Cursor missing-key protected action denies privately while Marrow MCP does
     }));
     const denied = JSON.parse(deniedText);
     assert.equal(denied.permission, 'deny');
-    assert.match(denied.user_message, /credentials are unavailable/i);
+    assert.match(denied.user_message, /Marrow can't find your key: run `npx @getmarrow\/install` once in this machine's terminal\./);
     assert.equal(denied.agent_message, denied.user_message);
     assert.deepEqual(Object.keys(denied).sort(), ['agent_message', 'permission', 'user_message']);
     assert.doesNotMatch(deniedText, /synthetic-private-credential|npm publish/);

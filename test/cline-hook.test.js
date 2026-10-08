@@ -144,7 +144,7 @@ test('Cline missing-key protected action denies privately while Marrow MCP does 
     }));
     const denied = JSON.parse(deniedText);
     assert.equal(denied.cancel, true);
-    assert.match(denied.errorMessage, /credentials are unavailable/i);
+    assert.match(denied.errorMessage, /Marrow can't find your key: run `npx @getmarrow\/install` once in this machine's terminal\./);
     assert.deepEqual(Object.keys(denied).sort(), ['cancel', 'errorMessage']);
     assert.doesNotMatch(deniedText, /synthetic-private-credential|npm publish/);
 

@@ -728,8 +728,7 @@ async function runContextHookCommand() {
             apiKey,
             baseUrl,
             deferDelivery: true,
-            event: {
-                event_id: `prompt-${requestCorrelation}`,
+            event: (0, lifecycle_spool_1.payloadBoundEvent)(`prompt-${requestCorrelation}`, {
                 event_type: 'prompt_submitted',
                 ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                 session_id: sessionId,
@@ -738,10 +737,12 @@ async function runContextHookCommand() {
                 action: `user prompt submitted: ${passiveBriefInput?.type || 'general'}`,
                 risk_level: passiveBriefInput ? 'medium' : 'low',
                 outcome_state: 'pending',
-            },
+            }),
         }).catch(() => { });
         const live = passiveBriefInput && process.env.MARROW_AGENT_RUNTIME !== 'false'
-            ? await withTimeout((signal) => (0, index_1.marrowAgentRuntime)(apiKey, baseUrl, runtimeInput, sessionId, agentId, signal), MARROW_API_TIMEOUT_MS)
+            ? await withTimeout(
+            // A first-prompt brief says so explicitly (the service never infers it from the text) and authorizes nothing.
+            (signal) => (0, index_1.marrowAgentRuntime)(apiKey, baseUrl, { ...runtimeInput, context: { prompt_brief: true } }, sessionId, agentId, signal), MARROW_API_TIMEOUT_MS)
             : await withTimeout((signal) => (0, index_1.marrowAgentContext)(apiKey, baseUrl, sessionId, agentId, signal), MARROW_API_TIMEOUT_MS);
         let context = live.value
             ? passiveBriefInput
@@ -779,8 +780,7 @@ async function runContextHookCommand() {
                 apiKey,
                 baseUrl,
                 deferDelivery: true,
-                event: {
-                    event_id: `preaction-${requestCorrelation}`,
+                event: (0, lifecycle_spool_1.payloadBoundEvent)(`preaction-${requestCorrelation}`, {
                     event_type: 'pre_action_checked',
                     ...(0, hook_contract_1.clientReportedHookLifecycleIdentity)(identity),
                     session_id: sessionId,
@@ -789,7 +789,7 @@ async function runContextHookCommand() {
                     action: `pre-action check: ${passiveBriefInput?.type || 'general'}`,
                     risk_level: live.value.risk_gate?.risk_level,
                     outcome_state: 'pending',
-                },
+                }),
             }).catch(() => { });
         }
         debug(`[marrow-context-hook] injected ${context.length} bytes of context`);

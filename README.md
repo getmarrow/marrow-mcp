@@ -134,20 +134,15 @@ A direct `marrow_think` can receive a durable pending response before the backen
 
 A saved `observed_unverified` outcome is terminal observation evidence, not a committed outcome. Receipt expiry cannot retroactively authorize completed work. Preserve the original decision, receipt, proof and key; an already authorized durable checkpoint may finish through its existing exact recovery path. Do not repeat the action merely to obtain a fresh receipt.
 
-## What's New in v3.9.99
+## What's New in v3.9.100
 
-v3.9.99 lets people approve held actions where they already work, and nobody has to log in. See [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
+- **One Marrow entry per hook event:** `marrow-mcp setup` recognizes the installer's local-runtime hook commands exactly (same version throughout, no additions), keeps whichever form is there (local runtime or npx), and never adds a second entry. Your own hooks stay as they are.
+- **Plain words without a key:** a protected action with no Marrow key says "Marrow can't find your key: run `npx @getmarrow/install` once in this machine's terminal." The hooks read the key from `MARROW_API_KEY` or an owner-only `~/.marrow/env.local` or `~/.marrow/env`, never from a file others can read.
+- **First-prompt briefs say so:** the prompt hook marks its brief `context.prompt_brief: true`; a brief authorizes nothing.
+- **Deploy text only word for word:** the exact command text is sent only for a whole command in an allowed deploy grammar (`vercel [deploy] --target`, `netlify deploy`, `serverless|sls|sst deploy --stage`, `railway up --environment`, optionally after one `npx`, `pnpx`, `bunx`, `npm exec` or `pnpm dlx`), with one environment value of lower-case letters, digits and dashes, in a single clause with nothing else in it, so Marrow can judge it itself. Anything else sends only the hash; no free-text word leaves the machine.
+- **No lifecycle event id with two payloads:** an event id names its payload, so a later run is a new record and a resend carries the same bytes.
 
-These approvals turn on when the Marrow service update ships; until then held actions work as in 3.9.98: Claude Code asks in its dialog and other hosts hold for the account owner.
-
-- **Approvals in the host prompt:** one click in the host's own permission prompt, a short typed reply where a host has no dialog, or no ask at all for routine work. `marrow-mcp setup` adds Claude Code's `PermissionRequest` and `PostToolBatch` hooks.
-- **Quiet holds:** unattended runs, and hosts that cannot ask, hold the action without emailing anyone; the person sees the waiting actions at their next interactive session.
-- **The exact action, never its text:** `normalized_action` binds an approval to the exact command; only program names and a SHA-256 of a normalized, secret-free form leave the machine.
-- **Slow is not down:** a slow Marrow keeps holdable actions held, within each host's hook time limit.
-- **`marrow_auto`** waits on the approval status and resumes on the same gate receipt. New `request_owner_link` parameter.
-- **Plain fixes:** a refused protected action names what to do next, and a `marrow_commit` retry that conflicts with the stored outcome lists the proof that is still missing.
-- **New registry name:** the MCP Registry name moves from `io.github.getmarrow/marrow` to `ai.getmarrow/marrow`, with a title, website and icon. The npm package name `@getmarrow/mcp` and its commands are unchanged, so existing `npx` configurations keep working.
-- On a service without host approvals, Claude Code asks in its dialog as 3.9.98 did. SDK `3.7.65`.
+v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt). These approvals turn on when the Marrow service update ships; until then held actions work as in 3.9.98: Claude Code asks in its dialog and other hosts hold for the account owner.
 
 Earlier release notes moved from this README to [CHANGELOG.md](https://github.com/getmarrow/marrow-mcp/blob/master/CHANGELOG.md).
 

@@ -6,6 +6,7 @@ exports.shouldNudgeLifecycleSpool = shouldNudgeLifecycleSpool;
 exports.quarantineLegacyNamespaces = quarantineLegacyNamespaces;
 exports.nudgeLifecycleSpool = nudgeLifecycleSpool;
 exports.drainLifecycleSpool = drainLifecycleSpool;
+exports.payloadBoundEvent = payloadBoundEvent;
 exports.recordLifecycleEvent = recordLifecycleEvent;
 exports.backgroundNudgeEnabled = backgroundNudgeEnabled;
 exports.hasDueLifecycleEvents = hasDueLifecycleEvents;
@@ -946,6 +947,30 @@ async function drainLifecycleSpool(input) {
     }
     return lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
 }
+/** The stored fields a lifecycle event id is bound to. */
+const PAYLOAD_FIELDS = [
+    'event_type', 'harness', 'agent_id', 'action', 'target', 'surfaces', 'workflow_id', 'session_id', 'decision_id',
+    'correlation_id', 'intervention_disposition', 'action_changed', 'risk_level', 'outcome_state', 'success', 'occurred_at',
+];
+/**
+ * A lifecycle event whose id names exactly its payload: `${base}-${12 hex}`
+ * of the fields the service stores, with its time fixed. A resend of the
+ * stored event carries the same bytes under the same id; a changed payload
+ * (another attempt, another turn) gets a new id, so the service never sees one
+ * id with two payloads.
+ */
+function payloadBoundEvent(base, event) {
+    const occurredAt = typeof event.occurred_at === 'string' && event.occurred_at ? event.occurred_at : new Date().toISOString();
+    let digest;
+    try {
+        const stored = compact({ ...event, occurred_at: occurredAt, event_id: `${base}-000000000000` });
+        digest = (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(PAYLOAD_FIELDS.map((field) => [field, stored[field] ?? null]))).digest('hex').slice(0, 12);
+    }
+    catch {
+        digest = (0, node_crypto_1.randomUUID)().replace(/-/g, '').slice(0, 12);
+    }
+    return { ...event, occurred_at: occurredAt, event_id: `${base}-${digest}` };
+}
 async function recordLifecycleEvent(input) {
     const location = spoolPath(input.apiKey, input.event.agent_id);
     const event = compact(input.event);
@@ -955,7 +980,10 @@ async function recordLifecycleEvent(input) {
     let rows = [];
     const queued = mutate(location.path, location.ownsParent, (events) => {
         rows = events;
-        const index = events.findIndex((row) => row.event_id === event.event_id);
+        const reusePrefix = input.reuseQueuedBase ? `${input.reuseQueuedBase}-` : null;
+        const index = events.findIndex((row) => row.event_id === event.event_id
+            || (reusePrefix !== null && row.delivery_state === 'queued' && row.event_id.startsWith(reusePrefix)
+                && row.event_id.length === reusePrefix.length + 12));
         if (index < 0) {
             if (reservedSpoolBytes([...events, event]) > MAX_SPOOL_BYTES) {
                 throw new Error('lifecycle spool capacity insufficient for durable retry metadata; receipt was not accepted');
@@ -983,7 +1011,7 @@ async function recordLifecycleEvent(input) {
         recoveredCorruption ||= delivery.recoveredCorruption === true;
     }
     if (deliveryStatus >= 200 && deliveryStatus < 300) {
-        const previous = rows.find((row) => (row.delivery_state === 'queued' && row.event_id !== event.event_id && dueAt(row) <= Date.now()));
+        const previous = rows.find((row) => (row.delivery_state === 'queued' && row.event_id !== queued.result.event_id && dueAt(row) <= Date.now()));
         if (previous) {
             try {
                 const retry = await attemptQueuedDelivery({
@@ -1004,9 +1032,10 @@ async function recordLifecycleEvent(input) {
             }
         }
     }
-    const current = rows.find((row) => row.event_id === event.event_id);
+    const recordedId = queued.result.event_id;
+    const current = rows.find((row) => row.event_id === recordedId);
     return {
-        event_id: event.event_id,
+        event_id: recordedId,
         accepted: !current,
         queued: current?.delivery_state === 'queued',
         failed: current?.delivery_state === 'dead_letter',

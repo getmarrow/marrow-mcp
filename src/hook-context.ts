@@ -15,7 +15,7 @@
 
 import { marrowAgentContext, marrowAgentRuntime, validateBaseUrl } from './index';
 import type { MarrowAgentRuntimeResult, MarrowDecisionBriefResult, MarrowValueReportResult } from './types';
-import { recordLifecycleEvent } from './lifecycle-spool';
+import { payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
 import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
 import {
   CONTEXT_HOOK_COMMAND as CONTRACT_CONTEXT_HOOK_COMMAND,
@@ -809,8 +809,7 @@ export async function runContextHookCommand(): Promise<void> {
       apiKey,
       baseUrl,
       deferDelivery: true,
-      event: {
-        event_id: `prompt-${requestCorrelation}`,
+      event: payloadBoundEvent(`prompt-${requestCorrelation}`, {
         event_type: 'prompt_submitted',
         ...clientReportedHookLifecycleIdentity(identity),
         session_id: sessionId,
@@ -819,11 +818,12 @@ export async function runContextHookCommand(): Promise<void> {
         action: `user prompt submitted: ${passiveBriefInput?.type || 'general'}`,
         risk_level: passiveBriefInput ? 'medium' : 'low',
         outcome_state: 'pending',
-      },
+      }),
     }).catch(() => {});
     const live = passiveBriefInput && process.env.MARROW_AGENT_RUNTIME !== 'false'
       ? await withTimeout(
-          (signal) => marrowAgentRuntime(apiKey, baseUrl, runtimeInput, sessionId, agentId, signal),
+          // A first-prompt brief says so explicitly (the service never infers it from the text) and authorizes nothing.
+          (signal) => marrowAgentRuntime(apiKey, baseUrl, { ...runtimeInput, context: { prompt_brief: true } }, sessionId, agentId, signal),
           MARROW_API_TIMEOUT_MS,
         )
       : await withTimeout(
@@ -862,8 +862,7 @@ export async function runContextHookCommand(): Promise<void> {
         apiKey,
         baseUrl,
         deferDelivery: true,
-        event: {
-          event_id: `preaction-${requestCorrelation}`,
+        event: payloadBoundEvent(`preaction-${requestCorrelation}`, {
           event_type: 'pre_action_checked',
           ...clientReportedHookLifecycleIdentity(identity),
           session_id: sessionId,
@@ -872,7 +871,7 @@ export async function runContextHookCommand(): Promise<void> {
           action: `pre-action check: ${passiveBriefInput?.type || 'general'}`,
           risk_level: (live.value as MarrowAgentRuntimeResult).risk_gate?.risk_level,
           outcome_state: 'pending',
-        },
+        }),
       }).catch(() => {});
     }
     debug(`[marrow-context-hook] injected ${context.length} bytes of context`);
