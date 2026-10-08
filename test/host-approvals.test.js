@@ -2029,3 +2029,43 @@ test('R5 INFO: Codex measures its budget from when the host spawned the hook, so
   close(preToolDeadline('codex', () => { throw new Error('x'); }) - start(), 2_000, 'an error reading /proc');
   close(preToolDeadline('cursor', () => 2_500) - start(), 4_000, 'other hosts unchanged');
 });
+
+// ---------------------------------------------------------------- Fix round 6 re-audit (ed41267): collision matrix at the hook
+
+test('Collision matrix at the hook: actions that differ only after a redacted span send different hashes; the secret is in no request, output or file', () => {
+  const { COLLISION_CASES } = require('./support/normalized-collision-cases.cjs');
+  const { readdirSync, statSync } = require('node:fs');
+  const filesUnder = (root) => readdirSync(root).flatMap((name) => {
+    const path = join(root, name);
+    return statSync(path).isDirectory() ? filesUnder(path) : [path];
+  });
+  const run = (input, secret) => {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+      const payload = input.kind === 'mcp'
+        ? { ...fixture('claude-pre-tool-use.json'), tool_name: input.tool, tool_input: input.input }
+        : { ...fixture('claude-pre-tool-use.json'), tool_input: { command: input.command, description: 'held call' } };
+      const out = h.run('claude-pre-action-hook', payload);
+      const sent = h.requests().map((request) => request.body).filter((body) => body?.normalized_action);
+      assert.ok(sent.length > 0, 'the normalized action was sent');
+      assert.equal(out.stdout.includes(secret) || out.stderr.includes(secret), false, 'the secret is not in hook output');
+      for (const file of filesUnder(h.dir)) assert.equal(readFileSync(file, 'utf8').includes(secret), false, 'the secret is in no file the hook wrote');
+      return sent[0].normalized_action;
+    } finally { h.cleanup(); }
+  };
+  for (const testCase of COLLISION_CASES) {
+    const secret = `pw-${randomBytes(6).toString('hex')}`;
+    const a = run(testCase.build(secret, testCase.values[0]), secret);
+    const b = run(testCase.build(secret, testCase.values[1]), secret);
+    const label = `${testCase.path}: ${testCase.pair}`;
+    if (testCase.secretOnly) {
+      const other = run(testCase.build(`pw-${randomBytes(6).toString('hex')}`, testCase.values[0]), secret);
+      assert.deepEqual(a.tool_input, other.tool_input, `${label}: only the secret differs, the same hash`);
+    } else if (testCase.afterEqual) {
+      if (testCase.truncatedExpected) assert.equal(a.truncated, true, `${label}: never binds`);
+    } else {
+      assert.notDeepEqual(a.tool_input, b.tool_input, `${label}: different hashes at the hook`);
+    }
+  }
+});

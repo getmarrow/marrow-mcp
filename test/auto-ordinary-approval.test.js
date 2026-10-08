@@ -558,6 +558,22 @@ test('MEDIUM-3: on an older service auto says plainly that chat approvals are no
   });
 });
 
+test('Day one: on a service without host approvals auto reads the approval status once and returns at once (no polling wait)', async () => {
+  const runtime = runtimeFixture();
+  const approval = runtime.completion_contract.owner_approval;
+  for (const field of ['host_approval_endpoint', 'host_approval_accepted', 'host_approval_trust', 'approval_categories', 'verified_approval_required', 'verified_approval_categories']) delete approval[field];
+  approval.approval_status_poll_after_ms = 2_000;
+  const mock = scriptedServer(['pending'], runtime);
+  await withFetch(mock.fetch, async () => {
+    const started = Date.now();
+    const waiting = await invoke(marrowAuto, { ...baseParams, operation_id: 'legacy_fast_op', proof: measuredProof });
+    const elapsed = Date.now() - started;
+    assert.equal(waiting.phase, 'owner_approval_required');
+    assert.equal(mock.calls.filter((call) => call.path === statusPath).length, 1, 'one status read');
+    assert.ok(elapsed < 1_500, `returned in ${elapsed} ms`);
+  });
+});
+
 test('arbitration review: auto asks Marrow for the owner\'s one-tap link, waits, then commits with the owner receipt from the status read', async () => {
   const runtime = runtimeFixture();
   runtime.arbitration = { receipt_id: 'arb-1', decision_id: 'ordinary-runtime-decision', resolution: 'review_required', owner_approval_required: true };

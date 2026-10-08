@@ -374,3 +374,38 @@ test('LOW-R5-3: input a host adapter cut or dropped is marked truncated; uncut i
   };
   for (const [name, event] of Object.entries(whole)) assert.equal(action(event).truncated, undefined, name);
 });
+
+// ---------------------------------------------------------------- Fix round 6 (MEDIUM-R6-1)
+
+test('MEDIUM-R6-1: a credential value ends at the next query or form field, so token-first variants are different actions', () => {
+  const T = `Zq9${randomBytes(6).toString('hex')}`;
+  const pairs = [
+    ['webhook query', `curl -X POST "https://hooks.example.com/deploy?token=${T}&env=staging"`, `curl -X POST "https://hooks.example.com/deploy?token=${T}&env=production"`],
+    ['access_token query', `curl "https://api.example.com/scale?access_token=${T}&replicas=3"`, `curl "https://api.example.com/scale?access_token=${T}&replicas=0"`],
+    ['form body -d', `curl -d 'api_key=${T}&sql=SELECT 1' https://db.example.com/q`, `curl -d 'api_key=${T}&sql=DROP TABLE users' https://db.example.com/q`],
+    ['--data-urlencode', `curl --data-urlencode 'token=${T}&env=staging' https://x.example.com`, `curl --data-urlencode 'token=${T}&env=production' https://x.example.com`],
+    ['--data=', `curl '--data=api_key=${T}&op=read' https://x.example.com`, `curl '--data=api_key=${T}&op=delete' https://x.example.com`],
+    ['fragment', `curl "https://x.example.com/a?token=${T}#staging"`, `curl "https://x.example.com/a?token=${T}#production"`],
+    ['cookie header', `curl -H "Cookie: session=${T}; env=staging" https://x.example.com`, `curl -H "Cookie: session=${T}; env=production" https://x.example.com`],
+    ['json body', `curl -d '{"token": "${T}", "env": "staging"}' https://x.example.com`, `curl -d '{"token": "${T}", "env": "production"}' https://x.example.com`],
+  ];
+  for (const [label, a, b] of pairs) {
+    const left = shell(a);
+    const right = shell(b);
+    assert.notEqual(left.tool_input.command_sha256, right.tool_input.command_sha256, `${label}: different actions`);
+    for (const command of [a, b]) {
+      assert.equal(normalizeShellCommand(command).text.includes(T), false, `${label}: the credential is withheld`);
+      assert.equal(JSON.stringify(shell(command)).includes(T), false, `${label}: not sent`);
+    }
+  }
+  // The same token-first command is the same action on a retry.
+  assert.equal(hashOf(pairs[0][1]), hashOf(pairs[0][1].replace('curl -X POST', 'curl  -X  POST')));
+  // A withheld value that itself held name=value fields cannot be told apart: truncated.
+  assert.equal(shell(`deploy --token=${T}=env=prod`).truncated, true);
+  assert.equal(shell(`TOKEN=${T}=x ./deploy.sh`).truncated, true);
+  assert.equal(shell(`curl -H "Cookie: session=${T}; env=staging" https://x.example.com`).truncated, true);
+  // Plain credentials and base64 padding stay exact.
+  assert.equal(shell(`curl -H "Authorization: Bearer ${T}" https://x.example.com`).truncated, undefined);
+  assert.equal(shell(`deploy --token ${T}==`).truncated, undefined);
+  assert.equal(shell(`curl "https://hooks.example.com/deploy?token=${T}"`).truncated, undefined);
+});

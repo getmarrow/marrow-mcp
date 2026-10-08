@@ -1334,8 +1334,9 @@ async function requestAutoOwnerLink(input) {
 }
 async function readOrdinaryApprovalForAuto(input) {
     let status = null;
+    const maxReads = Math.max(1, Math.min(3, input.maxReads ?? 3));
     // Poll as the server advises, inside auto's bounded response budget.
-    for (let reads = 0; reads < 3; reads += 1) {
+    for (let reads = 0; reads < maxReads; reads += 1) {
         const remaining = input.responseBudgetMs - (Date.now() - input.startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS;
         if (remaining < 250)
             break;
@@ -1356,6 +1357,8 @@ async function readOrdinaryApprovalForAuto(input) {
             timeout.cancel();
         }
         if (!status || (status.state !== 'pending' && status.state !== 'unavailable' && status.state !== 'arbitration_review'))
+            break;
+        if (reads + 1 >= maxReads)
             break;
         const waitMs = status.poll_after_ms ?? input.guidance.pollAfterMs;
         if (!await waitForAutoContinuation({ retry_after_ms: waitMs }, input.startedAt, input.responseBudgetMs, input.autoHttpTrace))
@@ -1735,6 +1738,7 @@ async function marrowAutoWithTrace(apiKey, baseUrl, params, sessionId, agentId, 
             })
             : await readOrdinaryApprovalForAuto({
                 apiKey, baseUrl, guidance: ordinaryGuidance, sessionId, agentId, startedAt, responseBudgetMs, autoHttpTrace,
+                maxReads: ordinaryGuidance.hostApprovalSupported ? 3 : 1,
             });
         const status = read.status;
         ordinaryApprovalState = autoApprovalState(ordinaryGuidance, status, read.notFound ? 'not_found' : undefined);

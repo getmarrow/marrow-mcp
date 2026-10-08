@@ -219,7 +219,38 @@ const AUTH_SCHEME = /\b(Bearer|Basic|Token|Bot)([ \t]{1,8})([A-Za-z0-9._~+/=-]{8
 const URL_CODE = /([?&])((?:auth(?:orization)?_)?code)=([^&#\s'"]+)/gi;
 /** A name and its separator (`name=`, `name: `, `"name": `); the value is read by hand after it. */
 const NAME_SEPARATOR = /(["']?)(?<![A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_.-]{0,127})\1([ \t]{0,8}[:=][ \t]{0,8})/g;
-const VALUE_END = /["'\s,;)}\]]/;
+/** An unquoted value ends at a quote, whitespace, a list or block end, or the next query/form field (`&`, `#`). */
+const VALUE_END = /["'\s,;)}\]&#]/;
+
+/**
+ * A credential value that itself holds `name=value` (beyond base64 `=`
+ * padding) may have carried more than the credential: withholding it could
+ * merge different actions, so the action is marked truncated.
+ */
+function holdsMoreThanCredential(value: string): boolean {
+  return /=(?!=*$)/.test(value);
+}
+
+/**
+ * A credential value followed by another field (`S,env=prod`, `S&env=prod`)
+ * is cut at that separator: the rest stays in the hashed form, so actions
+ * that differ after it stay different, and the action is marked truncated
+ * (never bound), since the separator may have been part of the credential.
+ * Without a following `name=` field the whole value is the credential.
+ */
+const FOLLOWING_FIELD = /[,;&#][ \t]{0,8}[A-Za-z_][A-Za-z0-9_.-]{0,127}=/;
+function cutCredential(value: string, state: Exactness): string {
+  const at = value.search(FOLLOWING_FIELD);
+  if (at < 0) {
+    if (holdsMoreThanCredential(value)) state.truncated = true;
+    return SECRET;
+  }
+  state.truncated = true;
+  return SECRET + redactText(value.slice(at), state);
+}
+
+/** One-value auth header (`Authorization: Bearer X`, `X-Api-Key: K`): the whole value is the credential. */
+const SINGLE_VALUE_HEADER = /^[^:\s]{1,128}:[ \t]*(?:(?:Bearer|Basic|Token|Bot)[ \t]+)?[^\s;,&]+[ \t]*$/i;
 
 /**
  * Replaces the secrets inside one word or text: URL passwords, auth header
@@ -275,7 +306,7 @@ function redactAssignments(text: string, state: Exactness): string {
     if (end <= start) continue;
     const value = text.slice(start, end);
     if (!value.startsWith('[secret') && !value.startsWith('[data:')) {
-      if (kind === 'ambiguous') state.truncated = true;
+      if (kind === 'ambiguous' || holdsMoreThanCredential(value)) state.truncated = true;
       out += text.slice(copied, start) + SECRET;
       copied = end;
     }
@@ -405,6 +436,22 @@ const REDIS_FAMILY = new Set(['redis-cli', 'keydb-cli', 'valkey-cli']);
 const CURL_FAMILY = new Set(['curl', 'wget', 'http', 'https', 'xh']);
 const OPENSSL_PASS_FLAGS = new Set(['-pass', '-passin', '-passout', '-k', '-kfile', '-password']);
 const AUTH_HEADER = /authorization|token|key|secret|cookie|bearer|basic/i;
+/** Flags of secrets commands whose value is a target, never the secret (`gh secret set N --repo org/app`). */
+const SECRET_COMMAND_VALUE_FLAGS = new Set([
+  'repo', 'repos', 'env', 'environment', 'org', 'app', 'application', 'namespace', 'context', 'cluster', 'project',
+  'config', 'mount', 'visibility', 'type', 'scope', 'region', 'profile', 'account', 'team', 'target', 'stage',
+  'service', 'site', 'path', 'name', 'vault',
+]);
+const SECRET_COMMAND_SHORT_VALUE_FLAGS: Record<string, Set<string>> = {
+  gh: new Set(['-R', '-e', '-o', '-a', '-v']),
+  kubectl: new Set(['-n']),
+  oc: new Set(['-n']),
+  doppler: new Set(['-p', '-c']),
+};
+function secretCommandValueFlag(program: string, flag: string): boolean {
+  if (flag.startsWith('--')) return SECRET_COMMAND_VALUE_FLAGS.has(flag.slice(2).toLowerCase());
+  return SECRET_COMMAND_SHORT_VALUE_FLAGS[program]?.has(flag) ?? false;
+}
 const SSH_VALUE_FLAGS = new Set(['-b', '-c', '-D', '-E', '-e', '-F', '-I', '-i', '-J', '-L', '-l', '-m', '-O', '-o', '-p', '-Q', '-R', '-S', '-W', '-w']);
 /** Programs that take secrets on their input. */
 const SECRET_PROGRAMS = new Set([
@@ -486,9 +533,8 @@ function takesSecrets(words: string[], parsed: Parsed): boolean {
 
 function assignedValue(name: string, value: string, state: Exactness): string {
   const kind = classifySecretName(name);
-  if (kind === 'credential') return `${name}=${SECRET}`;
-  if (kind === 'ambiguous') {
-    state.truncated = true;
+  if (kind === 'credential' || kind === 'ambiguous') {
+    if (kind === 'ambiguous' || holdsMoreThanCredential(value)) state.truncated = true;
     return `${name}=${SECRET}`;
   }
   return value ? `${name}=${dataMarker(value, false, state)}` : `${name}=`;
@@ -608,14 +654,32 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
   const htpasswdBatch = program === 'htpasswd' && args.some((value) => /^-[a-zA-Z]*b/.test(out[value]));
   const subcommands = positionals.slice(0, 3).map((i) => out[i].toLowerCase());
   const lowered = positionals.map((i) => out[i].toLowerCase());
-  const secretContext = subcommands.some((word) => /secret/.test(word));
+  // A secrets command is named by a bare subcommand word (`gh secret set`, `vault kv put secret/app`),
+  // never by a field inside a form body, query or JSON (`client_secret=K&path=/a`).
+  const secretContext = subcommands.some((word) => /secret/.test(word) && /^[a-z0-9][a-z0-9_.:\/-]*$/.test(word));
   const loginContext = subcommands.includes('login');
   const envStore = storeContext(lowered.slice(0, 4));
   const stem = programStem(program);
   const redactAt = (i: number, ambiguous = false) => {
+    if (ambiguous || holdsMoreThanCredential(out[i])) state.truncated = true;
     out[i] = SECRET;
     handled.add(i);
-    if (ambiguous) state.truncated = true;
+  };
+  // An auth header: a one-value header is the credential; any other (`Cookie: a=1; env=prod`)
+  // keeps its other fields, with the credentials inside replaced.
+  const redactHeaderValue = (header: string): string => {
+    if (SINGLE_VALUE_HEADER.test(header)) {
+      if (holdsMoreThanCredential(header.replace(/^[^:]*:/, ''))) state.truncated = true;
+      return SECRET;
+    }
+    const redacted = redactText(header, state);
+    if (redacted === header) state.truncated = true;
+    return redacted === header ? SECRET : redacted;
+  };
+  // A credential `NAME=value` argument: a form body (`api_key=K&sql=DROP`) keeps its other fields.
+  const credentialArgument = (name: string, value: string): string => {
+    if (/[&#]/.test(value)) return redactText(`${name}=${value}`, state);
+    return `${name}=${cutCredential(value, state)}`;
   };
 
   // A program named for a secret (set-password.sh): its arguments cannot be told apart.
@@ -635,7 +699,9 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
     const next = (ambiguous = false) => {
       const j = valueAt();
       if (j !== null) {
-        redactAt(j, ambiguous);
+        if (ambiguous) state.truncated = true;
+        out[j] = cutCredential(out[j], state);
+        handled.add(j);
         k += 1;
       }
     };
@@ -657,16 +723,19 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
     if (long) {
       const name = long[1].replace(/^-+/, '');
       if (name === 'from-literal' || name === 'from-env-literal') {
+        if (holdsMoreThanCredential(long[2].replace(/^[^=]*=/, ''))) state.truncated = true;
         out[i] = `${long[1]}=${long[2].replace(/^([^=]*)=.*$/s, `$1=${SECRET}`)}`;
         handled.add(i);
-      } else if ((CURL_FAMILY.has(program) && /^(?:u|user|proxy-user)$/.test(name))
-        || (CURL_FAMILY.has(program) && name === 'header' && AUTH_HEADER.test(long[2]))) {
+      } else if (CURL_FAMILY.has(program) && /^(?:u|user|proxy-user)$/.test(name)) {
         out[i] = `${long[1]}=${SECRET}`;
+        handled.add(i);
+      } else if (CURL_FAMILY.has(program) && name === 'header' && AUTH_HEADER.test(long[2])) {
+        out[i] = `${long[1]}=${redactHeaderValue(long[2])}`;
         handled.add(i);
       } else if (holdsSecret(name)) {
-        out[i] = `${long[1]}=${SECRET}`;
-        handled.add(i);
         if (classifySecretName(name) === 'ambiguous') state.truncated = true;
+        out[i] = `${long[1]}=${cutCredential(long[2], state)}`;
+        handled.add(i);
       }
       continue;
     }
@@ -676,7 +745,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
       if (CURL_FAMILY.has(program) && /^(?:user|proxy-user)$/.test(name)) next();
       else if (CURL_FAMILY.has(program) && name === 'header') {
         const j = valueAt();
-        if (j !== null && AUTH_HEADER.test(out[j])) { redactAt(j); k += 1; }
+        if (j !== null && AUTH_HEADER.test(out[j])) { out[j] = redactHeaderValue(out[j]); handled.add(j); k += 1; }
       } else if (program === 'gh' && secretContext && name === 'body') next();
       else byName(name);
       continue;
@@ -691,7 +760,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
       else if (CURL_FAMILY.has(program) && (arg === '-u' || arg === '-U')) next();
       else if (CURL_FAMILY.has(program) && arg === '-H') {
         const j = valueAt();
-        if (j !== null && AUTH_HEADER.test(out[j])) { redactAt(j); k += 1; }
+        if (j !== null && AUTH_HEADER.test(out[j])) { out[j] = redactHeaderValue(out[j]); handled.add(j); k += 1; }
       } else if (program === 'openssl' && OPENSSL_PASS_FLAGS.has(arg)) next();
       else if (program === 'gh' && secretContext && arg === '-b') next();
       else if (/^-[A-Za-z][A-Za-z0-9_-]{2,}$/.test(arg)) byName(arg.slice(1));
@@ -702,12 +771,14 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
     if (assignment) {
       const [, name, value] = assignment;
       if (secretContext) {
+        // In a secrets command every value is a secret: withheld whole, and truncated if it held more fields.
+        if (/[&#]/.test(value) || holdsMoreThanCredential(value)) state.truncated = true;
         out[i] = `${name}=${SECRET}`;
         handled.add(i);
       } else if (holdsSecret(name)) {
-        out[i] = `${name}=${SECRET}`;
-        handled.add(i);
         if (classifySecretName(name) === 'ambiguous') state.truncated = true;
+        out[i] = credentialArgument(name, value);
+        handled.add(i);
       } else if (envStore) {
         out[i] = assignedValue(name, value, state);
         handled.add(i);
@@ -754,9 +825,13 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
     // In a secrets command (gh secret set NAME, doppler secrets set NAME VALUE ...),
     // the name stays; later positionals are values.
     if (secretContext) {
+      const before = k > 0 ? out[args[k - 1]] : '';
+      // The value of a known non-secret flag (`--repo org/app`, `-n staging`) is part of the action, kept as is.
+      if (afterSecretWord >= 0 && secretCommandValueFlag(program, before)) continue;
       if (afterSecretWord >= 0) {
         afterSecretWord += 1;
-        if (afterSecretWord > 2) redactAt(i);
+        // After an unknown flag the word may be that flag's value, not the secret: withheld, and the action never binds.
+        if (afterSecretWord > 2) redactAt(i, /^-/.test(before) && !before.includes('='));
       } else if (/secret/i.test(arg)) {
         afterSecretWord = 0;
       }
