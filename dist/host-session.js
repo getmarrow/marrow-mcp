@@ -4,7 +4,9 @@ exports.localInteractiveSession = localInteractiveSession;
 exports.parseCodexSettings = parseCodexSettings;
 exports.codexApprovalPromptOff = codexApprovalPromptOff;
 exports.hostApprovalPromptOff = hostApprovalPromptOff;
+exports.geminiFlagApprovalMode = geminiFlagApprovalMode;
 exports.geminiApprovalPromptOff = geminiApprovalPromptOff;
+exports.geminiPromptOff = geminiPromptOff;
 exports.typedReplyPromptOff = typedReplyPromptOff;
 exports.hookLauncherHeadStartMs = hookLauncherHeadStartMs;
 const node_child_process_1 = require("node:child_process");
@@ -489,29 +491,185 @@ function hostApprovalPromptOff(host, reader = defaultReader(), startPid = proces
         return false;
     return codexApprovalPromptOff(codex.args, readConfig);
 }
-/** Gemini CLI started in YOLO mode runs every tool without asking. */
-function geminiApprovalPromptOff(args) {
+/** The approval mode Gemini CLI's own flags set (`yolo`, `auto_edit`, `default`, …), or null when they set none. */
+function geminiFlagApprovalMode(args) {
     const tokens = args.slice(1);
+    const modes = [];
     for (let i = 0; i < tokens.length; i += 1) {
         const token = tokens[i];
         const lower = token.toLowerCase();
-        if (lower === '--yolo' || lower.startsWith('--yolo='))
-            return lower !== '--yolo=false';
-        // -y, also inside a cluster of short flags (-yd).
-        if (/^-[A-Za-z]+$/.test(token) && token.includes('y'))
-            return true;
-        if (lower === '--approval-mode' && (tokens[i + 1] ?? '').trim().toLowerCase() === 'yolo')
-            return true;
-        if (lower === '--approval-mode=yolo')
-            return true;
+        if (lower === '--yolo' || lower.startsWith('--yolo=')) {
+            if (lower !== '--yolo=false')
+                modes.push('yolo');
+        }
+        else if (/^-[A-Za-z]+$/.test(token) && token.includes('y')) {
+            // -y, also inside a cluster of short flags (-yd).
+            modes.push('yolo');
+        }
+        else if (lower === '--approval-mode') {
+            modes.push((tokens[i + 1] ?? '').trim().toLowerCase() || 'unknown');
+        }
+        else if (lower.startsWith('--approval-mode=')) {
+            modes.push(lower.slice('--approval-mode='.length).trim() || 'unknown');
+        }
     }
-    return false;
+    if (modes.length === 0)
+        return null;
+    // Conflicting flags: any mode that does not ask wins.
+    return modes.find((mode) => mode !== 'default') ?? 'default';
+}
+/** Gemini CLI's flags alone turn its approval prompt off (YOLO, auto edit or any mode other than default). */
+function geminiApprovalPromptOff(args) {
+    const mode = geminiFlagApprovalMode(args);
+    return mode !== null && mode !== 'default';
+}
+/** Reads a settings file into memory (never logged): missing, or present with its text (null when unreadable or too large). */
+function readGeminiFile(path) {
+    try {
+        const stat = (0, node_fs_1.statSync)(path);
+        if (!stat.isFile() || stat.size > MAX_CONFIG_BYTES)
+            return { exists: true, text: null };
+        return { exists: true, text: (0, node_fs_1.readFileSync)(path, 'utf8') };
+    }
+    catch (error) {
+        const code = error?.code;
+        return { exists: code !== 'ENOENT' && code !== 'ENOTDIR', text: null };
+    }
+}
+/** JSON with // and block comments (Gemini's settings files allow them), parsed; null when it is not a JSON object. */
+function parseJsonWithComments(text) {
+    let out = '';
+    let inString = false;
+    for (let i = 0; i < text.length; i += 1) {
+        const c = text[i];
+        if (inString) {
+            out += c;
+            if (c === '\\') {
+                out += text[i + 1] ?? '';
+                i += 1;
+            }
+            else if (c === '"')
+                inString = false;
+            continue;
+        }
+        if (c === '"') {
+            inString = true;
+            out += c;
+            continue;
+        }
+        if (c === '/' && text[i + 1] === '/') {
+            while (i < text.length && text[i] !== '\n')
+                i += 1;
+            out += '\n';
+            continue;
+        }
+        if (c === '/' && text[i + 1] === '*') {
+            const end = text.indexOf('*/', i + 2);
+            if (end < 0)
+                return null;
+            i = end + 1;
+            continue;
+        }
+        out += c;
+    }
+    try {
+        const parsed = JSON.parse(out);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    }
+    catch {
+        return null;
+    }
+}
+/** What one Gemini settings file says: its approval mode (null when none), and whether it lets shell commands run without asking. */
+function geminiFileApproval(settings) {
+    const record = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : null);
+    const general = record(settings.general);
+    const tools = record(settings.tools);
+    const modes = [];
+    for (const value of [general?.defaultApprovalMode, settings.defaultApprovalMode, general?.approvalMode, settings.approvalMode, tools?.approvalMode]) {
+        if (value === undefined)
+            continue;
+        modes.push(typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : 'unknown');
+    }
+    for (const value of [settings.yolo, general?.yolo, tools?.yolo])
+        if (value !== undefined && value !== false)
+            modes.push('yolo');
+    for (const value of [settings.autoAccept, tools?.autoAccept, general?.autoAccept])
+        if (value !== undefined && value !== false)
+            modes.push('auto_accept');
+    const allowed = [tools?.allowed, settings.allowedTools, tools?.allowedTools].flatMap((value) => (Array.isArray(value) ? value : []));
+    const shellAllowed = allowed.some((entry) => typeof entry !== 'string' || /shell|run_shell_command|^\*$/i.test(entry));
+    return { mode: modes.length === 0 ? null : modes.find((mode) => mode !== 'default') ?? 'default', shellAllowed };
+}
+/**
+ * Whether Gemini CLI runs tools without asking in this session, by its own
+ * precedence: system defaults, the user's ~/.gemini/settings.json, the
+ * project's .gemini/settings.json (any found from the working directory up),
+ * the system settings file, then the command-line flags. Off when the
+ * effective mode is anything but `default` (YOLO, auto edit, auto accept,
+ * plan or an unknown value), when shell commands are allowed without asking,
+ * or when a settings file exists but cannot be read or parsed.
+ */
+function geminiPromptOff(args, options = {}) {
+    const env = options.env ?? process.env;
+    const home = options.home ?? env.HOME ?? (0, node_os_1.homedir)();
+    const read = options.read ?? readGeminiFile;
+    const userFile = (0, node_path_1.join)(home, '.gemini', 'settings.json');
+    const projectFiles = [];
+    let dir = options.cwd ?? process.cwd();
+    for (let depth = 0; depth < 32; depth += 1) {
+        const candidate = (0, node_path_1.join)(dir, '.gemini', 'settings.json');
+        if (candidate !== userFile)
+            projectFiles.push(candidate);
+        const parent = (0, node_path_1.join)(dir, '..');
+        if (parent === dir)
+            break;
+        dir = parent;
+    }
+    const darwin = process.platform === 'darwin';
+    const systemDefaults = env.GEMINI_CLI_SYSTEM_DEFAULTS_PATH || (darwin ? '/Library/Application Support/GeminiCli/system-defaults.json' : '/etc/gemini-cli/system-defaults.json');
+    const systemSettings = env.GEMINI_CLI_SYSTEM_SETTINGS_PATH || (darwin ? '/Library/Application Support/GeminiCli/settings.json' : '/etc/gemini-cli/settings.json');
+    let unreadable = false;
+    let shellAllowed = false;
+    const layer = (paths) => {
+        const modes = [];
+        for (const path of paths) {
+            const file = read(path);
+            if (!file.exists)
+                continue;
+            const parsed = file.text === null ? null : parseJsonWithComments(file.text);
+            if (!parsed) {
+                unreadable = true;
+                continue;
+            }
+            const approval = geminiFileApproval(parsed);
+            if (approval.shellAllowed)
+                shellAllowed = true;
+            if (approval.mode !== null)
+                modes.push(approval.mode);
+        }
+        // Several project files: any one that does not ask decides.
+        return modes.length === 0 ? null : modes.find((mode) => mode !== 'default') ?? 'default';
+    };
+    let mode = null;
+    for (const paths of [[systemDefaults], [userFile], projectFiles, [systemSettings]]) {
+        const set = layer(paths);
+        if (set !== null)
+            mode = set;
+    }
+    if (unreadable || shellAllowed)
+        return true;
+    const flag = geminiFlagApprovalMode(args);
+    if (flag !== null)
+        mode = flag;
+    return (mode ?? 'default') !== 'default';
 }
 /**
  * Whether a typed reply could come from someone other than the person: the
  * host runs tools without asking, so the agent could run the prompt hook
  * itself with a code it read from this user's files. Codex: its approval
- * prompt off (codexApprovalPromptOff). Gemini CLI: YOLO. Cursor: its auto-run
+ * prompt off (codexApprovalPromptOff). Gemini CLI: any mode but default, by
+ * flags or settings files (geminiPromptOff). Cursor: its auto-run
  * mode cannot be seen, so always. A host process that cannot be found counts
  * as off.
  */
@@ -522,7 +680,7 @@ function typedReplyPromptOff(host, reader = defaultReader(), startPid = process.
     }
     if (host === 'gemini') {
         const gemini = findHostProcess(isGemini, reader, startPid);
-        return !gemini || geminiApprovalPromptOff(gemini.args);
+        return !gemini || geminiPromptOff(gemini.args);
     }
     return true;
 }

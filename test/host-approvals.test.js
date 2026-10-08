@@ -2341,3 +2341,99 @@ test('3.9.100: no free-text word of a command leaves the machine; only an allowe
   const { actions } = run('npx sst deploy --stage staging');
   assert.equal(actions[0].tool_input.command, 'npx sst deploy --stage staging');
 });
+
+// ---------------------------------------------------------------- HIGH-R7-1 follow-up: Gemini settings files
+
+test('Gemini settings: the approval mode from system defaults, user, project and system files by Gemini\'s precedence, then flags; anything but default, shell allowed or an unreadable file is prompt off', () => {
+  const { geminiPromptOff } = require('../dist/host-session.js');
+  const U = '/h/.gemini/settings.json';
+  const P = '/w/p/.gemini/settings.json';
+  const PP = '/w/.gemini/settings.json';
+  const SD = '/etc/gemini-cli/system-defaults.json';
+  const S = '/etc/gemini-cli/settings.json';
+  const json = (value) => JSON.stringify(value);
+  const off = (files, args = ['gemini'], env = {}) => geminiPromptOff(args, {
+    cwd: '/w/p', home: '/h', env,
+    read: (path) => (path in files ? { exists: true, text: files[path] } : { exists: false, text: null }),
+  });
+  const mode = (value) => json({ general: { defaultApprovalMode: value } });
+  // Each settings form.
+  assert.equal(off({}), false, 'no settings: default');
+  assert.equal(off({ [U]: mode('default') }), false);
+  for (const value of ['auto_edit', 'yolo', 'plan', 'AUTO_EDIT', 'something-new', '']) assert.equal(off({ [U]: mode(value) }), true, `general.defaultApprovalMode ${value}`);
+  assert.equal(off({ [U]: json({ general: { defaultApprovalMode: 1 } }) }), true, 'a non-string value');
+  assert.equal(off({ [U]: json({ defaultApprovalMode: 'auto_edit' }) }), true, 'flat defaultApprovalMode');
+  assert.equal(off({ [U]: json({ approvalMode: 'yolo' }) }), true, 'flat approvalMode');
+  assert.equal(off({ [U]: json({ tools: { approvalMode: 'auto_edit' } }) }), true, 'tools.approvalMode');
+  assert.equal(off({ [U]: json({ yolo: true }) }), true, 'yolo: true');
+  assert.equal(off({ [U]: json({ yolo: false }) }), false, 'yolo: false');
+  assert.equal(off({ [U]: json({ tools: { autoAccept: true } }) }), true, 'tools.autoAccept');
+  assert.equal(off({ [U]: json({ autoAccept: true }) }), true, 'flat autoAccept');
+  assert.equal(off({ [U]: json({ tools: { allowed: ['run_shell_command'] } }) }), true, 'shell allowed without asking');
+  assert.equal(off({ [U]: json({ tools: { allowed: ['ShellTool(npx)'] } }) }), true, 'a shell prefix allowed');
+  assert.equal(off({ [U]: json({ tools: { allowed: ['read_file'] } }) }), false, 'a read tool allowed');
+  assert.equal(off({ [U]: `// mine\n{ "general": { /* ask */ "defaultApprovalMode": "default" } }` }), false, 'comments are allowed');
+  assert.equal(off({ [U]: '{ "general": ' }), true, 'malformed');
+  assert.equal(off({ [U]: '[]' }), true, 'not an object');
+  assert.equal(off({ [U]: null }), true, 'present but unreadable');
+  assert.equal(off({ [P]: '{' }), true, 'a malformed project file');
+  // Precedence: system defaults < user < project < system settings.
+  assert.equal(off({ [SD]: mode('auto_edit'), [U]: mode('default') }), false, 'user over system defaults');
+  assert.equal(off({ [SD]: mode('default'), [U]: mode('auto_edit') }), true);
+  assert.equal(off({ [U]: mode('auto_edit'), [P]: mode('default') }), false, 'project over user');
+  assert.equal(off({ [U]: mode('default'), [P]: mode('auto_edit') }), true);
+  assert.equal(off({ [U]: mode('default'), [PP]: mode('auto_edit') }), true, 'a project file further up');
+  assert.equal(off({ [P]: mode('default'), [S]: mode('auto_edit') }), true, 'system settings over project');
+  assert.equal(off({ [P]: mode('auto_edit'), [S]: mode('default') }), false);
+  assert.equal(off({ '/custom/system.json': mode('auto_edit') }, ['gemini'], { GEMINI_CLI_SYSTEM_SETTINGS_PATH: '/custom/system.json' }), true, 'GEMINI_CLI_SYSTEM_SETTINGS_PATH');
+  assert.equal(off({ '/custom/defaults.json': mode('auto_edit') }, ['gemini'], { GEMINI_CLI_SYSTEM_DEFAULTS_PATH: '/custom/defaults.json' }), true, 'GEMINI_CLI_SYSTEM_DEFAULTS_PATH');
+  // Flags over settings, both directions.
+  assert.equal(off({ [U]: mode('auto_edit') }, ['gemini', '--approval-mode', 'default']), false, 'flag default over settings auto_edit');
+  assert.equal(off({ [U]: mode('auto_edit') }, ['gemini', '--approval-mode=default']), false);
+  assert.equal(off({ [U]: mode('default') }, ['gemini', '--yolo']), true, 'flag --yolo over settings default');
+  assert.equal(off({ [U]: mode('default') }, ['gemini', '-y']), true);
+  assert.equal(off({ [U]: mode('default') }, ['gemini', '--approval-mode', 'auto_edit']), true, 'flag auto_edit over settings default');
+  assert.equal(off({ [U]: mode('default') }, ['gemini', '--approval-mode', 'default', '--yolo']), true, 'conflicting flags: the one that does not ask');
+  // A flag never makes an unreadable file or a shell allow-list safe.
+  assert.equal(off({ [U]: '{' }, ['gemini', '--approval-mode', 'default']), true);
+  assert.equal(off({ [U]: json({ tools: { allowed: ['run_shell_command'] } }) }, ['gemini', '--approval-mode', 'default']), true);
+});
+
+test('Gemini settings at the hook: auto edit, shell allow-lists or a malformed user settings file give no code and record no forged reply; default still gets a code', () => {
+  const gemini = 'node /usr/lib/node_modules/@google/gemini-cli/bin/gemini';
+  const run = (settingsText, args = '') => {
+    const h = harness();
+    const env = { MARROW_TEST_HOST_PROCESS: `${gemini}${args}` };
+    try {
+      if (settingsText !== null) {
+        mkdirSync(join(h.home, '.gemini'), { recursive: true });
+        writeFileSync(join(h.home, '.gemini', 'settings.json'), settingsText);
+      }
+      h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+      h.run('gemini-context-hook', { session_id: 'gemini-session-0001', hook_event_name: 'BeforeAgent', prompt: 'deploy the worker' }, env);
+      const denied = h.run('gemini-pre-action-hook', fixture('gemini-before-tool.json'), env);
+      const holds = Object.values(h.state()?.holds || {});
+      for (const code of ['ABC123', ...holds.map((hold) => hold.code).filter(Boolean)]) {
+        h.run('gemini-context-hook', { session_id: 'gemini-session-0001', hook_event_name: 'BeforeAgent', prompt: `marrow approve ${code}` }, env);
+      }
+      return { shown: /marrow approve [A-Z0-9]{6}/.test(denied.stdout), stored: holds.some((hold) => hold.code), reports: hostReports(h).length };
+    } finally { h.cleanup(); }
+  };
+  const autoEdit = JSON.stringify({ general: { defaultApprovalMode: 'auto_edit' } });
+  for (const [label, text, args] of [
+    ['settings auto_edit', autoEdit, ''],
+    ['settings plan', JSON.stringify({ general: { defaultApprovalMode: 'plan' } }), ''],
+    ['settings shell allowed', JSON.stringify({ tools: { allowed: ['run_shell_command'] } }), ''],
+    ['malformed settings', '{ "general": ', ''],
+    ['settings default, flag --yolo', JSON.stringify({ general: { defaultApprovalMode: 'default' } }), ' --yolo'],
+  ]) {
+    const result = run(text, args);
+    assert.equal(result.shown, false, `${label}: no code shown`);
+    assert.equal(result.stored, false, `${label}: no code stored`);
+    assert.equal(result.reports, 0, `${label}: a forged reply records nothing`);
+  }
+  // Prompt on: a code is offered (settings default, or a default flag over auto edit).
+  assert.equal(run(JSON.stringify({ general: { defaultApprovalMode: 'default' } })).shown, true);
+  assert.equal(run(autoEdit, ' --approval-mode default').shown, true, 'the flag default overrides settings auto_edit');
+  assert.equal(run(null).shown, true, 'no settings file');
+});

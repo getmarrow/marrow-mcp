@@ -288,7 +288,7 @@ When Marrow holds an action for approval (`review_required`), the person approve
 | Codex and Gemini CLI, local interactive session with their own approval prompt on | Types the reply the hook showed them only, such as `marrow approve CODE` |
 | MCP clients with elicitation (`marrow_auto`) | Answers the client's own dialog (client-attested) |
 | Codex TUI before its prompt hook, Cline and Windsurf in the editor | Uses the host's own approval step, if they have it on: the hook answers neutrally, never with an explicit allow, and Marrow records the result as not observed by Marrow |
-| Grok, Gemini without its prompt hook, Cursor at `preToolUse` and Cursor's other tools, Codex with its approval prompt off, Gemini CLI in YOLO mode (`--yolo`, `-y`, `--approval-mode yolo`), or no evidence of a person | No typed reply and no code (the agent could answer one itself); the action waits quietly for the owner |
+| Grok, Gemini without its prompt hook, Cursor at `preToolUse` and Cursor's other tools, Codex with its approval prompt off, Gemini CLI in any mode but `default` (`--yolo`, `-y`, `--approval-mode`, or `general.defaultApprovalMode` in its system, user or project `settings.json`, or shell commands allowed without asking, or a settings file it cannot read), or no evidence of a person | No typed reply and no code (the agent could answer one itself); the action waits quietly for the owner |
 | Unattended runs (headless Claude Code, `codex exec`, `gemini -p`, Cursor cloud) | Nothing in the run: the action waits quietly and the agent carries on |
 | Arbitration review | The account owner picks one proposal through a one-tap link |
 

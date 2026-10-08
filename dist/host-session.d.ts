@@ -60,13 +60,35 @@ export declare function codexApprovalPromptOff(args: string[], readConfig?: Conf
  * they are not detected (false).
  */
 export declare function hostApprovalPromptOff(host: string, reader?: ProcessReader, startPid?: number, readConfig?: ConfigReader): boolean;
-/** Gemini CLI started in YOLO mode runs every tool without asking. */
+/** The approval mode Gemini CLI's own flags set (`yolo`, `auto_edit`, `default`, …), or null when they set none. */
+export declare function geminiFlagApprovalMode(args: string[]): string | null;
+/** Gemini CLI's flags alone turn its approval prompt off (YOLO, auto edit or any mode other than default). */
 export declare function geminiApprovalPromptOff(args: string[]): boolean;
+export type GeminiFileReader = (path: string) => {
+    exists: boolean;
+    text: string | null;
+};
+/**
+ * Whether Gemini CLI runs tools without asking in this session, by its own
+ * precedence: system defaults, the user's ~/.gemini/settings.json, the
+ * project's .gemini/settings.json (any found from the working directory up),
+ * the system settings file, then the command-line flags. Off when the
+ * effective mode is anything but `default` (YOLO, auto edit, auto accept,
+ * plan or an unknown value), when shell commands are allowed without asking,
+ * or when a settings file exists but cannot be read or parsed.
+ */
+export declare function geminiPromptOff(args: string[], options?: {
+    cwd?: string;
+    home?: string;
+    env?: NodeJS.ProcessEnv;
+    read?: GeminiFileReader;
+}): boolean;
 /**
  * Whether a typed reply could come from someone other than the person: the
  * host runs tools without asking, so the agent could run the prompt hook
  * itself with a code it read from this user's files. Codex: its approval
- * prompt off (codexApprovalPromptOff). Gemini CLI: YOLO. Cursor: its auto-run
+ * prompt off (codexApprovalPromptOff). Gemini CLI: any mode but default, by
+ * flags or settings files (geminiPromptOff). Cursor: its auto-run
  * mode cannot be seen, so always. A host process that cannot be found counts
  * as off.
  */
