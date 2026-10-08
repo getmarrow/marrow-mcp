@@ -7,12 +7,9 @@ const sent = (command) => normalizedHookAction({ tool_name: 'Bash', tool_input: 
 
 test('Deploy command text: only a whole command in an allowed grammar is sent, word for word', () => {
   const allowed = [
-    'vercel deploy --target staging', 'vercel --target preview', 'vercel deploy --target=staging', 'vercel --target production',
-    'npx vercel deploy --target staging', 'pnpx vercel --target staging', 'bunx vercel --target staging', 'npm exec vercel --target staging', 'pnpm dlx vercel --target staging',
-    'netlify deploy', 'npx netlify deploy',
-    'serverless deploy --stage dev', 'sls deploy --stage=staging', 'sst deploy --stage pr-12',
-    'railway up --environment staging', 'railway up --environment=preview',
-    '  vercel\tdeploy  --target   staging  ',
+    'sst deploy --stage staging', 'sst deploy --stage=dev', 'sst deploy --stage pr-12', 'sst deploy --stage staging --verbose',
+    'sst deploy --verbose --stage staging', 'npx sst deploy --stage staging', 'bunx sst deploy --stage=preview --verbose',
+    '  sst\tdeploy  --stage   staging  ',
   ];
   for (const command of allowed) {
     const text = deployCommandText(command);
@@ -25,6 +22,13 @@ test('Deploy command text: only a whole command in an allowed grammar is sent, w
 test('Deploy command text, abuse cases: chains, wrappers, repeats, variables, unknown words, production flags, wrangler and free text send no text', () => {
   const word = `w${randomBytes(4).toString('hex')}`;
   const none = [
+    // tools and launchers the service does not accept: no text for any of them
+    'vercel deploy --target staging', 'vercel --target preview', 'vercel deploy --target=staging', 'npx vercel deploy --target staging',
+    'netlify deploy', 'npx netlify deploy', 'serverless deploy --stage dev', 'sls deploy --stage=staging', 'npx sls deploy --stage dev',
+    'railway up --environment staging', 'railway up --environment=preview', 'pnpx sst deploy --stage staging', 'npm exec sst deploy --stage staging',
+    'pnpm dlx sst deploy --stage staging', 'yarn sst deploy --stage staging', 'sst deploy --stage staging --verbose --verbose',
+    'sst deploy --stage staging --stage production', 'sst deploy --stage', 'sst deploy', 'sst dev --stage staging', 'sst remove --stage staging',
+    'sst deploy --stage staging && sst deploy --stage production', 'sst deploy --stage $STAGE', 'STAGE=production sst deploy --stage staging',
     // chained and wrapped
     'vercel deploy --target staging && vercel deploy --prod', 'vercel deploy --target staging; vercel deploy --prod',
     'vercel deploy --target staging || vercel deploy --prod', 'vercel deploy --target staging | tee log', 'vercel deploy --target staging &',

@@ -1042,21 +1042,20 @@ function withoutUserName(path, state) {
 // Deploy command text (the only command text ever sent)
 // ---------------------------------------------------------------------------
 /** A launcher that may stand directly before the tool: one word, or two. */
-const DEPLOY_LAUNCHERS = [['npx'], ['pnpx'], ['bunx'], ['npm', 'exec'], ['pnpm', 'dlx']];
+const DEPLOY_LAUNCHERS = [['npx'], ['bunx']];
 /** An environment value the service may read: lower-case letters, digits and dashes. */
 const DEPLOY_ENV_VALUE = /^[a-z0-9-]{1,32}$/;
 /**
  * The deploy tools whose non-production target can never fall back to
- * production, word for word (mirrors the service's allow-list): the tool and
- * its subcommand(s), the one environment flag it must carry (or none), and
- * the flags that make it production. Wrangler is not here: `--env staging`
- * deploys production when the project has no such environment.
+ * production, word for word (mirrors the service's allow-list exactly): the
+ * tool and its subcommand, the one environment flag it must carry, and the
+ * flags it may also carry once. Only SST: wrangler (`--env staging` deploys
+ * production when that environment is missing), vercel, netlify (a draft
+ * still runs the build and functions with production settings), serverless
+ * and railway are not here.
  */
 const DEPLOY_GRAMMARS = [
-    { tools: ['vercel'], subcommands: [[], ['deploy']], envFlag: '--target' },
-    { tools: ['netlify'], subcommands: [['deploy']], envFlag: null },
-    { tools: ['serverless', 'sls', 'sst'], subcommands: [['deploy']], envFlag: '--stage' },
-    { tools: ['railway'], subcommands: [['up']], envFlag: '--environment' },
+    { tools: ['sst'], subcommands: [['deploy']], envFlag: '--stage', optionalFlags: ['--verbose'] },
 ];
 /**
  * The command text, only when the whole command is one of the deploy
@@ -1092,14 +1091,30 @@ function deployCommandText(command) {
     if (!subcommand)
         return null;
     const flags = rest.slice(subcommand.length);
-    if (grammar.envFlag === null)
-        return flags.length === 0 ? normalizedWords(words, trimmed) : null;
     let value = null;
-    if (flags.length === 2 && flags[0] === grammar.envFlag)
-        value = flags[1];
-    else if (flags.length === 1 && flags[0].startsWith(`${grammar.envFlag}=`))
-        value = flags[0].slice(grammar.envFlag.length + 1);
-    if (value === null || !DEPLOY_ENV_VALUE.test(value))
+    let envFlags = 0;
+    const seenOptional = new Set();
+    for (let k = 0; k < flags.length; k += 1) {
+        const flag = flags[k];
+        if (grammar.optionalFlags.includes(flag)) {
+            if (seenOptional.has(flag))
+                return null;
+            seenOptional.add(flag);
+        }
+        else if (grammar.envFlag !== null && flag === grammar.envFlag && k + 1 < flags.length) {
+            envFlags += 1;
+            value = flags[k + 1];
+            k += 1;
+        }
+        else if (grammar.envFlag !== null && flag.startsWith(`${grammar.envFlag}=`)) {
+            envFlags += 1;
+            value = flag.slice(grammar.envFlag.length + 1);
+        }
+        else {
+            return null;
+        }
+    }
+    if (grammar.envFlag === null ? envFlags !== 0 : envFlags !== 1 || value === null || !DEPLOY_ENV_VALUE.test(value))
         return null;
     return normalizedWords(words, trimmed);
 }

@@ -2329,12 +2329,15 @@ test('3.9.100: no free-text word of a command leaves the machine; only an allowe
       return { bodies: JSON.stringify(h.requests().map((request) => request.body)), actions: h.requests().map((request) => request.body?.normalized_action).filter(Boolean) };
     } finally { h.cleanup(); }
   };
-  for (const command of [`./deploy.sh ${word}`, `vercel deploy ./${word}.txt --target staging`, `mysql -p${word} prod`, `wrangler deploy --env ${word}`]) {
+  for (const command of [`./deploy.sh ${word}`, `sst deploy ./${word}.txt --stage staging`, `sst deploy --stage staging ${word}`, `mysql -p${word} prod`, `wrangler deploy --env ${word}`]) {
     const { bodies, actions } = run(command);
     assert.ok(actions.length > 0);
     assert.equal(bodies.includes(word), false, `${command.replace(word, '<word>')}: the word never leaves the machine`);
     assert.equal(actions.some((action) => action.tool_input?.command !== undefined), false);
   }
-  const { actions } = run('vercel deploy --target staging');
-  assert.equal(actions[0].tool_input.command, 'vercel deploy --target staging');
+  for (const command of ['vercel deploy --target staging', 'netlify deploy', 'railway up --environment staging']) {
+    assert.equal(run(command).actions.some((action) => action.tool_input?.command !== undefined), false, `${command}: no text`);
+  }
+  const { actions } = run('npx sst deploy --stage staging');
+  assert.equal(actions[0].tool_input.command, 'npx sst deploy --stage staging');
 });
