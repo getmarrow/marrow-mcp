@@ -24,7 +24,7 @@ import {
   type HoldScope,
 } from './host-approval-state';
 import type { MarrowOwnerApprovalStatus } from './types';
-import { hookLauncherHeadStartMs, localInteractiveSession } from './host-session';
+import { hookLauncherHeadStartMs, localInteractiveSession, typedReplyPromptOff } from './host-session';
 import { normalizedHookAction } from './normalized-action';
 
 /**
@@ -1441,17 +1441,24 @@ export function cursorSessionEvidence(ctx: HoldContext): { interactive: boolean 
 
 /**
  * A typed reply counts only from a person: the session must be local and
- * interactive (Cursor: sessionStart says not a background agent; Codex and
- * Gemini CLI: the host process has a terminal and no scripted subcommand or
- * prompt flag), and its prompt hook must already have run, so the reply can
+ * interactive (Codex and Gemini CLI: the host process has a terminal and no
+ * scripted subcommand or prompt flag), the host must still ask before it runs
+ * a tool (otherwise the agent could run the prompt hook itself with a code it
+ * read from this user's files: Codex with its approval prompt off, Gemini CLI
+ * in YOLO mode, and Cursor, whose auto-run cannot be seen, get no typed reply
+ * and no code), and its prompt hook must already have run, so the reply can
  * reach Marrow at all.
  */
-export function typedReplyAvailable(ctx: HoldContext, interactive: (host: string) => boolean | null = localInteractiveSession): boolean {
-  if (!TYPED_REPLY_MARKER[ctx.host]) return false;
+export function typedReplyAvailable(
+  ctx: HoldContext,
+  interactive: (host: string) => boolean | null = localInteractiveSession,
+  promptOff: (host: string) => boolean = typedReplyPromptOff,
+): boolean {
+  if (!TYPED_REPLY_MARKER[ctx.host] || ctx.host === 'cursor') return false;
   const evidence = cursorSessionEvidence(ctx);
   if (evidence.promptHook !== true) return false;
-  if (ctx.host === 'cursor') return evidence.interactive === true;
-  return interactive(ctx.host) === true;
+  if (interactive(ctx.host) !== true) return false;
+  return promptOff(ctx.host) === false;
 }
 
 export type TypedReplyResult = { ok: boolean; verdict: 'approved' | 'declined'; userText: string; agentText: string | null };

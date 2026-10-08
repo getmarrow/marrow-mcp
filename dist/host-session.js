@@ -4,6 +4,8 @@ exports.localInteractiveSession = localInteractiveSession;
 exports.parseCodexSettings = parseCodexSettings;
 exports.codexApprovalPromptOff = codexApprovalPromptOff;
 exports.hostApprovalPromptOff = hostApprovalPromptOff;
+exports.geminiApprovalPromptOff = geminiApprovalPromptOff;
+exports.typedReplyPromptOff = typedReplyPromptOff;
 exports.hookLauncherHeadStartMs = hookLauncherHeadStartMs;
 const node_child_process_1 = require("node:child_process");
 const node_fs_1 = require("node:fs");
@@ -486,6 +488,43 @@ function hostApprovalPromptOff(host, reader = defaultReader(), startPid = proces
     if (!codex)
         return false;
     return codexApprovalPromptOff(codex.args, readConfig);
+}
+/** Gemini CLI started in YOLO mode runs every tool without asking. */
+function geminiApprovalPromptOff(args) {
+    const tokens = args.slice(1);
+    for (let i = 0; i < tokens.length; i += 1) {
+        const token = tokens[i];
+        const lower = token.toLowerCase();
+        if (lower === '--yolo' || lower.startsWith('--yolo='))
+            return lower !== '--yolo=false';
+        // -y, also inside a cluster of short flags (-yd).
+        if (/^-[A-Za-z]+$/.test(token) && token.includes('y'))
+            return true;
+        if (lower === '--approval-mode' && (tokens[i + 1] ?? '').trim().toLowerCase() === 'yolo')
+            return true;
+        if (lower === '--approval-mode=yolo')
+            return true;
+    }
+    return false;
+}
+/**
+ * Whether a typed reply could come from someone other than the person: the
+ * host runs tools without asking, so the agent could run the prompt hook
+ * itself with a code it read from this user's files. Codex: its approval
+ * prompt off (codexApprovalPromptOff). Gemini CLI: YOLO. Cursor: its auto-run
+ * mode cannot be seen, so always. A host process that cannot be found counts
+ * as off.
+ */
+function typedReplyPromptOff(host, reader = defaultReader(), startPid = process.ppid, readConfig = readConfigFile) {
+    if (host === 'codex') {
+        const codex = findHostProcess(isCodex, reader, startPid);
+        return !codex || codexApprovalPromptOff(codex.args, readConfig);
+    }
+    if (host === 'gemini') {
+        const gemini = findHostProcess(isGemini, reader, startPid);
+        return !gemini || geminiApprovalPromptOff(gemini.args);
+    }
+    return true;
 }
 // ---------------------------------------------------------------------------
 // Hook start-up time

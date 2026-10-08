@@ -1337,20 +1337,23 @@ function cursorSessionEvidence(ctx) {
 }
 /**
  * A typed reply counts only from a person: the session must be local and
- * interactive (Cursor: sessionStart says not a background agent; Codex and
- * Gemini CLI: the host process has a terminal and no scripted subcommand or
- * prompt flag), and its prompt hook must already have run, so the reply can
+ * interactive (Codex and Gemini CLI: the host process has a terminal and no
+ * scripted subcommand or prompt flag), the host must still ask before it runs
+ * a tool (otherwise the agent could run the prompt hook itself with a code it
+ * read from this user's files: Codex with its approval prompt off, Gemini CLI
+ * in YOLO mode, and Cursor, whose auto-run cannot be seen, get no typed reply
+ * and no code), and its prompt hook must already have run, so the reply can
  * reach Marrow at all.
  */
-function typedReplyAvailable(ctx, interactive = host_session_1.localInteractiveSession) {
-    if (!exports.TYPED_REPLY_MARKER[ctx.host])
+function typedReplyAvailable(ctx, interactive = host_session_1.localInteractiveSession, promptOff = host_session_1.typedReplyPromptOff) {
+    if (!exports.TYPED_REPLY_MARKER[ctx.host] || ctx.host === 'cursor')
         return false;
     const evidence = cursorSessionEvidence(ctx);
     if (evidence.promptHook !== true)
         return false;
-    if (ctx.host === 'cursor')
-        return evidence.interactive === true;
-    return interactive(ctx.host) === true;
+    if (interactive(ctx.host) !== true)
+        return false;
+    return promptOff(ctx.host) === false;
 }
 /**
  * The host's prompt hook (Codex UserPromptSubmit, Gemini BeforeAgent, Cursor

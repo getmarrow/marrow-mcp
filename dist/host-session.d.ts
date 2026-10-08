@@ -60,6 +60,17 @@ export declare function codexApprovalPromptOff(args: string[], readConfig?: Conf
  * they are not detected (false).
  */
 export declare function hostApprovalPromptOff(host: string, reader?: ProcessReader, startPid?: number, readConfig?: ConfigReader): boolean;
+/** Gemini CLI started in YOLO mode runs every tool without asking. */
+export declare function geminiApprovalPromptOff(args: string[]): boolean;
+/**
+ * Whether a typed reply could come from someone other than the person: the
+ * host runs tools without asking, so the agent could run the prompt hook
+ * itself with a code it read from this user's files. Codex: its approval
+ * prompt off (codexApprovalPromptOff). Gemini CLI: YOLO. Cursor: its auto-run
+ * mode cannot be seen, so always. A host process that cannot be found counts
+ * as off.
+ */
+export declare function typedReplyPromptOff(host: string, reader?: ProcessReader, startPid?: number, readConfig?: ConfigReader): boolean;
 /**
  * How long before this process the host started launching it (npx, npm, a
  * `sh -c` wrapper), in milliseconds, so a host's kill clock that started at

@@ -386,7 +386,8 @@ test('MEDIUM-R6-1: a credential value ends at the next query or form field, so t
     ['form body -d', `curl -d 'api_key=${T}&sql=SELECT 1' https://db.example.com/q`, `curl -d 'api_key=${T}&sql=DROP TABLE users' https://db.example.com/q`],
     ['--data-urlencode', `curl --data-urlencode 'token=${T}&env=staging' https://x.example.com`, `curl --data-urlencode 'token=${T}&env=production' https://x.example.com`],
     ['--data=', `curl '--data=api_key=${T}&op=read' https://x.example.com`, `curl '--data=api_key=${T}&op=delete' https://x.example.com`],
-    ['fragment', `curl "https://x.example.com/a?token=${T}#staging"`, `curl "https://x.example.com/a?token=${T}#production"`],
+    // A `#` ends the value only before a name= field (LOW-R7-2); a bare #tail may be part of the secret.
+    ['fragment field', `curl "https://x.example.com/a?token=${T}#env=staging"`, `curl "https://x.example.com/a?token=${T}#env=production"`],
     ['cookie header', `curl -H "Cookie: session=${T}; env=staging" https://x.example.com`, `curl -H "Cookie: session=${T}; env=production" https://x.example.com`],
     ['json body', `curl -d '{"token": "${T}", "env": "staging"}' https://x.example.com`, `curl -d '{"token": "${T}", "env": "production"}' https://x.example.com`],
   ];
@@ -411,4 +412,53 @@ test('MEDIUM-R6-1: a credential value ends at the next query or form field, so t
   assert.equal(shell(`deploy --token ${T}==`).tool_input.command_sha256, shell(`deploy --token ${T.slice(0, -1)}Q==`).tool_input.command_sha256);
   assert.equal(shell(`curl "https://hooks.example.com/deploy?token=${T}"`).truncated, true);
   assert.equal(shell('curl https://hooks.example.com/status').truncated, undefined, 'no secret: exact, may be reused');
+});
+
+test('LOW-R7-2: no part of a secret containing # , & ; | ) stays in the normalized text; a following name= field still ends it', () => {
+  const part = () => `p${randomBytes(5).toString('hex')}`;
+  const builds = [
+    ['?token=ab<sep>cd', (s) => `curl "https://x.example.com/a?token=${s}"`],
+    ['form password=ab<sep>cd&env=x', (s) => `curl -d 'password=${s}&env=prod' https://x.example.com`],
+    ['header X-Api-Key: ab<sep>cd', (s) => `curl -H 'X-Api-Key: ${s}' https://x.example.com`],
+    ['PASSWORD=ab<sep>cd', (s) => `PASSWORD='${s}' ./deploy.sh`],
+    ['--password=ab<sep>cd', (s) => `deploy '--password=${s}'`],
+    ['sshpass -p ab<sep>cd', (s) => `sshpass -p '${s}' ssh root@prod`],
+    ['API_KEY=ab<sep>cd quoted', (s) => `API_KEY='${s}' deploy`],
+    ['json-ish {token:ab<sep>cd}', (s) => `curl -d '{token:${s}}' https://x.example.com`],
+    ['?code=ab<sep>cd', (s) => `curl "https://x.example.com/cb?code=${s}"`],
+    ['Bearer ab<sep>cd', (s) => `curl -H "Authorization: Bearer ${s}" https://x.example.com`],
+    ['curl -b sid=ab<sep>cd', (s) => `curl -b "sid=${s}" https://x.example.com`],
+  ];
+  for (const sep of ['#', ',', '&', ';', '|', ')', '}', ']']) {
+    for (const [label, build] of builds) {
+      const head = `${part()}${part()}`;
+      const tail = part();
+      const text = normalizeShellCommand(build(`${head}${sep}${tail}`)).text;
+      assert.equal(text.includes(head) || text.includes(tail), false, `${label} with ${JSON.stringify(sep)}: no part of the secret stays`);
+    }
+  }
+  // A following name= / name: field still ends the value, so actions that differ after it stay different.
+  const s = `p${randomBytes(8).toString('hex')}`;
+  const keyed = (command) => normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }).tool_input.command_sha256;
+  for (const [a, b] of [
+    [`curl "https://x.example.com/a?token=${s}&env=staging"`, `curl "https://x.example.com/a?token=${s}&env=production"`],
+    [`curl "https://x.example.com/a?token=${s}#env=staging"`, `curl "https://x.example.com/a?token=${s}#env=production"`],
+    [`curl -d 'password=${s},env=staging' https://x`, `curl -d 'password=${s},env=production' https://x`],
+    [`curl -H "Cookie: session=${s}; mode=read" https://x`, `curl -H "Cookie: session=${s}; mode=delete" https://x`],
+    [`curl -d '{token:${s},env:staging}' https://x`, `curl -d '{token:${s},env:production}' https://x`],
+    [`deploy --token=${s},env=staging`, `deploy --token=${s},env=production`],
+  ]) {
+    assert.notEqual(keyed(a), keyed(b), a.replace(s, '<s>'));
+    assert.equal(normalizeShellCommand(a).text.includes(s), false);
+  }
+  assert.match(normalizeShellCommand(`curl "https://x.example.com/a?token=${s}&env=prod"`).text, /&env=prod/, '?token=S&env=prod keeps env');
+});
+
+test('Credential names match by containing a credential word, with explicit non-secret exclusions', () => {
+  for (const name of ['SECRET_KEY_BASE', 'GITHUB_TOKEN_V2', 'DBPASS', 'ADMINPASS', 'MYPWD', 'AWSCREDS', 'MYAPIKEY', 'SIGNINGKEY', 'DB_PASSWORD_PROD', 'npm_token']) {
+    assert.equal(classifySecretName(name), 'credential', name);
+  }
+  for (const name of ['TOKEN_FILE', 'SECRET_NAME', 'API_KEY_ID', 'PASSWORD_PATH', 'BYPASS_CACHE', 'COMPASS_URL', 'PASSIVE_MODE', 'PASSPORT_PATH', 'TARGET', 'ENV']) {
+    assert.notEqual(classifySecretName(name), 'credential', name);
+  }
 });

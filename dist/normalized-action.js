@@ -91,10 +91,13 @@ function redactKeyShapes(text, state) {
 function nameParts(name) {
     return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 }
-const CREDENTIAL_STEM = /password|passwd|passphrase|passcode|secret|token|apikey|accesskey|privatekey|credential|bearer|cookie|authorization|requirepass|masterauth|storepass|keypass|newpass|oldpass/;
-const CREDENTIAL_WORDS = new Set(['pass', 'pwd', 'pw', 'otp', 'totp', 'creds', 'pat', 'jwt']);
+const CREDENTIAL_STEM = /password|passwd|passphrase|passcode|secret|token|apikey|accesskey|privatekey|signingkey|masterkey|encryptionkey|accountkey|credential|creds|bearer|cookie|authorization|requirepass|masterauth|storepass|keypass|newpass|oldpass|pwd/;
+const CREDENTIAL_WORDS = new Set(['pass', 'pw', 'otp', 'totp', 'pat', 'jwt']);
+/** A name part that contains `pass` names a password (DBPASS, ADMINPASS), except these ordinary words. */
+const PASS_WORDS_NOT_SECRET = /bypass|compass|passage|passive|passeng|passport|passthr|surpass|overpass|underpass|trespass|passover|passable|passing|passed|passes/;
+const holdsPass = (part) => part.includes('pass') && !PASS_WORDS_NOT_SECRET.test(part);
 const CREDENTIAL_PAIRS = ['api_key', 'access_key', 'private_key', 'secret_key', 'signing_key', 'master_key', 'encryption_key', 'account_key', 'auth_key'];
-const AMBIGUOUS_WORDS = new Set(['auth', 'oauth', 'key', 'keys', 'session', 'signature', 'sig', 'pin', 'cred', 'hmac', 'sk']);
+const AMBIGUOUS_WORDS = new Set(['auth', 'oauth', 'key', 'keys', 'session', 'sessionid', 'sid', 'signature', 'sig', 'pin', 'cred', 'hmac', 'sk']);
 const REFERENCE_LAST = new Set([
     'file', 'files', 'path', 'paths', 'dir', 'name', 'names', 'id', 'ids', 'arn', 'ref', 'uri', 'url', 'type', 'mode',
     'ttl', 'length', 'size', 'scope', 'scopes', 'expiry', 'expires', 'version', 'alias', 'env', 'region', 'policy',
@@ -111,7 +114,7 @@ function classifySecretName(name) {
     if (!parts.length)
         return 'plain';
     const joined = parts.join('_');
-    const credential = parts.some((part) => CREDENTIAL_STEM.test(part) || CREDENTIAL_WORDS.has(part))
+    const credential = parts.some((part) => CREDENTIAL_STEM.test(part) || CREDENTIAL_WORDS.has(part) || holdsPass(part))
         || CREDENTIAL_PAIRS.some((pair) => joined === pair || joined.startsWith(`${pair}_`) || joined.endsWith(`_${pair}`) || joined.includes(`_${pair}_`));
     const ambiguous = !credential && parts.some((part) => AMBIGUOUS_WORDS.has(part));
     if (!credential && !ambiguous)
@@ -131,12 +134,47 @@ function holdsSecret(name) {
 // Every pattern starts at a boundary (lookbehind) and bounds its repeats, so
 // a scan is linear in the text: no start inside a run, no unbounded backtracking.
 const URL_CREDENTIALS = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/@:'"]{0,256}):([^\s/@'"]{1,1024})@/gi;
-const AUTH_SCHEME = /\b(Bearer|Basic|Token|Bot)([ \t]{1,8})([A-Za-z0-9._~+/=-]{8,})/g;
-const URL_CODE = /([?&])((?:auth(?:orization)?_)?code)=([^&#\s'"]+)/gi;
+/** An auth scheme (any case for Bearer and Basic) followed by a token-shaped value; the value is read by hand. */
+const AUTH_SCHEME = /\b([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|BEARER|BASIC|Token|Bot)([ \t]{1,8})(?=[A-Za-z0-9._~+/=-]{8})/g;
+const URL_CODE = /([?&])((?:auth(?:orization)?_)?code)=/gi;
 /** A name and its separator (`name=`, `name: `, `"name": `); the value is read by hand after it. */
 const NAME_SEPARATOR = /(["']?)(?<![A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_.-]{0,127})\1([ \t]{0,8}[:=][ \t]{0,8})/g;
-/** An unquoted value ends at a quote, whitespace, a list or block end, or the next query/form field (`&`, `#`). */
-const VALUE_END = /["'\s,;)}\]&#]/;
+/** After a separator: an identifier-like field name and its own separator (`env=`, `env:`, `"env":`). */
+const FIELD_AHEAD = /[ \t]{0,8}(["']?)[A-Za-z_][A-Za-z0-9_.-]{0,127}\1[ \t]{0,8}[=:]/y;
+function fieldAhead(text, at) {
+    FIELD_AHEAD.lastIndex = at;
+    return FIELD_AHEAD.test(text);
+}
+/**
+ * Where an unquoted credential value ends (one rule for every path): at
+ * whitespace or a quote; at `&`, `;` or `|` only when an identifier-like
+ * `name=`/`name:` field or a shell operator boundary (whitespace) follows; at
+ * `#` or `,` only when a `name=`/`name:` field follows. Anything else
+ * (`ab#cd`, `ab,cd`, `ab&cd`, `ab)cd`) is part of the value, so no part of a
+ * password stays in the normalized text. `wordOnly`: the value is one shell
+ * word, so whitespace and quotes inside it are part of it.
+ */
+function credentialValueEnd(text, start, wordOnly = false) {
+    let i = start;
+    while (i < text.length) {
+        const c = text[i];
+        if (!wordOnly && (c === '"' || c === '\'' || /\s/.test(c)))
+            return i;
+        if (c === '&' || c === ';' || c === '|') {
+            let j = i + 1;
+            while (j < text.length && (text[j] === '&' || text[j] === ';' || text[j] === '|'))
+                j += 1;
+            if ((!wordOnly && j < text.length && /\s/.test(text[j])) || fieldAhead(text, j))
+                return i;
+            i = j;
+            continue;
+        }
+        if ((c === '#' || c === ',') && fieldAhead(text, i + 1))
+            return i;
+        i += 1;
+    }
+    return i;
+}
 /**
  * A credential value that itself holds `name=value` (beyond base64 `=`
  * padding) may have carried more than the credential: withholding it could
@@ -152,10 +190,9 @@ function holdsMoreThanCredential(value) {
  * (never bound), since the separator may have been part of the credential.
  * Without a following `name=` field the whole value is the credential.
  */
-const FOLLOWING_FIELD = /[,;&#][ \t]{0,8}[A-Za-z_][A-Za-z0-9_.-]{0,127}=/;
 function cutCredential(value, state) {
-    const at = value.search(FOLLOWING_FIELD);
-    if (at < 0) {
+    const at = credentialValueEnd(value, 0, true);
+    if (at >= value.length) {
         if (holdsMoreThanCredential(value))
             state.truncated = true;
         return SECRET;
@@ -180,9 +217,27 @@ function redactText(text, state) {
     if (text.length < 12 && !/[:=?&@\s]/.test(text))
         return text;
     let out = text.replace(URL_CREDENTIALS, (_match, scheme, user) => `${scheme}${user}:${SECRET}@`);
-    out = out.replace(AUTH_SCHEME, (_match, scheme, space) => `${scheme}${space}${SECRET}`);
-    out = out.replace(URL_CODE, (_match, separator, name) => `${separator}${name}=${SECRET}`);
+    out = replaceValuesAfter(out, AUTH_SCHEME);
+    out = replaceValuesAfter(out, URL_CODE);
     return redactKeyShapes(redactAssignments(out, state), state);
+}
+/** Replaces the value after each match of `pattern` (an auth scheme, an OAuth code), ended by the shared rule. */
+function replaceValuesAfter(text, pattern) {
+    pattern.lastIndex = 0;
+    let out = '';
+    let copied = 0;
+    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+        const start = match.index + match[0].length;
+        const end = credentialValueEnd(text, start);
+        if (end <= start) {
+            pattern.lastIndex = start + 1;
+            continue;
+        }
+        out += text.slice(copied, start) + SECRET;
+        copied = end;
+        pattern.lastIndex = end;
+    }
+    return out + text.slice(copied);
 }
 /**
  * Credential-named literals (`name=value`, `name: value`, `"name": "value"`),
@@ -213,11 +268,8 @@ function redactAssignments(text, state) {
             const close = text.indexOf(quote, start);
             end = close;
         }
-        if (!quote || end < 0) {
-            end = start;
-            while (end < text.length && !VALUE_END.test(text[end]))
-                end += 1;
-        }
+        if (!quote || end < 0)
+            end = credentialValueEnd(text, start);
         if (end <= start)
             continue;
         const value = text.slice(start, end);
@@ -585,6 +637,13 @@ function redactSegment(words, ctx) {
             state.truncated = true;
         return redacted === header ? SECRET : redacted;
     };
+    // curl -b/--cookie NAME=VALUE[; …] is a Cookie header (without `=` it names a cookie file).
+    const redactCookieValue = (value) => {
+        if (!value.includes('='))
+            return value;
+        const redacted = redactHeaderValue(`Cookie: ${value}`);
+        return redacted.startsWith('Cookie: ') ? redacted.slice('Cookie: '.length) : redacted;
+    };
     // A credential `NAME=value` argument: a form body (`api_key=K&sql=DROP`) keeps its other fields.
     const credentialArgument = (name, value) => {
         if (/[&#]/.test(value))
@@ -650,6 +709,10 @@ function redactSegment(words, ctx) {
                 out[i] = `${long[1]}=${redactHeaderValue(long[2])}`;
                 handled.add(i);
             }
+            else if (CURL_FAMILY.has(program) && name === 'cookie') {
+                out[i] = `${long[1]}=${redactCookieValue(long[2])}`;
+                handled.add(i);
+            }
             else if (holdsSecret(name)) {
                 if (classifySecretName(name) === 'ambiguous')
                     state.truncated = true;
@@ -667,6 +730,14 @@ function redactSegment(words, ctx) {
                 const j = valueAt();
                 if (j !== null && AUTH_HEADER.test(out[j])) {
                     out[j] = redactHeaderValue(out[j]);
+                    handled.add(j);
+                    k += 1;
+                }
+            }
+            else if (CURL_FAMILY.has(program) && name === 'cookie') {
+                const j = valueAt();
+                if (j !== null) {
+                    out[j] = redactCookieValue(out[j]);
                     handled.add(j);
                     k += 1;
                 }
@@ -697,6 +768,14 @@ function redactSegment(words, ctx) {
                 const j = valueAt();
                 if (j !== null && AUTH_HEADER.test(out[j])) {
                     out[j] = redactHeaderValue(out[j]);
+                    handled.add(j);
+                    k += 1;
+                }
+            }
+            else if (CURL_FAMILY.has(program) && arg === '-b') {
+                const j = valueAt();
+                if (j !== null) {
+                    out[j] = redactCookieValue(out[j]);
                     handled.add(j);
                     k += 1;
                 }
