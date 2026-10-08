@@ -1204,6 +1204,7 @@ async function runPreActionHookCommand(input) {
             plan = (0, host_approval_1.planHeldAction)({
                 unattended: cursorMcpPreToolUse || unattendedRun(holdContext, claudePrompt, cursor?.interactive ?? null),
                 attendedConfirmed: !cursorMcpPreToolUse && attendedConfirmed(holdContext, cursor?.interactive ?? null),
+                hostPromptOff: (0, host_session_1.hostApprovalPromptOff)(holdContext.host),
                 guidance,
                 host: holdContext.host,
                 hookEvent,

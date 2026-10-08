@@ -1735,3 +1735,93 @@ test('runtime guidance is read from the expanded and slim shapes; endpoints are 
   assert.equal(ordinaryApprovalGuidance(normalizeRuntimeResult(hostRuntime('gate-held', { mode: 'arbitration_review_required' }))), null);
   assert.equal(ordinaryApprovalGuidance(normalizeRuntimeResult({ ...hostRuntime(), risk_gate: { ...hostRuntime().risk_gate, decision: 'block', allow: false } })), null);
 });
+
+
+// ---------------------------------------------------------------- Fix round 4 (MEDIUM-R4-1, MEDIUM-R1-1)
+
+test('MEDIUM-R4-1: Codex flags, -c overrides and config that turn its approval prompt off are recognized; other values are never kept', () => {
+  const { codexApprovalPromptOff, parseCodexSettings } = require('../dist/host-session.js');
+  const none = () => null;
+  const off = (args, config = none, env = {}) => codexApprovalPromptOff(['codex', ...args], config, env);
+  for (const args of [
+    ['--dangerously-bypass-approvals-and-sandbox'], ['--yolo'], ['--full-auto'], ['--approve-for-me'],
+    ['-a', 'never'], ['-anever'], ['--ask-for-approval', 'never'], ['--ask-for-approval=never'],
+    ['-s', 'danger-full-access'], ['--sandbox=danger-full-access'],
+    ['-c', 'approval_policy=never'], ['-c', 'approval_policy="never"'], ['--config', 'approvals_reviewer="auto_review"'], ['-c', "sandbox_mode='danger-full-access'"],
+  ]) {
+    assert.equal(off(args), true, args.join(' '));
+  }
+  for (const args of [[], ['--model', 'gpt-5-codex'], ['-a', 'on-request'], ['-s', 'workspace-write'], ['-c', 'model="o3"'], ['-c', 'approvals_reviewer="user"']]) {
+    assert.equal(off(args), false, args.join(' ') || '(no flags)');
+  }
+  const home = '/codex-home-test';
+  const files = (map) => (path) => map[path] ?? null;
+  const otherValue = randomBytes(12).toString('hex');
+  const base = `model = "gpt-5-codex"\napproval_policy = "never"\n\n[mcp_servers.marrow.env]\nMARROW_API_KEY = "${otherValue}"\n`;
+  assert.equal(off([], files({ [`${home}/config.toml`]: base }), { CODEX_HOME: home }), true, 'config approval_policy = "never"');
+  assert.equal(off(['-a', 'on-request'], files({ [`${home}/config.toml`]: base }), { CODEX_HOME: home }), false, 'the flag overrides the config');
+  assert.equal(off([], files({ [`${home}/config.toml`]: 'profile = "ci"\n[profiles.ci]\napproval_policy = "never"\n' }), { CODEX_HOME: home }), true, 'the active profile table');
+  assert.equal(off([], files({ [`${home}/config.toml`]: '[profiles.ci]\napproval_policy = "never"\n' }), { CODEX_HOME: home }), false, 'an inactive profile does not count');
+  assert.equal(off(['-p', 'ci'], files({ [`${home}/ci.config.toml`]: 'approvals_reviewer = "auto_review"\n' }), { CODEX_HOME: home }), true, 'a -p profile file');
+  assert.equal(off(['-p', '../x'], files({ '/x.config.toml': 'approval_policy = "never"\n' }), { CODEX_HOME: home }), false, 'a profile name cannot leave CODEX_HOME');
+  assert.equal(JSON.stringify(parseCodexSettings(base)).includes(otherValue), false, 'only the four approval keys are kept');
+});
+
+test('MEDIUM-R4-1: at the hook, Codex with its approval prompt off (bypass, never-ask, full-auto, config) holds quietly; plain Codex still passes through neutrally', () => {
+  const codexHome = mkdtempSync(join(tmpdir(), 'marrow-codex-home-'));
+  try {
+    writeFileSync(join(codexHome, 'config.toml'), 'approval_policy = "never"\n', { mode: 0o600 });
+    const cases = [
+      ['--dangerously-bypass-approvals-and-sandbox', { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex --dangerously-bypass-approvals-and-sandbox' }],
+      ['--yolo', { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex --yolo' }],
+      ['-a never', { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex -a never' }],
+      ['--ask-for-approval never', { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex --ask-for-approval never' }],
+      ['--full-auto', { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex --full-auto' }],
+      ['--approve-for-me', { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex --approve-for-me' }],
+      ['-s danger-full-access', { MARROW_TEST_HOST_PROCESS: '/usr/local/bin/codex -s danger-full-access' }],
+      ['config approval_policy = "never"', { ...codexTuiProcess, CODEX_HOME: codexHome }],
+    ];
+    for (const [label, env] of cases) {
+      const h = harness();
+      try {
+        h.setConfig({ runtime: noProofRuntime(), status: { 'gate-held': 'pending' } });
+        const out = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), env);
+        assert.equal(explicitAllow(out), false, label);
+        assert.equal(out.json?.hookSpecificOutput?.permissionDecision, 'deny', `${label}: held quietly (${out.stdout})`);
+        assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Codex runs with its own approval prompt turned off in this session/);
+        assert.equal(linkRequests(h).length, 0, `${label}: no email`);
+        h.run('codex-hook', fixture('codex-post-tool-use.json'), env);
+        assert.equal(hostReports(h).filter((report) => report.body.verdict === 'approved').length, 0, `${label}: nothing recorded as approved`);
+      } finally { h.cleanup(); }
+    }
+    const h = harness();
+    try {
+      h.setConfig({ runtime: noProofRuntime(), status: { 'gate-held': 'pending' } });
+      const out = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), codexTuiProcess);
+      assert.equal(out.json.hookSpecificOutput.permissionDecision, undefined, 'plain Codex TUI: neutral; its own prompt decides');
+    } finally { h.cleanup(); }
+  } finally { rmSync(codexHome, { recursive: true, force: true }); }
+});
+
+test('MEDIUM-R1-1: at the hook, piped SELECT and DROP send different command hashes; secret-bearing data is sent as truncated; no data in any body', () => {
+  const secret = `ZZQSYNTH${randomBytes(6).toString('hex').toUpperCase()}`;
+  const run = (command) => {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+      h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_input: { command, description: 'held call' } });
+      const sent = h.requests().map((request) => request.body).filter((body) => body?.normalized_action);
+      assert.ok(sent.length > 0, `${command.slice(0, 30)}: the normalized action was sent`);
+      return { action: sent[0].normalized_action, all: JSON.stringify(h.requests().map((request) => request.body)) };
+    } finally { h.cleanup(); }
+  };
+  const select = run('echo "SELECT count(*) FROM users" | npx wrangler d1 execute marrow-db --remote --command -');
+  const drop = run('echo "DROP TABLE users" | npx wrangler d1 execute marrow-db --remote --command -');
+  assert.notEqual(select.action.tool_input.command_sha256, drop.action.tool_input.command_sha256);
+  assert.equal(select.action.truncated, undefined);
+  assert.equal(drop.action.truncated, undefined);
+  assert.doesNotMatch(select.all + drop.all, /SELECT count|DROP TABLE/);
+  const secretPipe = run(`echo ${secret} | wrangler secret put API_KEY`);
+  assert.equal(secretPipe.action.truncated, true);
+  assert.equal(secretPipe.all.includes(secret), false);
+});

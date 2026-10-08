@@ -29,7 +29,7 @@ import {
   type OwnerLinkOutcome,
 } from './host-approval';
 import type { HoldRecord } from './host-approval-state';
-import { localInteractiveSession } from './host-session';
+import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
 import { normalizedHookAction } from './normalized-action';
 import { consultSessionLoopGuard, type LoopGuardOperation } from './session-loop-guard';
 import {
@@ -1261,6 +1261,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       plan = planHeldAction({
         unattended: cursorMcpPreToolUse || unattendedRun(holdContext, claudePrompt, cursor?.interactive ?? null),
         attendedConfirmed: !cursorMcpPreToolUse && attendedConfirmed(holdContext, cursor?.interactive ?? null),
+        hostPromptOff: hostApprovalPromptOff(holdContext.host),
         guidance,
         host: holdContext.host,
         hookEvent,

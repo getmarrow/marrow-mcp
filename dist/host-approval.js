@@ -285,16 +285,19 @@ function planHeldAction(input) {
     // answer: the host's own approval step decides (owner rule). Not after an
     // operator decline (only a marked answer counts then), and not without
     // positive evidence that a person is here.
-    if (input.attendedConfirmed === true && !guidance.operatorOnly && exports.PASS_THROUGH_HOSTS.has(host)) {
+    if (input.attendedConfirmed === true && input.hostPromptOff !== true && !guidance.operatorOnly && exports.PASS_THROUGH_HOSTS.has(host)) {
         return {
             kind: 'pass',
             contextText: bounded(`Marrow did not block this held action (gate receipt ${id}). ${exports.HOST_LABEL[host].charAt(0).toUpperCase()}${exports.HOST_LABEL[host].slice(1)}'s own approval step decides; Marrow cannot ask here and does not observe that answer. If it runs, Marrow records it as approved through the host's own prompt (client-attested, not an operator answer). Do not report or claim an approval yourself.${reason}`, 500),
         };
     }
     // Otherwise: hold quietly.
+    const label = `${exports.HOST_LABEL[host].charAt(0).toUpperCase()}${exports.HOST_LABEL[host].slice(1)}`;
     const why = host === 'cursor'
         ? 'Cursor asks for approval only for shell and MCP calls in a local session.'
-        : `${exports.HOST_LABEL[host].charAt(0).toUpperCase()}${exports.HOST_LABEL[host].slice(1)} cannot ask for approval in this session.`;
+        : input.hostPromptOff === true
+            ? `${label} runs with its own approval prompt turned off in this session (approval bypass, never-ask, automatic review or full access), so nothing asks for approval here.`
+            : `${label} cannot ask for approval in this session.`;
     const agentText = bounded(`${held} ${why} It stays held until the operator approves it: tell them it is held, and that they approve it by retrying it in a session with Marrow's prompt (a host permission dialog, or a typed reply). Carry on with other work. Do not report or claim an approval yourself.`, 500);
     return { kind: 'deny', agentText, userText: exports.HELD_FOR_YOU_TEXT, code: false, quiet: 'attended' };
 }

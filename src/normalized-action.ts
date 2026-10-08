@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { redactSensitiveText, redactSensitiveValue } from './redact';
 import {
   hookToolCommand,
   isMcpHookTool,
@@ -15,15 +14,55 @@ import {
  * coarse classification ("deploy on production") the hook also sends.
  *
  * What leaves the machine: the tool kind, the host's tool name, the program
- * names of a shell command, file paths of an edit, and a SHA-256 of the
- * command or tool input. The command text and tool input themselves are never
- * sent. Before hashing, secret-bearing values are replaced (environment
- * values, credentials in URLs, values after password, token, OTP and key flags
- * and in known secret positions, text piped into a command, here-strings and
- * heredoc bodies, and any argument shaped like a key), so the hash is of a
- * secret-free form: the same command gives the same hash on every machine and
- * on every retry, and two commands that differ only in a secret value give
- * the same hash. A program name or path that looks like a key is dropped.
+ * names of a shell command, the file paths of an edit, a SHA-256 of the
+ * command or tool input, and `truncated: true` when that hash could not cover
+ * everything that decides what the action does. The command text and the
+ * tool input themselves are never sent.
+ *
+ * Before hashing, a normalized form is built (whitespace and quoting
+ * normalized) in which:
+ * - A credential is replaced by `[secret]`, and the action stays exact (only
+ *   the credential differs between two such commands). Credentials are:
+ *   values of environment assignments, flags, `NAME=value` arguments and
+ *   inline `name: value` / `"name": "value"` literals whose name is a
+ *   credential name (password, passwd, passphrase, pwd, secret, token, OTP,
+ *   API key, access key, private key, client secret, bearer, cookie,
+ *   credential); the password in any `scheme://user:password@` URL;
+ *   `Bearer`/`Basic`/`Token` header values; an OAuth `code` in a URL; known
+ *   key formats (AWS, GitHub, Stripe, Slack, Google, GitLab, npm, JWT, PEM,
+ *   Marrow); the password flags of known programs (`mysql -p<pw>`, `sshpass
+ *   -p`, `docker|podman|helm|az|oc|cf login -p`, `mongo* -p`, `twine -p`,
+ *   `useradd -p`, `sqlcmd|bcp|osql|isql -P`, `redis-cli -a`, `curl -u/-U`,
+ *   auth headers, `openssl -pass*` and `pass:`, `keytool -storepass`,
+ *   `java -D…password=`, `gh secret set -b`, `kubectl --from-literal`);
+ *   `aws configure set <secret name> <value>`,
+ *   `npm|yarn|pnpm config set <secret name> <value>`; the values a secrets
+ *   command sets (`gh|doppler|fly|wrangler … secret(s) set NAME VALUE`, `vault
+ *   … password=…`, `vault login TOKEN`, `htpasswd -b`, `rabbitmqctl add_user`,
+ *   `mysqladmin password`, `redis AUTH` and `requirepass`).
+ * - Data a command reads (text echoed or printed into a pipe or a file,
+ *   heredoc bodies, here-strings) and the values of other environment
+ *   assignments and env-store settings (`env:set`, `config:set`, `variables
+ *   set`) are replaced by a SHA-256 of the data when the data carries
+ *   nothing secret-shaped and does not feed a secrets command or a secrets
+ *   file: different data gives a different hash, the same data the same hash.
+ * - Anything else that may be a secret is replaced by `[secret]` and the
+ *   action is marked `truncated: true`, so Marrow never binds an approval to
+ *   it and always asks: data that feeds a secrets command (`… secret put`,
+ *   `docker login --password-stdin`, `aws configure`, `vault`, `passwd` …)
+ *   or file (`.env*`, keys, `.npmrc`, `.pgpass` …) or looks secret; values
+ *   under ambiguous names (`key`, `auth`, `session`, `signature`, `pin`);
+ *   random-looking values (long hex, mixed-case strings of 20 or more
+ *   characters), which may also be an id or a commit; the arguments of a
+ *   program named for a secret (`set-password.sh`); and inputs cut for size.
+ *
+ * Commands run through `bash -c`, `ssh HOST …`, `eval` and `su -c` are
+ * normalized the same way. Everything else stays in the normalized form, which
+ * is only hashed; a password typed as a plain argument of an unknown program
+ * (`./deploy.sh hunter2`) cannot be recognized and is covered only by the
+ * hash. The same command gives the same hash on every machine and on every
+ * retry. A program name or path that looks like a key is dropped or
+ * replaced.
  */
 export type NormalizedHookAction = {
   tool_kind: 'shell' | 'edit' | 'mcp' | 'other';
@@ -31,26 +70,37 @@ export type NormalizedHookAction = {
   programs?: string[];
   paths?: string[];
   tool_input: { command_sha256: string } | { input_sha256: string } | Record<string, never>;
+  /** The hash could not cover everything that decides the action: Marrow never binds an approval to it. */
+  truncated?: true;
 };
 
 const SECRET = '[secret]';
 const HASH_VERSION = 'marrow-normalized-action-v2';
 const EDIT_TOOLS = /^(?:edit|write|multiedit|apply_patch|notebookedit|replace|write_file|edit_file|delete_file|search_replace|delete|create_file)$/i;
+const MAX_DEPTH = 3;
 
 type ToolEvent = { tool_name?: unknown; tool_input?: unknown };
+
+/** Set when a value that may change what the action does had to be withheld. */
+type Exactness = { truncated: boolean };
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
 
 // ---------------------------------------------------------------------------
 // Key-shaped values
 // ---------------------------------------------------------------------------
 
-const KNOWN_KEY_PREFIX = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}$|^github_pat_[A-Za-z0-9_]{20,}$|^(?:sk|pk|rk)[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{16,}$|^xox[abprs]-[A-Za-z0-9-]{10,}$|^AIza[0-9A-Za-z_-]{30,}$|^glpat-[A-Za-z0-9_-]{16,}$|^npm_[A-Za-z0-9]{20,}$|^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/;
+const KNOWN_KEY_PREFIX = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}$|^github_pat_[A-Za-z0-9_]{20,}$|^(?:sk|pk|rk)[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{12,}$|^xox[abprs]-[A-Za-z0-9-]{10,}$|^AIza[0-9A-Za-z_-]{30,}$|^glpat-[A-Za-z0-9_-]{16,}$|^npm_[A-Za-z0-9]{20,}$|^mrw_[A-Za-z0-9_-]{8,}$|^cfut_[A-Za-z0-9_-]{12,}$|^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/;
+const PEM = /-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)-----/;
 
 /** A value shaped like a key, token or password hash (mixed-case random text, long hex, known prefixes). */
 export function looksLikeKey(value: string): boolean {
   const text = value.trim();
   if (!text) return false;
   if (KNOWN_KEY_PREFIX.test(text)) return true;
-  if (/-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)-----/.test(text)) return true;
+  if (PEM.test(text)) return true;
   // A content digest (sha256:...) names content; it is not a secret.
   if (/^(?:sha(?:1|256|384|512)):[0-9a-f]+$/i.test(text)) return false;
   if (/^[0-9a-f]{32,}$/i.test(text)) return true;
@@ -58,13 +108,123 @@ export function looksLikeKey(value: string): boolean {
   return false;
 }
 
-/** Replaces key-shaped parts of a word (split at = : , ; @ / ? & and quotes). */
-function redactKeyShapedParts(word: string): string {
-  if (looksLikeKey(word)) return SECRET;
-  return word.split(/([=:,;@/?&'"])/).map((part) => (looksLikeKey(part) ? SECRET : part)).join('');
+const KEY_SPLIT = /([\s=:,;@/?&'"`()[\]{}<>|!*$])/;
+
+/**
+ * Replaces key-shaped values in a text. A known key format is a credential;
+ * any other random-looking value may be an id or a commit, so it marks the
+ * action truncated.
+ */
+function redactKeyShapes(text: string, state: Exactness): string {
+  const whole = text.trim();
+  if (whole && !/\s/.test(whole) && looksLikeKey(whole)) {
+    if (!KNOWN_KEY_PREFIX.test(whole) && !PEM.test(whole)) state.truncated = true;
+    return SECRET;
+  }
+  if (PEM.test(text)) {
+    return text.replace(/-----BEGIN [A-Z ]*-----[\s\S]*?(?:-----END [A-Z ]*-----|$)/g, SECRET);
+  }
+  return text.split(KEY_SPLIT).map((part) => {
+    if (!looksLikeKey(part)) return part;
+    if (!KNOWN_KEY_PREFIX.test(part)) state.truncated = true;
+    return SECRET;
+  }).join('');
 }
 
-const SECRET_NAME = /pass(?:word|wd|phrase)?|secret|token|otp|api[-_]?key|apikey|access[-_]?key|private[-_]?key|client[-_]?secret|auth|cred|cookie|session|bearer|signature|(?:^|[-_])pin$|(?:^|[-_])key$/i;
+// ---------------------------------------------------------------------------
+// Names
+// ---------------------------------------------------------------------------
+
+function nameParts(name: string): string[] {
+  return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+const CREDENTIAL_STEM = /password|passwd|passphrase|passcode|secret|token|apikey|accesskey|privatekey|credential|bearer|cookie|authorization|requirepass|masterauth|storepass|keypass|newpass|oldpass/;
+const CREDENTIAL_WORDS = new Set(['pass', 'pwd', 'pw', 'otp', 'totp', 'creds', 'pat', 'jwt']);
+const CREDENTIAL_PAIRS = ['api_key', 'access_key', 'private_key', 'secret_key', 'signing_key', 'master_key', 'encryption_key', 'account_key', 'auth_key'];
+const AMBIGUOUS_WORDS = new Set(['auth', 'oauth', 'key', 'keys', 'session', 'signature', 'sig', 'pin', 'cred', 'hmac', 'sk']);
+const REFERENCE_LAST = new Set([
+  'file', 'files', 'path', 'paths', 'dir', 'name', 'names', 'id', 'ids', 'arn', 'ref', 'uri', 'url', 'type', 'mode',
+  'ttl', 'length', 'size', 'scope', 'scopes', 'expiry', 'expires', 'version', 'alias', 'env', 'region', 'policy',
+  'count', 'limit', 'fd', 'stdin', 'prompt', 'rotation', 'format', 'algorithm', 'alg', 'method', 'provider', 'store',
+  'helper', 'command', 'cmd', 'prefix', 'field', 'var', 'location', 'endpoint', 'host', 'port', 'user', 'username', 'email',
+]);
+
+type NameClass = 'credential' | 'ambiguous' | 'reference' | 'plain';
+
+/**
+ * What a value under this name is: a credential (replaced; the action stays
+ * exact), ambiguous (replaced; the action is marked truncated), a reference
+ * to a secret such as its file, name or id (kept), or plain (kept).
+ */
+export function classifySecretName(name: string): NameClass {
+  const parts = nameParts(name);
+  if (!parts.length) return 'plain';
+  const joined = parts.join('_');
+  const credential = parts.some((part) => CREDENTIAL_STEM.test(part) || CREDENTIAL_WORDS.has(part))
+    || CREDENTIAL_PAIRS.some((pair) => joined === pair || joined.startsWith(`${pair}_`) || joined.endsWith(`_${pair}`) || joined.includes(`_${pair}_`));
+  const ambiguous = !credential && parts.some((part) => AMBIGUOUS_WORDS.has(part));
+  if (!credential && !ambiguous) return 'plain';
+  const last = parts[parts.length - 1];
+  if (REFERENCE_LAST.has(last)) return 'reference';
+  return credential ? 'credential' : 'ambiguous';
+}
+
+function holdsSecret(name: string): boolean {
+  const kind = classifySecretName(name);
+  return kind === 'credential' || kind === 'ambiguous';
+}
+
+// ---------------------------------------------------------------------------
+// Secrets inside a text
+// ---------------------------------------------------------------------------
+
+const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/)([^\s/@:'"]*):([^\s/@'"]+)@/gi;
+const AUTH_SCHEME = /\b(Bearer|Basic|Token|Bot)(\s+)([A-Za-z0-9._~+/=-]{8,})/g;
+const URL_CODE = /([?&])((?:auth(?:orization)?_)?code)=([^&#\s'"]+)/gi;
+const INLINE_ASSIGNMENT = /(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1([ \t]*[:=][ \t]*)(["']?)([^"'\s,;)}\]]+)\4/g;
+
+/**
+ * Replaces the secrets inside one word or text: URL passwords, auth header
+ * values, OAuth codes, credential-named literals (credentials; ambiguous
+ * names mark the action truncated) and key-shaped values.
+ */
+function redactText(text: string, state: Exactness): string {
+  let out = text.replace(URL_CREDENTIALS, (_match, scheme: string, user: string) => `${scheme}${user}:${SECRET}@`);
+  out = out.replace(AUTH_SCHEME, (_match, scheme: string, space: string) => `${scheme}${space}${SECRET}`);
+  out = out.replace(URL_CODE, (_match, separator: string, name: string) => `${separator}${name}=${SECRET}`);
+  return redactKeyShapes(redactAssignments(out, state), state);
+}
+
+/** Credential-named literals (`name=value`, `name: value`, `"name": "value"`), also nested in a plain value (a URL query). */
+function redactAssignments(text: string, state: Exactness): string {
+  return text.replace(INLINE_ASSIGNMENT, (match, quote: string, name: string, separator: string, valueQuote: string, value: string) => {
+    if (value.startsWith('[secret') || value.startsWith('[data:')) return match;
+    const kind = classifySecretName(name);
+    if (kind !== 'credential' && kind !== 'ambiguous') {
+      return `${quote}${name}${quote}${separator}${valueQuote}${redactAssignments(value, state)}${valueQuote}`;
+    }
+    if (kind === 'ambiguous') state.truncated = true;
+    return `${quote}${name}${quote}${separator}${valueQuote}${SECRET}${valueQuote}`;
+  });
+}
+
+/** Whether a text carries anything secret-shaped (it is then withheld, never hashed). */
+function secretShaped(text: string): boolean {
+  return redactText(text, { truncated: false }) !== text;
+}
+
+/**
+ * Data a command reads: its SHA-256 in the hashed form, or `[secret]` and
+ * truncated when it feeds a secrets command or file or looks secret.
+ */
+function dataMarker(text: string, feedsSecrets: boolean, state: Exactness): string {
+  if (feedsSecrets || secretShaped(text)) {
+    state.truncated = true;
+    return SECRET;
+  }
+  return `[data:${sha256(`${HASH_VERSION}\ndata\n${text}`)}]`;
+}
 
 // ---------------------------------------------------------------------------
 // Shell words
@@ -118,18 +278,65 @@ function tokenize(command: string): Token[] {
   return tokens;
 }
 
-/** Heredoc bodies are input to the command, never part of it: replaced before tokenizing. */
-function withoutHeredocBodies(command: string): string {
-  return command.replace(/<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\n[\s\S]*?(?:\n[ \t]*\2[ \t]*(?=\n|$)|$)/g,
-    (_match, _quote, tag: string, rest: string) => `<<${tag} ${SECRET}${rest}`);
+/** A placeholder word for a heredoc body or here-string, resolved per command. */
+function slotWord(slot: number): string {
+  return `\u0000${slot}\u0000`;
+}
+const SLOT = /^\u0000(\d+)\u0000$/;
+
+/**
+ * Heredoc bodies are input to the command, never part of it: each is moved
+ * to `data` and its place marked, before tokenizing.
+ */
+function extractHeredocs(command: string, data: string[]): string {
+  const lines = command.split('\n');
+  const out: string[] = [];
+  const pending: { tag: string; dash: boolean; slot: number }[] = [];
+  for (let n = 0; n < lines.length; n += 1) {
+    if (pending.length) {
+      const doc = pending.shift()!;
+      const body: string[] = [];
+      let closed = false;
+      for (; n < lines.length; n += 1) {
+        if (lines[n].replace(/^[ \t]+|[ \t]+$/g, '') === doc.tag) { closed = true; break; }
+        body.push(doc.dash ? lines[n].replace(/^\t+/, '') : lines[n]);
+      }
+      data[doc.slot] = body.join('\n');
+      if (!closed) break;
+      continue;
+    }
+    out.push(lines[n].replace(/(?<!<)<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g, (_match, dash: string, _quote: string, tag: string) => {
+      data.push('');
+      const slot = data.length - 1;
+      pending.push({ tag, dash: dash === '-', slot });
+      return `<<${tag} ${slotWord(slot)} `;
+    }));
+  }
+  return out.join('\n');
 }
 
 const WRAPPERS = new Set(['sudo', 'doas', 'env', 'time', 'nohup', 'exec', 'command', 'nice', 'ionice', 'stdbuf', 'timeout', 'xargs', 'npx', 'bunx', 'pnpx']);
+const SHELLS = /^(?:ba|z|da|k|fi|tc|c)?sh$/;
 const MYSQL_FAMILY = new Set(['mysql', 'mariadb', 'mysqldump', 'mysqladmin', 'mysqlimport', 'mysqlshow', 'mysqlcheck', 'mysqlsh']);
-const REGISTRY_LOGIN = new Set(['docker', 'podman', 'nerdctl', 'buildah', 'helm', 'oras', 'crane', 'skopeo', 'regctl']);
+const MONGO_FAMILY = new Set(['mongo', 'mongosh', 'mongodump', 'mongorestore', 'mongoexport', 'mongoimport', 'mongostat', 'mongotop', 'mongofiles']);
+/** `-p` is always the password. */
+const ALWAYS_P = new Set(['sshpass', 'twine', 'useradd', 'usermod', ...MONGO_FAMILY]);
+/** `-p` is the password in a `login` subcommand. */
+const LOGIN_P = new Set(['docker', 'podman', 'nerdctl', 'buildah', 'helm', 'oras', 'crane', 'skopeo', 'regctl', 'az', 'oc', 'cf']);
+/** `-P` is the password. */
+const UPPER_P = new Set(['sqlcmd', 'bcp', 'osql', 'isql']);
+const REDIS_FAMILY = new Set(['redis-cli', 'keydb-cli', 'valkey-cli']);
 const CURL_FAMILY = new Set(['curl', 'wget', 'http', 'https', 'xh']);
 const OPENSSL_PASS_FLAGS = new Set(['-pass', '-passin', '-passout', '-k', '-kfile', '-password']);
 const AUTH_HEADER = /authorization|token|key|secret|cookie|bearer|basic/i;
+const SSH_VALUE_FLAGS = new Set(['-b', '-c', '-D', '-E', '-e', '-F', '-I', '-i', '-J', '-L', '-l', '-m', '-O', '-o', '-p', '-Q', '-R', '-S', '-W', '-w']);
+/** Programs that take secrets on their input. */
+const SECRET_PROGRAMS = new Set([
+  'vault', 'op', 'pass', 'gopass', 'sops', 'age', 'kubeseal', 'ssh-add', 'sshpass', 'chpasswd', 'passwd', 'htpasswd',
+  'keytool', 'security', 'gpg', 'gpg2', 'systemd-creds', 'bw', 'lpass', 'doppler', 'infisical', 'dotenvx', 'secret-tool',
+]);
+const SECRET_FILE = /(?:^|\/)\.env(?:[.\w-]*)$|\.(?:pem|key|p12|pfx|jks|keystore|kdbx|gpg|asc|ppk)$|(?:^|\/)id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|(?:^|\/)\.(?:npmrc|netrc|pgpass|git-credentials|pypirc|dockercfg|htpasswd|my\.cnf)$|(?:^|\/)\.docker\/config\.json$|(?:^|\/)\.kube\/config$|kubeconfig|authorized_keys|credential|secret|token|passw|(?:^|[/._-])pass(?:$|[/._-])|(?:^|\/)shadow$/i;
+const REDIRECTS = new Set(['>', '>>', '<', '<<', '<<<']);
 
 function basename(word: string): string {
   return word.replace(/^.*\//, '');
@@ -137,99 +344,332 @@ function basename(word: string): string {
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 
-/** Redacts one simple command (a segment between operators); returns its program name. */
-function redactSegment(words: string[], pipedOut: boolean): { words: string[]; program: string | null } {
-  const out = [...words];
-  let index = 0;
-  // Leading environment assignments: every value is replaced (names stay).
-  while (index < out.length && ASSIGNMENT.test(out[index])) {
-    out[index] = out[index].replace(ASSIGNMENT, `$1=${SECRET}`);
-    index += 1;
-  }
-  // Wrappers (sudo, env, npx, timeout ...) and their own flags and assignments.
-  while (index < out.length && WRAPPERS.has(basename(out[index]))) {
-    index += 1;
-    while (index < out.length && (out[index].startsWith('-') || ASSIGNMENT.test(out[index]) || /^\d+[smhd]?$/.test(out[index]))) {
-      if (ASSIGNMENT.test(out[index])) out[index] = out[index].replace(ASSIGNMENT, `$1=${SECRET}`);
-      index += 1;
-    }
-  }
-  if (index >= out.length) return { words: out, program: null };
-  const program = basename(out[index]).toLowerCase();
-  // export/declare/local/readonly/typeset NAME=value: values replaced, like a leading assignment.
-  if (['export', 'declare', 'typeset', 'local', 'readonly', 'set'].includes(program)) {
-    const assigned = out.slice(index + 1).map((word) => (ASSIGNMENT.test(word) ? word.replace(ASSIGNMENT, `$1=${SECRET}`) : word));
-    return { words: [...out.slice(0, index + 1), ...assigned], program };
-  }
-  const args = out.slice(index + 1);
-  const positionals = args.filter((arg) => !arg.startsWith('-'));
-  const subcommands = positionals.slice(0, 3).map((arg) => arg.toLowerCase());
-  const secretContext = subcommands.some((arg) => /secret/.test(arg));
-  const loginContext = subcommands.includes('login');
+type Parsed = {
+  /** Index of the program word (after leading assignments and wrappers). */
+  index: number;
+  program: string | null;
+  /** Indices of the program's own arguments (not redirections, their targets, or input slots). */
+  plain: number[];
+  /** Files written by `>` or `>>`. */
+  targets: string[];
+};
 
-  // Text piped into another command (echo X | wrangler secret put NAME) is that
-  // command's input, and text written to a file (echo X > .env) is data: both replaced.
-  if (program === 'echo' || program === 'printf') {
-    const redirect = args.findIndex((arg) => arg === '>' || arg === '>>');
-    if (pipedOut || redirect >= 0) {
-      const data = redirect >= 0 ? args.slice(0, redirect) : args;
-      const rest = redirect >= 0 ? args.slice(redirect) : [];
-      return { words: [...out.slice(0, index + 1), ...(data.length ? [SECRET] : []), ...rest], program };
+function parseSegment(words: string[]): Parsed {
+  let index = 0;
+  while (index < words.length && ASSIGNMENT.test(words[index])) index += 1;
+  while (index < words.length && WRAPPERS.has(basename(words[index]))) {
+    index += 1;
+    while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index]))) index += 1;
+  }
+  const program = index < words.length ? basename(words[index]).toLowerCase() : null;
+  const plain: number[] = [];
+  const targets: string[] = [];
+  for (let i = index + 1; i < words.length; i += 1) {
+    const word = words[i];
+    if (REDIRECTS.has(word)) {
+      if ((word === '>' || word === '>>') && i + 1 < words.length) targets.push(words[i + 1]);
+      // Skip the file, the heredoc tag (and its body slot) or the here-string slot.
+      i += 1;
+      if (word === '<<' && i + 1 < words.length && SLOT.test(words[i + 1])) i += 1;
+      continue;
     }
+    if (SLOT.test(word)) continue;
+    plain.push(i);
+  }
+  return { index, program, plain, targets };
+}
+
+function isSecretFile(path: string): boolean {
+  return SECRET_FILE.test(path);
+}
+
+function programStem(program: string): string {
+  return program.replace(/\.(?:sh|bash|py|js|mjs|ts|rb|pl|ps1|exe)$/i, '');
+}
+
+/** env stores: values set there may be secrets (`netlify env:set`, `heroku config:set`, `railway variables set`). */
+function storeContext(positionals: string[]): boolean {
+  return positionals.some((word, i) => /^(?:env|config|variables?|vars?|secrets?):(?:set|add|push|import|create|update|put)$/.test(word)
+    || (/^(?:env|variables?|vars?)$/.test(word) && /^(?:set|add|push|import|put|create|update)$/.test(positionals[i + 1] ?? '')));
+}
+
+/** Whether a command takes secrets on its input (data fed to it is withheld). */
+function takesSecrets(words: string[], parsed: Parsed): boolean {
+  const { program } = parsed;
+  if (!program) return false;
+  if (SECRET_PROGRAMS.has(programStem(program)) || classifySecretName(programStem(program)) === 'credential') return true;
+  const args = parsed.plain.map((i) => words[i]);
+  const positionals = args.filter((word) => !word.startsWith('-')).slice(0, 4).map((word) => word.toLowerCase());
+  if (positionals.some((word) => /secret|credential|passw|token|login|keychain|keyring|keyvault/.test(word) || /^o?auth$/.test(word) || /:auth$/.test(word))) return true;
+  if (program === 'aws' && positionals[0] === 'configure') return true;
+  if (storeContext(positionals)) return true;
+  if (args.some((word) => /^--?with-token(?:=|$)/.test(word) || (/^--?[a-z-]+-(?:stdin|fd)(?:=|$)/i.test(word) && holdsSecret(word.replace(/^-+/, '').replace(/-(?:stdin|fd)(?:=.*)?$/i, ''))))) return true;
+  if (program === 'tee' && positionals.some(isSecretFile)) return true;
+  return parsed.targets.some(isSecretFile);
+}
+
+function assignedValue(name: string, value: string, state: Exactness): string {
+  const kind = classifySecretName(name);
+  if (kind === 'credential') return `${name}=${SECRET}`;
+  if (kind === 'ambiguous') {
+    state.truncated = true;
+    return `${name}=${SECRET}`;
+  }
+  return value ? `${name}=${dataMarker(value, false, state)}` : `${name}=`;
+}
+
+type SegmentContext = {
+  pipedOut: boolean;
+  /** The commands this one pipes into, in order. */
+  downstream: string[][];
+  data: string[];
+  state: Exactness;
+  depth: number;
+};
+
+/** Normalizes one simple command (a segment between operators); returns its words and program name. */
+function redactSegment(words: string[], ctx: SegmentContext): { words: string[]; program: string | null } {
+  const { state } = ctx;
+  const out = [...words];
+  const handled = new Set<number>();
+  const removed = new Set<number>();
+  const parsed = parseSegment(out);
+  const { index, program, targets } = parsed;
+
+  // Environment assignments before the program (and a wrapper's own, as in `env X=1 cmd`).
+  for (let i = 0; i < index; i += 1) {
+    const match = ASSIGNMENT.exec(out[i]);
+    if (match) {
+      out[i] = assignedValue(match[1], match[2], state);
+      handled.add(i);
+    }
+  }
+
+  // Input data: heredoc bodies and here-strings go to this command and on through a pipe.
+  const downstreamTakes = ctx.pipedOut && ctx.downstream.some((segment) => takesSecrets(segment, parseSegment(segment)));
+  const secretTarget = targets.some(isSecretFile);
+  const feedsHere = takesSecrets(out, parsed) || downstreamTakes || secretTarget;
+  for (let i = 0; i < out.length; i += 1) {
+    const slot = SLOT.exec(out[i]);
+    if (!slot) continue;
+    out[i] = dataMarker(ctx.data[Number(slot[1])] ?? '', feedsHere, state);
+    handled.add(i);
+  }
+
+  const finish = () => {
+    const result: string[] = [];
+    out.forEach((word, i) => {
+      if (removed.has(i)) return;
+      result.push(handled.has(i) ? word : redactText(word, state));
+    });
+    return { words: result, program };
+  };
+  if (!program) return finish();
+
+  // Text echoed or printed into a pipe or a file is data.
+  if ((program === 'echo' || program === 'printf') && (ctx.pipedOut || targets.length)) {
+    const printed = parsed.plain;
+    if (printed.length) {
+      out[printed[0]] = dataMarker(printed.map((i) => out[i]).join(' '), downstreamTakes || secretTarget, state);
+      handled.add(printed[0]);
+      for (const i of printed.slice(1)) removed.add(i);
+    }
+    return finish();
+  }
+
+  // export / declare NAME=value: like a leading assignment.
+  if (['export', 'declare', 'typeset', 'local', 'readonly', 'set'].includes(program)) {
+    for (const i of parsed.plain) {
+      const match = ASSIGNMENT.exec(out[i]);
+      if (match) {
+        out[i] = assignedValue(match[1], match[2], state);
+        handled.add(i);
+      }
+    }
+    return finish();
+  }
+
+  // Commands inside the command: `bash -c CMD`, `ssh HOST CMD …`, `eval …`, `su -c CMD`.
+  const embed = (at: number, text: string, also: number[] = []) => {
+    if (ctx.depth >= MAX_DEPTH) {
+      out[at] = SECRET;
+      state.truncated = true;
+    } else {
+      out[at] = normalizeInner(text, state, ctx.depth + 1).text;
+    }
+    handled.add(at);
+    for (const i of also) removed.add(i);
+  };
+  const plainWords = parsed.plain;
+  if (program === 'eval' && plainWords.length) {
+    embed(plainWords[0], plainWords.map((i) => out[i]).join(' '), plainWords.slice(1));
+  } else if (program === 'ssh' || program === 'autossh') {
+    let k = 0;
+    while (k < plainWords.length && out[plainWords[k]].startsWith('-')) {
+      k += SSH_VALUE_FLAGS.has(out[plainWords[k]]) ? 2 : 1;
+    }
+    const remote = plainWords.slice(k + 1);
+    if (remote.length) embed(remote[0], remote.map((i) => out[i]).join(' '), remote.slice(1));
+  } else if (program === 'su') {
+    for (let k = 0; k < plainWords.length; k += 1) {
+      const word = out[plainWords[k]];
+      if ((word === '-c' || word === '--command') && k + 1 < plainWords.length) { embed(plainWords[k + 1], out[plainWords[k + 1]]); break; }
+      if (word.startsWith('--command=')) { const text = word.slice('--command='.length); embed(plainWords[k], text); out[plainWords[k]] = `--command=${out[plainWords[k]]}`; break; }
+    }
+  }
+  const shellAt = [index, ...plainWords];
+  for (let k = 0; k + 2 < shellAt.length; k += 1) {
+    if (handled.has(shellAt[k + 2]) || removed.has(shellAt[k + 2])) continue;
+    if (SHELLS.test(basename(out[shellAt[k]]).toLowerCase()) && /^-[a-zA-Z]*c$/.test(out[shellAt[k + 1]])) {
+      embed(shellAt[k + 2], out[shellAt[k + 2]]);
+    }
+  }
+
+  const args = plainWords.filter((i) => !handled.has(i) && !removed.has(i));
+  const positionals = args.filter((i) => !out[i].startsWith('-'));
+  const subcommands = positionals.slice(0, 3).map((i) => out[i].toLowerCase());
+  const lowered = positionals.map((i) => out[i].toLowerCase());
+  const secretContext = subcommands.some((word) => /secret/.test(word));
+  const loginContext = subcommands.includes('login');
+  const envStore = storeContext(lowered.slice(0, 4));
+  const stem = programStem(program);
+  const redactAt = (i: number, ambiguous = false) => {
+    out[i] = SECRET;
+    handled.add(i);
+    if (ambiguous) state.truncated = true;
+  };
+
+  // A program named for a secret (set-password.sh): its arguments cannot be told apart.
+  if (!SECRET_PROGRAMS.has(stem) && classifySecretName(stem) === 'credential') {
+    for (const i of positionals) redactAt(i, true);
   }
 
   let afterSecretWord = -1;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    const next = () => {
-      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
-        args[i + 1] = SECRET;
-        i += 1;
+  for (let k = 0; k < args.length; k += 1) {
+    const i = args[k];
+    if (handled.has(i)) continue;
+    const arg = out[i];
+    const valueAt = (): number | null => {
+      const j = args[k + 1];
+      return j !== undefined && !handled.has(j) && !out[j].startsWith('-') ? j : null;
+    };
+    const next = (ambiguous = false) => {
+      const j = valueAt();
+      if (j !== null) {
+        redactAt(j, ambiguous);
+        k += 1;
       }
     };
-    // --flag=value (or -flag=value), when the flag names a secret.
+    const attachedOrNext = (prefix: string) => {
+      if (arg.length > prefix.length) {
+        out[i] = `${prefix}${SECRET}`;
+        handled.add(i);
+      } else {
+        next();
+      }
+    };
+    const byName = (name: string) => {
+      const kind = classifySecretName(name);
+      if (kind === 'credential') next();
+      else if (kind === 'ambiguous') next(true);
+    };
+    // --flag=value (or -flag=value)
     const long = /^(--?[A-Za-z0-9][A-Za-z0-9_.-]*)=(.*)$/s.exec(arg);
     if (long) {
       const name = long[1].replace(/^-+/, '');
       if (name === 'from-literal' || name === 'from-env-literal') {
-        args[i] = `${long[1]}=${long[2].replace(/^([^=]*)=.*$/s, `$1=${SECRET}`)}`;
-      } else if (SECRET_NAME.test(name) || (CURL_FAMILY.has(program) && /^(?:u|user|proxy-user)$/.test(name))
+        out[i] = `${long[1]}=${long[2].replace(/^([^=]*)=.*$/s, `$1=${SECRET}`)}`;
+        handled.add(i);
+      } else if ((CURL_FAMILY.has(program) && /^(?:u|user|proxy-user)$/.test(name))
         || (CURL_FAMILY.has(program) && name === 'header' && AUTH_HEADER.test(long[2]))) {
-        args[i] = `${long[1]}=${SECRET}`;
+        out[i] = `${long[1]}=${SECRET}`;
+        handled.add(i);
+      } else if (holdsSecret(name)) {
+        out[i] = `${long[1]}=${SECRET}`;
+        handled.add(i);
+        if (classifySecretName(name) === 'ambiguous') state.truncated = true;
       }
       continue;
     }
     // --flag value
     if (/^--[A-Za-z0-9]/.test(arg)) {
       const name = arg.slice(2);
-      if (SECRET_NAME.test(name) || (CURL_FAMILY.has(program) && /^(?:user|proxy-user)$/.test(name))) next();
+      if (CURL_FAMILY.has(program) && /^(?:user|proxy-user)$/.test(name)) next();
       else if (CURL_FAMILY.has(program) && name === 'header') {
-        if (i + 1 < args.length && AUTH_HEADER.test(args[i + 1])) args[++i] = SECRET;
+        const j = valueAt();
+        if (j !== null && AUTH_HEADER.test(out[j])) { redactAt(j); k += 1; }
       } else if (program === 'gh' && secretContext && name === 'body') next();
+      else byName(name);
       continue;
     }
-    // Short flags by program: -p<pw>/-p <pw> (mysql, sshpass, registry login), -a (redis), -u user:pass (curl).
+    // Short flags by program; single-dash long names (-password, -token) by name.
     if (/^-[A-Za-z]/.test(arg)) {
-      if (MYSQL_FAMILY.has(program) && /^-p.+/.test(arg)) args[i] = `-p${SECRET}`;
-      else if (program === 'sshpass' && /^-p/.test(arg)) { if (arg.length > 2) args[i] = `-p${SECRET}`; else next(); }
-      else if (REGISTRY_LOGIN.has(program) && loginContext && /^-p/.test(arg)) { if (arg.length > 2) args[i] = `-p${SECRET}`; else next(); }
-      else if (['redis-cli', 'keydb-cli', 'valkey-cli'].includes(program) && /^-a/.test(arg)) { if (arg.length > 2) args[i] = `-a${SECRET}`; else next(); }
+      if (MYSQL_FAMILY.has(program) && /^-p.+/.test(arg)) { out[i] = `-p${SECRET}`; handled.add(i); }
+      else if (ALWAYS_P.has(program) && /^-p/.test(arg)) attachedOrNext('-p');
+      else if (LOGIN_P.has(program) && loginContext && /^-p/.test(arg)) attachedOrNext('-p');
+      else if (UPPER_P.has(program) && /^-P/.test(arg)) attachedOrNext('-P');
+      else if (REDIS_FAMILY.has(program) && /^-a/.test(arg)) attachedOrNext('-a');
       else if (CURL_FAMILY.has(program) && (arg === '-u' || arg === '-U')) next();
-      else if (CURL_FAMILY.has(program) && arg === '-H') { if (i + 1 < args.length && AUTH_HEADER.test(args[i + 1])) args[++i] = SECRET; }
-      else if (program === 'openssl' && OPENSSL_PASS_FLAGS.has(arg)) next();
+      else if (CURL_FAMILY.has(program) && arg === '-H') {
+        const j = valueAt();
+        if (j !== null && AUTH_HEADER.test(out[j])) { redactAt(j); k += 1; }
+      } else if (program === 'openssl' && OPENSSL_PASS_FLAGS.has(arg)) next();
       else if (program === 'gh' && secretContext && arg === '-b') next();
+      else if (/^-[A-Za-z][A-Za-z0-9_-]{2,}$/.test(arg)) byName(arg.slice(1));
       continue;
     }
-    // NAME=value arguments: a secret-named value, or any value in a secrets command.
-    if (ASSIGNMENT.test(arg)) {
-      const name = ASSIGNMENT.exec(arg)![1];
-      if (secretContext || SECRET_NAME.test(name)) args[i] = `${name}=${SECRET}`;
+    // NAME=value arguments: a credential name, any value in a secrets command, env-store values.
+    const assignment = ASSIGNMENT.exec(arg);
+    if (assignment) {
+      const [, name, value] = assignment;
+      if (secretContext) {
+        out[i] = `${name}=${SECRET}`;
+        handled.add(i);
+      } else if (holdsSecret(name)) {
+        out[i] = `${name}=${SECRET}`;
+        handled.add(i);
+        if (classifySecretName(name) === 'ambiguous') state.truncated = true;
+      } else if (envStore) {
+        out[i] = assignedValue(name, value, state);
+        handled.add(i);
+      }
       continue;
     }
-    if (program === 'openssl' && /^(?:pass|env|file|fd):/.test(arg)) { args[i] = arg.replace(/:.*/s, `:${SECRET}`); continue; }
-    // aws configure set <key-ish name> <value>
-    if (program === 'aws' && subcommands[0] === 'configure' && args[i - 1]?.toLowerCase() === 'set' && SECRET_NAME.test(arg)) {
+    if (program === 'openssl' && /^(?:pass|env|file|fd):/.test(arg)) {
+      out[i] = arg.replace(/:.*/s, `:${SECRET}`);
+      handled.add(i);
+      continue;
+    }
+    const position = positionals.indexOf(i);
+    const previous = position > 0 ? out[positionals[position - 1]].toLowerCase() : '';
+    const beforePrevious = position > 1 ? out[positionals[position - 2]].toLowerCase() : '';
+    // aws configure set <name> <value>; npm|yarn|pnpm config set <name> <value>
+    if ((program === 'aws' && subcommands[0] === 'configure' && previous === 'set')
+      || (['npm', 'yarn', 'pnpm'].includes(program) && beforePrevious === 'config' && previous === 'set')) {
+      byName(arg);
+      continue;
+    }
+    // env stores: `netlify env:set NAME VALUE`, `railway variables set NAME VALUE`
+    if (envStore && position > 0 && /^(?:env|config|variables?|vars?):(?:set|add|push|import|create|update|put)$|^(?:set|add|put|push|import|create|update)$/.test(previous)) {
+      const j = valueAt();
+      if (j !== null) {
+        const kind = classifySecretName(arg);
+        if (kind === 'credential') redactAt(j);
+        else if (kind === 'ambiguous') redactAt(j, true);
+        else { out[j] = dataMarker(out[j], false, state); handled.add(j); }
+        k += 1;
+      }
+      continue;
+    }
+    // Known positional passwords.
+    if ((/^(?:password|passwd)$/i.test(arg) && program !== 'gh')
+      || (REDIS_FAMILY.has(program) && /^(?:auth|requirepass|masterauth)$/i.test(arg))
+      || (program === 'vault' && subcommands[0] === 'login' && arg.toLowerCase() === 'login')) {
       next();
+      continue;
+    }
+    if (program === 'rabbitmqctl' && ['add_user', 'change_password'].includes(subcommands[0] ?? '') && i === positionals[positionals.length - 1] && positionals.length >= 3) {
+      redactAt(i);
       continue;
     }
     // In a secrets command (gh secret set NAME, doppler secrets set NAME VALUE ...),
@@ -237,68 +677,86 @@ function redactSegment(words: string[], pipedOut: boolean): { words: string[]; p
     if (secretContext) {
       if (afterSecretWord >= 0) {
         afterSecretWord += 1;
-        if (afterSecretWord > 2) args[i] = SECRET;
+        if (afterSecretWord > 2) redactAt(i);
       } else if (/secret/i.test(arg)) {
         afterSecretWord = 0;
       }
     }
     // htpasswd -b FILE USER PASSWORD: the last positional.
-    if (program === 'htpasswd' && args.some((value) => /^-[a-zA-Z]*b/.test(value)) && i === args.length - 1) args[i] = SECRET;
+    if (program === 'htpasswd' && args.some((value) => /^-[a-zA-Z]*b/.test(out[value])) && i === args[args.length - 1]) redactAt(i);
   }
-  return { words: [...out.slice(0, index + 1), ...args], program };
+  return finish();
 }
 
 function quoteWord(word: string): string {
   return /[\s'"\\|&;<>()$`*?]/.test(word) ? `'${word.replace(/'/g, `'\\''`)}'` : word;
 }
 
-/**
- * The secret-free normalized form of a shell command: whitespace and quoting
- * normalized, secret values replaced (see the module comment). Exported for
- * tests; it is hashed and never sent.
- */
-export function normalizeShellCommand(command: string): { text: string; programs: string[] } {
-  const tokens = tokenize(withoutHeredocBodies(command.replace(/\r\n?/g, '\n')));
-  const words: string[] = [];
-  const programs: string[] = [];
-  let segment: string[] = [];
-  const flush = (pipedOut: boolean) => {
-    if (!segment.length) return;
-    const result = redactSegment(segment, pipedOut);
-    words.push(...result.words.map((word) => quoteWord(redactKeyShapedParts(redactSensitiveText(word)))));
-    if (result.program && /^[a-z0-9][a-z0-9._+-]{0,63}$/.test(result.program) && !looksLikeKey(result.program) && !programs.includes(result.program)) {
-      programs.push(result.program);
-    }
-    segment = [];
-  };
+function normalizeInner(command: string, state: Exactness, depth: number): { text: string; programs: string[] } {
+  const data: string[] = [];
+  const tokens = tokenize(extractHeredocs(command.replace(/\r\n?/g, '\n'), data));
+  const segments: { words: string[]; op: string | null }[] = [];
+  let current: string[] = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (!token.op) {
-      segment.push(token.value);
+      current.push(token.value);
       continue;
     }
     if (token.value === '<<<') {
       // A here-string is the command's input.
-      flush(false);
-      words.push('<<<');
-      if (i + 1 < tokens.length && !tokens[i + 1].op) { words.push(SECRET); i += 1; }
+      current.push('<<<');
+      if (i + 1 < tokens.length && !tokens[i + 1].op) {
+        data.push(tokens[i + 1].value);
+        current.push(slotWord(data.length - 1));
+        i += 1;
+      }
       continue;
     }
     if (['>', '>>', '<', '<<'].includes(token.value)) {
       // A redirection (and a heredoc tag) belongs to the current command.
-      segment.push(token.value);
+      current.push(token.value);
       continue;
     }
-    flush(token.value === '|' || token.value === '|&');
-    if (token.value !== ';' || (words.length && words[words.length - 1] !== ';')) words.push(token.value);
+    segments.push({ words: current, op: token.value });
+    current = [];
   }
-  flush(false);
+  segments.push({ words: current, op: null });
+
+  const words: string[] = [];
+  const programs: string[] = [];
+  segments.forEach((segment, k) => {
+    if (segment.words.length) {
+      const downstream: string[][] = [];
+      for (let j = k; j < segments.length - 1 && (segments[j].op === '|' || segments[j].op === '|&'); j += 1) downstream.push(segments[j + 1].words);
+      const result = redactSegment(segment.words, {
+        pipedOut: segment.op === '|' || segment.op === '|&',
+        downstream,
+        data,
+        state,
+        depth,
+      });
+      words.push(...result.words.map(quoteWord));
+      if (result.program && /^[a-z0-9][a-z0-9._+-]{0,63}$/.test(result.program) && !looksLikeKey(result.program) && !programs.includes(result.program)) {
+        programs.push(result.program);
+      }
+    }
+    const op = segment.op;
+    if (op && (op !== ';' || (words.length && words[words.length - 1] !== ';'))) words.push(op);
+  });
   while (words.length && words[words.length - 1] === ';') words.pop();
   return { text: words.join(' '), programs: programs.slice(0, 16) };
 }
 
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
+/**
+ * The normalized form of a shell command (see the module comment): hashed,
+ * never sent. `truncated` is true when something that may change what the
+ * command does had to be withheld. Exported for tests.
+ */
+export function normalizeShellCommand(command: string): { text: string; programs: string[]; truncated: boolean } {
+  const state: Exactness = { truncated: false };
+  const result = normalizeInner(command, state, 0);
+  return { ...result, truncated: state.truncated };
 }
 
 function sortedValue(value: unknown, depth = 0): unknown {
@@ -308,18 +766,30 @@ function sortedValue(value: unknown, depth = 0): unknown {
     .map((key) => [key, sortedValue((value as Record<string, unknown>)[key], depth + 1)]));
 }
 
-/** A tool input with secret-named fields and key-shaped values removed; hashed, never sent. */
-function redactedInput(value: unknown, depth = 0): unknown {
-  if (depth > 6) return SECRET;
-  if (typeof value === 'string') {
-    const text = redactSensitiveText(value);
-    return looksLikeKey(text) ? SECRET : text.split(/(\s+)/).map(redactKeyShapedParts).join('');
+/** A tool input with credentials and key-shaped values replaced; hashed, never sent. */
+function redactedInput(value: unknown, state: Exactness, depth = 0): unknown {
+  if (depth > 6) {
+    state.truncated = true;
+    return SECRET;
   }
-  if (Array.isArray(value)) return value.slice(0, 64).map((item) => redactedInput(item, depth + 1));
+  if (typeof value === 'string') return redactText(value, state);
+  if (Array.isArray(value)) {
+    if (value.length > 64) state.truncated = true;
+    return value.slice(0, 64).map((item) => redactedInput(item, state, depth + 1));
+  }
   if (value && typeof value === 'object') {
-    const redacted = redactSensitiveValue(value) as Record<string, unknown>;
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 64) state.truncated = true;
     const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(redacted)) out[key] = SECRET_NAME.test(key) ? SECRET : redactedInput(item, depth + 1);
+    for (const [key, item] of entries.slice(0, 64)) {
+      const kind = classifySecretName(key);
+      if (kind === 'credential' || kind === 'ambiguous') {
+        if (kind === 'ambiguous') state.truncated = true;
+        out[key] = SECRET;
+      } else {
+        out[key] = redactedInput(item, state, depth + 1);
+      }
+    }
     return out;
   }
   return value;
@@ -342,31 +812,41 @@ function shellCommand(event: ToolEvent): string {
   return hookToolCommand(event as Parameters<typeof hookToolCommand>[0]);
 }
 
-function inputHash(input: unknown): { input_sha256: string } | Record<string, never> {
+function inputHash(input: unknown, state: Exactness): { input_sha256: string } | Record<string, never> {
   if (input === undefined || input === null) return {};
-  return { input_sha256: sha256(`${HASH_VERSION}\ninput\n${JSON.stringify(sortedValue(redactedInput(input)))}`) };
+  return { input_sha256: sha256(`${HASH_VERSION}\ninput\n${JSON.stringify(sortedValue(redactedInput(input, state)))}`) };
+}
+
+function withExactness(action: NormalizedHookAction, state: Exactness): NormalizedHookAction {
+  return state.truncated ? { ...action, truncated: true } : action;
 }
 
 export function normalizedHookAction(event: ToolEvent): NormalizedHookAction {
+  const state: Exactness = { truncated: false };
   const toolName = normalizeHookToolName(event.tool_name) || 'tool';
   // The host's own tool name (stable across retries); the policy name decides the kind.
   const hostToolName = (typeof event.tool_name === 'string' && event.tool_name.trim() ? event.tool_name.trim() : toolName).slice(0, 128);
   if (isMcpHookTool(event.tool_name) || /^MCP:/i.test(hostToolName)) {
-    return { tool_kind: 'mcp', tool_name: hostToolName, tool_input: inputHash(event.tool_input) };
+    return withExactness({ tool_kind: 'mcp', tool_name: hostToolName, tool_input: inputHash(event.tool_input, state) }, state);
   }
   if (isShellGovernedTool(event as Parameters<typeof isShellGovernedTool>[0])) {
-    const { text, programs } = normalizeShellCommand(shellCommand(event));
-    return {
+    const { text, programs } = normalizeInner(shellCommand(event), state, 0);
+    return withExactness({
       tool_kind: 'shell',
       tool_name: hostToolName,
       programs,
       tool_input: { command_sha256: sha256(`${HASH_VERSION}\nshell\n${text}`) },
-    };
+    }, state);
   }
   if (EDIT_TOOLS.test(toolName)) {
-    const paths = toolTargetPaths(event as Parameters<typeof toolTargetPaths>[0])
-      .map((path) => redactKeyShapedParts(redactSensitiveText(path)).slice(0, 512)).slice(0, 64);
-    return { tool_kind: 'edit', tool_name: hostToolName, paths, tool_input: inputHash(event.tool_input) };
+    const targets = toolTargetPaths(event as Parameters<typeof toolTargetPaths>[0]);
+    if (targets.length > 64) state.truncated = true;
+    const paths = targets.slice(0, 64).map((path) => {
+      const redacted = redactText(path, state);
+      if (redacted.length > 512) state.truncated = true;
+      return redacted.slice(0, 512);
+    });
+    return withExactness({ tool_kind: 'edit', tool_name: hostToolName, paths, tool_input: inputHash(event.tool_input, state) }, state);
   }
-  return { tool_kind: 'other', tool_name: hostToolName, tool_input: inputHash(event.tool_input) };
+  return withExactness({ tool_kind: 'other', tool_name: hostToolName, tool_input: inputHash(event.tool_input, state) }, state);
 }

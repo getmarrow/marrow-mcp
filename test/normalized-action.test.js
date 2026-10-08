@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { randomBytes, randomInt } = require('node:crypto');
-const { normalizedHookAction, normalizeShellCommand, looksLikeKey } = require('../dist/normalized-action.js');
+const { normalizedHookAction, normalizeShellCommand, looksLikeKey, classifySecretName } = require('../dist/normalized-action.js');
 const { ordinaryApprovalGuidance } = require('../dist/runtime-contract.js');
 const { withoutServerNextActions } = require('../dist/index.js');
 
@@ -143,4 +143,149 @@ test('the raw runtime_gate marrow_auto returns carries no server next-step text 
   assert.doesNotMatch(JSON.stringify(stripped), /exact_next_action|approval-link/);
   assert.equal(stripped.intervention.headline, 'held');
   assert.equal(stripped.arbitration.proposals[0].id, 'p1');
+});
+
+
+// ---------------------------------------------------------------- Fix round 4 (MEDIUM-R1-1 and L-R4-1)
+
+const shell = (command) => normalizedHookAction({ tool_name: 'Bash', tool_input: { command } });
+const hashOf = (command) => shell(command).tool_input.command_sha256;
+const digest = (text) => require('node:crypto').createHash('sha256').update(text).digest('hex');
+
+test('MEDIUM-R1-1: commands that differ only in the data they read get different hashes; the same data the same hash', () => {
+  const pairs = [
+    ['pipe', 'echo "SELECT count(*) FROM users" | npx wrangler d1 execute marrow-db --remote --command -', 'echo "DROP TABLE users" | npx wrangler d1 execute marrow-db --remote --command -'],
+    ['heredoc', "psql \"$PROD_URL\" <<'SQL'\nSELECT 1;\nSQL", "psql \"$PROD_URL\" <<'SQL'\nDROP TABLE decisions;\nSQL"],
+    ['heredoc on /dev/stdin', 'npx wrangler d1 execute marrow-db --remote --file=/dev/stdin <<EOF\nSELECT 1;\nEOF', 'npx wrangler d1 execute marrow-db --remote --file=/dev/stdin <<EOF\nDROP TABLE users;\nEOF'],
+    ['here-string', 'npx wrangler d1 execute marrow-db --remote --command - <<< "SELECT 1"', 'npx wrangler d1 execute marrow-db --remote --command - <<< "DROP TABLE users"'],
+    ['kubectl here-string', 'kubectl apply -f deploy.yaml <<< "replicas: 3"', 'kubectl apply -f deploy.yaml <<< "replicas: 0"'],
+    ['printf pipe', "printf 'SELECT * FROM users WHERE id = 1' | psql prod", "printf 'DELETE FROM users' | psql prod"],
+    ['inside bash -c', "bash -c 'echo \"SELECT 1\" | psql prod'", "bash -c 'echo \"DROP TABLE users\" | psql prod'"],
+    ['environment value', 'TARGET=staging ./deploy.sh', 'TARGET=production ./deploy.sh'],
+  ];
+  for (const [label, a, b] of pairs) {
+    const left = shell(a);
+    const right = shell(b);
+    assert.notEqual(left.tool_input.command_sha256, right.tool_input.command_sha256, `${label}: different data, different action`);
+    assert.equal(left.truncated, undefined, `${label}: exact`);
+    assert.equal(right.truncated, undefined, `${label}: exact`);
+    assert.doesNotMatch(JSON.stringify(left), /SELECT|staging/, `${label}: the data never leaves`);
+    assert.doesNotMatch(JSON.stringify(right), /DROP|DELETE|production/, `${label}: the data never leaves`);
+  }
+  // The same data: the same hash on a retry, whatever the quoting, spacing or line endings.
+  assert.equal(hashOf('echo "DROP TABLE users" | npx wrangler d1 execute marrow-db --remote --command -'), hashOf("echo  'DROP TABLE users'  |  npx wrangler d1 execute marrow-db --remote --command -"));
+  assert.equal(hashOf("psql prod <<'SQL'\nDROP TABLE x;\nSQL"), hashOf('psql prod <<SQL\r\nDROP TABLE x;\r\nSQL'));
+  assert.equal(hashOf('kubectl apply -f d.yaml <<< "replicas: 0"'), hashOf("kubectl apply -f d.yaml <<< 'replicas: 0'"));
+  // And on every machine: the hash depends only on the command and its data (pinned).
+  const data = digest('marrow-normalized-action-v2\ndata\nDROP TABLE users');
+  assert.equal(hashOf('echo "DROP TABLE users" | psql prod'), digest(`marrow-normalized-action-v2\nshell\necho [data:${data}] | psql prod`));
+});
+
+test('MEDIUM-R1-1: data that feeds a secrets command or file, or looks secret, is withheld and the action is marked truncated (Marrow always asks)', () => {
+  const M = mark();
+  const key = `${randomBytes(24).toString('base64').replace(/[+/=]/g, 'A')}aZ9`;
+  const cases = {
+    wrangler_secret_pipe: `echo ${M} | wrangler secret put API_KEY`,
+    gh_secret_pipe: `printf '%s' ${M} | gh secret set API_KEY`,
+    docker_password_stdin: `echo ${M} | docker login -u bob --password-stdin registry.example.com`,
+    through_base64: `echo ${M} | base64 -d | wrangler secret put API_KEY`,
+    aws_configure_heredoc: `aws configure <<EOF\nAKID\n${M}\nus-east-1\njson\nEOF`,
+    vault_heredoc: `vault kv put secret/app - <<EOF\n${M}\nEOF`,
+    env_file: `cat > .env <<EOF\nAPP_MODE=${M}\nEOF`,
+    tee_env: `echo ${M} | tee .env.production`,
+    pgpass: `printf '%s' ${M} > ~/.pgpass`,
+    yaml_password: `cat <<EOF | kubectl apply -f -\nkind: Secret\nstringData:\n  password: ${M}\nEOF`,
+    key_shaped_data: `echo ${key} | kubectl apply -f -`,
+    here_string_secret: `wrangler secret put API_KEY <<< "${M}"`,
+    ssh_add: `ssh-add - <<< "${M}"`,
+    json_password: `psql prod <<< '{"password": "${M}"}'`,
+  };
+  for (const [name, command] of Object.entries(cases)) {
+    const action = shell(command);
+    const secret = name === 'key_shaped_data' ? key : M;
+    assert.equal(action.truncated, true, `${name}: truncated`);
+    assert.equal(JSON.stringify(action).includes(secret), false, `${name}: not sent`);
+    assert.equal(normalizeShellCommand(command).text.includes(secret), false, `${name}: not in the hashed form`);
+  }
+  // Two secrets for the same secrets command are one withheld action.
+  assert.equal(hashOf(`echo ${mark()} | wrangler secret put API_KEY`), hashOf(`echo ${mark()} | wrangler secret put API_KEY`));
+});
+
+test('MEDIUM-R1-1 (same class): a withheld value that may name the target marks the action truncated; credentials keep it exact', () => {
+  // Credential-named values are withheld, and the action stays exact (only the credential differs).
+  const token = shell(`API_TOKEN=${mark()} npm publish`);
+  assert.equal(token.truncated, undefined);
+  assert.equal(token.tool_input.command_sha256, hashOf(`API_TOKEN=${mark()} npm publish`));
+  // An ambiguous name (an S3 object key) and random-looking values (a commit, ids) are withheld and marked truncated.
+  for (const command of [
+    'aws s3api delete-object --bucket b --key reports/a.csv',
+    `git reset --hard ${randomBytes(20).toString('hex')}`,
+    `curl -X DELETE https://api.cloudflare.com/client/v4/zones/${randomBytes(16).toString('hex')}/dns_records/${randomBytes(16).toString('hex')}`,
+    `KEY=${mark()} ./rotate.sh`,
+  ]) {
+    assert.equal(shell(command).truncated, true, command.slice(0, 40));
+  }
+  // Names that only look secret-ish keep their values: git --author, a secret's id.
+  assert.notEqual(hashOf('git commit --author "Ann <a@x.io>" -m x'), hashOf('git commit --author "Bob <b@x.io>" -m x'));
+  assert.notEqual(hashOf('aws secretsmanager delete-secret --secret-id prod/db'), hashOf('aws secretsmanager delete-secret --secret-id staging/db'));
+  assert.equal(shell('aws secretsmanager delete-secret --secret-id prod/db').truncated, undefined);
+  assert.equal(shell('wrangler deploy --env production').truncated, undefined);
+  assert.equal(classifySecretName('AWS_SECRET_ACCESS_KEY'), 'credential');
+  assert.equal(classifySecretName('author'), 'plain');
+  assert.equal(classifySecretName('secret-id'), 'reference');
+  assert.equal(classifySecretName('key'), 'ambiguous');
+});
+
+test('L-R4-1: URL credentials, more password flags, positional passwords, inline literals and remote commands are redacted inside the hashed form', () => {
+  const word = `Summer${randomInt(1000, 9999)}!`;
+  const pw = b64(14);
+  const cases = {
+    postgres_url: `psql postgresql://app:${pw}@db.internal/prod -c 'select 1'`,
+    https_url: `git clone https://bob:${word}@git.example.com/o/r.git`,
+    redis_url: `redis-cli -u redis://:${pw}@cache:6379 FLUSHALL`,
+    mongodb_srv_url: `mongosh "mongodb+srv://admin:${pw}@cluster0.example.net/prod"`,
+    mongo_p: `mongo -u admin -p ${word} prod`,
+    mongodump_p_attached: `mongodump -u admin -p${pw} --db prod`,
+    az_login_p: `az login -u bob -p ${word}`,
+    twine_p: `twine upload -u __token__ -p ${pw} dist/*`,
+    sqlcmd_P: `sqlcmd -S db -U sa -P ${word} -Q 'select 1'`,
+    bcp_P_attached: `bcp dbo.t out t.dat -S db -U sa -P${word}`,
+    oc_login_p: `oc login https://api.example.com -u dev -p ${word}`,
+    useradd_p: `useradd -m -p ${pw} deploy`,
+    set_password_script: `./set-password.sh admin ${word}`,
+    mysqladmin_password: `mysqladmin -u root password ${word}`,
+    redis_auth: `redis-cli AUTH ${word}`,
+    redis_requirepass: `redis-cli CONFIG SET requirepass ${word}`,
+    rabbitmq_add_user: `rabbitmqctl add_user deploy ${word}`,
+    vault_login: `vault login ${pw}`,
+    netlify_env_set: `netlify env:set STRIPE_SECRET_KEY ${word}`,
+    npm_config_token: `npm config set //registry.npmjs.org/:_authToken ${word}`,
+    keytool_storepass: `keytool -list -keystore k.jks -storepass ${word}`,
+    java_property: `java -Ddb.password=${word} -jar app.jar`,
+    python_literal: `python -c "import requests; requests.post(u, headers={'X-Token': '${word}'})"`,
+    node_bearer_literal: `node -e "fetch(u, { headers: { authorization: 'Bearer ${pw}x' } })"`,
+    json_body: `curl -X POST https://api.example.com/x -d '{"client_secret": "${word}"}'`,
+    url_query: `curl "https://api.example.com/v1/x?api_key=${pw}"`,
+    ssh_remote: `ssh deploy@prod 'echo ${word} > /etc/app/pass'`,
+    ssh_remote_env: `ssh -i ~/.ssh/id deploy@prod "DB_PASSWORD=${word} ./migrate.sh"`,
+    bash_c: `bash -c "PGPASSWORD=${word} psql -h db prod"`,
+    eval: `eval "mysql -uroot -p${word} prod"`,
+    su_c: `su - deploy -c "sshpass -p ${word} ssh prod"`,
+  };
+  for (const [name, command] of Object.entries(cases)) {
+    const secret = command.includes(word) ? word : pw;
+    assert.equal(normalizeShellCommand(command).text.includes(secret), false, `${name}: not in the hashed form`);
+    assert.equal(JSON.stringify(shell(command)).includes(secret), false, `${name}: not sent`);
+  }
+});
+
+test('MCP and other inputs: credentials keep the action exact; ambiguous names, random-looking values and cut inputs mark it truncated', () => {
+  const mcp = (input) => normalizedHookAction({ tool_name: 'mcp__cloudflare__dns_delete', tool_input: input });
+  assert.equal(mcp({ api_token: b64(30), zone: 'example.com', name: 'www' }).truncated, undefined);
+  assert.notEqual(mcp({ zone: 'example.com', name: 'www' }).tool_input.input_sha256, mcp({ zone: 'example.com', name: 'api' }).tool_input.input_sha256);
+  assert.equal(mcp({ zone_id: randomBytes(16).toString('hex'), name: 'www' }).truncated, true);
+  assert.equal(mcp({ key: 'reports/a.csv' }).truncated, true);
+  assert.equal(mcp({ items: Array.from({ length: 65 }, (_, i) => i) }).truncated, true);
+  const secret = b64(14);
+  assert.equal(JSON.stringify(mcp({ password: secret, note: `client_secret=${secret}` })).includes(secret), false);
 });

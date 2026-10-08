@@ -168,6 +168,12 @@ export declare function planHeldAction(input: {
      * run where their user works). Without it a hold that cannot be asked waits quietly.
      */
     attendedConfirmed?: boolean;
+    /**
+     * The host's own approval prompt is off in this session (Codex started with
+     * its approval bypass, never-ask, automatic review, full auto or full
+     * access): leaving the action to it would let it run with no one asked.
+     */
+    hostPromptOff?: boolean;
 }): HoldPlan;
 /**
  * Hosts where an ordinary hold Marrow cannot ask about is left to the host's
