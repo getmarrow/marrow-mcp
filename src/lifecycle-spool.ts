@@ -69,8 +69,9 @@ export type LifecycleEvent = {
 type DeliveryState = 'queued' | 'dead_letter';
 type RetryReason = 'network_error' | 'ack_timeout' | 'transient_http' | 'rate_limited'
   | 'authentication_rejected' | 'schema_rejected' | 'permanent_http' | 'retry_after_invalid';
-type StoredEvent = Required<Pick<LifecycleEvent, 'event_id' | 'event_type' | 'harness' | 'agent_id' | 'action' | 'occurred_at'>>
-  & Omit<LifecycleEvent, 'event_id' | 'event_type' | 'harness' | 'agent_id' | 'action' | 'occurred_at'>
+// agent_id is kept only when the hook knows it: without one the server resolves the identity from the key.
+type StoredEvent = Required<Pick<LifecycleEvent, 'event_id' | 'event_type' | 'harness' | 'action' | 'occurred_at'>>
+  & Omit<LifecycleEvent, 'event_id' | 'event_type' | 'harness' | 'action' | 'occurred_at'>
   & { attempts: number; delivery_state: DeliveryState; last_status?: number;
     last_attempt_at?: string; next_attempt_at?: string; retry_reason?: RetryReason; retry_blocked?: boolean;
     recovery_attempts?: number; last_recovery_at?: string; recovery_exhausted?: true; server_owned?: true };
@@ -299,7 +300,8 @@ function validateStoredEvent(value: unknown): StoredEvent {
     event_id: safeId(event.event_id) || (() => { throw new Error('invalid lifecycle event_id'); })(),
     event_type: String(event.event_type) as LifecycleEventType,
     harness: safeId(event.harness, 'custom') || 'custom',
-    agent_id: safeId(event.agent_id, 'unknown') || 'unknown',
+    // Older spools stored 'unknown' for no agent; that is never sent.
+    ...(safeId(event.agent_id) && safeId(event.agent_id) !== 'unknown' ? { agent_id: safeId(event.agent_id) } : {}),
     action: compactAction(event.action),
     ...(event.target ? { target: compactAction(event.target) } : {}),
     ...(surfaces ? { surfaces } : {}),
@@ -349,7 +351,7 @@ function compact(input: LifecycleEvent): StoredEvent {
   if (input.action_changed != null && typeof input.action_changed !== 'boolean') throw new Error('invalid lifecycle action_changed');
   const eventId = optionalId(input.event_id, 'event_id') || randomUUID();
   const harness = optionalId(input.harness, 'harness') || 'custom';
-  const agentId = optionalId(input.agent_id, 'agent_id') || 'unknown';
+  const agentId = optionalId(input.agent_id, 'agent_id');
   const workflowId = optionalId(input.workflow_id, 'workflow_id');
   const sessionId = optionalId(input.session_id, 'session_id');
   const decisionId = optionalId(input.decision_id, 'decision_id');
@@ -363,7 +365,7 @@ function compact(input: LifecycleEvent): StoredEvent {
     event_id: eventId,
     event_type: input.event_type,
     harness,
-    agent_id: agentId,
+    ...(agentId && agentId !== 'unknown' ? { agent_id: agentId } : {}),
     action: compactAction(input.action),
     ...(input.target ? { target: compactAction(input.target) } : {}),
     ...(surfaces ? { surfaces } : {}),
@@ -470,7 +472,7 @@ async function deliver(baseUrl: string, apiKey: string, queued: StoredEvent, tim
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const wireEvent = eventPayload(queued);
-  if (queued.agent_id === 'unknown') delete wireEvent.agent_id;
+  if (!queued.agent_id || queued.agent_id === 'unknown') delete wireEvent.agent_id;
   try {
     const response = await Promise.race([
       fetch(`${baseUrl}/v1/agent/integrations/events`, {
@@ -480,7 +482,7 @@ async function deliver(baseUrl: string, apiKey: string, queued: StoredEvent, tim
           'Content-Type': 'application/json',
           'X-Marrow-Client': 'mcp',
           ...(queued.session_id ? { 'X-Marrow-Session-Id': queued.session_id } : {}),
-          ...(queued.agent_id !== 'unknown' ? { 'X-Marrow-Agent-Id': queued.agent_id } : {}),
+          ...(queued.agent_id && queued.agent_id !== 'unknown' ? { 'X-Marrow-Agent-Id': queued.agent_id } : {}),
         },
         body: JSON.stringify(wireEvent),
         signal: controller.signal,

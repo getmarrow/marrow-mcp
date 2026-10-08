@@ -90,8 +90,9 @@ const MIN_STEP_MS = 600;
  * action that can be held stays held (never an outage allow).
  */
 export function preToolBudgetMs(host: ApprovalHost): number {
-  // Codex: 5 s kill, then it runs the call; npx start-up before this process can take ~1.3 s cold.
-  if (host === 'codex') return 3_000;
+  // Codex: 5 s kill, then it runs the call. npx start-up before this process
+  // takes about 0.5-1.3 s and more under load, so the answer comes within 2 s.
+  if (host === 'codex') return 2_000;
   if (host === 'cursor' || host === 'grok' || host === 'gemini') return 4_000;
   return 14_000;
 }
@@ -184,7 +185,8 @@ export const HELD_UNREACHABLE_TEXT = 'Marrow could not confirm the owner\'s appr
 
 export type OwnerLinkOutcome =
   | { kind: 'sent'; channel: string }
-  | { kind: 'already_sent' }
+  /** The owner already has a live link (this hold's, or the arbitration's own on the service). */
+  | { kind: 'already_sent'; channel?: string; expiresAt?: string | null }
   | { kind: 'deferred' }
   | { kind: 'retryable' }
   | { kind: 'failed'; code: string | null }
@@ -196,7 +198,9 @@ export type OwnerLinkOutcome =
 export function ownerRequestText(outcome: OwnerLinkOutcome): string {
   switch (outcome.kind) {
     case 'sent': return ownerLinkSentText(outcome.channel);
-    case 'already_sent': return 'An approval link was sent to the account owner.';
+    case 'already_sent': return outcome.channel
+      ? `The account owner already has a one-tap approval link (${outcome.channel}${outcome.expiresAt ? `, until ${outcome.expiresAt}` : ''}); wait for their answer.`
+      : 'An approval link was sent to the account owner.';
     case 'not_sent': return 'Nothing was sent to anyone; it waits quietly until a person approves it.';
     // Deferred: tried right after this answer is written; until a retry confirms it, it is not "sent".
     case 'deferred':
@@ -299,7 +303,8 @@ export function planHeldAction(input: {
   const notice = guidance.operatorNotice ? ` Note: ${guidance.operatorNotice}` : '';
   const held = `Marrow is holding this action for approval (gate receipt ${id}), so it did not run.${reason}`;
   const tail = ' When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.';
-  const claudePrompt = bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${id}).${notice}${reason}`, 500);
+  // Text a person reads names no receipt ids; the agent's text keeps them (it closes the action with them).
+  const claudePrompt = bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer.${notice}${reason}`, 500);
   // Owner rule: the owner's link only for (a) an owner-locked category, (b) the
   // owner's standing decline once the operator asks, (c) an unattended run with pings on.
   const policy = ownerLinkPolicy(guidance, { unattended });
@@ -311,14 +316,14 @@ export function planHeldAction(input: {
     if (host === 'cursor' && CURSOR_ASK_EVENTS.has(input.hookEvent) && input.cursorInteractive === true && !guidance.operatorOnly) {
       return {
         kind: 'ask',
-        promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action (gate receipt ${id}).${notice}${reason}`, 500),
+        promptText: bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action.${notice}${reason}`, 500),
       };
     }
     if (input.typedReply && TYPED_REPLY_MARKER[host] && !unattended) {
       return {
         kind: 'deny',
         agentText: bounded(`${held} The operator was asked to approve it here.${tail}`, 500),
-        userText: bounded(`Marrow holds this action for your approval (gate receipt ${id}).${notice}${reason}`, 400),
+        userText: bounded(`Marrow holds this action for your approval.${notice}${reason}`, 400),
         code: true,
       };
     }
@@ -327,32 +332,32 @@ export function planHeldAction(input: {
     // An older service: no host approvals and no links. The hold waits, and
     // the retried action reads its status, so an owner's approval still counts.
     const agentText = bounded(`${held} ${LEGACY_SERVICE_TEXT} Retry this exact action after the owner approves it; Marrow checks the approval then. Do not report or claim an approval yourself.`, 500);
-    return { kind: 'deny', agentText, userText: agentText, code: false };
+    return { kind: 'deny', agentText, userText: forPerson(agentText), code: false };
   }
   if (!guidance.hostApprovalAccepted) {
     if (guidance.hostApprovalRefusal === 'approval_state_unavailable'
       || (guidance.hostApprovalRefusal === null && guidance.verifiedApprovalRequired === null)) {
       // Nothing to wait for yet: the next attempt asks Marrow again.
       const agentText = bounded(`${held} ${ownerOnlyReason(guidance)} Retry this exact action in a moment. Do not report or claim an approval yourself.`, 500);
-      return { kind: 'deny', agentText, userText: agentText, code: false, retryFresh: true };
+      return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, retryFresh: true };
     }
     if (guidance.hostApprovalRefusal === 'owner_decline_stands') {
       // The owner just said no: the owner is asked again only when the operator asks.
       const why = `${ownerOnlyReason(guidance)} Only the account owner can reverse that.`;
       const ask = policy === 'on_request' ? ` ${OWNER_LINK_ON_REQUEST_TEXT}` : '';
       const agentText = bounded(`${held} ${why}${ask} Retry it only if the operator asks you to; otherwise carry on with other work. Do not report or claim an approval yourself.`, 500);
-      return { kind: 'deny', agentText, userText: agentText, code: false, ...(policy === 'on_request' ? { ownerLink: 'on_request' as const } : {}) };
+      return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, ...(policy === 'on_request' ? { ownerLink: 'on_request' as const } : {}) };
     }
     // An owner-locked category: the owner's one-tap link is how it is approved.
     const request = policy === 'now' ? OWNER_APPROVAL_REQUEST_TEXT : ownerRequestText({ kind: 'none' });
     const agentText = bounded(`${held} ${ownerOnlyReason(guidance)} ${request} Carry on with other work meanwhile.${tail}`, 500);
-    return { kind: 'deny', agentText, userText: agentText, code: false, ...(policy === 'now' ? { ownerLink: 'now' as const } : {}) };
+    return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, ...(policy === 'now' ? { ownerLink: 'now' as const } : {}) };
   }
   if (host === 'claude-code' && !input.claudePrompt?.headless && !unattended) {
     // The operator is present but this session shows no dialog: switching to a
     // mode with the dialog approves it here (the host's own prompt, one click).
     const agentText = bounded(`${held} Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you. Until then carry on with other work. Do not report or claim an approval yourself.`, 500);
-    return { kind: 'deny', agentText, userText: agentText, code: false, dialogLater: true, laterPrompt: claudePrompt };
+    return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, dialogLater: true, laterPrompt: claudePrompt };
   }
   if (unattended || (host === 'claude-code' && input.claudePrompt?.headless)) {
     // Unattended: the action waits quietly and the agent carries on. The person
@@ -361,7 +366,7 @@ export function planHeldAction(input: {
     const agentText = pinged
       ? bounded(`${held} Nobody can approve it in this run. ${OWNER_APPROVAL_REQUEST_TEXT} If it is approved, retrying this exact action runs it once; meanwhile carry on with other work. Do not report or claim an approval yourself.`, 500)
       : bounded(`${held} Nobody can approve it in this run, so it waits quietly; nothing was sent to anyone. Carry on with other work and do not retry it in this run. A person sees it at their next interactive session and approves it there by retrying it where the host's prompt asks. Do not report or claim an approval yourself.`, 500);
-    return { kind: 'deny', agentText, userText: agentText, code: false, quiet: 'unattended', ...(pinged ? { ownerLink: 'now' as const } : {}) };
+    return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, quiet: 'unattended', ...(pinged ? { ownerLink: 'now' as const } : {}) };
   }
   // A person is here, but Marrow can neither ask in this host nor observe the
   // answer: the host's own approval step decides (owner rule). Not after an
@@ -406,9 +411,16 @@ export const HELD_FOR_YOU_TEXT = 'This action is held until you approve it. Appr
  * and approves one proposal. The hook denies, asks Marrow to send the owner a
  * link, and the retried action reads the status. Nobody is told to log in.
  */
-export function planArbitrationHold(guidance: ArbitrationApprovalGuidance): HoldPlan {
-  const agentText = bounded(`Marrow is holding this action for arbitration review (gate receipt ${guidance.gateReceiptId}), so it did not run. The account owner picks and approves one proposal. ${OWNER_APPROVAL_REQUEST_TEXT} When the owner has answered, retry this exact action; Marrow checks the answer then. Do not report or claim an approval yourself.`, 500);
-  return { kind: 'deny', agentText, userText: agentText, code: false, ownerLink: 'now' };
+export function planArbitrationHold(guidance: ArbitrationApprovalGuidance, options: { unattended?: boolean } = {}): HoldPlan {
+  const held = `Marrow is holding this action for arbitration review (gate receipt ${guidance.gateReceiptId}), so it did not run. The account owner picks and approves one proposal.`;
+  if (options.unattended === true) {
+    // Nobody here can ask: the service sends the owner a link only if they turned on unattended pings.
+    const agentText = bounded(`${held} ${OWNER_APPROVAL_REQUEST_TEXT} Carry on with other work and do not retry it in this run. Do not report or claim an approval yourself.`, 500);
+    return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, ownerLink: 'now', quiet: 'unattended' };
+  }
+  // A person is here: the owner is asked only when they ask for it, by retrying this action.
+  const agentText = bounded(`${held} Nothing was sent to the owner yet. If the operator wants the owner asked now, retry this exact action once; Marrow then sends the owner a one-tap link. Otherwise carry on with other work. When the owner has answered, retry this exact action; Marrow checks the answer then. Do not report or claim an approval yourself.`, 500);
+  return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, ownerLink: 'on_request' };
 }
 
 /** User-only text with the typed-reply code (Cursor user_message, Codex and Gemini systemMessage). */
@@ -448,6 +460,10 @@ export type RecordHoldInput = {
   action: { action: string; target: string; type: string; surfaces: string[] };
   /** From the plan: whether and when the owner's one-tap link is requested. */
   ownerLink?: 'now' | 'on_request';
+  /** The normalized action the runtime call carried; the answer is reported with the same one. */
+  normalizedAction?: Record<string, unknown> | null;
+  /** Arbitration: a person is at this session (its retry asks for the owner's link). */
+  personPresent?: boolean;
   dialogLater?: boolean;
   laterPrompt?: string;
   quiet?: 'attended' | 'unattended';
@@ -497,6 +513,8 @@ export function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldReco
     arbitration_receipt_id: input.guidance.arbitrationReceiptId && BOUNDED_ID.test(input.guidance.arbitrationReceiptId) ? input.guidance.arbitrationReceiptId : null,
     quiet: input.quiet ?? null,
     not_observed: input.notObserved === true,
+    ...(input.normalizedAction && JSON.stringify(input.normalizedAction).length <= 16_384 ? { normalized_action: input.normalizedAction } : {}),
+    ...(typeof input.personPresent === 'boolean' ? { person_present: input.personPresent } : {}),
   }, ctx.home);
 }
 
@@ -520,6 +538,17 @@ export function protectedAmong(ctx: HoldContext, categories: string[]): string[]
 }
 
 const OWNER_LINK_TIMEOUT_MS = 2_000;
+/** Text for a person: the agent's text without receipt ids (the agent keeps them to close the action). */
+export function forPerson(text: string): string {
+  return text.replace(/ ?\(gate receipt [^)]{1,200}\)/g, '').replace(/ on gate receipt [A-Za-z0-9_.:-]{1,128}/g, '');
+}
+
+/** An agent id worth showing a person: not an automatic seat or key-derived fallback id. */
+export function personAgentName(agent: string | null | undefined): string | null {
+  if (!agent) return null;
+  return /^(?:free-seat|seat|api-key|key|fallback)-/i.test(agent) ? null : agent;
+}
+
 /** The server allows three links per gate receipt. */
 const MAX_LINK_ATTEMPTS = 3;
 /** Link refusals that another request cannot change. */
@@ -552,8 +581,13 @@ export async function requestOwnerLink(ctx: HoldContext, hold: HoldRecord, reser
   const timeout = statusTimeout(budget);
   let outcome: OwnerLinkOutcome;
   try {
-    const result = await marrowRequestApprovalLink(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, hold.decision_id, hold.session_id, hold.agent_id || undefined, timeout.signal);
-    outcome = result.ok ? { kind: 'sent', channel: result.link.channel }
+    // Arbitration links carry whether a person at this session asked (client-attested): an
+    // attended hold's link is requested on the operator's retry; an unattended one never claims a person.
+    const arbitration = Boolean(hold.arbitration_receipt_id);
+    const result = await marrowRequestApprovalLink(ctx.apiKey, ctx.baseUrl, hold.gate_receipt_id, hold.decision_id, hold.session_id, hold.agent_id || undefined, timeout.signal,
+      arbitration ? { personPresent: hold.person_present === true && hold.owner_link === 'on_request' } : {});
+    outcome = result.ok && result.alreadySent ? { kind: 'already_sent', channel: result.link.channel, expiresAt: result.link.expires_at ?? null }
+      : result.ok ? { kind: 'sent', channel: result.link.channel }
       : result.notSent ? { kind: 'not_sent' }
       : !result.retryable && result.code && FINAL_LINK_CODES.has(result.code) ? { kind: 'failed', code: result.code }
       : result.retryable ? { kind: 'retryable' }
@@ -564,7 +598,7 @@ export async function requestOwnerLink(ctx: HoldContext, hold: HoldRecord, reser
     timeout.cancel();
   }
   const attempts = (hold.link_attempts || 0) + 1;
-  const state: HoldRecord['owner_link'] = outcome.kind === 'sent' ? 'sent'
+  const state: HoldRecord['owner_link'] = outcome.kind === 'sent' || outcome.kind === 'already_sent' ? 'sent'
     : outcome.kind === 'not_sent' ? null
     : outcome.kind === 'failed' || attempts >= MAX_LINK_ATTEMPTS ? 'failed'
     : 'unsent';
@@ -626,7 +660,8 @@ export async function heldActionsNotice(ctx: HoldContext, budgetMs = 1_500): Pro
   if (!items.length) return null;
   const groups = new Map<string, number>();
   for (const item of items) {
-    const label = `${bounded(item.type, 40)}${item.agent ? ` by agent ${bounded(item.agent, 64)}` : ''}`;
+    const agent = personAgentName(item.agent);
+    const label = `${bounded(item.type, 40)}${agent ? ` by agent ${bounded(agent, 64)}` : ''}`;
     groups.set(label, (groups.get(label) || 0) + 1);
   }
   const list = [...groups.entries()].slice(0, 5).map(([label, count]) => (count > 1 ? `${label} (${count})` : label)).join('; ');
@@ -768,7 +803,7 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
     }), ctx.home);
     if (!claimed) {
       const text = bounded(`Marrow approved this held action once (gate receipt ${hold.gate_receipt_id}), and an identical call is already running on that approval, so this repeat did not run. If it is still needed, retry it after that call finishes. Do not report or claim an approval yourself.`, 500);
-      return { kind: 'deny', hold, agentText: text, userText: text };
+      return { kind: 'deny', hold, agentText: text, userText: forPerson(text) };
     }
     const decision = claimed.decision_id ? `decision_id ${claimed.decision_id}, ` : '';
     const contextText = claimed.arbitration_receipt_id
@@ -792,7 +827,7 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
     return {
       kind: 'ask',
       hold: asked,
-      promptText: hold.ask_text || bounded(`Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt ${hold.gate_receipt_id}).`, 500),
+      promptText: hold.ask_text || 'Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer.',
     };
   }
   if (waitingStates.has(status.state)) {
@@ -813,9 +848,9 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
       kind: 'deny',
       hold,
       agentText: text,
-      userText: hold.code ? `Marrow still holds this action for your approval (gate receipt ${hold.gate_receipt_id}).`
+      userText: hold.code ? 'Marrow still holds this action for your approval.'
         : hold.quiet === 'attended' ? HELD_FOR_YOU_TEXT
-        : text,
+        : forPerson(text),
       ...(link.kind === 'deferred' ? { deferredLink: true } : {}),
     };
   }
@@ -1030,6 +1065,16 @@ export function holdSessionForReceipt(ctx: HoldContext, gateReceiptId: string): 
   }
 }
 
+/** The proof fields this machine's hold for a receipt asked for (empty when unknown). */
+export function proofFieldsForReceipt(ctx: HoldContext, gateReceiptId: string): string[] {
+  try {
+    const holds = findHolds(scopeOf(ctx), {}, ctx.home).filter((hold) => hold.gate_receipt_id === gateReceiptId);
+    return holds.length && holds[holds.length - 1].proof_required ? [...holds[holds.length - 1].proof_fields] : [];
+  } catch {
+    return [];
+  }
+}
+
 /** marrow_commit: send a queued host approval for this receipt before the agent's own commit. */
 export async function deliverQueuedForReceipt(ctx: HoldContext, gateReceiptId: string): Promise<void> {
   let holds: HoldRecord[];
@@ -1149,7 +1194,7 @@ export async function settleAfterTool(ctx: HoldContext, input: {
       asked_at: lateMarker ? hold.asked_at : (hold.dialog_at || hold.asked_at),
       answered_at: answeredAt,
       ...(hold.decision_id ? { decision_id: hold.decision_id } : {}),
-      ...reportAction(ctx, input.normalizedAction),
+      ...reportAction(ctx, hold.normalized_action ?? input.normalizedAction),
     }
     : null;
   if (!report && !commit) {
@@ -1272,7 +1317,7 @@ async function settleClaudeResolution(ctx: HoldContext, hold: HoldRecord, resolu
       asked_at: hold.dialog_at || hold.asked_at,
       answered_at: new Date().toISOString(),
       ...(hold.decision_id ? { decision_id: hold.decision_id } : {}),
-      ...reportAction(ctx, normalizedAction),
+      ...reportAction(ctx, hold.normalized_action ?? normalizedAction),
     };
     const commit: HoldCommit = {
       success: false,

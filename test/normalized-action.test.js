@@ -289,3 +289,88 @@ test('MCP and other inputs: credentials keep the action exact; ambiguous names, 
   const secret = b64(14);
   assert.equal(JSON.stringify(mcp({ password: secret, note: `client_secret=${secret}` })).includes(secret), false);
 });
+
+
+// ---------------------------------------------------------------- Fix round 5 (MEDIUM-R5-1, LOW-R5-1, LOW-R5-3)
+
+const { normalizeHookEventPayload } = require('../dist/hook-contract.js');
+const { MAX_SCAN_CHARS } = require('../dist/normalized-action.js');
+
+function medianMs(run) {
+  const times = [];
+  for (let i = 0; i < 3; i += 1) {
+    const started = process.hrtime.bigint();
+    run();
+    times.push(Number(process.hrtime.bigint() - started) / 1e6);
+  }
+  return times.sort((a, b) => a - b)[1];
+}
+
+test('MEDIUM-R5-1: a 64 KB token of any shape normalizes in under 100 ms and is withheld as truncated', () => {
+  const shapes = {
+    one_word: 'a'.repeat(65_536),
+    eq_pairs: 'a='.repeat(32_768),
+    colon_pairs: 'a:'.repeat(32_768),
+    scheme_like: 'a://u:'.repeat(10_923),
+    json_like: '{"a":'.repeat(13_107),
+    query: `https://x/y?${'a=1&'.repeat(16_384)}`,
+  };
+  for (const [name, token] of Object.entries(shapes)) {
+    for (const command of [`deploy ${token}`, `psql -c '${token}'`, `echo '${token}' | psql prod`]) {
+      let action;
+      const ms = medianMs(() => { action = shell(command); });
+      assert.ok(ms < 100, `${name}: ${ms.toFixed(0)} ms`);
+      assert.equal(action.truncated, true, `${name}: over ${MAX_SCAN_CHARS} characters, not scanned`);
+    }
+  }
+  // Many words up to 64 KB stay linear too.
+  for (const command of ['deploy ' + 'ab '.repeat(21_845), 'echo a' + ' | cat'.repeat(10_922), 'A=b '.repeat(16_384) + 'deploy']) {
+    const ms = medianMs(() => shell(command));
+    assert.ok(ms < 100, `${command.slice(0, 12)}: ${ms.toFixed(0)} ms`);
+  }
+});
+
+test('LOW-R5-1: credential literals are scanned without recursion; thousands of nested names neither crash nor slow down', () => {
+  // The forms that overflowed the stack at about 4 KB in 87fd70d.
+  for (const token of ['a='.repeat(1_950), 'a:'.repeat(1_950), '{"a":'.repeat(780), 'a='.repeat(8_000)]) {
+    const ms = medianMs(() => shell(`deploy ${token}`));
+    assert.ok(ms < 100, `${token.slice(0, 6)} x${token.length}: ${ms.toFixed(0)} ms`);
+  }
+  assert.equal(shell(`deploy ${'a='.repeat(1_950)}`).truncated, undefined, 'under the cap: scanned, exact');
+  assert.equal(shell(`deploy ${'a='.repeat(4_000)}`).truncated, true, 'over 2048 names in one text: withheld');
+  // Nested credentials are still found in one pass.
+  const secret = b64(16);
+  assert.equal(normalizeShellCommand(`curl "https://api.example.com/x?a=1&b=2&api_key=${secret}&c=3"`).text.includes(secret), false);
+  assert.equal(normalizeShellCommand(`curl -d '{"user": {"name": "x", "password": "${secret}"}}'`).text.includes(secret), false);
+  assert.equal(normalizeShellCommand(`curl -d '{"password": "two words ${secret}"}'`).text.includes(secret), false, 'a quoted value with spaces');
+});
+
+test('MEDIUM-R5-1: past its deadline or size limits, normalization gives a truncated placeholder (kind and tool name only)', () => {
+  const past = normalizedHookAction({ tool_name: 'Bash', tool_input: { command: 'wrangler deploy --env production' } }, { deadlineAt: Date.now() - 1 });
+  assert.deepEqual(past, { tool_kind: 'shell', tool_name: 'Bash', tool_input: {}, truncated: true });
+  assert.deepEqual(normalizedHookAction({ tool_name: 'mcp__db__query', tool_input: { sql: 'select 1' } }, { deadlineAt: Date.now() - 1 }), { tool_kind: 'mcp', tool_name: 'mcp__db__query', tool_input: {}, truncated: true });
+  assert.equal(normalizeShellCommand('wrangler deploy', Date.now() - 1).truncated, true);
+  assert.equal(shell(`deploy ${'x '.repeat(140_000)}`).truncated, true, 'over 256 KB');
+  assert.equal(shell(`deploy ${'x '.repeat(5_000)}`).truncated, true, 'over 4096 words');
+  assert.equal(shell('wrangler deploy --env production').truncated, undefined, 'a normal command is unaffected');
+});
+
+test('LOW-R5-3: input a host adapter cut or dropped is marked truncated; uncut input is not', () => {
+  const action = (event) => normalizedHookAction(normalizeHookEventPayload(event));
+  const pad = `echo ${'a'.repeat(9_000)} ; `;
+  const cut = {
+    windsurf_command_over_8k: { agent_action_name: 'pre_run_command', trajectory_id: 't', execution_id: 'e1', tool_info: { command_line: `${pad}psql -c "DROP TABLE users"` } },
+    windsurf_mcp_arguments_dropped: { agent_action_name: 'pre_mcp_tool_use', trajectory_id: 't', execution_id: 'e2', tool_info: { mcp_server_name: 'db', mcp_tool_name: 'execute', mcp_tool_arguments: { sql: 'DROP TABLE users' } } },
+    windsurf_write_code_dropped: { agent_action_name: 'pre_write_code', trajectory_id: 't', execution_id: 'e3', tool_info: { file_path: '/repo/.github/workflows/deploy.yml', edits: [{ old_string: 'x', new_string: 'y' }] } },
+    cursor_command_over_64k: { hook_event_name: 'beforeShellExecution', conversation_id: 'c', generation_id: 'g1', command: `echo ${'a'.repeat(70_000)} ; psql -c "DROP TABLE users"` },
+    cursor_mcp_over_256k: { hook_event_name: 'beforeMCPExecution', conversation_id: 'c', generation_id: 'g2', mcp_server_name: 'db', tool_name: 'execute', tool_input: JSON.stringify({ pad: 'a'.repeat(270_000), sql: 'DROP TABLE users' }) },
+    cursor_mcp_unparseable_over_4k: { hook_event_name: 'beforeMCPExecution', conversation_id: 'c', generation_id: 'g3', mcp_server_name: 'db', tool_name: 'execute', tool_input: `{bad ${'a'.repeat(5_000)} DROP TABLE users` },
+  };
+  for (const [name, event] of Object.entries(cut)) assert.equal(action(event).truncated, true, name);
+  const whole = {
+    windsurf_short_command: { agent_action_name: 'pre_run_command', trajectory_id: 't', execution_id: 'e4', tool_info: { command_line: 'wrangler deploy --env production' } },
+    cursor_mcp_small: { hook_event_name: 'beforeMCPExecution', conversation_id: 'c', generation_id: 'g4', mcp_server_name: 'db', tool_name: 'execute', tool_input: JSON.stringify({ sql: 'DROP TABLE users' }) },
+    cursor_command: { hook_event_name: 'beforeShellExecution', conversation_id: 'c', generation_id: 'g5', command: 'wrangler deploy --env production' },
+  };
+  for (const [name, event] of Object.entries(whole)) assert.equal(action(event).truncated, undefined, name);
+});

@@ -101,7 +101,7 @@ test('Cline native pre-action schema denies review and unavailable proof and all
     permit: null,
     runtime: null,
     enforcementError: 'runtime unavailable',
-  }), { cancel: true, errorMessage: 'Marrow could not verify the required action permit. Restore trusted governance and retry.' });
+  }), { cancel: true, errorMessage: "Marrow could not confirm a permit for this protected action. Run `npx -y @getmarrow/install@latest doctor` in this terminal to check this machine's Marrow setup, then retry." });
   assert.deepEqual(clinePreActionHookOutput({
     protectedRisk: false,
     permit: null,

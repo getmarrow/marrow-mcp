@@ -200,8 +200,35 @@ function controlFailureKind(error) {
         return 'credential_scope';
     return CONTROL_UNAVAILABLE_CODES.has(error.code) ? 'unavailable' : undefined;
 }
-// Names a reached control failure by HTTP status and stable failure code only, so the
-// denial is diagnosable without echoing private service text into the agent transcript.
+const DOCTOR_FIX = 'Run `npx -y @getmarrow/install@latest doctor` in this terminal to check this machine\'s Marrow setup, then retry.';
+/**
+ * A plain fix for a reached control failure: a known code's own fix, or the
+ * service's exact_fix when it is plain (no API calls, dashboard steps or
+ * links), else the doctor command. Service text other than exact_fix is never
+ * echoed into the agent transcript.
+ */
+function plainControlFix(error) {
+    if (!(error instanceof request_reliability_1.MarrowRequestError))
+        return DOCTOR_FIX;
+    const code = String(error.backendCode || '');
+    if (code === 'AGENT_NOT_REGISTERED' || code === 'MARROW_AGENT_NOT_REGISTERED') {
+        if (/agent limit/i.test(error.message)) {
+            return 'Marrow could not add this agent: this account has reached its plan\'s agent limit. The account owner can archive an unused agent or change the plan in Marrow, then retry.';
+        }
+        if (/not active/i.test(error.message)) {
+            return 'This agent is turned off in this Marrow account. The account owner can turn it back on in Marrow, then retry.';
+        }
+        return 'Marrow doesn\'t know this agent yet. Run `npx @getmarrow/install` again in this terminal, then retry.';
+    }
+    if (error.status === 429 || error.code === 'rate_limited')
+        return 'Marrow is busy right now. Retry in a minute.';
+    const fix = error.exactFix.replace(/\s+/g, ' ').trim();
+    const plain = fix.length > 0 && fix.length <= 240 && /[.!]$/.test(fix)
+        && !/\/v1\/|\b(?:POST|GET|PATCH|PUT|DELETE)\b|dashboard|https?:\/\/|X-Marrow|agent_id|api key|curl\b/i.test(fix);
+    return plain ? fix : DOCTOR_FIX;
+}
+// Names a reached control failure by HTTP status and stable failure code, with a plain
+// fix (see plainControlFix); private service text is never echoed into the agent transcript.
 function controlRejectionMessage(error, agentId) {
     const detail = [];
     if (error instanceof request_reliability_1.MarrowRequestError) {
@@ -222,7 +249,7 @@ function controlRejectionMessage(error, agentId) {
     if (kind === 'unavailable') {
         return `Marrow is unavailable, so this protected action was denied${suffix}. Retry when Marrow is reachable.`;
     }
-    return `Marrow rejected this protected action${suffix}. Restore trusted governance before retrying.`;
+    return `Marrow did not allow this protected action${suffix}. ${plainControlFix(error)}`;
 }
 // Claude Code permission modes in which a PreToolUse "ask" reaches a person.
 // bypassPermissions disables prompts, dontAsk auto-denies anything that would
@@ -526,7 +553,7 @@ function clinePreActionHookOutput(result) {
                     ? 'This Marrow API key is not authorized to obtain action permits for this agent. Use the API key issued to this agent and retry.'
                     : result.failure === 'unavailable'
                         ? 'Marrow is unavailable, so this protected action was denied. Retry when Marrow is reachable.'
-                        : 'Marrow could not verify the required action permit. Restore trusted governance and retry.',
+                        : `Marrow could not confirm a permit for this protected action. ${DOCTOR_FIX}`,
         };
     }
     return { cancel: false };
@@ -949,7 +976,7 @@ async function runPreActionHookCommand(input) {
             runtime: null,
             permit: null,
             protectedRisk: enforcementRequired,
-            enforcementError: 'Marrow enforcement configuration is unavailable. Restore the trusted configuration before retrying this protected action.',
+            enforcementError: 'The Marrow address in this machine\'s settings is not valid, so this protected action was held. Run `npx @getmarrow/install` again in this terminal, then retry.',
         }, identity.harness);
         return;
     }
@@ -1024,7 +1051,11 @@ async function runPreActionHookCommand(input) {
             outcome_state: 'pending',
         },
     }).catch(() => null);
-    const normalizedAction = (0, normalized_action_1.normalizedHookAction)(source);
+    // Normalizing has its own share of the host's budget: past it the action is
+    // a truncated placeholder, so the hook still answers (deny first) in time.
+    const normalizedAction = (0, normalized_action_1.normalizedHookAction)(source, {
+        deadlineAt: Math.min(Date.now() + 750, (holdContext.deadlineAt ?? Number.POSITIVE_INFINITY) - 1_000),
+    });
     // The decision and gate receipt this control path holds, so a denial can close them.
     const held = { decisionId: null, gateReceiptId: null };
     const control = async (signal) => {
@@ -1198,11 +1229,12 @@ async function runPreActionHookCommand(input) {
         // that would spend the receipt the operator or owner is about to approve.
         const hookEvent = typeof source.hook_event_name === 'string' ? source.hook_event_name : 'PreToolUse';
         let plan;
+        const cursor = holdContext.host === 'cursor' ? (0, host_approval_1.cursorSessionEvidence)(holdContext) : null;
+        const nobodyHere = cursorMcpPreToolUse || unattendedRun(holdContext, claudePrompt, cursor?.interactive ?? null);
         if (guidance) {
             (0, host_approval_1.rememberProtection)(holdContext, guidance);
-            const cursor = holdContext.host === 'cursor' ? (0, host_approval_1.cursorSessionEvidence)(holdContext) : null;
             plan = (0, host_approval_1.planHeldAction)({
-                unattended: cursorMcpPreToolUse || unattendedRun(holdContext, claudePrompt, cursor?.interactive ?? null),
+                unattended: nobodyHere,
                 attendedConfirmed: !cursorMcpPreToolUse && attendedConfirmed(holdContext, cursor?.interactive ?? null),
                 hostPromptOff: (0, host_session_1.hostApprovalPromptOff)(holdContext.host),
                 guidance,
@@ -1217,7 +1249,7 @@ async function runPreActionHookCommand(input) {
             });
         }
         else {
-            plan = (0, host_approval_1.planArbitrationHold)(arbitration);
+            plan = (0, host_approval_1.planArbitrationHold)(arbitration, { unattended: nobodyHere });
         }
         let code = null;
         let effective = plan;
@@ -1241,6 +1273,8 @@ async function runPreActionHookCommand(input) {
                 ...(plan.kind === 'deny' && plan.dialogLater ? { dialogLater: true, laterPrompt: plan.laterPrompt } : {}),
                 ...(plan.kind === 'deny' && plan.quiet ? { quiet: plan.quiet } : {}),
                 ...(plan.kind === 'pass' ? { notObserved: true } : {}),
+                normalizedAction,
+                ...(guidance ? {} : { personPresent: !nobodyHere }),
             });
             code = hold?.code ?? null;
             if (hold && plan.kind === 'deny' && plan.ownerLink === 'now') {
@@ -1253,7 +1287,7 @@ async function runPreActionHookCommand(input) {
             // Without local state the answer could not be linked to this hold, so it is not asked for.
             if (plan.kind === 'ask' || plan.kind === 'pass') {
                 const text = `Marrow is holding this action for approval (gate receipt ${guidance?.gateReceiptId || arbitration?.gateReceiptId}), so it did not run. Tell the operator it is waiting for approval; local approval state is unavailable on this machine.`;
-                effective = { kind: 'deny', agentText: text, userText: text, code: false };
+                effective = { kind: 'deny', agentText: text, userText: (0, host_approval_1.forPerson)(text), code: false };
             }
         }
         effective = (0, host_approval_1.finalizeOwnerRequest)(effective, linkOutcome);

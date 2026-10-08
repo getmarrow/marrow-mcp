@@ -287,7 +287,8 @@ function validateStoredEvent(value) {
         event_id: safeId(event.event_id) || (() => { throw new Error('invalid lifecycle event_id'); })(),
         event_type: String(event.event_type),
         harness: safeId(event.harness, 'custom') || 'custom',
-        agent_id: safeId(event.agent_id, 'unknown') || 'unknown',
+        // Older spools stored 'unknown' for no agent; that is never sent.
+        ...(safeId(event.agent_id) && safeId(event.agent_id) !== 'unknown' ? { agent_id: safeId(event.agent_id) } : {}),
         action: compactAction(event.action),
         ...(event.target ? { target: compactAction(event.target) } : {}),
         ...(surfaces ? { surfaces } : {}),
@@ -343,7 +344,7 @@ function compact(input) {
         throw new Error('invalid lifecycle action_changed');
     const eventId = optionalId(input.event_id, 'event_id') || (0, node_crypto_1.randomUUID)();
     const harness = optionalId(input.harness, 'harness') || 'custom';
-    const agentId = optionalId(input.agent_id, 'agent_id') || 'unknown';
+    const agentId = optionalId(input.agent_id, 'agent_id');
     const workflowId = optionalId(input.workflow_id, 'workflow_id');
     const sessionId = optionalId(input.session_id, 'session_id');
     const decisionId = optionalId(input.decision_id, 'decision_id');
@@ -357,7 +358,7 @@ function compact(input) {
         event_id: eventId,
         event_type: input.event_type,
         harness,
-        agent_id: agentId,
+        ...(agentId && agentId !== 'unknown' ? { agent_id: agentId } : {}),
         action: compactAction(input.action),
         ...(input.target ? { target: compactAction(input.target) } : {}),
         ...(surfaces ? { surfaces } : {}),
@@ -463,7 +464,7 @@ async function deliver(baseUrl, apiKey, queued, timeoutMs) {
     let timeout;
     let timedOut = false;
     const wireEvent = eventPayload(queued);
-    if (queued.agent_id === 'unknown')
+    if (!queued.agent_id || queued.agent_id === 'unknown')
         delete wireEvent.agent_id;
     try {
         const response = await Promise.race([
@@ -474,7 +475,7 @@ async function deliver(baseUrl, apiKey, queued, timeoutMs) {
                     'Content-Type': 'application/json',
                     'X-Marrow-Client': 'mcp',
                     ...(queued.session_id ? { 'X-Marrow-Session-Id': queued.session_id } : {}),
-                    ...(queued.agent_id !== 'unknown' ? { 'X-Marrow-Agent-Id': queued.agent_id } : {}),
+                    ...(queued.agent_id && queued.agent_id !== 'unknown' ? { 'X-Marrow-Agent-Id': queued.agent_id } : {}),
                 },
                 body: JSON.stringify(wireEvent),
                 signal: controller.signal,

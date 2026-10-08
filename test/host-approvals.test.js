@@ -704,7 +704,8 @@ test('Claude Code without a dialog: switching to the default mode asks on the sa
     assert.equal(linkRequests(h).length, 0, 'an ordinary hold never emails the owner');
     const asked = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_default_mode' });
     assert.equal(asked.json.hookSpecificOutput.permissionDecision, 'ask');
-    assert.match(asked.json.hookSpecificOutput.permissionDecisionReason, /\(gate receipt gate-held\)/);
+    assert.match(asked.json.hookSpecificOutput.permissionDecisionReason, /^Marrow holds this action for your approval\. Approve only if you authorize this exact action; Marrow records your answer\./);
+    assert.doesNotMatch(asked.json.hookSpecificOutput.permissionDecisionReason, /gate receipt/, 'a person reads no receipt ids')
     assert.equal(runtimes(h).length, 1, 'the same gate receipt, no new hold');
     h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
     h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), tool_use_id: 'toolu_default_mode' });
@@ -1052,14 +1053,18 @@ test('arbitration review: the hook sends the owner a one-tap link, waits on the 
   };
   const h = harness();
   try {
-    h.setConfig({ runtime, status: { 'gate-arb': 'arbitration_review' } });
+    h.setConfig({ runtime, status: { 'gate-arb': 'arbitration_review' }, approvalLinkPersonRule: true });
     const first = h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
     assert.equal(first.json.hookSpecificOutput.permissionDecision, 'deny');
-    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /^Marrow is holding this action for arbitration review \(gate receipt gate-arb\), so it did not run\. The account owner picks and approves one proposal\. An approval link was sent to the account owner \(email\)\./);
+    // Round 6: a person is here, so the owner is asked only when they ask for it (by retrying).
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /^Marrow is holding this action for arbitration review \(gate receipt gate-arb\), so it did not run\. The account owner picks and approves one proposal\. Nothing was sent to the owner yet\. If the operator wants the owner asked now, retry this exact action once/);
+    assert.equal(linkRequests(h).length, 0, 'nothing is sent until the operator asks');
     assert.doesNotMatch(first.stdout, /dashboard|log ?in/i);
     assert.deepEqual(commits(h), [], 'the receipt the owner is about to answer is never spent by the hook');
     const waiting = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_arb_2' });
-    assert.match(waiting.json.hookSpecificOutput.permissionDecisionReason, /^Marrow is still holding this action for arbitration review/);
+    assert.match(waiting.json.hookSpecificOutput.permissionDecisionReason, /^Marrow is still holding this action for arbitration review \(gate receipt gate-arb\), so it did not run\. An approval link was sent to the account owner \(email\)\./);
+    assert.equal(linkRequests(h).length, 1);
+    assert.equal(linkRequests(h)[0].body.person_present, true, 'the operator asked at this session (client-attested)');
     assert.equal(runtimes(h).length, 1);
     h.setConfig({ status: { 'gate-arb': 'approved' } });
     const allowed = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_arb_3' });
@@ -1352,10 +1357,10 @@ test('L-R3-2: an answer the service refuses as a different action (MARROW_HOST_A
   } finally { h.cleanup(); }
 });
 
-test('L-R3-1: Codex has a 3 s pre-tool budget, so npx start-up still fits under its 5 s kill', () => {
+test('L-R3-1 / R5 INFO: Codex has a 2 s pre-tool budget, so npx start-up under load still fits under its 5 s kill', () => {
   const { preToolBudgetMs } = require('../dist/host-approval.js');
-  assert.equal(preToolBudgetMs('codex'), 3_000);
-  assert.ok(preToolBudgetMs('codex') + 1_300 < 5_000, 'the measured cold npx overhead fits');
+  assert.equal(preToolBudgetMs('codex'), 2_000);
+  assert.ok(preToolBudgetMs('codex') + 2_500 < 5_000, 'more than twice the measured cold npx overhead fits');
 });
 
 
@@ -1824,4 +1829,177 @@ test('MEDIUM-R1-1: at the hook, piped SELECT and DROP send different command has
   const secretPipe = run(`echo ${secret} | wrangler secret put API_KEY`);
   assert.equal(secretPipe.action.truncated, true);
   assert.equal(secretPipe.all.includes(secret), false);
+});
+
+
+// ---------------------------------------------------------------- Fix round 5 (re-audit of 87fd70d)
+
+test('LOW-R5-2: Codex config forms: dotted -c profile keys, [profiles] tables, inline tables, multi-line strings; unreadable lines naming a key count as off', () => {
+  const { codexApprovalPromptOff, parseCodexSettings } = require('../dist/host-session.js');
+  const home = '/codex-home-r5';
+  const files = (map) => (path) => (path.startsWith(`${home}/`) && path.slice(home.length + 1) in map ? map[path.slice(home.length + 1)] : null);
+  const off = (argv, map = {}) => codexApprovalPromptOff(argv, files(map), { CODEX_HOME: home });
+  const on = [
+    ['plain', ['codex'], {}],
+    ['-a on-request', ['codex', '-a', 'on-request'], {}],
+    ['flag beats config', ['codex', '-a', 'on-request'], { 'config.toml': 'approval_policy = "never"\n' }],
+    ['a key in another table', ['codex'], { 'config.toml': '[mcp_servers.x]\ncommand = "y"\napproval_policy = "never"\n' }],
+    ['inactive profile', ['codex'], { 'config.toml': '[profiles.ci]\napproval_policy = "never"\n' }],
+    ['unrelated unreadable line', ['codex'], { 'config.toml': 'model = = broken\napproval_policy = "on-request"\n' }],
+    ['a prompt that mentions --yolo', ['codex', 'explain what --yolo does'], {}],
+    ['profile name outside CODEX_HOME', ['codex', '-p', '../../etc/x'], { '../../etc/x.config.toml': 'approval_policy = "never"\n' }],
+  ];
+  for (const [label, argv, map] of on) assert.equal(off(argv, map), false, label);
+  const offCases = [
+    ['-c profiles.fast.approval_policy with -p fast', ['codex', '-p', 'fast', '-c', 'profiles.fast.approval_policy="never"'], {}],
+    ['-c profiles.fast.* with profile in config', ['codex', '-c', 'profiles.fast.approval_policy="never"'], { 'config.toml': 'profile = "fast"\n' }],
+    ['-c quoted profile key', ['codex', '-p', 'fast', '-c', 'profiles."fast".sandbox_mode="danger-full-access"'], {}],
+    ['[profiles] table, dotted key', ['codex', '-p', 'fast'], { 'config.toml': '[profiles]\nfast.approval_policy = "never"\n' }],
+    ['[profiles] table, inline table', ['codex', '-p', 'fast'], { 'config.toml': '[profiles]\nfast = { approval_policy = "never" }\n' }],
+    ['inline profiles table', ['codex', '-p', 'fast'], { 'config.toml': 'profiles = { fast = { approval_policy = "never" } }\n' }],
+    ['literal multi-line string', ['codex'], { 'config.toml': "approval_policy = '''never'''\n" }],
+    ['basic multi-line string', ['codex'], { 'config.toml': 'approval_policy = """\nnever"""\n' }],
+    ['quoted key, BOM and CRLF', ['codex'], { 'config.toml': '\uFEFF"approval_policy" = "never"\r\n' }],
+    ['reviewer in a profile file', ['codex', '-p', 'fast'], { 'fast.config.toml': 'approvals_reviewer = "auto_review"\n' }],
+    ['unreadable line naming approval_policy', ['codex'], { 'config.toml': 'approval_policy = never ever\n' }],
+    ['unreadable -c naming sandbox_mode', ['codex', '-c', 'sandbox_mode'], {}],
+    ['-c top-level and an active profile disagree: hold quietly', ['codex', '-p', 'fast', '-c', 'approval_policy="on-request"'], { 'config.toml': '[profiles.fast]\napproval_policy = "never"\n' }],
+  ];
+  for (const [label, argv, map] of offCases) assert.equal(off(argv, map), true, label);
+  // Only the approval keys are kept; other values never are.
+  const other = randomBytes(12).toString('hex');
+  const parsed = parseCodexSettings(`[mcp_servers.marrow.env]\nMARROW_API_KEY = "${other}"\n[profiles.x]\napproval_policy = "never"\nnotes = """\n${other}\n"""\n`);
+  assert.equal(JSON.stringify(parsed).includes(other), false);
+  assert.deepEqual(parsed.profiles, { x: { approval_policy: 'never' } });
+});
+
+test('MEDIUM-R5-1: a held action with a 32 KB command on Codex is denied within its budget, whether Marrow answers or never does', async () => {
+  const big = `wrangler deploy --env production --var ${'a='.repeat(16_384)}`;
+  for (const delay of [0, 8_000]) {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' }, runtimeDelayMs: delay });
+      const out = await h.runAsync('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_input: { command: big } }, codexExec);
+      assert.equal(out.json?.hookSpecificOutput?.permissionDecision, 'deny', `Marrow delay ${delay} ms: ${out.stdout.slice(0, 200)}`);
+      assert.ok(out.ms < 3_000, `Marrow delay ${delay} ms: the hook took ${out.ms} ms`);
+      const sent = h.requests().map((request) => request.body?.normalized_action).filter(Boolean);
+      if (delay === 0) {
+        assert.ok(sent.length > 0, 'the normalized action was sent');
+        assert.equal(sent[0].truncated, true, 'a token over the scan limit is withheld and marked truncated');
+      }
+    } finally { h.cleanup(); }
+  }
+});
+
+test('Round 6 arbitration links: unattended runs never claim a person; no_person_present waits quietly; a live link is not resent; an older service gets the request without person_present', () => {
+  const arbitrationRuntime = () => {
+    const runtime = hostRuntime('gate-arb');
+    runtime.arbitration = { receipt_id: 'arb-receipt-1', decision_id: 'decision-review', resolution: 'review_required', owner_approval_required: true };
+    runtime.completion_contract.arbitration_receipt_required = true;
+    runtime.completion_contract.owner_approval = {
+      mode: 'arbitration_review_required', proof_path: null, proof_shape: null, dashboard_receipt_required: true,
+      receipt_field: 'owner_approval_receipt_id',
+      approval_link_endpoint: '/v1/agent/gate-receipts/gate-arb/approval-link',
+      approval_status_endpoint: '/v1/agent/gate-receipts/gate-arb/owner-approval',
+    };
+    return runtime;
+  };
+  // Unattended (codex exec): asks with person_present false; the service sends nothing unless pings are on.
+  let h = harness();
+  try {
+    h.setConfig({ runtime: arbitrationRuntime(), status: { 'gate-arb': 'arbitration_review' }, approvalLinkPersonRule: true });
+    const out = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), codexExec);
+    assert.equal(out.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(linkRequests(h).length, 1);
+    assert.equal(linkRequests(h)[0].body.person_present, false);
+    assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Nothing was sent to anyone; it waits quietly/);
+  } finally { h.cleanup(); }
+  // Pings on: the same unattended request is sent.
+  h = harness();
+  try {
+    h.setConfig({ runtime: arbitrationRuntime(), status: { 'gate-arb': 'arbitration_review' }, approvalLinkPersonRule: true, unattendedPing: true });
+    const out = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), codexExec);
+    assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /An approval link was sent to the account owner \(email\)/);
+  } finally { h.cleanup(); }
+  // A live link: already_sent / link_live means the owner has it; wait.
+  h = harness();
+  try {
+    h.setConfig({
+      runtime: arbitrationRuntime(), status: { 'gate-arb': 'arbitration_review' },
+      approvalLink: [{ status: 200, body: { data: { sent: false, state: 'already_sent', reason: 'link_live', approval_link: { id: 'link-live', channel: 'email', expires_at: '2030-01-01T00:10:00.000Z' }, exact_next_action: 'fixture live' } } }],
+    });
+    h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    const retry = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_arb_live' });
+    assert.match(retry.json.hookSpecificOutput.permissionDecisionReason, /The account owner already has a one-tap approval link \(email, until 2030-01-01T00:10:00\.000Z\); wait for their answer\./);
+    const again = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_arb_live_2' });
+    assert.equal(again.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(linkRequests(h).length, 1, 'a live link is never asked for again');
+  } finally { h.cleanup(); }
+  // An older service refuses person_present as unknown: the request is resent without it.
+  h = harness();
+  try {
+    h.setConfig({ runtime: arbitrationRuntime(), status: { 'gate-arb': 'arbitration_review' }, approvalLinkStrict: true });
+    h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
+    const retry = h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_use_id: 'toolu_arb_old' });
+    assert.match(retry.json.hookSpecificOutput.permissionDecisionReason, /An approval link was sent to the account owner \(email\)/);
+    const bodies = linkRequests(h).map((request) => request.body);
+    assert.deepEqual(bodies.map((body) => 'person_present' in body), [true, false]);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------- Day-one friction fixes (owner-approved, round 5)
+
+test('Day one (bug 9): text a person reads names no receipt ids, and the held notice names no seat or fallback agent ids', async () => {
+  const { forPerson, personAgentName } = require('../dist/host-approval.js');
+  assert.equal(forPerson('Marrow is holding this action for approval (gate receipt gate-123), so it did not run.'), 'Marrow is holding this action for approval, so it did not run.');
+  assert.equal(personAgentName('free-seat-0123456789abcdef0123456789abcdef'), null);
+  assert.equal(personAgentName('api-key-abc123'), null);
+  assert.equal(personAgentName('darvis'), 'darvis');
+  // Codex typed reply: the user-only text has no receipt id (the agent's text keeps it to close the action).
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
+    h.run('codex-context-hook', { ...fixture('codex-user-prompt-submit.json'), prompt: 'deploy please' }, codexTui);
+    const out = h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), codexTui);
+    if (out.json?.systemMessage) assert.doesNotMatch(out.json.systemMessage, /gate receipt/);
+    assert.match(out.json.hookSpecificOutput.permissionDecisionReason ?? out.json.hookSpecificOutput.additionalContext, /gate receipt gate-held/);
+    // Held notice: a seat id is left out.
+    const notice = h.run('claude-context-hook', { session_id: 'notice-session', transcript_path: null, cwd: '/home/operator/project', permission_mode: 'default', hook_event_name: 'UserPromptSubmit', prompt: 'hi' });
+    if (notice.json?.systemMessage) assert.doesNotMatch(notice.json.systemMessage, /free-seat|api-key-/);
+  } finally { h.cleanup(); }
+  const h2 = harness();
+  try {
+    h2.setConfig({ heldActions: [{ gate_receipt_id: 'gate-a', agent_id: 'free-seat-0123456789abcdef0123456789abcdef', decision_type: 'deploy', age_seconds: 30, expired: false }] });
+    const notice = h2.run('claude-context-hook', { session_id: 'notice-session-2', transcript_path: null, cwd: '/home/operator/project', permission_mode: 'default', hook_event_name: 'UserPromptSubmit', prompt: 'hi' });
+    assert.match(notice.json.systemMessage, /^Marrow: 1 held action is waiting for you: deploy\. Nothing ran\./);
+  } finally { h2.cleanup(); }
+});
+
+test('Day one (bug 3): a marrow_commit retry that added proof but conflicts says plainly which proof is still missing', () => {
+  const h = harness();
+  try {
+    h.setConfig({
+      runtime: hostRuntime(),
+      commitSequence: [
+        { status: 202, body: { data: { accepted: true, committed: false, decision_id: 'decision-review', outcome_state: 'observed_unverified', outcome_observation_id: 'outcome_observation_0123456789abcdef0123456789abcdef', authorization_granted: false, trusted_learning_applied: false, deduped: false, governance_validation: { code: 'MARROW_PROOF_PACK_INCOMPLETE', reason: 'Required proof pack is incomplete.' }, exact_next_action: 'Retry only after proof includes: summary, rollback_target, handoff_result_file.' } } },
+        { status: 409, body: { error: 'Outcome observation conflicts with the stored one.', details: { code: 'MARROW_OUTCOME_OBSERVATION_CONFLICT', exact_next_action: 'Retry only with the exact originally observed outcome, success value, proof, and causality.', retryable: false } } },
+      ],
+    });
+    const call = (id, proof) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'marrow_commit', arguments: {
+      decision_id: 'decision-review', success: true, outcome: 'Deployed the worker; smoke passed.', proof,
+    } } });
+    const input = [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      call(2, { summary: 'Deployed.' }),
+      call(3, { summary: 'Deployed.', rollback_target: 'worker version 41' }),
+    ].map(JSON.stringify).join('\n') + '\n';
+    const server = h.run('marrow-mcp-server-placeholder', input, { MARROW_AUTO_ENROLL: 'false' });
+    assert.equal(server.status, 0, server.stderr);
+    const replies = server.stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const retry = JSON.parse(replies.find((reply) => reply.id === 3).result.content[0].text);
+    assert.equal(retry.code, 'MARROW_OUTCOME_OBSERVATION_CONFLICT');
+    assert.deepEqual(retry.still_missing, ['handoff_result_file']);
+    assert.match(retry.exact_next_action, /^Still missing: handoff_result_file\./);
+    assert.equal(retry.failure_kind, 'validation', 'never reported as an outage');
+  } finally { h.cleanup(); }
 });

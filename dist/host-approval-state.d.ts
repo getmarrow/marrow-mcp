@@ -71,6 +71,10 @@ export type HoldRecord = {
     quiet?: 'attended' | 'unattended' | null;
     /** Left to the host's own approval step, which Marrow does not observe. */
     not_observed?: boolean;
+    /** The normalized action the runtime call carried (hashes and program names only). */
+    normalized_action?: Record<string, unknown>;
+    /** Arbitration: a person was at this session when it was held (a retry there is their request for the owner's link). */
+    person_present?: boolean;
     action: {
         action: string;
         target: string;

@@ -1519,6 +1519,9 @@ export type MarrowAutoApprovalState = {
 /** The owner's one-tap link for one marrow_auto operation. */
 export type AutoOwnerLinkState = {
   sent: boolean;
+  /** The owner already had a live link for this arbitration; nothing new was sent. */
+  alreadySent?: boolean;
+  expiresAt?: string | null;
   /** The service sent nothing on purpose (owner_ping_off): quiet by default. */
   notSent?: boolean;
   channel: string | null;
@@ -1678,15 +1681,20 @@ export function ordinaryHoldWaitText(guidance: OrdinaryApprovalGuidance, link?: 
 async function requestAutoOwnerLink(input: {
   apiKey: string; baseUrl: string; gateReceiptId: string; decisionId: string | null;
   sessionId?: string; agentId?: string; binding: { ownerLink?: AutoOwnerLinkState }; timeoutMs: number;
+  /** Arbitration: whether the operator asked for the link (request_owner_link). */
+  personPresent?: boolean;
 }): Promise<void> {
   const previous = input.binding.ownerLink;
-  if (previous?.sent || previous?.final || (previous?.attempts ?? 0) >= MAX_OWNER_LINK_ATTEMPTS) return;
+  // Nothing was sent because nobody had asked: the operator asking now is a new request.
+  const askedAfterQuiet = previous?.notSent === true && input.personPresent === true;
+  if (previous?.sent || (previous?.final && !askedAfterQuiet) || (previous?.attempts ?? 0) >= MAX_OWNER_LINK_ATTEMPTS) return;
   const attempts = (previous?.attempts ?? 0) + 1;
   const timeout = createTimeoutSignal(input.timeoutMs);
   try {
-    const link = await marrowRequestApprovalLink(input.apiKey, input.baseUrl, input.gateReceiptId, input.decisionId, input.sessionId, input.agentId, timeout.signal);
+    const link = await marrowRequestApprovalLink(input.apiKey, input.baseUrl, input.gateReceiptId, input.decisionId, input.sessionId, input.agentId, timeout.signal,
+      typeof input.personPresent === 'boolean' ? { personPresent: input.personPresent } : {});
     if (link.ok) {
-      input.binding.ownerLink = { sent: true, channel: link.link.channel, attempts, finalCode: null, final: false };
+      input.binding.ownerLink = { sent: true, ...(link.alreadySent ? { alreadySent: true } : {}), expiresAt: link.link.expires_at ?? null, channel: link.link.channel, attempts, finalCode: null, final: false };
     } else if (link.notSent) {
       input.binding.ownerLink = { sent: false, notSent: true, channel: null, attempts, finalCode: link.code, final: true };
     } else {
@@ -1809,7 +1817,7 @@ async function elicitAutoApproval(input: {
   try {
     answer = await input.elicit({
       gateReceiptId: input.guidance.gateReceiptId,
-      message: `Marrow holds this action for your approval: ${input.action}.${input.reason ? ` Reason: ${input.reason}` : ''}${notice} Approve only if you authorize this exact action (gate receipt ${input.guidance.gateReceiptId}).`.slice(0, 900),
+      message: `Marrow holds this action for your approval: ${input.action}.${input.reason ? ` Reason: ${input.reason}` : ''}${notice} Approve only if you authorize this exact action.`.slice(0, 900),
     });
   } catch {
     answer = null;
@@ -2072,6 +2080,8 @@ async function marrowAutoWithTrace(
       await requestAutoOwnerLink({
         apiKey, baseUrl, gateReceiptId: arbitrationGuidance.gateReceiptId, decisionId, sessionId, agentId,
         binding: operationBinding, timeoutMs: Math.min(2_000, linkBudget),
+        // Client-attested: a person at this session asked only when the operator asked for the link.
+        personPresent: params.request_owner_link === true,
       });
     }
     const read = await readOrdinaryApprovalForAuto({
@@ -2079,7 +2089,9 @@ async function marrowAutoWithTrace(
     });
     const status = read.status;
     const link = operationBinding.ownerLink;
-    const linkText = link?.sent ? `An approval link was sent to the account owner${link.channel ? ` (${link.channel})` : ''}.`
+    const linkText = link?.alreadySent ? `The account owner already has a one-tap approval link${link.channel ? ` (${link.channel}${link.expiresAt ? `, until ${link.expiresAt}` : ''})` : ''}; wait for their answer.`
+      : link?.sent ? `An approval link was sent to the account owner${link.channel ? ` (${link.channel})` : ''}.`
+      : link?.notSent ? 'Nothing was sent to the account owner. If the operator wants the owner asked now, call marrow_auto again with this same operation_id and request_owner_link: true; Marrow then sends the owner a one-tap link.'
       : link?.final ? `Marrow could not send the account owner an approval link${link.finalCode ? ` (${link.finalCode})` : ''}; tell the operator this action is waiting for the account owner's choice.`
       : link && link.attempts > 0 ? 'Marrow could not send the account owner an approval link yet; calling marrow_auto again with this same operation_id tries again.'
       : 'Tell the operator this action is waiting for the account owner\'s choice.';
@@ -3048,16 +3060,43 @@ export async function marrowRequestApprovalLink(
   sessionId?: string,
   agentId?: string,
   signal?: AbortSignal,
+  options: {
+    /**
+     * Arbitration links: true only when a person at this session asked for the
+     * link (client-attested); false when nobody asked. Omitted for other links.
+     */
+    personPresent?: boolean;
+  } = {},
 ): Promise<MarrowApprovalLinkResult> {
   if (!GATE_RECEIPT_IDENTIFIER.test(gateReceiptId)) throw new TypeError('gate_receipt_id is not a valid gate receipt identifier.');
+  const body: Record<string, unknown> = decisionId && GATE_RECEIPT_IDENTIFIER.test(decisionId) ? { decision_id: decisionId } : {};
+  if (typeof options.personPresent === 'boolean') body.person_present = options.personPresent;
+  const result = await requestApprovalLinkOnce(apiKey, baseUrl, gateReceiptId, body, sessionId, agentId, signal);
+  // A service before round 6 refuses person_present as an unknown field: send the request without it.
+  if (!result.ok && 'person_present' in body && result.status === 400 && result.code === 'MARROW_APPROVAL_LINK_INVALID' && result.fields?.includes('person_present')) {
+    const { person_present: _omitted, ...plain } = body;
+    return requestApprovalLinkOnce(apiKey, baseUrl, gateReceiptId, plain, sessionId, agentId, signal);
+  }
+  return result;
+}
+
+async function requestApprovalLinkOnce(
+  apiKey: string,
+  baseUrl: string,
+  gateReceiptId: string,
+  body: Record<string, unknown>,
+  sessionId?: string,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<MarrowApprovalLinkResult & { fields?: string[] }> {
   return fetch(`${baseUrl}${approvalLinkPath(gateReceiptId)}`, {
     method: 'POST',
     headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
-    body: JSON.stringify(decisionId && GATE_RECEIPT_IDENTIFIER.test(decisionId) ? { decision_id: decisionId } : {}),
+    body: JSON.stringify(body),
     signal,
   }, {
     retryOwner: 'caller',
-    consumeResponse: async (response): Promise<MarrowApprovalLinkResult> => {
+    consumeResponse: async (response): Promise<MarrowApprovalLinkResult & { fields?: string[] }> => {
       let json: Record<string, unknown> | null = null;
       try {
         if ((response.headers.get('content-type') || '').includes('json')) json = await response.json() as Record<string, unknown>;
@@ -3075,8 +3114,10 @@ export async function marrowRequestApprovalLink(
           return { ok: false, status: response.status, code: reason, retryable: false, notSent: true };
         }
         const link = data?.approval_link && typeof data.approval_link === 'object' ? data.approval_link as Record<string, unknown> : null;
-        if (!link || link.gate_receipt_id !== gateReceiptId) throw invalidResponseError();
-        return { ok: true, link: {
+        // One live link per arbitration: a repeat names that link and sends nothing new.
+        const alreadySent = data?.sent === false && data.state === 'already_sent';
+        if (!link || (link.gate_receipt_id !== undefined && link.gate_receipt_id !== gateReceiptId) || (!alreadySent && link.gate_receipt_id !== gateReceiptId)) throw invalidResponseError();
+        return { ok: true, ...(alreadySent ? { alreadySent: true } : {}), link: {
           channel: typeof link.channel === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(link.channel) ? link.channel : 'owner channel',
           expires_at: SAFE_STATUS_TIME(link.expires_at),
         } };
@@ -3085,7 +3126,8 @@ export async function marrowRequestApprovalLink(
         ? json.details as Record<string, unknown>
         : {};
       const code = typeof details.code === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(details.code) ? details.code : null;
-      return { ok: false, status: response.status, code, retryable: response.status === 429 || response.status >= 500 || details.retryable === true };
+      const fields = Array.isArray(details.fields) ? details.fields.filter((field): field is string => typeof field === 'string').slice(0, 10) : undefined;
+      return { ok: false, status: response.status, code, retryable: response.status === 429 || response.status >= 500 || details.retryable === true, ...(fields ? { fields } : {}) };
     },
   });
 }

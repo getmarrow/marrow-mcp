@@ -79,8 +79,12 @@ export declare const HELD_UNREACHABLE_TEXT = "Marrow could not confirm the owner
 export type OwnerLinkOutcome = {
     kind: 'sent';
     channel: string;
-} | {
+}
+/** The owner already has a live link (this hold's, or the arbitration's own on the service). */
+ | {
     kind: 'already_sent';
+    channel?: string;
+    expiresAt?: string | null;
 } | {
     kind: 'deferred';
 } | {
@@ -194,7 +198,9 @@ export declare const HELD_FOR_YOU_TEXT = "This action is held until you approve 
  * and approves one proposal. The hook denies, asks Marrow to send the owner a
  * link, and the retried action reads the status. Nobody is told to log in.
  */
-export declare function planArbitrationHold(guidance: ArbitrationApprovalGuidance): HoldPlan;
+export declare function planArbitrationHold(guidance: ArbitrationApprovalGuidance, options?: {
+    unattended?: boolean;
+}): HoldPlan;
 /** User-only text with the typed-reply code (Cursor user_message, Codex and Gemini systemMessage). */
 export declare function typedReplyUserText(userText: string, code: string): string;
 /** What a hold record needs from the runtime's guidance (ordinary or arbitration). */
@@ -221,6 +227,10 @@ export type RecordHoldInput = {
     };
     /** From the plan: whether and when the owner's one-tap link is requested. */
     ownerLink?: 'now' | 'on_request';
+    /** The normalized action the runtime call carried; the answer is reported with the same one. */
+    normalizedAction?: Record<string, unknown> | null;
+    /** Arbitration: a person is at this session (its retry asks for the owner's link). */
+    personPresent?: boolean;
     dialogLater?: boolean;
     laterPrompt?: string;
     quiet?: 'attended' | 'unattended';
@@ -235,6 +245,10 @@ export declare function rememberHold(ctx: HoldContext, input: RecordHoldInput): 
 export declare function rememberProtection(ctx: HoldContext, guidance: OrdinaryApprovalGuidance): void;
 /** Of these categories, the ones this key last saw the account owner protect. */
 export declare function protectedAmong(ctx: HoldContext, categories: string[]): string[];
+/** Text for a person: the agent's text without receipt ids (the agent keeps them to close the action). */
+export declare function forPerson(text: string): string;
+/** An agent id worth showing a person: not an automatic seat or key-derived fallback id. */
+export declare function personAgentName(agent: string | null | undefined): string | null;
 /**
  * Asks Marrow to send the account owner a one-tap approval link for this hold.
  * A retryable failure (network, rate limit, undelivered) is tried again on a
@@ -325,6 +339,8 @@ export declare function flushHoldOutbox(ctx: HoldContext, limit?: number, budget
  * to match it.
  */
 export declare function holdSessionForReceipt(ctx: HoldContext, gateReceiptId: string): string | null;
+/** The proof fields this machine's hold for a receipt asked for (empty when unknown). */
+export declare function proofFieldsForReceipt(ctx: HoldContext, gateReceiptId: string): string[];
 /** marrow_commit: send a queued host approval for this receipt before the agent's own commit. */
 export declare function deliverQueuedForReceipt(ctx: HoldContext, gateReceiptId: string): Promise<void>;
 /** How long a post-tool hook waits for Claude Code's async PermissionRequest marker. */

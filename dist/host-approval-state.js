@@ -184,6 +184,9 @@ function validHold(value) {
             || (typeof hold.arbitration_receipt_id === 'string' && IDENTIFIER.test(hold.arbitration_receipt_id)))
         && (hold.quiet === undefined || hold.quiet === null || hold.quiet === 'attended' || hold.quiet === 'unattended')
         && (hold.not_observed === undefined || typeof hold.not_observed === 'boolean')
+        && (hold.person_present === undefined || typeof hold.person_present === 'boolean')
+        && (hold.normalized_action === undefined || (Boolean(hold.normalized_action) && typeof hold.normalized_action === 'object'
+            && !Array.isArray(hold.normalized_action) && JSON.stringify(hold.normalized_action).length <= 16_384))
         && Boolean(hold.action) && typeof hold.action.action === 'string' && hold.action.action.length <= 512
         && typeof hold.action.target === 'string' && hold.action.target.length <= 256
         && typeof hold.action.type === 'string' && hold.action.type.length <= 64

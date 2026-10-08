@@ -203,13 +203,17 @@ function normalizeWindsurfHookEvent(source: Record<string, unknown>): Record<str
   const executionId = boundedCorrelationId(source.execution_id);
   if (trajectoryId) normalized.session_id = trajectoryId;
   if (executionId) normalized.tool_use_id = executionId;
+  // input_truncated: this adapter cut or dropped the input, so the exact action
+  // is not known; the normalized action is then marked truncated (never bound).
   if (action.endsWith('_run_command')) {
     normalized.tool_name = 'Bash';
     const command = typeof info.command_line === 'string' ? info.command_line.slice(0, 8192) : '';
     normalized.tool_input = { command };
+    if (typeof info.command_line === 'string' && info.command_line.length > 8192) normalized.input_truncated = true;
   } else if (action.endsWith('_write_code')) {
     normalized.tool_name = 'Write';
     normalized.tool_input = {};
+    normalized.input_truncated = true;
   } else if (action.endsWith('_mcp_tool_use')) {
     const server = boundedWindsurfName(info.mcp_server_name) || 'unknown';
     const tool = boundedWindsurfName(info.mcp_tool_name) || 'unknown';
@@ -217,6 +221,7 @@ function normalizeWindsurfHookEvent(source: Record<string, unknown>): Record<str
       ? `mcp__marrow__${tool}`
       : `MCP:${server}:${tool}`;
     normalized.tool_input = {};
+    normalized.input_truncated = true;
   }
   if (action.startsWith('post_') && action !== 'post_cascade_response') normalized.success = true;
   return normalized;
@@ -337,6 +342,7 @@ function normalizeCursorExecutionEvent(source: Record<string, unknown>): Record<
   if (event.endsWith('ShellExecution')) {
     normalized.tool_name = 'Shell';
     normalized.tool_input = { command: typeof source.command === 'string' ? source.command.slice(0, 65_536) : '' };
+    if (typeof source.command === 'string' && source.command.length > 65_536) normalized.input_truncated = true;
     // Cursor reports no exit status: the outcome is unknown, never assumed to be a success.
     if (event === 'afterShellExecution') normalized.outcome_unknown = true;
     return normalized;
@@ -348,9 +354,16 @@ function normalizeCursorExecutionEvent(source: Record<string, unknown>): Record<
     : `MCP:${server}:${tool}`;
   let input: unknown = {};
   if (typeof source.tool_input === 'string' && source.tool_input.length <= 262_144) {
-    try { input = JSON.parse(source.tool_input); } catch { input = { raw: source.tool_input.slice(0, 4096) }; }
+    try {
+      input = JSON.parse(source.tool_input);
+    } catch {
+      input = { raw: source.tool_input.slice(0, 4096) };
+      if (source.tool_input.length > 4096) normalized.input_truncated = true;
+    }
   } else if (source.tool_input && typeof source.tool_input === 'object') {
     input = source.tool_input;
+  } else if (typeof source.tool_input === 'string') {
+    normalized.input_truncated = true;
   }
   normalized.tool_input = input;
   if (event === 'afterMCPExecution') normalized.outcome_unknown = true;

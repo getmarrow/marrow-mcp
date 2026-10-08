@@ -120,6 +120,10 @@ export type HoldRecord = {
   quiet?: 'attended' | 'unattended' | null;
   /** Left to the host's own approval step, which Marrow does not observe. */
   not_observed?: boolean;
+  /** The normalized action the runtime call carried (hashes and program names only). */
+  normalized_action?: Record<string, unknown>;
+  /** Arbitration: a person was at this session when it was held (a retry there is their request for the owner's link). */
+  person_present?: boolean;
   action: { action: string; target: string; type: string; surfaces: string[] };
   outbox: HoldOutbox | null;
   created_at: number;
@@ -265,6 +269,9 @@ function validHold(value: unknown): value is HoldRecord {
       || (typeof hold.arbitration_receipt_id === 'string' && IDENTIFIER.test(hold.arbitration_receipt_id)))
     && (hold.quiet === undefined || hold.quiet === null || hold.quiet === 'attended' || hold.quiet === 'unattended')
     && (hold.not_observed === undefined || typeof hold.not_observed === 'boolean')
+    && (hold.person_present === undefined || typeof hold.person_present === 'boolean')
+    && (hold.normalized_action === undefined || (Boolean(hold.normalized_action) && typeof hold.normalized_action === 'object'
+      && !Array.isArray(hold.normalized_action) && JSON.stringify(hold.normalized_action).length <= 16_384))
     && Boolean(hold.action) && typeof hold.action.action === 'string' && hold.action.action.length <= 512
     && typeof hold.action.target === 'string' && hold.action.target.length <= 256
     && typeof hold.action.type === 'string' && hold.action.type.length <= 64

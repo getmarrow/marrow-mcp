@@ -450,7 +450,7 @@ if (process.argv[2] !== 'keys') {
     }
     else if (cliArgs.preActionHook) {
         void (0, hook_pre_action_1.runPreActionHookCommand)().catch(() => {
-            process.stderr.write('Marrow pre-action governance failed closed. Retry after restoring the trusted configuration.\n');
+            process.stderr.write('Marrow\'s pre-action check stopped on an internal error, so this action was held. Run `npx -y @getmarrow/install@latest doctor` in this terminal, then retry.\n');
             process.exitCode = 2;
         });
     }
@@ -644,6 +644,37 @@ if (process.argv[2] !== 'keys') {
                 content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
                 ...(isError ? { isError: true } : {}),
             });
+        }
+        /** Proof fields Marrow reported missing per decision or gate receipt, for a plain answer on a retry conflict. */
+        const commitProofMissing = new Map();
+        function proofFieldsGiven(proof) {
+            if (!proof || typeof proof !== 'object' || Array.isArray(proof))
+                return [];
+            return Object.entries(proof)
+                .filter(([, value]) => value !== null && value !== undefined && value !== ''
+                && !(Array.isArray(value) && value.length === 0)
+                && !(typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0))
+                .map(([key]) => key);
+        }
+        /**
+         * A retry of marrow_commit that added proof, refused as a conflict with the
+         * outcome Marrow already holds (409 MARROW_OUTCOME_OBSERVATION_CONFLICT):
+         * say plainly which proof fields are still missing.
+         */
+        function proofRetryConflict(keys, proof, requiredFromHold) {
+            const required = [...new Set([...keys.flatMap((key) => commitProofMissing.get(key) || []), ...requiredFromHold])];
+            const given = proofFieldsGiven(proof);
+            const stillMissing = required.filter((field) => !given.includes(field));
+            return {
+                committed: false,
+                code: 'MARROW_OUTCOME_OBSERVATION_CONFLICT',
+                proof_required: true,
+                failure_kind: 'validation',
+                still_missing: stillMissing,
+                exact_next_action: stillMissing.length
+                    ? `Still missing: ${stillMissing.join(', ')}. Call marrow_commit again with the same decision_id and gate_receipt_id, and a proof that has every field you sent plus these. Fill them from what really happened; do not invent values.`
+                    : 'Marrow already holds an outcome for this action with different proof. Call marrow_commit again with the same decision_id and gate_receipt_id and the complete proof in one call; do not invent values.',
+            };
         }
         function toolFailure(toolName, failure) {
             const result = (0, request_reliability_1.structuredRequestFailure)(failure);
@@ -2318,22 +2349,55 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             commitSessionId = (0, host_approval_1.holdSessionForReceipt)(holdContext, args.gate_receipt_id) || SESSION_ID;
                             await (0, host_approval_1.deliverQueuedForReceipt)(holdContext, args.gate_receipt_id).catch(() => undefined);
                         }
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
-                            decision_id,
-                            success: commitSuccess,
-                            outcome,
-                            caused_by: args.caused_by,
-                            proof: args.proof,
-                            gate_receipt_id: args.gate_receipt_id,
-                            arbitration_receipt_id: args.arbitration_receipt_id,
-                            owner_approval_receipt_id: args.owner_approval_receipt_id,
-                            action: args.action,
-                            target: args.target,
-                            type: args.type,
-                            surfaces: args.surfaces,
-                            auto_gate: args.auto_gate,
-                            model_usage: args.model_usage,
-                        }, commitSessionId, FLEET_AGENT_ID, signal), { highRisk: true, cacheAware: false, toolName: 'marrow_commit' });
+                        const proofKeys = [`decision:${decision_id}`, ...(typeof args.gate_receipt_id === 'string' && args.gate_receipt_id ? [`receipt:${args.gate_receipt_id}`] : [])];
+                        let result;
+                        try {
+                            result = await withControlDeadline((signal) => (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
+                                decision_id,
+                                success: commitSuccess,
+                                outcome,
+                                caused_by: args.caused_by,
+                                proof: args.proof,
+                                gate_receipt_id: args.gate_receipt_id,
+                                arbitration_receipt_id: args.arbitration_receipt_id,
+                                owner_approval_receipt_id: args.owner_approval_receipt_id,
+                                action: args.action,
+                                target: args.target,
+                                type: args.type,
+                                surfaces: args.surfaces,
+                                auto_gate: args.auto_gate,
+                                model_usage: args.model_usage,
+                            }, commitSessionId, FLEET_AGENT_ID, signal), { highRisk: true, cacheAware: false, toolName: 'marrow_commit' });
+                        }
+                        catch (err) {
+                            if (err instanceof request_reliability_1.MarrowRequestError && err.code === 'proof_required' && err.missingFields.length) {
+                                for (const key of proofKeys)
+                                    commitProofMissing.set(key, [...err.missingFields]);
+                            }
+                            if (err instanceof request_reliability_1.MarrowRequestError && err.status === 409 && err.backendCode === 'MARROW_OUTCOME_OBSERVATION_CONFLICT') {
+                                const fromHold = typeof args.gate_receipt_id === 'string' && args.gate_receipt_id
+                                    ? (0, host_approval_1.proofFieldsForReceipt)({ apiKey: API_KEY, baseUrl: BASE_URL, sessionId: SESSION_ID || 'mcp-server', agentId: FLEET_AGENT_ID, harness: 'mcp-client', host: 'other', hostSessionId: SESSION_ID || 'mcp-server' }, args.gate_receipt_id)
+                                    : [];
+                                toolSuccess(id, proofRetryConflict(proofKeys, args.proof, fromHold), true);
+                                return;
+                            }
+                            throw err;
+                        }
+                        if (result.committed) {
+                            for (const key of proofKeys)
+                                commitProofMissing.delete(key);
+                        }
+                        else {
+                            // A short close is accepted unverified with the missing proof named ("Retry only after proof includes: a, b.").
+                            const unverified = result;
+                            const listed = unverified.governance_validation?.code === 'MARROW_PROOF_PACK_INCOMPLETE'
+                                ? /proof includes: ([A-Za-z0-9_, ]{1,600})\.?\s*$/.exec(String(unverified.exact_next_action || ''))?.[1]
+                                : undefined;
+                            const missing = listed ? listed.split(',').map((field) => field.trim()).filter(Boolean) : [];
+                            if (missing.length)
+                                for (const key of proofKeys)
+                                    commitProofMissing.set(key, missing);
+                        }
                         const commitResult = { ...result, narrative: result.narrative ?? null };
                         lastCommitted = result.committed;
                         lastDecisionId = result.committed ? null : decision_id;

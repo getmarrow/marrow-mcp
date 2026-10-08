@@ -47,6 +47,13 @@
  *   characters), which may also be an id or a commit; the arguments of a
  *   program named for a secret (`set-password.sh`); and inputs cut for size.
  *
+ * Size and time: a word, data text or input string over 16 KB is not
+ * scanned (withheld, truncated); a command over 256 KB or 4,096 words, more
+ * than 512 KB scanned in all, or work past the caller's deadline gives a
+ * truncated placeholder (kind and tool name only). An event whose input a
+ * host adapter cut or dropped (`input_truncated`) is truncated too. Every scan
+ * is linear in its input: patterns start at boundaries and bound their repeats.
+ *
  * Commands run through `bash -c`, `ssh HOST …`, `eval` and `su -c` are
  * normalized the same way. Everything else stays in the normalized form, which
  * is only hashed; a password typed as a plain argument of an unknown program
@@ -68,6 +75,8 @@ export type NormalizedHookAction = {
     /** The hash could not cover everything that decides the action: Marrow never binds an approval to it. */
     truncated?: true;
 };
+/** A word, data text or input string longer than this is not scanned: it is withheld and the action marked truncated. */
+export declare const MAX_SCAN_CHARS = 16384;
 type ToolEvent = {
     tool_name?: unknown;
     tool_input?: unknown;
@@ -86,11 +95,21 @@ export declare function classifySecretName(name: string): NameClass;
  * never sent. `truncated` is true when something that may change what the
  * command does had to be withheld. Exported for tests.
  */
-export declare function normalizeShellCommand(command: string): {
+export declare function normalizeShellCommand(command: string, deadline?: number): {
     text: string;
     programs: string[];
     truncated: boolean;
 };
-export declare function normalizedHookAction(event: ToolEvent): NormalizedHookAction;
+/**
+ * The normalized action of a hook event. `deadlineAt` bounds the time it may
+ * take (default one second from now): past it, or past the size limits, the
+ * action is a truncated placeholder (kind and tool name only), which the
+ * service never binds, so the hook still answers within its host's budget.
+ * An event whose input a host adapter cut or dropped (`input_truncated`) is
+ * marked truncated as well.
+ */
+export declare function normalizedHookAction(event: ToolEvent, options?: {
+    deadlineAt?: number;
+}): NormalizedHookAction;
 export {};
 //# sourceMappingURL=normalized-action.d.ts.map

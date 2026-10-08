@@ -295,7 +295,7 @@ test('pre-action CLI fails closed without leaking malformed trusted endpoint con
       assert.equal(result.status, 0, result.stderr);
       const output = JSON.parse(result.stdout);
       assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, /configuration is unavailable/i);
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /^The Marrow address in this machine's settings is not valid, so this protected action was held\. Run `npx @getmarrow\/install` again in this terminal, then retry\.$/);
       assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /synthetic-pre-action-secret/);
       assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /api\.example\.test|not a valid URL/);
     }
@@ -862,11 +862,11 @@ test('a reached control rejection names its status and code without echoing serv
 
   assert.equal(
     controlRejectionMessage(new MarrowRequestError({ code: 'request_failed', backendCode: 'not a <safe> code', message: privateText, status: 400, exactFix: 'fix' })),
-    'Marrow rejected this protected action (HTTP 400 request_failed). Restore trusted governance before retrying.',
+    "Marrow did not allow this protected action (HTTP 400 request_failed). Run `npx -y @getmarrow/install@latest doctor` in this terminal to check this machine's Marrow setup, then retry.",
   );
   assert.equal(
     controlRejectionMessage(new Error(privateText)),
-    'Marrow rejected this protected action. Restore trusted governance before retrying.',
+    "Marrow did not allow this protected action. Run `npx -y @getmarrow/install@latest doctor` in this terminal to check this machine's Marrow setup, then retry.",
   );
 });
 
@@ -963,7 +963,7 @@ test('an ordinary review gate asks the operator in an interactive Claude Code se
   const decision = JSON.parse(output).hookSpecificOutput;
   assert.equal(decision.permissionDecision, 'ask');
   assert.equal(decision.permissionDecisionReason,
-    'Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer (gate receipt gate-review). Reason: Publishing needs owner review.');
+    'Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Publishing needs owner review.');
   assert.deepEqual(commits, [], 'asking never closes or spends the held receipt');
 });
 
@@ -1077,7 +1077,7 @@ test('control failures name what happened: credential scope, unavailability, or 
     assert.match(controlRejectionMessage(new MarrowRequestError({ code, message: 'x', exactFix: 'fix' })), /^Marrow is unavailable, so this protected action was denied/, code);
   }
   const otherForbidden = new MarrowRequestError({ code: 'permission_denied', backendCode: 'MARROW_PLAN_REQUIRED', message: 'x', status: 403, exactFix: 'fix' });
-  assert.equal(controlRejectionMessage(otherForbidden, 'darvis'), 'Marrow rejected this protected action (HTTP 403 MARROW_PLAN_REQUIRED). Restore trusted governance before retrying.');
+  assert.equal(controlRejectionMessage(otherForbidden, 'darvis'), "Marrow did not allow this protected action (HTTP 403 MARROW_PLAN_REQUIRED). Run `npx -y @getmarrow/install@latest doctor` in this terminal to check this machine's Marrow setup, then retry.");
 
   const reviewGate = { risk_gate: { allow: false, decision: 'review_required', enforced: true, reasons: [] } };
   assert.deepEqual(clinePreActionHookOutput({ protectedRisk: true, permit: null, runtime: reviewGate }),
@@ -1571,5 +1571,19 @@ test('the slim runtime shape the MCP client receives is enforced unless it says 
       assert.equal(decision.permissionDecision, 'deny', label);
       assert.match(decision.permissionDecisionReason, /^Marrow requires owner review before this action/, label);
     }
+  }
+});
+
+test('Day one (bug 1): a reached rejection gets a plain fix, never "Restore trusted governance"', () => {
+  const notRegistered = new MarrowRequestError({ code: 'request_failed', backendCode: 'AGENT_NOT_REGISTERED', message: 'HTTP 409: Agent "api-key-x" is not registered in this Marrow account. Register it with POST /v1/agents', status: 409, exactFix: 'Register it with POST /v1/agents and send the returned id as agent_id or X-Marrow-Agent-Id.' });
+  assert.equal(controlRejectionMessage(notRegistered), "Marrow did not allow this protected action (HTTP 409 AGENT_NOT_REGISTERED). Marrow doesn't know this agent yet. Run `npx @getmarrow/install` again in this terminal, then retry.");
+  const limit = new MarrowRequestError({ code: 'request_failed', backendCode: 'AGENT_NOT_REGISTERED', message: 'HTTP 409: Agent "x" could not be registered because the evaluation plan agent limit (1) is reached.', status: 409, exactFix: 'Archive an unused agent with DELETE /v1/agents/{id}.' });
+  assert.match(controlRejectionMessage(limit), /reached its plan's agent limit/);
+  const busy = new MarrowRequestError({ code: 'rate_limited', backendCode: 'RATE_LIMITED', message: 'x', status: 429, exactFix: 'fix' });
+  assert.match(controlRejectionMessage(busy), /Marrow is busy right now\. Retry in a minute\.$/);
+  const plain = new MarrowRequestError({ code: 'request_failed', backendCode: 'MARROW_SOMETHING', message: 'synthetic-private-service-text', status: 400, exactFix: 'Update the Marrow tools on this machine, then retry.' });
+  assert.equal(controlRejectionMessage(plain), 'Marrow did not allow this protected action (HTTP 400 MARROW_SOMETHING). Update the Marrow tools on this machine, then retry.');
+  for (const error of [notRegistered, limit, busy, plain, new Error('x')]) {
+    assert.doesNotMatch(controlRejectionMessage(error), /Restore trusted governance|\/v1\/|synthetic-private-service-text/);
   }
 });

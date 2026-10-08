@@ -2024,3 +2024,31 @@ test('same-namespace concurrent hook processes do not lose lifecycle receipts', 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('Day one (bug 8): an event with no agent is stored and sent without agent_id, so the server resolves the identity', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'marrow-mcp-no-agent-'));
+  const path = join(directory, 'spool.json');
+  const originalFetch = globalThis.fetch;
+  const sent = [];
+  try {
+    await withSpoolPath(path, async () => {
+      globalThis.fetch = async (_url, init) => {
+        sent.push({ body: JSON.parse(init.body), headers: init.headers });
+        return new Response('{}', { status: 200 });
+      };
+      const input = lifecycleInput({ event_id: 'mcp-event-no-agent' });
+      delete input.event.agent_id;
+      await recordLifecycleEvent(input);
+      await drainLifecycleSpool({ apiKey: input.apiKey, baseUrl: input.baseUrl });
+    });
+    assert.ok(sent.length >= 1);
+    for (const request of sent) {
+      assert.equal('agent_id' in request.body, false);
+      assert.equal('X-Marrow-Agent-Id' in request.headers, false);
+    }
+    if (existsSync(path)) assert.doesNotMatch(readFileSync(path, 'utf8'), /"agent_id":"unknown"/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

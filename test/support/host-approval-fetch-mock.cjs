@@ -82,7 +82,11 @@ globalThis.fetch = async (url, init = {}) => {
     return json({ data: config.runtime });
   }
   if (path === '/v1/agent/think') return json({ data: { decision_id: 'decision-think' } });
-  if (path === '/v1/agent/commit') return json({ data: config.commit || { committed: true, decision_id: body.decision_id } });
+  if (path === '/v1/agent/commit') {
+    const scripted = Array.isArray(config.commitSequence) && config.commitSequence.length ? next('commitSequence', config.commitSequence) : null;
+    if (scripted) return json(scripted.body, scripted.status);
+    return json({ data: config.commit || { committed: true, decision_id: body.decision_id } });
+  }
   const status = path.match(/^\/v1\/agent\/gate-receipts\/([^/]+)\/owner-approval$/);
   if (status && method === 'GET') {
     if (config.statusDelayMs) await sleep(config.statusDelayMs);
@@ -124,8 +128,16 @@ globalThis.fetch = async (url, init = {}) => {
     if (config.approvalLinkNotSent) {
       return json({ data: { sent: false, state: 'not_sent', reason: 'owner_ping_off', approval_link: null, exact_next_action: 'fixture not sent' } });
     }
+    // A service before round 6: person_present is an unknown field.
+    if (config.approvalLinkStrict && body && 'person_present' in body) {
+      return json({ error: 'Approval link request is invalid.', details: { code: 'MARROW_APPROVAL_LINK_INVALID', retryable: false, fields: ['person_present'] } }, 400);
+    }
+    // Round 6 arbitration links: sent only when a person asked, or the owner's unattended ping is on.
+    if (config.approvalLinkPersonRule && body?.person_present !== true && !config.unattendedPing) {
+      return json({ data: { sent: false, state: 'not_sent', reason: 'no_person_present', approval_link: null, exact_next_action: 'fixture no person' } });
+    }
     const scripted = Array.isArray(config.approvalLink) && config.approvalLink.length ? next('approvalLink', config.approvalLink) : null;
-    if (scripted && scripted.status !== 200) return json(scripted.body, scripted.status, scripted.headers || {});
+    if (scripted && (scripted.status !== 200 || scripted.body)) return json(scripted.body, scripted.status, scripted.headers || {});
     return json({ data: {
       approval_link: { id: 'link-1', gate_receipt_id: link[1], channel: 'email', recipient_hint: 'o***@example.test', expires_at: '2030-01-01T00:10:00.000Z', delivered_at: new Date().toISOString() },
       exact_next_action: 'fixture link sent',

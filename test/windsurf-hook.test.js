@@ -97,6 +97,8 @@ test('Windsurf entrypoints and envelopes normalize to bounded correlation and cl
   });
   assert.deepEqual(write, {
     hook_event_name: 'post_write_code',
+    // Windsurf's write_code input is dropped: the exact action is not known.
+    input_truncated: true,
     session_id: 'trajectory-2',
     tool_use_id: 'execution-2',
     tool_name: 'Write',

@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MAX_SCAN_CHARS = void 0;
 exports.looksLikeKey = looksLikeKey;
 exports.classifySecretName = classifySecretName;
 exports.normalizeShellCommand = normalizeShellCommand;
@@ -10,6 +11,29 @@ const SECRET = '[secret]';
 const HASH_VERSION = 'marrow-normalized-action-v2';
 const EDIT_TOOLS = /^(?:edit|write|multiedit|apply_patch|notebookedit|replace|write_file|edit_file|delete_file|search_replace|delete|create_file)$/i;
 const MAX_DEPTH = 3;
+/** A word, data text or input string longer than this is not scanned: it is withheld and the action marked truncated. */
+exports.MAX_SCAN_CHARS = 16_384;
+/** A command longer than this, or more text scanned in total, gives up on exactness (truncated placeholder). */
+const MAX_COMMAND_CHARS = 262_144;
+const MAX_TOTAL_SCAN_CHARS = 524_288;
+/** Words and operators in one command; more gives up on exactness (truncated placeholder). */
+const MAX_TOKENS = 4_096;
+/** Credential-literal matches scanned in one text before it is withheld as truncated. */
+const MAX_ASSIGNMENTS = 2_048;
+/** Wall-clock time normalization may take when the caller gives no deadline. */
+const DEFAULT_NORMALIZE_MS = 1_000;
+/** Thrown when normalization runs out of its budget: the caller sends a truncated placeholder instead. */
+class NormalizationLimit extends Error {
+}
+function newExactness(deadline = Date.now() + DEFAULT_NORMALIZE_MS) {
+    return { truncated: false, budget: { scanned: 0, deadline } };
+}
+/** Counts text about to be scanned against the shared budget; past it, normalization stops. */
+function spend(state, chars) {
+    state.budget.scanned += chars;
+    if (state.budget.scanned > MAX_TOTAL_SCAN_CHARS || Date.now() > state.budget.deadline)
+        throw new NormalizationLimit();
+}
 function sha256(text) {
     return (0, node_crypto_1.createHash)('sha256').update(text).digest('hex');
 }
@@ -103,45 +127,91 @@ function holdsSecret(name) {
 // ---------------------------------------------------------------------------
 // Secrets inside a text
 // ---------------------------------------------------------------------------
-const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/)([^\s/@:'"]*):([^\s/@'"]+)@/gi;
-const AUTH_SCHEME = /\b(Bearer|Basic|Token|Bot)(\s+)([A-Za-z0-9._~+/=-]{8,})/g;
+// Every pattern starts at a boundary (lookbehind) and bounds its repeats, so
+// a scan is linear in the text: no start inside a run, no unbounded backtracking.
+const URL_CREDENTIALS = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/@:'"]{0,256}):([^\s/@'"]{1,1024})@/gi;
+const AUTH_SCHEME = /\b(Bearer|Basic|Token|Bot)([ \t]{1,8})([A-Za-z0-9._~+/=-]{8,})/g;
 const URL_CODE = /([?&])((?:auth(?:orization)?_)?code)=([^&#\s'"]+)/gi;
-const INLINE_ASSIGNMENT = /(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1([ \t]*[:=][ \t]*)(["']?)([^"'\s,;)}\]]+)\4/g;
+/** A name and its separator (`name=`, `name: `, `"name": `); the value is read by hand after it. */
+const NAME_SEPARATOR = /(["']?)(?<![A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_.-]{0,127})\1([ \t]{0,8}[:=][ \t]{0,8})/g;
+const VALUE_END = /["'\s,;)}\]]/;
 /**
  * Replaces the secrets inside one word or text: URL passwords, auth header
  * values, OAuth codes, credential-named literals (credentials; ambiguous
  * names mark the action truncated) and key-shaped values.
  */
 function redactText(text, state) {
+    if (text.length > exports.MAX_SCAN_CHARS) {
+        state.truncated = true;
+        return SECRET;
+    }
+    spend(state, text.length);
+    // A short word without a separator cannot hold any of these (keys need 12 or more characters).
+    if (text.length < 12 && !/[:=?&@\s]/.test(text))
+        return text;
     let out = text.replace(URL_CREDENTIALS, (_match, scheme, user) => `${scheme}${user}:${SECRET}@`);
     out = out.replace(AUTH_SCHEME, (_match, scheme, space) => `${scheme}${space}${SECRET}`);
     out = out.replace(URL_CODE, (_match, separator, name) => `${separator}${name}=${SECRET}`);
     return redactKeyShapes(redactAssignments(out, state), state);
 }
-/** Credential-named literals (`name=value`, `name: value`, `"name": "value"`), also nested in a plain value (a URL query). */
+/**
+ * Credential-named literals (`name=value`, `name: value`, `"name": "value"`),
+ * also nested in a plain value (a URL query): one pass, no recursion. After a
+ * plain name the scan continues inside its value; after a credential name the
+ * value is replaced and skipped. Too many names in one text: it is withheld.
+ */
 function redactAssignments(text, state) {
-    return text.replace(INLINE_ASSIGNMENT, (match, quote, name, separator, valueQuote, value) => {
-        if (value.startsWith('[secret') || value.startsWith('[data:'))
-            return match;
-        const kind = classifySecretName(name);
-        if (kind !== 'credential' && kind !== 'ambiguous') {
-            return `${quote}${name}${quote}${separator}${valueQuote}${redactAssignments(value, state)}${valueQuote}`;
-        }
-        if (kind === 'ambiguous')
+    const pattern = NAME_SEPARATOR;
+    pattern.lastIndex = 0;
+    let out = '';
+    let copied = 0;
+    let matches = 0;
+    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+        matches += 1;
+        if (matches > MAX_ASSIGNMENTS) {
             state.truncated = true;
-        return `${quote}${name}${quote}${separator}${valueQuote}${SECRET}${valueQuote}`;
-    });
+            return SECRET;
+        }
+        const kind = classifySecretName(match[2]);
+        if (kind !== 'credential' && kind !== 'ambiguous')
+            continue;
+        let start = match.index + match[0].length;
+        let end = start;
+        const quote = text[start] === '"' || text[start] === '\'' ? text[start] : '';
+        if (quote) {
+            start += 1;
+            const close = text.indexOf(quote, start);
+            end = close;
+        }
+        if (!quote || end < 0) {
+            end = start;
+            while (end < text.length && !VALUE_END.test(text[end]))
+                end += 1;
+        }
+        if (end <= start)
+            continue;
+        const value = text.slice(start, end);
+        if (!value.startsWith('[secret') && !value.startsWith('[data:')) {
+            if (kind === 'ambiguous')
+                state.truncated = true;
+            out += text.slice(copied, start) + SECRET;
+            copied = end;
+        }
+        pattern.lastIndex = end;
+    }
+    return out + text.slice(copied);
 }
 /** Whether a text carries anything secret-shaped (it is then withheld, never hashed). */
-function secretShaped(text) {
-    return redactText(text, { truncated: false }) !== text;
+function secretShaped(text, state) {
+    const probe = { truncated: false, budget: state.budget };
+    return redactText(text, probe) !== text;
 }
 /**
  * Data a command reads: its SHA-256 in the hashed form, or `[secret]` and
  * truncated when it feeds a secrets command or file or looks secret.
  */
 function dataMarker(text, feedsSecrets, state) {
-    if (feedsSecrets || secretShaped(text)) {
+    if (feedsSecrets || secretShaped(text, state)) {
         state.truncated = true;
         return SECRET;
     }
@@ -345,7 +415,7 @@ function redactSegment(words, ctx) {
         }
     }
     // Input data: heredoc bodies and here-strings go to this command and on through a pipe.
-    const downstreamTakes = ctx.pipedOut && ctx.downstream.some((segment) => takesSecrets(segment, parseSegment(segment)));
+    const downstreamTakes = ctx.pipedOut && ctx.downstreamTakes;
     const secretTarget = targets.some(isSecretFile);
     const feedsHere = takesSecrets(out, parsed) || downstreamTakes || secretTarget;
     for (let i = 0; i < out.length; i += 1) {
@@ -439,6 +509,9 @@ function redactSegment(words, ctx) {
     }
     const args = plainWords.filter((i) => !handled.has(i) && !removed.has(i));
     const positionals = args.filter((i) => !out[i].startsWith('-'));
+    const positionOf = new Map(positionals.map((i, position) => [i, position]));
+    const lastArg = args[args.length - 1];
+    const htpasswdBatch = program === 'htpasswd' && args.some((value) => /^-[a-zA-Z]*b/.test(out[value]));
     const subcommands = positionals.slice(0, 3).map((i) => out[i].toLowerCase());
     const lowered = positionals.map((i) => out[i].toLowerCase());
     const secretContext = subcommands.some((word) => /secret/.test(word));
@@ -584,7 +657,7 @@ function redactSegment(words, ctx) {
             handled.add(i);
             continue;
         }
-        const position = positionals.indexOf(i);
+        const position = positionOf.get(i) ?? -1;
         const previous = position > 0 ? out[positionals[position - 1]].toLowerCase() : '';
         const beforePrevious = position > 1 ? out[positionals[position - 2]].toLowerCase() : '';
         // aws configure set <name> <value>; npm|yarn|pnpm config set <name> <value>
@@ -634,7 +707,7 @@ function redactSegment(words, ctx) {
             }
         }
         // htpasswd -b FILE USER PASSWORD: the last positional.
-        if (program === 'htpasswd' && args.some((value) => /^-[a-zA-Z]*b/.test(out[value])) && i === args[args.length - 1])
+        if (htpasswdBatch && i === lastArg)
             redactAt(i);
     }
     return finish();
@@ -643,8 +716,13 @@ function quoteWord(word) {
     return /[\s'"\\|&;<>()$`*?]/.test(word) ? `'${word.replace(/'/g, `'\\''`)}'` : word;
 }
 function normalizeInner(command, state, depth) {
+    if (command.length > MAX_COMMAND_CHARS)
+        throw new NormalizationLimit();
+    spend(state, 0);
     const data = [];
     const tokens = tokenize(extractHeredocs(command.replace(/\r\n?/g, '\n'), data));
+    if (tokens.length > MAX_TOKENS)
+        throw new NormalizationLimit();
     const segments = [];
     let current = [];
     for (let i = 0; i < tokens.length; i += 1) {
@@ -674,14 +752,20 @@ function normalizeInner(command, state, depth) {
     segments.push({ words: current, op: null });
     const words = [];
     const programs = [];
+    // Whether anything later in each segment's pipeline takes secrets: one pass from the end.
+    const piped = (k) => segments[k].op === '|' || segments[k].op === '|&';
+    const sinkAfter = new Array(segments.length).fill(false);
+    for (let k = segments.length - 2; k >= 0; k -= 1) {
+        if (!piped(k))
+            continue;
+        const next = segments[k + 1].words;
+        sinkAfter[k] = (next.length > 0 && takesSecrets(next, parseSegment(next))) || sinkAfter[k + 1];
+    }
     segments.forEach((segment, k) => {
         if (segment.words.length) {
-            const downstream = [];
-            for (let j = k; j < segments.length - 1 && (segments[j].op === '|' || segments[j].op === '|&'); j += 1)
-                downstream.push(segments[j + 1].words);
             const result = redactSegment(segment.words, {
-                pipedOut: segment.op === '|' || segment.op === '|&',
-                downstream,
+                pipedOut: piped(k),
+                downstreamTakes: sinkAfter[k],
                 data,
                 state,
                 depth,
@@ -704,10 +788,17 @@ function normalizeInner(command, state, depth) {
  * never sent. `truncated` is true when something that may change what the
  * command does had to be withheld. Exported for tests.
  */
-function normalizeShellCommand(command) {
-    const state = { truncated: false };
-    const result = normalizeInner(command, state, 0);
-    return { ...result, truncated: state.truncated };
+function normalizeShellCommand(command, deadline) {
+    const state = newExactness(deadline);
+    try {
+        const result = normalizeInner(command, state, 0);
+        return { ...result, truncated: state.truncated };
+    }
+    catch (error) {
+        if (error instanceof NormalizationLimit)
+            return { text: '', programs: [], truncated: true };
+        throw error;
+    }
 }
 function sortedValue(value, depth = 0) {
     if (depth > 6 || !value || typeof value !== 'object')
@@ -775,15 +866,39 @@ function inputHash(input, state) {
 function withExactness(action, state) {
     return state.truncated ? { ...action, truncated: true } : action;
 }
-function normalizedHookAction(event) {
-    const state = { truncated: false };
+/**
+ * The normalized action of a hook event. `deadlineAt` bounds the time it may
+ * take (default one second from now): past it, or past the size limits, the
+ * action is a truncated placeholder (kind and tool name only), which the
+ * service never binds, so the hook still answers within its host's budget.
+ * An event whose input a host adapter cut or dropped (`input_truncated`) is
+ * marked truncated as well.
+ */
+function normalizedHookAction(event, options = {}) {
+    const state = newExactness(options.deadlineAt);
     const toolName = (0, hook_tool_policy_1.normalizeHookToolName)(event.tool_name) || 'tool';
     // The host's own tool name (stable across retries); the policy name decides the kind.
     const hostToolName = (typeof event.tool_name === 'string' && event.tool_name.trim() ? event.tool_name.trim() : toolName).slice(0, 128);
-    if ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) || /^MCP:/i.test(hostToolName)) {
+    const kind = (0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) || /^MCP:/i.test(hostToolName) ? 'mcp'
+        : (0, hook_tool_policy_1.isShellGovernedTool)(event) ? 'shell'
+            : EDIT_TOOLS.test(toolName) ? 'edit'
+                : 'other';
+    if (event.input_truncated === true)
+        state.truncated = true;
+    try {
+        return normalizedOfKind(event, kind, hostToolName, state);
+    }
+    catch (error) {
+        if (error instanceof NormalizationLimit)
+            return { tool_kind: kind, tool_name: hostToolName, tool_input: {}, truncated: true };
+        throw error;
+    }
+}
+function normalizedOfKind(event, kind, hostToolName, state) {
+    if (kind === 'mcp') {
         return withExactness({ tool_kind: 'mcp', tool_name: hostToolName, tool_input: inputHash(event.tool_input, state) }, state);
     }
-    if ((0, hook_tool_policy_1.isShellGovernedTool)(event)) {
+    if (kind === 'shell') {
         const { text, programs } = normalizeInner(shellCommand(event), state, 0);
         return withExactness({
             tool_kind: 'shell',
@@ -792,7 +907,7 @@ function normalizedHookAction(event) {
             tool_input: { command_sha256: sha256(`${HASH_VERSION}\nshell\n${text}`) },
         }, state);
     }
-    if (EDIT_TOOLS.test(toolName)) {
+    if (kind === 'edit') {
         const targets = (0, hook_tool_policy_1.toolTargetPaths)(event);
         if (targets.length > 64)
             state.truncated = true;

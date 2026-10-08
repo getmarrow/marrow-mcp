@@ -443,7 +443,11 @@ function scriptedServer(states, runtime = runtimeFixture(), { links = [] } = {})
     if (path.endsWith('/runtime')) return Response.json({ data: runtime });
     if (path.endsWith('/approval-link')) {
       const next = linkQueue.length > 1 ? linkQueue.shift() : linkQueue[0] || { status: 200 };
-      if (next.status !== 200) return Response.json(next.body, { status: next.status });
+      if (typeof next === 'function') {
+        const answer = next(body);
+        return Response.json(answer.body, { status: answer.status });
+      }
+      if (next.status !== 200 || next.body) return Response.json(next.body, { status: next.status });
       return Response.json({ data: { approval_link: { gate_receipt_id: 'ordinary-gate', channel: 'email', expires_at: '2030-01-01T00:10:00.000Z' } } });
     }
     if (path === statusPath) {
@@ -575,5 +579,37 @@ test('arbitration review: auto asks Marrow for the owner\'s one-tap link, waits,
     assert.equal(commit.owner_approval_receipt_id, 'arb-owner-1');
     assert.equal(commit.arbitration_receipt_id, 'arb-1');
     assert.equal(mock.calls.filter((call) => call.path.endsWith('/approval-link')).length, 1);
+  });
+});
+
+
+test('Round 6 arbitration links in marrow_auto: person_present only when the operator asked (request_owner_link); no_person_present waits quietly; a live link means wait', async () => {
+  const runtime = runtimeFixture();
+  runtime.arbitration = { receipt_id: 'arb-1', decision_id: 'ordinary-runtime-decision', resolution: 'review_required', owner_approval_required: true };
+  runtime.completion_contract.arbitration_receipt_required = true;
+  runtime.completion_contract.owner_approval = {
+    mode: 'arbitration_review_required', proof_path: null, proof_shape: null, dashboard_receipt_required: true, receipt_field: 'owner_approval_receipt_id',
+    approval_link_endpoint: '/v1/agent/gate-receipts/ordinary-gate/approval-link', approval_status_endpoint: statusPath,
+  };
+  // The round-6 rule: sent only with person_present true (pings off).
+  const personRule = (body) => (body?.person_present === true
+    ? { status: 200, body: { data: { approval_link: { gate_receipt_id: 'ordinary-gate', channel: 'email', expires_at: '2030-01-01T00:10:00.000Z' } } } }
+    : { status: 200, body: { data: { sent: false, state: 'not_sent', reason: 'no_person_present', approval_link: null } } });
+  const mock = scriptedServer(['arbitration_review'], runtime, { links: [personRule] });
+  await withFetch(mock.fetch, async () => {
+    const quiet = await invoke(marrowAuto, { ...baseParams, operation_id: 'arb_r6_op', proof: measuredProof });
+    assert.equal(quiet.phase, 'owner_approval_required');
+    assert.match(quiet.exact_next_action, /Nothing was sent to the account owner\. If the operator wants the owner asked now, call marrow_auto again with this same operation_id and request_owner_link: true/);
+    const asked = await invoke(marrowAuto, { ...baseParams, operation_id: 'arb_r6_op', proof: measuredProof, request_owner_link: true });
+    assert.match(asked.exact_next_action, /An approval link was sent to the account owner \(email\)\./);
+    const links = mock.calls.filter((call) => call.path.endsWith('/approval-link')).map((call) => call.body.person_present);
+    assert.deepEqual(links, [false, true]);
+  });
+  const live = scriptedServer(['arbitration_review'], runtime, { links: [{ status: 200, body: { data: { sent: false, state: 'already_sent', reason: 'link_live', approval_link: { id: 'l1', channel: 'email', expires_at: '2030-01-01T00:10:00.000Z' } } } }] });
+  await withFetch(live.fetch, async () => {
+    const waiting = await invoke(marrowAuto, { ...baseParams, operation_id: 'arb_r6_live', proof: measuredProof, request_owner_link: true });
+    assert.match(waiting.exact_next_action, /The account owner already has a one-tap approval link \(email, until 2030-01-01T00:10:00\.000Z\); wait for their answer\./);
+    await invoke(marrowAuto, { ...baseParams, operation_id: 'arb_r6_live', proof: measuredProof, request_owner_link: true });
+    assert.equal(live.calls.filter((call) => call.path.endsWith('/approval-link')).length, 1, 'never asked for again');
   });
 });

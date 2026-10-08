@@ -156,6 +156,9 @@ export type MarrowAutoApprovalState = {
 /** The owner's one-tap link for one marrow_auto operation. */
 export type AutoOwnerLinkState = {
     sent: boolean;
+    /** The owner already had a live link for this arbitration; nothing new was sent. */
+    alreadySent?: boolean;
+    expiresAt?: string | null;
     /** The service sent nothing on purpose (owner_ping_off): quiet by default. */
     notSent?: boolean;
     channel: string | null;
@@ -320,7 +323,13 @@ export declare function marrowOwnerApprovalStatus(apiKey: string, baseUrl: strin
  * own channel. The response never contains the link; the owner approves
  * without a login. Returns the channel only (no recipient details).
  */
-export declare function marrowRequestApprovalLink(apiKey: string, baseUrl: string, gateReceiptId: string, decisionId: string | null, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<MarrowApprovalLinkResult>;
+export declare function marrowRequestApprovalLink(apiKey: string, baseUrl: string, gateReceiptId: string, decisionId: string | null, sessionId?: string, agentId?: string, signal?: AbortSignal, options?: {
+    /**
+     * Arbitration links: true only when a person at this session asked for the
+     * link (client-attested); false when nobody asked. Omitted for other links.
+     */
+    personPresent?: boolean;
+}): Promise<MarrowApprovalLinkResult>;
 /** One held action waiting for a person (no action text, link or token). */
 export type MarrowHeldAction = {
     gate_receipt_id: string;

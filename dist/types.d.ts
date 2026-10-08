@@ -446,9 +446,12 @@ export interface MarrowApprovalLink {
     channel: string;
     expires_at: string | null;
 }
-export type MarrowApprovalLinkResult = {
+export type MarrowApprovalLinkResult = 
+/** alreadySent: the owner already has a live link for this arbitration (no new email). */
+{
     ok: true;
     link: MarrowApprovalLink;
+    alreadySent?: boolean;
 } | {
     ok: false;
     status: number | null;
