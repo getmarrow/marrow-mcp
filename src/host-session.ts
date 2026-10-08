@@ -15,7 +15,14 @@ import { basename, join } from 'node:path';
  * interactive": no typed approval is offered.
  */
 
-export type ProcessInfo = { pid: number; ppid: number; args: string[]; terminal: boolean };
+export type ProcessInfo = {
+  pid: number;
+  ppid: number;
+  args: string[];
+  terminal: boolean;
+  /** Linux: the process start time in clock ticks since boot (/proc/PID/stat field 22). */
+  startTicks?: number;
+};
 export type ProcessReader = (pid: number) => ProcessInfo | null;
 
 const MAX_DEPTH = 8;
@@ -30,13 +37,14 @@ function linuxProcess(pid: number): ProcessInfo | null {
     const close = stat.lastIndexOf(')');
     const fields = stat.slice(close + 2).split(' ');
     const ppid = Number(fields[1]);
+    const startTicks = Number(fields[19]);
     const args = readFileSync(`/proc/${pid}/cmdline`).toString('utf8').split('\0').filter(Boolean).slice(0, 64);
     let terminal = false;
     try {
       const stdin = readlinkSync(`/proc/${pid}/fd/0`);
       terminal = /^\/dev\/(?:pts\/\d+|tty\w*)$/.test(stdin);
     } catch { terminal = false; }
-    return Number.isSafeInteger(ppid) ? { pid, ppid, args, terminal } : null;
+    return Number.isSafeInteger(ppid) ? { pid, ppid, args, terminal, ...(Number.isSafeInteger(startTicks) ? { startTicks } : {}) } : null;
   } catch {
     return null;
   }
@@ -447,4 +455,44 @@ export function hostApprovalPromptOff(
   const codex = findHostProcess(isCodex, reader, startPid);
   if (!codex) return false;
   return codexApprovalPromptOff(codex.args, readConfig);
+}
+
+// ---------------------------------------------------------------------------
+// Hook start-up time
+// ---------------------------------------------------------------------------
+
+/** /proc reports start times in USER_HZ, which is 100 on Linux. */
+const TICK_MS = 10;
+/** Longer than this is not a hook's own start-up (a long-lived wrapper shell): unknown. */
+const MAX_HEAD_START_MS = 4_000;
+
+/** A process that only launches the hook: npx or npm (exec), or a `sh -c` wrapper. */
+function isHookLauncher(args: string[]): boolean {
+  // npm rewrites its process title: /proc shows "npm exec …" (or "npx …") as one string.
+  if (/^(?:npm exec|npx)(?:\s|$)/.test(args[0] || '')) return true;
+  const first = basename(args[0] || '').toLowerCase();
+  if (first === 'npx' || first === 'npm') return true;
+  if (/^(?:node|nodejs)(?:\.exe)?$/.test(first) && /(?:^|[/\\])(?:npx-cli|npm-cli)\.js$|(?:^|[/\\])(?:npx|npm)$/.test(args[1] || '')) return true;
+  return /^(?:sh|bash|dash|zsh)$/.test(first) && args.slice(1, 3).some((arg) => /^-[a-z]*c$/.test(arg));
+}
+
+/**
+ * How long before this process the host started launching it (npx, npm, a
+ * `sh -c` wrapper), in milliseconds, so a host's kill clock that started at
+ * spawn can be honored. Linux only (from /proc start times); 0 when unknown,
+ * including a launcher older than 4 s (a long-lived wrapper, not start-up).
+ */
+export function hookLauncherHeadStartMs(reader: ProcessReader = defaultReader(), selfPid: number = process.pid): number {
+  const self = reader(selfPid);
+  if (!self || typeof self.startTicks !== 'number') return 0;
+  let earliest = self.startTicks;
+  let pid = self.ppid;
+  for (let depth = 0; depth < 6 && pid > 1; depth += 1) {
+    const info = reader(pid);
+    if (!info || typeof info.startTicks !== 'number' || !isHookLauncher(info.args)) break;
+    earliest = Math.min(earliest, info.startTicks);
+    pid = info.ppid;
+  }
+  const headStart = Math.max(0, (self.startTicks - earliest) * TICK_MS);
+  return headStart > MAX_HEAD_START_MS ? 0 : headStart;
 }

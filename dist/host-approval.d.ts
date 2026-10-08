@@ -35,8 +35,13 @@ export declare const HOST_APPROVAL_REQUEST_TIMEOUT_MS = 4000;
  * action that can be held stays held (never an outage allow).
  */
 export declare function preToolBudgetMs(host: ApprovalHost): number;
-/** The hook process's deadline for its pre-tool answer and any follow-up work. */
-export declare function preToolDeadline(host: ApprovalHost): number;
+/**
+ * The hook process's deadline for its pre-tool answer and any follow-up work.
+ * Codex's kill clock starts when it spawns the hook command, so the time npx
+ * (or a shell) took to start this process comes out of the budget: the answer
+ * comes about 2.6 s after spawn, with at least 1 s for this process itself.
+ */
+export declare function preToolDeadline(host: ApprovalHost, headStartMs?: () => number): number;
 /** Time left before the hook must have written its answer (Infinity without a deadline). */
 export declare function remainingMs(ctx: {
     deadlineAt?: number;

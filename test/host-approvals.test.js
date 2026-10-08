@@ -2003,3 +2003,29 @@ test('Day one (bug 3): a marrow_commit retry that added proof but conflicts says
     assert.equal(retry.failure_kind, 'validation', 'never reported as an outage');
   } finally { h.cleanup(); }
 });
+
+test('R5 INFO: Codex measures its budget from when the host spawned the hook, so npx start-up under load comes out of it', () => {
+  const { hookLauncherHeadStartMs } = require('../dist/host-session.js');
+  const { preToolDeadline } = require('../dist/host-approval.js');
+  const table = {
+    100: { pid: 100, ppid: 90, args: ['node', '/x/dist/cli.js', 'codex-pre-action-hook'], terminal: false, startTicks: 5_120 },
+    90: { pid: 90, ppid: 80, args: ['sh', '-c', 'marrow-mcp codex-pre-action-hook'], terminal: false, startTicks: 5_119 },
+    // npm rewrites its title; /proc shows it as one string.
+    80: { pid: 80, ppid: 70, args: ['npm exec --yes --package=@getmarrow/mcp@3.9.99 marrow-mcp codex-pre-action-hook'], terminal: false, startTicks: 5_030 },
+    70: { pid: 70, ppid: 1, args: ['/usr/local/bin/codex'], terminal: true, startTicks: 100 },
+  };
+  const reader = (pid) => table[pid] ?? null;
+  assert.equal(hookLauncherHeadStartMs(reader, 100), 900, 'npx and its shell started 0.9 s before this process');
+  table[80] = { ...table[80], args: ['node', '/usr/lib/node_modules/npm/bin/npx-cli.js', '--yes', 'marrow-mcp'] };
+  assert.equal(hookLauncherHeadStartMs(reader, 100), 900, 'the untitled npx form too');
+  table[80] = { ...table[80], startTicks: 1_000 };
+  assert.equal(hookLauncherHeadStartMs(reader, 100), 0, 'a long-lived wrapper is not start-up: unknown');
+  assert.equal(hookLauncherHeadStartMs(() => null, 100), 0, 'no /proc: unknown');
+  const close = (actual, expected, label) => assert.ok(Math.abs(actual - expected) <= 20, `${label}: ${actual} vs ${expected}`);
+  const start = () => Date.now() - Math.round(process.uptime() * 1000);
+  close(preToolDeadline('codex', () => 0) - start(), 2_000, 'nothing before this process');
+  close(preToolDeadline('codex', () => 900) - start(), 1_700, '2.6 s from spawn');
+  close(preToolDeadline('codex', () => 2_500) - start(), 1_000, 'at least 1 s for this process');
+  close(preToolDeadline('codex', () => { throw new Error('x'); }) - start(), 2_000, 'an error reading /proc');
+  close(preToolDeadline('cursor', () => 2_500) - start(), 4_000, 'other hosts unchanged');
+});

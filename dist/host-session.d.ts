@@ -14,6 +14,8 @@ export type ProcessInfo = {
     ppid: number;
     args: string[];
     terminal: boolean;
+    /** Linux: the process start time in clock ticks since boot (/proc/PID/stat field 22). */
+    startTicks?: number;
 };
 export type ProcessReader = (pid: number) => ProcessInfo | null;
 /** true only with positive evidence; false or null means no typed approval is offered. */
@@ -58,5 +60,12 @@ export declare function codexApprovalPromptOff(args: string[], readConfig?: Conf
  * they are not detected (false).
  */
 export declare function hostApprovalPromptOff(host: string, reader?: ProcessReader, startPid?: number, readConfig?: ConfigReader): boolean;
+/**
+ * How long before this process the host started launching it (npx, npm, a
+ * `sh -c` wrapper), in milliseconds, so a host's kill clock that started at
+ * spawn can be honored. Linux only (from /proc start times); 0 when unknown,
+ * including a launcher older than 4 s (a long-lived wrapper, not start-up).
+ */
+export declare function hookLauncherHeadStartMs(reader?: ProcessReader, selfPid?: number): number;
 export {};
 //# sourceMappingURL=host-session.d.ts.map

@@ -105,9 +105,24 @@ function preToolBudgetMs(host) {
         return 4_000;
     return 14_000;
 }
-/** The hook process's deadline for its pre-tool answer and any follow-up work. */
-function preToolDeadline(host) {
-    return Date.now() - Math.round(process.uptime() * 1000) + preToolBudgetMs(host);
+/**
+ * The hook process's deadline for its pre-tool answer and any follow-up work.
+ * Codex's kill clock starts when it spawns the hook command, so the time npx
+ * (or a shell) took to start this process comes out of the budget: the answer
+ * comes about 2.6 s after spawn, with at least 1 s for this process itself.
+ */
+function preToolDeadline(host, headStartMs = host_session_1.hookLauncherHeadStartMs) {
+    const start = Date.now() - Math.round(process.uptime() * 1000);
+    if (host !== 'codex')
+        return start + preToolBudgetMs(host);
+    let headStart = 0;
+    try {
+        headStart = headStartMs();
+    }
+    catch {
+        headStart = 0;
+    }
+    return start + Math.max(1_000, Math.min(preToolBudgetMs(host), 2_600 - headStart));
 }
 /** Time left before the hook must have written its answer (Infinity without a deadline). */
 function remainingMs(ctx) {
