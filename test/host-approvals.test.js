@@ -2069,3 +2069,59 @@ test('Collision matrix at the hook: actions that differ only after a redacted sp
     }
   }
 });
+
+test('A replaced secret marks the action truncated and changes nothing else: every host answers, holds and reports the same as without the flag', () => {
+  const STRIP = join(__dirname, 'support', 'strip-redaction-truncated.cjs');
+  const scrub = (text) => String(text)
+    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, '<time>')
+    .replace(/((?:pretool|posttool|attempt)-[0-9a-f]{32})-[0-9a-f]{12}/g, '$1-<attempt>')
+    .replace(/"(?:asked_at|answered_at|occurred_at|observed_at|created_at|started_at|duration_ms|elapsed_ms|ms)":\s*[0-9]+/g, '"<t>":0');
+  const view = (h, out) => ({
+    status: out.status,
+    stdout: scrub(out.stdout),
+    stderr: scrub(out.stderr),
+    requests: h.requests().map((request) => {
+      const body = request.body && typeof request.body === 'object' ? JSON.parse(JSON.stringify(request.body)) : request.body;
+      if (body?.normalized_action) delete body.normalized_action.truncated;
+      return `${request.method || 'POST'} ${request.path} ${scrub(JSON.stringify(body ?? null))}`;
+    }),
+  });
+  const hosts = [
+    ['claude', 'claude-pre-action-hook', (command) => ({ ...fixture('claude-pre-tool-use.json'), tool_input: { command, description: 'x' } }), {}],
+    ['codex exec', 'codex-pre-action-hook', (command) => ({ ...fixture('codex-pre-tool-use.json'), tool_input: { command } }), codexExec],
+    ['codex tui', 'codex-pre-action-hook', (command) => ({ ...fixture('codex-pre-tool-use.json'), tool_input: { command } }), codexTui],
+    ['cursor shell', 'cursor-pre-action-hook', (command) => ({ ...fixture('cursor-before-shell.json'), command }), {}],
+    ['cursor preToolUse', 'cursor-pre-action-hook', (command) => ({ ...fixture('cursor-pre-tool-use.json'), tool_input: { command } }), {}],
+    ['gemini', 'gemini-pre-action-hook', (command) => ({ ...fixture('gemini-before-tool.json'), tool_input: { command } }), {}],
+    ['grok', 'grok-pre-action-hook', (command) => ({ ...fixture('grok-pre-tool-use.json'), toolInput: { command } }), {}],
+    ['cline', 'cline-pre-action-hook', (command) => ({ hookName: 'PreToolUse', taskId: 'task-trunc', preToolUse: { toolName: 'execute_command', parameters: { command } } }), editorProcess],
+    ['windsurf', 'windsurf-pre-action-hook', (command) => ({ agent_action_name: 'pre_run_command', trajectory_id: 'traj-trunc', execution_id: 'exec-trunc', tool_info: { command_line: command, cwd: '/home/operator/project' } }), windsurfProcess],
+  ];
+  const secret = `pw-${randomBytes(6).toString('hex')}`;
+  const cases = [
+    ['low-risk read with a bearer header', `curl -H "Authorization: Bearer ${secret}" https://api.example.com/status`, {}],
+    ['held deploy with a token', `API_TOKEN=${secret} wrangler deploy --env production`, { runtime: hostRuntime(), status: { 'gate-held': 'pending' } }],
+  ];
+  const sentTruncated = [];
+  for (const [label, command, config] of cases) {
+    for (const [host, entrypoint, payload, env] of hosts) {
+      const runOnce = (strip) => {
+        const h = harness();
+        try {
+          h.setConfig(config);
+          const out = h.run(entrypoint, payload(command), strip ? { ...env, NODE_OPTIONS: `--require=${MOCK} --require=${STRIP}` } : env);
+          const sent = h.requests().map((request) => request.body?.normalized_action).filter(Boolean);
+          if (!strip) sentTruncated.push(...sent.map((action) => action.truncated));
+          if (strip) assert.equal(sent.some((action) => 'truncated' in action), false, `${host}: the preload strips the flag`);
+          const all = JSON.stringify(h.requests()) + out.stdout + out.stderr;
+          assert.equal(all.includes(secret), false, `${label} / ${host}: the secret is in no request or output`);
+          return view(h, out);
+        } finally { h.cleanup(); }
+      };
+      assert.deepEqual(runOnce(false), runOnce(true), `${label} / ${host}: the same answer, hold and requests with and without the flag`);
+    }
+  }
+  // Where a normalized action was sent, it carried the flag (so Marrow never reuses an approval for it).
+  assert.ok(sentTruncated.length > 0);
+  assert.equal(sentTruncated.every((flag) => flag === true), true);
+});

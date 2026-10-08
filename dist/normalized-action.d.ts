@@ -12,8 +12,12 @@
  *
  * Before hashing, a normalized form is built (whitespace and quoting
  * normalized) in which:
- * - A credential is replaced by `[secret]`, and the action stays exact (only
- *   the credential differs between two such commands). Credentials are:
+ * - A credential is replaced by `[secret]` where it stood (only the
+ *   credential differs between two such commands), and the action is marked
+ *   `truncated: true`: Marrow cannot see a replacement inside the hash, and
+ *   an approval is never reused for an action that carried a secret (it asks
+ *   each time). The verdict, the hold and the prompt do not depend on it.
+ *   Credentials are:
  *   values of environment assignments, flags, `NAME=value` arguments and
  *   inline `name: value` / `"name": "value"` literals whose name is a
  *   credential name (password, passwd, passphrase, pwd, secret, token, OTP,

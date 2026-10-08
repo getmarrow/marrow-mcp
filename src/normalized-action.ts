@@ -21,8 +21,12 @@ import {
  *
  * Before hashing, a normalized form is built (whitespace and quoting
  * normalized) in which:
- * - A credential is replaced by `[secret]`, and the action stays exact (only
- *   the credential differs between two such commands). Credentials are:
+ * - A credential is replaced by `[secret]` where it stood (only the
+ *   credential differs between two such commands), and the action is marked
+ *   `truncated: true`: Marrow cannot see a replacement inside the hash, and
+ *   an approval is never reused for an action that carried a secret (it asks
+ *   each time). The verdict, the hold and the prompt do not depend on it.
+ *   Credentials are:
  *   values of environment assignments, flags, `NAME=value` arguments and
  *   inline `name: value` / `"name": "value"` literals whose name is a
  *   credential name (password, passwd, passphrase, pwd, secret, token, OTP,
@@ -982,7 +986,9 @@ function shellCommand(event: ToolEvent): string {
 
 function inputHash(input: unknown, state: Exactness): { input_sha256: string } | Record<string, never> {
   if (input === undefined || input === null) return {};
-  return { input_sha256: sha256(`${HASH_VERSION}\ninput\n${JSON.stringify(sortedValue(redactedInput(input, state)))}`) };
+  const text = JSON.stringify(sortedValue(redactedInput(input, state)));
+  if (text.includes(SECRET)) state.truncated = true;
+  return { input_sha256: sha256(`${HASH_VERSION}\ninput\n${text}`) };
 }
 
 function withExactness(action: NormalizedHookAction, state: Exactness): NormalizedHookAction {
@@ -1021,6 +1027,8 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
   }
   if (kind === 'shell') {
     const { text, programs } = normalizeInner(shellCommand(event), state, 0);
+    // A secret was replaced: the action is never bound or reused (it asks each time).
+    if (text.includes(SECRET)) state.truncated = true;
     return withExactness({
       tool_kind: 'shell',
       tool_name: hostToolName,
@@ -1033,7 +1041,7 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     if (targets.length > 64) state.truncated = true;
     const paths = targets.slice(0, 64).map((path) => {
       const redacted = redactText(path, state);
-      if (redacted.length > 512) state.truncated = true;
+      if (redacted.length > 512 || redacted.includes(SECRET)) state.truncated = true;
       return redacted.slice(0, 512);
     });
     return withExactness({ tool_kind: 'edit', tool_name: hostToolName, paths, tool_input: inputHash(event.tool_input, state) }, state);

@@ -211,10 +211,10 @@ test('MEDIUM-R1-1: data that feeds a secrets command or file, or looks secret, i
   assert.equal(hashOf(`echo ${mark()} | wrangler secret put API_KEY`), hashOf(`echo ${mark()} | wrangler secret put API_KEY`));
 });
 
-test('MEDIUM-R1-1 (same class): a withheld value that may name the target marks the action truncated; credentials keep it exact', () => {
-  // Credential-named values are withheld, and the action stays exact (only the credential differs).
+test('MEDIUM-R1-1 (same class): a withheld value that may name the target marks the action truncated; a replaced credential too (never reused)', () => {
+  // Credential-named values are replaced where they stood (only the credential differs), and the action is never reused.
   const token = shell(`API_TOKEN=${mark()} npm publish`);
-  assert.equal(token.truncated, undefined);
+  assert.equal(token.truncated, true);
   assert.equal(token.tool_input.command_sha256, hashOf(`API_TOKEN=${mark()} npm publish`));
   // An ambiguous name (an S3 object key) and random-looking values (a commit, ids) are withheld and marked truncated.
   for (const command of [
@@ -279,9 +279,10 @@ test('L-R4-1: URL credentials, more password flags, positional passwords, inline
   }
 });
 
-test('MCP and other inputs: credentials keep the action exact; ambiguous names, random-looking values and cut inputs mark it truncated', () => {
+test('MCP and other inputs: a replaced credential, ambiguous names, random-looking values and cut inputs mark it truncated', () => {
   const mcp = (input) => normalizedHookAction({ tool_name: 'mcp__cloudflare__dns_delete', tool_input: input });
-  assert.equal(mcp({ api_token: b64(30), zone: 'example.com', name: 'www' }).truncated, undefined);
+  assert.equal(mcp({ api_token: b64(30), zone: 'example.com', name: 'www' }).truncated, true);
+  assert.equal(mcp({ zone: 'example.com', name: 'www' }).truncated, undefined);
   assert.notEqual(mcp({ zone: 'example.com', name: 'www' }).tool_input.input_sha256, mcp({ zone: 'example.com', name: 'api' }).tool_input.input_sha256);
   assert.equal(mcp({ zone_id: randomBytes(16).toString('hex'), name: 'www' }).truncated, true);
   assert.equal(mcp({ key: 'reports/a.csv' }).truncated, true);
@@ -404,8 +405,10 @@ test('MEDIUM-R6-1: a credential value ends at the next query or form field, so t
   assert.equal(shell(`deploy --token=${T}=env=prod`).truncated, true);
   assert.equal(shell(`TOKEN=${T}=x ./deploy.sh`).truncated, true);
   assert.equal(shell(`curl -H "Cookie: session=${T}; env=staging" https://x.example.com`).truncated, true);
-  // Plain credentials and base64 padding stay exact.
-  assert.equal(shell(`curl -H "Authorization: Bearer ${T}" https://x.example.com`).truncated, undefined);
-  assert.equal(shell(`deploy --token ${T}==`).truncated, undefined);
-  assert.equal(shell(`curl "https://hooks.example.com/deploy?token=${T}"`).truncated, undefined);
+  // Any replaced credential marks the action truncated (never reused); base64 padding is not a field.
+  assert.equal(shell(`curl -H "Authorization: Bearer ${T}" https://x.example.com`).truncated, true);
+  assert.equal(shell(`deploy --token ${T}==`).truncated, true);
+  assert.equal(shell(`deploy --token ${T}==`).tool_input.command_sha256, shell(`deploy --token ${T.slice(0, -1)}Q==`).tool_input.command_sha256);
+  assert.equal(shell(`curl "https://hooks.example.com/deploy?token=${T}"`).truncated, true);
+  assert.equal(shell('curl https://hooks.example.com/status').truncated, undefined, 'no secret: exact, may be reused');
 });
