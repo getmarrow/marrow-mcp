@@ -287,7 +287,7 @@ async function runSpoolCommand(drain: boolean): Promise<void> {
 
 const GET_A_KEY_URL = 'https://getmarrow.ai/signup';
 const ACTIVATE_COMMAND = 'npx -y @getmarrow/install@latest activate';
-const ENFORCEMENT_SENTENCE = 'On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, most actions run with a warning. Over MCP, the agent gets the decision and is expected to follow it.';
+const ENFORCEMENT_SENTENCE = 'On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, hooks let actions run with a warning, and the governed runner stops protected actions it cannot verify. Over MCP, the agent gets the decision and is expected to follow it.';
 
 const HELP_TEXT = `Marrow MCP server and hook commands (@getmarrow/mcp)
 
@@ -320,7 +320,8 @@ function runSetup(): void {
   const path = require('path') as typeof import('path');
 
   // Hooks without a key deny protected actions, so write nothing until a key exists.
-  if (!resolveMarrowEnv().apiKey) {
+  // Same trusted resolution the installed hooks use: project .env files and non-private owner files cannot supply the key.
+  if (!resolveMarrowEnv({ trustedOnly: true }).apiKey) {
     process.stderr.write(`Marrow needs your API key before setup can write hooks, so nothing was written.\nCreate a key at ${GET_A_KEY_URL}, make it available as MARROW_API_KEY (environment or an owner-only ~/.marrow/env), then run:\n  ${ACTIVATE_COMMAND}\nFallback: MARROW_API_KEY=<your_key> ${ACTIVATE_COMMAND}  (a key typed on a command line stays in shell history)\n`);
     process.exit(2);
   }
@@ -425,16 +426,11 @@ ${MARROW_BLOCK_END}`;
     process.stdout.write('Stop hook configuration is present. Activity is client-self-reported and does not certify session-end coverage.\n');
   }
 
-  // Grok hooks are global (~/.grok), so write them only for people who use Grok.
-  if (fs.existsSync(path.join(process.env.HOME || require('os').homedir(), '.grok'))) {
-    const grokHookInstall = installGrokNativeHooks();
-    if (grokHookInstall.installed) {
-      process.stdout.write(`Configured Grok native pre-action, result, and nonblocking turn-closeout hooks at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on them. Activity remains client-self-reported and does not certify observed coverage.\n`);
-    } else {
-      process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on it. Activity remains client-self-reported and does not certify observed coverage.\n`);
-    }
+  const grokHookInstall = installGrokNativeHooks();
+  if (grokHookInstall.installed) {
+    process.stdout.write(`Configured Grok native pre-action, result, and nonblocking turn-closeout hooks at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on them. Activity remains client-self-reported and does not certify observed coverage.\n`);
   } else {
-    process.stdout.write('Grok not detected (no ~/.grok), so no Grok hooks were written. Create ~/.grok and rerun setup if you use Grok.\n');
+    process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on it. Activity remains client-self-reported and does not certify observed coverage.\n`);
   }
 
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);

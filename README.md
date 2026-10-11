@@ -27,7 +27,7 @@ Use `@getmarrow/mcp` when your agent client supports the Model Context Protocol 
    npx -y @getmarrow/install@latest doctor --self-test
    ```
 
-**What is enforced.** On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, most actions run with a warning. Over MCP, the agent gets the decision and is expected to follow it. Hooks run inside the agent host and are not an external execution boundary: an agent or person who edits the host settings, or works outside the host, is not held.
+**What is enforced.** On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, hooks let actions run with a warning, and the governed runner stops protected actions it cannot verify. Over MCP, the agent gets the decision and is expected to follow it. Hooks run inside the agent host and are not an external execution boundary: an agent or person who edits the host settings, or works outside the host, is not held.
 
 ## Agent Discovery
 
@@ -81,11 +81,13 @@ Verify current claims through the [public evidence manifest](https://getmarrow.a
 
 For most installations, follow the [Quick start](#quick-start): the universal installer's `activate` command. The steps below are the manual, MCP-only route.
 
-Get a key at [getmarrow.ai/signup](https://getmarrow.ai/signup) and set it through trusted secret storage:
+Get a key at [getmarrow.ai/signup](https://getmarrow.ai/signup) and keep it in an owner-only key file: put `MARROW_API_KEY=<your_key>` in `~/.marrow/env`, then lock the file down:
 
 ```bash
-export MARROW_API_KEY=<your_key>
+chmod 600 ~/.marrow/env
 ```
+
+Fallback if you cannot use the key file (a key typed on a command line stays in your shell history): set it through trusted secret storage, or `export MARROW_API_KEY=<your_key>` for the session.
 
 Hooks-only setup (`marrow-mcp setup` writes hooks and `CLAUDE.md` instructions, and adds no MCP server). It needs the key first: without one it prints how to get it and exits 2 before writing anything.
 
@@ -177,7 +179,7 @@ Direct `marrow_model_usage` and Commit `model_usage` also accept billing host, t
 
 With `MARROW_TOOL_PROFILE` unset, the default primary profile uses `marrow_agent_runtime` followed by `marrow_commit`. It exposes 17 tools; `marrow_auto` is available only after an explicit `core` or `full` selection and MCP restart. Primary status and lessons use `marrow_agent_status` and `marrow_fleet_lessons`.
 
-On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, most actions run with a warning. Over MCP, the agent gets the decision and is expected to follow it. Hooks run inside the agent host, so a host edited or bypassed by an agent or person is not held. Before deploys, merges, publishes, migrations, credential changes, financial operations, or customer-impacting work:
+On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, hooks let actions run with a warning, and the governed runner stops protected actions it cannot verify. Over MCP, the agent gets the decision and is expected to follow it. Hooks run inside the agent host, so a host edited or bypassed by an agent or person is not held. Before deploys, merges, publishes, migrations, credential changes, financial operations, or customer-impacting work:
 
 1. Call `marrow_agent_runtime` or `marrow_decision_brief`.
 2. Stop when the returned decision is `block` or `review_required`; otherwise follow its prior lesson and proof contract.

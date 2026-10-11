@@ -1,0 +1,62 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y --package=@getmarrow/mcp@3.9.100 marrow-mcp grok-context-hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e 'const {spawn}=require(\"node:child_process\");const valid=value=>{try{const parsed=JSON.parse(value);return JSON.stringify(parsed)===value&&parsed&&Object.keys(parsed).every(key=>[\"decision\",\"reason\"].includes(key))&&(parsed.decision===\"allow\"&&parsed.reason===undefined||parsed.decision===\"deny\"&&typeof parsed.reason===\"string\"&&parsed.reason.length>0&&parsed.reason.length<=500);}catch{return false;}};let child=null,timer=null,done=false,input=[],inputBytes=0,output=\"\",outputBytes=0,err=\"\";const outage=\"Marrow is offline. This action is allowed. The record stays queued locally and is sent when Marrow is back.\\n\";const fail=()=>{if(done)return;done=true;if(timer)clearTimeout(timer);if(child&&!child.killed)child.kill(\"SIGKILL\");process.stderr.write(\"Marrow governance adapter was unavailable; this action is blocked.\\n\");process.exitCode=2;process.stdin.destroy();};process.stdin.on(\"error\",fail);process.stdin.on(\"data\",chunk=>{const value=Buffer.from(chunk);inputBytes+=value.length;if(inputBytes>65536){fail();return;}input.push(value);});process.stdin.on(\"end\",()=>{if(done)return;try{child=spawn(process.platform===\"win32\"?\"npx.cmd\":\"npx\",[\"-y\",\"--package=@getmarrow/mcp@3.9.100\",\"marrow-mcp\",\"grok-pre-action-hook\"],{stdio:[\"pipe\",\"pipe\",\"pipe\"]});timer=setTimeout(fail,10000);child.stdout.on(\"data\",chunk=>{if(done)return;outputBytes+=chunk.length;if(outputBytes>512){fail();return;}output+=chunk.toString(\"utf8\");});child.stderr.on(\"data\",chunk=>{if(done)return;if(err.length<1024)err+=chunk.toString(\"utf8\");});child.on(\"error\",fail);child.stdin.on(\"error\",fail);child.on(\"close\",code=>{if(done)return;if(code!==0||!valid(output)){fail();return;}done=true;if(timer)clearTimeout(timer);if(err===outage)process.stderr.write(err);process.stdout.write(output);});child.stdin.end(Buffer.concat(input));}catch{fail();}});'",
+            "timeout": 7
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y --package=@getmarrow/mcp@3.9.100 marrow-mcp grok-hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y --package=@getmarrow/mcp@3.9.100 marrow-mcp grok-hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y --package=@getmarrow/mcp@3.9.100 marrow-mcp grok-session-hook",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

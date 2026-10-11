@@ -301,7 +301,6 @@ export type OwnerApprovalPrompt = { available: boolean; unavailableReason: strin
 
 const FIX_DEFAULT_MODE = 'To approve it, switch Claude Code to its default permission mode and retry this exact action.';
 const FIX_HEADLESS = 'To approve it, retry this exact action in an interactive Claude Code session in default permission mode.';
-const FIX_CODEX_REPLY = 'To approve it, type the reply the hook shows (if it shows one) and retry this exact action.';
 
 /** Claude Code entrypoints with no one at a dialog (claude -p and the Agent SDKs); hooks inherit it. */
 const HEADLESS_CLAUDE_ENTRYPOINTS = HEADLESS_ENTRYPOINTS;
@@ -321,7 +320,7 @@ export function ownerApprovalPrompt(
   const claudeCode = harness === 'claude-code' || (harness === 'mcp-client' && env.CLAUDE_CODE_CHILD_SESSION === '1');
   if (!claudeCode) {
     return harness === 'codex'
-      ? { available: false, unavailableReason: 'Codex hooks cannot prompt the owner', fix: FIX_CODEX_REPLY }
+      ? { available: false, unavailableReason: 'Codex hooks cannot prompt the owner' }
       : NO_OWNER_PROMPT;
   }
   const entrypoint = typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' ? env.CLAUDE_CODE_ENTRYPOINT : '';
@@ -702,7 +701,8 @@ export function preActionHookOutput(
     // review the server offered no chat or terminal approval for.
     const reason = verdict.kind === 'review' && prompt.available && !legacyServiceAsk
       ? { available: false, unavailableReason: 'this Marrow service did not offer a chat or terminal approval for this hold' }
-      : prompt;
+      // The fix names default mode, which asks only on a legacy service; any other service denies there too.
+      : legacyServiceAsk ? prompt : { ...prompt, fix: undefined };
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
