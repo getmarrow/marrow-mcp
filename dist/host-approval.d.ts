@@ -217,6 +217,8 @@ export declare function arbitrationHoldGuidance(guidance: ArbitrationApprovalGui
 export type RecordHoldInput = {
     guidance: HoldGuidance;
     correlation: string;
+    /** exactHookTarget of the held call: only a call with this exact target can use the approval. */
+    target: string;
     toolUseId: string | null;
     generationId: string | null;
     toolName: string;
@@ -305,6 +307,8 @@ export type WaitingResolution = {
  */
 export declare function resumeWaitingHold(ctx: HoldContext, input: {
     correlation: string;
+    /** exactHookTarget of this call: a hold made for any other target (a look-alike sharing the correlation) is never claimed. */
+    target: string;
     toolUseId: string | null;
     generationId: string | null;
     /** Claude Code shows its dialog for this attempt (permission mode and version). */
@@ -359,6 +363,8 @@ export declare const LATE_MARKER_WAIT_MS = 1500;
  */
 export declare function settleAfterTool(ctx: HoldContext, input: {
     correlation: string;
+    /** exactHookTarget of the call that ran: only its own hold is reported or closed. */
+    target: string;
     toolUseId: string | null;
     generationId: string | null;
     /** null when the host does not say whether the call succeeded (Cursor's after-execution events). */

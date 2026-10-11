@@ -35,6 +35,13 @@ export type HoldRecord = {
     host_session_id: string;
     agent_id: string | null;
     correlation: string;
+    /**
+     * The exact target the hold was made for (exactHookTarget: the normalised tool
+     * name, the adapter form, nested and Gemini server/tool), as a SHA-256 hex.
+     * Only a call with this same target can use the hold's approval; a hold
+     * without one (written by an older version) is never claimed.
+     */
+    target?: string;
     tool_use_id: string | null;
     generation_id: string | null;
     tool_name: string;
@@ -100,6 +107,8 @@ export type NewHold = Omit<HoldRecord, 'id' | 'key_ref' | 'code' | 'outbox' | 'c
 export declare function recordHold(scope: HoldScope, input: NewHold, home?: string): HoldRecord;
 export type HoldQuery = {
     correlation?: string;
+    /** Exact target (exactHookTarget); a hold without a target never matches a query that names one. */
+    target?: string;
     toolUseId?: string | null;
     sessionId?: string;
     hostSessionId?: string;

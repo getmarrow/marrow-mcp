@@ -84,6 +84,13 @@ export type HoldRecord = {
   host_session_id: string;
   agent_id: string | null;
   correlation: string;
+  /**
+   * The exact target the hold was made for (exactHookTarget: the normalised tool
+   * name, the adapter form, nested and Gemini server/tool), as a SHA-256 hex.
+   * Only a call with this same target can use the hold's approval; a hold
+   * without one (written by an older version) is never claimed.
+   */
+  target?: string;
   tool_use_id: string | null;
   generation_id: string | null;
   tool_name: string;
@@ -245,6 +252,7 @@ function validHold(value: unknown): value is HoldRecord {
     && typeof hold.host_session_id === 'string' && IDENTIFIER.test(hold.host_session_id)
     && (hold.agent_id === null || (typeof hold.agent_id === 'string' && hold.agent_id.length <= 128))
     && HEX32.test(hold.correlation)
+    && (hold.target === undefined || (typeof hold.target === 'string' && /^[a-f0-9]{64}$/.test(hold.target)))
     && (hold.tool_use_id === null || (typeof hold.tool_use_id === 'string' && hold.tool_use_id.length <= 128))
     && (hold.generation_id === null || (typeof hold.generation_id === 'string' && hold.generation_id.length <= 128))
     && typeof hold.tool_name === 'string' && hold.tool_name.length <= 256
@@ -398,6 +406,7 @@ export function recordHold(scope: HoldScope, input: NewHold, home?: string): Hol
     const now = Date.now();
     for (const [id, hold] of Object.entries(state.holds)) {
       if (hold.key_ref === ref && hold.correlation === input.correlation && hold.mode === input.mode
+        && (hold.target === undefined || hold.target === input.target)
         && hold.state !== 'resolved' && !hold.outbox && (hold.mode === 'wait' || hold.tool_use_id === input.tool_use_id)) {
         delete state.holds[id];
       }
@@ -422,6 +431,8 @@ export function recordHold(scope: HoldScope, input: NewHold, home?: string): Hol
 
 export type HoldQuery = {
   correlation?: string;
+  /** Exact target (exactHookTarget); a hold without a target never matches a query that names one. */
+  target?: string;
   toolUseId?: string | null;
   sessionId?: string;
   hostSessionId?: string;
@@ -441,6 +452,7 @@ function matches(hold: HoldRecord, ref: string, query: HoldQuery): boolean {
   if (hold.key_ref !== ref) return false;
   if (query.id && hold.id !== query.id) return false;
   if (query.correlation && hold.correlation !== query.correlation) return false;
+  if (query.target !== undefined && hold.target !== query.target) return false;
   if (query.toolUseId && hold.tool_use_id && hold.tool_use_id !== query.toolUseId) return false;
   if (query.sessionId !== undefined && hold.session_id !== boundSessionId(query.sessionId)) return false;
   if (query.hostSessionId !== undefined && hold.host_session_id !== query.hostSessionId) return false;

@@ -57,6 +57,7 @@ import {
   MARROW_OUTAGE_WARNING,
   stableSessionWorkflowId,
   stableToolCorrelation,
+  exactHookTarget,
 } from './hook-contract';
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
 export const NO_KEY_TEXT = 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.';
@@ -1079,7 +1080,9 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   }
   // The same action retried after a hold that waited for approval: its status decides.
   const dialogAvailable = holdContext.host === 'claude-code' && ownerApprovalPrompt(identity.harness, source).available;
-  const waited = await resumeWaitingHold(holdContext, { correlation, toolUseId, generationId, dialogAvailable }).catch(() => null);
+  // The exact target (not only the correlation) binds a hold's approval to this call.
+  const target = exactHookTarget(source);
+  const waited = await resumeWaitingHold(holdContext, { correlation, target, toolUseId, generationId, dialogAvailable }).catch(() => null);
   if (waited?.kind === 'allow') {
     emitHookOutput(identity.harness, approvedHoldHookOutput(identity.harness, waited.contextText));
     await afterAnswer(holdContext, {});
@@ -1317,6 +1320,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       const hold = plan.kind === 'deny' && plan.retryFresh ? null : rememberHold(holdContext, {
         guidance: guidance || arbitrationHoldGuidance(arbitration!),
         correlation,
+        target,
         toolUseId,
         generationId,
         toolName: String(source.tool_name || 'tool'),

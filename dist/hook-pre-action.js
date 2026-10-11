@@ -1017,7 +1017,9 @@ async function runPreActionHookCommand(input) {
     }
     // The same action retried after a hold that waited for approval: its status decides.
     const dialogAvailable = holdContext.host === 'claude-code' && ownerApprovalPrompt(identity.harness, source).available;
-    const waited = await (0, host_approval_1.resumeWaitingHold)(holdContext, { correlation, toolUseId, generationId, dialogAvailable }).catch(() => null);
+    // The exact target (not only the correlation) binds a hold's approval to this call.
+    const target = (0, hook_contract_1.exactHookTarget)(source);
+    const waited = await (0, host_approval_1.resumeWaitingHold)(holdContext, { correlation, target, toolUseId, generationId, dialogAvailable }).catch(() => null);
     if (waited?.kind === 'allow') {
         emitHookOutput(identity.harness, approvedHoldHookOutput(identity.harness, waited.contextText));
         await afterAnswer(holdContext, {});
@@ -1258,6 +1260,7 @@ async function runPreActionHookCommand(input) {
             const hold = plan.kind === 'deny' && plan.retryFresh ? null : (0, host_approval_1.rememberHold)(holdContext, {
                 guidance: guidance || (0, host_approval_1.arbitrationHoldGuidance)(arbitration),
                 correlation,
+                target,
                 toolUseId,
                 generationId,
                 toolName: String(source.tool_name || 'tool'),

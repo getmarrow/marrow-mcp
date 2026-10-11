@@ -32,7 +32,10 @@ const LEGACY = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|f
 const full = new RegExp(`^(?:${NATIVE_HOOK_MATCHER})$`);
 const search = new RegExp(NATIVE_HOOK_MATCHER);
 const legacyFull = new RegExp(`^(?:${LEGACY})$`);
-const OWN_FORMS = new Set(OWN.flatMap((name) => [`mcp__marrow__${name}`, `functions.mcp__marrow__${name}`]));
+// r3 (shared policy, marrow-install host-label-research.md): only Claude Code's label proves server
+// `marrow`, so the matcher skips only `mcp__marrow__<own>`; `functions.mcp__marrow__<own>` reaches the hook
+// (which still allows it: no lockout).
+const OWN_FORMS = new Set(OWN.map((name) => `mcp__marrow__${name}`));
 
 function variantsOf(name) {
   return [
@@ -68,17 +71,20 @@ test('M1: the native matcher is generated from the registered names and matches 
   assert.equal(OWN.length, 58);
   assert.deepEqual(OWN, [...MARROW_OWN_TOOL_NAMES].sort(), 'the fixture is the registry in sorted (file) order');
   const joined = OWN.join('|');
-  const expected = `Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__(?:${joined})$).*|mcp__(?!marrow__(?:${joined})$).*`;
+  // r3: the shared string marrow-install writes (byte-identical): start-anchored, `[\\s\\S]*` in every consuming part.
+  const expected = `Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|^(?!mcp__marrow__(?:${joined})$)[\\s\\S]*(?:functions\\.|mcp__)[\\s\\S]*`;
+  const r2 = `Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__(?:${joined})$).*|mcp__(?!marrow__(?:${joined})$).*`;
   assert.equal(NATIVE_HOOK_MATCHER, expected);
   assert.equal(nativeHookMatcher(), expected);
   assert.equal(nativeHookMatcher([...OWN].reverse()), expected, 'order of the input never changes the string');
   assert.equal(require('../dist/hook.js').AUTO_HOOK_MATCHER, expected);
-  assert.deepEqual(LEGACY_NATIVE_HOOK_MATCHERS, [LEGACY]);
+  // The r2 string with `.*` (never released) is legacy too, so a hook written with it is repaired.
+  assert.deepEqual(LEGACY_NATIVE_HOOK_MATCHERS, [LEGACY, r2]);
   // A regex character in a name is escaped, never interpreted.
   assert.match(nativeHookMatcher(['a.b|c']), /\(\?:a\\\.b\\\|c\)\$/);
 });
 
-test('M1: the matcher skips exactly the 58 own names on server marrow (with and without functions.) and nothing else', () => {
+test('M1: the matcher skips exactly the 58 own names on server marrow and nothing else', () => {
   for (const name of ['mcp__marrow__marrow_delete_all', 'mcp__MARROW__marrow_commit', 'mcp__marrow__marrow_commit ', 'mcp__evil__x']) {
     assert.equal(full.test(name), true, name);
     assert.equal(search.test(name), true, name);
@@ -86,12 +92,13 @@ test('M1: the matcher skips exactly the 58 own names on server marrow (with and 
   const names = corpus();
   assert.ok(names.length > 2000, `corpus ${names.length}`);
   let skipped = 0;
-  // Known gap, the same as the old matcher (follow-up): `.*` never crosses a line terminator, so a
-  // full-matching host skips any name that contains one. Host tool-name charsets exclude them.
+  // r3 closes the r2 gap: `[\s\S]*` crosses line terminators, so a full-matching host no longer
+  // skips a name that contains one (the old matcher did; never looser than it).
   const LINE = /[\n\r\u2028\u2029]/;
+  assert.ok(names.filter((n) => LINE.test(n)).length > 100);
   for (const name of names.filter((n) => LINE.test(n))) {
-    assert.equal(full.test(name), false, JSON.stringify(name));
-    assert.equal(legacyFull.test(name), false, `never looser than the old matcher ${JSON.stringify(name)}`);
+    assert.equal(full.test(name), true, JSON.stringify(name));
+    assert.equal(legacyFull.test(name), false, `the old matcher skipped it ${JSON.stringify(name)}`);
     assert.equal(search.test(name), !OWN_FORMS.has(name), JSON.stringify(name));
   }
   for (const name of names.filter((n) => !LINE.test(n))) {
@@ -102,7 +109,7 @@ test('M1: the matcher skips exactly the 58 own names on server marrow (with and 
     if (legacyFull.test(name)) assert.equal(full.test(name), true, `legacy covered ${JSON.stringify(name)}`);
     if (!full.test(name)) skipped += 1;
   }
-  assert.equal(skipped, 116, '58 names x (bare, functions.)');
+  assert.equal(skipped, 58, '58 names, Claude Code form only');
   // The unregistered names the old matcher skipped now reach the hook.
   for (const name of ['mcp__marrow__marrow_delete_all', 'mcp__marrow__marrow_x', 'functions.mcp__marrow__marrow_exec', 'mcp__marrow__marrow_commitx']) {
     assert.equal(legacyFull.test(name), false, name);

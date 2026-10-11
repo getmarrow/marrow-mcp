@@ -98,12 +98,23 @@ test('Gemini entrypoints and hook envelopes normalize to bounded classifications
   assert.equal(JSON.stringify(shell).includes('synthetic-private-context'), false);
   assert.equal(JSON.stringify(shell).includes('/synthetic/private/path'), false);
 
+  // Marrow's own tool: Gemini's mcp_context names server `marrow` and the exact tool (the label alone is ambiguous).
   const ownMcp = normalizeHookEventPayload({
     session_id: 'gemini-session',
     hook_event_name: 'BeforeTool',
     tool_name: 'mcp_marrow_marrow_agent_runtime',
     tool_input: { private: 'synthetic-private-arguments' },
+    mcp_context: { server_name: 'marrow', tool_name: 'marrow_agent_runtime', command: 'synthetic-private-command', args: ['synthetic-private-ctx-value'] },
   });
+  assert.equal(JSON.stringify(ownMcp).includes('synthetic-private-command'), false);
+  assert.equal(JSON.stringify(ownMcp).includes('synthetic-private-ctx-value'), false);
+  const labelOnly = normalizeHookEventPayload({
+    session_id: 'gemini-session',
+    hook_event_name: 'BeforeTool',
+    tool_name: 'mcp_marrow_marrow_agent_runtime',
+    tool_input: { private: 'synthetic-private-arguments' },
+  });
+  assert.equal(classifyTool(labelOnly).protected, true, 'without mcp_context the label proves nothing');
   const externalMcp = normalizeHookEventPayload({
     session_id: 'gemini-session',
     hook_event_name: 'BeforeTool',
@@ -201,6 +212,7 @@ test('Gemini child BeforeTool returns strict exit-zero JSON for allow, missing p
     hook_event_name: 'BeforeTool',
     tool_name: 'mcp_marrow_marrow_agent_runtime',
     tool_input: { private: 'synthetic-private-mcp-arguments' },
+    mcp_context: { server_name: 'marrow', tool_name: 'marrow_agent_runtime' },
   });
   assert.equal(ownMcp.status, 0);
   assert.equal(ownMcp.stderr, '');

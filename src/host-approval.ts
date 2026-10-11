@@ -459,6 +459,8 @@ export function arbitrationHoldGuidance(guidance: ArbitrationApprovalGuidance): 
 export type RecordHoldInput = {
   guidance: HoldGuidance;
   correlation: string;
+  /** exactHookTarget of the held call: only a call with this exact target can use the approval. */
+  target: string;
   toolUseId: string | null;
   generationId: string | null;
   toolName: string;
@@ -492,6 +494,7 @@ export function rememberHold(ctx: HoldContext, input: RecordHoldInput): HoldReco
     host_session_id: ctx.hostSessionId,
     agent_id: ctx.agentId && ctx.agentId.length <= 128 ? ctx.agentId : null,
     correlation: input.correlation,
+    target: input.target,
     tool_use_id: input.toolUseId && BOUNDED_ID.test(input.toolUseId) ? input.toolUseId : null,
     generation_id: input.generationId && BOUNDED_ID.test(input.generationId) ? input.generationId : null,
     tool_name: input.toolName.slice(0, 256),
@@ -778,6 +781,8 @@ export type WaitingResolution =
  */
 export async function resumeWaitingHold(ctx: HoldContext, input: {
   correlation: string;
+  /** exactHookTarget of this call: a hold made for any other target (a look-alike sharing the correlation) is never claimed. */
+  target: string;
   toolUseId: string | null;
   generationId: string | null;
   /** Claude Code shows its dialog for this attempt (permission mode and version). */
@@ -786,7 +791,7 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
   const scope = scopeOf(ctx);
   let holds: HoldRecord[];
   try {
-    holds = findHolds(scope, { correlation: input.correlation, sessionId: ctx.sessionId, mode: 'wait', states: ['open'] }, ctx.home);
+    holds = findHolds(scope, { correlation: input.correlation, target: input.target, sessionId: ctx.sessionId, mode: 'wait', states: ['open'] }, ctx.home);
   } catch {
     return null;
   }
@@ -1147,6 +1152,8 @@ export const LATE_MARKER_WAIT_MS = 1_500;
  */
 export async function settleAfterTool(ctx: HoldContext, input: {
   correlation: string;
+  /** exactHookTarget of the call that ran: only its own hold is reported or closed. */
+  target: string;
   toolUseId: string | null;
   generationId: string | null;
   /** null when the host does not say whether the call succeeded (Cursor's after-execution events). */
@@ -1161,6 +1168,7 @@ export async function settleAfterTool(ctx: HoldContext, input: {
   try {
     holds = findHolds(scope, {
       correlation: input.correlation,
+      target: input.target,
       sessionId: ctx.sessionId,
       states: ['open', 'allowed'],
       ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),

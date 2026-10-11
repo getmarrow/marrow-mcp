@@ -29,6 +29,7 @@ import {
   resolveNativeHookIdentity,
   stableSessionWorkflowId,
   stableToolCorrelation,
+  exactHookTarget,
 } from './hook-contract';
 
 export const AUTO_HOOK_COMMAND = ACTION_RESULT_HOOK_COMMAND;
@@ -285,6 +286,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       const correlation = stableToolCorrelation({ ...ranWith, session_id: sessionId });
       const handoff = await settleAfterTool(heldContext, {
         correlation,
+        target: exactHookTarget(ranWith),
         toolUseId: getString(event.tool_use_id) || null,
         generationId: getString(event.generation_id) || null,
         success: outcome.unknown ? null : outcome.success,

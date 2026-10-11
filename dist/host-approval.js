@@ -380,6 +380,7 @@ function rememberHold(ctx, input) {
         host_session_id: ctx.hostSessionId,
         agent_id: ctx.agentId && ctx.agentId.length <= 128 ? ctx.agentId : null,
         correlation: input.correlation,
+        target: input.target,
         tool_use_id: input.toolUseId && BOUNDED_ID.test(input.toolUseId) ? input.toolUseId : null,
         generation_id: input.generationId && BOUNDED_ID.test(input.generationId) ? input.generationId : null,
         tool_name: input.toolName.slice(0, 256),
@@ -676,7 +677,7 @@ async function resumeWaitingHold(ctx, input) {
     const scope = scopeOf(ctx);
     let holds;
     try {
-        holds = (0, host_approval_state_1.findHolds)(scope, { correlation: input.correlation, sessionId: ctx.sessionId, mode: 'wait', states: ['open'] }, ctx.home);
+        holds = (0, host_approval_state_1.findHolds)(scope, { correlation: input.correlation, target: input.target, sessionId: ctx.sessionId, mode: 'wait', states: ['open'] }, ctx.home);
     }
     catch {
         return null;
@@ -1042,6 +1043,7 @@ async function settleAfterTool(ctx, input) {
     try {
         holds = (0, host_approval_state_1.findHolds)(scope, {
             correlation: input.correlation,
+            target: input.target,
             sessionId: ctx.sessionId,
             states: ['open', 'allowed'],
             ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),

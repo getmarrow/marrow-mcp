@@ -160,6 +160,7 @@ function validHold(value) {
         && typeof hold.host_session_id === 'string' && IDENTIFIER.test(hold.host_session_id)
         && (hold.agent_id === null || (typeof hold.agent_id === 'string' && hold.agent_id.length <= 128))
         && HEX32.test(hold.correlation)
+        && (hold.target === undefined || (typeof hold.target === 'string' && /^[a-f0-9]{64}$/.test(hold.target)))
         && (hold.tool_use_id === null || (typeof hold.tool_use_id === 'string' && hold.tool_use_id.length <= 128))
         && (hold.generation_id === null || (typeof hold.generation_id === 'string' && hold.generation_id.length <= 128))
         && typeof hold.tool_name === 'string' && hold.tool_name.length <= 256
@@ -330,6 +331,7 @@ function recordHold(scope, input, home) {
         const now = Date.now();
         for (const [id, hold] of Object.entries(state.holds)) {
             if (hold.key_ref === ref && hold.correlation === input.correlation && hold.mode === input.mode
+                && (hold.target === undefined || hold.target === input.target)
                 && hold.state !== 'resolved' && !hold.outbox && (hold.mode === 'wait' || hold.tool_use_id === input.tool_use_id)) {
                 delete state.holds[id];
             }
@@ -361,6 +363,8 @@ function matches(hold, ref, query) {
     if (query.id && hold.id !== query.id)
         return false;
     if (query.correlation && hold.correlation !== query.correlation)
+        return false;
+    if (query.target !== undefined && hold.target !== query.target)
         return false;
     if (query.toolUseId && hold.tool_use_id && hold.tool_use_id !== query.toolUseId)
         return false;

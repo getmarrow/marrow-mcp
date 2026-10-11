@@ -27,7 +27,8 @@ const HOSTS = [
   // functions.mcp__* is an MCP tool too (G1), so a foreign one is held like mcp__*.
   { host: 'codex', entry: 'codex-pre-action-hook', event: (s, t) => ({ hook_event_name: 'PreToolUse', tool_name: `functions.mcp__${s}__${t}`, tool_input: {} }) },
   { host: 'codex-bare', entry: 'codex-pre-action-hook', event: (s, t) => ({ hook_event_name: 'PreToolUse', tool_name: `mcp__${s}__${t}`, tool_input: {} }) },
-  { host: 'gemini', entry: 'gemini-pre-action-hook', event: (s, t) => ({ hook_event_name: 'BeforeTool', tool_name: `mcp_${s}_${t}`, tool_input: {} }) },
+  // Gemini >= 0.33 labels `mcp_<server>_<tool>` and sends the separate server and tool in mcp_context (r3: the proof).
+  { host: 'gemini', entry: 'gemini-pre-action-hook', event: (s, t) => ({ hook_event_name: 'BeforeTool', tool_name: `mcp_${s}_${t}`, tool_input: {}, mcp_context: { server_name: s, tool_name: t } }) },
   { host: 'cursor-pre-no-server', entry: 'cursor-pre-action-hook', server: false, event: (_s, t) => ({ hook_event_name: 'preToolUse', tool_name: `MCP:${t}`, tool_input: {} }) },
   { host: 'cursor-pre', entry: 'cursor-pre-action-hook', event: (s, t) => ({ hook_event_name: 'preToolUse', tool_name: `MCP:${s}:${t}`, tool_input: {} }) },
   { host: 'cursor-mcp', entry: 'cursor-pre-action-hook', event: (s, t) => ({ hook_event_name: 'beforeMCPExecution', mcp_server_name: s, tool_name: t, tool_input: '{}' }) },
@@ -188,12 +189,14 @@ test('look-alike servers and unregistered or padded tools are never own and are 
 
 test('raw tool-name table: case, prefixes, look-alike servers, suffixes, whitespace and NUL', () => {
   const own = [
-    'mcp__marrow__marrow_commit', 'functions.mcp__marrow__marrow_commit', 'mcp_marrow_marrow_commit',
+    'mcp__marrow__marrow_commit', 'functions.mcp__marrow__marrow_commit',
     'MCP:marrow_commit', 'MCP:marrow:marrow_commit', 'mcp__marrow__marrow_auto', 'mcp__marrow__marrow_create_key',
-    'mcp__marrow__marrow_run', 'MCP:marrow:marrow_handoff_status', 'mcp_marrow_marrow_agent_runtime',
+    'mcp__marrow__marrow_run', 'MCP:marrow:marrow_handoff_status',
   ];
   for (const name of own) assert.equal(isOfficialMarrowMcpTool(name), true, name);
   const gated = [
+    // r3: a Gemini label alone is never own (server `marrow_marrow` + `commit` has the same label); see own-tool-r3
+    'mcp_marrow_marrow_commit', 'mcp_marrow_marrow_agent_runtime',
     // F9: case variants of server, tool and host prefix
     'mcp__MARROW__marrow_delete_all', 'mcp__Marrow__marrow_exec', 'mcp__MARROW__marrow_commit', 'mcp__marrow__MARROW_COMMIT',
     'mcp__marrow__Marrow_commit', 'MCP__marrow__marrow_commit', 'Mcp__marrow__marrow_commit', 'mcp:marrow_commit', 'Mcp:marrow:marrow_commit',

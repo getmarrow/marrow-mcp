@@ -4,13 +4,22 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 import { normalizedHookAction } from './normalized-action';
-import { isMarrowOwnTool, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput, nativeHookMatcher, normalizedMcpToolName } from './own-tool';
+import {
+  geminiMcpTarget, isGeminiOwnLabel, isMarrowOwnTool, isOfficialMarrowGeminiCall, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput,
+  nativeHookMatcher, normalizedMcpToolName, r2NativeHookMatcher,
+} from './own-tool';
 
 export const MCP_ADAPTER_VERSION = '3.9.101';
 export const NATIVE_HOOK_MATCHER = nativeHookMatcher();
-/** Matchers older versions wrote; they skip every `mcp__marrow__marrow_*` tool, so a hook carrying one needs repair. */
+/**
+ * Matchers older versions wrote, so a hook carrying one needs repair: the
+ * released one skips every `mcp__marrow__marrow_*` tool; the r2 one (never
+ * released) skips `functions.mcp__marrow__<own>` and, under a full match, any
+ * name with a line terminator.
+ */
 export const LEGACY_NATIVE_HOOK_MATCHERS: readonly string[] = [
   'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*',
+  r2NativeHookMatcher(),
 ];
 export const GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
@@ -246,12 +255,22 @@ function normalizeGeminiHookEvent(source: Record<string, unknown>): Record<strin
     return normalized;
   }
   const toolName = typeof source.tool_name === 'string' ? source.tool_name.trim().slice(0, 256) : '';
+  // Gemini's separate server and tool. The label `mcp_<server>_<tool>` is ambiguous
+  // (`marrow_marrow` + `commit` = `marrow` + `marrow_commit`), so only this proves a call is Marrow's own.
+  const mcpTarget = geminiMcpTarget(source.mcp_context);
+  if (mcpTarget) normalized.mcp_context = mcpTarget;
+  const own = isOfficialMarrowGeminiCall(source.tool_name, mcpTarget);
+  // A label in another host's own form (`mcp__marrow__<own>` from a server named `mcp`, `MCP:<own>`
+  // from an older Gemini) without that proof: never own, left unclassified (held), as a padded one is.
+  const otherFormOwnLabel = !own && isOfficialMarrowMcpTool(toolName);
   // A padded Marrow tool name is not Marrow's own: leave it unclassified (held).
-  const paddedOwnName = toolName !== source.tool_name && isOfficialMarrowMcpTool(toolName);
+  const paddedOwnName = toolName !== source.tool_name && (otherFormOwnLabel || isGeminiOwnLabel(toolName));
   // A trimmed or cut name is not the host's exact tool: never bound, so it never shares a key with the exact one.
   // Kept on the second normalization (hooks normalize on read and again on use).
   if (source.input_truncated === true || (toolName && toolName !== source.tool_name)) normalized.input_truncated = true;
-  if (toolName && !paddedOwnName && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
+  if (own && mcpTarget) {
+    normalized.tool_name = `mcp__marrow__${mcpTarget.tool_name}`;
+  } else if (toolName && !paddedOwnName && !otherFormOwnLabel && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
     normalized.tool_name = toolName === 'run_shell_command' ? 'Bash'
       : toolName === 'write_file' ? 'Write'
       : ['replace', 'edit_file'].includes(toolName) ? 'Edit'
@@ -296,13 +315,18 @@ function normalizeGrokHookEvent(source: Record<string, unknown>): Record<string,
     : null;
   const server = boundedWindsurfName(toolInput?.serverName ?? toolInput?.server_name);
   const nestedTool = boundedWindsurfName(toolInput?.toolName ?? toolInput?.tool_name);
-  const boundedToolName = toolName === 'use_tool' && server && nestedTool
+  const adapterBuilt = Boolean(toolName === 'use_tool' && server && nestedTool);
+  const boundedToolName = adapterBuilt
     ? normalizedMcpToolName(
-      source.toolName === 'use_tool' && isOfficialMarrowNestedInput(toolInput), nestedTool, server,
+      source.toolName === 'use_tool' && isOfficialMarrowNestedInput(toolInput), nestedTool!, server!,
       toolInput?.serverName ?? toolInput?.server_name, toolInput?.toolName ?? toolInput?.tool_name,
     )
     : toolName;
-  if (boundedToolName && /^[A-Za-z0-9._:-]+$/.test(boundedToolName)) normalized.tool_name = boundedToolName;
+  // The adapter's own encoding: an escaped name quotes inexact or colon-bearing server and tool names.
+  // An inexact name that bounds to Marrow's own stays unclassified (held), as before.
+  if (boundedToolName && (/^[A-Za-z0-9._:-]+$/.test(boundedToolName) || (adapterBuilt && !isMarrowOwnTool(server, nestedTool)))) {
+    normalized.tool_name = boundedToolName;
+  }
   // A trimmed, cut or replaced name is not the host's exact tool: never bound, so it never shares a key with the exact one.
   if (toolName !== source.toolName || (toolName === 'use_tool' && (server !== (toolInput?.serverName ?? toolInput?.server_name)
     || nestedTool !== (toolInput?.toolName ?? toolInput?.tool_name)))) normalized.input_truncated = true;
@@ -791,6 +815,40 @@ export function stableToolCorrelation(event: {
     event.tool_name || 'tool',
     actionIdentity(event.tool_name, event.tool_input ?? null),
   ]);
+}
+
+/** Hook events whose MCP tool name the adapter built from a separate server and tool. */
+const ADAPTER_MCP_EVENTS = new Set(['beforeMCPExecution', 'afterMCPExecution', 'pre_mcp_tool_use', 'post_mcp_tool_use']);
+
+/**
+ * The exact target of one tool call, for binding a hold's approval to it: the
+ * tool name exactly as normalised (adapters encode server and tool without
+ * ambiguity), whether an adapter built that name from a separate server and
+ * tool (Cursor `MCP:a:b` at preToolUse is a tool named `a:b`; at
+ * beforeMCPExecution it is server `a`, tool `b`), the nested server and tool
+ * fields of the input, and Gemini's mcp_context server and tool. The pre and
+ * post events of one call give the same target. Only the hash is kept.
+ */
+export function exactHookTarget(event: { hook_event_name?: unknown; tool_name?: unknown; tool_input?: unknown; mcp_context?: unknown }): string {
+  try {
+    const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input)
+      ? event.tool_input as Record<string, unknown>
+      : null;
+    const nested = input
+      ? ['serverName', 'server_name', 'toolName', 'tool_name'].map((key) => (Object.prototype.hasOwnProperty.call(input, key) ? input[key] ?? null : null))
+      : null;
+    const mcp = geminiMcpTarget(event.mcp_context);
+    return createHash('sha256').update(JSON.stringify([
+      'marrow-hook-target-v1',
+      typeof event.tool_name === 'string' ? event.tool_name : null,
+      ADAPTER_MCP_EVENTS.has(String(event.hook_event_name ?? '')) ? 'adapter-mcp' : 'host-name',
+      nested,
+      mcp ? [mcp.server_name, mcp.tool_name] : null,
+    ])).digest('hex');
+  } catch {
+    // Not serialisable: a target nothing else can match (it stays held).
+    return createHash('sha256').update(`unmatched:${randomUUID()}`).digest('hex');
+  }
 }
 
 /**

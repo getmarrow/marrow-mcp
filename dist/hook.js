@@ -235,6 +235,7 @@ async function runHookCommand(input) {
             const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...ranWith, session_id: sessionId });
             const handoff = await (0, host_approval_1.settleAfterTool)(heldContext, {
                 correlation,
+                target: (0, hook_contract_1.exactHookTarget)(ranWith),
                 toolUseId: getString(event.tool_use_id) || null,
                 generationId: getString(event.generation_id) || null,
                 success: outcome.unknown ? null : outcome.success,

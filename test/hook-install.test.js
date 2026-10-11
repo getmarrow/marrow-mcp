@@ -31,7 +31,8 @@ test('native matcher exempts only the exact official Marrow MCP namespace', () =
   assert.equal(matcher.test('Read'), true);
   assert.equal(matcher.test('Grep'), true);
   assert.equal(matcher.test('functions.exec'), true);
-  assert.equal(matcher.test('functions.mcp__marrow__marrow_commit'), false);
+  // r3 shared policy: only Claude Code's label proves server `marrow`; this form reaches the hook, which allows it.
+  assert.equal(matcher.test('functions.mcp__marrow__marrow_commit'), true);
 });
 
 function withSettings(value, callback) {
