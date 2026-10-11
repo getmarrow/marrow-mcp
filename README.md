@@ -97,7 +97,7 @@ Hooks-only setup (`marrow-mcp setup` writes hooks and `CLAUDE.md` instructions, 
 npx -y --package=@getmarrow/mcp@latest marrow-mcp setup
 ```
 
-For Claude Code's cooperative pre-action hook, Marrow accepts the process environment or an owner-controlled `~/.marrow/env` file with owner-only permissions. Repository-local `.env` files are intentionally ignored so project content cannot replace the account, agent, or API endpoint used for guidance. The public hook callback is still a client self-report, not certified host provenance or an external enforcement boundary.
+The MCP server and Claude Code's cooperative pre-action hook read the key only from the process environment or an owner-controlled `~/.marrow/env` (or `~/.marrow/env.local`) with owner-only permissions (`chmod 600`). Repository-local files (`.env`, `.env.local`, `.marrow/env*` in the working directory or its parents) are never read for `MARROW_API_KEY` or any other `MARROW_*` setting, whatever their permissions, so project content cannot replace the account, agent, or API endpoint. If one holds a key, the missing-key message names that file and the fix: run `npx @getmarrow/install doctor`, or move the line to `~/.marrow/env`, then `chmod 600 ~/.marrow/env`. The public hook callback is still a client self-report, not certified host provenance or an external enforcement boundary.
 
 Then configure the MCP server:
 
