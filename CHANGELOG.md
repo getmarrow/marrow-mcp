@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.9.101
+
+- `marrow-mcp setup` with no key, or a key only in an untrusted place such as a project `.env`, stops, writes nothing and says how to get a key.
+- Setup reads keys only from the environment or an owner-only `~/.marrow/env`.
+- The key-file steps include `chmod 700 ~/.marrow`.
+- Hold messages say how to approve where the host really asks.
+- The enforcement sentence matches the public one.
+- Version 3.9.101 in `package.json`, `server.json` and the hook commands.
+
 ## 3.9.100
 
 - `marrow-mcp setup` recognizes the installer's local-runtime hook commands (`/bin/sh -c 'M="$HOME/.marrow/runtime/mcp/<version>/run"; …'`, the `{ M=…; }` block inside `sh -c`, and the node guard) only in their exact generated shape with the same version throughout. An entry for the same command keeps its form, so Claude Code and Grok get one Marrow entry per event in either order; an older version's local form is replaced; a look-alike (another path, a suffix, mixed versions) is left alone as the person's own hook. Doctor and coverage read the local form too. Setup still never writes Codex, Cursor, Gemini or Windsurf hook files.

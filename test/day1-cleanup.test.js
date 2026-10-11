@@ -43,7 +43,8 @@ test('setup without a key writes nothing, exits 2 and points to the signup page 
   } finally { s.cleanup(); }
 });
 
-const GROK_BASE = readFileSync(join(__dirname, 'fixtures', 'grok-setup-base-960bc6b1.json'), 'utf8');
+// The fixture is the base 960bc6b1 output (3.9.100); only the pinned package version moves with each release.
+const GROK_BASE = readFileSync(join(__dirname, 'fixtures', 'grok-setup-base-960bc6b1.json'), 'utf8').split('@getmarrow/mcp@3.9.100').join(`@getmarrow/mcp@${require('../package.json').version}`);
 
 test('setup writes the Grok hooks exactly as base 960bc6b1 did, with and without ~/.grok', () => {
   for (const withGrokDir of [false, true]) {

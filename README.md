@@ -155,7 +155,9 @@ A direct `marrow_think` can receive a durable pending response before the backen
 
 A saved `observed_unverified` outcome is terminal observation evidence, not a committed outcome. Receipt expiry cannot retroactively authorize completed work. Preserve the original decision, receipt, proof and key; an already authorized durable checkpoint may finish through its existing exact recovery path. Do not repeat the action merely to obtain a fresh receipt.
 
-## What's New in v3.9.100
+## Hook behavior details
+
+These behaviors shipped in 3.9.100 and still apply.
 
 - **One Marrow entry per hook event:** `marrow-mcp setup` recognizes the installer's local-runtime hook commands exactly (same version throughout, no additions), keeps whichever form is there (local runtime or npx), and never adds a second entry. Your own hooks stay as they are.
 - **Plain words without a key:** a protected action with no Marrow key is denied with "Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action." The hooks read the key from `MARROW_API_KEY` or an owner-only `~/.marrow/env.local` or `~/.marrow/env`, never from a file others can read.
@@ -163,7 +165,15 @@ A saved `observed_unverified` outcome is terminal observation evidence, not a co
 - **Deploy text only word for word:** the exact command text is sent only for `sst deploy --stage <stage>` (optionally `--verbose`, optionally after one `npx` or `bunx`), with a stage of lower-case letters, digits and dashes, in a single clause with nothing else in it, so Marrow can judge the stage itself. Every other command, including other deploy tools, sends only the hash; no free-text word leaves the machine.
 - **No lifecycle event id with two payloads:** an event id names its payload, so a later run is a new record and a resend carries the same bytes.
 
-v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
+## What's New in v3.9.101
+
+- **Setup with no key stops:** `marrow-mcp setup` with no key, or with a key only in an untrusted place such as a project `.env`, now stops, writes nothing and tells you how to get a key.
+- **Keys are read from trusted places only:** setup reads a key only from the environment or an owner-only `~/.marrow/env`.
+- **Key-file steps are safer:** they now include `chmod 700 ~/.marrow` before `chmod 600 ~/.marrow/env`.
+- **Hold messages say where to approve:** a held action now says how to approve it where your host really asks.
+- **One enforcement sentence:** the "what is enforced" wording now matches the public site.
+
+The 3.9.100 behaviors are kept under [Hook behavior details](#hook-behavior-details). v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
 
 Earlier release notes moved from this README to [CHANGELOG.md](https://github.com/getmarrow/marrow-mcp/blob/master/CHANGELOG.md).
 
