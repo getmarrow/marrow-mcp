@@ -16,7 +16,7 @@ const ALLOWED_ENV_KEYS = new Set([
 // files (~/.marrow/env*) may set these; a repository file never can.
 const ENDPOINT_IDENTITY_KEYS = ['MARROW_BASE_URL', 'MARROW_FLEET_AGENT_ID', 'MARROW_AGENT_ID', 'MARROW_SESSION_ID'] as const;
 const MAX_ENV_FILE_BYTES = 1024 * 1024;
-const OWNER_ENV_FIX = 'move the key to ~/.marrow/env (chmod 600) or export MARROW_API_KEY';
+const REPO_KEY_FIX = 'run npx @getmarrow/install doctor, or move the line to ~/.marrow/env, then chmod 600 ~/.marrow/env';
 
 export interface ResolvedMarrowEnv {
   apiKey: string;
@@ -115,58 +115,6 @@ function readEnvFile(filePath: string, noFollow: boolean): EnvFileRead | null {
     return null;
   } finally {
     fs.closeSync(fd);
-  }
-}
-
-function currentUid(): number | null {
-  return typeof process.getuid === 'function' ? process.getuid() : null;
-}
-
-/**
- * Why a key in a repository-level file may not be used, or null when it may.
- * The file must be a regular, non-symlink file owned by this user with no
- * group/other permission bits, and every directory of its real parent chain
- * must be owned by this user or root and not group/other-writable.
- */
-function repoKeyFileProblem(filePath: string, opened: fs.Stats | null): { reason: string; fix: string } | null {
-  const uid = currentUid();
-  const shown = printablePath(filePath);
-  if (uid === null) return { reason: 'file ownership cannot be verified on this platform', fix: OWNER_ENV_FIX };
-  let linkStat: fs.Stats;
-  try {
-    linkStat = fs.lstatSync(filePath);
-  } catch {
-    return { reason: 'file could not be inspected', fix: OWNER_ENV_FIX };
-  }
-  if (linkStat.isSymbolicLink() || !opened) return { reason: 'file is a symlink or not a regular file', fix: OWNER_ENV_FIX };
-  if (!linkStat.isFile() || linkStat.ino !== opened.ino || linkStat.dev !== opened.dev) {
-    return { reason: 'file changed while it was read', fix: OWNER_ENV_FIX };
-  }
-  if (opened.uid !== uid) return { reason: 'file is owned by another user', fix: OWNER_ENV_FIX };
-  if ((opened.mode & 0o077) !== 0) return { reason: 'file is readable or writable by group/other', fix: `chmod 600 ${shown}` };
-  let dir: string;
-  try {
-    dir = fs.realpathSync(path.dirname(filePath));
-  } catch {
-    return { reason: 'directory could not be resolved', fix: OWNER_ENV_FIX };
-  }
-  for (;;) {
-    let dirStat: fs.Stats;
-    try {
-      dirStat = fs.lstatSync(dir);
-    } catch {
-      return { reason: 'directory could not be inspected', fix: OWNER_ENV_FIX };
-    }
-    if (!dirStat.isDirectory()) return { reason: 'directory could not be inspected', fix: OWNER_ENV_FIX };
-    if ((dirStat.mode & 0o022) !== 0) {
-      return { reason: `directory ${printablePath(dir)} is group/other-writable`, fix: OWNER_ENV_FIX };
-    }
-    if (dirStat.uid !== uid && dirStat.uid !== 0) {
-      return { reason: `directory ${printablePath(dir)} is owned by another user`, fix: OWNER_ENV_FIX };
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
   }
 }
 
@@ -304,32 +252,25 @@ export function resolveMarrowEnv(options: {
     return fromFile(filePath, found, withoutEndpointIdentity(read.values), env);
   }
 
-  // Repository-level files may supply only a key, and only from a private file.
+  // Repository-level files (found by walking up from cwd) never supply a key or
+  // any other Marrow setting, whatever their owner or mode: a umask-077 clone or a
+  // mode-preserving archive yields a private file the owner never wrote. They are
+  // read (bounded, non-blocking) only to tell the owner a key there was skipped.
   for (const filePath of repoEnvFiles(cwd, ownerFiles)) {
-    let exists = false;
     try {
       fs.lstatSync(filePath);
-      exists = true;
-    } catch { /* absent */ }
-    if (!exists) continue;
-    const read = readEnvFile(filePath, true);
-    const problem = repoKeyFileProblem(filePath, read?.stat || null);
-    if (problem) {
-      // Look (bounded, non-blocking) only to tell the owner a key was skipped.
-      const peek = read || readEnvFile(filePath, false);
-      if (pickKey(peek?.values || {}).key) note(filePath, problem.reason, problem.fix);
+    } catch {
       continue;
     }
-    const found = pickKey(read?.values || {});
-    if (!read || !found.key) continue;
-    if (namesOtherEndpoint(read.values, env)) {
-      note(filePath, 'repository files cannot set MARROW_BASE_URL', OWNER_ENV_FIX);
-      continue;
-    }
-    return fromFile(filePath, found, withoutEndpointIdentity(read.values), env);
+    const peek = readEnvFile(filePath, false);
+    if (pickKey(peek?.values || {}).key && !ignored) ignored = repoKeyNotice(filePath);
   }
 
   return missingKey(env, ignored);
+}
+
+function repoKeyNotice(filePath: string): string {
+  return `Marrow key in ${printablePath(filePath)} ignored: keys are read only from ~/.marrow/env or your environment. Fix: ${REPO_KEY_FIX}.`;
 }
 
 function withoutEndpointIdentity(values: Record<string, string>): Record<string, string> {

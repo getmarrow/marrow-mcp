@@ -1,6 +1,7 @@
-// A cloned or downloaded repository must not steer the MCP server: repository
-// env files can never set the endpoint or agent identity, and can supply a key
-// only from an owner-only file on a safe directory chain.
+// A cloned or downloaded repository must not steer the MCP server: env files
+// found by walking up from the working directory never supply a key, endpoint
+// or agent identity, whatever their owner or mode. Only the process env and the
+// owner files ~/.marrow/env(.local) do.
 const assert = require('node:assert/strict');
 const { execFileSync, spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -28,8 +29,9 @@ function chainIsSafe(dir) {
 }
 
 // A private base whose whole real directory chain is owner/root-owned and not
-// group/other-writable. A shared /tmp (1777) never qualifies: run the suite with
-// TMPDIR set to a private directory to exercise the accepted-file paths.
+// group/other-writable, so a repository file there would have passed the old
+// owner-only check. A shared /tmp (1777) never qualifies: run the suite with
+// TMPDIR set to a private directory to exercise those rows.
 function safeBase() {
   if (typeof process.getuid !== 'function') return null;
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-env-safe-'));
@@ -73,28 +75,62 @@ function withUid(uid, fn) {
   try { return fn(); } finally { process.getuid = original; }
 }
 
+const NOTICE = 'ignored: keys are read only from ~/.marrow/env or your environment. Fix: run npx @getmarrow/install doctor, or move the line to ~/.marrow/env, then chmod 600 ~/.marrow/env.';
+
+function assertIgnored(resolved, file, key, label) {
+  assert.equal(resolved.missing, true, label);
+  assert.equal(resolved.apiKey, '', label);
+  assert.equal(resolved.baseUrl, 'https://api.getmarrow.ai', label);
+  assert.equal(resolved.agentId, undefined, label);
+  assert.equal(resolved.sessionId, undefined, label);
+  assert.ok(resolved.exactFix.includes(`\nMarrow key in ${file} ${NOTICE}`), `${label}: notice names ${file}`);
+  assert.equal(resolved.exactFix.split('\n').length, 2, `${label}: exactly one notice line`);
+  assertNoSecret(resolved, key);
+}
+
+const PLANTED_LINES = (key) => [
+  `MARROW_API_KEY=${key}`,
+  'MARROW_BASE_URL=https://attacker.example',
+  'MARROW_FLEET_AGENT_ID=attacker-agent',
+  'MARROW_AGENT_ID=attacker-agent-2',
+  'MARROW_SESSION_ID=attacker-session',
+];
+
+const gitEnv = (home) => ({ PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' });
+
+// A repository whose tracked .env carries a key, cloned under the given umask.
+function cloneUnderUmask(root, umask, depth) {
+  const home = emptyHome(root);
+  const origin = path.join(root, 'origin');
+  const key = dummyKey(`clone-${umask.toString(8)}`);
+  write(path.join(origin, '.env'), PLANTED_LINES(key), 0o644);
+  const parts = Array.from({ length: depth }, (_, i) => `d${i}`);
+  if (depth > 0) {
+    fs.mkdirSync(path.join(origin, ...parts), { recursive: true });
+    fs.writeFileSync(path.join(origin, ...parts, 'keep'), '');
+  }
+  const git = (args, cwd) => execFileSync('git', args, { cwd, env: gitEnv(home), stdio: 'ignore' });
+  git(['init', '-q'], origin);
+  git(['add', '-A'], origin);
+  git(['-c', 'user.name=t', '-c', 'user.email=t@t.invalid', 'commit', '-qm', 'planted'], origin);
+  const clone = path.join(root, 'clone');
+  execFileSync('/bin/sh', ['-c', `umask ${umask.toString(8).padStart(3, '0')} && exec git clone -q "$1" "$2"`, 'sh', origin, clone], { env: gitEnv(home), stdio: 'ignore' });
+  return { home, key, file: path.join(clone, '.env'), cwd: path.join(clone, ...parts) };
+}
+
 // ── planted files at every walk depth ─────────────────────────────────────
 
-test('planted 0644 .env at depths 0-7 supplies neither key nor endpoint, and names the file', () => {
-  for (let depth = 0; depth <= 7; depth += 1) {
-    const root = scratch('depth');
-    const parts = Array.from({ length: depth }, (_, i) => `d${i}`);
-    const cwd = path.join(root, 'repo', ...parts);
-    fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
-    const key = dummyKey('planted');
-    const planted = path.join(root, 'repo', '.env');
-    write(planted, [`MARROW_API_KEY=${key}`, 'MARROW_BASE_URL=https://attacker.example', 'MARROW_FLEET_AGENT_ID=attacker-agent'], 0o644);
-    const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-    assert.equal(resolved.missing, true, `depth ${depth}`);
-    assert.equal(resolved.apiKey, '');
-    assert.equal(resolved.baseUrl, 'https://api.getmarrow.ai');
-    assert.equal(resolved.agentId, undefined);
-    assert.ok(resolved.exactFix.includes(`Ignored the Marrow key in ${planted}`), `depth ${depth}`);
-    assert.ok(resolved.exactFix.includes(`chmod 600 ${planted}`));
-    assert.equal(resolved.exactFix.split('\n').length, 2, 'exactly one extra notice line');
-    assertNoSecret(resolved, key);
-  }
-});
+for (const umask of [0o022, 0o077]) {
+  test(`git clone under umask ${umask.toString(8).padStart(3, '0')}: a tracked .env at depths 0-7 supplies nothing and is named once`, needsSafe, () => {
+    for (let depth = 0; depth <= 7; depth += 1) {
+      const root = scratch(`umask${umask.toString(8)}-${depth}`);
+      const { home, key, file, cwd } = cloneUnderUmask(root, umask, depth);
+      const mode = fs.statSync(file).mode & 0o777;
+      assert.equal(mode, umask === 0o077 ? 0o600 : 0o644, 'clone produced the mode under test');
+      assertIgnored(resolveMarrowEnv({ cwd, home, env: {} }), file, key, `umask ${umask.toString(8)} depth ${depth}`);
+    }
+  });
+}
 
 test('a file eight levels up is outside the walk: not read and not named', () => {
   const root = scratch('depth8');
@@ -103,169 +139,101 @@ test('a file eight levels up is outside the walk: not read and not named', () =>
   write(path.join(root, 'repo', '.env'), [`MARROW_API_KEY=${dummyKey('far')}`], 0o600);
   const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
   assert.equal(resolved.missing, true);
-  assert.doesNotMatch(resolved.exactFix, /Ignored/);
+  assert.doesNotMatch(resolved.exactFix, /ignored/);
 });
 
-test('every repository file name is rejected at 0644: .env, .env.local, .marrow/env, .marrow/env.local', () => {
+test('an archive extracted with stored modes (tar -p) yields a 0600 .env that is still ignored', needsSafe, () => {
+  const root = scratch('archive');
+  const src = path.join(root, 'src', 'proj');
+  const key = dummyKey('archive');
+  write(path.join(src, '.env'), PLANTED_LINES(key), 0o600);
+  const tarball = path.join(root, 'proj.tar');
+  execFileSync('tar', ['-cf', tarball, '-C', path.dirname(src), 'proj']);
+  const out = path.join(root, 'out');
+  fs.mkdirSync(out, { mode: 0o700 });
+  execFileSync('tar', ['-xpf', tarball, '-C', out]);
+  const file = path.join(out, 'proj', '.env');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assertIgnored(resolveMarrowEnv({ cwd: path.join(out, 'proj'), home: emptyHome(root), env: {} }), file, key, 'tar -p');
+});
+
+test('every repository file name and mode is ignored: .env, .env.local, .marrow/env, .marrow/env.local at 0644/0640/0600', needsSafe, () => {
   for (const rel of ['.env', '.env.local', path.join('.marrow', 'env'), path.join('.marrow', 'env.local')]) {
-    const root = scratch('names');
-    const cwd = path.join(root, 'repo');
-    const key = dummyKey('name');
-    write(path.join(cwd, rel), [`MARROW_API_KEY=${key}`], 0o644);
-    const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-    assert.equal(resolved.missing, true, rel);
-    assert.ok(resolved.exactFix.includes(path.join(cwd, rel)), rel);
-    assertNoSecret(resolved, key);
+    for (const mode of [0o644, 0o640, 0o600]) {
+      const root = scratch('names');
+      const cwd = path.join(root, 'repo');
+      const key = dummyKey('name');
+      write(path.join(cwd, rel), PLANTED_LINES(key), mode);
+      assertIgnored(resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }), path.join(cwd, rel), key, `${rel} ${mode.toString(8)}`);
+    }
   }
 });
 
-test('0640 repository file is rejected; 0600 is accepted for the key only', needsSafe, () => {
-  const root = scratch('modes');
+test('MARROW_KEY in a repository file is ignored the same way', needsSafe, () => {
+  const root = scratch('marrow-key');
   const cwd = path.join(root, 'repo');
-  const key = dummyKey('mode');
-  const file = path.join(cwd, '.env');
-  write(file, [`MARROW_API_KEY=${key}`, 'MARROW_FLEET_AGENT_ID=repo-agent', 'MARROW_AGENT_ID=repo-agent-2', 'MARROW_SESSION_ID=repo-session'], 0o640);
-  const rejected = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-  assert.equal(rejected.missing, true);
-  assert.match(rejected.exactFix, /readable or writable by group\/other/);
-  assertNoSecret(rejected, key);
-
-  fs.chmodSync(file, 0o600);
-  const accepted = resolveMarrowEnv({ cwd, home: emptyHome(root), env: { MARROW_FLEET_AGENT_ID: 'env-agent', MARROW_SESSION_ID: 'env-session' } });
-  assert.equal(accepted.apiKey, key);
-  assert.equal(accepted.baseUrl, 'https://api.getmarrow.ai');
-  assert.equal(accepted.agentId, 'env-agent', 'agent identity comes from the process env, never the repo file');
-  assert.equal(accepted.sessionId, 'env-session');
-  assert.doesNotMatch(JSON.stringify(accepted), /repo-agent|repo-session/);
-
-  const noEnvIdentity = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-  assert.equal(noEnvIdentity.agentId, undefined);
-  assert.equal(noEnvIdentity.sessionId, undefined);
+  const key = dummyKey('mk');
+  write(path.join(cwd, '.env'), [`MARROW_KEY=${key}`], 0o600);
+  assertIgnored(resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }), path.join(cwd, '.env'), key, 'MARROW_KEY');
 });
 
-test('a private repository file that names another endpoint is skipped, not redirected and not re-pointed', needsSafe, () => {
-  for (const line of [
-    'MARROW_BASE_URL=https://attacker.example',
-    'export MARROW_BASE_URL="https://attacker.example"',
-    "MARROW_BASE_URL='https://api.getmarrow.ai.attacker.example'",
-    'MARROW_BASE_URL=http://api.getmarrow.ai',
-  ]) {
-    const root = scratch('endpoint');
-    const cwd = path.join(root, 'repo');
-    const key = dummyKey('endpoint');
-    write(path.join(cwd, '.env'), [`MARROW_API_KEY=${key}`, line], 0o600);
-    const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-    assert.equal(resolved.missing, true, line);
-    assert.equal(resolved.baseUrl, 'https://api.getmarrow.ai');
-    assert.match(resolved.exactFix, /repository files cannot set MARROW_BASE_URL/);
-    assertNoSecret(resolved, key);
-  }
-});
-
-test('a private repository file that repeats the endpoint in use keeps working', needsSafe, () => {
-  const root = scratch('same-endpoint');
-  const cwd = path.join(root, 'repo');
-  const key = dummyKey('same');
-  write(path.join(cwd, '.env'), [`MARROW_API_KEY=${key}`, 'MARROW_BASE_URL=https://api.getmarrow.ai/'], 0o600);
+test('several planted files produce one notice, naming the nearest', needsSafe, () => {
+  const root = scratch('many');
+  const cwd = path.join(root, 'repo', 'pkg');
+  const keys = [dummyKey('a'), dummyKey('b'), dummyKey('c')];
+  write(path.join(cwd, '.env'), [`MARROW_API_KEY=${keys[0]}`], 0o600);
+  write(path.join(cwd, '.marrow', 'env'), [`MARROW_API_KEY=${keys[1]}`], 0o600);
+  write(path.join(root, 'repo', '.env.local'), [`MARROW_API_KEY=${keys[2]}`], 0o600);
   const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-  assert.equal(resolved.apiKey, key);
-  assert.equal(resolved.baseUrl, 'https://api.getmarrow.ai');
+  assertIgnored(resolved, path.join(cwd, '.marrow', 'env'), keys[0], 'many');
+  assertNoSecret(resolved, ...keys);
 });
 
-// ── symlinks, owners, directory chain ─────────────────────────────────────
+test('a repository file with only endpoint/identity settings changes nothing and adds no notice', needsSafe, () => {
+  const root = scratch('no-key');
+  const cwd = path.join(root, 'repo');
+  write(path.join(cwd, '.env'), PLANTED_LINES('x').slice(1), 0o600);
+  const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
+  assert.equal(resolved.baseUrl, 'https://api.getmarrow.ai');
+  assert.equal(resolved.agentId, undefined);
+  assert.equal(resolved.exactFix.split('\n').length, 1);
+});
 
-test('a symlinked repository env file is rejected even when its target is private', needsSafe, () => {
+// ── symlinks and special files ───────────────────────────────────────────
+
+test('a symlinked repository env file is ignored even when its target is private', needsSafe, () => {
   const root = scratch('symlink-file');
   const cwd = path.join(root, 'repo');
   fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
   const target = path.join(root, 'private-env');
   const key = dummyKey('symlink');
-  write(target, [`MARROW_API_KEY=${key}`], 0o600);
+  write(target, PLANTED_LINES(key), 0o600);
   fs.symlinkSync(target, path.join(cwd, '.env'));
-  const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-  assert.equal(resolved.missing, true);
-  assert.match(resolved.exactFix, /: file is a symlink or not a regular file\./);
-  assertNoSecret(resolved, key);
+  assertIgnored(resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }), path.join(cwd, '.env'), key, 'symlink file');
 });
 
-test('a symlinked .marrow directory is judged by its real directory chain', needsSafe, () => {
+test('a symlinked .marrow directory pointing at a private directory is ignored', needsSafe, () => {
   const root = scratch('symlink-dir');
   const cwd = path.join(root, 'repo');
   fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
   const realDir = path.join(root, 'elsewhere');
   const key = dummyKey('symdir');
-  write(path.join(realDir, 'env'), [`MARROW_API_KEY=${key}`], 0o600);
+  write(path.join(realDir, 'env'), PLANTED_LINES(key), 0o600);
   fs.symlinkSync(realDir, path.join(cwd, '.marrow'));
-  assert.equal(resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }).apiKey, key);
-
-  fs.chmodSync(realDir, 0o777);
-  const unsafe = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-  assert.equal(unsafe.missing, true);
-  assert.match(unsafe.exactFix, /group\/other-writable/);
-  assert.ok(unsafe.exactFix.includes(realDir), 'names the real directory, not the link');
-  assertNoSecret(unsafe, key);
+  assertIgnored(resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }), path.join(cwd, '.marrow', 'env'), key, 'symlink dir');
 });
 
-test('a group-writable directory anywhere in the chain rejects a 0600 file', needsSafe, () => {
-  for (const mode of [0o770, 0o757, 0o1777]) {
-    const root = scratch('gw');
-    const shared = path.join(root, 'shared');
-    const cwd = path.join(shared, 'repo', 'pkg');
-    fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
-    const key = dummyKey('gw');
-    write(path.join(cwd, '.env'), [`MARROW_API_KEY=${key}`], 0o600);
-    fs.chmodSync(shared, mode);
-    const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-    assert.equal(resolved.missing, true, mode.toString(8));
-    assert.ok(resolved.exactFix.includes(`directory ${shared} is group/other-writable`));
-    assert.match(resolved.exactFix, /move the key to ~\/\.marrow\/env/);
-    assertNoSecret(resolved, key);
-  }
-});
-
-test('the shared temp directory itself never qualifies as a safe chain', { skip: !fs.existsSync('/tmp') || (fs.statSync('/tmp').mode & 0o002) === 0 ? 'no world-writable /tmp here' : false }, () => {
-  const dir = fs.mkdtempSync(path.join('/tmp', 'marrow-env-shared-'));
-  const key = dummyKey('tmp');
-  write(path.join(dir, '.env'), [`MARROW_API_KEY=${key}`], 0o600);
-  const resolved = resolveMarrowEnv({ cwd: dir, home: emptyHome(dir), env: {} });
-  assert.equal(resolved.missing, true);
-  assertNoSecret(resolved, key);
-});
-
-test('a file owned by another user is rejected (uid simulated)', needsSafe, () => {
-  const root = scratch('foreign');
+test('a repository .marrow symlinked to ~/.marrow changes nothing: the owner file is read by its own path', needsSafe, () => {
+  const root = scratch('symlink-owner');
   const cwd = path.join(root, 'repo');
-  const key = dummyKey('foreign');
-  write(path.join(cwd, '.env'), [`MARROW_API_KEY=${key}`], 0o600);
-  const resolved = withUid(process.getuid() + 4242, () => resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }));
-  assert.equal(resolved.missing, true);
-  assert.match(resolved.exactFix, /: file is owned by another user/);
-  assertNoSecret(resolved, key);
-});
-
-test('a directory in the chain owned by another (non-root) user rejects a 0600 file (stat simulated)', needsSafe, () => {
-  const root = scratch('foreign-dir');
-  const foreignDir = path.join(root, 'theirs');
-  const cwd = path.join(foreignDir, 'repo');
-  const key = dummyKey('foreign-dir');
-  write(path.join(cwd, '.env'), [`MARROW_API_KEY=${key}`], 0o600);
-  const realLstat = fs.lstatSync;
-  const foreign = fs.realpathSync(foreignDir);
-  fs.lstatSync = (target, ...rest) => {
-    const stat = realLstat(target, ...rest);
-    if (target === foreign) return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: process.getuid() + 4242 });
-    return stat;
-  };
-  let resolved;
-  try {
-    resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-  } finally {
-    fs.lstatSync = realLstat;
-  }
-  assert.equal(resolved.missing, true);
-  assert.ok(resolved.exactFix.includes(`directory ${foreign} is owned by another user`));
-  assertNoSecret(resolved, key);
-  assert.equal(resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }).apiKey, key, 'same tree is accepted without the foreign owner');
+  fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
+  const home = ownerHome(root, null);
+  const ownerKey = dummyKey('owner');
+  write(path.join(home, '.marrow', 'env.local'), [`MARROW_API_KEY=${ownerKey}`], 0o600);
+  fs.symlinkSync(path.join(home, '.marrow'), path.join(cwd, '.marrow'));
+  const resolved = resolveMarrowEnv({ cwd, home, env: {} });
+  assert.equal(resolved.apiKey, ownerKey, 'owner file reached through its real path');
+  assert.equal(resolved.source, `${path.join(home, '.marrow', 'env.local')}:MARROW_API_KEY`);
 });
 
 test('without a uid (Windows) a repository key is never used', needsSafe, () => {
@@ -274,9 +242,7 @@ test('without a uid (Windows) a repository key is never used', needsSafe, () => 
   const key = dummyKey('nouid');
   write(path.join(cwd, '.env'), [`MARROW_API_KEY=${key}`], 0o600);
   const resolved = withUid(undefined, () => resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }));
-  assert.equal(resolved.missing, true);
-  assert.match(resolved.exactFix, /cannot be verified on this platform/);
-  assertNoSecret(resolved, key);
+  assertIgnored(resolved, path.join(cwd, '.env'), key, 'no uid');
 });
 
 test('a planted FIFO, directory or oversized file cannot hang or feed the resolver', () => {
@@ -311,7 +277,7 @@ test('a planted endpoint never overrides an owner key: owner URL or default stay
   const root = scratch('owner-wins');
   const cwd = path.join(root, 'repo');
   const planted = dummyKey('planted');
-  write(path.join(cwd, '.env'), [`MARROW_API_KEY=${planted}`, 'MARROW_BASE_URL=https://attacker.example'], 0o600);
+  write(path.join(cwd, '.env'), PLANTED_LINES(planted), 0o600);
   const ownerKey = dummyKey('owner');
   const home = ownerHome(root, [`MARROW_API_KEY=${ownerKey}`]);
   const resolved = resolveMarrowEnv({ cwd, home, env: {} });
@@ -364,29 +330,52 @@ test('a non-private owner file keeps its key but loses endpoint and identity; a 
   assertNoSecret(dropped, key);
 });
 
-test('hook path (trustedOnly) still never reads repository files, even private ones', needsSafe, () => {
+test('hook path (trustedOnly) and MCP path agree: repository files are never a key source', needsSafe, () => {
   const root = scratch('trusted');
   const cwd = path.join(root, 'repo');
   write(path.join(cwd, '.env'), [`MARROW_API_KEY=${dummyKey('repo')}`], 0o600);
-  const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {}, trustedOnly: true });
-  assert.equal(resolved.missing, true);
-  assert.doesNotMatch(resolved.exactFix, /Ignored/);
-  assert.equal(resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }).missing, false);
+  const hook = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {}, trustedOnly: true });
+  assert.equal(hook.missing, true);
+  assert.doesNotMatch(hook.exactFix, /ignored/);
+  assert.equal(resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }).missing, true);
+});
+
+test('a private owner ~/.marrow/env and ~/.marrow/env.local still work, including from cwd = HOME', needsSafe, () => {
+  for (const name of ['env', 'env.local']) {
+    const root = scratch('owner-ok');
+    const home = ownerHome(root, null);
+    const key = dummyKey('owner');
+    write(path.join(home, '.marrow', name), [`MARROW_API_KEY=${key}`, 'MARROW_FLEET_AGENT_ID=owner-agent'], 0o600);
+    for (const cwd of [home, path.join(root, 'repo')]) {
+      fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
+      const resolved = resolveMarrowEnv({ cwd, home, env: {} });
+      assert.equal(resolved.apiKey, key, `${name} from ${cwd}`);
+      assert.equal(resolved.agentId, 'owner-agent');
+      assert.equal(resolved.source, `${path.join(home, '.marrow', name)}:MARROW_API_KEY`);
+    }
+  }
+});
+
+test('a key in ~/.env (not ~/.marrow/env) is a walked file and is ignored with the notice', needsSafe, () => {
+  const root = scratch('home-dotenv');
+  const home = ownerHome(root, null);
+  const key = dummyKey('home-dotenv');
+  write(path.join(home, '.env'), [`MARROW_API_KEY=${key}`], 0o600);
+  const cwd = path.join(home, 'code', 'proj');
+  fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
+  assertIgnored(resolveMarrowEnv({ cwd, home, env: {} }), path.join(home, '.env'), key, '~/.env');
 });
 
 // ── parser edge cases and fleet mapping ──────────────────────────────────
 
-test('CRLF, quotes and export prefixes do not smuggle an endpoint or identity out of a private repo file', needsSafe, () => {
+test('CRLF, quotes and export prefixes in a private repository file supply nothing', needsSafe, () => {
   const root = scratch('parse');
   const cwd = path.join(root, 'repo');
   const key = dummyKey('crlf');
   fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
   const file = path.join(cwd, '.env');
   fs.writeFileSync(file, `export MARROW_API_KEY="${key}"\r\nMARROW_AGENT_ID='repo-agent'\r\nX=1\rMARROW_BASE_URL=https://attacker.example\r\n`, { mode: 0o600 });
-  const resolved = resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} });
-  assert.equal(resolved.apiKey, key);
-  assert.equal(resolved.baseUrl, 'https://api.getmarrow.ai');
-  assert.equal(resolved.agentId, undefined);
+  assertIgnored(resolveMarrowEnv({ cwd, home: emptyHome(root), env: {} }), file, key, 'crlf');
 });
 
 test('fleet key/agent mappings are never read from repository or owner files', () => {
@@ -423,12 +412,12 @@ test('non-default endpoint host is shown precisely, including odd forms', () => 
   assert.equal(nonDefaultBaseUrlHost('https://u:p@x.example'), 'x.example', 'host only, never userinfo');
 });
 
-test('identical repo state with different planted endpoints resolves identically (no repo-driven variation)', needsSafe, () => {
-  const outputs = ['https://a.example', 'https://b.example', ''].map((url) => {
+test('identical owner state with different planted repository files resolves identically (no repo-driven variation)', needsSafe, () => {
+  const outputs = ['https://a.example', 'https://b.example', ''].flatMap((url) => [0o644, 0o600].map((mode) => [url, mode])).map(([url, mode]) => {
     const root = scratch('collide');
     const cwd = path.join(root, 'repo');
     const ownerKey = 'synthetic-collide-owner';
-    write(path.join(cwd, '.env'), [`MARROW_API_KEY=${dummyKey('p')}`, ...(url ? [`MARROW_BASE_URL=${url}`] : []), 'MARROW_FLEET_AGENT_ID=planted'], 0o644);
+    write(path.join(cwd, '.env'), [`MARROW_API_KEY=${dummyKey('p')}`, ...(url ? [`MARROW_BASE_URL=${url}`] : []), 'MARROW_FLEET_AGENT_ID=planted', 'MARROW_SESSION_ID=planted'], mode);
     const home = ownerHome(root, null);
     const r = resolveMarrowEnv({ cwd, home, env: { MARROW_API_KEY: ownerKey, MARROW_FLEET_AGENT_ID: 'env-agent' } });
     return JSON.stringify({ k: r.apiKey, u: r.baseUrl, a: r.agentId, s: r.sessionId });
@@ -458,20 +447,32 @@ function cliEnv(home, extra = {}) {
   return env;
 }
 
-test('MCP server refuses a planted repository key and tells the owner the exact fix', async () => {
-  const root = scratch('cli');
-  const cwd = path.join(root, 'repo');
-  const key = dummyKey('cli');
-  write(path.join(cwd, '.env'), [`MARROW_API_KEY=${key}`, 'MARROW_BASE_URL=https://attacker.example'], 0o644);
-  const home = emptyHome(root);
-  for (const args of [[], ['keys', 'list']]) {
-    const result = await runCli(args, { cwd, env: cliEnv(home) });
-    assert.equal(result.code, 1, args.join(' '));
-    assert.ok(result.stderr.includes(`Ignored the Marrow key in ${path.join(cwd, '.env')}`));
-    assert.ok(result.stderr.includes(`chmod 600 ${path.join(cwd, '.env')}`));
-    assert.equal(`${result.stderr}${result.stdout}`.includes(key), false);
-    assert.doesNotMatch(result.stderr, /attacker/);
+test('MCP server refuses a planted repository key (0644 and 0600) and shows the notice once', async () => {
+  for (const mode of [0o644, 0o600]) {
+    const root = scratch('cli');
+    const cwd = path.join(root, 'repo');
+    const key = dummyKey('cli');
+    const file = path.join(cwd, '.env');
+    write(file, PLANTED_LINES(key), mode);
+    const home = emptyHome(root);
+    for (const args of [[], ['keys', 'list']]) {
+      const result = await runCli(args, { cwd, env: cliEnv(home) });
+      assert.equal(result.code, 1, args.join(' '));
+      assert.equal(result.stderr.split(`Marrow key in ${file} ${NOTICE}`).length, 2, 'notice appears exactly once');
+      assert.equal(`${result.stderr}${result.stdout}`.includes(key), false);
+      assert.doesNotMatch(result.stderr, /attacker/);
+    }
   }
+});
+
+test('MCP server still starts from an owner ~/.marrow/env with a planted repository key present', async () => {
+  const root = scratch('cli-owner');
+  const cwd = path.join(root, 'repo');
+  write(path.join(cwd, '.env'), PLANTED_LINES(dummyKey('planted')), 0o600);
+  const home = ownerHome(root, [`MARROW_API_KEY=${dummyKey('owner')}`, 'MARROW_BASE_URL=https://marrow.invalid:8443']);
+  const result = await runCli([], { cwd, env: cliEnv(home) });
+  assert.match(result.stderr, /non-default Marrow endpoint: marrow\.invalid:8443/, 'owner URL in use, not the planted one');
+  assert.doesNotMatch(result.stderr, /attacker|MARROW_API_KEY required/);
 });
 
 test('MCP server names a non-default endpoint host at startup', async () => {
