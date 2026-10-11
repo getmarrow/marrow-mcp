@@ -311,23 +311,23 @@ test('planted key with a process-env base URL: the planted 0644 key is not sent 
   assertNoSecret(resolved, key);
 });
 
-test('a non-private owner file keeps its key but loses endpoint and identity; a foreign endpoint drops the key', () => {
+test('a non-private owner file supplies nothing, with or without its own endpoint, and names the chmod fix', () => {
   const root = scratch('owner-loose');
   const cwd = path.join(root, 'repo');
   fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
   const key = dummyKey('loose-owner');
   const home = ownerHome(root, [`MARROW_API_KEY=${key}`, 'MARROW_FLEET_AGENT_ID=loose-agent', 'MARROW_SESSION_ID=loose-session'], 0o644);
-  const kept = resolveMarrowEnv({ cwd, home, env: {} });
-  assert.equal(kept.apiKey, key);
-  assert.equal(kept.agentId, undefined);
-  assert.equal(kept.sessionId, undefined);
-
-  write(path.join(home, '.marrow', 'env'), [`MARROW_API_KEY=${key}`, 'MARROW_BASE_URL=https://staging.example'], 0o644);
-  const dropped = resolveMarrowEnv({ cwd, home, env: {} });
-  assert.equal(dropped.missing, true);
-  assert.equal(dropped.baseUrl, 'https://api.getmarrow.ai');
-  assert.ok(dropped.exactFix.includes(`chmod 600 ${path.join(home, '.marrow', 'env')}`));
-  assertNoSecret(dropped, key);
+  for (const lines of [null, [`MARROW_API_KEY=${key}`, 'MARROW_BASE_URL=https://staging.example']]) {
+    if (lines) write(path.join(home, '.marrow', 'env'), lines, 0o644);
+    const dropped = resolveMarrowEnv({ cwd, home, env: {} });
+    assert.equal(dropped.missing, true);
+    assert.equal(dropped.apiKey, '');
+    assert.equal(dropped.baseUrl, 'https://api.getmarrow.ai');
+    assert.equal(dropped.agentId, undefined);
+    assert.equal(dropped.sessionId, undefined);
+    assert.ok(dropped.exactFix.includes(`chmod 600 ${path.join(home, '.marrow', 'env')}`));
+    assertNoSecret(dropped, key);
+  }
 });
 
 test('hook path (trustedOnly) and MCP path agree: repository files are never a key source', needsSafe, () => {

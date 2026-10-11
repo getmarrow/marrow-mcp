@@ -47,9 +47,6 @@ const ALLOWED_ENV_KEYS = new Set([
     'MARROW_AGENT_ID',
     'MARROW_SESSION_ID',
 ]);
-// Endpoint and identity settings. Only the process environment and private owner
-// files (~/.marrow/env*) may set these; a repository file never can.
-const ENDPOINT_IDENTITY_KEYS = ['MARROW_BASE_URL', 'MARROW_FLEET_AGENT_ID', 'MARROW_AGENT_ID', 'MARROW_SESSION_ID'];
 const MAX_ENV_FILE_BYTES = 1024 * 1024;
 const REPO_KEY_FIX = 'run npx @getmarrow/install doctor, or move the line to ~/.marrow/env, then chmod 600 ~/.marrow/env';
 /** Host (with port) of a non-default base URL, for status output; null for the default. */
@@ -83,26 +80,42 @@ function stripQuotes(value) {
     }
     return trimmed;
 }
-function isPrivateOwnerFile(filePath, home) {
+// The one trust decision for owner files, shared by the MCP and hook paths. It
+// is made about the bytes that were read: the file is opened without following
+// a symlink, its type, owner and mode come from fstat on that same descriptor,
+// and an lstat of the path taken after the read must name the same inode. The
+// file must be the owner's and private; home and ~/.marrow must be the owner's
+// real directories, not writable by anyone else. Anything else supplies nothing.
+function readOwnerEnvFile(filePath, home) {
+    const resolvedHome = path.resolve(home);
+    const resolvedFile = path.resolve(filePath);
+    const read = readEnvFile(resolvedFile, true);
+    if (!read) {
+        try {
+            fs.lstatSync(resolvedFile);
+            return { status: 'rejected' };
+        }
+        catch {
+            return { status: 'absent' };
+        }
+    }
     try {
-        const resolvedHome = path.resolve(home);
-        const resolvedFile = path.resolve(filePath);
         const parent = path.dirname(resolvedFile);
         const homeStat = fs.lstatSync(resolvedHome);
         const parentStat = fs.lstatSync(parent);
-        const fileStat = fs.lstatSync(resolvedFile);
+        const pathStat = fs.lstatSync(resolvedFile);
         const uid = typeof process.getuid === 'function' ? process.getuid() : null;
-        return resolvedFile.startsWith(`${resolvedHome}${path.sep}`)
-            && homeStat.isDirectory() && !homeStat.isSymbolicLink() && fs.realpathSync(resolvedHome) === resolvedHome
-            && parentStat.isDirectory() && !parentStat.isSymbolicLink() && fs.realpathSync(parent) === parent
-            && fileStat.isFile() && !fileStat.isSymbolicLink()
-            && (uid === null || fileStat.uid === uid && parentStat.uid === uid && homeStat.uid === uid)
-            && (fileStat.mode & 0o077) === 0
-            && (parentStat.mode & 0o022) === 0
-            && (homeStat.mode & 0o022) === 0;
+        const owned = (stat) => uid === null || stat.uid === uid;
+        const safeDir = (stat, dir) => stat.isDirectory() && !stat.isSymbolicLink()
+            && fs.realpathSync(dir) === dir && owned(stat) && (stat.mode & 0o022) === 0;
+        const trusted = resolvedFile.startsWith(`${resolvedHome}${path.sep}`)
+            && safeDir(homeStat, resolvedHome) && safeDir(parentStat, parent)
+            && read.stat.isFile() && owned(read.stat) && (read.stat.mode & 0o077) === 0
+            && pathStat.isFile() && pathStat.dev === read.stat.dev && pathStat.ino === read.stat.ino;
+        return trusted ? { status: 'trusted', values: read.values } : { status: 'rejected' };
     }
     catch {
-        return false;
+        return { status: 'rejected' };
     }
 }
 // Opens without blocking (a planted FIFO cannot hang the server) and reads only
@@ -140,13 +153,6 @@ function readEnvFile(filePath, noFollow) {
     finally {
         fs.closeSync(fd);
     }
-}
-function parseEnvFile(filePath, trustedHome) {
-    if (!fs.existsSync(filePath))
-        return {};
-    if (trustedHome && !isPrivateOwnerFile(filePath, trustedHome))
-        return {};
-    return readEnvFile(filePath, false)?.values || {};
 }
 function parseEnvText(raw) {
     const values = {};
@@ -237,42 +243,25 @@ function resolveMarrowEnv(options = {}) {
             exactFix: 'Marrow key is loaded from the process environment.',
         };
     }
-    const trustedOnly = options.trustedOnly === true;
+    // Owner files, in the same order and with the same check on the MCP and hook
+    // paths. A file that fails the check supplies nothing, key included.
     const ownerFiles = ownerEnvFiles(home);
-    if (trustedOnly) {
-        for (const filePath of ownerFiles) {
-            const parsed = parseEnvFile(filePath, home);
-            const found = pickKey(parsed);
-            if (!found.key)
-                continue;
-            return fromFile(filePath, found, parsed, env);
-        }
-        return missingKey(env, null);
-    }
-    // Owner files keep today's precedence and key handling. Their endpoint and
-    // identity settings count only when the file passes the private-owner check;
-    // a key from a file whose endpoint is not trusted and differs from the one in
-    // use is not sent anywhere.
     let ignored = null;
-    const note = (filePath, reason, fix) => {
-        if (!ignored)
-            ignored = `Ignored the Marrow key in ${printablePath(filePath)}: ${reason}. Fix: ${fix}.`;
-    };
     for (const filePath of ownerFiles) {
-        if (!fs.existsSync(filePath))
-            continue;
-        const read = readEnvFile(filePath, false);
-        const found = pickKey(read?.values || {});
-        if (!read || !found.key)
-            continue;
-        if (isPrivateOwnerFile(filePath, home))
-            return fromFile(filePath, found, read.values, env);
-        if (namesOtherEndpoint(read.values, env)) {
-            note(filePath, 'its MARROW_BASE_URL is ignored because the file is not owner-only', `chmod 600 ${printablePath(filePath)} && chmod 700 ${printablePath(path.dirname(filePath))}`);
+        const read = readOwnerEnvFile(filePath, home);
+        if (read.status === 'rejected') {
+            if (!ignored)
+                ignored = ownerFileNotice(filePath);
             continue;
         }
-        return fromFile(filePath, found, withoutEndpointIdentity(read.values), env);
+        if (read.status !== 'trusted')
+            continue;
+        const found = pickKey(read.values);
+        if (found.key)
+            return fromFile(filePath, found, read.values, env);
     }
+    if (options.trustedOnly === true)
+        return missingKey(env, ignored);
     // Repository-level files (found by walking up from cwd) never supply a key or
     // any other Marrow setting, whatever their owner or mode: a umask-077 clone or a
     // mode-preserving archive yields a private file the owner never wrote. They are
@@ -293,17 +282,9 @@ function resolveMarrowEnv(options = {}) {
 function repoKeyNotice(filePath) {
     return `Marrow key in ${printablePath(filePath)} ignored: keys are read only from ~/.marrow/env or your environment. Fix: ${REPO_KEY_FIX}.`;
 }
-function withoutEndpointIdentity(values) {
-    const kept = { ...values };
-    for (const name of ENDPOINT_IDENTITY_KEYS)
-        delete kept[name];
-    return kept;
-}
-// True when the file names a base URL other than the one that would be used.
-function namesOtherEndpoint(values, env) {
-    if (!values.MARROW_BASE_URL)
-        return false;
-    return normalizeBaseUrl(values.MARROW_BASE_URL) !== normalizeBaseUrl(env.MARROW_BASE_URL || DEFAULT_BASE_URL);
+function ownerFileNotice(filePath) {
+    const file = printablePath(filePath);
+    return `Ignored the Marrow key in ${file}: the file is not owner-only (a symlink, readable or writable by others, owned by another user, or in a directory others can write). Fix: chmod 600 ${file} && chmod 700 ${printablePath(path.dirname(filePath))}, replacing a symlink with the file itself.`;
 }
 function fromFile(filePath, found, parsed, env) {
     return {
