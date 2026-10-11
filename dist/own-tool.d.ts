@@ -25,12 +25,13 @@ export declare function isOfficialMarrowMcpTool(value: unknown): boolean;
 export declare function isOfficialMarrowNestedInput(input: unknown): boolean;
 export declare function isOfficialMarrowMcpEvent(event: OwnToolEvent): boolean;
 /**
- * Hook adapters that see a separate server and tool name. `own` is the exact
- * decision on the raw host values; `server` and `tool` are the bounded
- * (trimmed) names. An inexact `marrow` call (padding, a padded wrapper,
- * conflicting aliases) never normalises into an own form: it keeps its quoted
- * raw names, so it stays a distinct, gated MCP action.
+ * The Claude Code / Codex hook matcher: every built-in it covers, and every MCP
+ * or `functions.` tool except exactly Marrow's own registered names on server
+ * `marrow`. Hosts full-match it (`^(?:matcher)$`), so the `$` inside each
+ * lookahead skips only an exact own name; a suffix, padding or a different
+ * case reaches the hook. marrow-install must write the identical string.
  */
+export declare function nativeHookMatcher(names?: Iterable<string>): string;
 export declare function normalizedMcpToolName(own: boolean, tool: string, server: string, rawServer: unknown, rawTool: unknown): string;
 export {};
 //# sourceMappingURL=own-tool.d.ts.map

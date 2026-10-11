@@ -4,10 +4,14 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 import { normalizedHookAction } from './normalized-action';
-import { isMarrowOwnTool, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput, normalizedMcpToolName } from './own-tool';
+import { isMarrowOwnTool, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput, nativeHookMatcher, normalizedMcpToolName } from './own-tool';
 
 export const MCP_ADAPTER_VERSION = '3.9.101';
-export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*';
+export const NATIVE_HOOK_MATCHER = nativeHookMatcher();
+/** Matchers older versions wrote; they skip every `mcp__marrow__marrow_*` tool, so a hook carrying one needs repair. */
+export const LEGACY_NATIVE_HOOK_MATCHERS: readonly string[] = [
+  'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*',
+];
 export const GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;
 const hookCommand = (entrypoint: string) => `npx -y --package=${MCP_PACKAGE_SPEC} marrow-mcp ${entrypoint}`;
@@ -244,6 +248,9 @@ function normalizeGeminiHookEvent(source: Record<string, unknown>): Record<strin
   const toolName = typeof source.tool_name === 'string' ? source.tool_name.trim().slice(0, 256) : '';
   // A padded Marrow tool name is not Marrow's own: leave it unclassified (held).
   const paddedOwnName = toolName !== source.tool_name && isOfficialMarrowMcpTool(toolName);
+  // A trimmed or cut name is not the host's exact tool: never bound, so it never shares a key with the exact one.
+  // Kept on the second normalization (hooks normalize on read and again on use).
+  if (source.input_truncated === true || (toolName && toolName !== source.tool_name)) normalized.input_truncated = true;
   if (toolName && !paddedOwnName && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
     normalized.tool_name = toolName === 'run_shell_command' ? 'Bash'
       : toolName === 'write_file' ? 'Write'
@@ -296,6 +303,9 @@ function normalizeGrokHookEvent(source: Record<string, unknown>): Record<string,
     )
     : toolName;
   if (boundedToolName && /^[A-Za-z0-9._:-]+$/.test(boundedToolName)) normalized.tool_name = boundedToolName;
+  // A trimmed, cut or replaced name is not the host's exact tool: never bound, so it never shares a key with the exact one.
+  if (toolName !== source.toolName || (toolName === 'use_tool' && (server !== (toolInput?.serverName ?? toolInput?.server_name)
+    || nestedTool !== (toolInput?.toolName ?? toolInput?.tool_name)))) normalized.input_truncated = true;
   if (hookEventName === 'PreToolUse') {
     normalized.tool_input = source.toolInput;
     return normalized;
@@ -357,6 +367,8 @@ function normalizeCursorExecutionEvent(source: Record<string, unknown>): Record<
   normalized.tool_name = normalizedMcpToolName(
     isMarrowOwnTool(source.mcp_server_name, source.tool_name), tool, server, source.mcp_server_name, source.tool_name,
   );
+  // A trimmed, cut or replaced (`unknown`) name is not the host's exact tool: never bound, so it never shares a key.
+  if (server !== source.mcp_server_name || tool !== source.tool_name) normalized.input_truncated = true;
   let input: unknown = {};
   if (typeof source.tool_input === 'string' && source.tool_input.length <= 262_144) {
     try {
@@ -657,10 +669,43 @@ function exactHookDescriptors(
   });
 }
 
+const NATIVE_MATCHER_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest'] as const;
+
+/**
+ * Marrow handlers on a tool event whose matcher is not the current
+ * NATIVE_HOOK_MATCHER (an older version's, a hand edit, or none). The host
+ * still runs them, but they may skip tools the current matcher covers, so
+ * setup rewrites them; until then they are reported, never counted as healthy.
+ */
+export function staleMatcherHooks(settings: HookSettings): Array<{ event: string; subcommand: MarrowHookSubcommand; matcher: string | null; legacy: boolean }> {
+  const hooks = asRecord(settings.hooks);
+  return NATIVE_MATCHER_HOOK_EVENTS.flatMap((event) => {
+    const entries = hooks?.[event];
+    if (!Array.isArray(entries)) return [];
+    return entries.flatMap((entry) => {
+      const record = asRecord(entry);
+      if (!record || !Array.isArray(record.hooks) || record.matcher === NATIVE_HOOK_MATCHER) return [];
+      const matcher = typeof record.matcher === 'string' ? record.matcher : null;
+      return record.hooks.flatMap((hook) => {
+        const handler = asRecord(hook);
+        const subcommand = marrowHookSubcommand(handler?.command);
+        if (handler?.type !== 'command' || !subcommand) return [];
+        return [{ event, subcommand, matcher, legacy: matcher !== null && LEGACY_NATIVE_HOOK_MATCHERS.includes(matcher) }];
+      });
+    });
+  });
+}
+
+export function localHookRepairStatus(startDir = process.cwd()): { needs_repair: boolean; stale_matchers: ReturnType<typeof staleMatcherHooks> } {
+  const stale = staleMatcherHooks(readHookSettings(startDir));
+  return { needs_repair: stale.length > 0, stale_matchers: stale };
+}
+
 export function localHookConfigurationFingerprint(startDir = process.cwd()): string {
   const settings = readHookSettings(startDir);
   const contract = {
-    schema: 'marrow-claude-native-hooks.v4',
+    schema: 'marrow-claude-native-hooks.v5',
+    stale_matchers: staleMatcherHooks(settings),
     adapter_version: MCP_ADAPTER_VERSION,
     configured_stages: LOCAL_CONFIGURED_HOOK_STAGES,
     configured: {

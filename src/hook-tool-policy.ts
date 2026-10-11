@@ -149,8 +149,9 @@ export function normalizeHookToolName(value: unknown): string {
   return mapped.replace(/^mcp__/, '').replace(/^MCP:/i, '').trim().toLowerCase();
 }
 
+/** An MCP tool in any host form, including Codex's `functions.` namespace (repeated or padded). */
 export function isMcpHookTool(value: unknown): boolean {
-  return /^(?:mcp__|mcp_|MCP:)/i.test(String(value || '').trim());
+  return /^(?:functions\.\s*)*(?:mcp__|mcp_|MCP:)/i.test(String(value || '').trim());
 }
 
 export function isProtectedShellMutation(command: string): boolean {

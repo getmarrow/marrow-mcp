@@ -5,6 +5,7 @@ type ToolPolicyEvent = {
     tool_input?: unknown;
 };
 export declare function normalizeHookToolName(value: unknown): string;
+/** An MCP tool in any host form, including Codex's `functions.` namespace (repeated or padded). */
 export declare function isMcpHookTool(value: unknown): boolean;
 export declare function isProtectedShellMutation(command: string): boolean;
 export declare function hookToolCommand(event: ToolPolicyEvent): string;

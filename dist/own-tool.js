@@ -21,6 +21,7 @@ exports.isMarrowOwnTool = isMarrowOwnTool;
 exports.isOfficialMarrowMcpTool = isOfficialMarrowMcpTool;
 exports.isOfficialMarrowNestedInput = isOfficialMarrowNestedInput;
 exports.isOfficialMarrowMcpEvent = isOfficialMarrowMcpEvent;
+exports.nativeHookMatcher = nativeHookMatcher;
 exports.normalizedMcpToolName = normalizedMcpToolName;
 const tool_catalog_1 = require("./tool-catalog");
 exports.MARROW_OWN_SERVER_NAME = 'marrow';
@@ -61,6 +62,18 @@ function isOfficialMarrowMcpEvent(event) {
  * conflicting aliases) never normalises into an own form: it keeps its quoted
  * raw names, so it stays a distinct, gated MCP action.
  */
+const NATIVE_HOOK_BUILTIN_TOOLS = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task';
+/**
+ * The Claude Code / Codex hook matcher: every built-in it covers, and every MCP
+ * or `functions.` tool except exactly Marrow's own registered names on server
+ * `marrow`. Hosts full-match it (`^(?:matcher)$`), so the `$` inside each
+ * lookahead skips only an exact own name; a suffix, padding or a different
+ * case reaches the hook. marrow-install must write the identical string.
+ */
+function nativeHookMatcher(names = exports.MARROW_OWN_TOOL_NAMES) {
+    const own = [...names].sort().map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    return `${NATIVE_HOOK_BUILTIN_TOOLS}|functions\\.(?!mcp__marrow__(?:${own})$).*|mcp__(?!marrow__(?:${own})$).*`;
+}
 function normalizedMcpToolName(own, tool, server, rawServer, rawTool) {
     if (own)
         return `mcp__marrow__${tool}`;

@@ -24,9 +24,8 @@ const OWN = [...MARROW_OWN_TOOL_NAMES];
 // pre_mcp_tool_use (test/windsurf-hook.test.js).
 const HOSTS = [
   { host: 'claude', entry: 'claude-pre-action-hook', event: (s, t) => ({ hook_event_name: 'PreToolUse', tool_name: `mcp__${s}__${t}`, tool_input: {} }) },
-  // foreignHeld false: master does not count functions.mcp__* as an MCP tool, so a foreign one is not
-  // held either (reported separately); here a look-alike must only match the foreign result exactly.
-  { host: 'codex', entry: 'codex-pre-action-hook', foreignHeld: false, event: (s, t) => ({ hook_event_name: 'PreToolUse', tool_name: `functions.mcp__${s}__${t}`, tool_input: {} }) },
+  // functions.mcp__* is an MCP tool too (G1), so a foreign one is held like mcp__*.
+  { host: 'codex', entry: 'codex-pre-action-hook', event: (s, t) => ({ hook_event_name: 'PreToolUse', tool_name: `functions.mcp__${s}__${t}`, tool_input: {} }) },
   { host: 'codex-bare', entry: 'codex-pre-action-hook', event: (s, t) => ({ hook_event_name: 'PreToolUse', tool_name: `mcp__${s}__${t}`, tool_input: {} }) },
   { host: 'gemini', entry: 'gemini-pre-action-hook', event: (s, t) => ({ hook_event_name: 'BeforeTool', tool_name: `mcp_${s}_${t}`, tool_input: {} }) },
   { host: 'cursor-pre-no-server', entry: 'cursor-pre-action-hook', server: false, event: (_s, t) => ({ hook_event_name: 'preToolUse', tool_name: `MCP:${t}`, tool_input: {} }) },

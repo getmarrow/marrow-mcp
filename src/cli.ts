@@ -68,7 +68,7 @@ import {
 import { localControlEvidence } from './control-state';
 import { hookSpooledLifecycleEvent, installPermissionRequestHook, installPostToolUseHook, runHookCommand, runPermissionRequestHookCommand } from './hook';
 import { deliverQueuedForReceipt, holdSessionForReceipt, proofFieldsForReceipt, type HoldContext } from './host-approval';
-import { installGrokNativeHooks } from './hook-contract';
+import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
@@ -394,6 +394,7 @@ ${MARROW_BLOCK_END}`;
     process.stdout.write(`Added Marrow instructions to ${claudeMdPath}\n`);
   }
 
+  const matcherRepair = localHookRepairStatus(process.cwd());
   const hookInstall = installPostToolUseHook(process.cwd());
   if (hookInstall.installed) {
     process.stdout.write('Configured PostToolUse hook. Activity is client-self-reported and does not certify action-result coverage.\n');
@@ -433,6 +434,13 @@ ${MARROW_BLOCK_END}`;
     process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on it. Activity remains client-self-reported and does not certify observed coverage.\n`);
   }
 
+  if (matcherRepair.needs_repair) {
+    const events = [...new Set(matcherRepair.stale_matchers.map((entry) => entry.event))].join(', ');
+    const repaired = localHookRepairStatus(process.cwd());
+    process.stdout.write(repaired.needs_repair
+      ? `Marrow ${events} hooks still use an outdated tool matcher that skips some MCP tools. Fix the settings file and run setup again.\n`
+      : `Repaired Marrow ${events} hooks that used an outdated tool matcher (it skipped unregistered mcp__marrow__ tools).\n`);
+  }
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
   process.stdout.write('Configured private local session loop guard for supported native hook events. It becomes active only after host restart/trust review and an actual hook invocation; setup alone does not prove enforcement.\n');
   process.stdout.write('Offline verification: marrow-mcp loop-guard-self-test (uses isolated temporary state and does not touch the user ledger).\n');

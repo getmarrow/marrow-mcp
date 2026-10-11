@@ -1144,8 +1144,12 @@ function withExactness(action, state) {
 function normalizedHookAction(event, options = {}) {
     const state = newExactness(options.deadlineAt);
     const toolName = (0, hook_tool_policy_1.normalizeHookToolName)(event.tool_name) || 'tool';
-    // The host's own tool name (stable across retries); the policy name decides the kind.
-    const hostToolName = (typeof event.tool_name === 'string' && event.tool_name.trim() ? event.tool_name.trim() : toolName).slice(0, 128);
+    // The host's own tool name, exactly as sent (stable across retries); the policy name decides the kind.
+    // Not trimmed, so `X ` and `X` get different actions; a name past 128 characters is never bound.
+    const rawToolName = typeof event.tool_name === 'string' && event.tool_name ? event.tool_name : toolName;
+    const hostToolName = rawToolName.slice(0, 128);
+    if (rawToolName.length > 128)
+        state.truncated = true;
     const kind = (0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) || /^MCP:/i.test(hostToolName) ? 'mcp'
         : (0, hook_tool_policy_1.isShellGovernedTool)(event) ? 'shell'
             : EDIT_TOOLS.test(toolName) ? 'edit'

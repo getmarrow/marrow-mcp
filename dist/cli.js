@@ -324,6 +324,7 @@ ${MARROW_BLOCK_END}`;
         fs.writeFileSync(claudeMdPath, marrowInstructions + '\n');
         process.stdout.write(`Added Marrow instructions to ${claudeMdPath}\n`);
     }
+    const matcherRepair = (0, hook_contract_1.localHookRepairStatus)(process.cwd());
     const hookInstall = (0, hook_1.installPostToolUseHook)(process.cwd());
     if (hookInstall.installed) {
         process.stdout.write('Configured PostToolUse hook. Activity is client-self-reported and does not certify action-result coverage.\n');
@@ -365,6 +366,13 @@ ${MARROW_BLOCK_END}`;
     }
     else {
         process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on it. Activity remains client-self-reported and does not certify observed coverage.\n`);
+    }
+    if (matcherRepair.needs_repair) {
+        const events = [...new Set(matcherRepair.stale_matchers.map((entry) => entry.event))].join(', ');
+        const repaired = (0, hook_contract_1.localHookRepairStatus)(process.cwd());
+        process.stdout.write(repaired.needs_repair
+            ? `Marrow ${events} hooks still use an outdated tool matcher that skips some MCP tools. Fix the settings file and run setup again.\n`
+            : `Repaired Marrow ${events} hooks that used an outdated tool matcher (it skipped unregistered mcp__marrow__ tools).\n`);
     }
     process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
     process.stdout.write('Configured private local session loop guard for supported native hook events. It becomes active only after host restart/trust review and an actual hook invocation; setup alone does not prove enforcement.\n');
