@@ -336,7 +336,7 @@ test('M1: marrow-mcp setup repairs an old-matcher install and says so; a second 
     writeFileSync(settingsPath, JSON.stringify(oldInstall(LEGACY), null, 2));
     const setup = () => spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js'), 'setup'], {
       cwd: work, encoding: 'utf8', timeout: 30_000,
-      env: { PATH: process.env.PATH, HOME: home, MARROW_HOOK_BACKGROUND_NUDGE: 'false' },
+      env: { PATH: process.env.PATH, HOME: home, MARROW_API_KEY: 'fixture-dummy-key', MARROW_BASE_URL: 'http://127.0.0.1:9', MARROW_HOOK_BACKGROUND_NUDGE: 'false' },
     });
     const first = setup();
     assert.equal(first.status, 0, first.stderr);
