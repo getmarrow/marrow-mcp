@@ -124,3 +124,15 @@ test('the hold fix is text only: available prompts and non-Claude hosts keep the
   assert.equal(gateDecisionMessage({ kind: 'block', reason: 'r' }, false, ownerApprovalPrompt('codex', {}, {})),
     'Marrow blocked this action under the current policy. Reason: r');
 });
+
+test('--help never short-circuits a hook entrypoint', () => {
+  const s = sandbox();
+  try {
+    const r = spawnSync(process.execPath, [CLI, 'claude-pre-action-hook', '--help'], {
+      cwd: s.work, encoding: 'utf8', timeout: 15_000, input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm publish' } }),
+      env: { PATH: process.env.PATH, HOME: s.home, MARROW_HOOK_BACKGROUND_NUDGE: 'false' },
+    });
+    assert.doesNotMatch(r.stdout, /Day one:/);
+    assert.match(r.stdout, /permissionDecision":"deny"/);
+  } finally { s.cleanup(); }
+});

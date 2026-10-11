@@ -381,7 +381,8 @@ ${MARROW_BLOCK_END}`;
     process.exit(0);
 }
 const cliArgs = parseArgs();
-if (cliArgs.help) {
+// Never for a hook entrypoint: a hook that sees -h must still run its check.
+if (cliArgs.help && !(cliArgs.hook || cliArgs.contextHook || cliArgs.preActionHook || cliArgs.sessionHook || cliArgs.permissionRequestHook || cliArgs.backgroundNudge)) {
     process.stdout.write(HELP_TEXT);
     process.exit(0);
 }
