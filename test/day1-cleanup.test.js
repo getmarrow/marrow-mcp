@@ -273,3 +273,15 @@ test('--help never short-circuits any hook entrypoint, in either argument order'
     assert.match(r.stdout, /permissionDecision":"deny"/);
   } finally { s.cleanup(); }
 });
+
+test('README Install shows the key file first, export as the fallback, and the 0700 folder step', () => {
+  const readme = readFileSync(join(__dirname, '..', 'README.md'), 'utf8');
+  const install = readme.slice(readme.indexOf('\n## Install'));
+  const section = install.slice(1, install.indexOf('\n## ', 1) === -1 ? undefined : install.indexOf('\n## ', 1));
+  const keyFile = section.indexOf('~/.marrow/env');
+  const fallback = section.search(/Fallback[^\n]*\bexport MARROW_API_KEY=/);
+  assert.ok(keyFile > -1 && fallback > keyFile, 'key file first, export labelled as the fallback');
+  assert.match(section, /chmod 700 ~\/\.marrow/);
+  assert.match(section, /mkdir -p ~\/\.marrow && chmod 700 ~\/\.marrow/);
+  assert.ok(section.indexOf('chmod 700 ~/.marrow') < section.indexOf('chmod 600 ~/.marrow/env'), 'folder step before file step');
+});

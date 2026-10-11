@@ -81,9 +81,11 @@ Verify current claims through the [public evidence manifest](https://getmarrow.a
 
 For most installations, follow the [Quick start](#quick-start): the universal installer's `activate` command. The steps below are the manual, MCP-only route.
 
-Get a key at [getmarrow.ai/signup](https://getmarrow.ai/signup) and keep it in an owner-only key file: put `MARROW_API_KEY=<your_key>` in `~/.marrow/env`, then lock the file down:
+Get a key at [getmarrow.ai/signup](https://getmarrow.ai/signup) and keep it in an owner-only key file: put `MARROW_API_KEY=<your_key>` in `~/.marrow/env`, then run `chmod 700 ~/.marrow && chmod 600 ~/.marrow/env` (Marrow rejects a key file whose folder others can write):
 
 ```bash
+mkdir -p ~/.marrow && chmod 700 ~/.marrow
+# put MARROW_API_KEY=<your_key> in ~/.marrow/env
 chmod 600 ~/.marrow/env
 ```
 
