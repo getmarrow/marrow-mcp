@@ -55,6 +55,15 @@ function printablePath(filePath: string): string {
   return chars.length > MAX_PRINTED_PATH ? `${chars.slice(0, MAX_PRINTED_PATH - 3).join('')}...` : clean;
 }
 
+// Shell operand for a chmod command built from the REAL path. Returns null when
+// the path cannot be printed faithfully (control/format/line-separator characters
+// or longer than the print cap), so advice never targets a shortened or '?' path.
+function shellOperand(realPath: string): string | null {
+  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(realPath) || Array.from(realPath).length > MAX_PRINTED_PATH) return null;
+  if (/^[A-Za-z0-9_@%+=:,./][A-Za-z0-9_@%+=:,./-]*$/.test(realPath)) return realPath;
+  return `'${realPath.replace(/'/g, `'\\''`)}'`;
+}
+
 function stripQuotes(value: string): string {
   const trimmed = String(value || '').trim();
   if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
@@ -279,16 +288,27 @@ function ownerFileNotice(filePath: string, home: string): string {
     return `Ignored the Marrow key in ${file}: owner-only file permissions cannot be confirmed on Windows. Fix: set MARROW_API_KEY in your environment or in the MCP client's env settings.`;
   }
   // The helper also refuses a home directory others can write, so name it too.
-  let homeFix = '';
+  let homeDir: string | null = null;
   try {
     const resolvedHome = path.resolve(home);
     if (resolvedHome !== path.dirname(path.resolve(filePath)) && (fs.lstatSync(resolvedHome).mode & 0o022) !== 0) {
-      homeFix = ` && chmod go-w ${printablePath(resolvedHome)}`;
+      homeDir = resolvedHome;
     }
   } catch {
     // Unreadable home: the generic advice stands.
   }
-  return `Ignored the Marrow key in ${file}: the file is not owner-only (a symlink, readable or writable by others, owned by another user, or in a directory others can write). Fix: chmod 600 ${file} && chmod 700 ${printablePath(path.dirname(filePath))}${homeFix} (replace a symlink with the file itself).`;
+  const lead = `Ignored the Marrow key in ${file}: the file is not owner-only (a symlink, readable or writable by others, owned by another user, or in a directory others can write).`;
+  const tail = ' (replace a symlink with the file itself)';
+  // Command operands use the real paths, quoted; if any cannot be printed safely, name no path.
+  const dirOp = shellOperand(path.dirname(filePath));
+  const fileOp = shellOperand(filePath);
+  const homeOp = homeDir === null ? '' : shellOperand(homeDir);
+  if (fileOp !== null && dirOp !== null && homeOp !== null) {
+    const homeFix = homeDir === null ? '' : ` && chmod go-w ${homeOp}`;
+    return `${lead} Fix: chmod 600 ${fileOp} && chmod 700 ${dirOp}${homeFix}${tail}.`;
+  }
+  const homeText = homeDir === null ? '' : ' and chmod go-w on your home folder';
+  return `${lead} Fix: run chmod 600 on the file named above and chmod 700 on its folder${homeText}${tail}.`;
 }
 
 function fromFile(
