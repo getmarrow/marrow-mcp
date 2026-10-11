@@ -365,3 +365,197 @@ test('hook path and MCP path agree on every owner-file row', () => {
     assertSame(both(fx, { MARROW_BASE_URL: 'https://env.example', MARROW_FLEET_AGENT_ID: 'env-agent' }), `${label} with env settings`);
   }
 });
+
+// ── round 3: every check in the shared helper has a test that fails without it ──
+
+// Wrap one fs function for the length of fn; the wrapper may edit the result.
+function patchFs(name, wrapper, fn) {
+  const original = fs[name];
+  fs[name] = function patched(...args) { return wrapper(original.apply(fs, args), args, original); };
+  try {
+    return fn();
+  } finally {
+    fs[name] = original;
+  }
+}
+
+const sameFile = (stat, file) => {
+  const real = fs.lstatSync(file);
+  return stat.ino === real.ino && stat.dev === real.dev;
+};
+
+for (const [label, owned] of [
+  ['home and ~/.marrow', (fx) => [fx.home, fx.marrowDir]],
+  ['only ~/.marrow', (fx) => [fx.marrowDir]],
+  ['only home', (fx) => [fx.home]],
+]) {
+  test(`X1: ${label} owned by another uid, file mine, supplies nothing on either path`, { skip: !hasUid }, () => {
+    const fx = fixture('dir-owner');
+    const key = dummyKey('dir-owner');
+    write(fx.envFile, PLANTED(key), 0o600);
+    const foreign = new Set(owned(fx));
+    const pair = patchFs('lstatSync', (stat, args) => {
+      if (foreign.has(path.resolve(String(args[0])))) stat.uid = process.getuid() + 1;
+      return stat;
+    }, () => both(fx));
+    assertRejected(pair.mcp, fx.envFile, key, `mcp ${label}`);
+    assertRejected(pair.hook, fx.envFile, key, `hook ${label}`);
+    assertSame(pair, label);
+  });
+}
+
+test('X3: a home that sits under a symlinked ancestor supplies nothing on either path', () => {
+  const root = scratch('ancestor');
+  const real = path.join(root, 'real');
+  fs.mkdirSync(path.join(real, 'home', '.marrow'), { recursive: true, mode: 0o700 });
+  fs.chmodSync(path.join(real, 'home'), 0o700);
+  fs.chmodSync(path.join(real, 'home', '.marrow'), 0o700);
+  const link = path.join(root, 'link');
+  fs.symlinkSync(real, link);
+  const fx = { home: path.join(link, 'home'), cwd: root, envFile: path.join(link, 'home', '.marrow', 'env') };
+  const key = dummyKey('ancestor');
+  write(fx.envFile, PLANTED(key), 0o600);
+  const pair = both(fx);
+  assertRejected(pair.mcp, fx.envFile, key, 'mcp');
+  assertRejected(pair.hook, fx.envFile, key, 'hook');
+  assertSame(pair, 'ancestor symlink');
+});
+
+for (const mode of [0o600, 0o666]) {
+  test(`X2: a ${mode.toString(8)} file unlinked after the read supplies nothing on either path`, () => {
+    for (const trustedOnly of [false, true]) {
+      const fx = fixture('unlinked');
+      const key = dummyKey('unlinked');
+      write(fx.envFile, PLANTED(key), mode);
+      const resolved = withSwap(fx.envFile, { afterRead: () => fs.unlinkSync(fx.envFile) },
+        () => resolveMarrowEnv({ cwd: fx.cwd, home: fx.home, env: {}, trustedOnly }));
+      assertRejected(resolved, fx.envFile, key, `trustedOnly=${trustedOnly}`);
+    }
+  });
+}
+
+test('X4: a private file that grows between fstat and read supplies nothing on either path', () => {
+  for (const trustedOnly of [false, true]) {
+    const fx = fixture('grows');
+    const key = dummyKey('grows');
+    write(fx.envFile, PLANTED(key), 0o600);
+    let grown = false;
+    const resolved = patchFs('fstatSync', (stat) => {
+      if (!grown && stat.isFile() && sameFile(stat, fx.envFile)) {
+        grown = true;
+        fs.appendFileSync(fx.envFile, 'MARROW_AGENT_ID=grown-agent\n');
+      }
+      return stat;
+    }, () => resolveMarrowEnv({ cwd: fx.cwd, home: fx.home, env: {}, trustedOnly }));
+    assert.equal(grown, true, 'the file grew');
+    assertRejected(resolved, fx.envFile, key, `trustedOnly=${trustedOnly}`);
+    assert.doesNotMatch(JSON.stringify(resolved), /grown-agent/);
+  }
+});
+
+test('X5: an fstat device that differs from the lstat device supplies nothing on either path', () => {
+  const fx = fixture('dev');
+  const key = dummyKey('dev');
+  write(fx.envFile, PLANTED(key), 0o600);
+  const pair = patchFs('fstatSync', (stat) => {
+    if (stat.isFile() && sameFile(stat, fx.envFile)) stat.dev += 1;
+    return stat;
+  }, () => both(fx));
+  assertRejected(pair.mcp, fx.envFile, key, 'mcp');
+  assertRejected(pair.hook, fx.envFile, key, 'hook');
+  assertSame(pair, 'dev mismatch');
+});
+
+test('T3: a private owner file over 1 MiB supplies nothing; exactly 1 MiB still works', () => {
+  const MAX = 1024 * 1024;
+  const fx = fixture('big');
+  const key = dummyKey('big');
+  const head = `MARROW_API_KEY=${key}\n`;
+  fs.writeFileSync(fx.envFile, head + '#'.repeat(MAX + 1 - head.length), { mode: 0o600 });
+  assert.equal(fs.statSync(fx.envFile).size, MAX + 1);
+  const pair = both(fx);
+  assertRejected(pair.mcp, fx.envFile, key, 'mcp');
+  assertRejected(pair.hook, fx.envFile, key, 'hook');
+  assertSame(pair, 'over cap');
+  fs.writeFileSync(fx.envFile, head + '#'.repeat(MAX - head.length), { mode: 0o600 });
+  assert.equal(fs.statSync(fx.envFile).size, MAX);
+  const ok = both(fx);
+  assert.equal(ok.mcp.apiKey, key);
+  assertSame(ok, 'at cap');
+});
+
+// ── Codex F1 (round 3): the advised fix repairs a writable home ────────────
+
+function applyAdvice(exactFix) {
+  const steps = [...exactFix.matchAll(/chmod (600|700|go-w) (\S+)/g)];
+  for (const [, mode, target] of steps) {
+    if (mode === 'go-w') fs.chmodSync(target, fs.lstatSync(target).mode & ~0o022);
+    else fs.chmodSync(target, parseInt(mode, 8));
+  }
+  return steps.map((s) => s[2]);
+}
+
+for (const homeMode of [0o775, 0o757, 0o777]) {
+  test(`F1 r3: the notice names a ${homeMode.toString(8)} home and following it makes both paths resolve`, { skip: !hasUid }, () => {
+    const fx = fixture('home-advice');
+    const key = dummyKey('home-advice');
+    write(fx.envFile, [`MARROW_API_KEY=${key}`, 'MARROW_FLEET_AGENT_ID=owner-agent'], 0o600);
+    fs.chmodSync(fx.home, homeMode);
+    const before = both(fx);
+    assertRejected(before.mcp, fx.envFile, key, 'mcp');
+    assertSame(before, 'before');
+    assert.ok(before.mcp.exactFix.includes(`chmod go-w ${fx.home}`), 'notice names the home directory');
+    const touched = applyAdvice(before.mcp.exactFix);
+    assert.ok(touched.includes(fx.home), 'advice touched the home directory');
+    const after = both(fx);
+    assert.equal(after.mcp.apiKey, key);
+    assert.equal(after.mcp.agentId, 'owner-agent');
+    assertSame(after, 'after');
+  });
+}
+
+test('F1 r3: a private home leaves the notice without a home step', () => {
+  const fx = fixture('home-private');
+  write(fx.envFile, [`MARROW_API_KEY=${dummyKey('p')}`], 0o644);
+  const { mcp } = both(fx);
+  assert.doesNotMatch(mcp.exactFix, /go-w/);
+});
+
+// ── Barvis r1 F2: the one path in the notice is bounded and plain ──────────
+
+test('r1 F2: bidi, zero-width and control characters in the path are stripped from the notice', () => {
+  const fx = fixture('bidi');
+  const key = dummyKey('bidi');
+  const names = ['a\u202Eb', 'c\u200Bd', 'e\u2066f', 'g\u2028h'];
+  const home = path.join(fx.root, `h${names.join('')}`);
+  fs.mkdirSync(path.join(home, '.marrow'), { recursive: true, mode: 0o700 });
+  fs.chmodSync(home, 0o700);
+  write(path.join(home, '.marrow', 'env'), [`MARROW_API_KEY=${key}`], 0o644);
+  const pair = both({ cwd: fx.cwd, home });
+  assert.equal(pair.mcp.missing, true);
+  const notice = pair.mcp.exactFix.split('\n')[1];
+  assert.doesNotMatch(notice, /[\u202A-\u202E\u2066-\u2069\u200B-\u200F\u2028\u2029\u0000-\u001f\u007f-\u009f]/);
+  assert.ok(notice.includes('ha?bc?de?fg?h'), 'replaced with ?');
+  assert.equal(pair.mcp.exactFix.split('\n').length, 2);
+  assertNoSecret(pair.mcp, key);
+});
+
+test('r1 F2: a very long path is length-capped in the notice', () => {
+  const fx = fixture('long');
+  const key = dummyKey('long');
+  let home = fx.root;
+  for (let i = 0; i < 3; i += 1) {
+    home = path.join(home, 'd'.repeat(200));
+    fs.mkdirSync(home, { mode: 0o700 });
+  }
+  fs.mkdirSync(path.join(home, '.marrow'), { mode: 0o700 });
+  write(path.join(home, '.marrow', 'env'), [`MARROW_API_KEY=${key}`], 0o644);
+  const { mcp } = both({ cwd: fx.cwd, home });
+  const file = path.join(home, '.marrow', 'env');
+  assert.ok(file.length > 600);
+  const notice = mcp.exactFix.split('\n')[1];
+  assert.equal(notice.includes(file), false, 'full path not printed');
+  assert.ok(notice.includes('...'), 'truncation marker');
+  assert.ok(notice.length < 1000, `notice bounded (${notice.length})`);
+  assertNoSecret(mcp, key);
+});

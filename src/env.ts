@@ -45,8 +45,14 @@ function normalizeBaseUrl(value: string): string {
 }
 
 // File paths come from the working directory; keep notices on one printable line.
+const MAX_PRINTED_PATH = 200;
+
+// Paths in notices can be attacker-named: control, line-separator and format
+// (bidi, zero-width) characters become '?', and the length is capped.
 function printablePath(filePath: string): string {
-  return filePath.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '?');
+  const clean = filePath.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '?');
+  const chars = Array.from(clean);
+  return chars.length > MAX_PRINTED_PATH ? `${chars.slice(0, MAX_PRINTED_PATH - 3).join('')}...` : clean;
 }
 
 function stripQuotes(value: string): string {
@@ -236,7 +242,7 @@ export function resolveMarrowEnv(options: {
   for (const filePath of ownerFiles) {
     const read = readOwnerEnvFile(filePath, home);
     if (read.status === 'rejected') {
-      if (!ignored) ignored = ownerFileNotice(filePath);
+      if (!ignored) ignored = ownerFileNotice(filePath, home);
       continue;
     }
     if (read.status !== 'trusted') continue;
@@ -266,13 +272,23 @@ function repoKeyNotice(filePath: string): string {
   return `Marrow key in ${printablePath(filePath)} ignored: keys are read only from ~/.marrow/env or your environment. Fix: ${REPO_KEY_FIX}.`;
 }
 
-function ownerFileNotice(filePath: string): string {
+function ownerFileNotice(filePath: string, home: string): string {
   const file = printablePath(filePath);
   // Windows reports no owner-only mode bits, so owner files never pass there.
   if (process.platform === 'win32') {
     return `Ignored the Marrow key in ${file}: owner-only file permissions cannot be confirmed on Windows. Fix: set MARROW_API_KEY in your environment or in the MCP client's env settings.`;
   }
-  return `Ignored the Marrow key in ${file}: the file is not owner-only (a symlink, readable or writable by others, owned by another user, or in a directory others can write). Fix: chmod 600 ${file} && chmod 700 ${printablePath(path.dirname(filePath))}, replacing a symlink with the file itself.`;
+  // The helper also refuses a home directory others can write, so name it too.
+  let homeFix = '';
+  try {
+    const resolvedHome = path.resolve(home);
+    if (resolvedHome !== path.dirname(path.resolve(filePath)) && (fs.lstatSync(resolvedHome).mode & 0o022) !== 0) {
+      homeFix = ` && chmod go-w ${printablePath(resolvedHome)}`;
+    }
+  } catch {
+    // Unreadable home: the generic advice stands.
+  }
+  return `Ignored the Marrow key in ${file}: the file is not owner-only (a symlink, readable or writable by others, owned by another user, or in a directory others can write). Fix: chmod 600 ${file} && chmod 700 ${printablePath(path.dirname(filePath))}${homeFix} (replace a symlink with the file itself).`;
 }
 
 function fromFile(
