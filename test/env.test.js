@@ -6,21 +6,18 @@ const test = require('node:test');
 
 const { resolveMarrowEnv } = require('../dist/env.js');
 
-test('resolveMarrowEnv loads MARROW_KEY alias from project env file', () => {
+test('resolveMarrowEnv loads MARROW_KEY alias from a private owner env file', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-mcp-env-'));
-  fs.mkdirSync(path.join(dir, '.marrow'));
-  fs.writeFileSync(path.join(dir, '.marrow', 'env'), [
+  const home = path.join(dir, 'home');
+  fs.mkdirSync(path.join(home, '.marrow'), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(home, '.marrow', 'env'), [
     'OTHER_SERVICE_SECRET=do_not_materialize',
     'MARROW_KEY=synthetic-mcp-alias-key',
     'MARROW_FLEET_AGENT_ID=mcp-agent',
     '',
-  ].join('\n'));
+  ].join('\n'), { mode: 0o600 });
 
-  const resolved = resolveMarrowEnv({
-    cwd: dir,
-    home: path.join(dir, 'home'),
-    env: {},
-  });
+  const resolved = resolveMarrowEnv({ cwd: dir, home, env: {} });
 
   assert.equal(resolved.apiKey, 'synthetic-mcp-alias-key');
   assert.equal(resolved.agentId, 'mcp-agent');
@@ -120,19 +117,16 @@ test('trusted enforcement rejects an owner credential under an unsafe home bound
 
 test('resolveMarrowEnv ignores non-Marrow env file assignments', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-mcp-env-whitelist-'));
-  fs.mkdirSync(path.join(dir, '.marrow'));
-  fs.writeFileSync(path.join(dir, '.marrow', 'env'), [
+  const home = path.join(dir, 'home');
+  fs.mkdirSync(path.join(home, '.marrow'), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(home, '.marrow', 'env'), [
     'OTHER_SERVICE_SECRET=should_not_be_read',
     'DATABASE_URL=postgres://example',
     'MARROW_KEY=synthetic-whitelist-key',
     '',
-  ].join('\n'));
+  ].join('\n'), { mode: 0o600 });
 
-  const resolved = resolveMarrowEnv({
-    cwd: dir,
-    home: path.join(dir, 'home'),
-    env: {},
-  });
+  const resolved = resolveMarrowEnv({ cwd: dir, home, env: {} });
 
   assert.equal(resolved.apiKey, 'synthetic-whitelist-key');
   assert.doesNotMatch(JSON.stringify(resolved), /should_not_be_read|postgres/);

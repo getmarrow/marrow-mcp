@@ -314,18 +314,21 @@ function normalizeReplayOutcomeReference(value, field) {
  * Validate and sanitize a base URL. Requires HTTPS.
  */
 function validateBaseUrl(rawUrl) {
+    let parsed;
     try {
-        const parsed = new URL(rawUrl);
-        if (parsed.protocol !== 'https:') {
-            throw new Error('MARROW_BASE_URL must use HTTPS');
-        }
-        return rawUrl.replace(/\/+$/, '');
+        parsed = new URL(rawUrl);
     }
-    catch (err) {
-        if (err instanceof Error && err.message.includes('HTTPS'))
-            throw err;
-        throw new Error(`MARROW_BASE_URL is not a valid URL: ${rawUrl}`);
+    catch {
+        // The raw value is not echoed: it may carry credentials.
+        throw new Error('MARROW_BASE_URL is not a valid URL');
     }
+    if (parsed.protocol !== 'https:') {
+        throw new Error('MARROW_BASE_URL must use HTTPS');
+    }
+    if (parsed.username || parsed.password) {
+        throw new Error('MARROW_BASE_URL must not contain a user name or password');
+    }
+    return rawUrl.replace(/\/+$/, '');
 }
 /**
  * Check HTTP response status and parse JSON safely.

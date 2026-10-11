@@ -7,6 +7,8 @@ export interface ResolvedMarrowEnv {
     missing: boolean;
     exactFix: string;
 }
+/** Host (with port) of a non-default base URL, for status output; null for the default. */
+export declare function nonDefaultBaseUrlHost(baseUrl: string): string | null;
 export declare function resolveMarrowEnv(options?: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;

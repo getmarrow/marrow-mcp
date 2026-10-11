@@ -160,6 +160,7 @@ async function runPingCommand() {
         return;
     }
     const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
+    const endpointHost = (0, env_1.nonDefaultBaseUrlHost)(baseUrl);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), (0, ping_state_1.resolvePingTimeoutMs)(process.env.MARROW_PING_TIMEOUT_MS));
     timer.unref?.();
@@ -177,6 +178,7 @@ async function runPingCommand() {
             sample_count: history.sample_count,
             last_success_at: history.last_success_at,
             lifecycle_spool: reportLifecycleSpool({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId }),
+            ...(endpointHost ? { endpoint_host: endpointHost } : {}),
         }, null, 2) + '\n');
     }
     catch (error) {
@@ -190,6 +192,7 @@ async function runPingCommand() {
             sample_count: history.sample_count,
             last_success_at: history.last_success_at,
             lifecycle_spool: reportLifecycleSpool({ apiKey: resolved.apiKey, baseUrl, agentId: resolved.agentId }),
+            ...(endpointHost ? { endpoint_host: endpointHost } : {}),
         }, null, 2) + '\n');
         process.exitCode = 1;
     }
@@ -526,6 +529,8 @@ if (process.argv[2] !== 'keys') {
         // [SECURITY #3] Validate BASE_URL — require HTTPS to prevent SSRF / credential leakage
         const rawBaseUrl = resolvedEnv.baseUrl || 'https://api.getmarrow.ai';
         const BASE_URL = (0, index_1.validateBaseUrl)(rawBaseUrl);
+        // A non-default endpoint receives every action; name its host wherever status is shown.
+        const ENDPOINT_HOST = (0, env_1.nonDefaultBaseUrlHost)(BASE_URL);
         const SESSION_ID = resolvedEnv.sessionId || undefined;
         // One identity must bind headers, bodies, queries, cache, and lifecycle events.
         // resolveMarrowEnv already gives MARROW_FLEET_AGENT_ID precedence over MARROW_AGENT_ID.
@@ -538,6 +543,9 @@ if (process.argv[2] !== 'keys') {
             process.stderr.write(`${resolvedEnv.exactFix}\n`);
             process.stderr.write(`Get a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
             process.exit(1);
+        }
+        if (ENDPOINT_HOST) {
+            process.stderr.write(`[marrow] Using a non-default Marrow endpoint: ${ENDPOINT_HOST} (MARROW_BASE_URL).\n`);
         }
         // [SECURITY #12] Warn if API key is visible in process args
         if (cliArgs.apiKey) {
@@ -801,6 +809,7 @@ if (process.argv[2] !== 'keys') {
                     legacy_namespaces: spool.other_namespaces?.count || 0,
                 },
                 mcp_tool_profile: mcpToolProfileStatus(payload),
+                marrow_endpoint: { host: ENDPOINT_HOST || 'api.getmarrow.ai', non_default: Boolean(ENDPOINT_HOST) },
             };
         }
         // [FIX #9] Runtime validation helper for required string params
