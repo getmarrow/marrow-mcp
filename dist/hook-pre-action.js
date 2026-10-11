@@ -42,7 +42,7 @@ const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 Object.defineProperty(exports, "MARROW_OUTAGE_WARNING", { enumerable: true, get: function () { return hook_contract_1.MARROW_OUTAGE_WARNING; } });
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
-exports.NO_KEY_TEXT = 'Marrow can\'t find your key: run `npx @getmarrow/install` once in this machine\'s terminal.';
+exports.NO_KEY_TEXT = 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.';
 // Claude Code sends the whole tool input, and a Write of a long document grows
 // further once JSON-escaped, so tens of kilobytes of markdown must still parse.
 exports.MAX_PRE_ACTION_INPUT_BYTES = 4 * 1024 * 1024;
@@ -259,6 +259,9 @@ function controlRejectionMessage(error, agentId) {
 // https://code.claude.com/docs/en/hooks#pretooluse-decision-control
 // https://code.claude.com/docs/en/permission-modes
 const OWNER_PROMPT_PERMISSION_MODES = new Set(['default', 'acceptEdits', 'auto']);
+const FIX_DEFAULT_MODE = 'To approve it, switch Claude Code to its default permission mode and retry this exact action.';
+const FIX_HEADLESS = 'To approve it, retry this exact action in an interactive Claude Code session in default permission mode.';
+const FIX_CODEX_REPLY = 'To approve it, type the reply the hook shows (if it shows one) and retry this exact action.';
 /** Claude Code entrypoints with no one at a dialog (claude -p and the Agent SDKs); hooks inherit it. */
 const HEADLESS_CLAUDE_ENTRYPOINTS = host_approval_1.HEADLESS_CLAUDE_ENTRYPOINTS;
 const NO_OWNER_PROMPT = { available: false, unavailableReason: 'this agent host cannot prompt the owner' };
@@ -271,22 +274,22 @@ function ownerApprovalPrompt(harness, event, env = process.env) {
     const claudeCode = harness === 'claude-code' || (harness === 'mcp-client' && env.CLAUDE_CODE_CHILD_SESSION === '1');
     if (!claudeCode) {
         return harness === 'codex'
-            ? { available: false, unavailableReason: 'Codex hooks cannot prompt the owner' }
+            ? { available: false, unavailableReason: 'Codex hooks cannot prompt the owner', fix: FIX_CODEX_REPLY }
             : NO_OWNER_PROMPT;
     }
     const entrypoint = typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' ? env.CLAUDE_CODE_ENTRYPOINT : '';
     if (HEADLESS_CLAUDE_ENTRYPOINTS.has(entrypoint)) {
-        return { available: false, unavailableReason: `${entrypoint}, no one sees a dialog`, headless: true };
+        return { available: false, unavailableReason: `${entrypoint}, no one sees a dialog`, headless: true, fix: FIX_HEADLESS };
     }
     const mode = typeof event.permission_mode === 'string' && /^[A-Za-z]{1,32}$/.test(event.permission_mode) ? event.permission_mode : '';
     if (!OWNER_PROMPT_PERMISSION_MODES.has(mode)) {
-        return { available: false, unavailableReason: `Claude Code permission mode ${mode || 'unknown'} cannot guarantee an owner prompt` };
+        return { available: false, unavailableReason: `Claude Code permission mode ${mode || 'unknown'} cannot guarantee an owner prompt`, fix: FIX_DEFAULT_MODE };
     }
     // Before Claude Code v2.1.211 the auto-mode classifier could approve a Bash
     // command outside the sandbox without the prompt a hook asked for. The hook
     // input carries scratchpad_dir only from v2.1.257, so it proves a fixed version.
     if (mode === 'auto' && !(typeof event.scratchpad_dir === 'string' && event.scratchpad_dir.trim())) {
-        return { available: false, unavailableReason: 'this auto-mode session does not prove a Claude Code version whose classifier honors hook prompts' };
+        return { available: false, unavailableReason: 'this auto-mode session does not prove a Claude Code version whose classifier honors hook prompts', fix: FIX_DEFAULT_MODE };
     }
     return { available: true, unavailableReason: '' };
 }
@@ -393,7 +396,7 @@ function gateDecisionMessage(verdict, ask, prompt = NO_OWNER_PROMPT) {
                 ? 'Marrow did not allow this action.'
                 : ask
                     ? 'Marrow requires owner review before this action. Approve only if you authorize this exact action.'
-                    : `Marrow requires owner review before this action, and no owner approval prompt is available (${prompt.unavailableReason}), so it was denied. Tell the operator it is waiting for the account owner's approval.`;
+                    : `Marrow requires owner review before this action, and no owner approval prompt is available (${prompt.unavailableReason}), so it was denied. Tell the operator it is waiting for the account owner's approval.${prompt.fix ? ` ${prompt.fix}` : ''}`;
     return boundedText(verdict.reason ? `${headline} Reason: ${verdict.reason}` : headline, 500);
 }
 const SAFE_DECISION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;

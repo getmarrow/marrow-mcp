@@ -2,7 +2,7 @@ import { marrowAgentRuntime, marrowEnforcement } from './index';
 import { type HoldPlan } from './host-approval';
 import { MARROW_OUTAGE_WARNING } from './hook-contract';
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
-export declare const NO_KEY_TEXT = "Marrow can't find your key: run `npx @getmarrow/install` once in this machine's terminal.";
+export declare const NO_KEY_TEXT = "Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.";
 export { MARROW_OUTAGE_WARNING };
 export declare const MAX_PRE_ACTION_INPUT_BYTES: number;
 export declare const PRE_ACTION_CONTROL_TIMEOUT_MS = 8000;
@@ -67,7 +67,8 @@ export declare function controlRejectionMessage(error: unknown, agentId?: string
 export type OwnerApprovalPrompt = {
     available: boolean;
     unavailableReason: string;
-    headless?: boolean;
+    headless?: boolean; /** Static, one-sentence README fix for the person; never built from input. */
+    fix?: string;
 };
 /**
  * Whether a PreToolUse "ask" from this hook reaches a person who can approve.

@@ -2275,7 +2275,7 @@ test('HIGH-R7-1: with the host\'s own prompt off (Codex yolo/full-auto/never/con
 test('No key: a protected action names the one fix; a key in an owner-only ~/.marrow/env is used, a readable-by-others one is not', () => {
   const { chmodSync } = require('node:fs');
   const { NO_KEY_TEXT } = require('../dist/hook-pre-action.js');
-  assert.equal(NO_KEY_TEXT, 'Marrow can\'t find your key: run `npx @getmarrow/install` once in this machine\'s terminal.');
+  assert.equal(NO_KEY_TEXT, 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.');
   const deploy = { ...fixture('claude-pre-tool-use.json'), tool_input: { command: 'wrangler deploy --env production', description: 'x' } };
   const run = (mode) => {
     const h = harness();

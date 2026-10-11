@@ -4,9 +4,8 @@
  * Exposes pre-action governance, intent capture, outcome closure, and fleet evidence.
  *
  * Usage:
- *   npx @getmarrow/mcp                          (reads MARROW_API_KEY from env)
- *   npx @getmarrow/mcp --key mrw_abc123          (pass key via CLI flag)
- *   MARROW_API_KEY=mrw_abc123 npx @getmarrow/mcp
+ *   npx @getmarrow/mcp                          (reads MARROW_API_KEY from env or an owner-only ~/.marrow/env)
+ *   npx @getmarrow/mcp --help
  */
 
 import { randomUUID } from 'node:crypto';
@@ -103,7 +102,7 @@ import type { MarrowAutoResult } from './index';
 import type { ThinkResult, MarrowMemory } from './types';
 
 // Parse CLI args
-type CliArgs = { apiKey?: string; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; permissionRequestHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean; backgroundNudge?: boolean };
+type CliArgs = { apiKey?: string; help?: boolean; setup?: boolean; hook?: boolean; contextHook?: boolean; preActionHook?: boolean; sessionHook?: boolean; permissionRequestHook?: boolean; spoolStatus?: boolean; drainSpool?: boolean; ping?: boolean; loopGuardSelfTest?: boolean; backgroundNudge?: boolean };
 function parseArgs(): CliArgs {
   const args = process.argv.slice(2);
   const result: CliArgs = {};
@@ -111,6 +110,9 @@ function parseArgs(): CliArgs {
     if (args[i] === '--key' && i + 1 < args.length) {
       result.apiKey = args[i + 1];
       i++;
+    }
+    if (args[i] === '--help' || args[i] === '-h') {
+      result.help = true;
     }
     if (args[i] === 'setup' || args[i] === '--setup') {
       result.setup = true;
@@ -283,10 +285,45 @@ async function runSpoolCommand(drain: boolean): Promise<void> {
   if (outcome.exitCode !== 0) process.exitCode = outcome.exitCode;
 }
 
+const GET_A_KEY_URL = 'https://getmarrow.ai/signup';
+const ACTIVATE_COMMAND = 'npx -y @getmarrow/install@latest activate';
+const ENFORCEMENT_SENTENCE = 'On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, most actions run with a warning. Over MCP, the agent gets the decision and is expected to follow it.';
+
+const HELP_TEXT = `Marrow MCP server and hook commands (@getmarrow/mcp)
+
+Day one:
+  1. Create a key at ${GET_A_KEY_URL} (dashboard -> API keys).
+  2. Make the key available as MARROW_API_KEY (environment or an owner-only ~/.marrow/env), then run:
+       ${ACTIVATE_COMMAND}
+     Fallback if you cannot set it first (a key typed on a command line stays in shell history):
+       MARROW_API_KEY=<your_key> ${ACTIVATE_COMMAND}
+  3. Restart the agent host and review/enable its hook trust.
+  4. Verify: npx -y @getmarrow/install@latest doctor --self-test
+
+Commands:
+  (none)                    start the MCP server on stdio (needs MARROW_API_KEY)
+  setup                     hooks-only setup; needs the key first and writes nothing without it
+  ping                      check live read latency, last success and local backlog
+  spool-status              show the local lifecycle spool
+  drain-spool               deliver the local lifecycle spool
+  loop-guard-self-test      offline check of the local session loop guard
+  keys <create|list|get|rotate|revoke|audit>   manage API keys
+  --help, -h                show this text (works without a key)
+
+${ENFORCEMENT_SENTENCE}
+Hooks run inside the agent host and are not an external execution boundary: an agent or person who edits the host settings or runs outside the host is not held.
+`;
+
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
 function runSetup(): void {
   const fs = require('fs') as typeof import('fs');
   const path = require('path') as typeof import('path');
+
+  // Hooks without a key deny protected actions, so write nothing until a key exists.
+  if (!resolveMarrowEnv().apiKey) {
+    process.stderr.write(`Marrow needs your API key before setup can write hooks, so nothing was written.\nCreate a key at ${GET_A_KEY_URL}, make it available as MARROW_API_KEY (environment or an owner-only ~/.marrow/env), then run:\n  ${ACTIVATE_COMMAND}\nFallback: MARROW_API_KEY=<your_key> ${ACTIVATE_COMMAND}  (a key typed on a command line stays in shell history)\n`);
+    process.exit(2);
+  }
 
   const MARROW_BLOCK_START = '<!-- marrow:start -->';
   const MARROW_BLOCK_END = '<!-- marrow:end -->';
@@ -388,11 +425,16 @@ ${MARROW_BLOCK_END}`;
     process.stdout.write('Stop hook configuration is present. Activity is client-self-reported and does not certify session-end coverage.\n');
   }
 
-  const grokHookInstall = installGrokNativeHooks();
-  if (grokHookInstall.installed) {
-    process.stdout.write(`Configured Grok native pre-action, result, and nonblocking turn-closeout hooks at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on them. Activity remains client-self-reported and does not certify observed coverage.\n`);
+  // Grok hooks are global (~/.grok), so write them only for people who use Grok.
+  if (fs.existsSync(path.join(process.env.HOME || require('os').homedir(), '.grok'))) {
+    const grokHookInstall = installGrokNativeHooks();
+    if (grokHookInstall.installed) {
+      process.stdout.write(`Configured Grok native pre-action, result, and nonblocking turn-closeout hooks at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on them. Activity remains client-self-reported and does not certify observed coverage.\n`);
+    } else {
+      process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on it. Activity remains client-self-reported and does not certify observed coverage.\n`);
+    }
   } else {
-    process.stdout.write(`Grok native hook configuration is present at ${grokHookInstall.settingsPath}. Restart Grok and inspect /hooks before relying on it. Activity remains client-self-reported and does not certify observed coverage.\n`);
+    process.stdout.write('Grok not detected (no ~/.grok), so no Grok hooks were written. Create ~/.grok and rerun setup if you use Grok.\n');
   }
 
   process.stdout.write(`Hook settings: ${hookInstall.settingsPath}\n`);
@@ -406,6 +448,11 @@ ${MARROW_BLOCK_END}`;
 }
 
 const cliArgs = parseArgs();
+
+if (cliArgs.help) {
+  process.stdout.write(HELP_TEXT);
+  process.exit(0);
+}
 
 function formatKeyMaterialWarning(): string {
   return 'Copy this key now. Marrow will only show the full plaintext key once.';
@@ -532,8 +579,7 @@ const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
 if (!API_KEY) {
   process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
   process.stderr.write(`${resolvedEnv.exactFix}\n`);
-  process.stderr.write('Usage: MARROW_API_KEY=mrw_yourkey npx @getmarrow/mcp\n');
-  process.stderr.write('   or: npx @getmarrow/mcp --key mrw_yourkey\n');
+  process.stderr.write(`Get a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
   process.exit(1);
 }
 

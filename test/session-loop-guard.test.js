@@ -12,6 +12,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
+const { randomBytes } = require('node:crypto');
 
 const {
   advanceSessionInstructionEpoch,
@@ -272,7 +273,7 @@ test('setup idempotently reports configured loop guard without claiming live enf
     mkdirSync(join(root, '.claude'), { mode: 0o700 });
     const run = () => spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js'), 'setup'], {
       cwd: root,
-      env: { ...process.env, HOME: root, MARROW_API_KEY: '', MARROW_KEY: '' },
+      env: { ...process.env, HOME: root, MARROW_API_KEY: `mrw_test_${randomBytes(16).toString('hex')}`, MARROW_KEY: '' },
       encoding: 'utf8',
       timeout: 8_000,
     });

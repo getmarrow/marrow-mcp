@@ -4,6 +4,7 @@ const { spawnSync } = require('node:child_process');
 const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
+const { randomBytes } = require('node:crypto');
 
 const contract = require('../dist/hook-contract.js');
 const { delocalizeMarrowHookCommand, isMarrowHookCommand, MCP_ADAPTER_VERSION } = contract;
@@ -72,11 +73,12 @@ function project() {
   const home = join(root, 'home');
   const work = join(root, 'project');
   mkdirSync(home, { mode: 0o700 });
+  mkdirSync(join(home, '.grok'), { mode: 0o700 }); // setup writes Grok hooks only for people who use Grok
   mkdirSync(join(work, '.claude'), { recursive: true });
   const setup = () => {
     const result = spawnSync(process.execPath, [CLI, 'setup'], {
       cwd: work, encoding: 'utf8', timeout: 30_000,
-      env: { PATH: process.env.PATH, HOME: home, MARROW_HOOK_BACKGROUND_NUDGE: 'false' },
+      env: { PATH: process.env.PATH, HOME: home, MARROW_API_KEY: `mrw_test_${randomBytes(16).toString('hex')}`, MARROW_HOOK_BACKGROUND_NUDGE: 'false' },
     });
     assert.equal(result.status, 0, result.stderr);
   };

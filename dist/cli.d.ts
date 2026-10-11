@@ -4,9 +4,8 @@
  * Exposes pre-action governance, intent capture, outcome closure, and fleet evidence.
  *
  * Usage:
- *   npx @getmarrow/mcp                          (reads MARROW_API_KEY from env)
- *   npx @getmarrow/mcp --key mrw_abc123          (pass key via CLI flag)
- *   MARROW_API_KEY=mrw_abc123 npx @getmarrow/mcp
+ *   npx @getmarrow/mcp                          (reads MARROW_API_KEY from env or an owner-only ~/.marrow/env)
+ *   npx @getmarrow/mcp --help
  */
 export {};
 //# sourceMappingURL=cli.d.ts.map

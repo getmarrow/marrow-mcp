@@ -4,6 +4,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
+const { randomBytes } = require('node:crypto');
 
 const {
   NATIVE_HOOK_ACTIVITY,
@@ -227,7 +228,7 @@ test('setup configures hooks without claiming automatic coverage', () => {
     writeFileSync(join(directory, 'CLAUDE.md'), '');
     const child = spawnSync(process.execPath, [join(__dirname, '..', 'dist', 'cli.js'), 'setup'], {
       cwd: directory,
-      env: { ...process.env, HOME: directory },
+      env: { ...process.env, HOME: directory, MARROW_API_KEY: `mrw_test_${randomBytes(16).toString('hex')}` },
       encoding: 'utf8',
       timeout: 3_000,
     });

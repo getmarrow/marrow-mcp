@@ -64,9 +64,8 @@ if (process.env.MARROW_NPX_CHECK_STATIC_ONLY !== '1') {
     }
     if (tarball) {
       // Both probes are read-only and run with no Marrow credentials in the
-      // environment. `--help` (the form from the bug report) is not a special
-      // flag in this CLI: it starts the stdio server, which with no key prints
-      // its usage text and exits 1, so success means that usage text appeared.
+      // environment. `--help` (the form from the bug report) prints the usage
+      // text and exits 0 before any key check, so success means that text appeared.
       // `loop-guard-self-test` is an offline self-test that exits 0 with pass:true.
       const forms = [
         // npx executes a bare path to an existing file instead of installing it, so
@@ -86,7 +85,7 @@ if (process.env.MARROW_NPX_CHECK_STATIC_ONLY !== '1') {
           const what = `${label} ${extra.join(' ')}`
           const npxFailure = /could not determine executable|Permission denied|not found|ERR!|npm error/i.test(output)
           if (extra[0] === '--help') {
-            check(`${what} must run the CLI and print its usage text (exit ${result.status}${npxFailure ? '; npx failed to run an executable' : ''})`, /Usage: MARROW_API_KEY=/.test(output))
+            check(`${what} must run the CLI and print its usage text (exit ${result.status}${npxFailure ? '; npx failed to run an executable' : ''})`, result.status === 0 && /Day one:[\s\S]*doctor --self-test/.test(output))
           } else {
             check(`${what} must exit 0 and report pass:true from the real CLI (exit ${result.status}${npxFailure ? '; npx failed to run an executable' : ''})`, result.status === 0 && /"pass": true/.test(result.stdout || ''))
           }

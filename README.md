@@ -10,6 +10,25 @@ Marrow AI is the runtime control and proof layer for teams running AI agents. It
 
 Use `@getmarrow/mcp` when your agent client supports the Model Context Protocol and you want Marrow available inside the agent's normal workflow. It works with Claude Code, Claude Desktop, Cursor and other MCP-compatible clients without replacing the model or harness.
 
+## Quick start
+
+1. **Create a key.** Sign up at [getmarrow.ai/signup](https://getmarrow.ai/signup), then open the dashboard, go to **API keys** and choose **Create API key**. The key is shown once.
+2. **Activate.** Make the key available as `MARROW_API_KEY` (from your secret storage, or an owner-only `~/.marrow/env`), then run the installer from a terminal:
+
+   ```bash
+   npx -y @getmarrow/install@latest activate
+   ```
+
+   Fallback if you cannot set the key first (a key typed on a command line stays in your shell history): `MARROW_API_KEY=<your_key> npx -y @getmarrow/install@latest activate`.
+3. **Restart** the agent host and review/enable its hook trust.
+4. **Verify:**
+
+   ```bash
+   npx -y @getmarrow/install@latest doctor --self-test
+   ```
+
+**What is enforced.** On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, most actions run with a warning. Over MCP, the agent gets the decision and is expected to follow it. Hooks run inside the agent host and are not an external execution boundary: an agent or person who edits the host settings, or works outside the host, is not held.
+
 ## Agent Discovery
 
 - **Publisher:** Marrow AI. Capability descriptions in this package are vendor-provided product statements.
@@ -60,14 +79,18 @@ Verify current claims through the [public evidence manifest](https://getmarrow.a
 
 ## Install
 
+For most installations, follow the [Quick start](#quick-start): the universal installer's `activate` command. The steps below are the manual, MCP-only route.
+
+Get a key at [getmarrow.ai/signup](https://getmarrow.ai/signup) and set it through trusted secret storage:
+
 ```bash
-npx -y --package=@getmarrow/mcp@latest marrow-mcp setup
+export MARROW_API_KEY=<your_key>
 ```
 
-Set the key through trusted secret storage:
+Hooks-only setup (`marrow-mcp setup` writes hooks and `CLAUDE.md` instructions, and adds no MCP server). It needs the key first: without one it prints how to get it and exits 2 before writing anything.
 
 ```bash
-export MARROW_API_KEY=mrw_live_...
+npx -y --package=@getmarrow/mcp@latest marrow-mcp setup
 ```
 
 For Claude Code's cooperative pre-action hook, Marrow accepts the process environment or an owner-controlled `~/.marrow/env` file with owner-only permissions. Repository-local `.env` files are intentionally ignored so project content cannot replace the account, agent, or API endpoint used for guidance. The public hook callback is still a client self-report, not certified host provenance or an external enforcement boundary.
@@ -83,12 +106,6 @@ Then configure the MCP server:
     }
   }
 }
-```
-
-For most new installations, start with the universal installer instead:
-
-```bash
-npx @getmarrow/install activate
 ```
 
 After setup writes MCP configuration or hooks, restart the agent host and review/enable its hook trust. Then verify the reloaded environment:
@@ -137,12 +154,12 @@ A saved `observed_unverified` outcome is terminal observation evidence, not a co
 ## What's New in v3.9.100
 
 - **One Marrow entry per hook event:** `marrow-mcp setup` recognizes the installer's local-runtime hook commands exactly (same version throughout, no additions), keeps whichever form is there (local runtime or npx), and never adds a second entry. Your own hooks stay as they are.
-- **Plain words without a key:** a protected action with no Marrow key says "Marrow can't find your key: run `npx @getmarrow/install` once in this machine's terminal." The hooks read the key from `MARROW_API_KEY` or an owner-only `~/.marrow/env.local` or `~/.marrow/env`, never from a file others can read.
+- **Plain words without a key:** a protected action with no Marrow key is denied with "Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action." The hooks read the key from `MARROW_API_KEY` or an owner-only `~/.marrow/env.local` or `~/.marrow/env`, never from a file others can read.
 - **First-prompt briefs say so:** the prompt hook marks its brief `context.prompt_brief: true`; a brief authorizes nothing.
 - **Deploy text only word for word:** the exact command text is sent only for `sst deploy --stage <stage>` (optionally `--verbose`, optionally after one `npx` or `bunx`), with a stage of lower-case letters, digits and dashes, in a single clause with nothing else in it, so Marrow can judge the stage itself. Every other command, including other deploy tools, sends only the hash; no free-text word leaves the machine.
 - **No lifecycle event id with two payloads:** an event id names its payload, so a later run is a new record and a resend carries the same bytes.
 
-v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt). These approvals turn on when the Marrow service update ships; until then held actions work as in 3.9.98: Claude Code asks in its dialog and other hosts hold for the account owner.
+v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
 
 Earlier release notes moved from this README to [CHANGELOG.md](https://github.com/getmarrow/marrow-mcp/blob/master/CHANGELOG.md).
 
@@ -160,7 +177,7 @@ Direct `marrow_model_usage` and Commit `model_usage` also accept billing host, t
 
 With `MARROW_TOOL_PROFILE` unset, the default primary profile uses `marrow_agent_runtime` followed by `marrow_commit`. It exposes 17 tools; `marrow_auto` is available only after an explicit `core` or `full` selection and MCP restart. Primary status and lessons use `marrow_agent_status` and `marrow_fleet_lessons`.
 
-Configured hooks can provide cooperative telemetry and context, but they are not a certified execution boundary. Before deploys, merges, publishes, migrations, credential changes, financial operations, or customer-impacting work:
+On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, most actions run with a warning. Over MCP, the agent gets the decision and is expected to follow it. Hooks run inside the agent host, so a host edited or bypassed by an agent or person is not held. Before deploys, merges, publishes, migrations, credential changes, financial operations, or customer-impacting work:
 
 1. Call `marrow_agent_runtime` or `marrow_decision_brief`.
 2. Stop when the returned decision is `block` or `review_required`; otherwise follow its prior lesson and proof contract.
@@ -276,8 +293,6 @@ recorded an outcome. It compares that existing evidence under one tenant task;
 it does not run models, retain prompts, or infer a winner from labels.
 
 ## Approvals in the Host Prompt
-
-These approvals turn on when the Marrow service update ships; until then held actions work as in 3.9.98: Claude Code asks in its dialog and other hosts hold for the account owner.
 
 When Marrow holds an action for approval (`review_required`), the person approves it where they already work, and nobody has to log in. The hooks record the answer with Marrow; the agent never reports or claims an approval. The Marrow dashboard shows receipts and history; it is not where approvals happen.
 
