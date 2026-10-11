@@ -205,6 +205,24 @@ for (const [label, setup] of [
   });
 }
 
+test('on Windows a rejected owner file names the environment fix, not chmod', () => {
+  const fx = fixture('win32');
+  const key = dummyKey('win');
+  write(fx.envFile, [`MARROW_API_KEY=${key}`], 0o644);
+  const original = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try {
+    const pair = both(fx);
+    assert.equal(pair.mcp.missing, true);
+    assert.ok(pair.mcp.exactFix.includes(`\nIgnored the Marrow key in ${fx.envFile}: owner-only file permissions cannot be confirmed on Windows. Fix: set MARROW_API_KEY in your environment`));
+    assert.doesNotMatch(pair.mcp.exactFix, /chmod 600 .*\.marrow/);
+    assertNoSecret(pair.mcp, key);
+    assertSame(pair, 'win32');
+  } finally {
+    Object.defineProperty(process, 'platform', original);
+  }
+});
+
 test('a rejected env.local does not block a private ~/.marrow/env (same on both paths)', () => {
   const fx = fixture('fallthrough');
   const loose = dummyKey('loose');

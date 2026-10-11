@@ -268,6 +268,10 @@ function repoKeyNotice(filePath: string): string {
 
 function ownerFileNotice(filePath: string): string {
   const file = printablePath(filePath);
+  // Windows reports no owner-only mode bits, so owner files never pass there.
+  if (process.platform === 'win32') {
+    return `Ignored the Marrow key in ${file}: owner-only file permissions cannot be confirmed on Windows. Fix: set MARROW_API_KEY in your environment or in the MCP client's env settings.`;
+  }
   return `Ignored the Marrow key in ${file}: the file is not owner-only (a symlink, readable or writable by others, owned by another user, or in a directory others can write). Fix: chmod 600 ${file} && chmod 700 ${printablePath(path.dirname(filePath))}, replacing a symlink with the file itself.`;
 }
 
