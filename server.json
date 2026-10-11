@@ -10,6 +10,13 @@
   },
   "icons": [
     {
+      "src": "https://getmarrow.ai/brand/marrow-logo-512.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "512x512"
+      ]
+    },
+    {
       "src": "https://getmarrow.ai/favicon.svg",
       "mimeType": "image/svg+xml",
       "sizes": [
