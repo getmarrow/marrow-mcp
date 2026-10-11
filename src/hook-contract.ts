@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 import { normalizedHookAction } from './normalized-action';
+import { isMarrowOwnTool, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput, normalizedMcpToolName } from './own-tool';
 
 export const MCP_ADAPTER_VERSION = '3.9.101';
 export const NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*';
@@ -218,9 +219,9 @@ function normalizeWindsurfHookEvent(source: Record<string, unknown>): Record<str
   } else if (action.endsWith('_mcp_tool_use')) {
     const server = boundedWindsurfName(info.mcp_server_name) || 'unknown';
     const tool = boundedWindsurfName(info.mcp_tool_name) || 'unknown';
-    normalized.tool_name = server.toLowerCase() === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(tool)
-      ? `mcp__marrow__${tool}`
-      : `MCP:${server}:${tool}`;
+    normalized.tool_name = normalizedMcpToolName(
+      isMarrowOwnTool(info.mcp_server_name, info.mcp_tool_name), tool, server, info.mcp_server_name, info.mcp_tool_name,
+    );
     normalized.tool_input = {};
     normalized.input_truncated = true;
   }
@@ -241,7 +242,9 @@ function normalizeGeminiHookEvent(source: Record<string, unknown>): Record<strin
     return normalized;
   }
   const toolName = typeof source.tool_name === 'string' ? source.tool_name.trim().slice(0, 256) : '';
-  if (toolName && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
+  // A padded Marrow tool name is not Marrow's own: leave it unclassified (held).
+  const paddedOwnName = toolName !== source.tool_name && isOfficialMarrowMcpTool(toolName);
+  if (toolName && !paddedOwnName && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
     normalized.tool_name = toolName === 'run_shell_command' ? 'Bash'
       : toolName === 'write_file' ? 'Write'
       : ['replace', 'edit_file'].includes(toolName) ? 'Edit'
@@ -287,9 +290,10 @@ function normalizeGrokHookEvent(source: Record<string, unknown>): Record<string,
   const server = boundedWindsurfName(toolInput?.serverName ?? toolInput?.server_name);
   const nestedTool = boundedWindsurfName(toolInput?.toolName ?? toolInput?.tool_name);
   const boundedToolName = toolName === 'use_tool' && server && nestedTool
-    ? server.toLowerCase() === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(nestedTool)
-      ? `mcp__marrow__${nestedTool}`
-      : `MCP:${server}:${nestedTool}`
+    ? normalizedMcpToolName(
+      source.toolName === 'use_tool' && isOfficialMarrowNestedInput(toolInput), nestedTool, server,
+      toolInput?.serverName ?? toolInput?.server_name, toolInput?.toolName ?? toolInput?.tool_name,
+    )
     : toolName;
   if (boundedToolName && /^[A-Za-z0-9._:-]+$/.test(boundedToolName)) normalized.tool_name = boundedToolName;
   if (hookEventName === 'PreToolUse') {
@@ -350,9 +354,9 @@ function normalizeCursorExecutionEvent(source: Record<string, unknown>): Record<
   }
   const server = boundedWindsurfName(source.mcp_server_name) || 'unknown';
   const tool = boundedWindsurfName(source.tool_name) || 'unknown';
-  normalized.tool_name = server.toLowerCase() === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(tool)
-    ? `mcp__marrow__${tool}`
-    : `MCP:${server}:${tool}`;
+  normalized.tool_name = normalizedMcpToolName(
+    isMarrowOwnTool(source.mcp_server_name, source.tool_name), tool, server, source.mcp_server_name, source.tool_name,
+  );
   let input: unknown = {};
   if (typeof source.tool_input === 'string' && source.tool_input.length <= 262_144) {
     try {

@@ -1,8 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isOfficialMarrowMcpTool = exports.isOfficialMarrowMcpEvent = void 0;
 exports.normalizeHookToolName = normalizeHookToolName;
-exports.isOfficialMarrowMcpTool = isOfficialMarrowMcpTool;
-exports.isOfficialMarrowMcpEvent = isOfficialMarrowMcpEvent;
 exports.isMcpHookTool = isMcpHookTool;
 exports.isProtectedShellMutation = isProtectedShellMutation;
 exports.hookToolCommand = hookToolCommand;
@@ -19,6 +18,9 @@ exports.isShellGovernedTool = isShellGovernedTool;
 exports.isReadOnlyToolEvent = isReadOnlyToolEvent;
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
+const own_tool_1 = require("./own-tool");
+Object.defineProperty(exports, "isOfficialMarrowMcpEvent", { enumerable: true, get: function () { return own_tool_1.isOfficialMarrowMcpEvent; } });
+Object.defineProperty(exports, "isOfficialMarrowMcpTool", { enumerable: true, get: function () { return own_tool_1.isOfficialMarrowMcpTool; } });
 const READ_ONLY_TOOLS = new Set([
     'read',
     'read_file',
@@ -148,25 +150,6 @@ function normalizeHookToolName(value) {
             : /^(?:view_image|read_file)$/i.test(withoutNamespace) ? 'read_file'
                 : withoutNamespace;
     return mapped.replace(/^mcp__/, '').replace(/^MCP:/i, '').trim().toLowerCase();
-}
-function isOfficialMarrowMcpTool(value) {
-    const tool = String(value || '').trim().replace(/^functions\./i, '');
-    return /^mcp__marrow__marrow_[a-z0-9_]+$/i.test(tool)
-        || /^MCP:(?:marrow:)?marrow_[a-z0-9_]+$/i.test(tool)
-        || /^mcp_marrow_marrow_[a-z0-9_]+$/i.test(tool);
-}
-function isOfficialMarrowMcpEvent(event) {
-    if (isOfficialMarrowMcpTool(event.tool_name))
-        return true;
-    const tool = String(event.tool_name || '').trim().toLowerCase();
-    if (!['use_mcp_tool', 'use_tool', 'mcp', 'mcp_tool'].includes(tool))
-        return false;
-    const input = asRecord(event.tool_input);
-    if (!input)
-        return false;
-    const server = String(input.serverName ?? input.server_name ?? '').trim().toLowerCase();
-    const name = String(input.toolName ?? input.tool_name ?? '').trim();
-    return server === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(name);
 }
 function isMcpHookTool(value) {
     return /^(?:mcp__|mcp_|MCP:)/i.test(String(value || '').trim());

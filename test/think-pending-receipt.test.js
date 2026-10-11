@@ -72,7 +72,8 @@ test('structured receipt copies only validated public fields', () => {
 
 test('think tool exposes exact resume fields and tracks a decision only after the awaited confirmed result', () => {
   const source = fs.readFileSync(require.resolve('../src/cli.ts'), 'utf8');
-  const schema = source.slice(source.indexOf("name: 'marrow_think'"), source.indexOf("name: 'marrow_commit'"));
+  const catalog = fs.readFileSync(require.resolve('../src/tool-catalog.ts'), 'utf8');
+  const schema = catalog.slice(catalog.indexOf("name: 'marrow_think'"), catalog.indexOf("name: 'marrow_commit'"));
   assert.match(schema, /idempotency_key: \{ type: 'string'/); assert.match(schema, /request_hash: \{ type: 'string'/);
   const handler = source.slice(source.indexOf("if (toolName === 'marrow_think')"), source.indexOf("if (toolName === 'marrow_commit')"));
   assert.match(handler, /idempotencyKey: args\.idempotency_key/); assert.match(handler, /requestHash: args\.request_hash/);

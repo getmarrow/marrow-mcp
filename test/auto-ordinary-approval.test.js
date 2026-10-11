@@ -423,7 +423,7 @@ test('the CLI projects the wait and the closure, with the approval state and no 
 });
 
 test('the marrow_auto tool description never tells an agent to write its own approval', () => {
-  const source = require('node:fs').readFileSync(join(__dirname, '../src/cli.ts'), 'utf8');
+  const source = require('node:fs').readFileSync(join(__dirname, '../src/tool-catalog.ts'), 'utf8');
   const start = source.indexOf("name: 'marrow_auto'");
   const description = source.slice(start, source.indexOf('inputSchema', start));
   assert.match(description, /Never write or claim an approval yourself\./);

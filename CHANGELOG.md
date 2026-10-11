@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Security: only Marrow's own tools skip the pre-action gate. A tool counts as Marrow's own only when its server is exactly `marrow` and its tool is exactly one of the names this package registers (any profile). A server named `Marrow` or `MARROW`, a look-alike server, an unregistered `marrow_*` tool, or a name with extra case, spaces, NUL or a suffix now goes through the gate like any other MCP tool. The Cursor, Windsurf and Grok adapters no longer turn such names into the official `mcp__marrow__` form.
+
 ## 3.9.101
 
 - `marrow-mcp setup` with no key, or a key only in an untrusted place such as a project `.env`, stops, writes nothing and says how to get a key.

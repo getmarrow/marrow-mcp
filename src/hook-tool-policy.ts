@@ -1,5 +1,8 @@
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
+import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
+
+export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
 
 type ToolPolicyEvent = {
   tool_name?: string;
@@ -144,24 +147,6 @@ export function normalizeHookToolName(value: unknown): string {
     : /^(?:view_image|read_file)$/i.test(withoutNamespace) ? 'read_file'
     : withoutNamespace;
   return mapped.replace(/^mcp__/, '').replace(/^MCP:/i, '').trim().toLowerCase();
-}
-
-export function isOfficialMarrowMcpTool(value: unknown): boolean {
-  const tool = String(value || '').trim().replace(/^functions\./i, '');
-  return /^mcp__marrow__marrow_[a-z0-9_]+$/i.test(tool)
-    || /^MCP:(?:marrow:)?marrow_[a-z0-9_]+$/i.test(tool)
-    || /^mcp_marrow_marrow_[a-z0-9_]+$/i.test(tool);
-}
-
-export function isOfficialMarrowMcpEvent(event: ToolPolicyEvent): boolean {
-  if (isOfficialMarrowMcpTool(event.tool_name)) return true;
-  const tool = String(event.tool_name || '').trim().toLowerCase();
-  if (!['use_mcp_tool', 'use_tool', 'mcp', 'mcp_tool'].includes(tool)) return false;
-  const input = asRecord(event.tool_input);
-  if (!input) return false;
-  const server = String(input.serverName ?? input.server_name ?? '').trim().toLowerCase();
-  const name = String(input.toolName ?? input.tool_name ?? '').trim();
-  return server === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(name);
 }
 
 export function isMcpHookTool(value: unknown): boolean {

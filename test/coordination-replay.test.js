@@ -195,7 +195,8 @@ test('coordination and replay reject path traversal and remain advertised MCP to
       /constraints/,
     );
   }
-  const cli = readFileSync(resolve(__dirname, '../src/cli.ts'), 'utf8');
+  // Tool definitions live in the registry module; handlers stay in the CLI.
+  const cli = readFileSync(resolve(__dirname, '../src/tool-catalog.ts'), 'utf8') + readFileSync(resolve(__dirname, '../src/cli.ts'), 'utf8');
   assert.match(cli, /name: 'marrow_coordinate'/);
   assert.match(cli, /name: 'marrow_replay_compare'/);
   assert.match(cli, /does not run a model/);
