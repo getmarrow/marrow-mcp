@@ -124,15 +124,81 @@ test('a short ordinary path still gets the working command (home go-w included)'
   assert.equal(mode(real.home) & 0o022, 0);
 });
 
-test('a symlinked directory: advice targets the real path as named, not a shortened one', { skip }, () => {
-  const top = root('symdir');
+// Everything chmod-shaped in the advice, run through the link, must change nothing.
+function runAnyChmod(top, fix) {
+  for (const m of fix.matchAll(/chmod (?:600|700|go-w) (\S+)/g)) {
+    spawnSync('sh', ['-c', `chmod 600 ${m[1]}`], { cwd: top });
+  }
+}
+
+test('a symlinked owner file: no chmod operand, advice says replace the link, target untouched', { skip }, () => {
+  const top = root('symfile');
+  const real = makeHome(top, 'home', dummyKey());
+  const target = path.join(top, 'target-env');
+  fs.writeFileSync(target, `MARROW_API_KEY=${dummyKey()}\n`, { mode: 0o644 });
+  fs.chmodSync(target, 0o644);
+  fs.rmSync(real.file);
+  fs.symlinkSync(target, real.file);
+  const fix = notice(top, real);
+  assert.doesNotMatch(fix, /chmod \d+ \S*\//, 'no chmod operand');
+  assert.match(fix, /replace the symlink with the real file/);
+  assert.equal(fix.includes(real.file), false, 'operand-free fix');
+  runAnyChmod(top, fix);
+  assert.equal(mode(target), 0o644, 'link target unchanged');
+  assert.equal(fs.lstatSync(real.file).isSymbolicLink(), true);
+});
+
+test('a symlinked folder or ancestor: no chmod operand, advice says remove the link from the chain', { skip }, () => {
+  const top = root('symchain');
   const real = makeHome(top, 'realhome', dummyKey());
-  const link = path.join(top, 'link home');
+  const link = path.join(top, 'link-home');
   fs.symlinkSync(real.home, link);
   const cwd = path.join(top, 'work');
   fs.mkdirSync(cwd, { recursive: true });
-  const r = resolveMarrowEnv({ cwd, home: link, env: {} });
-  assert.ok(r.exactFix.includes('Ignored the Marrow key'));
-  const fix = r.exactFix.slice(r.exactFix.indexOf('Fix:'));
-  assert.ok(fix.includes(`'${path.join(link, '.marrow', 'env')}'`), fix);
+  // ancestor symlink (home itself is the link)
+  const r1 = resolveMarrowEnv({ cwd, home: link, env: {} });
+  const fix1 = r1.exactFix.slice(r1.exactFix.indexOf('Fix:'));
+  assert.doesNotMatch(fix1, /chmod \d+ \S*\//);
+  assert.match(fix1, /remove the symlink from the folder chain/);
+  runAnyChmod(top, fix1);
+  assert.equal(mode(real.file), 0o644);
+  assert.equal(mode(real.dir), 0o700);
+  // ~/.marrow itself is a symlink
+  const home2 = path.join(top, 'home2');
+  fs.mkdirSync(home2, { mode: 0o700 });
+  fs.symlinkSync(real.dir, path.join(home2, '.marrow'));
+  const r2 = resolveMarrowEnv({ cwd, home: home2, env: {} });
+  const fix2 = r2.exactFix.slice(r2.exactFix.indexOf('Fix:'));
+  assert.doesNotMatch(fix2, /chmod \d+ \S*\//);
+  assert.match(fix2, /remove the symlink from the folder chain/);
+  runAnyChmod(top, fix2);
+  assert.equal(mode(real.file), 0o644);
+});
+
+// Guard boundaries of shellOperand/printablePath.
+test('U+2028 and U+2029 in a path component give no operand', { skip }, () => {
+  for (const ch of ['\u2028', '\u2029']) {
+    const top = root('zl');
+    const real = makeHome(top, `h${ch}e`, dummyKey());
+    const fix = notice(top, real);
+    assert.doesNotMatch(fix, /chmod \d+ ['/]/, `U+${ch.codePointAt(0).toString(16)}`);
+    assert.equal(fix.includes(ch), false);
+    assert.match(fix, /chmod 600 on the file named above/);
+  }
+});
+
+test('file path of exactly 200 code points gets an operand; 201 does not', { skip }, () => {
+  const top = root('len');
+  const base = path.join(top, 'x');
+  // makeHome file = <top>/<name>/.marrow/env ; pad name so the file path hits the target length.
+  const overhead = path.join(top, '', '.marrow', 'env').length + 1;
+  for (const [len, expectOperand] of [[200, true], [201, false]]) {
+    const name = 'n'.repeat(len - overhead);
+    const real = makeHome(top, name, dummyKey());
+    assert.equal(Array.from(real.file).length, len);
+    const fix = notice(top, real);
+    if (expectOperand) assert.match(fix, /chmod 600 \S+ && chmod 700/, `len ${len}`);
+    else assert.doesNotMatch(fix, /chmod \d+ ['/]/, `len ${len}`);
+  }
+  assert.ok(base);
 });

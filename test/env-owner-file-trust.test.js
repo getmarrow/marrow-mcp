@@ -57,6 +57,13 @@ function assertNoSecret(resolved, ...secrets) {
   for (const secret of secrets) assert.equal(text.includes(secret), false, 'secret value leaked into resolution output');
 }
 
+function hasSymlinkInChain(file) {
+  for (let p = file; ; p = path.dirname(p)) {
+    try { if (fs.lstatSync(p).isSymbolicLink()) return true; } catch { /* keep walking */ }
+    if (path.dirname(p) === p) return false;
+  }
+}
+
 function assertRejected(resolved, file, key, label) {
   assert.equal(resolved.missing, true, `${label}: missing`);
   assert.equal(resolved.apiKey, '', `${label}: no key`);
@@ -65,7 +72,12 @@ function assertRejected(resolved, file, key, label) {
   assert.equal(resolved.sessionId, undefined, `${label}: no session`);
   assert.equal(resolved.source, null, `${label}: no source`);
   assert.ok(resolved.exactFix.includes(`\nIgnored the Marrow key in ${file}: the file is not owner-only`), `${label}: notice names ${file}`);
-  assert.ok(resolved.exactFix.includes(`Fix: chmod 600 ${file} && chmod 700 ${path.dirname(file)}`), `${label}: chmod fix`);
+  if (hasSymlinkInChain(file)) {
+    assert.doesNotMatch(resolved.exactFix, /chmod \d+ \S/, `${label}: no chmod operand through a link`);
+    assert.match(resolved.exactFix, /replace the symlink|remove the symlink/, `${label}: link advice`);
+  } else {
+    assert.ok(resolved.exactFix.includes(`Fix: chmod 600 ${file} && chmod 700 ${path.dirname(file)}`), `${label}: chmod fix`);
+  }
   assert.equal(resolved.exactFix.split('\n').length, 2, `${label}: exactly one notice line`);
   assertNoSecret(resolved, key);
   assert.doesNotMatch(JSON.stringify(resolved), /attacker/, `${label}: no planted setting`);
@@ -466,22 +478,33 @@ test('X5: an fstat device that differs from the lstat device supplies nothing on
   assertSame(pair, 'dev mismatch');
 });
 
-test('T3: a private owner file over 1 MiB supplies nothing; exactly 1 MiB still works', () => {
+test('T3 r5: a private owner file over 1 MiB keeps base parity (key still supplied); the cap applies to repo files only', () => {
   const MAX = 1024 * 1024;
   const fx = fixture('big');
   const key = dummyKey('big');
   const head = `MARROW_API_KEY=${key}\n`;
-  fs.writeFileSync(fx.envFile, head + '#'.repeat(MAX + 1 - head.length), { mode: 0o600 });
-  assert.equal(fs.statSync(fx.envFile).size, MAX + 1);
-  const pair = both(fx);
-  assertRejected(pair.mcp, fx.envFile, key, 'mcp');
-  assertRejected(pair.hook, fx.envFile, key, 'hook');
-  assertSame(pair, 'over cap');
-  fs.writeFileSync(fx.envFile, head + '#'.repeat(MAX - head.length), { mode: 0o600 });
-  assert.equal(fs.statSync(fx.envFile).size, MAX);
-  const ok = both(fx);
-  assert.equal(ok.mcp.apiKey, key);
-  assertSame(ok, 'at cap');
+  for (const size of [MAX - 1, MAX, MAX + 1, 3 * MAX]) {
+    fs.writeFileSync(fx.envFile, head + '#'.repeat(size - head.length), { mode: 0o600 });
+    assert.equal(fs.statSync(fx.envFile).size, size);
+    const pair = both(fx);
+    assert.equal(pair.mcp.apiKey, key, `owner file of ${size} bytes supplies its key (mcp)`);
+    assert.equal(pair.hook.apiKey, key, `owner file of ${size} bytes supplies its key (hook)`);
+    assertSame(pair, `size ${size}`);
+  }
+  // Repo file: over the cap it is not even peeked at (no notice); at the cap it is.
+  fs.rmSync(fx.envFile);
+  const repoFile = path.join(fx.cwd, '.env');
+  const repoKey = dummyKey('repo');
+  const repoHead = `MARROW_API_KEY=${repoKey}\n`;
+  fs.writeFileSync(repoFile, repoHead + '#'.repeat(MAX - repoHead.length), { mode: 0o600 });
+  const atCap = resolveMarrowEnv({ cwd: fx.cwd, home: fx.home, env: {} });
+  assert.equal(atCap.missing, true);
+  assert.match(atCap.exactFix, /Marrow key in .*ignored/);
+  fs.writeFileSync(repoFile, repoHead + '#'.repeat(MAX + 1 - repoHead.length), { mode: 0o600 });
+  const over = resolveMarrowEnv({ cwd: fx.cwd, home: fx.home, env: {} });
+  assert.equal(over.missing, true);
+  assert.doesNotMatch(over.exactFix, /ignored/);
+  assertNoSecret(over, repoKey);
 });
 
 // ── Codex F1 (round 3): the advised fix repairs a writable home ────────────

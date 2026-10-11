@@ -86,7 +86,7 @@ type OwnerFileRead =
 function readOwnerEnvFile(filePath: string, home: string): OwnerFileRead {
   const resolvedHome = path.resolve(home);
   const resolvedFile = path.resolve(filePath);
-  const read = readEnvFile(resolvedFile, true);
+  const read = readEnvFile(resolvedFile, true, Infinity);
   if (!read) {
     try {
       fs.lstatSync(resolvedFile);
@@ -120,8 +120,10 @@ interface EnvFileRead {
 }
 
 // Opens without blocking (a planted FIFO cannot hang the server) and reads only
-// bounded regular files. noFollow refuses a symlink at open time where supported.
-function readEnvFile(filePath: string, noFollow: boolean): EnvFileRead | null {
+// regular files. Only untrusted repo files are size-capped (maxBytes); owner files
+// keep base parity (no cap), so a file base accepted is never turned into no-key.
+// noFollow refuses a symlink at open time where supported.
+function readEnvFile(filePath: string, noFollow: boolean, maxBytes: number): EnvFileRead | null {
   const flags = fs.constants.O_RDONLY
     | (fs.constants.O_NONBLOCK || 0)
     | (noFollow ? fs.constants.O_NOFOLLOW || 0 : 0);
@@ -133,7 +135,7 @@ function readEnvFile(filePath: string, noFollow: boolean): EnvFileRead | null {
   }
   try {
     const stat = fs.fstatSync(fd);
-    if (!stat.isFile() || stat.size > MAX_ENV_FILE_BYTES) return null;
+    if (!stat.isFile() || stat.size > maxBytes) return null;
     const buffer = Buffer.alloc(stat.size + 1);
     let length = 0;
     while (length < buffer.length) {
@@ -270,7 +272,7 @@ export function resolveMarrowEnv(options: {
     } catch {
       continue;
     }
-    const peek = readEnvFile(filePath, false);
+    const peek = readEnvFile(filePath, false, MAX_ENV_FILE_BYTES);
     if (pickKey(peek?.values || {}).key && !ignored) ignored = repoKeyNotice(filePath);
   }
 
@@ -279,6 +281,25 @@ export function resolveMarrowEnv(options: {
 
 function repoKeyNotice(filePath: string): string {
   return `Marrow key in ${printablePath(filePath)} ignored: keys are read only from ~/.marrow/env or your environment. Fix: ${REPO_KEY_FIX}.`;
+}
+
+function symlinkInChain(filePath: string): 'file' | 'folder' | null {
+  try {
+    if (fs.lstatSync(filePath).isSymbolicLink()) return 'file';
+  } catch {
+    // Missing or unreadable: not a link we can name.
+  }
+  let dir = path.dirname(path.resolve(filePath));
+  for (;;) {
+    try {
+      if (fs.lstatSync(dir).isSymbolicLink()) return 'folder';
+    } catch {
+      // Keep walking up.
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 function ownerFileNotice(filePath: string, home: string): string {
@@ -297,7 +318,16 @@ function ownerFileNotice(filePath: string, home: string): string {
   } catch {
     // Unreadable home: the generic advice stands.
   }
+  // chmod follows a symlink and would change its target while the link stays
+  // refused, so a symlinked file or folder gets no chmod operand on that path.
   const lead = `Ignored the Marrow key in ${file}: the file is not owner-only (a symlink, readable or writable by others, owned by another user, or in a directory others can write).`;
+  const link = symlinkInChain(filePath);
+  if (link === 'file') {
+    return `${lead} Fix: replace the symlink with the real file (owner-only, mode 600); do not run chmod on the link.`;
+  }
+  if (link === 'folder') {
+    return `${lead} Fix: remove the symlink from the folder chain so the path uses real folders only, then make the file owner-only (mode 600); do not run chmod through the link.`;
+  }
   const tail = ' (replace a symlink with the file itself)';
   // Command operands use the real paths, quoted; if any cannot be printed safely, name no path.
   const dirOp = shellOperand(path.dirname(filePath));
