@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.GEMINI_CONTEXT_HOOK_COMMAND = exports.GEMINI_SESSION_END_HOOK_COMMAND = exports.GEMINI_ACTION_RESULT_HOOK_COMMAND = exports.GEMINI_PRE_ACTION_HOOK_COMMAND = exports.WINDSURF_SESSION_END_HOOK_COMMAND = exports.WINDSURF_ACTION_RESULT_HOOK_COMMAND = exports.WINDSURF_PRE_ACTION_HOOK_COMMAND = exports.CLINE_SESSION_END_HOOK_COMMAND = exports.CLINE_ACTION_RESULT_HOOK_COMMAND = exports.CLINE_PRE_ACTION_HOOK_COMMAND = exports.CURSOR_CONTEXT_HOOK_COMMAND = exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_PRE_ACTION_GUARD_COMMAND = exports.MARROW_OUTAGE_WARNING = exports.GROK_LAUNCH_FAILURE = exports.GROK_FIXED_DENIAL = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.PERMISSION_REQUEST_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
+exports.GEMINI_CONTEXT_HOOK_COMMAND = exports.GEMINI_SESSION_END_HOOK_COMMAND = exports.GEMINI_ACTION_RESULT_HOOK_COMMAND = exports.GEMINI_PRE_ACTION_HOOK_COMMAND = exports.WINDSURF_SESSION_END_HOOK_COMMAND = exports.WINDSURF_ACTION_RESULT_HOOK_COMMAND = exports.WINDSURF_PRE_ACTION_HOOK_COMMAND = exports.CLINE_SESSION_END_HOOK_COMMAND = exports.CLINE_ACTION_RESULT_HOOK_COMMAND = exports.CLINE_PRE_ACTION_HOOK_COMMAND = exports.CURSOR_CONTEXT_HOOK_COMMAND = exports.CURSOR_SESSION_END_HOOK_COMMAND = exports.CURSOR_ACTION_RESULT_HOOK_COMMAND = exports.CURSOR_PRE_ACTION_HOOK_COMMAND = exports.GROK_PRE_ACTION_GUARD_COMMAND = exports.MARROW_OUTAGE_WARNING = exports.GROK_LAUNCH_FAILURE = exports.GROK_FIXED_DENIAL = exports.GROK_SESSION_END_HOOK_COMMAND = exports.GROK_ACTION_RESULT_HOOK_COMMAND = exports.GROK_PRE_ACTION_HOOK_COMMAND = exports.GROK_CONTEXT_HOOK_COMMAND = exports.PERMISSION_REQUEST_HOOK_COMMAND = exports.SESSION_END_HOOK_COMMAND = exports.ACTION_RESULT_HOOK_COMMAND = exports.PRE_ACTION_HOOK_COMMAND = exports.CONTEXT_HOOK_COMMAND = exports.MCP_PACKAGE_SPEC = exports.GROK_NATIVE_HOOK_MATCHER = exports.LEGACY_NATIVE_HOOK_MATCHERS = exports.NATIVE_HOOK_MATCHER = exports.MCP_ADAPTER_VERSION = void 0;
 exports.resolveNativeHookIdentity = resolveNativeHookIdentity;
 exports.clientReportedHookLifecycleIdentity = clientReportedHookLifecycleIdentity;
 exports.privateHookLoopGuardPayload = privateHookLoopGuardPayload;
@@ -12,8 +12,11 @@ exports.delocalizeMarrowHookCommand = delocalizeMarrowHookCommand;
 exports.isMarrowHookCommand = isMarrowHookCommand;
 exports.reconcileMarrowCommandHook = reconcileMarrowCommandHook;
 exports.hasExactCommandHook = hasExactCommandHook;
+exports.staleMatcherHooks = staleMatcherHooks;
+exports.localHookRepairStatus = localHookRepairStatus;
 exports.localHookConfigurationFingerprint = localHookConfigurationFingerprint;
 exports.stableToolCorrelation = stableToolCorrelation;
+exports.exactHookTarget = exactHookTarget;
 exports.stablePromptCorrelation = stablePromptCorrelation;
 exports.stableSessionWorkflowId = stableSessionWorkflowId;
 exports.grokHookSettingsPath = grokHookSettingsPath;
@@ -24,8 +27,19 @@ const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const env_1 = require("./env");
 const normalized_action_1 = require("./normalized-action");
+const own_tool_1 = require("./own-tool");
 exports.MCP_ADAPTER_VERSION = '3.9.101';
-exports.NATIVE_HOOK_MATCHER = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*';
+exports.NATIVE_HOOK_MATCHER = (0, own_tool_1.nativeHookMatcher)();
+/**
+ * Matchers older versions wrote, so a hook carrying one needs repair: the
+ * released one skips every `mcp__marrow__marrow_*` tool; the r2 one (never
+ * released) skips `functions.mcp__marrow__<own>` and, under a full match, any
+ * name with a line terminator.
+ */
+exports.LEGACY_NATIVE_HOOK_MATCHERS = [
+    'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*',
+    (0, own_tool_1.r2NativeHookMatcher)(),
+];
 exports.GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 exports.MCP_PACKAGE_SPEC = `@getmarrow/mcp@${exports.MCP_ADAPTER_VERSION}`;
 const hookCommand = (entrypoint) => `npx -y --package=${exports.MCP_PACKAGE_SPEC} marrow-mcp ${entrypoint}`;
@@ -213,9 +227,7 @@ function normalizeWindsurfHookEvent(source) {
     else if (action.endsWith('_mcp_tool_use')) {
         const server = boundedWindsurfName(info.mcp_server_name) || 'unknown';
         const tool = boundedWindsurfName(info.mcp_tool_name) || 'unknown';
-        normalized.tool_name = server.toLowerCase() === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(tool)
-            ? `mcp__marrow__${tool}`
-            : `MCP:${server}:${tool}`;
+        normalized.tool_name = (0, own_tool_1.normalizedMcpToolName)((0, own_tool_1.isMarrowOwnTool)(info.mcp_server_name, info.mcp_tool_name), tool, server, info.mcp_server_name, info.mcp_tool_name);
         normalized.tool_input = {};
         normalized.input_truncated = true;
     }
@@ -240,7 +252,25 @@ function normalizeGeminiHookEvent(source) {
         return normalized;
     }
     const toolName = typeof source.tool_name === 'string' ? source.tool_name.trim().slice(0, 256) : '';
-    if (toolName && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
+    // Gemini's separate server and tool. The label `mcp_<server>_<tool>` is ambiguous
+    // (`marrow_marrow` + `commit` = `marrow` + `marrow_commit`), so only this proves a call is Marrow's own.
+    const mcpTarget = (0, own_tool_1.geminiMcpTarget)(source.mcp_context);
+    if (mcpTarget)
+        normalized.mcp_context = mcpTarget;
+    const own = (0, own_tool_1.isOfficialMarrowGeminiCall)(source.tool_name, mcpTarget);
+    // A label in another host's own form (`mcp__marrow__<own>` from a server named `mcp`, `MCP:<own>`
+    // from an older Gemini) without that proof: never own, left unclassified (held), as a padded one is.
+    const otherFormOwnLabel = !own && (0, own_tool_1.isOfficialMarrowMcpTool)(toolName);
+    // A padded Marrow tool name is not Marrow's own: leave it unclassified (held).
+    const paddedOwnName = toolName !== source.tool_name && (otherFormOwnLabel || (0, own_tool_1.isGeminiOwnLabel)(toolName));
+    // A trimmed or cut name is not the host's exact tool: never bound, so it never shares a key with the exact one.
+    // Kept on the second normalization (hooks normalize on read and again on use).
+    if (source.input_truncated === true || (toolName && toolName !== source.tool_name))
+        normalized.input_truncated = true;
+    if (own && mcpTarget) {
+        normalized.tool_name = `mcp__marrow__${mcpTarget.tool_name}`;
+    }
+    else if (toolName && !paddedOwnName && !otherFormOwnLabel && /^[A-Za-z0-9._:-]+$/.test(toolName)) {
         normalized.tool_name = toolName === 'run_shell_command' ? 'Bash'
             : toolName === 'write_file' ? 'Write'
                 : ['replace', 'edit_file'].includes(toolName) ? 'Edit'
@@ -289,13 +319,19 @@ function normalizeGrokHookEvent(source) {
         : null;
     const server = boundedWindsurfName(toolInput?.serverName ?? toolInput?.server_name);
     const nestedTool = boundedWindsurfName(toolInput?.toolName ?? toolInput?.tool_name);
-    const boundedToolName = toolName === 'use_tool' && server && nestedTool
-        ? server.toLowerCase() === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(nestedTool)
-            ? `mcp__marrow__${nestedTool}`
-            : `MCP:${server}:${nestedTool}`
+    const adapterBuilt = Boolean(toolName === 'use_tool' && server && nestedTool);
+    const boundedToolName = adapterBuilt
+        ? (0, own_tool_1.normalizedMcpToolName)(source.toolName === 'use_tool' && (0, own_tool_1.isOfficialMarrowNestedInput)(toolInput), nestedTool, server, toolInput?.serverName ?? toolInput?.server_name, toolInput?.toolName ?? toolInput?.tool_name)
         : toolName;
-    if (boundedToolName && /^[A-Za-z0-9._:-]+$/.test(boundedToolName))
+    // The adapter's own encoding: an escaped name quotes inexact or colon-bearing server and tool names.
+    // An inexact name that bounds to Marrow's own stays unclassified (held), as before.
+    if (boundedToolName && (/^[A-Za-z0-9._:-]+$/.test(boundedToolName) || (adapterBuilt && !(0, own_tool_1.isMarrowOwnTool)(server, nestedTool)))) {
         normalized.tool_name = boundedToolName;
+    }
+    // A trimmed, cut or replaced name is not the host's exact tool: never bound, so it never shares a key with the exact one.
+    if (toolName !== source.toolName || (toolName === 'use_tool' && (server !== (toolInput?.serverName ?? toolInput?.server_name)
+        || nestedTool !== (toolInput?.toolName ?? toolInput?.tool_name))))
+        normalized.input_truncated = true;
     if (hookEventName === 'PreToolUse') {
         normalized.tool_input = source.toolInput;
         return normalized;
@@ -358,9 +394,10 @@ function normalizeCursorExecutionEvent(source) {
     }
     const server = boundedWindsurfName(source.mcp_server_name) || 'unknown';
     const tool = boundedWindsurfName(source.tool_name) || 'unknown';
-    normalized.tool_name = server.toLowerCase() === 'marrow' && /^marrow_[a-z0-9_]+$/i.test(tool)
-        ? `mcp__marrow__${tool}`
-        : `MCP:${server}:${tool}`;
+    normalized.tool_name = (0, own_tool_1.normalizedMcpToolName)((0, own_tool_1.isMarrowOwnTool)(source.mcp_server_name, source.tool_name), tool, server, source.mcp_server_name, source.tool_name);
+    // A trimmed, cut or replaced (`unknown`) name is not the host's exact tool: never bound, so it never shares a key.
+    if (server !== source.mcp_server_name || tool !== source.tool_name)
+        normalized.input_truncated = true;
     let input = {};
     if (typeof source.tool_input === 'string' && source.tool_input.length <= 262_144) {
         try {
@@ -656,10 +693,43 @@ function exactHookDescriptors(settings, eventName, command, matcher) {
         });
     });
 }
+const NATIVE_MATCHER_HOOK_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest'];
+/**
+ * Marrow handlers on a tool event whose matcher is not the current
+ * NATIVE_HOOK_MATCHER (an older version's, a hand edit, or none). The host
+ * still runs them, but they may skip tools the current matcher covers, so
+ * setup rewrites them; until then they are reported, never counted as healthy.
+ */
+function staleMatcherHooks(settings) {
+    const hooks = asRecord(settings.hooks);
+    return NATIVE_MATCHER_HOOK_EVENTS.flatMap((event) => {
+        const entries = hooks?.[event];
+        if (!Array.isArray(entries))
+            return [];
+        return entries.flatMap((entry) => {
+            const record = asRecord(entry);
+            if (!record || !Array.isArray(record.hooks) || record.matcher === exports.NATIVE_HOOK_MATCHER)
+                return [];
+            const matcher = typeof record.matcher === 'string' ? record.matcher : null;
+            return record.hooks.flatMap((hook) => {
+                const handler = asRecord(hook);
+                const subcommand = marrowHookSubcommand(handler?.command);
+                if (handler?.type !== 'command' || !subcommand)
+                    return [];
+                return [{ event, subcommand, matcher, legacy: matcher !== null && exports.LEGACY_NATIVE_HOOK_MATCHERS.includes(matcher) }];
+            });
+        });
+    });
+}
+function localHookRepairStatus(startDir = process.cwd()) {
+    const stale = staleMatcherHooks(readHookSettings(startDir));
+    return { needs_repair: stale.length > 0, stale_matchers: stale };
+}
 function localHookConfigurationFingerprint(startDir = process.cwd()) {
     const settings = readHookSettings(startDir);
     const contract = {
-        schema: 'marrow-claude-native-hooks.v4',
+        schema: 'marrow-claude-native-hooks.v5',
+        stale_matchers: staleMatcherHooks(settings),
         adapter_version: exports.MCP_ADAPTER_VERSION,
         configured_stages: LOCAL_CONFIGURED_HOOK_STAGES,
         configured: {
@@ -742,6 +812,39 @@ function stableToolCorrelation(event) {
         event.tool_name || 'tool',
         actionIdentity(event.tool_name, event.tool_input ?? null),
     ]);
+}
+/** Hook events whose MCP tool name the adapter built from a separate server and tool. */
+const ADAPTER_MCP_EVENTS = new Set(['beforeMCPExecution', 'afterMCPExecution', 'pre_mcp_tool_use', 'post_mcp_tool_use']);
+/**
+ * The exact target of one tool call, for binding a hold's approval to it: the
+ * tool name exactly as normalised (adapters encode server and tool without
+ * ambiguity), whether an adapter built that name from a separate server and
+ * tool (Cursor `MCP:a:b` at preToolUse is a tool named `a:b`; at
+ * beforeMCPExecution it is server `a`, tool `b`), the nested server and tool
+ * fields of the input, and Gemini's mcp_context server and tool. The pre and
+ * post events of one call give the same target. Only the hash is kept.
+ */
+function exactHookTarget(event) {
+    try {
+        const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input)
+            ? event.tool_input
+            : null;
+        const nested = input
+            ? ['serverName', 'server_name', 'toolName', 'tool_name'].map((key) => (Object.prototype.hasOwnProperty.call(input, key) ? input[key] ?? null : null))
+            : null;
+        const mcp = (0, own_tool_1.geminiMcpTarget)(event.mcp_context);
+        return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify([
+            'marrow-hook-target-v1',
+            typeof event.tool_name === 'string' ? event.tool_name : null,
+            ADAPTER_MCP_EVENTS.has(String(event.hook_event_name ?? '')) ? 'adapter-mcp' : 'host-name',
+            nested,
+            mcp ? [mcp.server_name, mcp.tool_name] : null,
+        ])).digest('hex');
+    }
+    catch {
+        // Not serialisable: a target nothing else can match (it stays held).
+        return (0, node_crypto_1.createHash)('sha256').update(`unmatched:${(0, node_crypto_1.randomUUID)()}`).digest('hex');
+    }
 }
 /**
  * The correlation of one submitted prompt: the session and the host's own

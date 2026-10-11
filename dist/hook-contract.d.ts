@@ -1,6 +1,13 @@
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 export declare const MCP_ADAPTER_VERSION = "3.9.101";
-export declare const NATIVE_HOOK_MATCHER = "Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*";
+export declare const NATIVE_HOOK_MATCHER: string;
+/**
+ * Matchers older versions wrote, so a hook carrying one needs repair: the
+ * released one skips every `mcp__marrow__marrow_*` tool; the r2 one (never
+ * released) skips `functions.mcp__marrow__<own>` and, under a full match, any
+ * name with a line terminator.
+ */
+export declare const LEGACY_NATIVE_HOOK_MATCHERS: readonly string[];
 export declare const GROK_NATIVE_HOOK_MATCHER = "run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video";
 export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.101";
 export declare const CONTEXT_HOOK_COMMAND: string;
@@ -76,6 +83,22 @@ export declare function reconcileMarrowCommandHook(settings: HookSettings, event
     changed: boolean;
 };
 export declare function hasExactCommandHook(settings: HookSettings, eventName: string, command: string, matcher?: string): boolean;
+/**
+ * Marrow handlers on a tool event whose matcher is not the current
+ * NATIVE_HOOK_MATCHER (an older version's, a hand edit, or none). The host
+ * still runs them, but they may skip tools the current matcher covers, so
+ * setup rewrites them; until then they are reported, never counted as healthy.
+ */
+export declare function staleMatcherHooks(settings: HookSettings): Array<{
+    event: string;
+    subcommand: MarrowHookSubcommand;
+    matcher: string | null;
+    legacy: boolean;
+}>;
+export declare function localHookRepairStatus(startDir?: string): {
+    needs_repair: boolean;
+    stale_matchers: ReturnType<typeof staleMatcherHooks>;
+};
 export declare function localHookConfigurationFingerprint(startDir?: string): string;
 /**
  * The correlation of one tool call (pre- and post-tool events, holds): the
@@ -87,6 +110,21 @@ export declare function stableToolCorrelation(event: {
     tool_use_id?: string;
     tool_name?: string;
     tool_input?: unknown;
+}): string;
+/**
+ * The exact target of one tool call, for binding a hold's approval to it: the
+ * tool name exactly as normalised (adapters encode server and tool without
+ * ambiguity), whether an adapter built that name from a separate server and
+ * tool (Cursor `MCP:a:b` at preToolUse is a tool named `a:b`; at
+ * beforeMCPExecution it is server `a`, tool `b`), the nested server and tool
+ * fields of the input, and Gemini's mcp_context server and tool. The pre and
+ * post events of one call give the same target. Only the hash is kept.
+ */
+export declare function exactHookTarget(event: {
+    hook_event_name?: unknown;
+    tool_name?: unknown;
+    tool_input?: unknown;
+    mcp_context?: unknown;
 }): string;
 /**
  * The correlation of one submitted prompt: the session and the host's own
