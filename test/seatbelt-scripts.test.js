@@ -152,3 +152,14 @@ test('S2 deploy readers: samconfig, sst stage, terraform workspace, gcloud proje
   assert.equal(readGcloudProject(fs, null).status, 'unknown');
   assert.equal(parseJsonc('{"a":"// not a comment",}').a, '// not a comment');
 });
+
+test('security pass: pathological Makefile, TOML and kubeconfig inputs finish quickly (no polynomial regex backtracking)', () => {
+  const spaces = ' '.repeat(200000);
+  const started = Date.now();
+  const make = createFakeFs().file('/m/Makefile', `a${spaces}b\nx:\n\techo ok\n`);
+  assert.deepEqual(resolveMakeTargets(make, '/m', ['x']).commands, ['echo ok']);
+  assert.equal(readWranglerConfig(createFakeFs().file('/d/wrangler.toml', `[${spaces}x\n`), '/d').status, 'unknown');
+  const kube = createFakeFs().file('/home/u/.kube/config', `${'\n'.repeat(100000)}current-context: c\n- name:${' '.repeat(100000)}\n`);
+  assert.equal(readKubeContexts(kube, '/home/u').status, 'ok');
+  assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
+});

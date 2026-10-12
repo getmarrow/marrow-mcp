@@ -140,7 +140,7 @@ export function expandPathOperand(raw: string, context: PathContext): ExpandedOp
   // Judged on the operand and substituted values only: a non-ASCII home or cwd is not the agent's choice.
   let nonAscii = /[^\x20-\x7e]/.test(value);
   if (/\$\(|`|<\(|>\(/.test(value)) return { kind: 'dynamic', reason: 'substitution' };
-  if (/\{[^}]*,[^}]*\}|\{[^}]*\.\.[^}]*\}/.test(value)) return { kind: 'dynamic', reason: 'brace' };
+  if (value.includes('}') && /\{[^{}]*(?:,|\.\.)/.test(value)) return { kind: 'dynamic', reason: 'brace' };
   if (value.startsWith('~')) {
     const slash = value.indexOf('/');
     const prefix = slash < 0 ? value.slice(1) : value.slice(1, slash);

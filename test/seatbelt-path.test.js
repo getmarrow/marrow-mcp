@@ -288,3 +288,10 @@ test('T-path matrix on the real Linux filesystem (nodeSeatbeltFs)', (t) => {
   assert.equal(cls('/'), 'root');
   if (existsSync('/proc/self/root')) assert.equal(cls(`/proc/self/root${home}`), 'home');
 });
+
+test('security pass: brace detection is linear on long operands', () => {
+  const started = Date.now();
+  assert.equal(expandPathOperand(`${'{'.repeat(20000)}a`, { home: '/home/u', cwd: '/w' }).kind, 'path');
+  assert.equal(expandPathOperand(`{${'a'.repeat(20000)},b}`, { home: '/home/u', cwd: '/w' }).kind, 'dynamic');
+  assert.ok(Date.now() - started < 1000);
+});

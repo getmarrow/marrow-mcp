@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.BASELINE_PROTECTED_BRANCHES = exports.GIT_PUSH_LONG_OPTIONS = exports.GIT_MAYBE_COMMANDS = exports.GIT_CORE_BUILTINS = exports.MAX_ALIAS_DEPTH = exports.MAX_INCLUDE_DEPTH = exports.MAX_GIT_CONFIG_BYTES = void 0;
+exports.BASELINE_PROTECTED_BRANCHES = exports.GIT_PUSH_LONG_OPTIONS = exports.GIT_MAYBE_COMMANDS = exports.GIT_CORE_BUILTINS = exports.MAX_CONFIG_FILES = exports.MAX_ALIAS_STEPS = exports.MAX_ALIAS_DEPTH = exports.MAX_INCLUDE_DEPTH = exports.MAX_GIT_CONFIG_BYTES = void 0;
 exports.canonicalGitKey = canonicalGitKey;
 exports.parseGitConfigText = parseGitConfigText;
 exports.discoverGitDirs = discoverGitDirs;
@@ -24,6 +24,9 @@ const seatbelt_path_1 = require("./seatbelt-path");
 exports.MAX_GIT_CONFIG_BYTES = 1024 * 1024;
 exports.MAX_INCLUDE_DEPTH = 10;
 exports.MAX_ALIAS_DEPTH = 10;
+/** Total alias nodes and config files visited: a planted config cannot fan out without bound. */
+exports.MAX_ALIAS_STEPS = 256;
+exports.MAX_CONFIG_FILES = 64;
 /** Canonical config key: git compares section and variable names case-insensitively, subsections exactly. */
 function canonicalGitKey(key) {
     const first = key.indexOf('.');
@@ -213,7 +216,13 @@ function loadGitConfig(fs, sources) {
             addFile(target, depth + 1);
         }
     };
+    let files = 0;
     const addFile = (path, depth) => {
+        files += 1;
+        if (files > exports.MAX_CONFIG_FILES) {
+            incomplete = true;
+            return;
+        }
         const read = readSmall(fs, path);
         if (read.status === 'absent')
             return;
@@ -391,7 +400,14 @@ function parseGitInvocation(argv) {
  */
 function expandGitAliases(argv, context) {
     const results = [];
+    let steps = 0;
     const walk = (invocation, inherited, seen, depth) => {
+        steps += 1;
+        if (steps > exports.MAX_ALIAS_STEPS) {
+            if (!results.some((r) => r.kind === 'unknown' && r.reason === 'too_deep'))
+                results.push({ kind: 'unknown', reason: 'too_deep' });
+            return;
+        }
         const extra = [...inherited, ...invocation.config];
         for (const [key, envName] of invocation.configEnv) {
             const value = context.env?.[envName];

@@ -2,6 +2,9 @@ import type { SeatbeltFs } from './seatbelt-fs';
 export declare const MAX_GIT_CONFIG_BYTES: number;
 export declare const MAX_INCLUDE_DEPTH = 10;
 export declare const MAX_ALIAS_DEPTH = 10;
+/** Total alias nodes and config files visited: a planted config cannot fan out without bound. */
+export declare const MAX_ALIAS_STEPS = 256;
+export declare const MAX_CONFIG_FILES = 64;
 export interface GitConfigEntry {
     /** section[.subsection].name; section and name lower-cased, subsection as written. */
     key: string;

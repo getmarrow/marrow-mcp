@@ -135,14 +135,14 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       current = [];
       continue;
     }
-    const rule = /^([^:=]+?)\s*::?\s*([^=]*)$/.exec(trimmed);
+    const rule = /^([^:=]+)::?([^=]*)$/.exec(trimmed);
     if (!rule) {
       dynamic = true;
       current = [];
       continue;
     }
-    const names = rule[1].split(/\s+/).filter(Boolean);
-    let prereqs = rule[2];
+    const names = rule[1].trim().split(/\s+/).filter(Boolean);
+    let prereqs = rule[2].trim();
     let inlineRecipe: string | null = null;
     const semi = prereqs.indexOf(';');
     if (semi >= 0) {

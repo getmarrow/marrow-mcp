@@ -10,6 +10,9 @@ import { realPath } from './seatbelt-path';
 export const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
 export const MAX_INCLUDE_DEPTH = 10;
 export const MAX_ALIAS_DEPTH = 10;
+/** Total alias nodes and config files visited: a planted config cannot fan out without bound. */
+export const MAX_ALIAS_STEPS = 256;
+export const MAX_CONFIG_FILES = 64;
 
 export interface GitConfigEntry {
   /** section[.subsection].name; section and name lower-cased, subsection as written. */
@@ -222,7 +225,13 @@ export function loadGitConfig(fs: SeatbeltFs, sources: GitConfigSources): GitCon
     }
   };
 
+  let files = 0;
   const addFile = (path: string, depth: number) => {
+    files += 1;
+    if (files > MAX_CONFIG_FILES) {
+      incomplete = true;
+      return;
+    }
     const read = readSmall(fs, path);
     if (read.status === 'absent') return;
     if (read.status === 'unknown') {
@@ -393,7 +402,13 @@ export type GitExpansion =
  */
 export function expandGitAliases(argv: string[], context: { config: GitConfig; env?: Record<string, string | undefined> }): GitExpansion[] {
   const results: GitExpansion[] = [];
+  let steps = 0;
   const walk = (invocation: GitInvocation, inherited: Array<[string, string]>, seen: string[], depth: number) => {
+    steps += 1;
+    if (steps > MAX_ALIAS_STEPS) {
+      if (!results.some((r) => r.kind === 'unknown' && r.reason === 'too_deep')) results.push({ kind: 'unknown', reason: 'too_deep' });
+      return;
+    }
     const extra: Array<[string, string]> = [...inherited, ...invocation.config];
     for (const [key, envName] of invocation.configEnv) {
       const value = context.env?.[envName];

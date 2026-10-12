@@ -86,10 +86,10 @@ function parseSimpleToml(text) {
         if (!line || line.startsWith('#'))
             continue;
         if (line.startsWith('[')) {
-            const header = /^\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
+            const header = /^\[\[?([^\]]+)\]\]?\s*(?:#.*)?$/.exec(line);
             if (!header)
                 return null;
-            section = header[1].split('.').map((part) => part.trim().replace(/^"(.*)"$/, '$1')).join('.');
+            section = header[1].trim().split('.').map((part) => part.trim().replace(/^"(.*)"$/, '$1')).join('.');
             if (!sections.has(section))
                 sections.set(section, new Map());
             continue;
@@ -192,11 +192,11 @@ function readKubeContexts(fs, home, kubeconfigEnv) {
             continue;
         // Find this context's namespace in the contexts: list (block YAML only).
         let namespace = null;
-        const blocks = read.text.split(/\n(?=\s*-\s)/);
+        const blocks = read.text.split(/\n(?=[ \t]*-[ \t\n])/);
         for (const block of blocks) {
-            const blockName = /(?:^|\n)\s*-?\s*name:\s*["']?([^"'\s#]+)/.exec(block);
+            const blockName = /(?:^|\n)[ \t]*-?[ \t]*name:[ \t]*["']?([^"'\s#]+)/.exec(block);
             if (blockName && blockName[1] === name && /\bcontext:/.test(block)) {
-                const ns = /\bnamespace:\s*["']?([^"'\s#]+)/.exec(block);
+                const ns = /\bnamespace:[ \t]*["']?([^"'\s#]+)/.exec(block);
                 if (ns)
                     namespace = ns[1];
             }

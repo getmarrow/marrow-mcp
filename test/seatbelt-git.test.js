@@ -276,3 +276,16 @@ test('cloned repo plants config to hide a force-push: every hiding form is visib
   assert.equal(t.forceFromConfig, true);
   assert.ok(t.branches.includes('main'));
 });
+
+test('security pass: a planted config cannot fan alias or include expansion out without bound', () => {
+  let config = '[alias]\n';
+  for (let level = 0; level < 10; level += 1) for (let i = 0; i < 40; i += 1) config += `\ta${level} = a${level + 1} x${i}\n`;
+  config += '[include]\n\tpath = config\n\tpath = config\n\tpath = config\n';
+  const fs = repoFs({ config });
+  const started = Date.now();
+  const c = ctx(fs);
+  assert.equal(c.config.incomplete, true);
+  const found = expandGitAliases(['a0'], { config: c.config });
+  assert.ok(found.some((e) => e.kind === 'unknown' && e.reason === 'too_deep'));
+  assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
+});

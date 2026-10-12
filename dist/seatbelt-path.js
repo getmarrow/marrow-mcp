@@ -130,7 +130,7 @@ function expandPathOperand(raw, context) {
     let nonAscii = /[^\x20-\x7e]/.test(value);
     if (/\$\(|`|<\(|>\(/.test(value))
         return { kind: 'dynamic', reason: 'substitution' };
-    if (/\{[^}]*,[^}]*\}|\{[^}]*\.\.[^}]*\}/.test(value))
+    if (value.includes('}') && /\{[^{}]*(?:,|\.\.)/.test(value))
         return { kind: 'dynamic', reason: 'brace' };
     if (value.startsWith('~')) {
         const slash = value.indexOf('/');
