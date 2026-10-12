@@ -18,8 +18,14 @@ import {
  * names of a shell command, the file paths of an edit (the home directory as
  * `~`, another user's home as `/home/[user]`), a SHA-256 of the
  * command or tool input, and `truncated: true` when that hash could not cover
- * everything that decides what the action does. The command text and the
- * tool input themselves are never sent.
+ * everything that decides what the action does. The tool input is never sent.
+ * The command text is never sent, with one exception: a shell command that is
+ * word for word one of the deploy grammars (deployCommandText: one clause of
+ * plain ASCII words, an optional launcher, the deploy tool and subcommand, at
+ * most one environment flag with a DEPLOY_ENV_VALUE value, nothing else, and
+ * no secret replaced) is also sent as `tool_input.command`, exactly as typed
+ * (for example `sst deploy --stage production`), so the service can judge the
+ * deploy target. Every other command sends only its hash.
  *
  * Before hashing, a normalized form is built (whitespace and quoting
  * normalized) in which:
