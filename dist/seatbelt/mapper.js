@@ -7001,12 +7001,66 @@ function handlePublishTool(prog, rest, ctx, run) {
 }
 // ---------------------------------------------------------------------------------------------
 // S2 deploy tools
+// Flags of `wrangler pages deploy` that cannot change the branch, the directory, the project
+// configuration or the account the deploy resolves from the checkout (audit r4 B2). T1 holds only when
+// the argv, before or after `pages deploy`, has no other flag: `--cwd`, `--config`/`-c`, `--env-file`,
+// `--env`, an empty `--branch=`, an unknown flag, `--`, or any word the mapper cannot read.
+const PAGES_DEPLOY_VALUE_FLAGS = new Set(['--project-name', '--commit-hash', '--commit-message']);
+const PAGES_DEPLOY_BOOL_FLAGS = new Set(['--commit-dirty', '--skip-caching', '--no-bundle']);
+function pagesDeployFlagsPlain(rest) {
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === null)
+            return false;
+        // A bare word is the subcommand, the directory or a value that was consumed with its flag.
+        if (!t.startsWith('-'))
+            continue;
+        const eq = t.indexOf('=');
+        const name = eq >= 0 ? t.slice(0, eq) : t;
+        if (PAGES_DEPLOY_VALUE_FLAGS.has(name)) {
+            if (eq >= 0)
+                continue;
+            const v = rest[i + 1];
+            // A missing, dynamic or dash-led value is read as the next flag (and stops).
+            if (!v || v.text === null || v.text.startsWith('-'))
+                return false;
+            i += 1;
+            continue;
+        }
+        if (PAGES_DEPLOY_BOOL_FLAGS.has(name)) {
+            const v = rest[i + 1];
+            if (eq < 0 && v && v.text !== null && /^(?:true|false)$/.test(v.text))
+                i += 1;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+// wrangler reads WRANGLER_* and CF_PAGES_* variables; any assignment, export or mention of one in the
+// command turns T1 off (audit r4 B2). Names are looked at in the text, in the exported set and in the
+// variables of this context.
+const PAGES_ENV_NAME = /(?:^|[^A-Za-z0-9_])(?:WRANGLER|CF_PAGES)_[A-Za-z0-9_]*/i;
+function pagesEnvOverride(ctx, run, x) {
+    if (PAGES_ENV_NAME.test(run.topSource.slice(0, tables_1.LIMITS.maxCommandBytes)))
+        return true;
+    for (const name of ctx.exported)
+        if (/^(?:WRANGLER|CF_PAGES)_/i.test(name))
+            return true;
+    for (const name of ctx.vars.keys())
+        if (/^(?:WRANGLER|CF_PAGES)_/i.test(name))
+            return true;
+    for (const name of x.env.keys())
+        if (/^(?:WRANGLER|CF_PAGES)_/i.test(name))
+            return true;
+    return false;
+}
 function handleDeployTool(prog, rest, ctx, run, x) {
     const stop = (reason) => { hit(run, 'S2', reason); run.flags.add('prod'); return true; };
     const pos = (vf) => positionals(rest, vf);
     switch (prog) {
         case 'wrangler': {
-            const p = pos(['--env', '-e', '--config', '-c', '--name', '--branch', '--project-name', '--compatibility-date', '--outdir', '--var', '--define', '--message', '--tag']);
+            const p = pos(['--env', '-e', '--config', '-c', '--cwd', '--env-file', '--name', '--branch', '--project-name', '--compatibility-date', '--outdir', '--var', '--define', '--message', '--tag']);
             const s1 = p[0]?.text;
             const s2 = p[1]?.text;
             if (s1 === null)
@@ -7017,7 +7071,13 @@ function handleDeployTool(prog, rest, ctx, run, x) {
                     return stop('wrangler_deploy_production');
                 return true;
             }
-            if (s1 === 'pages' && (s2 === 'deploy' || s2 === 'publish')) {
+            // A global flag with a value that is not in the list above moves the positionals (`wrangler
+            // --unknown X pages deploy`): `pages` followed by `deploy` or `publish` anywhere is the deploy.
+            const lits = rest.map((a) => a.text);
+            const ip = lits.indexOf('pages');
+            const pagesDeploy = (s1 === 'pages' && (s2 === 'deploy' || s2 === 'publish'))
+                || (ip >= 0 && lits.slice(ip + 1).some((t) => t === 'deploy' || t === 'publish'));
+            if (pagesDeploy) {
                 // Pages decides production by the project's production branch, which the mapper cannot see:
                 // only an explicit branch that is not protected or production-named is a preview.
                 const branch = valueFlag(rest, ['--branch']);
@@ -7025,6 +7085,9 @@ function handleDeployTool(prog, rest, ctx, run, x) {
                     // No `--branch`: Pages uses the checked-out branch (audit T1). It is a preview only when
                     // `git.currentBranch` is a known branch that is not protected, production-named or a
                     // release branch, and nothing in the command can have changed the branch or the directory.
+                    // wrangler's own global flags and variables can (audit r4 B2): only the plain flags keep T1.
+                    if (!pagesDeployFlagsPlain(rest) || pagesEnvOverride(ctx, run, x))
+                        return stop('wrangler_pages_production_branch');
                     if (!unprotectedBranch(currentBranchProof(ctx, run, x), ctx, run))
                         return stop('wrangler_pages_production_branch');
                     run.flags.add('pages_branch_from_git');

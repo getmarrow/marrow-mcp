@@ -96,3 +96,60 @@ test('B1: ordinary scalar variables and array text that never runs stay quiet', 
   ]) passes(cmd, F);
 });
 
+// ---------------------------------------------------------------------------------------------
+// B2: wrangler global flags and environment move the Pages branch; only a short allowlist keeps T1.
+
+test('B2: --cwd anywhere, --config/-c, --env-file, empty --branch=, unknown flags and WRANGLER_/CF_PAGES_ variables stop', () => {
+  for (const cmd of [
+    `${W} --cwd ../other-repo`,
+    `${W} --cwd=../other-repo`,
+    'wrangler pages deploy --cwd /home/u/other-repo dist',
+    'npx wrangler pages deploy dist --cwd=/home/u/other-repo',
+    `${W} --cwd "$D"`,
+    'wrangler --cwd ../other-repo pages deploy dist',
+    'wrangler --cwd=../other-repo pages deploy dist',
+    'wrangler pages --cwd ../other-repo deploy dist',
+    `${W} --config ../other/wrangler.toml`,
+    `${W} -c ../other/wrangler.toml`,
+    `${W} --env-file ../other/.env`,
+    `${W} --branch=`,
+    `${W} --branch ""`,
+    `${W} --unknown-flag`,
+    `${W} --env production`,
+    `${W} -e production`,
+    `${W} --experimental-json-config`,
+    `${W} --`,
+    `${W} "$FLAG"`,
+    'wrangler pages deploy "$DIR"',
+    `WRANGLER_SEND_METRICS=false ${W}`,
+    `CF_PAGES_BRANCH=main ${W}`,
+    `export WRANGLER_LOG=debug; ${W}`,
+    `env CF_PAGES_COMMIT_SHA=abc ${W}`,
+    `WRANGLER_C3_COMMAND=x npx ${W}`,
+  ]) stops(cmd, F);
+});
+
+test('B2: --cwd with an explicit branch keeps the explicit-branch rule', () => {
+  stops('wrangler --cwd ../other-repo pages deploy dist --branch main', F);
+  stops('wrangler pages deploy dist --branch main --cwd ../other-repo', F);
+  passes('wrangler --cwd ../other-repo pages deploy dist --branch feat/x', F);
+});
+
+test('B2: the allowlisted Pages deploy flags keep T1', () => {
+  for (const cmd of [
+    W,
+    `${W} --project-name site`,
+    `${W} --project-name=site`,
+    `${W} --commit-dirty=true`,
+    `${W} --commit-dirty true --commit-hash abc123`,
+    `${W} --commit-message "fix: x"`,
+    `${W} --skip-caching`,
+    `${W} --no-bundle`,
+    `${W} --project-name site --skip-caching --no-bundle`,
+    'npx wrangler pages deploy ./out --project-name site',
+    'wrangler pages deploy --project-name site dist',
+  ]) passes(cmd, F);
+  stops(W, { current: 'main' });
+  stops(W, { current: null });
+});
+
