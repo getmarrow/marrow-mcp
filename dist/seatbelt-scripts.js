@@ -574,6 +574,10 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             dynamic = true;
         if (!rule)
             return;
+        // Two rules with a recipe for one target: make keeps one (a warning) and drops the other, unless they are `::`
+        // rules; which commands run, and which variables they expand, is not read here.
+        if (rule.lines.filter((ruleLine) => ruleLine.recipe.length > 0).length > 1)
+            dynamic = true;
         for (const ruleLine of rule.lines) {
             if (ruleLine.unresolved)
                 dynamic = true;

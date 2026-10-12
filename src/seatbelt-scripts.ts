@@ -543,6 +543,9 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
     const rule = rules.get(target);
     if (!rule?.lines.some((ruleLine) => ruleLine.recipe.length > 0) && !phony.has(target) && implicitRuleMayApply(target)) dynamic = true;
     if (!rule) return;
+    // Two rules with a recipe for one target: make keeps one (a warning) and drops the other, unless they are `::`
+    // rules; which commands run, and which variables they expand, is not read here.
+    if (rule.lines.filter((ruleLine) => ruleLine.recipe.length > 0).length > 1) dynamic = true;
     for (const ruleLine of rule.lines) {
       if (ruleLine.unresolved) dynamic = true;
       if (depth < MAX_MAKE_DEPTH) for (const prerequisite of ruleLine.prerequisites) visit(prerequisite, depth + 1, seen);

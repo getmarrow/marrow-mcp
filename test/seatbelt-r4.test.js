@@ -234,7 +234,8 @@ function checkAgainstMake(rows) {
     else if (/RISKY/.test(real.stdout) && !resolver.commands.some((c) => /RISKY/.test(c))) failures.push(`${row.name}: definite answer without the RISKY command make ran`);
     else if (!row.subMake) {
       const listed = dry.stdout.split('\n').filter((line) => line && !/^make(\[\d+\])?: /.test(line)).map(strip);
-      if (JSON.stringify(resolver.commands.map(strip)) !== JSON.stringify(listed)) failures.push(`${row.name}: resolver ${JSON.stringify(resolver.commands)} vs make -n ${JSON.stringify(listed)}`);
+      // The same commands (GNU make orders prerequisites of a rule with a recipe before the ones of a line without).
+      if (JSON.stringify(resolver.commands.map(strip).sort()) !== JSON.stringify([...listed].sort())) failures.push(`${row.name}: resolver ${JSON.stringify(resolver.commands)} vs make -n ${JSON.stringify(listed)}`);
     }
   }
   assert.deepEqual(failures, []);
@@ -677,5 +678,23 @@ test('G2/G3 oracle: GNU make runs the built-in rule and the makefile\'s own rule
     { name: 'data file (control)', makefile: 'all: data.txt\n', files: { 'data.txt': 'x\n' } },
     { name: 'phony grouping (control)', makefile: '.PHONY: all\nall: build\nbuild:\n\t@echo b\n' },
     { name: 'makefile remake rule', makefile: 'all:\n\t@echo hi\nMakefile: gen.sh\n\t/bin/sh ./gen.sh\n', files: { 'gen.sh': '#!/bin/sh\n/usr/bin/touch @DIR@/MARKER\n' } },
+  ]);
+});
+
+test('G4: two rules with a recipe for one target are dynamic (make keeps one; the other one\'s variables are not "used")', () => {
+  for (const text of [
+    'all:\n\techo $(FOO)\nall:\n\techo b\n',
+    'all: x\n\techo a\nall:\n\techo b\nx:\n\techo x\n',
+    'all::\n\techo a\nall::\n\techo b\n',
+    'all: ; echo a\nall:\n\techo b\n',
+  ]) assert.ok(!definite(withFiles(text, [], ['all'], { env: ENV, overrides: { FOO: 'new' } })), JSON.stringify(text));
+  // Prerequisites split over several lines with one recipe are the normal form.
+  assert.ok(definite(withFiles('all: a\nall: b\n\techo done\na:\n\techo a\nb:\n\techo b\n', [])));
+});
+
+test('G4 oracle: the dropped recipe does not run and its variable is not what the override is used for', { skip: oracleSkip }, () => {
+  checkAgainstMake([
+    { name: 'duplicate recipe', makefile: 'all:\n\t@echo $(FOO)\nall:\n\t@echo "FOO=[$$FOO]"\n', overrides: { FOO: 'new' }, badOutput: 'FOO=[new]' },
+    { name: 'prerequisites on two lines, one recipe (control)', makefile: 'all: a\nall: b\n\t@echo done\na:\n\t@echo a\nb:\n\t@echo b\n' },
   ]);
 });
