@@ -109,6 +109,9 @@ test('B2: --cwd anywhere, --config/-c, --env-file, empty --branch=, unknown flag
     'wrangler --cwd ../other-repo pages deploy dist',
     'wrangler --cwd=../other-repo pages deploy dist',
     'wrangler pages --cwd ../other-repo deploy dist',
+    'wrangler --some-global-flag x pages deploy dist',
+    'wrangler pages --some-global-flag x deploy dist',
+    'wrangler --some-global-flag x pages deploy dist --branch main',
     `${W} --config ../other/wrangler.toml`,
     `${W} -c ../other/wrangler.toml`,
     `${W} --env-file ../other/.env`,
@@ -212,6 +215,14 @@ test('B3: nohup, coproc, disown, setsid, ( … ) &, { …; } | cat and other sha
     `BASH_ENV=/tmp/x.sh ${W}`,
     `export ENV=/tmp/x.sh; ${W}`,
     `echo dist | xargs wrangler pages deploy`,
+    `sleep 1 & ${W}`,
+    `true & ${T3}`,
+    `echo y | ${W}`,
+    `true | ${T3}`,
+    `trap 'echo bye' EXIT; ${W}`,
+    `trap 'echo bye' EXIT; ${T3}`,
+    `alias ll='ls -l'; ${W}`,
+    `PROMPT_COMMAND=true; ${W}`,
     `${T3} &`,
     `${T3} | cat`,
     `${T3}; git checkout main`,
@@ -266,3 +277,81 @@ test('B3: MCP shell tool events apply the same shape rule (the last text only)',
   assert.equal(ev({ command: `${T3} | cat` }).decision, 'stop');
 });
 
+// ---------------------------------------------------------------------------------------------
+// B4: a push mapping (remote.<r>.push and friends) set in the line, or known in the repo config.
+
+test('B4: the review repros stop', () => {
+  stops('git -c remote.origin.push=refs/heads/feat/x:refs/heads/main push -f origin "$(git branch --show-current)"', F);
+  stops('git config remote.origin.push +refs/heads/feat/x:refs/heads/main && git push origin "$(git branch --show-current)"', F);
+  stops(T3f, { current: 'feat/x', gitConfig: MAP_MAIN });
+  stops(T3, { current: 'feat/x', gitConfig: MAP_MAIN });
+  stops('git push -f origin feat/x', { current: 'feat/x', gitConfig: MAP_MAIN });
+});
+
+test('B4: wildcard and HEAD mappings, push.default=upstream with an upstream of main, and unreadable config', () => {
+  stops(T3f, { current: 'feat/x', gitConfig: { 'remote.origin.push': ['+refs/heads/*:refs/heads/main'] } });
+  stops('git push -f origin feat/x', { current: 'feat/x', gitConfig: { 'remote.origin.push': ['+refs/heads/*:refs/heads/main'] } });
+  stops(T3f, { current: 'feat/x', gitConfig: { 'remote.origin.push': ['refs/heads/*:refs/heads/*'] } });
+  stops(T3f, { current: 'feat/x', gitConfig: { 'remote.origin.push': ['HEAD:main'] } });
+  stops('git push -f origin feat/x', { current: 'feat/x', gitConfig: { 'remote.origin.push': ['HEAD:main'] } });
+  stops('git push -f origin HEAD', { current: 'feat/x', gitConfig: { 'remote.origin.push': ['HEAD:main'] } });
+  // push.default only chooses the destination when no refspec is given (git-push(1)): with an explicit
+  // branch name the push goes to that name, so repo config alone does not stop T3; without a refspec
+  // the existing rule applies.
+  passes(T3f, { current: 'feat/x', gitConfig: { 'push.default': ['upstream'], 'branch.feat/x.merge': ['refs/heads/main'] } });
+  stops('git push -f', { current: 'feat/x', gitConfig: { 'push.default': ['upstream'], 'branch.feat/x.merge': ['refs/heads/main'] } });
+  stops('git -c push.default=upstream -c branch.feat/x.merge=refs/heads/main push -f', F);
+  stops('git -c push.default=upstream push -f origin "$(git branch --show-current)"', F);
+  // The config cannot be read: no trim for T3.
+  stops(T3, { current: 'feat/x', gitThrows: true });
+  stops(T3f, { current: 'feat/x', gitThrows: true });
+});
+
+test('B4: every setting in the line that can map or redirect the push stops T3 and a forced literal push', () => {
+  for (const setting of [
+    'git -c remote.origin.push=+refs/heads/feat/x:refs/heads/main',
+    'git -c push.default=upstream',
+    'git -c remote.origin.pushurl=git@example.com:o/r.git',
+    'git -c remote.origin.url=git@example.com:o/r.git',
+    'git -c url.git@example.com:.pushInsteadOf=https://example.com/',
+    'git -c branch.feat/x.merge=refs/heads/main',
+    'git --config-env=remote.origin.push=MAPVAR',
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.push GIT_CONFIG_VALUE_0=+refs/heads/feat/x:refs/heads/main git',
+    "GIT_CONFIG_PARAMETERS=\"'remote.origin.push=+refs/heads/feat/x:refs/heads/main'\" git",
+    'GIT_CONFIG_GLOBAL=/tmp/g.cfg git',
+    'GIT_CONFIG_SYSTEM=/tmp/s.cfg git',
+  ]) {
+    stops(`${setting} push origin "$(git branch --show-current)"`, F);
+    stops(`${setting} push -f origin "$(git branch --show-current)"`, F);
+    stops(`${setting} push -f origin feat/x`, F);
+    stops(`${setting} push origin feat/x`, F);
+  }
+  // A read-only mention counts as well (fail closed): the text is not told apart from a write.
+  stops(`git config --get remote.origin.push && ${T3f}`, F);
+  stops(`git config --get remote.origin.url; ${T3}`, F);
+  for (const cfg of ['remote.origin.push', 'push.default', 'remote.origin.pushurl', 'remote.origin.url', 'url.x.pushInsteadOf', 'branch.feat/x.merge']) {
+    stops(`git config ${cfg} refs/heads/main && ${T3}`, F);
+    stops(`git config --add ${cfg} refs/heads/main && ${T3f}`, F);
+    stops(`git config ${cfg} refs/heads/main; git push -f origin feat/x`, F);
+  }
+});
+
+test('B4: literal branch names and everyday pushes keep 452da607 behaviour', () => {
+  for (const cmd of ['git push origin feat/x', 'git push -u origin feat/x', 'git push -f origin feat/x', 'git push --force-with-lease origin feat/x', 'git push origin HEAD']) passes(cmd, F);
+  // Unknown or unrelated config: no new stop.
+  passes('git push -f origin feat/x', { current: 'feat/x', gitThrows: true });
+  passes('git push -f origin feat/x', { current: 'feat/x', gitConfig: { 'remote.origin.push': ['refs/heads/feat/y:refs/heads/feat/y'] } });
+  passes('git push -f origin feat/x', { current: 'feat/x', gitConfig: { 'remote.origin.push': ['refs/heads/main:refs/heads/main'] } });
+  passes(T3, { current: 'feat/x', gitConfig: { 'remote.origin.push': ['refs/heads/main:refs/heads/main'] } });
+  passes(T3f, { current: 'feat/x', gitConfig: { 'remote.origin.push': ['+refs/heads/feat/x:refs/heads/feat/x'] } });
+  // A `+` in the configured mapping forces the push without -f on the command line.
+  stops('git push origin feat/x', { current: 'feat/x', gitConfig: { 'remote.origin.push': ['+refs/heads/feat/x:refs/heads/main'] } });
+  stops('git push origin HEAD', { current: 'feat/x', gitConfig: { 'remote.origin.push': ['+HEAD:refs/heads/main'] } });
+  stops('git -c remote.origin.push=+refs/heads/feat/x:refs/heads/main push origin feat/x', F);
+  stops('git -c remote.origin.push=refs/heads/feat/x:refs/heads/main push -f origin feat/x', F);
+  // A mapping onto a protected ref without a `+` and without -f is the non-force push of Q1: flag only.
+  passes('git push origin feat/x', { current: 'feat/x', gitConfig: { 'remote.origin.push': ['refs/heads/feat/x:refs/heads/main'] } });
+  // A forced push to main stays a stop, with or without config.
+  stops('git push -f origin main', F);
+  stops('git push origin +feat/x:main', F);
+});

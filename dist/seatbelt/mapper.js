@@ -5790,6 +5790,9 @@ function envValue(x, ctx, name) {
 // GIT_CONFIG_SYSTEM and GIT_CONFIG, and include.path / includeIf.*.path. Entries are expanded like
 // `-c`; whatever cannot be read marks the configuration unknown.
 const CONFIG_UNKNOWN = 'marrow.configunknown';
+// Config that came in through the command's own environment or `--config-env` (audit r4 B4): a setting
+// of the push that is given in the line, whatever its keys.
+const CONFIG_GIVEN = 'marrow.configgiven';
 function parseGitConfigText(text) {
     const out = [];
     let section = '';
@@ -5821,11 +5824,13 @@ function addConfigEntry(overrides, key, value, ctx, run, depth) {
         const target = expandTilde(value, run);
         if (depth >= 3 || target === null || !path.posix.isAbsolute(target)) {
             overrides.set(CONFIG_UNKNOWN, ['1']);
+            overrides.set(CONFIG_GIVEN, ['1']);
             return;
         }
         const text = safeRead(run.env, target, tables_1.LIMITS.maxConfigBytes);
         if (text === null) {
             overrides.set(CONFIG_UNKNOWN, ['1']);
+            overrides.set(CONFIG_GIVEN, ['1']);
             return;
         }
         for (const [k, v] of parseGitConfigText(text))
@@ -5836,14 +5841,17 @@ function envGitConfig(x, ctx, run, overrides) {
     const count = envValue(x, ctx, 'GIT_CONFIG_COUNT');
     if (count !== undefined) {
         const n = count === null ? NaN : parseInt(count, 10);
-        if (!Number.isFinite(n) || n < 0 || n > 64)
+        if (!Number.isFinite(n) || n < 0 || n > 64) {
             overrides.set(CONFIG_UNKNOWN, ['1']);
+            overrides.set(CONFIG_GIVEN, ['1']);
+        }
         else {
             for (let k = 0; k < n; k += 1) {
                 const key = envValue(x, ctx, `GIT_CONFIG_KEY_${k}`);
                 const value = envValue(x, ctx, `GIT_CONFIG_VALUE_${k}`);
                 if (key === undefined || key === null || value === null || value === undefined) {
                     overrides.set(CONFIG_UNKNOWN, ['1']);
+                    overrides.set(CONFIG_GIVEN, ['1']);
                     continue;
                 }
                 addConfigEntry(overrides, key, value, ctx, run, 0);
@@ -5851,8 +5859,10 @@ function envGitConfig(x, ctx, run, overrides) {
         }
     }
     const params = envValue(x, ctx, 'GIT_CONFIG_PARAMETERS');
-    if (params === null)
+    if (params === null) {
         overrides.set(CONFIG_UNKNOWN, ['1']);
+        overrides.set(CONFIG_GIVEN, ['1']);
+    }
     else if (params !== undefined && params.trim()) {
         // 'key'='value' 'key2'='value2'  (or the older 'key=value' form), single-quote escaped.
         const re = /'((?:[^']|'\\'')*)'(?:='((?:[^']|'\\'')*)')?/g;
@@ -5869,8 +5879,10 @@ function envGitConfig(x, ctx, run, overrides) {
                 addConfigEntry(overrides, eq >= 0 ? t.slice(0, eq) : t, eq >= 0 ? t.slice(eq + 1) : 'true', ctx, run, 0);
             }
         }
-        if (consumed < params.replace(/\s+/g, '').length)
+        if (consumed < params.replace(/\s+/g, '').length) {
             overrides.set(CONFIG_UNKNOWN, ['1']);
+            overrides.set(CONFIG_GIVEN, ['1']);
+        }
     }
     // Environment that moves git to other configuration or another repository (the U3 resolver's
     // GIT_RELOCATING_ENV, plus HOME and XDG_CONFIG_HOME when the command sets them).
@@ -5889,8 +5901,11 @@ function envGitConfig(x, ctx, run, overrides) {
             continue;
         const abs = file === null ? null : expandTilde(file, run);
         const text = abs && path.posix.isAbsolute(abs) ? safeRead(run.env, abs, tables_1.LIMITS.maxConfigBytes) : null;
+        // /dev/null is the idiom for no file: no setting is given by it (T3 still takes it as unreadable).
         if (text === null) {
             overrides.set(CONFIG_UNKNOWN, ['1']);
+            if (abs !== '/dev/null')
+                overrides.set(CONFIG_GIVEN, ['1']);
             continue;
         }
         for (const [k, v] of parseGitConfigText(text))
@@ -5960,6 +5975,14 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
         if (t.startsWith('--config-env')) {
             // --config-env=<key>=<ENVVAR>: the value comes from the environment (the hook cannot see it).
             overrides.set(CONFIG_UNKNOWN, ['1']);
+            // The key is read from the text: `--config-env=remote.origin.push=VAR` is a mapping whose value is unknown.
+            const body = t === '--config-env' ? (rest[i + 1] ? rest[i + 1].text : null) : t.slice('--config-env='.length);
+            if (body) {
+                const key = canonicalGitKey(body.indexOf('=') >= 0 ? body.slice(0, body.indexOf('=')) : body);
+                overrides.set(key, [...(overrides.get(key) || []), 'MARROW_CONFIG_ENV']);
+            }
+            else
+                overrides.set(CONFIG_GIVEN, ['1']);
             worseParse(run, 'dynamic');
             i += t === '--config-env' ? 2 : 1;
             continue;
@@ -6080,6 +6103,9 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
             // `git push origin "$(git branch --show-current)"` (audit T3): the exact substitution forms stand
             // for `git.currentBranch` when nothing in the command can have changed it; anything else stays
             // dynamic and stops.
+            // The substituted words are listed: gitPush takes them back to dynamic when a push mapping could
+            // send the branch elsewhere (audit r4 B4).
+            const trimmed = new WeakSet();
             const pushArgs = args.map((a) => {
                 if (a.text !== null)
                     return a;
@@ -6088,9 +6114,13 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
                     return a;
                 const cur = currentBranchProof(ctx, run, x);
                 // A protected current branch keeps the substitution dynamic, which stops (T3: no new pass).
-                return cur !== null && unprotectedBranch(cur, ctx, run) ? litArg(cur) : a;
+                if (cur === null || !unprotectedBranch(cur, ctx, run))
+                    return a;
+                const lit = litArg(cur);
+                trimmed.add(lit);
+                return lit;
             });
-            return gitPush(pushArgs, gctx, run, overrides);
+            return gitPush(pushArgs, gctx, run, overrides, trimmed);
         }
         case 'clean': return gitClean(args, gctx, run);
         case 'config': return gitConfig(args, gctx, run, x, overrides, aliasDepth);
@@ -6231,7 +6261,66 @@ function longOption(name, list) {
         return [name];
     return list.filter((o) => o.startsWith(name));
 }
-function gitPush(args, ctx, run, overrides) {
+// Settings that choose where a push goes or which remote it uses (audit r4 B4): the refspec mapping
+// `remote.<r>.push`, the mode `push.default` and the upstream `branch.<b>.merge`, the target of the
+// remote and the rewrites of its URL. One of them given in the line is a push whose destination the
+// mapper does not know.
+const PUSH_MAP_KEY = /^(?:remote\.(?:.+\.)?(?:push|pushurl|url|mirror)|remote\.pushdefault|push\.default|url\..+\.(?:pushinsteadof|insteadof)|branch\..+\.(?:merge|remote|pushremote))$/;
+// The same keys anywhere in the text of the line, in any spelling that reaches git (`-c`, `git config`,
+// `--config-env`, a config file). A read-only mention counts as well: that only turns a trim off.
+const PUSH_MAP_TEXT = /(?:^|[^A-Za-z0-9_.-])(?:remote\.[^\s'"=]{0,128}\.(?:push|pushurl|url|mirror)|remote\.pushdefault|push\.default|url\.[^\s'"=]{0,128}\.(?:pushinsteadof|insteadof)|branch\.[^\s'"=]{0,128}\.(?:merge|remote|pushremote))(?![A-Za-z0-9_-])/i;
+function pushMappingInLine(overrides, ctx, run) {
+    let certain = overrides.has(CONFIG_GIVEN);
+    if (!certain)
+        for (const k of overrides.keys())
+            if (PUSH_MAP_KEY.test(k)) {
+                certain = true;
+                break;
+            }
+    if (!certain)
+        for (const k of ctx.gitConfig.keys())
+            if (PUSH_MAP_KEY.test(k)) {
+                certain = true;
+                break;
+            }
+    if (run.pushMapText === undefined)
+        run.pushMapText = PUSH_MAP_TEXT.test(run.topSource.slice(0, tables_1.LIMITS.maxCommandBytes));
+    return { certain, mentioned: run.pushMapText };
+}
+// Where `remote.<r>.push` sends an explicit `<src>` that has no `:<dst>` (git-push(1)): the
+// destination of every configured spec whose source is `src`, and whether that spec forces (`+`). A
+// spec that cannot be compared (a wildcard, an empty source, a ref the mapper cannot resolve) or a
+// `src` that cannot be resolved is an unknown destination (null), which is protected and forced.
+function mappedPushDestinations(specs, src, current) {
+    const mine = resolveRefName(src, current);
+    const out = [];
+    for (const raw of specs) {
+        let spec = raw.trim();
+        const forced = spec.startsWith('+');
+        if (forced)
+            spec = spec.slice(1);
+        if (spec === '' || spec === ':') {
+            out.push({ dest: null, forced: true });
+            continue;
+        }
+        const colon = spec.indexOf(':');
+        const from = colon < 0 ? spec : spec.slice(0, colon);
+        const to = colon < 0 ? spec : spec.slice(colon + 1);
+        if (from === '' || spec.includes('*')) {
+            out.push({ dest: null, forced: true });
+            continue;
+        }
+        const f = resolveRefName(from, current);
+        if (mine === null || f === null) {
+            out.push({ dest: null, forced: true });
+            continue;
+        }
+        if (f === mine)
+            out.push({ dest: resolveRefName(to, current), forced });
+    }
+    return out;
+}
+function gitPush(args, ctx, run, overrides, trimmed) {
     const risky = new Set();
     let repo = null;
     const refspecs = [];
@@ -6320,6 +6409,7 @@ function gitPush(args, ctx, run, overrides) {
     // with more than one reading, a pattern, or an odd ref name is unresolved (audit F4).
     const targets = [];
     let anyForced = false;
+    const inLine = pushMappingInLine(overrides, ctx, run);
     const consumeRefspec = (spec) => {
         let s = spec;
         if (s.startsWith('+')) {
@@ -6340,8 +6430,45 @@ function gitPush(args, ctx, run, overrides) {
             return;
         }
         targets.push(resolveRefName(dst !== null ? dst : src, current));
+        // `<src>` without `:<dst>` goes where the remote's push mapping sends it, and a `+` in the mapping
+        // forces it (audit r4 B4). A mapping that can be read (repository config, `-c`, `git config`,
+        // GIT_CONFIG_*) is applied. A mapping or another setting of the push given in the line that cannot
+        // be applied is an unknown destination, forced or not. An unreadable repository config keeps the
+        // literal reading, as at 452da607.
+        if (colon < 0 && src !== '') {
+            const specs = remote ? cfg(`remote.${remote}.push`) : null;
+            if (specs !== null) {
+                for (const m of mappedPushDestinations(specs, src, current)) {
+                    targets.push(m.dest);
+                    if (m.forced)
+                        anyForced = true;
+                }
+            }
+            if (inLine.certain) {
+                risky.add('unknown_flag');
+                targets.push(null);
+            }
+            else if (inLine.mentioned)
+                targets.push(null);
+        }
+    };
+    // A branch name that came from the current-branch substitution (T3) is trusted only when nothing can
+    // map it: no mapping or other push setting in the line, a config that can be read, and no mapping of
+    // it onto a protected or unknown ref. Otherwise the word is dynamic again, which stops.
+    const trimStands = (r) => {
+        if (r.text === null || overrides.has(CONFIG_UNKNOWN) || inLine.certain || inLine.mentioned || !remote)
+            return false;
+        const specs = cfg(`remote.${remote}.push`);
+        if (specs === null)
+            return false;
+        return mappedPushDestinations(specs, r.text, current).every((m) => m.dest !== null && !isProtectedBranch(m.dest, remote, cwd, run));
     };
     for (const r of refspecs) {
+        if (r.text !== null && trimmed && trimmed.has(r) && !trimStands(r)) {
+            risky.add('unknown_flag');
+            targets.push(null);
+            continue;
+        }
         if (r.text === null) {
             if (r.pattern.startsWith('+'))
                 anyForced = true;
