@@ -2,6 +2,13 @@ import type { SeatbeltFs } from './seatbelt-fs';
 export declare const MAX_SCRIPT_BYTES: number;
 export declare const MAX_MANIFEST_BYTES: number;
 export declare const MAX_MAKE_DEPTH = 3;
+/** Parse budgets: over any of them the Makefile is 'unknown' (time and memory stay linear in its size). */
+export declare const MAX_MAKE_TARGETS_PER_RULE = 256;
+export declare const MAX_MAKE_PREREQUISITES = 4096;
+export declare const MAX_MAKE_RULES = 4096;
+export declare const MAX_MAKE_RECIPE_LINES = 16384;
+export declare const MAX_MAKE_COMMANDS = 1024;
+export declare const MAX_MAKE_EXPANDED_BYTES: number;
 export type PackageScripts = {
     status: 'ok';
     packageDir: string;

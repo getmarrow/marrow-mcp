@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PUBLISH_LIFECYCLE = exports.MAX_MAKE_DEPTH = exports.MAX_MANIFEST_BYTES = exports.MAX_SCRIPT_BYTES = void 0;
+exports.PUBLISH_LIFECYCLE = exports.MAX_MAKE_EXPANDED_BYTES = exports.MAX_MAKE_COMMANDS = exports.MAX_MAKE_RECIPE_LINES = exports.MAX_MAKE_RULES = exports.MAX_MAKE_PREREQUISITES = exports.MAX_MAKE_TARGETS_PER_RULE = exports.MAX_MAKE_DEPTH = exports.MAX_MANIFEST_BYTES = exports.MAX_SCRIPT_BYTES = void 0;
 exports.resolvePackageScript = resolvePackageScript;
 exports.packageCommands = packageCommands;
 exports.resolveMakeTargets = resolveMakeTargets;
@@ -13,6 +13,13 @@ const seatbelt_path_1 = require("./seatbelt-path");
 exports.MAX_SCRIPT_BYTES = 64 * 1024;
 exports.MAX_MANIFEST_BYTES = 1024 * 1024;
 exports.MAX_MAKE_DEPTH = 3;
+/** Parse budgets: over any of them the Makefile is 'unknown' (time and memory stay linear in its size). */
+exports.MAX_MAKE_TARGETS_PER_RULE = 256;
+exports.MAX_MAKE_PREREQUISITES = 4096;
+exports.MAX_MAKE_RULES = 4096;
+exports.MAX_MAKE_RECIPE_LINES = 16384;
+exports.MAX_MAKE_COMMANDS = 1024;
+exports.MAX_MAKE_EXPANDED_BYTES = 256 * 1024;
 function readResolved(fs, path, maxBytes) {
     const real = (0, seatbelt_path_1.realPath)(fs, path, { followFinal: true });
     if (real.status !== 'resolved')
@@ -108,12 +115,19 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     const rules = new Map();
     let firstTarget = null;
     let dynamic = false;
-    let current = [];
+    let current = null;
+    let prerequisiteCount = 0;
+    let recipeCount = 0;
+    const overBudget = { status: 'unknown', reason: 'too_complex' };
     const lines = read.text.replace(/\\\r?\n/g, ' ').split(/\r?\n/);
     for (const line of lines) {
         if (line.startsWith('\t')) {
-            for (const rule of current)
-                rule.recipe.push(line.slice(1));
+            if (current) {
+                recipeCount += 1;
+                if (recipeCount > exports.MAX_MAKE_RECIPE_LINES)
+                    return overBudget;
+                current.recipe.push(line.slice(1));
+            }
             continue;
         }
         const trimmed = line.replace(/#.*$/, '').trim();
@@ -121,7 +135,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             continue;
         if (/^(-?include|sinclude|ifeq|ifneq|ifdef|ifndef|else|endif|define|endef|export|vpath)\b/.test(trimmed)) {
             dynamic = true;
-            current = [];
+            current = null;
             continue;
         }
         const assign = /^(?:override\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*(\?=|:::=|::=|:=|\+=|!=|=)\s*(.*)$/.exec(trimmed);
@@ -133,13 +147,15 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                 variables[name] = `${variables[name] ?? ''} ${value}`.trim();
             else if (op !== '?=' || variables[name] === undefined)
                 variables[name] = value;
-            current = [];
+            if (variables[name] !== undefined && variables[name].length > exports.MAX_MAKE_EXPANDED_BYTES)
+                return overBudget;
+            current = null;
             continue;
         }
         const rule = /^([^:=]+)::?([^=]*)$/.exec(trimmed);
         if (!rule) {
             dynamic = true;
-            current = [];
+            current = null;
             continue;
         }
         const names = rule[1].trim().split(/\s+/).filter(Boolean);
@@ -150,7 +166,13 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             inlineRecipe = prereqs.slice(semi + 1).trim();
             prereqs = prereqs.slice(0, semi);
         }
-        current = [];
+        if (names.length > exports.MAX_MAKE_TARGETS_PER_RULE)
+            return overBudget;
+        const ruleLine = { prerequisites: prereqs.split(/\s+/).filter((p) => p && p !== '|'), recipe: inlineRecipe ? [inlineRecipe] : [] };
+        prerequisiteCount += ruleLine.prerequisites.length;
+        if (prerequisiteCount > exports.MAX_MAKE_PREREQUISITES)
+            return overBudget;
+        current = ruleLine;
         for (const name of names) {
             if (name.includes('%'))
                 dynamic = true;
@@ -158,16 +180,30 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                 continue;
             if (firstTarget === null && !name.includes('%'))
                 firstTarget = name;
-            const entry = rules.get(name) || { prerequisites: [], recipe: [] };
-            entry.prerequisites.push(...prereqs.split(/\s+/).filter((p) => p && p !== '|'));
-            if (inlineRecipe)
-                entry.recipe.push(inlineRecipe);
-            rules.set(name, entry);
-            current.push(entry);
+            let entry = rules.get(name);
+            if (!entry) {
+                if (rules.size >= exports.MAX_MAKE_RULES)
+                    return overBudget;
+                entry = { lines: [] };
+                rules.set(name, entry);
+            }
+            if (entry.lines[entry.lines.length - 1] !== ruleLine)
+                entry.lines.push(ruleLine);
         }
     }
     const values = { ...variables, ...(options.overrides || {}) };
-    const expand = (text, depth = 0) => text.replace(/\$(?:\(([^()]*)\)|\{([^{}]*)\}|([A-Za-z@<^*?%$]))/g, (match, a, b, c) => {
+    // Every expansion is charged to one budget, so nested variables cannot blow up.
+    let expandedBytes = 0;
+    let exhausted = false;
+    const expand = (text, depth = 0) => {
+        expandedBytes += text.length;
+        if (expandedBytes > exports.MAX_MAKE_EXPANDED_BYTES) {
+            exhausted = true;
+            return '';
+        }
+        return expandOnce(text, depth);
+    };
+    const expandOnce = (text, depth) => text.replace(/\$(?:\(([^()]*)\)|\{([^{}]*)\}|([A-Za-z@<^*?%$]))/g, (match, a, b, c) => {
         const name = (a ?? b ?? c);
         if (name === '$')
             return '$';
@@ -180,23 +216,34 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     });
     const commands = [];
     const visit = (target, depth, seen) => {
-        if (seen.has(target))
+        if (exhausted || seen.has(target))
             return;
         seen.add(target);
         const rule = rules.get(target);
         if (!rule)
             return;
-        if (depth < exports.MAX_MAKE_DEPTH)
-            for (const prerequisite of rule.prerequisites)
-                visit(expand(prerequisite), depth + 1, seen);
-        else if (rule.prerequisites.length > 0)
-            dynamic = true;
-        for (const line of rule.recipe)
-            commands.push(expand(line).replace(/^[\s@+-]+/, ''));
+        for (const ruleLine of rule.lines) {
+            if (depth < exports.MAX_MAKE_DEPTH)
+                for (const prerequisite of ruleLine.prerequisites)
+                    visit(expand(prerequisite), depth + 1, seen);
+            else if (ruleLine.prerequisites.length > 0)
+                dynamic = true;
+        }
+        for (const ruleLine of rule.lines) {
+            for (const line of ruleLine.recipe) {
+                if (commands.length >= exports.MAX_MAKE_COMMANDS) {
+                    exhausted = true;
+                    return;
+                }
+                commands.push(expand(line).replace(/^[\s@+-]+/, ''));
+            }
+        }
     };
     const wanted = targets.length > 0 ? targets : firstTarget ? [firstTarget] : [];
     for (const target of wanted)
         visit(target, 0, new Set());
+    if (exhausted)
+        return overBudget;
     return { status: 'ok', makefile: read.path, commands, dynamic: dynamic || wanted.some((t) => !rules.has(t)) };
 }
 /** A script file run as `./x.sh` or `bash x.sh` (≤64 KB), realpath-ed; the interpreter comes from the shebang. */
@@ -204,10 +251,28 @@ function readScriptFile(fs, path) {
     const read = readResolved(fs, path, exports.MAX_SCRIPT_BYTES);
     if (read.status !== 'ok')
         return read;
-    const shebang = /^#!\s*(\S+)(?:\s+(\S+))?/.exec(read.text);
-    let program = shebang ? shebang[1].split('/').pop() || '' : 'sh';
-    if (program === 'env' && shebang?.[2])
-        program = shebang[2];
+    const shebang = /^#![ \t]*([^\r\n]*)/.exec(read.text);
+    const words = shebang ? shebang[1].split(/[ \t]+/).filter(Boolean) : ['sh'];
+    let program = (words[0] || '').split('/').pop() || '';
+    if (program === 'env') {
+        // env's own options and NAME=value words come before the program (`env -S bash -e`, `env -i -u X bash`).
+        let i = 1;
+        while (i < words.length) {
+            const word = words[i];
+            if (/^-[^-]*S./.test(word)) {
+                // `-Sbash`: the split string starts inside the option word.
+                words.splice(i + 1, 0, word.slice(word.indexOf('S') + 1));
+                i += 1;
+            }
+            else if (word === '-u' || word === '--unset' || word === '-C' || word === '--chdir')
+                i += 2;
+            else if (word.startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word))
+                i += 1;
+            else
+                break;
+        }
+        program = (words[i] || '').split('/').pop() || '';
+    }
     const interpreter = /^(sh|bash|zsh|dash|ksh|ash)$/.test(program) ? 'shell' : 'other';
     return { status: 'ok', path: read.path, interpreter, text: read.text };
 }
