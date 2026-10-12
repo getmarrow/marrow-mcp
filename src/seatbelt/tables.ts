@@ -3,14 +3,28 @@
 
 export const SEATBELT_RULES_VERSION = 'marrow.seatbelt.rules.v1';
 
+// Budgets. A command that exceeds ANY budget stops (never passes): padding, deep nesting, wide
+// fan-out and slow repositories must not turn into "pass" (audit F3, F10).
 export const LIMITS = Object.freeze({
-  maxCommandBytes: 8 * 1024,
-  maxSegments: 64,
-  maxDepth: 3,
+  // The vendored parser's own limits (vendor/classifier/shell-parse.js MAX_SOURCE_BYTES / MAX_COMMANDS).
+  maxCommandBytes: 64 * 1024,
+  maxSegments: 256,
+  maxDepth: 6,
   maxScriptBytes: 64 * 1024,
   maxPackageJsonBytes: 256 * 1024,
   maxConfigBytes: 1024 * 1024,
   maxAliasExpansions: 5,
+  // Work per classification: evaluated commands and shell texts (deterministic), script expansions
+  // (package scripts, make targets, script files), and a wall-clock ceiling well under hook timeouts.
+  maxWork: 4000,
+  maxScriptExpansions: 150,
+  maxVariants: 16,
+  timeBudgetMs: 300,
+  maxGlobMatches: 256,
+  maxToolNodes: 200000,
+  maxToolDepth: 12,
+  maxTailTrials: 64,
+  maxPathChars: 4096,
 });
 
 // S4 secret paths. Home-anchored entries in the spec are matched home-agnostic ("**/"), which is
@@ -65,14 +79,14 @@ export const S4_EXEMPT_PROGRAMS = new Set([
 ]);
 export const GIT_S4_EXEMPT_SUBS = new Set(['rm', 'check-ignore', 'check-attr', 'ls-files', 'status', 'log', 'restore']);
 
-export const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'busybox', 'mksh', 'yash']);
+export const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh', 'yash', 'rbash', 'csh', 'tcsh']);
 export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'bun', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh', 'irb', 'ipython']);
 
 // Interpreter one-liners that delete trees (S5).
-export const INTERPRETER_TREE_DELETE = /rmSync|rmdirSync|rimraf|shutil\.rmtree|rm_rf|FileUtils\.rm_r|FileUtils\.remove_dir|remove_dir_all|removedirs|\.rm\s*\([^)]*recursive|Remove-Item[^\n]*-Recurse|deleteRecursively/;
+export const INTERPRETER_TREE_DELETE = /rmSync|rmdirSync|rimraf|shutil\.rmtree|rm_rf|FileUtils\.rm_r|FileUtils\.remove_dir|remove_dir_all|removedirs|\.rm\s*\([^)]{0,200}recursive|Remove-Item[^\n]{0,200}-Recurse|deleteRecursively/;
 // Decoded data that is then executed inside interpreter code (S-x).
-export const INTERPRETER_DECODE = /b64decode|base64|atob\s*\(|fromCharCode|unhexlify|bytes\.fromhex|codecs\.decode|\.decode\(\s*['"](?:hex|base64|rot)|Buffer\.from\([^)]*['"](?:base64|hex)['"]|\\x[0-9a-f]{2}.*\\x[0-9a-f]{2}/i;
-export const INTERPRETER_EXEC = /\bexec\s*\(|\beval\s*\(|\bFunction\s*\(|\bsystem\s*\(|popen|spawn|execSync|execFile|child_process|subprocess|os\.system|\bcompile\s*\(|`/;
+export const INTERPRETER_DECODE = /b64decode|base64|atob\s*\(|fromCharCode|unhexlify|bytes\.fromhex|codecs\.decode|\.decode\(\s*['"](?:hex|base64|rot)|Buffer\.from\([^)]{0,200}['"](?:base64|hex)['"]|\\x[0-9a-f]{2}.{0,200}\\x[0-9a-f]{2}|\bpack\s*\(?\s*['"][HhBbuU]|\bchr\s*\(|\bhex\s*\(|\bgunzip|\binflate|\bzlib\b|\bunpack\b|\bpack\b\s*\(?\s*['"]|\.reverse\(\)|\[::-1\]|\bscalar\s+reverse/i;
+export const INTERPRETER_EXEC = /\bexec\b|\beval\b|\bFunction\s*\(|\bsystem\b|popen|spawn|execSync|execFile|child_process|subprocess|\bcompile\s*\(|`/;
 
 // Owner-only commands an agent must never run (S0).
 export const MARROW_OWNER_SUBS = new Set(['claim', 'unclaim', 'control', 'uninstall']);
@@ -116,10 +130,134 @@ export const TRIPWIRE: ReadonlyArray<{ re: RegExp; category: 'S0' | 'S1' | 'S2' 
   { re: /deploy|--prod\b/, category: 'S2', reason: 'tripwire_deploy' },
   { re: /\.ssh\b|id_rsa|id_ed25519|id_ecdsa|\.aws\b|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.docker\/config|\.kube\/config|gh\/hosts\.yml|\.gnupg|\.claude\.json|settings\.local\.json|\/environ\b|\.dev\.vars|\.pem\b|\.p12\b|\.pfx\b|\.marrow\/env/, category: 'S4', reason: 'tripwire_secret_path' },
   { re: /(?:^|[^a-z0-9_$)\].])\.env(?![a-z0-9_])(?!\.(?:example|sample|template)\b)/, category: 'S4', reason: 'tripwire_env_file' },
-  { re: /printenv|export\s+-p|declare\s+-[a-z]*[xp]|(?:^|[;&|({\s])(?:env|set|export)\s*(?:$|[;&|)}])|auth\s+token|print-(?:access|identity)-token|get-session-token|get-access-token|auth:token|find-(?:generic|internet)-password|secret-tool|op\s+read|vault\s+(?:kv|read)|pass\s+show|token\s+list|(?:process\.env|os\.environ|\$env|env\.to_h|system\.getenv\(\))\s*(?:\)|;|$|\||,|\.items|\.keys|\.copy)|(?:environ|\benv)\W{0,3}[a-z_]*(?:key|token|secret|pass|cred)|\$\{?!?[a-z_]*(?:key|token|secret|pass|cred)/, category: 'S4', reason: 'tripwire_secret_dumper' },
-  { re: /\brm\b[^;&|\n]*?[\s,(\[](?:-[a-z]*r[a-z]*|--recursive)\b|rmtree|rmsync|rmdirsync|rimraf|rm_rf|\brm_r\b|mkfs|\bdd\b[^;&|\n]*of=\/dev\//, category: 'S5', reason: 'tripwire_recursive_delete' },
+  { re: /printenv|export\s+-p|declare\s+-[a-z]*[xp]|(?:^|[;&|({\s])(?:env|set|export)\s*(?:$|[;&|)}])|auth\s+token|print-(?:access|identity)-token|get-session-token|get-access-token|auth:token|find-(?:generic|internet)-password|secret-tool|op\s+read|vault\s+(?:kv|read)|pass\s+show|token\s+list|(?:process\.env|os\.environ|\$env|env\.to_h|system\.getenv\(\))\s*(?:\)|;|$|\||,|\.items|\.keys|\.copy)|(?:environ|\benv)\W{0,3}[a-z_]{0,64}(?:key|token|secret|pass|cred)|\$\{?!?[a-z_]{0,64}(?:key|token|secret|pass|cred)/, category: 'S4', reason: 'tripwire_secret_dumper' },
+  { re: /\brm\b[^;&|\n]{0,200}?[\s,(\[](?:-[a-z]*r[a-z]*|--recursive)\b|rmtree|rmsync|rmdirsync|rimraf|rm_rf|\brm_r\b|mkfs|\bdd\b[^;&|\n]{0,200}of=\/dev\//, category: 'S5', reason: 'tripwire_recursive_delete' },
   { re: /\.marrow|@getmarrow|settings\.json|hooks\.json|\.mcp\.json|\.bashrc|\.zshrc|\.bash_profile|\.zprofile|\.zshenv|\.profile\b/, category: 'S0', reason: 'tripwire_self_protection' },
   { re: /base64\s+(?:-[a-z]*d|--decode)|xxd\s+-[a-z]*r|b64decode|atob\s*\(/, category: 'Sx', reason: 'tripwire_decoded_exec' },
 ];
 // Script, Makefile-target and package-script names that trip when their content cannot be read.
 export const NAME_TRIPWIRE = /publish|deploy|release|ship|prod/i;
+
+// ---------------------------------------------------------------------------------------------
+// Unknown wrappers (audit F1). A program the mapper has no handler for is not "harmless": its argv
+// may hold a command (`strace npm publish`, `tmux new -d 'npm publish'`). Only programs in
+// INERT_PROGRAMS (text, file and info tools whose arguments are never run) skip the argv scan.
+
+// Every program name the dispatcher has a handler for. test/seatbelt-audit-regression.test.js checks
+// that each `case '<name>'` in mapper.ts is listed, so a tail-position scan sees every handler.
+export const KNOWN_COMMANDS = new Set([
+  'cd', 'pushd', 'popd', 'alias', 'export', 'declare', 'typeset', 'readonly', 'local', 'set', 'unset', 'printenv', 'echo', 'printf',
+  'print', 'eval', 'source', '.', 'env', 'sudo', 'doas', 'pkexec', 'runas', 'su', 'timeout', 'nice', 'nohup', 'time', 'command',
+  'builtin', 'exec', 'stdbuf', 'ionice', 'chrt', 'taskset', 'setsid', 'unbuffer', 'caffeinate', 'retry', 'flock', 'xargs', 'parallel',
+  'watch', 'ssh', 'git', 'gh', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'bunx', 'corepack', 'make', 'gmake', 'rm', 'rimraf', 'rmdir', 'find',
+  'rsync', 'shred', 'dd', 'docker', 'podman', 'kubectl', 'helm', 'marrow', 'marrow-install', 'claude', 'apply_patch', 'applypatch',
+  'trap', 'busybox', 'toybox', 'concurrently', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'railway',
+  // deploy tools
+  'wrangler', 'vercel', 'netlify', 'ntl', 'fly', 'flyctl', 'firebase', 'heroku', 'gcloud', 'sst', 'serverless', 'sls', 'cdk', 'terraform',
+  'tofu', 'terragrunt', 'pulumi', 'eb', 'aws', 'az',
+  // publish tools and task runners
+  'np', 'just', 'task', 'mage', 'rake', 'invoke', 'nx', 'turbo', 'release-it', 'semantic-release', 'changeset', 'changesets', 'lerna',
+  'cargo', 'twine', 'uv', 'poetry', 'hatch', 'flit', 'gem', 'mvn', 'mvnw', 'gradle', 'gradlew', 'dotnet', 'pod', 'vsce', 'ovsx', 'goreleaser',
+  // secret dumpers
+  'security', 'secret-tool', 'op', 'vault', 'pass', 'gpg', 'gpg2',
+  // shells and interpreters
+  'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh', 'yash', 'rbash', 'csh', 'tcsh',
+  'python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh',
+  'irb', 'ipython', 'awk', 'gawk', 'mawk', 'sed', 'gsed', 'tar', 'gtar', 'bsdtar', 'ps',
+]);
+
+// Programs whose arguments are text, patterns or paths and are never run. Their argv is not scanned
+// for a command. A program with an exec-capable flag (find -exec, xargs, tar --to-command) is not
+// listed here; it has a handler or is scanned.
+export const INERT_PROGRAMS = new Set([
+  'ls', 'cat', 'head', 'tail', 'less', 'more', 'wc', 'sort', 'uniq', 'cut', 'tr', 'tee', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack',
+  'jq', 'yq', 'diff', 'cmp', 'comm', 'join', 'paste', 'column', 'fmt', 'fold', 'nl', 'od', 'hexdump', 'xxd', 'strings', 'cp', 'mv',
+  'mkdir', 'touch', 'ln', 'chmod', 'chown', 'chgrp', 'true', 'false', 'sleep', 'date', 'uname', 'hostname', 'whoami', 'id', 'pwd',
+  'stat', 'du', 'df', 'free', 'uptime', 'ps', 'pgrep', 'file', 'which', 'whereis', 'type', 'basename', 'dirname', 'realpath', 'readlink',
+  'md5sum', 'sha1sum', 'sha256sum', 'sha512sum', 'shasum', 'cksum', 'b2sum', 'base64', 'curl', 'wget', 'http', 'https', 'ping',
+  'nslookup', 'dig', 'host', 'man', 'help', 'history', 'clear', 'tput', 'stty', 'sync', 'pbcopy', 'pbpaste', 'xclip', 'wl-copy',
+  'notify-send', 'say', 'logger', 'wait', 'jobs', 'kill', 'ulimit', 'umask', 'test', '[', '[[', 'seq', 'yes', 'expr', 'let', 'return',
+  'exit', 'break', 'continue', 'shift', 'read', 'getopts', 'hash', 'rev', 'tac', 'sed', 'gsed', 'zip', 'unzip', 'gzip',
+  'gunzip', 'bzip2', 'xz', 'zstd', 'tar', 'truncate', 'unlink', 'mktemp', 'install', 'ssh-add', 'ssh-keygen',
+  'ssh-keyscan', 'openssl', 'gpg', 'gpg2', 'tree', 'bat', 'fd', 'exa', 'eza', 'lsof', 'netstat', 'ss', 'ip', 'ifconfig', 'top', 'htop',
+  'nproc', 'getconf', 'locale', 'cal', 'bc', 'dc', 'zcat', 'bzcat', 'xzcat', 'diff3', 'patch', 'colordiff',
+  'git-lfs', 'tsc', 'eslint', 'prettier', 'jest', 'vitest', 'mocha',
+]);
+
+// Executable-looking argument paths worth reading as a script when an unknown program is given one.
+export const SCRIPT_SUFFIX = /\.(?:sh|bash|zsh|ksh|command)$/;
+export const NON_SCRIPT_NAMES = new Set(['makefile', 'gnumakefile', 'dockerfile', 'readme', 'license', 'licence', 'changelog', 'procfile', 'gemfile', 'rakefile', 'vagrantfile', 'jenkinsfile']);
+
+// `eval "$(<producer> …)"` forms that only print shell variable assignments.
+export const EVAL_PRODUCERS = new Set(['ssh-agent', 'direnv', 'opam', 'pyenv', 'rbenv', 'nodenv', 'jenv', 'goenv', 'fnm', 'zoxide', 'starship',
+  'mise', 'asdf', 'volta', 'dircolors', 'keychain', 'gpg-agent', 'lesspipe', 'lesspipe.sh', 'thefuck', 'conda', 'micromamba', 'luarocks', 'cs']);
+
+// ---------------------------------------------------------------------------------------------
+// npm subcommand resolution (audit F5). Same tables as npm 10 lib/utils/cmd-list.js; the lookup
+// below keeps every reading an abbreviation can have (ambiguous prefixes included), so a prefix that
+// could be publish is treated as publish.
+export const NPM_COMMANDS = ['access', 'adduser', 'audit', 'bugs', 'cache', 'ci', 'completion', 'config', 'dedupe', 'deprecate', 'diff',
+  'dist-tag', 'docs', 'doctor', 'edit', 'exec', 'explain', 'explore', 'find-dupes', 'fund', 'get', 'help', 'help-search', 'hook', 'init',
+  'install', 'install-ci-test', 'install-test', 'link', 'll', 'login', 'logout', 'ls', 'org', 'outdated', 'owner', 'pack', 'ping', 'pkg',
+  'prefix', 'profile', 'prune', 'publish', 'query', 'rebuild', 'repo', 'restart', 'root', 'run-script', 'sbom', 'search', 'set',
+  'shrinkwrap', 'star', 'stars', 'start', 'stop', 'team', 'test', 'token', 'uninstall', 'unpublish', 'unstar', 'update', 'version',
+  'view', 'whoami',
+  // older and newer npm releases
+  'bin', 'birthday', 'cit', 'dist-tags', 'install-clean', 'issues', 'rum', 'unpkg', 'xmas', 'config-set', 'ddp', 'hlep'];
+export const NPM_ALIASES: Record<string, string> = {
+  author: 'owner', home: 'docs', issues: 'bugs', info: 'view', show: 'view', find: 'search', add: 'install', unlink: 'uninstall',
+  remove: 'uninstall', rm: 'uninstall', r: 'uninstall', un: 'uninstall', rb: 'rebuild', list: 'ls', ln: 'link', create: 'init',
+  i: 'install', it: 'install-test', cit: 'install-ci-test', up: 'update', c: 'config', s: 'search', se: 'search', tst: 'test', t: 'test',
+  ddp: 'dedupe', v: 'view', run: 'run-script', 'clean-install': 'ci', 'clean-install-test': 'install-ci-test', x: 'exec', why: 'explain',
+  la: 'll', verison: 'version', ic: 'ci', innit: 'init', in: 'install', ins: 'install', inst: 'install', insta: 'install',
+  instal: 'install', isnt: 'install', isnta: 'install', isntal: 'install', isntall: 'install', 'install-clean': 'ci',
+  'isntall-clean': 'ci', hlep: 'help', 'dist-tags': 'dist-tag', upgrade: 'update', udpate: 'update', rum: 'run-script',
+  sit: 'install-ci-test', urn: 'run-script', ogr: 'org', 'add-user': 'adduser',
+};
+// Global options that take a value (the value is never the subcommand).
+export const NPM_VALUE_FLAGS = new Set(['-w', '--workspace', '--prefix', '-C', '--dir', '--filter', '-F', '--cwd', '--tag', '--access',
+  '--otp', '--registry', '--cache', '--loglevel', '--userconfig', '--globalconfig', '--scope', '--location', '--omit', '--include',
+  '--before', '--min-release-age', '--install-strategy', '--workspaces-update', '--package', '-p', '--call', '-c', '--node-options',
+  '--script-shell', '--foreground-scripts-value', '--logs-dir', '--logs-max', '--otp-value', '--init-module', '--fetch-retries',
+  '--maxsockets', '--proxy', '--https-proxy', '--noproxy', '--cafile', '--tag-version-prefix', '--message', '-m', '--depth',
+  '--engine-strict-value', '--cpu', '--os', '--libc', '--jsonfile']);
+// Global options that never take a value.
+export const NPM_BOOL_FLAGS = new Set(['-g', '--global', '-S', '--save', '-D', '--save-dev', '-O', '--save-optional', '-E', '--save-exact',
+  '-B', '--save-bundle', '-f', '--force', '-d', '-dd', '-ddd', '-s', '--silent', '-q', '--quiet', '-v', '--verbose', '--json', '--no-json',
+  '--dry-run', '--no-dry-run', '--no-audit', '--audit', '--no-fund', '--fund', '--ignore-scripts', '--no-ignore-scripts', '--production',
+  '--prod', '--legacy-peer-deps', '--no-legacy-peer-deps', '--strict-peer-deps', '--no-save', '--package-lock-only', '--no-package-lock',
+  '--prefer-offline', '--prefer-online', '--offline', '--no-offline', '-y', '--yes', '--no', '-l', '--long', '-p', '--parseable',
+  '--no-progress', '--progress', '--workspaces', '-ws', '--include-workspace-root', '--if-present', '--ignore-engines',
+  '--no-optional', '--no-bin-links', '--foreground-scripts', '--install-links', '--global-style', '--no-color', '--color', '--unicode',
+  '--no-unicode', '--verify-store-integrity', '--frozen-lockfile', '--no-frozen-lockfile', '--recursive', '-r', '--workspace-root',
+  '--link', '--sign-git-tag', '--no-git-tag-version', '--git-tag-version', '--allow-same-version', '--no-commit-hooks',
+  '--commit-hooks', '--audit-level-none', '--update-notifier', '--no-update-notifier', '--ignore-workspace-root-check', '-w-root']);
+
+// ---------------------------------------------------------------------------------------------
+// git config that makes git run another program (audit F6; same list as the U3 resolver,
+// src/seatbelt-git.ts GIT_EXEC_CONFIG). A value set for one of these is a shell command.
+export const GIT_EXEC_CONFIG = /^(?:core\.(?:sshcommand|pager|editor|fsmonitor|hookspath|gitproxy|askpass)|sequence\.editor|diff\.external|diff\..+\.(?:command|textconv)|merge\..+\.driver|filter\..+\.(?:clean|smudge|process)|credential(?:\..+)?\.helper|pager\..+|gpg(?:\..+)?\.program|uploadpack\.packobjectshook|remote\..+\.(?:receivepack|uploadpack|vcs)|submodule\..+\.update|alias\..+)$/;
+// Config keys that redirect or extend where git reads configuration from.
+export const GIT_CONFIG_INCLUDE = /^(?:include\.path|includeif\..+\.path)$/;
+// Environment variables that redirect git's configuration files.
+export const GIT_CONFIG_ENV_FILES = ['GIT_CONFIG', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM'];
+
+// ---------------------------------------------------------------------------------------------
+// Tools that run a shell command (audit F11).
+// Names (lower-cased) of tools whose input is a shell command. Any other tool is scanned too: an
+// input field named like COMMAND_KEYS is a shell command wherever it sits (top level or nested).
+export const SHELL_TOOL_NAMES = new Set(['bash', 'shell', 'local_shell', 'exec_command', 'container.exec', 'run_terminal_command',
+  'run_terminal_cmd', 'execute_command', 'run_shell_command', 'run_command', 'terminal', 'shell_command', 'bash_command', 'execute_bash',
+  'run_bash', 'bashtool', 'bash_tool', 'powershell', 'run_in_terminal', 'terminal_command', 'exec', 'sh', 'zsh', 'cmd', 'command',
+  'developer__shell', 'run_shell', 'shell_exec', 'execute_shell', 'process']);
+// Tools with their own handling (file read, search, write); `command` there is not a shell string.
+export const FILE_TOOL_NAMES = new Set(['read', 'notebookread', 'read_file', 'view', 'view_file', 'grep', 'grep_files', 'search', 'rg',
+  'write', 'edit', 'multiedit', 'notebookedit', 'write_file', 'create_file', 'str_replace_editor', 'str_replace_based_edit_tool',
+  'apply_patch', 'edit_file', 'glob', 'ls', 'list_dir', 'list_directory']);
+// Input field names (lower-cased) that hold a shell command, script or argv.
+export const COMMAND_KEYS = new Set(['command', 'cmd', 'commandline', 'command_line', 'cmdline', 'cmd_line', 'shell_command', 'shellcommand',
+  'bash_command', 'script', 'shell', 'bash', 'sh', 'exec', 'run', 'execute', 'argv', 'commands', 'cmds']);
+// Companion argument-vector fields next to a `command` string (MCP exec servers: {command:'git', args:[…]}).
+export const ARGV_KEYS = new Set(['args', 'argv', 'arguments', 'params', 'argument']);
+// Fields that hold interpreter code (scanned like `node -e`).
+export const CODE_KEYS = new Set(['code', 'python', 'javascript', 'js', 'node', 'ruby', 'perl', 'php', 'python_code', 'source_code']);

@@ -5,6 +5,11 @@ export interface SeatbeltFs {
     readFile(absPath: string, maxBytes: number): string | null;
     /** realpath(3) of an existing path, or null when it does not exist. */
     realpath(absPath: string): string | null;
+    /**
+     * Entry names of a directory (no `.` or `..`), or null when it is missing or unreadable. Optional:
+     * without it a glob that could reach a symlink cannot be expanded and stops (audit F9).
+     */
+    readdir?(absPath: string): string[] | null;
 }
 export interface SeatbeltGit {
     /** Work-tree top level for cwd, or null when cwd is not in a repository. */
@@ -27,6 +32,8 @@ export interface SeatbeltEnv {
     git: SeatbeltGit;
     /** The classifier's class for the same action. Recorded only; it never decides an S category. */
     classifierClass?: string;
+    /** Wall-clock budget for one classification in ms (default LIMITS.timeBudgetMs). Over it: stop. */
+    budgetMs?: number;
 }
 export interface SeatbeltHit {
     category: Exclude<SeatbeltCategory, 'none'>;

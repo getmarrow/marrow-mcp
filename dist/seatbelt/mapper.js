@@ -67,18 +67,74 @@ function litArg(text) {
 function dynArg() { return { text: null, alts: null, pattern: DYN, glob: false, word: null, nonAscii: false }; }
 // ---------------------------------------------------------------------------------------------
 // public entry points
-function evaluateSeatbeltShell(command, env) {
-    const run = newRun(env, command);
-    evalShell(String(command == null ? '' : command), newCtx(run), run);
+// Any exception, including a stack overflow on pathological input, is a stop (spec 2.1.4).
+function failClosed(env, source) {
+    const run = newRun(env, source);
+    worseParse(run, 'unparsed');
+    hit(run, 'Sx', 'mapper_error');
     return finish(run);
 }
+function evaluateSeatbeltShell(command, env) {
+    try {
+        const run = newRun(env, command);
+        evalShell(String(command == null ? '' : command), newCtx(run), run);
+        return finish(run);
+    }
+    catch {
+        try {
+            return failClosed(env, '');
+        }
+        catch {
+            return failClosedBare();
+        }
+    }
+}
+// Last resort when even building a run fails (a malformed env): a fixed stop.
+function failClosedBare() {
+    return {
+        decision: 'stop', category: 'Sx', rule: RULE_IDS.Sx, reasons: ['mapper_error'], hits: [{ category: 'Sx', reason: 'mapper_error' }],
+        flags: ['parse_unparsed'], parse: 'unparsed',
+        engine: { rules: tables_1.SEATBELT_RULES_VERSION, classifier_contract: classifier_pin_1.CLASSIFIER_PIN.contract, classifier_source_commit: classifier_pin_1.CLASSIFIER_PIN.source_commit },
+    };
+}
 function evaluateSeatbelt(event, env) {
+    try {
+        return evaluateEvent(event, env);
+    }
+    catch {
+        try {
+            return failClosed(env, '');
+        }
+        catch {
+            return failClosedBare();
+        }
+    }
+}
+function evaluateEvent(event, env) {
     const tool = String((event && event.tool_name) || '');
-    const input = (event && event.tool_input && typeof event.tool_input === 'object' ? event.tool_input : {});
+    const rawInput = event && event.tool_input;
+    const input = (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput : {});
     const name = tool.toLowerCase();
-    const shellText = shellCommandOf(name, input);
-    if (shellText !== null)
-        return evaluateSeatbeltShell(shellText, env);
+    // A tool that runs a shell command (audit F11): a known shell tool, or any tool whose input names a
+    // command, script or argv field, at any depth.
+    const invocation = shellInvocations(name, input);
+    if (invocation) {
+        const run = newRun(env, invocation.shell.join('\n'));
+        for (const text of invocation.shell)
+            evalShell(text, newCtx(run), run);
+        for (const code of invocation.code)
+            scanInterpreterCode(code, run);
+        if (invocation.malformed) {
+            hit(run, 'Sx', 'tool_command_malformed');
+            worseParse(run, 'unparsed');
+        }
+        if (invocation.truncated)
+            exhaust(run, 'budget_tool_input');
+        // The tool may also take file paths (an MCP tool with `command` and `path`).
+        if (name.startsWith('mcp__') && name.split('__')[1] !== 'marrow')
+            mcpPathChecks(name, input, newCtx(run), run);
+        return finish(run);
+    }
     const run = newRun(env, '');
     const ctx = newCtx(run);
     if (['read', 'notebookread', 'read_file', 'view', 'view_file'].includes(name)) {
@@ -110,33 +166,108 @@ function evaluateSeatbelt(event, env) {
         }
     }
     else if (name.startsWith('mcp__')) {
-        const parts = name.split('__');
-        if (parts[1] !== 'marrow') {
-            const verbs = /write|edit|create|move|delete|remove|rename|put|update|append|save|mkdir|copy|patch|upload/;
-            for (const p of pathInputs(input, true)) {
-                if (checkSecretOperand(litArg(p), ctx, run, 'mcp_path'))
-                    continue;
-                if (verbs.test(parts.slice(2).join('_')))
-                    checkProtectedWrite(litArg(p), ctx, run, 'mcp_write', false);
-            }
-        }
+        if (name.split('__')[1] !== 'marrow')
+            mcpPathChecks(name, input, ctx, run);
     }
     return finish(run);
 }
-function shellCommandOf(name, input) {
-    const shellTools = ['bash', 'shell', 'local_shell', 'exec_command', 'container.exec', 'run_terminal_command', 'execute_command', 'run_shell_command', 'run_command', 'terminal'];
-    if (!shellTools.includes(name))
+function mcpPathChecks(name, input, ctx, run) {
+    const parts = name.split('__');
+    const verbs = /write|edit|create|move|delete|remove|rename|put|update|append|save|mkdir|copy|patch|upload/;
+    const walked = walkPathInputs(input);
+    if (walked.truncated)
+        exhaust(run, 'budget_tool_input');
+    for (const p of walked.paths) {
+        if (checkSecretOperand(litArg(p), ctx, run, 'mcp_path'))
+            continue;
+        if (verbs.test(parts.slice(2).join('_')))
+            checkProtectedWrite(litArg(p), ctx, run, 'mcp_write', false);
+    }
+}
+// Tools that never run what their `command`/`script` field says (it names a skill, a slash command,
+// a sub-agent task), plus Marrow's own tools.
+const NON_SHELL_TOOLS = new Set(['slashcommand', 'skill', 'task', 'agent', 'todowrite', 'todoread', 'exitplanmode', 'enterplanmode',
+    'websearch', 'webfetch', 'killshell', 'bashoutput', 'askuserquestion', 'sendmessage', 'taskcreate', 'taskupdate', 'tasklist']);
+function shellInvocations(name, input) {
+    const known = tables_1.SHELL_TOOL_NAMES.has(name);
+    if (!known) {
+        if (tables_1.FILE_TOOL_NAMES.has(name) || NON_SHELL_TOOLS.has(name) || name.startsWith('mcp__marrow__') || name.startsWith('marrow_'))
+            return null;
+    }
+    const out = { shell: [], code: [], malformed: false, truncated: false };
+    let visited = 0;
+    const walk = (obj, depth) => {
+        for (const [rawKey, value] of Object.entries(obj)) {
+            visited += 1;
+            if (visited > tables_1.LIMITS.maxToolNodes) {
+                out.truncated = true;
+                return;
+            }
+            const key = rawKey.toLowerCase().replace(/[-\s]/g, '_');
+            if (tables_1.COMMAND_KEYS.has(key)) {
+                if (typeof value === 'string') {
+                    const extra = [...tables_1.ARGV_KEYS].map((k) => Object.entries(obj).find(([kk]) => kk.toLowerCase() === k)).find((e) => e && Array.isArray(e[1]));
+                    const argv = extra && Array.isArray(extra[1]) && extra[1].every((v) => typeof v === 'string') ? extra[1].map(shellQuote).join(' ') : '';
+                    if (value.trim() !== '')
+                        out.shell.push(argv ? `${value} ${argv}` : value);
+                }
+                else if (Array.isArray(value)) {
+                    if (value.every((v) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')) {
+                        // `commands` / `cmds` is a list of command lines; any other array is one argv vector.
+                        if (key === 'commands' || key === 'cmds') {
+                            for (const v of value)
+                                if (String(v).trim())
+                                    out.shell.push(String(v));
+                        }
+                        else if (value.length)
+                            out.shell.push(value.map((v) => shellQuote(String(v))).join(' '));
+                    }
+                    else if (value.every((v) => v && typeof v === 'object' && !Array.isArray(v))) {
+                        // commands: [{command: …}, …]
+                        if (depth < tables_1.LIMITS.maxToolDepth)
+                            for (const o of value)
+                                walk(o, depth + 1);
+                    }
+                    else
+                        out.malformed = true;
+                }
+                else if (typeof value === 'number' || typeof value === 'boolean') {
+                    out.shell.push(String(value));
+                }
+                else if (value && typeof value === 'object') {
+                    // A command that is an object: unknown shape. Read what is inside it, and stop.
+                    out.malformed = true;
+                    if (depth < tables_1.LIMITS.maxToolDepth)
+                        walk(value, depth + 1);
+                }
+                continue;
+            }
+            if (tables_1.CODE_KEYS.has(key) && typeof value === 'string') {
+                if (value.trim())
+                    out.code.push(value);
+                continue;
+            }
+            if (value && typeof value === 'object' && depth < tables_1.LIMITS.maxToolDepth) {
+                if (Array.isArray(value)) {
+                    for (const item of value)
+                        if (item && typeof item === 'object' && !Array.isArray(item))
+                            walk(item, depth + 1);
+                }
+                else
+                    walk(value, depth + 1);
+            }
+        }
+    };
+    walk(input, 0);
+    if (!known && out.shell.length === 0 && out.code.length === 0 && !out.malformed && !out.truncated)
         return null;
-    const c = input.command !== undefined ? input.command : input.cmd;
-    if (Array.isArray(c))
-        return c.map((part) => shellQuote(String(part))).join(' ');
-    return typeof c === 'string' ? c : '';
+    return out;
 }
 function shellQuote(s) {
     return /^[A-Za-z0-9_\-./=:@%+,]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
-function pathInputs(input, deep = false) {
-    const keys = ['file_path', 'path', 'notebook_path', 'filepath', 'filename', 'file', 'target_file', 'paths', 'source', 'destination', 'target', 'dir', 'directory', 'uri', 'files'];
+const PATH_KEYS = ['file_path', 'path', 'notebook_path', 'filepath', 'filename', 'file', 'target_file', 'paths', 'source', 'destination', 'target', 'dir', 'directory', 'uri', 'files', 'src', 'dest', 'from', 'to', 'old_path', 'new_path'];
+function pathInputs(input) {
     const out = [];
     const add = (v) => {
         if (typeof v === 'string' && v)
@@ -144,21 +275,58 @@ function pathInputs(input, deep = false) {
         else if (Array.isArray(v))
             v.forEach(add);
     };
-    for (const key of keys)
+    for (const key of PATH_KEYS)
         add(input[key]);
-    if (deep) {
-        for (const value of Object.values(input)) {
-            if (value && typeof value === 'object' && !Array.isArray(value)) {
-                for (const key of keys)
-                    add(value[key]);
-            }
-        }
-    }
     if (Array.isArray(input.edits))
         for (const e of input.edits)
             if (e && typeof e === 'object')
                 add(e.file_path);
     return [...new Set(out)];
+}
+// Path-like fields at any depth up to LIMITS.maxToolDepth (audit F14). Over the node budget the
+// result is truncated and the caller stops.
+function walkPathInputs(input) {
+    const out = new Set();
+    let visited = 0;
+    let truncated = false;
+    const add = (v) => {
+        if (typeof v === 'string' && v)
+            out.add(v.replace(/^file:\/\//, ''));
+        else if (Array.isArray(v))
+            v.forEach(add);
+    };
+    const walk = (value, depth) => {
+        if (truncated || !value || typeof value !== 'object')
+            return;
+        if (depth > tables_1.LIMITS.maxToolDepth) {
+            truncated = true;
+            return;
+        }
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                visited += 1;
+                if (visited > tables_1.LIMITS.maxToolNodes) {
+                    truncated = true;
+                    return;
+                }
+                walk(item, depth + 1);
+            }
+            return;
+        }
+        for (const [k, v] of Object.entries(value)) {
+            visited += 1;
+            if (visited > tables_1.LIMITS.maxToolNodes) {
+                truncated = true;
+                return;
+            }
+            if (PATH_KEYS.includes(k.toLowerCase()))
+                add(v);
+            if (v && typeof v === 'object')
+                walk(v, depth + 1);
+        }
+    };
+    walk(input, 0);
+    return { paths: [...out], truncated };
 }
 function patchPaths(patch) {
     const out = [];
@@ -173,7 +341,40 @@ function patchPaths(patch) {
 }
 // ---------------------------------------------------------------------------------------------
 // run state
-function newRun(env, source) {
+// The injected fs returns null for a path that is missing or unreadable. A call that throws is an
+// unexpected failure: the answer is then null, and the run records it so the decision is a stop.
+function guardFs(env, state) {
+    const fsIn = env.fs;
+    const guarded = {
+        readFile: (p, max) => { try {
+            return fsIn.readFile(p, max);
+        }
+        catch {
+            state.errored = true;
+            return null;
+        } },
+        realpath: (p) => { try {
+            return fsIn.realpath(p);
+        }
+        catch {
+            state.errored = true;
+            return null;
+        } },
+    };
+    if (fsIn && typeof fsIn.readdir === 'function') {
+        guarded.readdir = (p) => { try {
+            return fsIn.readdir ? fsIn.readdir(p) : null;
+        }
+        catch {
+            state.errored = true;
+            return null;
+        } };
+    }
+    return { ...env, fs: guarded };
+}
+function newRun(rawEnv, source) {
+    const fsState = { errored: false };
+    const env = guardFs(rawEnv, fsState);
     const platform = env.platform || 'linux';
     const fold = platform === 'darwin' || platform === 'win32';
     const home = path.posix.normalize(String(env.home || '/nonexistent-home'));
@@ -228,6 +429,16 @@ function newRun(env, source) {
         secretRegexes: tables_1.SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
         branchRegexes: baseline.BASELINE_POLICY.protected_branches.map((p) => classifierModule.globToRegex(p, '/nonexistent-home')),
         topSource: source,
+        work: 0,
+        scriptExpansions: 0,
+        deadline: Date.now() + (typeof env.budgetMs === 'number' && env.budgetMs >= 0 ? env.budgetMs : tables_1.LIMITS.timeBudgetMs),
+        exhausted: false,
+        links: new Map(),
+        linksUnknown: false,
+        fsState,
+        reads: new Map(),
+        packages: new Map(),
+        seen: new Set(),
     };
 }
 function newCtx(run) {
@@ -235,11 +446,11 @@ function newCtx(run) {
     return {
         cwds: [cwd], vars: new Map([['HOME', [run.home]]]), exported: new Set(['HOME']), aliases: new Map(), gitAliases: new Map(),
         gitConfig: new Map(), written: new Set(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
-        decodedVars: new Set(),
+        decodedVars: new Set(), ifs: undefined, backstop: false,
     };
 }
 function childCtx(ctx, overrides = {}) {
-    return { ...ctx, depth: ctx.depth + 1, ...overrides };
+    return { ...ctx, depth: ctx.depth + 1, backstop: false, ...overrides };
 }
 function scriptCtx(ctx, cwds, extraEnv) {
     // A child process sees exported variables and same-command assignments only.
@@ -249,7 +460,7 @@ function scriptCtx(ctx, cwds, extraEnv) {
             vars.set(name, ctx.vars.get(name) ?? null);
     for (const [k, v] of extraEnv)
         vars.set(k, v);
-    return { ...ctx, cwds, vars, exported: new Set([...ctx.exported, ...extraEnv.keys()]), aliases: new Map(), depth: ctx.depth + 1 };
+    return { ...ctx, cwds, vars, exported: new Set([...ctx.exported, ...extraEnv.keys()]), aliases: new Map(), depth: ctx.depth + 1, backstop: false };
 }
 function hit(run, category, reason) {
     if (!run.hits.some((h) => h.category === category && h.reason === reason))
@@ -260,7 +471,50 @@ function worseParse(run, p) {
     if (PARSE_RANK[p] > PARSE_RANK[run.parse])
         run.parse = p;
 }
+// Budgets (audit F3, F10). One unit per evaluated command or shell text; one script expansion per
+// package script, make target or script file. Exceeding any budget (work, script fan-out, wall clock)
+// records a stop and ends the evaluation: over the budget never passes.
+function exhaust(run, reason) {
+    run.exhausted = true;
+    worseParse(run, 'too_large');
+    hit(run, 'Sx', reason);
+    return false;
+}
+function tick(run) {
+    if (run.exhausted)
+        return false;
+    run.work += 1;
+    if (run.work > tables_1.LIMITS.maxWork)
+        return exhaust(run, 'budget_work');
+    if (Date.now() >= run.deadline)
+        return exhaust(run, 'budget_time');
+    return true;
+}
+function expandScript(run) {
+    if (run.exhausted)
+        return false;
+    run.scriptExpansions += 1;
+    if (run.scriptExpansions > tables_1.LIMITS.maxScriptExpansions)
+        return exhaust(run, 'budget_scripts');
+    return true;
+}
+// True when this script, package script or make target was already evaluated in the same context:
+// its hits are already recorded, so a fan-out of references costs one evaluation each.
+function alreadySeen(run, ctx, kind, id, env) {
+    const exported = [...ctx.exported].sort().map((n) => `${n}=${JSON.stringify(ctx.vars.get(n) ?? null)}`).join('\u0001');
+    const e = [...env.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('\u0001');
+    const cwd = ctx.cwds.map((c) => c || '?').join(',');
+    // Everything a verdict can depend on: the deploy contexts, git aliases and config, IFS, decoded vars.
+    const state = JSON.stringify([ctx.kubeContext, ctx.tfWorkspace, ctx.pulumiStack, [...ctx.gitAliases], [...ctx.gitConfig], ctx.ifs, [...ctx.decodedVars], [...ctx.aliases], ctx.depth, ctx.backstop]);
+    const key = `${kind}\u0002${id}\u0002${cwd}\u0002${exported}\u0002${e}\u0002${ctx.remote ? 'r' : 'l'}\u0002${state}`;
+    if (run.seen.has(key))
+        return true;
+    run.seen.add(key);
+    return false;
+}
 function finish(run) {
+    if (run.fsState.errored)
+        hit(run, 'Sx', 'fs_error');
     const hits = [...run.hits].sort((a, b) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category));
     const category = hits.length ? hits[0].category : 'none';
     if (run.parse !== 'ok')
@@ -293,6 +547,15 @@ function safeRead(env, p, max) {
     catch {
         return null;
     }
+}
+// One read per file per classification (a script referenced sixty times is read once).
+function readCached(run, p, max) {
+    const k = `${p}\u0000${max}`;
+    if (run.reads.has(k))
+        return run.reads.get(k);
+    const v = safeRead(run.env, p, max);
+    run.reads.set(k, v);
+    return v;
 }
 function gitAll(run, ctx, cwd, key, overrides) {
     const lower = canonicalGitKey(key);
@@ -333,25 +596,36 @@ function isAncestorOrSelf(a, b) {
 // shell evaluation
 const STRUCTURAL_REASONS = new Set(['case_statement', 'coproc_statement', 'unterminated_heredoc', 'dangling_redirect']);
 function evalShell(src, ctx, run) {
+    if (!tick(run))
+        return;
     if (ctx.depth > tables_1.LIMITS.maxDepth) {
-        worseParse(run, 'unparsed');
+        worseParse(run, 'too_large');
         run.flags.add('depth_limit');
+        hit(run, 'Sx', 'budget_depth');
         tripwire(src, run);
         return;
     }
     if (Buffer.byteLength(src) > tables_1.LIMITS.maxCommandBytes) {
         worseParse(run, 'too_large');
-        tripwire(src, run);
+        hit(run, 'Sx', 'budget_size');
+        tripwire(src.slice(0, tables_1.LIMITS.maxCommandBytes), run);
         return;
     }
     const parsed = shellParse.parseShell(src, { depth: ctx.depth });
     if (!parsed.ok) {
-        worseParse(run, parsed.error === 'too_large' || parsed.error === 'too_many_commands' ? 'too_large' : 'unparsed');
-        tripwire(src, run);
+        const big = parsed.error === 'too_large' || parsed.error === 'too_many_commands';
+        worseParse(run, big ? 'too_large' : 'unparsed');
+        tripwire(src.slice(0, tables_1.LIMITS.maxCommandBytes), run);
+        // Over the parser's budget, or text it cannot parse that also builds words from variables: stop.
+        if (big)
+            hit(run, 'Sx', parsed.error === 'too_many_commands' ? 'budget_segments' : 'budget_size');
+        else if (/[$`]|(?:^|[\s;&|(])[A-Za-z_][A-Za-z0-9_]*\+?=/.test(src))
+            hit(run, 'Sx', 'unparsed_dynamic');
         return;
     }
     if (parsed.commands.length > tables_1.LIMITS.maxSegments) {
         worseParse(run, 'too_large');
+        hit(run, 'Sx', 'budget_segments');
         tripwire(src, run);
         return;
     }
@@ -367,16 +641,23 @@ function evalShell(src, ctx, run) {
         evalShell(sub, childCtx(ctx), run);
     // Pipelines, for decoded-exec (S-x) and stdin-fed shells.
     const pipelines = [];
+    const groupSource = new Set();
     for (const command of parsed.commands) {
-        if (command.pipedInput && pipelines.length)
-            pipelines[pipelines.length - 1].push(command);
+        if (command.pipedInput && pipelines.length) {
+            const prev = pipelines[pipelines.length - 1];
+            // `{ a; b; } | sh`: the group's output is piped but the parser drops the group, so the stage
+            // before this one did not itself pipe into it.
+            if (!prev[prev.length - 1].pipesOutput)
+                groupSource.add(command);
+            prev.push(command);
+        }
         else
             pipelines.push([command]);
     }
     for (const pipeline of pipelines) {
         for (let i = 0; i < pipeline.length; i += 1) {
             const upstream = pipeline.slice(0, i);
-            evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions });
+            evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions, groupSource: groupSource.has(pipeline[i]) });
         }
     }
 }
@@ -495,29 +776,169 @@ function evalCommand(cmd, ctx, run, info) {
     const assignEnv = new Map();
     for (const w of cmd.assignments) {
         const eq = w.text.indexOf('=');
-        const name = w.text.slice(0, eq).replace(/\+$/, '').replace(/\[.*$/, '');
+        const rawName = w.text.slice(0, eq);
+        const name = rawName.replace(/\+$/, '').replace(/\[.*$/, '');
         const valueWord = { ...w, text: w.text.slice(eq + 1) };
         const v = resolveWord(valueWord, ctx, run);
-        assignEnv.set(name, v.text !== null ? [v.text] : v.alts);
+        let value = v.text !== null ? [v.text] : v.alts;
+        // `x+=…` appends to the earlier value (unknown when that is unknown).
+        if (/\+$/.test(rawName) && !/\[/.test(rawName)) {
+            const before = assignEnv.has(name) ? assignEnv.get(name) : ctx.vars.get(name);
+            value = value && before && before.length === 1 ? value.map((x) => `${before[0]}${x}`) : value && before === undefined ? value : null;
+        }
+        assignEnv.set(name, value);
     }
     if (cmd.words.length === 0) {
-        for (const [k, v] of assignEnv)
+        for (const [k, v] of assignEnv) {
             ctx.vars.set(k, v);
+            if (k === 'IFS')
+                ctx.ifs = v && v.length === 1 ? v[0] : null;
+        }
         // X=$(… | base64 -d): executing $X later is decoded exec.
         if (cmd.assignments.some((w) => w.substitution) && substitutionsDecode(info.subs, run))
             for (const k of assignEnv.keys())
                 ctx.decodedVars.add(k);
         return;
     }
-    const args = cmd.words.map((w) => resolveWord(w, ctx, run));
+    // `… | base64 -d | tee >(sh)`: a process substitution that is a shell or interpreter, fed by a
+    // decoder upstream (the parser does not say whether `<(…)` or `>(…)` was written).
+    if (info.upstream.length && cmd.words.some((w) => w.substitution) && info.upstream.some((c) => decoderCommand(c, run, info))) {
+        for (const sub of info.subs) {
+            const parsedSub = shellParse.parseShell(sub, { depth: ctx.depth + 1 });
+            if (parsedSub.ok && parsedSub.commands.some((c) => { const p0 = (c.words[0]?.text || '').split('/').pop() || ''; return tables_1.SHELLS.has(p0) || tables_1.INTERPRETERS.has(p0); }))
+                hit(run, 'Sx', 'decoded_process_substitution_exec');
+        }
+    }
+    // BASH_ENV and ENV name a file a shell runs before its own script: read it as a script.
+    for (const name of ['BASH_ENV', 'ENV']) {
+        const v = assignEnv.has(name) ? assignEnv.get(name) : ctx.exported.has(name) ? ctx.vars.get(name) : undefined;
+        if (v === undefined)
+            continue;
+        if (v === null || v.length !== 1) {
+            worseParse(run, 'dynamic');
+            hit(run, 'Sx', 'dynamic_startup_file');
+            continue;
+        }
+        if (v[0])
+            scriptFile(litArg(v[0]), [], ctx, run, null);
+    }
+    // Words are field-split like the shell does (audit F2): `x='npm publish'; $x` runs npm with publish,
+    // `F='-f origin main'; git push $F` pushes with -f.
+    const variants = argvVariants(cmd.words, ctx, run);
     // Shell aliases defined earlier in this command line.
     const first = cmd.words[0];
     if (!first.quoted && !first.dynamic && ctx.aliases.has(first.text) && ctx.depth < tables_1.LIMITS.maxDepth + 2) {
+        const args = variants[0] || [];
         const rest = args.slice(1).map((a) => (a.text !== null ? shellQuote(a.text) : '"$__marrow_dynamic"')).join(' ');
         evalShell(`${ctx.aliases.get(first.text)} ${rest}`, childCtx(ctx), run);
         return;
     }
-    dispatch(args, ctx, run, { cmd, info, env: assignEnv });
+    for (const args of variants)
+        dispatch(args, ctx, run, { cmd, info, env: assignEnv });
+}
+// ---------------------------------------------------------------------------------------------
+// word expansion with field splitting (audit F2)
+function hasVarSlot(w) { return w.slots.some((s) => s.type === 'var'); }
+// Default IFS splits on space, tab and newline; a literal IFS assignment is honoured; an unknown IFS
+// (null) cannot be split and leaves the word unresolved.
+function ifsSplit(value, ifs) {
+    if (ifs === null)
+        return null;
+    const chars = ifs === undefined ? ' \t\n' : ifs;
+    if (chars === '')
+        return [value];
+    const set = new Set(chars);
+    const fields = [];
+    let cur = '';
+    for (const ch of value) {
+        if (set.has(ch)) {
+            if (cur !== '')
+                fields.push(cur);
+            cur = '';
+        }
+        else
+            cur += ch;
+    }
+    if (cur !== '')
+        fields.push(cur);
+    return fields;
+}
+function fieldArg(value, word, base, unquotedExpansion) {
+    return {
+        text: value, alts: [value], pattern: value, word, nonAscii: /[^\x00-\x7f]/.test(value),
+        glob: base.glob || (unquotedExpansion && /[*?[]/.test(value)),
+    };
+}
+// Every reading of one word as a list of fields. A resolved variable value is split when the word is
+// unquoted (or when `force` asks for the split reading of a partly quoted word).
+function wordAlternatives(word, ctx, run, force) {
+    const base = resolveWord(word, ctx, run);
+    if (!word.dynamic || !hasVarSlot(word))
+        return [[base]];
+    if (base.alts === null || base.alts.length === 0) {
+        // Unresolved. An unquoted expansion under an unknown IFS is just as unresolved.
+        return [[base]];
+    }
+    const splits = !word.quoted || force;
+    const out = [];
+    const seen = new Set();
+    for (const value of base.alts) {
+        if (seen.has(value))
+            continue;
+        seen.add(value);
+        if (!splits) {
+            out.push([fieldArg(value, word, base, false)]);
+            continue;
+        }
+        const fields = ifsSplit(value, ctx.ifs);
+        if (fields === null) {
+            out.push([{ ...base, text: null, alts: null, pattern: DYN }]);
+            continue;
+        }
+        out.push(fields.map((f) => fieldArg(f, word, base, !word.quoted)));
+    }
+    return out.length ? out : [[base]];
+}
+function expandWords(words, ctx, run, force) {
+    let variants = [[]];
+    for (const w of words) {
+        const alts = wordAlternatives(w, ctx, run, force);
+        if (alts.length === 1 && variants.length === 1) {
+            variants[0] = [...variants[0], ...alts[0]];
+            continue;
+        }
+        const next = [];
+        for (const v of variants)
+            for (const a of alts)
+                next.push([...v, ...a]);
+        if (next.length > tables_1.LIMITS.maxVariants) {
+            // Too many readings: keep one reading with every multi-valued word unresolved.
+            return [words.flatMap((w2) => {
+                    const alts2 = wordAlternatives(w2, ctx, run, force);
+                    return alts2.length === 1 ? alts2[0] : [{ ...dynArg(), word: w2, pattern: DYN }];
+                })];
+        }
+        variants = next;
+    }
+    return variants;
+}
+function argvVariants(words, ctx, run) {
+    const normal = expandWords(words, ctx, run, false);
+    // The parser marks a whole word quoted when any part is (`$x""`, `a"$x"`), so the unquoted
+    // expansion inside it would still split. Classify that split reading as well.
+    if (words.some((w) => w.quoted && w.dynamic && hasVarSlot(w))) {
+        const sig = (v) => v.map((a) => (a.text === null ? `\u0001${a.pattern}` : a.text)).join('\u0000');
+        const have = new Set(normal.map(sig));
+        for (const v of expandWords(words, ctx, run, true)) {
+            if (normal.length >= tables_1.LIMITS.maxVariants * 2)
+                break;
+            if (!have.has(sig(v))) {
+                normal.push(v);
+                have.add(sig(v));
+            }
+        }
+    }
+    return normal;
 }
 function progName(a, run) {
     if (a.text === null)
@@ -529,21 +950,15 @@ function isOpt(a) { return a.text !== null && a.text.length > 1 && a.text.starts
 function dispatch(args, ctx, run, x) {
     if (args.length === 0)
         return;
-    const prog = progName(args[0], run);
-    if (prog === null) {
-        // The program itself is dynamic: decode-exec check on its substitution, then the tripwire.
-        worseParse(run, 'dynamic');
-        if (args[0].word && args[0].word.substitution)
-            checkSubstitutionExec(x.info.subs, ctx, run);
-        else if (ctx.decodedVars.size && args[0].word && args[0].word.variables.some((v) => ctx.decodedVars.has(v)))
-            hit(run, 'Sx', 'decoded_variable_exec');
-        tripwire(args.map(argText).join(' '), run);
+    if (!tick(run))
         return;
-    }
+    const prog = progName(args[0], run);
+    if (prog === null)
+        return dynamicProgram(args, ctx, run, x);
     const rest = args.slice(1);
     const pathLike = args[0].text !== null && args[0].text.includes('/');
     // Generic operand checks apply to every program (S4 reads, S0 writes by write-programs).
-    genericOperandChecks(prog, args, ctx, run);
+    genericOperandChecks(prog, args, ctx, run, x.info.subs);
     switch (prog) {
         case 'cd':
         case 'pushd': return changeDir(rest, ctx, run, x.cmd.subshell);
@@ -559,8 +974,11 @@ function dispatch(args, ctx, run, x) {
         case 'set': return setBuiltin(rest, run);
         case 'unset':
             for (const a of rest)
-                if (a.text)
+                if (a.text) {
                     ctx.vars.delete(a.text);
+                    if (a.text === 'IFS')
+                        ctx.ifs = undefined;
+                }
             return;
         case 'printenv': return printenv(rest, run);
         case 'echo':
@@ -595,7 +1013,7 @@ function dispatch(args, ctx, run, x) {
         case 'xargs':
         case 'parallel': return xargsWrapper(prog, rest, ctx, run, x);
         case 'watch': return watchWrapper(rest, ctx, run);
-        case 'ssh': return sshRemote(rest, ctx, run);
+        case 'ssh': return sshRemote(rest, ctx, run, x);
         case 'git': return handleGit(rest, ctx, run, x, new Map(), 0);
         case 'gh': return handleGh(rest, ctx, run);
         case 'npm':
@@ -604,7 +1022,24 @@ function dispatch(args, ctx, run, x) {
         case 'bun': return handlePackageManager(prog, rest, ctx, run, x);
         case 'npx':
         case 'bunx': return handleNpx(rest, ctx, run, x);
-        case 'corepack': return dispatch(rest, ctx, run, x);
+        case 'corepack':
+        case 'busybox':
+        case 'toybox': return dispatch(rest, ctx, run, x);
+        case 'trap': return trapBuiltin(rest, ctx, run, x);
+        case 'awk':
+        case 'gawk':
+        case 'mawk': return awkProgram(rest, ctx, run);
+        case 'sed':
+        case 'gsed': return sedProgram(rest, ctx, run);
+        case 'ps': return psProgram(rest, run);
+        case 'tar':
+        case 'gtar':
+        case 'bsdtar': return tarProgram(rest, ctx, run, x);
+        case 'concurrently': return concurrentlyWrapper(rest, ctx, run, x);
+        case 'npm-run-all':
+        case 'npm-run-all2':
+        case 'run-s':
+        case 'run-p': return runAllWrapper(rest, ctx, run, x);
         case 'make':
         case 'gmake': return handleMake(rest, ctx, run, x);
         case 'rm': return handleRm(rest, ctx, run);
@@ -640,14 +1075,248 @@ function dispatch(args, ctx, run, x) {
         return handleShell(prog, rest, ctx, run, x);
     if (tables_1.INTERPRETERS.has(prog) || /^python3\.\d+$/.test(prog))
         return handleInterpreter(prog, rest, ctx, run, x);
+    // Deploy and publish tools run commands too (`heroku run …`, `railway run …`, `lerna exec`): once a
+    // handler has taken the command, the argv is still scanned for a command inside it.
+    const scanHandled = () => {
+        if (!tables_1.INERT_PROGRAMS.has(prog) && !ctx.backstop && !DATA_ARGV_TOOLS.has(prog))
+            scanArgvForCommands(rest, ctx, run, x);
+    };
     if (handleDeployTool(prog, rest, ctx, run, x))
-        return;
+        return scanHandled();
     if (handlePublishTool(prog, rest, ctx, run))
-        return;
+        return scanHandled();
     if (handleSecretDumper(prog, rest, run))
-        return;
+        return scanHandled();
     if (pathLike)
         return scriptFile(args[0], rest, ctx, run, x);
+    unknownProgram(prog, args, ctx, run, x);
+}
+// Tools whose arguments are mostly data (variables, payloads); their argv is not scanned for commands.
+const DATA_ARGV_TOOLS = new Set(['terraform', 'tofu', 'terragrunt', 'pulumi', 'cdk', 'helm', 'kubectl']);
+// ---------------------------------------------------------------------------------------------
+// dynamic command words and unknown programs (audit F1, F2)
+// A program word that is still dynamic after variable resolution and field splitting. The shell runs
+// whatever it expands to and the mapper cannot know it: stop. Two forms stay resolvable: a word that
+// ends in a literal program name (`$(npm bin)/eslint`, `"$DIR"/node_modules/.bin/jest`), which is
+// classified as that program, and a substitution whose own text is decoded or fetched code.
+function dynamicProgram(args, ctx, run, x) {
+    worseParse(run, 'dynamic');
+    const a = args[0];
+    const slash = a.pattern.lastIndexOf('/');
+    const tail = slash >= 0 ? a.pattern.slice(slash + 1) : '';
+    if (tail && !tail.includes(DYN) && /^[A-Za-z0-9_.@+-]+$/.test(tail)) {
+        nameTripwire(tail, run, 'script_unreadable');
+        dispatch([litArg(tail), ...args.slice(1)], ctx, run, x);
+        return;
+    }
+    if (a.word && a.word.substitution)
+        checkSubstitutionExec(x.info.subs, ctx, run);
+    else if (ctx.decodedVars.size && a.word && a.word.variables.some((v) => ctx.decodedVars.has(v)))
+        hit(run, 'Sx', 'decoded_variable_exec');
+    tripwire(args.map(argText).join(' '), run);
+    hit(run, 'Sx', 'dynamic_command_word');
+}
+// The word is exactly one substitution, nothing else.
+function isPureSubstitution(a) {
+    return a.text === null && a.pattern === DYN && !!a.word && a.word.slots.length === 1 && a.word.slots[0].type === 'sub';
+}
+// A word that starts a command the mapper has a handler for (or a script path).
+function isCommandWord(a, run) {
+    if (a.text === null)
+        return false;
+    const base = progName(a, run) || '';
+    if (NESTED_NOT_PROGRAMS.has(base))
+        return false;
+    if (tables_1.KNOWN_COMMANDS.has(base) || /^python3\.\d+$/.test(base) || /^mkfs(?:\.|$)/.test(base))
+        return true;
+    if (a.text.includes('/')) {
+        const name = base.toLowerCase();
+        if (tables_1.NON_SCRIPT_NAMES.has(name))
+            return false;
+        return tables_1.SCRIPT_SUFFIX.test(name) || (/^\.\.?\//.test(a.text) && !name.includes('.'));
+    }
+    return false;
+}
+// Shell builtins and words that only mean something as the first word of a command line. As an
+// argument of another program they are plain text.
+// Paths that name the program's own stdin.
+const STDIN_PATHS = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '/proc/self/fd/0/']);
+// Programs that read their commands from stdin.
+const STDIN_EXEC_PROGRAMS = new Set(['at', 'batch', 'atq-run', 'crontab']);
+const NESTED_NOT_PROGRAMS = new Set(['set', 'export', 'declare', 'typeset', 'readonly', 'local', 'unset', 'alias', 'cd', 'pushd', 'popd',
+    'eval', 'source', '.', 'trap', 'type', 'command', 'builtin', 'exec', 'print']);
+// Every command hidden in the argv of a program the mapper has no handler for (`strace -f npm
+// publish`, `cross-env NODE_ENV=production vercel --prod`, `tmux new -d 'npm publish'`). Used for
+// unknown programs and for known wrappers with open grammars (docker run IMAGE CMD…).
+function scanArgvForCommands(rest, ctx, run, x, remote = false) {
+    const base = remote ? childCtx(ctx, { cwds: [null], remote: true, vars: new Map(), aliases: new Map(), backstop: true }) : { ...ctx, backstop: true };
+    const env = new Map(x.env);
+    let trials = 0;
+    for (let k = 0; k < rest.length; k += 1) {
+        if (run.exhausted)
+            return;
+        const w = rest[k];
+        if (w.text === null)
+            continue;
+        const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(w.text);
+        if (m && !/\s/.test(m[2])) {
+            env.set(m[1], [m[2]]);
+            continue;
+        }
+        // A quoted command string: `script -qc 'npm publish'`, `tmux new 'npm publish'`, `--cmd=npm publish`,
+        // `-o ProxyCommand=npm publish`.
+        const kv = /^[A-Za-z][A-Za-z0-9_.-]*=([\s\S]+)$/.exec(w.text);
+        const value = w.text.startsWith('-') ? (w.text.indexOf('=') > 0 ? w.text.slice(w.text.indexOf('=') + 1) : '') : kv ? kv[1] : w.text;
+        if (/\s/.test(value) && value.length > 2) {
+            evalShell(value, childCtx(base, { backstop: false }), run);
+            if (w.text.startsWith('-') || kv)
+                continue;
+        }
+        if (w.text.startsWith('-'))
+            continue;
+        if (!isCommandWord(w, run))
+            continue;
+        const tail = rest.slice(k);
+        const b = progName(w, run);
+        if ((b === 'env' || b === 'printenv') && tail.length === 1)
+            continue;
+        trials += 1;
+        if (trials > tables_1.LIMITS.maxTailTrials) {
+            exhaust(run, 'budget_argv_scan');
+            return;
+        }
+        dispatch(tail, base, run, { ...x, env: new Map(env) });
+    }
+}
+// What printf and echo -e write: backslash escapes decoded, conversions replaced by the arguments.
+function unescapeBackslashes(s) {
+    return s.replace(/\\(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|([0-7]{1,3})|([abefnrtv\\'"]))/g, (_m, hex, uni, oct, ch) => {
+        if (hex)
+            return String.fromCharCode(parseInt(hex, 16));
+        if (uni)
+            return String.fromCharCode(parseInt(uni, 16));
+        if (oct)
+            return String.fromCharCode(parseInt(oct, 8));
+        const map = { a: '\x07', b: '\b', e: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"' };
+        return map[ch] ?? ch;
+    });
+}
+function printfOutput(format, args) {
+    const fmt = unescapeBackslashes(format);
+    let out = '';
+    let used = 0;
+    for (let round = 0; round < 64; round += 1) {
+        let consumed = false;
+        out += fmt.replace(/%(?:%|[-+ #0]*\d*(?:\.\d+)?[sdiouxXeEfgGcb])/g, (m) => {
+            if (m === '%%')
+                return '%';
+            consumed = true;
+            const v = used < args.length ? args[used] : '';
+            used += 1;
+            return m.endsWith('b') ? unescapeBackslashes(v) : v;
+        });
+        if (!consumed || used >= args.length)
+            break;
+    }
+    return out;
+}
+// Text fed to a program's stdin that is known statically: a heredoc body, a here-string, or the
+// literal output of an upstream echo/printf/cat. `unknown` = a source the mapper cannot read.
+function stdinSource(x, ctx, run) {
+    const out = { texts: [], files: [], unknown: false };
+    const addWord = (a) => {
+        if (a.text !== null)
+            out.texts.push(a.text);
+        else if (a.alts && a.alts.length)
+            out.texts.push(...a.alts);
+        else {
+            out.unknown = true;
+            out.texts.push(argText(a));
+        }
+    };
+    if (x.cmd.heredoc !== null)
+        out.texts.push(x.cmd.heredoc);
+    for (const r of x.cmd.redirects)
+        if (r.op === '<<<' && r.target)
+            addWord(resolveWord(r.target, ctx, run));
+    if (out.texts.length)
+        return out;
+    const up = x.info.upstream;
+    if (!up.length)
+        return out;
+    const last = up[up.length - 1];
+    const words = last.words.map((w) => resolveWord(w, ctx, run));
+    const p = words[0] ? progName(words[0], run) : null;
+    if (p === 'echo' || p === 'printf') {
+        const flags = words.slice(1).filter((w) => p === 'echo' && /^-[neE]+$/.test(w.text || '')).map((w) => w.text);
+        const operands = words.slice(1).filter((w) => !(p === 'echo' && /^-[neE]+$/.test(w.text || '')));
+        if (operands.every((w) => w.text !== null)) {
+            const texts = operands.map((w) => w.text);
+            if (p === 'printf')
+                out.texts.push(texts.length ? printfOutput(texts[0], texts.slice(1)) : '');
+            else
+                out.texts.push(flags.some((f) => f.includes('e') && !f.includes('E')) ? unescapeBackslashes(texts.join(' ')) : texts.join(' '));
+        }
+        else {
+            out.unknown = true;
+            out.texts.push(operands.map(argText).join(' '));
+        }
+        return out;
+    }
+    if (p === 'cat') {
+        if (last.heredoc !== null)
+            out.texts.push(last.heredoc);
+        for (const r of last.redirects)
+            if (r.op === '<<<' && r.target)
+                addWord(resolveWord(r.target, ctx, run));
+        const ops = words.slice(1).filter((w) => !(w.text !== null && w.text.startsWith('-') && w.text.length > 1));
+        if (ops.length === 0 && out.texts.length === 0) {
+            out.unknown = true;
+            return out;
+        }
+        for (const o of ops) {
+            if (o.text === null)
+                out.unknown = true;
+            else
+                out.files.push(o);
+        }
+        return out;
+    }
+    out.unknown = true;
+    return out;
+}
+// An unknown program may run its argv or its stdin as a command (audit F1, F7).
+function unknownProgram(prog, args, ctx, run, x) {
+    if (tables_1.INERT_PROGRAMS.has(prog) || ctx.backstop)
+        return;
+    const rest = args.slice(1);
+    scanArgvForCommands(rest, ctx, run, x);
+    // stdin text: `echo 'npm publish' | at now`, `at now <<< 'npm publish'`, `batch <<EOF …`.
+    const src = stdinSource(x, ctx, run);
+    for (const t of src.texts) {
+        if (prog === 'crontab') {
+            // `* * * * * <command>` / `@reboot <command>`: the time fields are not words of a command.
+            for (const line of t.split('\n')) {
+                const body = line.trim();
+                if (!body || body.startsWith('#') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(body))
+                    continue;
+                evalShell(body.replace(/^(?:@\w+\s+|(?:\S+\s+){5})/, ''), childCtx(ctx), run);
+            }
+            continue;
+        }
+        evalShell(t, childCtx(ctx), run);
+    }
+    if (STDIN_EXEC_PROGRAMS.has(prog))
+        for (const f of src.files)
+            scriptFile(f, [], ctx, run, null);
+    // `at now < job.sh`
+    for (const r of x.cmd.redirects) {
+        if (r.op === '<' && r.target) {
+            const a = resolveWord(r.target, ctx, run);
+            if (a.text !== null && !a.glob)
+                scriptFile(a, [], ctx, run, null);
+        }
+    }
 }
 // ---------------------------------------------------------------------------------------------
 // tripwire and S-x
@@ -714,8 +1383,26 @@ function fetcherCommand(cmd) {
     const prog = (words[0] || '').split('/').pop() || '';
     return ['curl', 'wget', 'fetch', 'http', 'https', 'iwr', 'invoke-webrequest', 'aria2c'].includes(prog);
 }
-// A shell or interpreter that reads its program from stdin inside a pipeline.
+// A shell or interpreter that reads its program from stdin: a heredoc, a here-string (audit F7), or a
+// pipeline. The Q4 pass (`curl … | sh`, flag remote_exec) covers exactly a fetcher that is the stage
+// directly upstream of the shell (audit F8). Any other stage is classified by what it emits.
 function stdinExec(prog, rest, x, ctx, run) {
+    const asShell = tables_1.SHELLS.has(prog) || prog === 'sh';
+    const code = (text) => { if (asShell)
+        evalShell(text, childCtx(ctx), run);
+    else
+        scanInterpreterCode(text, run); };
+    const source = stdinSource(x, ctx, run);
+    const onCommand = x.cmd.heredoc !== null || x.cmd.redirects.some((r) => r.op === '<<<');
+    if (onCommand) {
+        for (const t of source.texts)
+            code(t);
+        if (source.unknown) {
+            worseParse(run, 'dynamic');
+            hit(run, 'Sx', 'dynamic_stdin_code');
+        }
+        return;
+    }
     const upstream = x.info.upstream;
     if (upstream.length === 0)
         return;
@@ -723,34 +1410,60 @@ function stdinExec(prog, rest, x, ctx, run) {
         hit(run, 'Sx', 'decoded_pipe_exec');
         return;
     }
-    if (upstream.some((c) => fetcherCommand(c))) {
+    const direct = upstream[upstream.length - 1];
+    if (upstream.length === 1 && fetcherCommand(direct) && !x.info.groupSource) {
         run.flags.add('remote_exec');
         return;
     }
-    const last = upstream[upstream.length - 1];
-    const words = last.words.map((w) => resolveWord(w, ctx, run));
-    const p = words[0] ? progName(words[0], run) : null;
-    if ((p === 'echo' || p === 'printf') && words.slice(1).every((w) => w.text !== null)) {
-        const text = words.slice(1).filter((w) => !(p === 'echo' && /^-[neE]+$/.test(w.text || ''))).map((w) => w.text).join(' ');
-        if (tables_1.SHELLS.has(prog))
-            evalShell(text, childCtx(ctx), run);
-        else
-            scanInterpreterCode(text, run);
+    if (x.info.groupSource) {
+        // `{ curl …; echo …; } | sh`: the group's output is piped but its members are not visible.
+        worseParse(run, 'dynamic');
+        tripwire(run.topSource, run);
+        hit(run, 'Sx', 'stdin_exec_group_source');
         return;
     }
-    if (p === 'cat' && words.length === 2 && words[1].text !== null && tables_1.SHELLS.has(prog)) {
-        scriptFile(words[1], rest, ctx, run, x);
+    if (source.texts.length) {
+        for (const t of source.texts)
+            code(t);
+        if (source.unknown) {
+            worseParse(run, 'dynamic');
+            hit(run, 'Sx', 'dynamic_stdin_code');
+        }
         return;
     }
+    if (source.files.length) {
+        for (const f of source.files) {
+            if (asShell) {
+                scriptFile(f, rest, ctx, run, x);
+                continue;
+            }
+            const found = (absCandidates(f.text, ctx, run) || []).map((p) => safeRead(run.env, p, tables_1.LIMITS.maxScriptBytes));
+            if (found.length === 0 || found.some((c) => c === null))
+                nameTripwire(path.posix.basename(f.text), run, 'script_unreadable');
+            for (const c of found)
+                if (c !== null)
+                    scanInterpreterCode(c, run);
+        }
+        if (source.unknown) {
+            worseParse(run, 'dynamic');
+            hit(run, 'Sx', 'dynamic_stdin_code');
+        }
+        return;
+    }
+    // The stage that feeds the interpreter is neither a fetcher directly upstream nor a literal: its
+    // output is unknown code.
     worseParse(run, 'dynamic');
     tripwire(upstream.map((c) => c.words.map((w) => w.text.replace(/\u0000/g, '')).join(' ')).join(' | '), run);
+    hit(run, 'Sx', 'stdin_exec_unknown_source');
 }
 // `$(…)` used as code: eval "$(…)", sh -c "$(…)", a program word that is a substitution, source <(…).
 function checkSubstitutionExec(subs, ctx, run) {
+    let classified = true;
     for (const s of subs) {
         const parsed = shellParse.parseShell(s, { depth: ctx.depth + 1 });
         if (!parsed.ok) {
             tripwire(s, run);
+            classified = false;
             continue;
         }
         const info = { upstream: [], ansiC: /\$'[^']*\\(?:x[0-9a-fA-F]|[0-7]{2,3})/.test(s), subs: parsed.substitutions };
@@ -763,6 +1476,10 @@ function checkSubstitutionExec(subs, ctx, run) {
             continue;
         }
         const simple = parsed.commands.length === 1 ? parsed.commands[0] : null;
+        // Tools whose output is a block of shell variable assignments by design (`eval "$(ssh-agent -s)"`).
+        if (simple && simple.words.length && tables_1.EVAL_PRODUCERS.has((simple.words[0].text || '').split('/').pop() || '')
+            && simple.words.slice(1).every((w) => !w.dynamic))
+            continue;
         if (simple && ['echo', 'printf'].includes(simple.words[0]?.text || '') && simple.words.slice(1).every((w) => !w.dynamic)) {
             evalShell(simple.words.slice(1).map((w) => w.text).filter((t) => !/^-[neE]+$/.test(t)).join(' '), childCtx(ctx), run);
             continue;
@@ -771,13 +1488,40 @@ function checkSubstitutionExec(subs, ctx, run) {
             scriptFile(litArg(simple.words[1].text), [], ctx, run, null);
             continue;
         }
+        // The output of some other command is run as code: unknown code (audit F2).
         worseParse(run, 'dynamic');
         tripwire(s, run);
+        hit(run, 'Sx', 'dynamic_substitution_exec');
+        classified = false;
     }
+    return classified;
+}
+// Environment access in interpreter code: a literal, non-secret name is fine; a secret-looking name,
+// the whole environment, or a computed name dumps secrets (S4).
+function interpreterEnvDump(code) {
+    const literal = [
+        /\bos\.environ(?:\.get|\.pop|\.setdefault)?\s*[[(]\s*(['"])([A-Za-z0-9_]+)\1/g, /\bos\.getenv\s*\(\s*(['"])([A-Za-z0-9_]+)\1/g,
+        /\bprocess\.env\.([A-Za-z_]\w*)()/g, /\bprocess\.env\s*\[\s*(['"])([A-Za-z0-9_]+)\1\s*\]/g,
+        /\bENV\s*\[\s*(['"])([A-Za-z0-9_]+)\1\s*\]/g, /\bENV\.fetch\s*\(\s*(['"])([A-Za-z0-9_]+)\1/g, /\$ENV\s*\{\s*(['"]?)([A-Za-z0-9_]+)\1\s*\}/g,
+        /\bENVIRON\s*\[\s*(['"])([A-Za-z0-9_]+)\1\s*\]/g, /\bSystem\.getenv\s*\(\s*(['"])([A-Za-z0-9_]+)\1/g, /\bgetenv\s*\(\s*(['"])([A-Za-z0-9_]+)\1/g,
+    ];
+    let rest = code;
+    for (const re of literal) {
+        rest = rest.replace(re, (_m, a, b) => {
+            const name = b !== undefined && b !== '' ? b : a;
+            return tables_1.SECRET_VAR.test(name) ? '\u0004SECRETENV\u0004' : '';
+        });
+    }
+    if (rest.includes('\u0004SECRETENV\u0004'))
+        return true;
+    // What is left: any other mention of the environment object is a dump or a computed lookup.
+    return /\bos\.environ\b|\bprocess\.env\b|%ENV\b|\bENV\b(?!\s*(?:=|==)\s*['"])|\bENVIRON\b|\benviron\b\s*(?:[.)\],;:|]|$)|\$_ENV|\$_SERVER|\bSystem\.getenv\s*\(\s*\)|\bgetenv\s*\(\s*\)|\benvironment\.get_environment_variables|\bGet-ChildItem\s+env:/i.test(rest);
 }
 function scanInterpreterCode(code, run) {
     if (tables_1.INTERPRETER_TREE_DELETE.test(code))
         hit(run, 'S5', 'interpreter_tree_delete');
+    if (interpreterEnvDump(code))
+        hit(run, 'S4', 'interpreter_env_dump');
     if (tables_1.INTERPRETER_DECODE.test(code) && tables_1.INTERPRETER_EXEC.test(code))
         hit(run, 'Sx', 'interpreter_decoded_exec');
     tripwire(code, run);
@@ -805,6 +1549,9 @@ function rewriteProc(abs, cwds) {
 // Absolute candidates for a literal path operand under every possible cwd. Unknown cwd gives a
 // placeholder root so home-agnostic secret patterns still match by name.
 function absCandidates(text, ctx, run) {
+    // Longer than PATH_MAX is not a path the OS can open or delete.
+    if (text.length > tables_1.LIMITS.maxPathChars)
+        return null;
     const t = expandTilde(text, run);
     if (t === null)
         return null;
@@ -830,7 +1577,72 @@ function realCandidates(abs, run, followFinal) {
     }
     return [...out];
 }
+// Symlinks the command itself creates (`ln -s ~ x && rm -rf x/`, audit F9): the injected fs cannot
+// see them yet, so path resolution applies them first. A link to an unknown target resolves to a
+// path outside every workspace.
+function applyLinks(abs, run) {
+    if (run.links.size === 0)
+        return abs;
+    let cur = abs;
+    for (let hop = 0; hop < 8; hop += 1) {
+        const parts = cur.split('/');
+        let prefix = '';
+        let replaced = false;
+        for (let k = 1; k < parts.length; k += 1) {
+            prefix += `/${parts[k]}`;
+            if (!run.links.has(prefix))
+                continue;
+            const target = run.links.get(prefix);
+            if (target === null || target === undefined)
+                return '/__unknown_link__';
+            const rest = parts.slice(k + 1).join('/');
+            cur = rest ? path.posix.join(target, rest) : target;
+            replaced = true;
+            break;
+        }
+        if (!replaced)
+            return cur;
+    }
+    return cur;
+}
+function recordLinks(prog, rest, ctx, run) {
+    const flagged = (long) => rest.some((a) => a.text !== null && ((/^-[a-zA-Z]*s[a-zA-Z]*$/.test(a.text) && !a.text.startsWith('--')) || a.text === long));
+    if (!((prog === 'ln' && flagged('--symbolic')) || (prog === 'cp' && flagged('--symbolic-link'))))
+        return;
+    const ops = nonOptions(rest, new Set(['-t', '--target-directory', '-S', '--suffix']));
+    const tDir = targetDirFlag(rest);
+    const sources = tDir ? ops : ops.slice(0, -1);
+    const dest = tDir || (ops.length ? ops[ops.length - 1] : null);
+    if (!dest)
+        return;
+    if (dest.text === null) {
+        run.links.set('/__unknown_link_dest__', null);
+        run.linksUnknown = true;
+        return;
+    }
+    const destAbs = absCandidates(dest.text, ctx, run);
+    if (!destAbs) {
+        run.linksUnknown = true;
+        return;
+    }
+    for (const d of destAbs) {
+        for (const src of sources.length ? sources : [litArg(path.posix.basename(d))]) {
+            const linkParent = path.posix.dirname(d);
+            let target = null;
+            if (src.text !== null) {
+                const expanded = expandTilde(src.text, run);
+                if (expanded !== null)
+                    target = path.posix.isAbsolute(expanded) ? path.posix.normalize(expanded) : path.posix.resolve(linkParent, expanded);
+            }
+            // The destination may be a directory: the link is then dest/<basename of the source>.
+            run.links.set(d, target);
+            if (src.text !== null)
+                run.links.set(path.posix.join(d, path.posix.basename(src.text.replace(/\/+$/, ''))), target);
+        }
+    }
+}
 function longestRealpath(abs, run) {
+    abs = applyLinks(abs, run);
     let cur = abs;
     const tail = [];
     for (let k = 0; k < 64; k += 1) {
@@ -862,32 +1674,117 @@ function isSecretPath(abs, run) {
         return false;
     return true;
 }
-// Matches a glob or partly dynamic operand against concrete secret examples.
-function patternToRegex(pattern, lookalike) {
-    let out = '';
+function compileGlob(pattern, opts) {
+    const toks = [];
+    const ci = Boolean(opts.ci);
+    const stop = opts.stop === undefined ? '/' : opts.stop;
+    const pushStar = (across) => {
+        const last = toks[toks.length - 1];
+        if (last && last.k === 'star') {
+            last.across = last.across || across;
+            return;
+        }
+        toks.push({ k: 'star', across });
+    };
     for (let i = 0; i < pattern.length; i += 1) {
         const ch = pattern[i];
-        if (ch === DYN)
-            out += '.*';
-        else if (ch === '*')
-            out += '[^/]*';
-        else if (ch === '?')
-            out += '[^/]';
-        else if (ch === '[') {
+        if (opts.dyn && ch === DYN) {
+            pushStar(true);
+            continue;
+        }
+        if (ch === '*') {
+            let j = i;
+            while (pattern[j + 1] === '*')
+                j += 1;
+            pushStar(Boolean(opts.doubleStar) && j > i);
+            i = j;
+            continue;
+        }
+        if (ch === '?') {
+            toks.push({ k: 'any1' });
+            continue;
+        }
+        if (ch === '[') {
             const end = pattern.indexOf(']', i + 2);
             if (end > 0) {
-                out += '[^/]';
+                let body = pattern.slice(i + 1, end);
+                const neg = body.startsWith('!') || body.startsWith('^');
+                if (neg)
+                    body = body.slice(1);
+                const tok = { k: 'cls', neg, set: new Set(), ranges: [] };
+                for (let q = 0; q < body.length; q += 1) {
+                    if (body[q + 1] === '-' && q + 2 < body.length) {
+                        tok.ranges.push([ci ? body[q].toLowerCase() : body[q], ci ? body[q + 2].toLowerCase() : body[q + 2]]);
+                        q += 2;
+                    }
+                    else
+                        tok.set.add(ci ? body[q].toLowerCase() : body[q]);
+                }
+                toks.push(tok);
                 i = end;
+                continue;
             }
-            else
-                out += '\\[';
+            toks.push({ k: 'lit', c: '[' });
+            continue;
         }
-        else if (lookalike && /[^\x00-\x7f]/.test(ch))
-            out += '.';
-        else
-            out += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+        if (opts.lookalike && /[^\x00-\x7f]/.test(ch)) {
+            toks.push({ k: 'any1' });
+            continue;
+        }
+        toks.push({ k: 'lit', c: ci ? ch.toLowerCase() : ch });
     }
-    return new RegExp(`^${out}$`, 'i');
+    const one = (t, c) => {
+        if (t.k === 'lit')
+            return t.c === c;
+        if (t.k === 'any1')
+            return c !== stop || stop === '';
+        if (t.k === 'cls') {
+            const hit1 = t.set.has(c) || t.ranges.some(([lo, hi]) => c >= lo && c <= hi);
+            return t.neg ? !hit1 : hit1;
+        }
+        return false;
+    };
+    return {
+        test(text) {
+            const str = ci ? text.toLowerCase() : text;
+            let p = 0;
+            let s = 0;
+            let starP = -1;
+            let starS = 0;
+            while (s < str.length) {
+                const t = toks[p];
+                if (t && t.k !== 'star' && one(t, str[s])) {
+                    p += 1;
+                    s += 1;
+                    continue;
+                }
+                if (t && t.k === 'star') {
+                    starP = p;
+                    starS = s;
+                    p += 1;
+                    continue;
+                }
+                if (starP >= 0) {
+                    const star = toks[starP];
+                    // The star takes one more character; one that cannot cross the separator ends the match.
+                    if (!star.across && str[starS] === stop && stop !== '')
+                        return false;
+                    starS += 1;
+                    s = starS;
+                    p = starP + 1;
+                    continue;
+                }
+                return false;
+            }
+            while (p < toks.length && toks[p].k === 'star')
+                p += 1;
+            return p === toks.length;
+        },
+    };
+}
+// Matches a glob or partly dynamic operand against concrete secret examples.
+function patternToRegex(pattern, lookalike) {
+    return compileGlob(pattern, { dyn: true, lookalike, ci: true });
 }
 function sampleMatch(a, ctx, run, samples) {
     const raw = a.pattern;
@@ -939,7 +1836,8 @@ function checkSecretOperand(a, ctx, run, reason) {
 // Path-ish parts of an operand: the value after `--opt=`, after `@` (curl -d @file) and after `:`
 // for git object paths (HEAD:.env).
 function operandPaths(a) {
-    const t = a.text !== null ? a.text : a.pattern;
+    // Only the head of a long argument can be a path (`--opt=<path>`, `@<path>`, `REV:<path>`).
+    const t = (a.text !== null ? a.text : a.pattern).slice(0, tables_1.LIMITS.maxPathChars);
     const out = [t];
     const eq = t.match(/^--?[A-Za-z0-9-]+=(.+)$/);
     if (eq)
@@ -1011,8 +1909,23 @@ function checkDeleteTarget(a, ctx, run, reason, kind) {
         return hit(run, 'S5', `${reason}_dynamic_target`);
     if (a.nonAscii)
         return hit(run, 'S5', `${reason}_non_ascii_target`);
+    // A symlink whose target the mapper could not resolve was made earlier in this command line.
+    if (run.linksUnknown)
+        return hit(run, 'S5', `${reason}_after_unknown_symlink`);
     let text = a.text;
     let effKind = kind;
+    // A glob whose match is followed as a directory (`./l*/`, `./l*/x`) can reach a symlink to
+    // anywhere (audit F9): expand it against the injected fs and judge each match, or stop.
+    if (a.glob && globFollowsLinks(a.text)) {
+        const matches = expandGlob(a.text, ctx, run);
+        if (matches === null)
+            return hit(run, 'S5', `${reason}_glob_unresolved`);
+        for (const m of matches) {
+            if (checkDeleteTarget({ ...litArg(m), glob: false }, ctx, run, reason, kind))
+                return true;
+        }
+        return false;
+    }
     if (a.glob) {
         const segs = text.split('/');
         const firstGlob = segs.findIndex((s) => /[*?[]/.test(s));
@@ -1040,6 +1953,79 @@ function checkDeleteTarget(a, ctx, run, reason, kind) {
     }
     return false;
 }
+function globChars(s) { return /[*?[]/.test(s); }
+// A glob component is followed as a directory when it is not the last component, or when the
+// pattern ends in `/` (a trailing slash follows a symlink).
+function globFollowsLinks(text) {
+    const comps = text.split('/');
+    let last = comps.length - 1;
+    while (last > 0 && comps[last] === '')
+        last -= 1;
+    const trailing = text.endsWith('/') || /\/\.$/.test(text);
+    for (let i = 0; i < comps.length; i += 1) {
+        if (!globChars(comps[i]))
+            continue;
+        if (i < last)
+            return true;
+        if (i === last && trailing)
+            return true;
+    }
+    return false;
+}
+function globComponentRegex(comp) {
+    return compileGlob(comp, { ci: false });
+}
+// Concrete matches of a glob under every possible cwd, or null when they cannot be listed.
+function expandGlob(text, ctx, run) {
+    const readdir = run.env.fs.readdir;
+    if (typeof readdir !== 'function')
+        return null;
+    const expanded = expandTilde(text, run);
+    if (expanded === null)
+        return null;
+    const trailing = /\/+$/.test(expanded);
+    const comps = expanded.split('/').filter((c, i) => c !== '' || i === 0);
+    let paths;
+    if (path.posix.isAbsolute(expanded))
+        paths = [''];
+    else {
+        if (ctx.cwds.some((c) => c === null))
+            return null;
+        paths = ctx.cwds.map((c) => c.replace(/\/$/, ''));
+    }
+    for (const comp of comps) {
+        if (comp === '')
+            continue;
+        if (!globChars(comp)) {
+            paths = paths.map((p) => `${p}/${comp}`);
+            continue;
+        }
+        const re = globComponentRegex(comp);
+        const next = [];
+        for (const p of paths) {
+            const dir = p || '/';
+            const before = run.fsState.errored;
+            const names = run.env.fs.readdir ? run.env.fs.readdir(dir) : null;
+            if (names === null) {
+                if (!before && run.fsState.errored)
+                    return null;
+                if (safeRealpath(run.env, dir) === null && !run.fsState.errored)
+                    continue; // no such directory: no matches
+                return null;
+            }
+            for (const n of names) {
+                if (n.startsWith('.') && !comp.startsWith('.'))
+                    continue;
+                if (re.test(n))
+                    next.push(`${p}/${n}`);
+                if (next.length > tables_1.LIMITS.maxGlobMatches)
+                    return null;
+            }
+        }
+        paths = next;
+    }
+    return [...new Set(paths)].map((p) => (trailing ? `${p}/` : p));
+}
 function checkTreeDeletes(targets, ctx, run, reason) {
     for (const t of targets) {
         checkProtectedWrite(t, ctx, run, reason, true);
@@ -1048,8 +2034,62 @@ function checkTreeDeletes(targets, ctx, run, reason) {
 }
 // ---------------------------------------------------------------------------------------------
 // generic operand checks (S4 on every program, S0 on write programs)
-function genericOperandChecks(prog, args, ctx, run) {
+const SECRET_DIRS = ['.ssh', '.aws', '.config/gcloud', '.azure', '.kube', '.docker', '.config/gh', '.config/op', '.gnupg', '.marrow'];
+// True when `text` names a credential directory, or a directory that holds one (home itself).
+function isSecretDirOrAncestor(text, ctx, run) {
+    const abs = absCandidates(text, ctx, run);
+    if (!abs)
+        return false;
+    const dirs = SECRET_DIRS.map((d) => path.posix.join(run.home, d));
+    return abs.some((p) => realCandidates(p, run, true).some((r) => dirs.some((d) => isAncestorOrSelf(r, d) || isAncestorOrSelf(d, r))));
+}
+// `cat $(echo ~/.ssh/id_rsa)`, `cat $(ls ~/.ssh/id_*)`, `cat $(find ~/.ssh -name 'id_*')`: the path
+// is produced by a substitution that the reader then opens.
+function substitutionOperandCheck(prog, rest, ctx, run, subs) {
+    if (tables_1.S4_EXEMPT_PROGRAMS.has(prog) || prog === 'git' || !rest.some((a) => a.word && a.word.substitution))
+        return;
+    for (const sub of subs) {
+        const parsedSub = shellParse.parseShell(sub, { depth: ctx.depth + 1 });
+        if (!parsedSub.ok)
+            continue;
+        for (const c of parsedSub.commands) {
+            const w0 = (c.words[0]?.text || '').split('/').pop() || '';
+            if (!['echo', 'printf', 'ls', 'find', 'realpath', 'readlink', 'cat', 'head', 'tail', 'grep', 'rg', 'locate', 'dirname', 'wc'].includes(w0))
+                continue;
+            for (const w of c.words.slice(1)) {
+                const a = resolveWord(w, ctx, run);
+                if (checkSecretOperand(a, ctx, run, 'operand_via_substitution'))
+                    return;
+                if (w0 === 'find' && a.text !== null && !a.text.startsWith('-') && isSecretDirOrAncestor(a.text, ctx, run)) {
+                    hit(run, 'S4', 'operand_via_substitution_secret_dir');
+                    return;
+                }
+            }
+        }
+    }
+}
+// grep -r, rg, ag and ack over a credential directory, or over a directory that holds one, print
+// matches from the credential files inside it.
+function recursiveSecretDirRead(prog, rest, ctx, run) {
+    const searchers = new Set(['grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'ack']);
+    if (!searchers.has(prog))
+        return;
+    const recursive = prog === 'rg' || prog === 'ag' || prog === 'ack' || rest.some((a) => a.text !== null && (/^-[a-zA-Z]*[rR][a-zA-Z]*$/.test(a.text) || a.text === '--recursive' || a.text === '--dereference-recursive'));
+    if (!recursive)
+        return;
+    for (const a of nonOptions(rest)) {
+        if (a.text === null || !(a.text.includes('/') || a.text === '.' || a.text === '..' || a.text.startsWith('~')))
+            continue;
+        if (isSecretDirOrAncestor(a.text, ctx, run)) {
+            hit(run, 'S4', 'recursive_search_secret_dir');
+            return;
+        }
+    }
+}
+function genericOperandChecks(prog, args, ctx, run, subs = []) {
     const rest = args.slice(1);
+    substitutionOperandCheck(prog, rest, ctx, run, subs);
+    recursiveSecretDirRead(prog, rest, ctx, run);
     if (!tables_1.S4_EXEMPT_PROGRAMS.has(prog) && prog !== 'git') {
         let skipNext = false;
         for (let i = 0; i < rest.length; i += 1) {
@@ -1086,6 +2126,7 @@ function genericOperandChecks(prog, args, ctx, run) {
         checkProtectedWrite(arg, ctx, run, `${prog}_write`, tree);
         markWritten(arg, ctx);
     }
+    recordLinks(prog, rest, ctx, run);
 }
 const COPY_PROGRAMS = new Set(['cp', 'scp', 'rsync', 'tar', 'zip', '7z', '7za', 'rclone', 'gtar', 'bsdtar', 'ditto']);
 function nonOptions(rest, valueFlags = new Set()) {
@@ -1267,6 +2308,8 @@ function declareLike(prog, rest, ctx, run, x) {
         }
         const eq = n.text.indexOf('=');
         const name = eq >= 0 ? n.text.slice(0, eq) : n.text;
+        if (name === 'IFS' && eq >= 0)
+            ctx.ifs = n.text.slice(eq + 1);
         if (eq >= 0)
             ctx.vars.set(name, [n.text.slice(eq + 1)]);
         else if (n.word && n.word.dynamic)
@@ -1309,8 +2352,16 @@ function echoLike(args, run, x) {
     void x;
 }
 function evalBuiltin(rest, ctx, run, subs) {
-    if (rest.some((a) => a.word && a.word.substitution))
-        checkSubstitutionExec(subs, ctx, run);
+    if (rest.some((a) => a.word && a.word.substitution)) {
+        const classified = checkSubstitutionExec(subs, ctx, run);
+        // `eval "$(ssh-agent -s)"`: every substitution is a known producer, fetched or literal text.
+        if (classified && rest.every((a) => isPureSubstitution(a) || a.text !== null)) {
+            const literal = rest.filter((a) => a.text !== null);
+            if (literal.length)
+                evalShell(literal.map((a) => a.text).join(' '), childCtx(ctx), run);
+            return;
+        }
+    }
     if (rest.every((a) => a.text !== null)) {
         evalShell(rest.map((a) => a.text).join(' '), childCtx(ctx), run);
         return;
@@ -1324,7 +2375,9 @@ function evalBuiltin(rest, ctx, run, subs) {
     worseParse(run, 'dynamic');
     if (rest.some((a) => a.word && a.word.variables.some((v) => ctx.decodedVars.has(v))))
         hit(run, 'Sx', 'decoded_variable_eval');
-    tripwire(rest.map(argText).join(' '), run);
+    // `eval $x` with an unresolved value runs unknown code (audit F2).
+    const joined = { text: null, alts: null, pattern: rest.map((a) => (a.text !== null ? a.text : a.pattern)).join(' '), glob: false, word: null, nonAscii: false };
+    dynamicCode(joined, ctx, run, 'dynamic_eval');
 }
 function sourceFile(rest, ctx, run, x) {
     const target = rest[0];
@@ -1334,7 +2387,7 @@ function sourceFile(rest, ctx, run, x) {
         checkSubstitutionExec(x.info.subs, ctx, run);
         return;
     }
-    if (target.text === '/dev/stdin' || target.text === '-') {
+    if (target.text !== null && (target.text === '-' || STDIN_PATHS.has(target.text))) {
         stdinExec('sh', rest.slice(1), x, ctx, run);
         return;
     }
@@ -1431,7 +2484,7 @@ function suWrapper(rest, ctx, run, x) {
         if (t && t.startsWith('--command='))
             return shellString(litArg(t.slice(10)), ctx, run, x.info.subs);
     }
-    if (x.info.upstream.length)
+    if (x.info.upstream.length || x.cmd.heredoc !== null || x.cmd.redirects.some((r) => r.op === '<<<'))
         stdinExec('sh', [], x, ctx, run);
 }
 function shellString(a, ctx, run, subs) {
@@ -1439,15 +2492,31 @@ function shellString(a, ctx, run, subs) {
         evalShell(a.text, childCtx(ctx), run);
         return;
     }
-    if (a.word && a.word.substitution)
-        checkSubstitutionExec(subs, ctx, run);
+    if (a.word && a.word.substitution) {
+        const classified = checkSubstitutionExec(subs, ctx, run);
+        if (classified && isPureSubstitution(a))
+            return;
+    }
     if (a.alts) {
         for (const v of a.alts)
             evalShell(v, childCtx(ctx), run);
         return;
     }
+    dynamicCode(a, ctx, run, 'dynamic_shell_code');
+}
+// Code text with unresolved parts (audit F2). The literal text is classified with each unknown piece
+// as an opaque variable (so `cd $DIR && npm test` is read, `$CMD publish` has a dynamic command word).
+// With nothing literal left (`sh -c "$CMD"`) the code is unknowable and the answer is stop.
+function dynamicCode(a, ctx, run, reason) {
     worseParse(run, 'dynamic');
-    tripwire(a.pattern.replace(new RegExp(DYN, 'g'), ' '), run);
+    const literal = a.pattern.replace(new RegExp(DYN, 'g'), '');
+    if (literal.trim() === '') {
+        tripwire(run.topSource, run);
+        hit(run, 'Sx', reason);
+        return;
+    }
+    tripwire(literal, run);
+    evalShell(a.pattern.replace(new RegExp(DYN, 'g'), '${__marrow_dynamic}'), childCtx(ctx), run);
 }
 function simpleWrapper(prog, rest, ctx, run, x) {
     let i = 0;
@@ -1494,7 +2563,10 @@ function simpleWrapper(prog, rest, ctx, run, x) {
     dispatch(rest.slice(i), ctx, run, x);
 }
 function xargsWrapper(prog, rest, ctx, run, x) {
-    const vf = new Set(['-d', '--delimiter', '-E', '-e', '-I', '-i', '-L', '-l', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars', '-a', '--arg-file', '-j', '--jobs']);
+    // Options with a separate value. GNU -i, -l and -e take an attached optional value only.
+    const vf = new Set(['-d', '--delimiter', '-E', '--eof', '-I', '-L', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars', '-a',
+        '--arg-file', '--max-lines', '-j', '--jobs', '--replace-str', '--sshlogin', '-S', '--results', '--joblog', '--tagstring', '-N']);
+    let replacement = '{}';
     let i = 0;
     while (i < rest.length) {
         const t = rest[i].text;
@@ -1504,6 +2576,14 @@ function xargsWrapper(prog, rest, ctx, run, x) {
             i += 1;
             break;
         }
+        if (t === '-I' && rest[i + 1]?.text)
+            replacement = rest[i + 1].text;
+        else if (/^-I.+/.test(t) && !t.startsWith('--'))
+            replacement = t.slice(2);
+        else if (/^--replace(?:=(.+))?$/.test(t))
+            replacement = (t.match(/^--replace=(.+)$/) || [])[1] || '{}';
+        else if (/^-i(.*)$/.test(t) && !t.startsWith('--'))
+            replacement = t.slice(2) || '{}';
         if (vf.has(t)) {
             i += 2;
             continue;
@@ -1515,15 +2595,65 @@ function xargsWrapper(prog, rest, ctx, run, x) {
         break;
     }
     let inner = rest.slice(i);
+    const marker = '"$__marrow_dynamic"';
     if (prog === 'parallel') {
-        const sep = inner.findIndex((a) => a.text === ':::' || a.text === '::::');
-        if (sep >= 0)
-            inner = inner.slice(0, sep);
+        const sep = inner.findIndex((a) => a.text !== null && /^::::?\+?$/.test(a.text));
+        const inputs = sep >= 0 ? inner.slice(sep + 1) : [];
+        inner = sep >= 0 ? inner.slice(0, sep) : inner;
+        if (inner.length === 0) {
+            // `parallel ::: 'cmd1' 'cmd2'` and `… | parallel`: every input line is a command line.
+            if (sep >= 0) {
+                for (const v of inputs)
+                    if (!(v.text !== null && /^::::?\+?$/.test(v.text)))
+                        shellString(v, ctx, run, x.info.subs);
+                return;
+            }
+            const src = stdinSource(x, ctx, run);
+            for (const t of src.texts)
+                evalShell(t, childCtx(ctx), run);
+            if (src.unknown || src.texts.length === 0) {
+                worseParse(run, 'dynamic');
+                hit(run, 'Sx', 'parallel_stdin_commands');
+            }
+            return;
+        }
+        // GNU parallel runs the template through a shell, placeholders become dynamic values.
+        const text = inner.map((a) => (a.text !== null ? a.text.replace(/\{(?:[.\/#%]|\/\.|\d+)?\}/g, marker) : marker)).join(' ');
+        evalShell(/\{(?:[.\/#%]|\/\.|\d+)?\}/.test(inner.map((a) => a.text || '').join(' ')) ? text : `${text} ${marker}`, childCtx(ctx), run);
+        return;
     }
     if (inner.length === 0)
         inner = [litArg('echo')];
-    // Input lines become extra operands: unknown targets (spec A6).
-    dispatch([...inner.map((a) => (a.text === '{}' ? dynArg() : a)), dynArg()], ctx, run, x);
+    // Input lines become extra operands: unknown targets (spec A6). The -I replacement string stands
+    // for one input line wherever it appears.
+    let replaced = false;
+    const mapped = inner.map((a) => {
+        if (a.text === null || replacement === null || replacement === '')
+            return a;
+        if (a.text === replacement) {
+            replaced = true;
+            return dynArg();
+        }
+        if (a.text.includes(replacement)) {
+            replaced = true;
+            const text = a.text.split(replacement).join(marker);
+            return { ...litArg(text), text: null, alts: null, pattern: a.text.split(replacement).join(DYN), word: null };
+        }
+        return a;
+    });
+    // The input is an unknown operand (spec A6: S1 and S5 targets become unknown and stop). When the
+    // upstream stage's output is a literal (`echo ~/.ssh/id_rsa | xargs cat`) that text is read as well,
+    // as a second reading: it can only add a stop.
+    dispatch([...mapped, dynArg()], ctx, run, x);
+    if (!replaced) {
+        const src = stdinSource(x, ctx, run);
+        const custom = rest.some((a) => a.text === '-d' || a.text === '--delimiter' || a.text === '-a' || a.text === '--arg-file');
+        if (src.texts.length === 1 && !src.unknown && src.files.length === 0 && !custom && !/['"\\]/.test(src.texts[0])) {
+            const nul = rest.some((a) => a.text === '-0' || a.text === '--null');
+            const literal = (nul ? [src.texts[0]] : src.texts[0].split(/\s+/).filter(Boolean)).map((t) => litArg(t));
+            dispatch([...mapped, ...literal], ctx, run, x);
+        }
+    }
 }
 function watchWrapper(rest, ctx, run) {
     const vf = new Set(['-n', '--interval', '-d', '-q', '--equexit', '-g']);
@@ -1534,9 +2664,9 @@ function watchWrapper(rest, ctx, run) {
     if (inner.every((a) => a.text !== null))
         evalShell(inner.map((a) => a.text).join(' '), childCtx(ctx), run);
     else
-        tripwire(inner.map(argText).join(' '), run);
+        dynamicCode({ text: null, alts: null, pattern: inner.map((a) => (a.text !== null ? a.text : a.pattern)).join(' '), glob: false, word: null, nonAscii: false }, ctx, run, 'dynamic_watch_command');
 }
-function sshRemote(rest, ctx, run) {
+function sshRemote(rest, ctx, run, x) {
     const vf = new Set(['-b', '-c', '-D', '-E', '-e', '-F', '-I', '-i', '-J', '-L', '-l', '-m', '-O', '-o', '-p', '-Q', '-R', '-S', '-W', '-w', '-B']);
     let i = 0;
     while (i < rest.length) {
@@ -1554,18 +2684,21 @@ function sshRemote(rest, ctx, run) {
         break;
     }
     const remoteCmd = rest.slice(i + 1);
-    if (remoteCmd.length === 0)
+    if (remoteCmd.length === 0) {
+        // `ssh host <<EOF … EOF`, `ssh host <<< 'cmd'`, `echo cmd | ssh host`: the text runs remotely.
+        const remote = childCtx(ctx, { cwds: [null], remote: true, vars: new Map(), aliases: new Map() });
+        const src = stdinSource(x, ctx, run);
+        for (const t of src.texts)
+            evalShell(t, remote, run);
         return;
+    }
     const remoteCtx = childCtx(ctx, { cwds: [null], remote: true, vars: new Map(), aliases: new Map() });
     if (remoteCmd.every((a) => a.text !== null))
         evalShell(remoteCmd.map((a) => a.text).join(' '), remoteCtx, run);
-    else {
-        worseParse(run, 'dynamic');
-        tripwire(remoteCmd.map(argText).join(' '), run);
-    }
+    else
+        dynamicCode({ text: null, alts: null, pattern: remoteCmd.map((a) => (a.text !== null ? a.text : a.pattern)).join(' '), glob: false, word: null, nonAscii: false }, remoteCtx, run, 'dynamic_remote_command');
 }
 function handleShell(prog, rest, ctx, run, x) {
-    void prog;
     for (let i = 0; i < rest.length; i += 1) {
         const t = rest[i].text;
         if (t === null) {
@@ -1573,8 +2706,17 @@ function handleShell(prog, rest, ctx, run, x) {
                 checkSubstitutionExec(x.info.subs, ctx, run);
                 return;
             }
+            // A script path or code word that cannot be resolved: a literal file name is read as a script
+            // name, anything else is unknown code.
+            const a = rest[i];
+            const tail = a.pattern.slice(a.pattern.lastIndexOf('/') + 1);
             worseParse(run, 'dynamic');
-            tripwire(rest.map(argText).join(' '), run);
+            if (tail && !tail.includes(DYN) && a.pattern.includes('/')) {
+                nameTripwire(tail, run, 'script_unreadable');
+                tripwire(a.pattern.replace(new RegExp(DYN, 'g'), ''), run);
+                return;
+            }
+            dynamicCode(a, ctx, run, 'dynamic_shell_arg');
             return;
         }
         if (t === '-c' || (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(t) && !t.startsWith('--'))) {
@@ -1583,8 +2725,8 @@ function handleShell(prog, rest, ctx, run, x) {
                 return;
             return shellString(code, ctx, run, x.info.subs);
         }
-        if (t === '-s' || t === '-')
-            return stdinExec('sh', [], x, ctx, run);
+        if (t === '-s' || t === '-' || STDIN_PATHS.has(t))
+            return stdinExec(prog, [], x, ctx, run);
         if (t === '-o' || t === '+o' || t === '-O' || t === '+O' || t === '--rcfile' || t === '--init-file') {
             i += 1;
             continue;
@@ -1593,19 +2735,15 @@ function handleShell(prog, rest, ctx, run, x) {
             continue;
         return scriptFile(rest[i], rest.slice(i + 1), ctx, run, x);
     }
-    if (x.cmd.heredoc !== null) {
-        evalShell(x.cmd.heredoc, childCtx(ctx), run);
-        return;
-    }
     const input = x.cmd.redirects.find((r) => r.op === '<' && r.target);
-    if (input && input.target) {
+    if (input && input.target && x.cmd.heredoc === null) {
         if (input.target.substitution) {
             checkSubstitutionExec(x.info.subs, ctx, run);
             return;
         }
         return scriptFile(resolveWord(input.target, ctx, run), [], ctx, run, x);
     }
-    stdinExec('sh', [], x, ctx, run);
+    stdinExec(prog, [], x, ctx, run);
 }
 function handleInterpreter(prog, rest, ctx, run, x) {
     const codeFlags = {
@@ -1619,7 +2757,13 @@ function handleInterpreter(prog, rest, ctx, run, x) {
         const t = a.text;
         if (t === null) {
             worseParse(run, 'dynamic');
+            const dyn = a.word && a.word.substitution;
+            if (dyn)
+                checkSubstitutionExec(x.info.subs, ctx, run);
+            // `python3 $SCRIPT`, `node "$DIR/x.js"`: a script path; with code flags earlier it is the code.
             tripwire(rest.map(argText).join(' '), run);
+            if (rest.slice(0, i).some((b) => b.text !== null && (codeRe.test(b.text) || b.text === 'eval')))
+                hit(run, 'Sx', 'dynamic_interpreter_code');
             return;
         }
         if (codeRe.test(t) || (prog === 'deno' && t === 'eval')) {
@@ -1628,6 +2772,14 @@ function handleInterpreter(prog, rest, ctx, run, x) {
                 return;
             if (code.word && code.word.substitution)
                 checkSubstitutionExec(x.info.subs, ctx, run);
+            if (code.text === null && !code.alts) {
+                worseParse(run, 'dynamic');
+                if (code.pattern.replace(new RegExp(DYN, 'g'), '').trim() === '') {
+                    tripwire(run.topSource, run);
+                    hit(run, 'Sx', 'dynamic_interpreter_code');
+                    return;
+                }
+            }
             scanInterpreterCode(code.text !== null ? code.text : argText(code), run);
             return;
         }
@@ -1638,7 +2790,7 @@ function handleInterpreter(prog, rest, ctx, run, x) {
             }
             return;
         }
-        if (t === '-')
+        if (t === '-' || STDIN_PATHS.has(t))
             return stdinInterpreter(prog, x, ctx, run);
         if (t.startsWith('-')) {
             if (isPython && ['-W', '-X', '-Q'].includes(t))
@@ -1655,11 +2807,189 @@ function handleInterpreter(prog, rest, ctx, run, x) {
     stdinInterpreter(prog, x, ctx, run);
 }
 function stdinInterpreter(prog, x, ctx, run) {
-    if (x.cmd.heredoc !== null) {
-        scanInterpreterCode(x.cmd.heredoc, run);
-        return;
-    }
     stdinExec(prog, [], x, ctx, run);
+}
+// BSD `ps e`, `ps auxe`, `ps eww` print every process's environment.
+function psProgram(rest, run) {
+    for (const a of rest) {
+        if (a.text === null)
+            continue;
+        if (/^[a-zA-Z]*e[a-zA-Z]*$/.test(a.text) && !a.text.startsWith('-') && !/^\d+$/.test(a.text)) {
+            hit(run, 'S4', 'ps_environment');
+            return;
+        }
+    }
+}
+// trap 'cmd' SIGNAL…: the command runs when the signal arrives.
+function trapBuiltin(rest, ctx, run, x) {
+    const ops = rest.filter((a) => !(a.text !== null && /^-[lp]+$/.test(a.text)));
+    if (ops.length < 2)
+        return;
+    if (ops[0].text === '' || ops[0].text === '-')
+        return;
+    shellString(ops[0], ctx, run, x.info.subs);
+}
+// awk programs run commands through system() and pipes.
+const AWK_EXEC = /\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b|\bENVIRON\b|\bPROCINFO\b/;
+function awkProgram(rest, ctx, run) {
+    const vf = new Set(['-F', '-v', '-W', '--field-separator', '--assign', '-i', '-l', '--include', '--load']);
+    let program = null;
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === '-f' || t === '--file') {
+            const f = rest[i + 1];
+            if (f && f.text !== null) {
+                for (const abs of absCandidates(f.text, ctx, run) || []) {
+                    const content = safeRead(run.env, abs, tables_1.LIMITS.maxScriptBytes);
+                    if (content !== null && AWK_EXEC.test(content))
+                        scanInterpreterCode(content, run);
+                }
+            }
+            i += 1;
+            continue;
+        }
+        if (t !== null && vf.has(t)) {
+            i += 1;
+            continue;
+        }
+        if (t !== null && t.startsWith('-') && t.length > 1)
+            continue;
+        program = rest[i];
+        break;
+    }
+    if (!program)
+        return;
+    const code = program.text !== null ? program.text : argText(program);
+    if (AWK_EXEC.test(code))
+        scanInterpreterCode(code, run);
+    void ctx;
+}
+// GNU sed runs a command with the `e` command and the `s///e` flag.
+function sedProgram(rest, ctx, run) {
+    const scripts = [];
+    let seenScript = false;
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === '-e' || t === '--expression') {
+            if (rest[i + 1])
+                scripts.push(rest[i + 1]);
+            seenScript = true;
+            i += 1;
+            continue;
+        }
+        if (t !== null && t.startsWith('--expression=')) {
+            scripts.push(litArg(t.slice(13)));
+            seenScript = true;
+            continue;
+        }
+        if (t === '-f' || t === '--file') {
+            seenScript = true;
+            i += 1;
+            continue;
+        }
+        if (t !== null && t.startsWith('-') && t.length > 1)
+            continue;
+        if (!seenScript) {
+            scripts.push(rest[i]);
+            seenScript = true;
+        }
+    }
+    for (const a of scripts) {
+        const code = a.text !== null ? a.text : argText(a);
+        if (code.length > 4096) {
+            tripwire(code.slice(0, 4096), run);
+            hit(run, 'Sx', 'sed_script_too_long');
+            continue;
+        }
+        if (/(?:^|[\n;{}])\s*(?:\d+|\$|\/[^/\n]*\/)?(?:,\s*(?:\d+|\$))?\s*!?\s*e(?:\s|$)/.test(code) || /(?:^|[\n;{}])\s*s(.)(?:(?!\1)[^\n])*\1(?:(?!\1)[^\n])*\1[a-zA-Z0-9]*e/.test(code)) {
+            tripwire(code, run);
+            hit(run, 'Sx', 'sed_exec');
+        }
+    }
+    void ctx;
+}
+// tar runs programs for compression filters, per-file commands and checkpoint actions.
+function tarProgram(rest, ctx, run, x) {
+    const named = new Set(['--to-command', '--checkpoint-action', '--use-compress-program', '--rsh-command', '--info-script', '--new-volume-script', '-I', '-F']);
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === null)
+            continue;
+        let value = null;
+        if (named.has(t))
+            value = rest[i + 1] || null;
+        else {
+            const eq = t.match(/^(--[a-z-]+)=([\s\S]*)$/);
+            if (eq && named.has(eq[1]))
+                value = litArg(eq[2]);
+        }
+        if (!value)
+            continue;
+        const v = value.text !== null ? value.text.replace(/^exec=/, '') : value.pattern;
+        if (value.text !== null)
+            evalShell(v, childCtx(ctx), run);
+        else
+            dynamicCode({ ...value, pattern: v }, ctx, run, 'dynamic_tar_command');
+    }
+    void x;
+}
+// concurrently 'npm run a' 'npm:b' …: every positional argument is a command line.
+function concurrentlyWrapper(rest, ctx, run, x) {
+    for (const a of rest) {
+        if (a.text === null) {
+            shellString(a, ctx, run, x.info.subs);
+            continue;
+        }
+        if (a.text.startsWith('-') && a.text.length > 1)
+            continue;
+        const m = a.text.match(/^(npm|pnpm|yarn|bun):(.+)$/);
+        if (m) {
+            for (const name of scriptNamesMatching(m[2], ctx, run))
+                evalShell(`${m[1]} run ${shellQuote(name)}`, childCtx(ctx), run);
+            continue;
+        }
+        evalShell(a.text, childCtx(ctx), run);
+    }
+}
+// npm-run-all / run-s / run-p: positional arguments are package script names or patterns.
+function runAllWrapper(rest, ctx, run, x) {
+    const valueFlags = new Set(['--max-parallel', '--npm-path', '-m']);
+    for (let i = 0; i < rest.length; i += 1) {
+        const a = rest[i];
+        const t = a.text;
+        if (t === '--')
+            break;
+        if (t !== null && valueFlags.has(t)) {
+            i += 1;
+            continue;
+        }
+        if (t !== null && t.startsWith('-') && t.length > 1)
+            continue;
+        if (t === null) {
+            dynamicCode(a, ctx, run, 'dynamic_script_name');
+            continue;
+        }
+        const names = scriptNamesMatching(t, ctx, run);
+        if (names.length === 0)
+            nameTripwire(t, run, 'package_script_unresolved');
+        for (const name of names)
+            runPackageScript(name, [], ctx, run, x, true);
+    }
+}
+// Script names of the package.json in scope that match a name or a `*` / `**` pattern.
+function scriptNamesMatching(pattern, ctx, run) {
+    const out = new Set();
+    const re = compileGlob(pattern, { stop: ':', doubleStar: true });
+    for (const cwd of ctx.cwds) {
+        const found = findPackageJson(ctx, run, cwd);
+        const scripts = found.pkg && typeof found.pkg.scripts === 'object' && found.pkg.scripts ? Object.keys(found.pkg.scripts) : [];
+        for (const n of scripts)
+            if (re.test(n))
+                out.add(n);
+    }
+    if (out.size === 0 && !/\*/.test(pattern))
+        out.add(pattern);
+    return [...out];
 }
 // ---------------------------------------------------------------------------------------------
 // script files, package scripts, make
@@ -1682,12 +3012,17 @@ function scriptFile(target, extra, ctx, run, x) {
         return;
     }
     if (ctx.depth >= tables_1.LIMITS.maxDepth) {
-        worseParse(run, 'unparsed');
+        worseParse(run, 'too_large');
+        hit(run, 'Sx', 'budget_depth');
         nameTripwire(name, run, 'script_depth');
         return;
     }
     for (const p of abs) {
-        const content = safeRead(run.env, p, tables_1.LIMITS.maxScriptBytes);
+        if (alreadySeen(run, ctx, 'script', p, x ? x.env : new Map()))
+            continue;
+        if (!expandScript(run))
+            return;
+        const content = readCached(run, p, tables_1.LIMITS.maxScriptBytes);
         if (content === null) {
             nameTripwire(name, run, 'script_unreadable');
             continue;
@@ -1720,15 +3055,21 @@ function findPackageJson(ctx, run, cwd) {
         const file = path.posix.join(dir, 'package.json');
         if (ctx.written.has(file))
             return { pkg: null, dir, error: 'written' };
-        const raw = safeRead(run.env, file, tables_1.LIMITS.maxPackageJsonBytes);
+        const raw = readCached(run, file, tables_1.LIMITS.maxPackageJsonBytes);
         if (raw !== null) {
+            const memo = run.packages.get(file);
+            if (memo)
+                return { pkg: memo.pkg, dir, error: memo.error };
+            let parsedPkg;
             try {
                 const pkg = JSON.parse(raw);
-                return { pkg: pkg && typeof pkg === 'object' ? pkg : null, dir, error: pkg && typeof pkg === 'object' ? undefined : 'invalid' };
+                parsedPkg = { pkg: pkg && typeof pkg === 'object' ? pkg : null, error: pkg && typeof pkg === 'object' ? undefined : 'invalid' };
             }
             catch {
-                return { pkg: null, dir, error: 'invalid' };
+                parsedPkg = { pkg: null, error: 'invalid' };
             }
+            run.packages.set(file, parsedPkg);
+            return { ...parsedPkg, dir };
         }
         const parent = path.posix.dirname(dir);
         if (parent === dir)
@@ -1739,7 +3080,8 @@ function findPackageJson(ctx, run, cwd) {
 }
 function runPackageScript(name, extraArgs, ctx, run, x, withHooks) {
     if (ctx.depth >= tables_1.LIMITS.maxDepth) {
-        worseParse(run, 'unparsed');
+        worseParse(run, 'too_large');
+        hit(run, 'Sx', 'budget_depth');
         nameTripwire(name, run, 'package_script_depth');
         return;
     }
@@ -1761,13 +3103,21 @@ function runPackageScript(name, extraArgs, ctx, run, x, withHooks) {
             if (typeof body !== 'string')
                 continue;
             const suffix = hook === name && extraArgs.length ? ` ${extraArgs.map((a) => (a.text !== null ? shellQuote(a.text) : '"$__marrow_dynamic"')).join(' ')}` : '';
+            // The same script in the same context was already evaluated: its hits are recorded.
+            if (alreadySeen(run, ctx, 'pkg', `${found.dir}\u0002${hook}\u0002${suffix}`, x.env))
+                continue;
+            if (!expandScript(run))
+                return;
             evalShell(body + suffix, scriptCtx(ctx, [found.dir], x.env), run);
         }
     }
 }
 function lifecycleScripts(names, ctx, run, x) {
-    if (ctx.depth >= tables_1.LIMITS.maxDepth)
+    if (ctx.depth >= tables_1.LIMITS.maxDepth) {
+        worseParse(run, 'too_large');
+        hit(run, 'Sx', 'budget_depth');
         return;
+    }
     for (const cwd of ctx.cwds) {
         const found = findPackageJson(ctx, run, cwd);
         if (found.error === 'written') {
@@ -1778,9 +3128,15 @@ function lifecycleScripts(names, ctx, run, x) {
         const scripts = found.pkg && typeof found.pkg.scripts === 'object' && found.pkg.scripts ? found.pkg.scripts : null;
         if (!scripts)
             continue;
-        for (const n of names)
-            if (typeof scripts[n] === 'string')
-                evalShell(scripts[n], scriptCtx(ctx, [found.dir], x.env), run);
+        for (const n of names) {
+            if (typeof scripts[n] !== 'string')
+                continue;
+            if (alreadySeen(run, ctx, 'pkg', `${found.dir}\u0002${n}\u0002`, x.env))
+                continue;
+            if (!expandScript(run))
+                return;
+            evalShell(scripts[n], scriptCtx(ctx, [found.dir], x.env), run);
+        }
     }
 }
 function handleMake(rest, ctx, run, x) {
@@ -1819,7 +3175,8 @@ function handleMake(rest, ctx, run, x) {
         targets.push(rest[i]);
     }
     if (ctx.depth >= tables_1.LIMITS.maxDepth) {
-        worseParse(run, 'unparsed');
+        worseParse(run, 'too_large');
+        hit(run, 'Sx', 'budget_depth');
         for (const tg of targets)
             nameTripwire(argText(tg), run, 'make_depth');
         return;
@@ -1836,7 +3193,7 @@ function handleMake(rest, ctx, run, x) {
                 tripwire(run.topSource, run);
                 return;
             }
-            content = safeRead(run.env, p, tables_1.LIMITS.maxScriptBytes);
+            content = readCached(run, p, tables_1.LIMITS.maxScriptBytes);
             if (content !== null)
                 break;
         }
@@ -1855,7 +3212,7 @@ function handleMake(rest, ctx, run, x) {
                 worseParse(run, 'dynamic');
                 return;
             }
-            if (seen.has(target) || depth > 8)
+            if (run.exhausted || seen.has(target) || depth > 8)
                 return;
             seen.add(target);
             const rule = mk.rules.get(target);
@@ -1863,6 +3220,10 @@ function handleMake(rest, ctx, run, x) {
                 return;
             for (const dep of rule.deps)
                 visit(dep, depth + 1);
+            if (alreadySeen(run, ctx, 'make', `${dir}\u0002${target}\u0002${JSON.stringify([...mk.vars])}`, x.env))
+                return;
+            if (!expandScript(run))
+                return;
             for (const line of rule.recipe)
                 evalShell(expandMakeLine(line, mk.vars), scriptCtx(ctx, [dir], x.env), run);
         };
@@ -2019,16 +3380,147 @@ function envValue(x, ctx, name) {
 }
 // ---------------------------------------------------------------------------------------------
 // S1 git
+// Config that arrives outside the repository's own files (audit F6): GIT_CONFIG_COUNT with
+// GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n>, GIT_CONFIG_PARAMETERS, files named by GIT_CONFIG_GLOBAL,
+// GIT_CONFIG_SYSTEM and GIT_CONFIG, and include.path / includeIf.*.path. Entries are expanded like
+// `-c`; whatever cannot be read marks the configuration unknown.
+const CONFIG_UNKNOWN = 'marrow.configunknown';
+function parseGitConfigText(text) {
+    const out = [];
+    let section = '';
+    for (const raw of text.split('\n')) {
+        const line = raw.trim();
+        if (!line || line.startsWith('#') || line.startsWith(';'))
+            continue;
+        const sec = line.match(/^\[\s*([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\]\s*(.*)$/);
+        if (sec) {
+            section = sec[2] !== undefined ? `${sec[1].toLowerCase()}.${sec[2]}` : sec[1].toLowerCase();
+            if (sec[3]) {
+                const kv = sec[3].match(/^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$/);
+                if (kv)
+                    out.push([`${section}.${kv[1].toLowerCase()}`, kv[2].replace(/^"(.*)"$/, '$1')]);
+            }
+            continue;
+        }
+        const kv = line.match(/^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/);
+        if (kv && section)
+            out.push([`${section}.${kv[1].toLowerCase()}`, kv[2] === undefined ? 'true' : kv[2].replace(/\s+[#;].*$/, '').replace(/^"(.*)"$/, '$1')]);
+    }
+    return out;
+}
+function addConfigEntry(overrides, key, value, ctx, run, depth) {
+    const canon = canonicalGitKey(key);
+    overrides.set(canon, [...(overrides.get(canon) || []), value]);
+    if (tables_1.GIT_CONFIG_INCLUDE.test(canon)) {
+        // An include is read when its path is absolute and readable; anything else is unknown config.
+        const target = expandTilde(value, run);
+        if (depth >= 3 || target === null || !path.posix.isAbsolute(target)) {
+            overrides.set(CONFIG_UNKNOWN, ['1']);
+            return;
+        }
+        const text = safeRead(run.env, target, tables_1.LIMITS.maxConfigBytes);
+        if (text === null) {
+            overrides.set(CONFIG_UNKNOWN, ['1']);
+            return;
+        }
+        for (const [k, v] of parseGitConfigText(text))
+            addConfigEntry(overrides, k, v, ctx, run, depth + 1);
+    }
+}
+function envGitConfig(x, ctx, run, overrides) {
+    const count = envValue(x, ctx, 'GIT_CONFIG_COUNT');
+    if (count !== undefined) {
+        const n = count === null ? NaN : parseInt(count, 10);
+        if (!Number.isFinite(n) || n < 0 || n > 64)
+            overrides.set(CONFIG_UNKNOWN, ['1']);
+        else {
+            for (let k = 0; k < n; k += 1) {
+                const key = envValue(x, ctx, `GIT_CONFIG_KEY_${k}`);
+                const value = envValue(x, ctx, `GIT_CONFIG_VALUE_${k}`);
+                if (key === undefined || key === null || value === null || value === undefined) {
+                    overrides.set(CONFIG_UNKNOWN, ['1']);
+                    continue;
+                }
+                addConfigEntry(overrides, key, value, ctx, run, 0);
+            }
+        }
+    }
+    const params = envValue(x, ctx, 'GIT_CONFIG_PARAMETERS');
+    if (params === null)
+        overrides.set(CONFIG_UNKNOWN, ['1']);
+    else if (params !== undefined && params.trim()) {
+        // 'key'='value' 'key2'='value2'  (or the older 'key=value' form), single-quote escaped.
+        const re = /'((?:[^']|'\\'')*)'(?:='((?:[^']|'\\'')*)')?/g;
+        let m;
+        let consumed = 0;
+        while ((m = re.exec(params))) {
+            consumed += m[0].length;
+            const unq = (v) => v.replace(/'\\''/g, "'");
+            if (m[2] !== undefined)
+                addConfigEntry(overrides, unq(m[1]), unq(m[2]), ctx, run, 0);
+            else {
+                const t = unq(m[1]);
+                const eq = t.indexOf('=');
+                addConfigEntry(overrides, eq >= 0 ? t.slice(0, eq) : t, eq >= 0 ? t.slice(eq + 1) : 'true', ctx, run, 0);
+            }
+        }
+        if (consumed < params.replace(/\s+/g, '').length)
+            overrides.set(CONFIG_UNKNOWN, ['1']);
+    }
+    // Environment that moves git to other configuration or another repository (the U3 resolver's
+    // GIT_RELOCATING_ENV, plus HOME and XDG_CONFIG_HOME when the command sets them).
+    const homeMoved = x.env.has('HOME') || x.env.has('XDG_CONFIG_HOME')
+        || (ctx.exported.has('XDG_CONFIG_HOME') && ctx.vars.has('XDG_CONFIG_HOME'))
+        || (ctx.vars.get('HOME') !== undefined && ctx.vars.get('HOME')?.length === 1 && ctx.vars.get('HOME')[0] !== run.home);
+    if (homeMoved)
+        overrides.set(CONFIG_UNKNOWN, ['1']);
+    for (const name of ['GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT_NAMESPACE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_TEMPLATE_DIR']) {
+        if (envValue(x, ctx, name) !== undefined)
+            overrides.set(CONFIG_UNKNOWN, ['1']);
+    }
+    for (const name of tables_1.GIT_CONFIG_ENV_FILES) {
+        const file = envValue(x, ctx, name);
+        if (file === undefined)
+            continue;
+        const abs = file === null ? null : expandTilde(file, run);
+        const text = abs && path.posix.isAbsolute(abs) ? safeRead(run.env, abs, tables_1.LIMITS.maxConfigBytes) : null;
+        if (text === null) {
+            overrides.set(CONFIG_UNKNOWN, ['1']);
+            continue;
+        }
+        for (const [k, v] of parseGitConfigText(text))
+            addConfigEntry(overrides, k, v, ctx, run, 1);
+    }
+}
+// An exec-capable config value (a hook program, pager, ssh command, filter, credential helper) is a
+// shell command; classify it as one.
+const BENIGN_EXEC_VALUE = /^(?:true|false|:|cat|less(?: -[A-Za-z]+)?|more|vim?|nvim|nano|emacs|code --wait|subl -w|store|cache(?: .*)?|osxkeychain|manager(?:-core)?|libsecret|wincred|\/dev\/null)$/;
+function classifyExecConfig(key, value, ctx, run) {
+    if (!tables_1.GIT_EXEC_CONFIG.test(key) || key.startsWith('alias.'))
+        return;
+    if (/^credential(?:\..+)?\.helper$/.test(key) && !value.startsWith('!') && !path.posix.isAbsolute(value))
+        return;
+    if (/hookspath$/.test(key) || /^submodule\./.test(key) && !value.startsWith('!'))
+        return;
+    const code = value.startsWith('!') ? value.slice(1) : value;
+    if (BENIGN_EXEC_VALUE.test(code.trim()))
+        return;
+    evalShell(code, childCtx(ctx), run);
+}
 function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
     let cwds = ctx.cwds;
     const overrides = new Map(cOverrides);
+    if (aliasDepth === 0)
+        envGitConfig(x, ctx, run, overrides);
     let i = 0;
     while (i < rest.length) {
         const a = rest[i];
         const t = a.text;
         if (t === null) {
+            // `git $x origin main`: a dynamic word where an option or the subcommand belongs (audit F2).
             worseParse(run, 'dynamic');
             tripwire(rest.slice(i).map(argText).join(' '), run);
+            hit(run, 'S1', 'git_dynamic_subcommand');
             return;
         }
         if (t === '-C') {
@@ -2050,20 +3542,28 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
                 return;
             }
             const eq = kv.text.indexOf('=');
-            const key = canonicalGitKey(eq >= 0 ? kv.text.slice(0, eq) : kv.text);
-            overrides.set(key, [...(overrides.get(key) || []), eq >= 0 ? kv.text.slice(eq + 1) : 'true']);
+            const rawKey = eq >= 0 ? kv.text.slice(0, eq) : kv.text;
+            const value = eq >= 0 ? kv.text.slice(eq + 1) : 'true';
+            addConfigEntry(overrides, rawKey, value, ctx, run, 0);
+            classifyExecConfig(canonicalGitKey(rawKey), value, ctx, run);
             i += 2;
             continue;
         }
         if (t.startsWith('--config-env')) {
+            // --config-env=<key>=<ENVVAR>: the value comes from the environment (the hook cannot see it).
+            overrides.set(CONFIG_UNKNOWN, ['1']);
             worseParse(run, 'dynamic');
-            tripwire(rest.map(argText).join(' '), run);
-            return;
+            i += t === '--config-env' ? 2 : 1;
+            continue;
         }
         if (['--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--list-cmds', '--attr-source'].includes(t)) {
+            if (t === '--git-dir' || t === '--work-tree')
+                overrides.set(CONFIG_UNKNOWN, ['1']);
             i += 2;
             continue;
         }
+        if (/^--(?:git-dir|work-tree)=/.test(t))
+            overrides.set(CONFIG_UNKNOWN, ['1']);
         if (t.startsWith('-')) {
             i += 1;
             continue;
@@ -2073,9 +3573,34 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
     const subArg = rest[i];
     if (!subArg)
         return;
+    if (subArg.text === null) {
+        // `git $sub …`: the subcommand could be push -f (audit F2).
+        worseParse(run, 'dynamic');
+        tripwire(rest.map(argText).join(' '), run);
+        hit(run, 'S1', 'git_dynamic_subcommand');
+        return;
+    }
     const sub = subArg.text;
     const args = rest.slice(i + 1);
     const gctx = { ...ctx, cwds };
+    // Programs git runs for the agent: GIT_SSH_COMMAND, GIT_EDITOR, GIT_PAGER … set in this command.
+    for (const name of ['GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_PROXY_COMMAND', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_EDITOR', 'GIT_SEQUENCE_EDITOR', 'GIT_PAGER', 'GIT_EXTERNAL_DIFF']) {
+        const v = envValue(x, ctx, name);
+        if (v === undefined)
+            continue;
+        if (v === null) {
+            worseParse(run, 'dynamic');
+            hit(run, 'Sx', 'dynamic_git_exec_env');
+            continue;
+        }
+        if (!BENIGN_EXEC_VALUE.test(v.trim()))
+            evalShell(v, childCtx(ctx), run);
+    }
+    if (args.some((a) => a.text !== null && /^ext::/.test(a.text))) {
+        hit(run, 'Sx', 'git_ext_transport');
+        return;
+    }
+    gitExecOptions(sub, args, gctx, run, x);
     if (!tables_1.GIT_BUILTINS.has(sub)) {
         const key = `alias.${sub.toLowerCase()}`;
         let value;
@@ -2096,9 +3621,17 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
                     value = vals[vals.length - 1];
             }
         }
+        if (value === undefined && overrides.has(CONFIG_UNKNOWN)) {
+            // The configuration is partly unreadable (redirected files, includes, --config-env): this
+            // subcommand may be an alias for `push -f`.
+            worseParse(run, 'dynamic');
+            hit(run, 'S1', 'git_unresolved_alias_config_unknown');
+            return;
+        }
         if (value !== undefined) {
             if (aliasDepth >= tables_1.LIMITS.maxAliasExpansions) {
-                worseParse(run, 'unparsed');
+                worseParse(run, 'too_large');
+                hit(run, 'Sx', 'budget_alias_depth');
                 tripwire(`${value} ${args.map(argText).join(' ')}`, run);
                 return;
             }
@@ -2133,6 +3666,15 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
             if (a.text === null || !a.text.startsWith('-'))
                 checkProtectedWrite(a, gctx, run, `git_${sub}`, sub === 'rm' || sub === 'mv');
     }
+    // `git credential fill` prints the stored password for a host.
+    if (sub === 'credential' && args.some((a) => a.text === null || a.text === 'fill' || a.text === 'get')) {
+        hit(run, 'S4', 'git_credential_fill');
+        return;
+    }
+    if (/^credential-/.test(sub) && args.some((a) => a.text === null || a.text === 'get')) {
+        hit(run, 'S4', 'git_credential_get');
+        return;
+    }
     if (!tables_1.GIT_S4_EXEMPT_SUBS.has(sub)) {
         // Commit messages are prose, never paths.
         for (let k = 0; k < args.length; k += 1) {
@@ -2147,6 +3689,54 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
         }
     }
 }
+// Options that hand git a command to run: rebase --exec, filter-branch filters, bisect run, submodule
+// foreach, and the pack programs of fetch and push.
+function gitExecOptions(sub, args, ctx, run, x) {
+    const classify = (a) => {
+        if (!a)
+            return;
+        if (a.text !== null)
+            evalShell(a.text, childCtx(ctx), run);
+        else
+            dynamicCode(a, ctx, run, 'dynamic_git_exec_option');
+    };
+    const filters = ['--env-filter', '--tree-filter', '--index-filter', '--parent-filter', '--msg-filter', '--commit-filter', '--tag-name-filter'];
+    for (let i = 0; i < args.length; i += 1) {
+        const t = args[i].text;
+        if (t === null || !t.startsWith('-'))
+            continue;
+        const eq = t.startsWith('--') ? t.indexOf('=') : -1;
+        const key = eq > 0 ? t.slice(0, eq) : t;
+        const inline = eq > 0 ? litArg(t.slice(eq + 1)) : null;
+        const value = inline || args[i + 1];
+        if (sub === 'rebase' && (key === '-x' || key === '--exec'))
+            classify(value);
+        else if (sub === 'rebase' && /^-x.+/.test(t))
+            classify(litArg(t.slice(2)));
+        else if (sub === 'filter-branch' && filters.includes(key))
+            classify(value);
+        else if (['fetch', 'pull', 'clone', 'ls-remote'].includes(sub) && (key === '--upload-pack' || key === '-u'))
+            classify(value);
+        else if (['push', 'send-pack'].includes(sub) && (key === '--receive-pack' || key === '--exec'))
+            classify(value);
+        else if (sub === 'archive' && key === '--exec')
+            classify(value);
+        else if ((sub === 'difftool' || sub === 'mergetool') && (key === '--extcmd' || key === '-x'))
+            classify(value);
+        else if (sub === 'clone' && (key === '-c' || key === '--config') && value && value.text !== null) {
+            const kv = value.text.indexOf('=');
+            if (kv > 0)
+                classifyExecConfig(canonicalGitKey(value.text.slice(0, kv)), value.text.slice(kv + 1), ctx, run);
+        }
+    }
+    if (sub === 'bisect' && args[0]?.text === 'run')
+        dispatch(args.slice(1), ctx, run, x);
+    if (sub === 'submodule') {
+        const k = args.findIndex((a) => a.text === 'foreach');
+        if (k >= 0)
+            classify(args.slice(k + 1).find((a) => !(a.text !== null && a.text.startsWith('-'))));
+    }
+}
 function gitConfig(args, ctx, run, x, overrides, aliasDepth) {
     const vf = new Set(['--file', '-f', '--blob', '--type', '--default', '--comment']);
     const pos = positionals(args, [...vf]);
@@ -2159,8 +3749,19 @@ function gitConfig(args, ctx, run, x, overrides, aliasDepth) {
     if (value === null) {
         worseParse(run, 'dynamic');
         tripwire(`${pos[0].text} ${argText(pos[1])}`, run);
+        if (tables_1.GIT_EXEC_CONFIG.test(key) || tables_1.GIT_CONFIG_INCLUDE.test(key))
+            hit(run, 'S0', 'git_config_exec_key_dynamic');
         return;
     }
+    // A persistent exec-capable setting runs a program for the owner later (audit F6, adv5).
+    if (tables_1.GIT_EXEC_CONFIG.test(key) && !key.startsWith('alias.')) {
+        const benign = BENIGN_EXEC_VALUE.test(value.trim()) && !/hookspath$/.test(key);
+        if (!benign && !(/^credential(?:\..+)?\.helper$/.test(key) && !value.startsWith('!') && !path.posix.isAbsolute(value)))
+            hit(run, 'S0', 'git_config_exec_key');
+        classifyExecConfig(key, value, ctx, run);
+    }
+    if (tables_1.GIT_CONFIG_INCLUDE.test(key))
+        hit(run, 'S0', 'git_config_include');
     if (key.startsWith('alias.')) {
         const name = key.slice(6).toLowerCase();
         ctx.gitAliases.set(name, value);
@@ -2243,6 +3844,11 @@ function gitPush(args, ctx, run, overrides) {
         else
             refspecs.push(a);
     }
+    // Configuration that could not be read may add a `+` refspec or mirror mode to a push with no
+    // explicit refspec.
+    const configUnknown = overrides.has(CONFIG_UNKNOWN) && refspecs.length === 0;
+    if (configUnknown)
+        risky.add('unknown_flag');
     const cwd = ctx.cwds.length === 1 ? ctx.cwds[0] : null;
     const remoteName = repo ? repo.text : undefined;
     let current = null;
@@ -2265,54 +3871,32 @@ function gitPush(args, ctx, run, overrides) {
         hit(run, 'S2', 'git_push_heroku');
     if (remote && /^(?:true|yes|on|1)$/i.test(last(cfg(`remote.${remote}.mirror`)) || ''))
         risky.add('mirror');
+    // null in `targets` = a destination that cannot be resolved to one branch: protected. The rule is
+    // the U3 resolver's (src/seatbelt-git.ts resolvePushRefspec): git matches a short name with
+    // ref_rev_parse_rules, so `heads/main` is refs/heads/main and `tags/x` may name a branch; any name
+    // with more than one reading, a pattern, or an odd ref name is unresolved (audit F4).
     const targets = [];
     let anyForced = false;
-    const addTarget = (dst) => {
-        if (dst === null) {
-            targets.push(null);
-            return;
-        }
-        let d = dst;
-        if (d === 'HEAD' || d === '@') {
-            targets.push(current);
-            return;
-        }
-        if (d.startsWith('refs/tags/') || d.startsWith('refs/notes/') || d.startsWith('refs/remotes/'))
-            return;
-        d = d.replace(/^refs\/heads\//, '');
-        if (d.includes('*')) {
-            targets.push('*');
-            return;
-        }
-        targets.push(d);
-    };
     const consumeRefspec = (spec) => {
         let s = spec;
         if (s.startsWith('+')) {
             anyForced = true;
             s = s.slice(1);
         }
-        if (risky.has('delete') && !s.includes(':')) {
-            addTarget(s);
+        if (s === ':') {
+            targets.push(null);
             return;
         }
         const colon = s.indexOf(':');
-        if (colon < 0) {
-            addTarget(s);
-            return;
-        }
-        const src = s.slice(0, colon);
-        const dst = s.slice(colon + 1);
-        if (src === '')
+        const src = colon < 0 ? s : s.slice(0, colon);
+        const dst = colon < 0 ? null : s.slice(colon + 1);
+        if (colon >= 0 && src === '')
             risky.add('delete');
-        if (dst === '') {
-            if (src === 'HEAD' || src === '@')
-                addTarget(current);
-            else
-                addTarget(src);
+        if (s.includes('*')) {
+            targets.push(null);
             return;
         }
-        addTarget(dst);
+        targets.push(resolveRefName(dst !== null ? dst : src, current));
     };
     for (const r of refspecs) {
         if (r.text === null) {
@@ -2339,7 +3923,7 @@ function gitPush(args, ctx, run, overrides) {
             else if (mode === 'nothing') { /* pushes nothing */ }
             else if (mode === 'upstream' || mode === 'tracking') {
                 const merge = current ? last(cfg(`branch.${current}.merge`)) : undefined;
-                targets.push(merge ? merge.replace(/^refs\/heads\//, '') : current);
+                targets.push(merge ? resolveRefName(merge, current) : current);
             }
             else
                 targets.push(current);
@@ -2347,6 +3931,8 @@ function gitPush(args, ctx, run, overrides) {
     }
     if (repo && repo.text === null)
         remote = null;
+    if (configUnknown)
+        targets.push(null);
     const forced = anyForced || risky.has('force') || risky.has('unknown_flag');
     const destructive = forced || risky.has('delete') || risky.has('mirror') || risky.has('prune');
     const protectedHit = targets.some((tname) => isProtectedBranch(tname, remote, cwd, run));
@@ -2360,6 +3946,24 @@ function gitPush(args, ctx, run, overrides) {
         run.flags.add('protected_branch_push');
     if (destructive)
         run.flags.add(risky.has('delete') ? 'delete' : 'force');
+}
+const AMBIGUOUS_REF_PREFIX = /^(?:refs|heads|tags|remotes)(?:\/|$)/i;
+// One ref name as git would resolve it to a branch under refs/heads/, or null when it cannot be
+// resolved to a single branch. Same rule as the U3 resolver.
+function resolveRefName(ref, current) {
+    if (ref === 'HEAD' || ref === '@')
+        return current;
+    if (/[$`~^:?*[\\\s{}]|@\{|\.\.|\/\/|^\/|\/$|\.lock(?:\/|$)/.test(ref))
+        return null;
+    if (ref.startsWith('refs/heads/')) {
+        const branch = ref.slice('refs/heads/'.length);
+        return branch && !AMBIGUOUS_REF_PREFIX.test(branch) ? branch : null;
+    }
+    if (/^refs\//i.test(ref))
+        return null;
+    if (AMBIGUOUS_REF_PREFIX.test(ref) || /^(?:head|fetch_head|orig_head|merge_head)$/i.test(ref))
+        return null;
+    return ref || null;
 }
 function isProtectedBranch(name, remote, cwd, run) {
     if (name === null || name === '*' || name === '')
@@ -2388,6 +3992,20 @@ function handleGh(rest, ctx, run) {
     const pos = positionals(rest, ['-R', '--repo', '-X', '--method', '-f', '-F', '--field', '--raw-field', '-H', '--header', '--input', '-q', '--jq', '-t', '--template', '--hostname', '-p', '--preview', '--cache']);
     const sub = pos[0]?.text;
     const sub2 = pos[1]?.text;
+    // Destructive source control beyond a branch (S1, owner decision 2026-10-12): deleting a whole
+    // repository or a release. A dynamic subcommand could be either.
+    if (sub === 'repo' && (sub2 === 'delete' || sub2 === null)) {
+        hit(run, 'S1', sub2 === null ? 'gh_dynamic_subcommand' : 'gh_repo_delete');
+        return;
+    }
+    if (sub === 'release' && (sub2 === 'delete' || sub2 === 'delete-asset' || sub2 === null)) {
+        hit(run, 'S1', sub2 === null ? 'gh_dynamic_subcommand' : 'gh_release_delete');
+        return;
+    }
+    if (sub === null) {
+        hit(run, 'S1', 'gh_dynamic_subcommand');
+        return;
+    }
     if (sub === 'auth' && sub2 === 'token') {
         hit(run, 'S4', 'gh_auth_token');
         return;
@@ -2402,13 +4020,14 @@ function handleGh(rest, ctx, run) {
     }
     if (sub === 'api' && pos[1]?.text === 'graphql') {
         const body = rest.map(argText).join(' ');
-        if (/deleteRef|updateRefs?\b[\s\S]*force|force[\s\S]*updateRefs?\b/i.test(body))
+        if (/deleteRef|deleteRepository|deleteRelease|deleteBranchProtectionRule|updateRefs?\b[\s\S]*force|force[\s\S]*updateRefs?\b/i.test(body))
             hit(run, 'S1', 'gh_graphql_ref_rewrite');
         return;
     }
     if (sub === 'api') {
         const endpoint = pos[1];
-        const method = (valueFlag(rest, ['-X', '--method'], ['-X']) ?? undefined);
+        // null = the method is a dynamic word: UNKNOWN below (a `?? undefined` here made it a GET).
+        const method = valueFlag(rest, ['-X', '--method'], ['-X']);
         const fields = [];
         for (let i = 0; i < rest.length; i += 1)
             if (['-f', '-F', '--field', '--raw-field'].includes(rest[i].text || '') && rest[i + 1])
@@ -2419,45 +4038,142 @@ function handleGh(rest, ctx, run) {
             return;
         const ep = endpoint.text;
         if (ep === null) {
-            if (/git\/refs/.test(endpoint.pattern) && m !== 'GET')
+            if (/git\/refs|repos\//.test(endpoint.pattern) && m !== 'GET')
                 hit(run, 'S1', 'gh_api_ref_dynamic');
             return;
         }
-        const ref = ep.match(/^\/?repos\/[^/]+\/[^/]+\/git\/refs\/heads\/(.+)$/);
+        let epDecoded = ep;
+        try {
+            epDecoded = decodeURIComponent(ep);
+        }
+        catch {
+            epDecoded = ep;
+        }
+        // Repository, release and branch-protection deletes (S1, owner decision 2026-10-12).
+        const base = epDecoded.replace(/^https?:\/\/[^/]+\/(?:api\/v3\/)?/, '').replace(/^\//, '').replace(/\?.*$/, '');
+        if (m === 'DELETE' || m === 'UNKNOWN') {
+            if (/^repos\/[^/]+\/[^/]+\/?$/.test(base)) {
+                hit(run, 'S1', 'gh_api_delete_repo');
+                return;
+            }
+            if (/^repos\/[^/]+\/[^/]+\/releases\/[^/]+\/?$/.test(base)) {
+                hit(run, 'S1', 'gh_api_delete_release');
+                return;
+            }
+            const prot = base.match(/^repos\/[^/]+\/[^/]+\/branches\/(.+?)\/protection(?:\/.*)?$/);
+            if (prot && isProtectedBranch(resolveRefName(prot[1], null), 'origin', ctx.cwds[0] || null, run)) {
+                hit(run, 'S1', 'gh_api_delete_branch_protection');
+                return;
+            }
+        }
+        const ref = base.match(/^repos\/[^/]+\/[^/]+\/git\/refs?\/(.+)$/);
         if (!ref)
             return;
+        // refs/heads/<name>, heads/<name> and any other form: the same rule as `git push` (audit F4).
+        const full = ref[1];
+        const branch = full.startsWith('heads/') ? full.slice('heads/'.length) : full.startsWith('refs/heads/') ? full.slice('refs/heads/'.length) : full;
         const forced = fields.some((f) => /^force=(?:true|1)$/i.test(f)) || hasInput || m === 'UNKNOWN';
-        if ((m === 'DELETE' || ((m === 'PATCH' || m === 'POST' || m === 'UNKNOWN') && forced)) && isProtectedBranch(ref[1], 'origin', ctx.cwds[0] || null, run)) {
+        const resolved = full.startsWith('tags/') || full.startsWith('refs/tags/') ? 'tag' : resolveRefName(`refs/heads/${branch}`, null);
+        if ((m === 'DELETE' || ((m === 'PATCH' || m === 'POST' || m === 'UNKNOWN') && forced)) && resolved !== 'tag' && isProtectedBranch(resolved, 'origin', ctx.cwds[0] || null, run)) {
             hit(run, 'S1', m === 'DELETE' ? 'gh_api_delete_protected_ref' : 'gh_api_force_protected_ref');
         }
     }
 }
 // ---------------------------------------------------------------------------------------------
 // package managers (S3 publish, script resolution, npx, S0 uninstall)
-const NPM_SUB_ALIASES = {
-    'run-script': 'run', rum: 'run', urn: 'run', t: 'test', tst: 'test', i: 'install', in: 'install', ins: 'install', inst: 'install',
-    insta: 'install', instal: 'install', isnt: 'install', isnta: 'install', isntal: 'install', isntall: 'install', add: 'install',
-    ci: 'ci', 'clean-install': 'ci', ic: 'ci', 'install-clean': 'ci', 'isntall-clean': 'ci', un: 'uninstall', unlink: 'uninstall',
-    remove: 'uninstall', rm: 'uninstall', r: 'uninstall', x: 'exec', 'dist-tags': 'dist-tag',
-};
 const PNPM_BUILTINS = new Set(['add', 'install', 'i', 'update', 'up', 'upgrade', 'remove', 'rm', 'un', 'uninstall', 'link', 'ln', 'unlink', 'import', 'rebuild', 'rb', 'prune', 'fetch', 'patch', 'patch-commit', 'publish', 'pack', 'run', 'exec', 'dlx', 'create', 'test', 't', 'start', 'store', 'list', 'ls', 'outdated', 'why', 'audit', 'licenses', 'deploy', 'env', 'setup', 'init', 'doctor', 'config', 'root', 'bin', 'server', 'recursive', 'ci', 'dedupe', 'help']);
 const YARN_BUILTINS = new Set(['add', 'install', 'remove', 'upgrade', 'up', 'info', 'init', 'link', 'unlink', 'list', 'outdated', 'pack', 'publish', 'run', 'test', 'why', 'workspace', 'workspaces', 'global', 'cache', 'config', 'dlx', 'exec', 'npm', 'set', 'version', 'plugin', 'node', 'bin', 'audit', 'check', 'autoclean', 'licenses', 'login', 'logout', 'owner', 'tag', 'team', 'import', 'generate-lock-entry', 'policies', 'dedupe', 'explain', 'constraints', 'patch', 'patch-commit', 'rebuild', 'search', 'stage', 'unplug', 'help']);
 const BUN_BUILTINS = new Set(['run', 'test', 'x', 'repl', 'exec', 'install', 'i', 'add', 'a', 'remove', 'rm', 'update', 'outdated', 'link', 'unlink', 'publish', 'patch', 'pm', 'build', 'init', 'create', 'upgrade', 'audit', 'info', 'why']);
+// npm's own subcommand resolution (audit F5): an exact name, an alias, or an unambiguous prefix of
+// either (`pu`, `publ`, `unpub`, `dep`, `exe`, `x`). Ambiguous prefixes keep every reading: npm would
+// refuse them, but a prefix that could be publish is treated as publish.
+function npmAliasChain(name) {
+    let n = name;
+    for (let k = 0; k < 8 && tables_1.NPM_ALIASES[n]; k += 1)
+        n = tables_1.NPM_ALIASES[n];
+    return n;
+}
+function npmCandidates(token) {
+    let c = token;
+    if (/[A-Z]/.test(c))
+        c = c.replace(/([A-Z])/g, (m) => `-${m.toLowerCase()}`);
+    if (tables_1.NPM_COMMANDS.includes(c))
+        return [npmAliasChain(c)];
+    if (tables_1.NPM_ALIASES[c])
+        return [npmAliasChain(c)];
+    if (!c)
+        return [token];
+    const out = new Set();
+    for (const n of [...tables_1.NPM_COMMANDS, ...Object.keys(tables_1.NPM_ALIASES)])
+        if (n.startsWith(c))
+            out.add(npmAliasChain(n));
+    return out.size ? [...out] : [token];
+}
+// Positions in `rest` that may hold the subcommand. An option that takes a value is skipped with its
+// value; an option the table does not know may or may not take one, so both readings are kept
+// (`npm --loglevel silent publish`, `npm --frob x publish`).
+function pmSubCandidates(rest) {
+    const idx = [];
+    let unknownPending = false;
+    for (let i = 0; i < rest.length; i += 1) {
+        const a = rest[i];
+        if (a.text === null)
+            return { idx, dynamic: true };
+        const t = a.text;
+        if (t === '--')
+            continue;
+        if (t.startsWith('-') && t.length > 1) {
+            if (t.includes('='))
+                continue;
+            if (tables_1.NPM_VALUE_FLAGS.has(t)) {
+                i += 1;
+                continue;
+            }
+            if (tables_1.NPM_BOOL_FLAGS.has(t))
+                continue;
+            unknownPending = true;
+            continue;
+        }
+        idx.push(i);
+        if (!unknownPending)
+            break;
+        unknownPending = false;
+    }
+    return { idx, dynamic: false };
+}
 function handlePackageManager(prog, rest, ctx, run, x) {
-    const vf = ['-w', '--workspace', '--prefix', '-C', '--dir', '--filter', '-F', '--cwd', '--tag', '--access', '--otp', '--registry', '--cache'];
-    const pos = positionals(rest, vf);
-    const rawSub = pos[0]?.text;
-    if (rawSub === null) {
+    const cands = pmSubCandidates(rest);
+    if (cands.dynamic) {
+        // `npm $cmd`: the subcommand could be publish.
         worseParse(run, 'dynamic');
         tripwire(rest.map(argText).join(' '), run);
+        hit(run, 'S3', `${prog}_dynamic_subcommand`);
         return;
     }
-    if (rawSub === undefined) {
+    if (cands.idx.length === 0) {
         if (prog !== 'npm')
             lifecycleScripts(['preinstall', 'install', 'postinstall', 'prepublish', 'preprepare', 'prepare', 'postprepare'], ctx, run, x);
         return;
     }
-    const sub = prog === 'npm' ? (NPM_SUB_ALIASES[rawSub] || rawSub) : rawSub;
+    const builtins = prog === 'pnpm' ? PNPM_BUILTINS : prog === 'yarn' ? YARN_BUILTINS : prog === 'bun' ? BUN_BUILTINS : null;
+    for (const idx of cands.idx) {
+        const tail = rest.slice(idx);
+        const token = tail[0].text;
+        const readings = prog === 'npm' ? npmCandidates(token) : [token];
+        // pnpm, yarn and bun do not abbreviate, but a prefix of publish that is not one of their own
+        // commands is read as publish too.
+        if (prog !== 'npm' && token.length >= 2 && 'publish'.startsWith(token) && token !== 'publish' && builtins && !builtins.has(token))
+            readings.push('publish');
+        for (const reading of readings)
+            packageManagerCommand(prog, reading, tail, rest, ctx, run, x);
+    }
+}
+// One reading of the subcommand. `tail` starts at the subcommand token; `all` is the whole argv (global
+// flags such as -g can sit on either side of it).
+function packageManagerCommand(prog, sub, tail, all, ctx, run, x) {
+    const vf = ['-w', '--workspace', '--prefix', '-C', '--dir', '--filter', '-F', '--cwd', '--tag', '--access', '--otp', '--registry', '--cache', '--loglevel'];
+    const rest = tail;
+    const pos = positionals(rest, vf);
     const subIdx = rest.indexOf(pos[0]);
     // yarn workspace <name> <cmd…> / yarn workspaces foreach [opts] <cmd…> / pnpm recursive <cmd…>
     if (prog === 'yarn' && sub === 'workspace' && pos[1])
@@ -2473,12 +4189,12 @@ function handlePackageManager(prog, rest, ctx, run, x) {
     if (prog === 'pnpm' && (sub === 'recursive' || sub === 'multi' || sub === 'm'))
         return handlePackageManager(prog, rest.slice(subIdx + 1), ctx, run, x);
     const after = rest.slice(subIdx + 1);
-    const global = rest.some((a) => a.text === '-g' || a.text === '--global' || a.text === '--location=global');
+    const global = all.some((a) => a.text === '-g' || a.text === '--global' || a.text === '--location=global');
     // yarn berry: `yarn npm publish`
     if (prog === 'yarn' && sub === 'npm' && pos[1]?.text === 'publish')
-        return publishCheck(after, run, `${prog}_publish`);
+        return publishCheck(all, run, `${prog}_publish`);
     if (sub === 'publish')
-        return publishCheck(after, run, `${prog}_publish`);
+        return publishCheck(all, run, `${prog}_publish`);
     if (prog === 'npm') {
         if (sub === 'unpublish') {
             hit(run, 'S3', 'npm_unpublish');
@@ -2494,6 +4210,28 @@ function handlePackageManager(prog, rest, ctx, run, x) {
         }
         if (sub === 'token' && ['list', 'ls', 'create'].includes(pos[1]?.text || 'list')) {
             hit(run, 'S4', 'npm_token');
+            return;
+        }
+        // Reading a registry credential back out of npm's config.
+        if ((sub === 'config' && ['get', 'set'].includes(pos[1]?.text || '')) || sub === 'get') {
+            const key = sub === 'get' ? pos[1] : pos[2];
+            if (key && (key.text === null || /auth|token|password|cert|key|secret/i.test(key.text))) {
+                hit(run, 'S4', 'npm_config_credential');
+                return;
+            }
+        }
+        if (sub === 'explore') {
+            const dd = after.findIndex((a) => a.text === '--');
+            if (dd >= 0)
+                dispatch(after.slice(dd + 1), ctx, run, x);
+            return;
+        }
+        if (sub === 'init') {
+            for (const a of pos.slice(1))
+                if (a.text === null || /^@getmarrow\//.test(a.text)) {
+                    hit(run, 'S0', 'npm_init_marrow_installer');
+                    return;
+                }
             return;
         }
     }
@@ -2515,22 +4253,25 @@ function handlePackageManager(prog, rest, ctx, run, x) {
         return npxLike(after, ctx, run, x);
     if (prog === 'bun' && (sub === 'x' || sub === 'exec'))
         return npxLike(after, ctx, run, x);
-    if (sub === 'run' || (prog === 'npm' && ['start', 'test', 'stop', 'restart'].includes(sub)) || (prog !== 'npm' && ['start', 'test', 't'].includes(sub))) {
-        const name = sub === 'run' ? pos[1] : litArg(sub === 't' ? 'test' : sub);
+    const isRun = sub === 'run' || sub === 'run-script';
+    if (isRun || (prog === 'npm' && ['start', 'test', 'stop', 'restart'].includes(sub)) || (prog !== 'npm' && ['start', 'test', 't'].includes(sub))) {
+        const name = isRun ? pos[1] : litArg(sub === 't' ? 'test' : sub);
         if (!name)
             return;
         if (name.text === null) {
+            // A script name that cannot be resolved: the script may be a deploy (audit F2).
             worseParse(run, 'dynamic');
             tripwire(rest.map(argText).join(' '), run);
+            hit(run, 'Sx', 'dynamic_script_name');
             return;
         }
         const dd = after.findIndex((a) => a.text === '--');
-        const extra = sub === 'run' ? (dd >= 0 ? after.slice(dd + 1) : (prog === 'npm' ? [] : after.slice(after.indexOf(name) + 1))) : (dd >= 0 ? after.slice(dd + 1) : []);
-        if (prog === 'bun' && sub === 'run' && /[./]/.test(name.text) && !/^[a-z0-9:_-]+$/i.test(name.text))
+        const extra = isRun ? (dd >= 0 ? after.slice(dd + 1) : (prog === 'npm' ? [] : after.slice(after.indexOf(name) + 1))) : (dd >= 0 ? after.slice(dd + 1) : []);
+        if (prog === 'bun' && isRun && /[./]/.test(name.text) && !/^[a-z0-9:_-]+$/i.test(name.text))
             return;
         return runPackageScript(name.text, extra, ctx, run, x, true);
     }
-    if (['install', 'ci', 'pack', 'i'].includes(sub) && pos.length === 1) {
+    if (['install', 'install-test', 'install-ci-test', 'ci', 'pack', 'i'].includes(sub) && pos.length === 1) {
         lifecycleScripts(sub === 'pack' ? ['prepack', 'prepare', 'postpack'] : ['preinstall', 'install', 'postinstall', 'prepublish', 'preprepare', 'prepare', 'postprepare'], ctx, run, x);
         return;
     }
@@ -2604,7 +4345,12 @@ function npxLike(rest, ctx, run, x) {
         return;
     }
     const bin = pkgFlag ? (spec.text) : (tables_1.PACKAGE_BINS[name] || name.split('/').pop() || name);
-    dispatch([litArg(bin), ...rest.slice(i + 1)], ctx, run, x);
+    // `npm exec vercel -- --prod` and `npx vercel -- --prod`: the first `--` only ends npm's own
+    // options; what follows is the command's argv (audit F5).
+    const fwd = rest.slice(i + 1);
+    const sep = fwd.findIndex((a) => a.text === '--');
+    const argv = sep >= 0 ? [...fwd.slice(0, sep), ...fwd.slice(sep + 1)] : fwd;
+    dispatch([litArg(bin), ...argv], ctx, run, x);
 }
 // ---------------------------------------------------------------------------------------------
 // S3 publish tools
@@ -2723,18 +4469,10 @@ function handleDeployTool(prog, rest, ctx, run, x) {
                 return true;
             }
             if (s1 === 'pages' && (s2 === 'deploy' || s2 === 'publish')) {
-                let branch = valueFlag(rest, ['--branch']);
-                if (branch === undefined) {
-                    let c = null;
-                    try {
-                        c = ctx.cwds.length === 1 && ctx.cwds[0] ? run.env.git.currentBranch(ctx.cwds[0]) : null;
-                    }
-                    catch {
-                        c = null;
-                    }
-                    branch = c;
-                }
-                if (branch === null || isProtectedBranch(branch, 'origin', ctx.cwds[0] || null, run) || tables_1.PROD_ENV.test(branch || ''))
+                // Pages decides production by the project's production branch, which the mapper cannot see:
+                // only an explicit branch that is not protected or production-named is a preview.
+                const branch = valueFlag(rest, ['--branch']);
+                if (branch === undefined || branch === null || branch === '' || isProtectedBranch(resolveRefName(branch, null), 'origin', ctx.cwds[0] || null, run) || isProdName(branch))
                     return stop('wrangler_pages_production_branch');
                 return true;
             }
@@ -2796,6 +4534,10 @@ function handleDeployTool(prog, rest, ctx, run, x) {
             const s = p.map((a) => a.text);
             if (s[0] === 'auth' && (s[1] === 'print-access-token' || s[1] === 'print-identity-token' || (s[1] === 'application-default' && /^print-/.test(s[2] || '')))) {
                 hit(run, 'S4', 'gcloud_print_token');
+                return true;
+            }
+            if (s[0] === 'secrets' && s[1] === 'versions' && s[2] === 'access') {
+                hit(run, 'S4', 'gcloud_secret_value');
                 return true;
             }
             if (s[0] === 'app' && s[1] === 'deploy')
@@ -2883,8 +4625,15 @@ function handleDeployTool(prog, rest, ctx, run, x) {
                 }
                 i += 1;
             }
-            const s1 = rest[i]?.text;
-            const args = rest.slice(i + 1);
+            let s1 = rest[i]?.text;
+            let args = rest.slice(i + 1);
+            // terragrunt run-all apply / apply-all / destroy-all
+            if (prog === 'terragrunt' && (s1 === 'run-all' || s1 === 'run') && args[0]) {
+                s1 = args[0].text;
+                args = args.slice(1);
+            }
+            if (s1 === 'apply-all' || s1 === 'destroy-all')
+                s1 = s1.slice(0, -4);
             if (s1 === 'workspace' && (args[0]?.text === 'select' || args[0]?.text === 'new')) {
                 const ws = positionals(args.slice(1), [])[0];
                 ctx.tfWorkspace = ws ? ws.text : null;
@@ -2949,6 +4698,15 @@ function handleDeployTool(prog, rest, ctx, run, x) {
                 return stop('terraform_prod_var');
             if (planFiles.some((p) => p.text === null || tables_1.PROD_ENV.test(p.text)))
                 return stop('terraform_prod_plan');
+            // Nothing says which environment this is. The default workspace is often production, so an
+            // apply needs positive evidence of a non-production one (production is never looser).
+            const nonProd = /(?:^|[^a-z0-9])(?:dev|development|stag|staging|stage|test|testing|qa|sandbox|preview|local|demo|uat)(?:[^a-z0-9]|$)/i;
+            const evidence = (typeof workspace === 'string' && workspace !== 'default' && nonProd.test(workspace))
+                || varFiles.some((f) => f !== null && nonProd.test(f)) || varValues.some((v) => v !== null && nonProd.test(v))
+                || dirs.some((d) => d !== null && nonProd.test(d.split('/').slice(-3).join('/')))
+                || planFiles.some((p) => p.text !== null && nonProd.test(p.text));
+            if (!evidence)
+                return stop('terraform_environment_unresolved');
             return true;
         }
         case 'pulumi': {
@@ -2970,6 +4728,15 @@ function handleDeployTool(prog, rest, ctx, run, x) {
             return true;
         }
         case 'eb': return pos(['--profile', '-r', '--region', '-l', '--label', '-m', '--message'])[0]?.text === 'deploy' ? stop('eb_deploy') : true;
+        case 'railway': {
+            const s1 = pos(['-e', '--environment', '-s', '--service', '-p', '--project', '-d', '--detach', '-m', '--message'])[0]?.text;
+            if (s1 !== 'up' && s1 !== 'deploy' && s1 !== 'redeploy' && s1 !== null)
+                return true;
+            const environment = valueFlag(rest, ['-e', '--environment'], ['-e']);
+            if (environment === undefined || prodValue(environment))
+                return stop('railway_deploy_production');
+            return true;
+        }
         case 'aws': {
             const p = pos(['--profile', '--region', '--output', '--query', '--endpoint-url', '--stack-name', '--template-file', '--parameter-overrides', '--capabilities', '--s3-bucket', '--role-arn']);
             const s = p.map((a) => a.text);
@@ -2985,6 +4752,18 @@ function handleDeployTool(prog, rest, ctx, run, x) {
                 hit(run, 'S4', 'aws_sts_credentials');
                 return true;
             }
+            if (s[0] === 'secretsmanager' && s[1] === 'get-secret-value') {
+                hit(run, 'S4', 'aws_secret_value');
+                return true;
+            }
+            if (s[0] === 'ssm' && /^get-parameters?(?:-by-path)?$/.test(s[1] || '') && rest.some((a) => a.text === '--with-decryption' || a.text === null)) {
+                hit(run, 'S4', 'aws_ssm_decrypt');
+                return true;
+            }
+            if (s[0] === 'kms' && s[1] === 'decrypt') {
+                hit(run, 'S4', 'aws_kms_decrypt');
+                return true;
+            }
             if (s[0] === 'cloudformation' && ['deploy', 'update-stack', 'delete-stack', 'create-stack'].includes(s[1] || '')) {
                 const stack = valueFlag(rest, ['--stack-name']);
                 const profile = valueFlag(rest, ['--profile']);
@@ -2997,6 +4776,10 @@ function handleDeployTool(prog, rest, ctx, run, x) {
             const p = pos(['--subscription', '-o', '--output', '--query', '--resource', '--scope', '--tenant', '-t']);
             if (p[0]?.text === 'account' && p[1]?.text === 'get-access-token') {
                 hit(run, 'S4', 'az_get_access_token');
+                return true;
+            }
+            if (p[0]?.text === 'keyvault' && p[1]?.text === 'secret' && ['show', 'download'].includes(p[2]?.text || '')) {
+                hit(run, 'S4', 'az_keyvault_secret');
                 return true;
             }
             return true;
@@ -3044,8 +4827,26 @@ function handleKubectl(rest, ctx, run, x) {
         }
         return;
     }
+    if (s1 === 'run' || s1 === 'debug' || s1 === 'create') {
+        // `kubectl run NAME --image=X -- cmd args…`: runs in the cluster.
+        const dd = rest.findIndex((a) => a.text === '--');
+        if (dd >= 0)
+            dispatch(rest.slice(dd + 1), childCtx(ctx, { cwds: [null], remote: true, vars: new Map(), aliases: new Map() }), run, { ...x, env: new Map() });
+    }
     if (s1 === 'config' && p[1]?.text === 'use-context') {
         ctx.kubeContext = p[2] ? p[2].text : null;
+        return;
+    }
+    if (s1 === 'get' && /^(?:secrets?|sec)(?:\/|$)/.test(p[1]?.text || '')) {
+        // Only name and wide listings are free of secret values.
+        const format = valueFlag(rest, ['-o', '--output'], ['-o']);
+        if (format !== undefined && (format === null || !/^(?:name|wide)$/.test(format))) {
+            hit(run, 'S4', 'kubectl_secret_value');
+            return;
+        }
+    }
+    if (s1 === 'config' && p[1]?.text === 'view' && rest.some((a) => a.text === '--raw')) {
+        hit(run, 'S4', 'kubectl_config_raw');
         return;
     }
     if (s1 === null) {
@@ -3063,6 +4864,17 @@ function handleKubectl(rest, ctx, run, x) {
     if (prodValue(context) || (ns !== undefined && prodValue(ns))) {
         hit(run, 'S2', 'kubectl_production_context');
         run.flags.add('prod');
+        return;
+    }
+    // `kubectl delete ns production`, `kubectl delete deploy/api-prod`: the object itself is production.
+    if (s1 === 'delete' || s1 === 'drain' || s1 === 'scale') {
+        for (const a of p.slice(1)) {
+            if (a.text === null || prodValue(a.text.replace(/^[a-z.]+\//, '')) && a.text !== '') {
+                hit(run, 'S2', 'kubectl_production_object');
+                run.flags.add('prod');
+                return;
+            }
+        }
     }
 }
 function handleHelm(rest, ctx, run) {
@@ -3096,11 +4908,20 @@ function handleDocker(rest, ctx, run) {
     while (i < rest.length && rest[i].text !== null && rest[i].text.startsWith('-'))
         i += globalVf.has(rest[i].text) ? 2 : 1;
     const s0 = rest[i]?.text;
+    if (s0 === 'run' || s0 === 'create' || s0 === 'start') {
+        // `docker run [opts] IMAGE CMD…`: the command runs in a container (remote paths are unknowable).
+        scanArgvForCommands(rest.slice(i + 1), ctx, run, emptyExec(), true);
+        return;
+    }
     if (s0 === 'compose' || s0 === 'container') {
         i += 1;
         if (s0 === 'compose')
             while (i < rest.length && rest[i].text !== null && rest[i].text.startsWith('-'))
                 i += ['-f', '--file', '-p', '--project-name', '--env-file', '--profile'].includes(rest[i].text) ? 2 : 1;
+        if (rest[i]?.text === 'run' && s0 === 'container') {
+            scanArgvForCommands(rest.slice(i + 1), ctx, run, emptyExec(), true);
+            return;
+        }
         if (rest[i]?.text !== 'exec' && rest[i]?.text !== 'run')
             return;
     }
@@ -3134,20 +4955,25 @@ function handleClaudeCli(rest, run) {
 function handleSecretDumper(prog, rest, run) {
     const s = positionals(rest, ['-a', '-s', '-l', '--vault', '--account', '--format', '-field', '--field', '-mount']).map((a) => a.text);
     const stop = (reason) => { hit(run, 'S4', reason); return true; };
+    // A subcommand that is not a dump is not handled here: `op run -- <cmd>` and `pass git …` run a
+    // command, so their argv goes through the unknown-program scan.
     switch (prog) {
         case 'security':
             if (/^find-(?:generic|internet)-password$/.test(rest[0]?.text || '') && rest.some((a) => a.text === '-w' || a.text === '-g'))
                 return stop('keychain_password');
-            return true;
-        case 'secret-tool': return s[0] === 'lookup' || s[0] === null ? stop('secret_tool_lookup') : true;
-        case 'op': return (s[0] === 'read' || (s[0] === 'item' && s[1] === 'get') || s[0] === null) ? stop('op_read') : true;
-        case 'vault': return ((s[0] === 'kv' && ['get', 'read'].includes(s[1] || '')) || s[0] === 'read' || s[0] === null) ? stop('vault_read') : true;
+            return false;
+        case 'gpg':
+        case 'gpg2':
+            return rest.some((a) => a.text !== null && /^--export-secret(?:-subkeys|-keys)?$|^--export-ssh-key$/.test(a.text)) ? stop('gpg_export_secret') : false;
+        case 'secret-tool': return s[0] === 'lookup' || s[0] === null ? stop('secret_tool_lookup') : false;
+        case 'op': return (s[0] === 'read' || (s[0] === 'item' && s[1] === 'get') || s[0] === null) ? stop('op_read') : false;
+        case 'vault': return ((s[0] === 'kv' && ['get', 'read'].includes(s[1] || '')) || s[0] === 'read' || s[0] === null) ? stop('vault_read') : false;
         case 'pass': {
             if (s[0] === 'show' || s[0] === null)
                 return stop('pass_show');
             if (s[0] && !['ls', 'list', 'find', 'search', 'init', 'insert', 'add', 'edit', 'generate', 'rm', 'remove', 'delete', 'mv', 'rename', 'cp', 'copy', 'git', 'help', 'version', 'grep', 'otp'].includes(s[0]) && !rest.some((a) => a.text === '-c' || a.text === '--clip'))
                 return stop('pass_show');
-            return true;
+            return false;
         }
         default: return false;
     }
@@ -3260,6 +5086,13 @@ function handleFind(rest, ctx, run, x) {
         }
 }
 function handleRsync(rest, ctx, run) {
+    // The remote shell (-e / --rsh) is a command.
+    for (let k = 0; k < rest.length; k += 1) {
+        const t = rest[k].text;
+        const v = t === '-e' || t === '--rsh' ? rest[k + 1] : t !== null && t.startsWith('--rsh=') ? litArg(t.slice(6)) : null;
+        if (v && v.text !== null && /\s|\//.test(v.text) && !/^ssh(?:\s+-[A-Za-z0-9]+(?:\s+\S+)?)*$/.test(v.text.trim()))
+            evalShell(v.text, childCtx(ctx), run);
+    }
     if (!rest.some((a) => a.text !== null && /^--(?:del|delete(?:-[a-z]+)?|remove-source-files)$/.test(a.text)))
         return;
     const ops = nonOptions(rest, new Set(['-e', '--rsh', '--exclude', '--include', '--filter', '-f', '--files-from', '--port', '--password-file', '--log-file', '--backup-dir', '--suffix', '--chmod', '--chown']));

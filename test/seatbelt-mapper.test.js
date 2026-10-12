@@ -176,8 +176,12 @@ test('fail closed: unknown cwd, git reader failure and oversize input never pass
   assert.equal(sh('rm -rf build', { cwd: null }).decision, 'stop');
   assert.equal(sh('rm -rf build', { cwd: 'relative/dir' }).decision, 'stop');
   assert.equal(sh('git push -f', { gitThrows: true }).decision, 'stop');
+  // The 8 KB cutoff is gone (audit F3): 9 KB parses, so the publish is read; past the parser's own
+  // 64 KB limit the answer is stop, never pass.
   assert.equal(sh(`npm publish ${'a'.repeat(9000)}`).decision, 'stop');
-  assert.equal(sh(`npm publish ${'a'.repeat(9000)}`).parse, 'too_large');
+  assert.equal(sh(`npm publish ${'a'.repeat(9000)}`).parse, 'ok');
+  assert.equal(sh(`ls ${'a'.repeat(70000)}`).decision, 'stop');
+  assert.equal(sh(`ls ${'a'.repeat(70000)}`).parse, 'too_large');
   assert.equal(sh('git push -f origin main "').parse, 'unparsed');
   assert.equal(sh('echo "hi').decision, 'pass');
   const deep = 'bash -c "bash -c \\"bash -c \'bash -c \\\\\\"bash -c npm\\\\ publish\\\\\\"\'\\""';

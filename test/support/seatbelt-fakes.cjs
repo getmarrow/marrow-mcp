@@ -60,6 +60,17 @@ function makeEnv(options = {}) {
     }
     return cur;
   }
+  // Directory listing for glob expansion (audit F9). `options.noReaddir` leaves the fs without it.
+  function readdir(p) {
+    const r = realpath(p);
+    if (r === null || !dirs.has(r)) return null;
+    const prefix = r === '/' ? '/' : `${r}/`;
+    const names = new Set();
+    for (const f of Object.keys(files)) if (f.startsWith(prefix)) names.add(f.slice(prefix.length).split('/')[0]);
+    for (const d of dirs) if (d.startsWith(prefix) && d !== r) names.add(d.slice(prefix.length).split('/')[0]);
+    for (const l of Object.keys(links)) if (l.startsWith(prefix)) names.add(l.slice(prefix.length).split('/')[0]);
+    return [...names].filter(Boolean);
+  }
   const config = { 'remote.origin.url': ['git@github.com:acme/proj.git'], ...(options.gitConfig || {}) };
   const reads = [];
   const env = {
@@ -68,6 +79,9 @@ function makeEnv(options = {}) {
     tmpdir: '/tmp',
     platform: options.platform || 'linux',
     classifierClass: options.classifierClass,
+    // Tests run under a roomy wall-clock budget so a loaded machine cannot flip a decision; the
+    // budget tests set their own (production default: LIMITS.timeBudgetMs).
+    budgetMs: options.budgetMs === undefined ? 30000 : options.budgetMs,
     fs: {
       readFile(p, max) {
         reads.push(p);
@@ -77,6 +91,7 @@ function makeEnv(options = {}) {
         return Buffer.byteLength(v) > max ? null : v;
       },
       realpath,
+      ...(options.noReaddir ? {} : { readdir }),
     },
     git: {
       toplevel(cwd) {

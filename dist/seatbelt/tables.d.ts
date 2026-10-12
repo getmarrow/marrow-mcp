@@ -1,12 +1,21 @@
 export declare const SEATBELT_RULES_VERSION = "marrow.seatbelt.rules.v1";
 export declare const LIMITS: Readonly<{
     maxCommandBytes: number;
-    maxSegments: 64;
-    maxDepth: 3;
+    maxSegments: 256;
+    maxDepth: 6;
     maxScriptBytes: number;
     maxPackageJsonBytes: number;
     maxConfigBytes: number;
     maxAliasExpansions: 5;
+    maxWork: 4000;
+    maxScriptExpansions: 150;
+    maxVariants: 16;
+    timeBudgetMs: 300;
+    maxGlobMatches: 256;
+    maxToolNodes: 200000;
+    maxToolDepth: 12;
+    maxTailTrials: 64;
+    maxPathChars: 4096;
 }>;
 export declare const SECRET_PATTERNS: readonly string[];
 export declare const KEY_EXTENSIONS: RegExp;
@@ -34,4 +43,21 @@ export declare const TRIPWIRE: ReadonlyArray<{
     reason: string;
 }>;
 export declare const NAME_TRIPWIRE: RegExp;
+export declare const KNOWN_COMMANDS: Set<string>;
+export declare const INERT_PROGRAMS: Set<string>;
+export declare const SCRIPT_SUFFIX: RegExp;
+export declare const NON_SCRIPT_NAMES: Set<string>;
+export declare const EVAL_PRODUCERS: Set<string>;
+export declare const NPM_COMMANDS: string[];
+export declare const NPM_ALIASES: Record<string, string>;
+export declare const NPM_VALUE_FLAGS: Set<string>;
+export declare const NPM_BOOL_FLAGS: Set<string>;
+export declare const GIT_EXEC_CONFIG: RegExp;
+export declare const GIT_CONFIG_INCLUDE: RegExp;
+export declare const GIT_CONFIG_ENV_FILES: string[];
+export declare const SHELL_TOOL_NAMES: Set<string>;
+export declare const FILE_TOOL_NAMES: Set<string>;
+export declare const COMMAND_KEYS: Set<string>;
+export declare const ARGV_KEYS: Set<string>;
+export declare const CODE_KEYS: Set<string>;
 //# sourceMappingURL=tables.d.ts.map
