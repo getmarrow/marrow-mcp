@@ -76,17 +76,41 @@ function readHostConfigFile(path) {
     }
 }
 /**
+ * A real git repository root: `.git` is a directory (not a symlink) holding a
+ * regular `HEAD` file and `objects` and `refs` directories, as `git init` makes.
+ * codex does not stop at a `.git` that is not a repository (an empty folder,
+ * an archive, a generated directory), so neither does this walk. A gitfile
+ * (`.git` file of a worktree or submodule) never stops it either: walking on
+ * reads more configs than the host, which only adds to the union (stricter).
+ */
+function realGitRoot(dir) {
+    try {
+        const git = (0, node_fs_1.lstatSync)((0, node_path_1.join)(dir, '.git'));
+        if (!git.isDirectory())
+            return false;
+        return (0, node_fs_1.lstatSync)((0, node_path_1.join)(dir, '.git', 'HEAD')).isFile()
+            && (0, node_fs_1.lstatSync)((0, node_path_1.join)(dir, '.git', 'objects')).isDirectory()
+            && (0, node_fs_1.lstatSync)((0, node_path_1.join)(dir, '.git', 'refs')).isDirectory();
+    }
+    catch {
+        return false;
+    }
+}
+/**
  * Every `<dir>/<rel>` from each start directory up to its project root (the
- * nearest directory holding `.git`, where codex and Cursor stop looking), or up
- * to the filesystem root when there is none; deduplicated, bounded.
+ * nearest real git repository root, where codex stops looking), or up to the
+ * filesystem root when there is none; deduplicated. A path deeper than the
+ * bound proves nothing (null).
  */
 function upwardPaths(starts, rel) {
     const out = new Set();
     for (const start of starts) {
         let dir = (0, node_path_1.resolve)(start);
-        for (let depth = 0; depth < MAX_DIR_DEPTH; depth += 1) {
+        for (let depth = 0;; depth += 1) {
+            if (depth >= MAX_DIR_DEPTH)
+                return null;
             out.add((0, node_path_1.join)(dir, rel));
-            if ((0, node_fs_1.existsSync)((0, node_path_1.join)(dir, '.git')))
+            if (realGitRoot(dir))
                 break;
             const parent = (0, node_path_1.dirname)(dir);
             if (parent === dir)
@@ -671,13 +695,16 @@ function codexOfficialMarrowServer(options = {}) {
     if (facts.bad)
         return { official: false, reason: facts.bad };
     const home = env.CODEX_HOME && env.CODEX_HOME.trim() ? (0, node_path_1.resolve)(env.CODEX_HOME) : (0, node_path_1.join)((0, node_os_1.homedir)(), '.codex');
-    const cwds = [process.cwd(), ...(options.cwds ?? []).map(usableDir).filter((dir) => Boolean(dir)), ...facts.dirs].slice(0, MAX_ROOTS + 1);
+    const cwds = [options.processCwd ?? process.cwd(), ...(options.cwds ?? []).map(usableDir).filter((dir) => Boolean(dir)), ...facts.dirs].slice(0, MAX_ROOTS + 1);
+    const projectFiles = upwardPaths(cwds, (0, node_path_1.join)('.codex', 'config.toml'));
+    if (!projectFiles)
+        return { official: false, reason: 'a working directory is nested too deep' };
     const files = [
         (0, node_path_1.join)(home, 'config.toml'),
         (0, node_path_1.join)(home, 'managed_config.toml'),
         '/etc/codex/config.toml',
         '/etc/codex/managed_config.toml',
-        ...upwardPaths(cwds, (0, node_path_1.join)('.codex', 'config.toml')),
+        ...projectFiles,
     ];
     const set = { names: new Map(), bad: null };
     const parsedFiles = [];
@@ -749,8 +776,11 @@ function codexOfficialMarrowServer(options = {}) {
 function cursorOfficialMarrowServer(options) {
     const read = options.read ?? readHostConfigFile;
     const home = options.home ?? (0, node_os_1.homedir)();
-    const cwds = [process.cwd(), ...(options.cwds ?? []).map(usableDir).filter((dir) => Boolean(dir))].slice(0, MAX_ROOTS + 1);
-    const files = new Set([(0, node_path_1.join)(home, '.cursor', 'mcp.json'), ...upwardPaths(cwds, (0, node_path_1.join)('.cursor', 'mcp.json'))]);
+    const cwds = [options.processCwd ?? process.cwd(), ...(options.cwds ?? []).map(usableDir).filter((dir) => Boolean(dir))].slice(0, MAX_ROOTS + 1);
+    const projectFiles = upwardPaths(cwds, (0, node_path_1.join)('.cursor', 'mcp.json'));
+    if (!projectFiles)
+        return { official: false, reason: 'a workspace root is nested too deep' };
+    const files = new Set([(0, node_path_1.join)(home, '.cursor', 'mcp.json'), ...projectFiles]);
     const set = { names: new Map(), bad: null };
     for (const file of files) {
         const result = read(file);

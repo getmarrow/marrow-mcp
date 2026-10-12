@@ -16,7 +16,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fstatSync, openSync, readSync, constants as fsConstants } from 'node:fs';
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, constants as fsConstants } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { brotliDecompressSync } from 'node:zlib';
@@ -72,17 +72,39 @@ export function readHostConfigFile(path: string): HostConfigRead {
 }
 
 /**
- * Every `<dir>/<rel>` from each start directory up to its project root (the
- * nearest directory holding `.git`, where codex and Cursor stop looking), or up
- * to the filesystem root when there is none; deduplicated, bounded.
+ * A real git repository root: `.git` is a directory (not a symlink) holding a
+ * regular `HEAD` file and `objects` and `refs` directories, as `git init` makes.
+ * codex does not stop at a `.git` that is not a repository (an empty folder,
+ * an archive, a generated directory), so neither does this walk. A gitfile
+ * (`.git` file of a worktree or submodule) never stops it either: walking on
+ * reads more configs than the host, which only adds to the union (stricter).
  */
-function upwardPaths(starts: string[], rel: string): string[] {
+function realGitRoot(dir: string): boolean {
+  try {
+    const git = lstatSync(join(dir, '.git'));
+    if (!git.isDirectory()) return false;
+    return lstatSync(join(dir, '.git', 'HEAD')).isFile()
+      && lstatSync(join(dir, '.git', 'objects')).isDirectory()
+      && lstatSync(join(dir, '.git', 'refs')).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Every `<dir>/<rel>` from each start directory up to its project root (the
+ * nearest real git repository root, where codex stops looking), or up to the
+ * filesystem root when there is none; deduplicated. A path deeper than the
+ * bound proves nothing (null).
+ */
+function upwardPaths(starts: string[], rel: string): string[] | null {
   const out = new Set<string>();
   for (const start of starts) {
     let dir = resolve(start);
-    for (let depth = 0; depth < MAX_DIR_DEPTH; depth += 1) {
+    for (let depth = 0; ; depth += 1) {
+      if (depth >= MAX_DIR_DEPTH) return null;
       out.add(join(dir, rel));
-      if (existsSync(join(dir, '.git'))) break;
+      if (realGitRoot(dir)) break;
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -511,6 +533,8 @@ export type CodexIdentityOptions = {
   read?: HostConfigReader;
   /** The codex process argv, or null when it cannot be found. */
   processArgs?: string[] | null;
+  /** Test seam: the hook's own working directory (default process.cwd()). */
+  processCwd?: string;
 };
 
 const PROFILE_NAME = /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$/;
@@ -549,13 +573,15 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
   const facts = codexArgsFacts(options.processArgs === undefined ? codexProcessArgs() : options.processArgs);
   if (facts.bad) return { official: false, reason: facts.bad };
   const home = env.CODEX_HOME && env.CODEX_HOME.trim() ? resolve(env.CODEX_HOME) : join(homedir(), '.codex');
-  const cwds = [process.cwd(), ...(options.cwds ?? []).map(usableDir).filter((dir): dir is string => Boolean(dir)), ...facts.dirs].slice(0, MAX_ROOTS + 1);
+  const cwds = [options.processCwd ?? process.cwd(), ...(options.cwds ?? []).map(usableDir).filter((dir): dir is string => Boolean(dir)), ...facts.dirs].slice(0, MAX_ROOTS + 1);
+  const projectFiles = upwardPaths(cwds, join('.codex', 'config.toml'));
+  if (!projectFiles) return { official: false, reason: 'a working directory is nested too deep' };
   const files = [
     join(home, 'config.toml'),
     join(home, 'managed_config.toml'),
     '/etc/codex/config.toml',
     '/etc/codex/managed_config.toml',
-    ...upwardPaths(cwds, join('.codex', 'config.toml')),
+    ...projectFiles,
   ];
   const set: ServerSet = { names: new Map(), bad: null };
   const parsedFiles: TomlTable[] = [];
@@ -611,14 +637,16 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
 // Cursor
 // ---------------------------------------------------------------------------
 
-export type CursorIdentityOptions = { home?: string; cwds?: unknown[]; read?: HostConfigReader; onlyServer: boolean };
+export type CursorIdentityOptions = { home?: string; cwds?: unknown[]; read?: HostConfigReader; onlyServer: boolean; processCwd?: string };
 
 /** Whether Cursor's `marrow` server is provably the official one (and, at preToolUse, the only server). */
 export function cursorOfficialMarrowServer(options: CursorIdentityOptions): ServerIdentity {
   const read = options.read ?? readHostConfigFile;
   const home = options.home ?? homedir();
-  const cwds = [process.cwd(), ...(options.cwds ?? []).map(usableDir).filter((dir): dir is string => Boolean(dir))].slice(0, MAX_ROOTS + 1);
-  const files = new Set([join(home, '.cursor', 'mcp.json'), ...upwardPaths(cwds, join('.cursor', 'mcp.json'))]);
+  const cwds = [options.processCwd ?? process.cwd(), ...(options.cwds ?? []).map(usableDir).filter((dir): dir is string => Boolean(dir))].slice(0, MAX_ROOTS + 1);
+  const projectFiles = upwardPaths(cwds, join('.cursor', 'mcp.json'));
+  if (!projectFiles) return { official: false, reason: 'a workspace root is nested too deep' };
+  const files = new Set([join(home, '.cursor', 'mcp.json'), ...projectFiles]);
   const set: ServerSet = { names: new Map(), bad: null };
   for (const file of files) {
     const result = read(file);

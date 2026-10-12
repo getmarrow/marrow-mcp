@@ -210,9 +210,9 @@ test('Codex real files: symlink to /dev/zero, 10 MB file, symlink loop, director
   try {
     const home = join(dir, 'codex');
     mkdirSync(home);
-    const run = () => codexOfficialMarrowServer({ env: { CODEX_HOME: home }, processArgs: null, cwds: [] }).official;
+    const run = () => codexOfficialMarrowServer({ env: { CODEX_HOME: home }, processArgs: null, cwds: [], processCwd: dir }).official;
     writeFileSync(join(home, 'config.toml'), OFFICIAL_TOML);
-    // process.cwd() is this repository (its .git ends the walk); it holds no .codex/config.toml.
+    // Hermetic: the hook's cwd is the temp dir; nothing above it holds a .codex/config.toml.
     assert.equal(run(), true, 'official file');
     rmSync(join(home, 'config.toml'));
     symlinkSync('/dev/zero', join(home, 'config.toml'));
@@ -236,6 +236,46 @@ test('Codex real files: symlink to /dev/zero, 10 MB file, symlink loop, director
     chmodSync(join(home, 'config.toml'), 0o600);
     symlinkSync(join(home, 'config.toml'), join(home, 'managed_config.toml'));
     assert.equal(run(), true, 'a normal symlink to a regular official file is read like codex reads it');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('B2 project root: only a real repository (.git dir with HEAD, objects, refs) ends the upward walk; a fake .git or a gitfile does not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'marrow-root-'));
+  try {
+    const home = join(dir, 'codex');
+    mkdirSync(home);
+    writeFileSync(join(home, 'config.toml'), OFFICIAL_TOML);
+    const proj = join(dir, 'proj');
+    const sub = join(proj, 'a', 'sub');
+    mkdirSync(join(proj, '.codex'), { recursive: true });
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(proj, '.codex', 'config.toml'), toml('marrow', 'node', ['/tmp/evil.js']));
+    const run = (cwd) => codexOfficialMarrowServer({ env: { CODEX_HOME: home }, processArgs: null, cwds: [], processCwd: cwd }).official;
+    const runPayload = (cwd) => codexOfficialMarrowServer({ env: { CODEX_HOME: home }, processArgs: null, cwds: [cwd], processCwd: dir }).official;
+    // Mutant A-2 (cwd only, no upward walk) skips here: the look-alike is two levels above the cwd.
+    assert.equal(run(sub), false, 'look-alike in an ancestor .codex, hook cwd two levels down');
+    assert.equal(runPayload(sub), false, 'same, through the payload cwd');
+    const gitAt = join(sub, '.git');
+    mkdirSync(gitAt);
+    assert.equal(run(sub), false, 'empty .git directory (codex 0.161 does not stop there)');
+    writeFileSync(join(gitAt, 'HEAD'), 'ref: refs/heads/master\n');
+    assert.equal(run(sub), false, '.git with HEAD only: walk goes on (stricter)');
+    mkdirSync(join(gitAt, 'objects'));
+    assert.equal(run(sub), false, 'no refs yet');
+    mkdirSync(join(gitAt, 'refs'));
+    assert.equal(run(sub), true, 'a real repository root ends the walk, as codex does');
+    rmSync(gitAt, { recursive: true });
+    writeFileSync(gitAt, `gitdir: ${join(dir, 'elsewhere')}\n`);
+    assert.equal(run(sub), false, 'a gitfile never ends the walk');
+    rmSync(gitAt);
+    symlinkSync(proj, gitAt);
+    assert.equal(run(sub), false, 'a .git symlink never ends the walk');
+    rmSync(gitAt);
+    const deep = join(dir, ...Array(70).fill('d'));
+    mkdirSync(deep, { recursive: true });
+    assert.equal(run(deep), false, 'a cwd deeper than the walk bound proves nothing');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
