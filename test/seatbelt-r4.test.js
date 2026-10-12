@@ -653,8 +653,10 @@ test('G2: a target with no recipe is searched for in make\'s built-in rules: dyn
   assert.ok(definite(withFiles('all: data.txt\n', ['data.txt'])));
   assert.ok(definite(withFiles('all: nothing\n', [])));
   // An unreadable directory is not known to be free of sources.
-  const unreadable = createFakeFs().file('/m/Makefile', 'all: main.o\n').file('/m/main.c', 'x').fail('/m');
+  const listable = createFakeFs().file('/m/Makefile', 'all: main.o\n');
+  const unreadable = { ...listable, readdir: () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); } };
   assert.ok(!definite(S.resolveMakeTargets(unreadable, '/m', ['all'], { env: ENV })));
+  assert.ok(definite(S.resolveMakeTargets(listable, '/m', ['all'], { env: ENV })), 'the same file with a listable directory');
 });
 
 test('G3: a rule for the makefile itself runs first, whatever target is wanted: dynamic', () => {
