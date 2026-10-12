@@ -68,7 +68,8 @@ export type MakeResolution = {
  * recipes (MAKE_RECIPE_ENV_DENY) or a name in the environment; `export`,
  * `unexport`, `.EXPORT_ALL_VARIABLES`; `?=`/`+=` on a variable make defines
  * itself; a command-line value with `$` or a control character, or a
- * command-line name no expansion reaches; a recipe-less target that is not
+ * command-line name no expansion reaches; an assignment the command line overrides
+ * (make still reads it) that is `!=` or has a right side not proven inert; a recipe-less target that is not
  * .PHONY and could have a source file (built-in rules); a rule for the makefile
  * itself; two recipes for one target. The mapper must re-classify `commands`.
  */

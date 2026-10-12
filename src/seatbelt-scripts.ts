@@ -206,7 +206,8 @@ const MAKE_SIMPLE_FLAGS = new Set(['-s', '-k', '-w', '--silent', '--quiet', '--k
  * recipes (MAKE_RECIPE_ENV_DENY) or a name in the environment; `export`,
  * `unexport`, `.EXPORT_ALL_VARIABLES`; `?=`/`+=` on a variable make defines
  * itself; a command-line value with `$` or a control character, or a
- * command-line name no expansion reaches; a recipe-less target that is not
+ * command-line name no expansion reaches; an assignment the command line overrides
+ * (make still reads it) that is `!=` or has a right side not proven inert; a recipe-less target that is not
  * .PHONY and could have a source file (built-in rules); a rule for the makefile
  * itself; two recipes for one target. The mapper must re-classify `commands`.
  */
@@ -286,6 +287,9 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
   // Every expansion is charged to one budget, so nested variables cannot blow up.
   let expandedBytes = 0;
   let exhausted = false;
+  // Set while the right side of an assignment make drops is only looked at: no name is marked as used, and a value this
+  // resolver could not compute counts as a function with effects (it may hold one).
+  let probing = false;
   const MAKE_AUTOMATIC = /^[@<^*?%+|]$/;
   /**
    * `state.bad` is set when a reference could not be resolved (the reference
@@ -371,7 +375,7 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
         out += reference;
         continue;
       }
-      referenced.add(name);
+      if (!probing) referenced.add(name);
       const variable = variables.get(name);
       if (variable === undefined) {
         const fromEnv = envValue(name);
@@ -389,6 +393,7 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       }
       if (variable.unresolved) {
         state.bad = true;
+        if (probing) state.fn = true;
         out += reference;
         continue;
       }
@@ -432,8 +437,25 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       current = null;
       const safeShell = name === 'SHELL' && (op === '=' || op === ':=' || op === '::=') && MAKE_SAFE_SHELL.test(value.trim());
       if (!safeShell && changesWhatRuns(name)) dynamic = true;
-      // A variable given on the command line wins over the file's assignments (unless `override`).
-      if (commandLine.has(name) && !overrideKeyword) continue;
+      // A variable given on the command line wins over the file's assignments (unless `override`). make still reads the
+      // dropped assignment: `!=` runs its command, and `:=` / `::=` / `:::=` expand their right side, at read time and
+      // under `make -n`. The right side is looked at as if it were assigned (`=`, `?=` and `+=` too: make does not
+      // expand those, a call in them is still not proven inert): a call with effects, or a value not understood, is dynamic.
+      if (commandLine.has(name) && !overrideKeyword) {
+        if (op === '!=') dynamic = true;
+        else {
+          const state = { bad: false, fn: false };
+          probing = true;
+          try {
+            expand(value, state);
+          } finally {
+            probing = false;
+          }
+          if (exhausted) return overBudget;
+          if (state.fn) dynamic = true;
+        }
+        continue;
+      }
       const existing = variables.get(name);
       if (op === '!=') {
         dynamic = true;
