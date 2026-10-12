@@ -40,9 +40,10 @@ export declare function parseToml(text: string): TomlTable;
 /**
  * Whether (command, args) start the official Marrow MCP server, in one of the
  * exact forms Marrow documents or writes:
- *   npx|npx.cmd [-y|--yes] @getmarrow/mcp[@latest|@X.Y.Z]
- *   npx|npx.cmd [-y|--yes] --package=@getmarrow/mcp[@latest|@X.Y.Z] marrow-mcp
- *   marrow-mcp|marrow-mcp.cmd                      (the installed bin, no args)
+ *   npx [-y|--yes] @getmarrow/mcp[@latest|@X.Y.Z]
+ *   npx [-y|--yes] --package=@getmarrow/mcp[@latest|@X.Y.Z] marrow-mcp
+ *   marrow-mcp                                     (the installed bin, no args)
+ * (npx.cmd and marrow-mcp.cmd only on Windows)
  *   /bin/sh -c <installer script> <installer loader> --package=@getmarrow/mcp@V marrow-mcp
  *   node -e <installer loader> -- --package=@getmarrow/mcp@V marrow-mcp
  * Nothing appended, no wrapper, no other package.

@@ -401,9 +401,10 @@ function installerLoaderFor(loader: string, version: string): boolean {
 /**
  * Whether (command, args) start the official Marrow MCP server, in one of the
  * exact forms Marrow documents or writes:
- *   npx|npx.cmd [-y|--yes] @getmarrow/mcp[@latest|@X.Y.Z]
- *   npx|npx.cmd [-y|--yes] --package=@getmarrow/mcp[@latest|@X.Y.Z] marrow-mcp
- *   marrow-mcp|marrow-mcp.cmd                      (the installed bin, no args)
+ *   npx [-y|--yes] @getmarrow/mcp[@latest|@X.Y.Z]
+ *   npx [-y|--yes] --package=@getmarrow/mcp[@latest|@X.Y.Z] marrow-mcp
+ *   marrow-mcp                                     (the installed bin, no args)
+ * (npx.cmd and marrow-mcp.cmd only on Windows)
  *   /bin/sh -c <installer script> <installer loader> --package=@getmarrow/mcp@V marrow-mcp
  *   node -e <installer loader> -- --package=@getmarrow/mcp@V marrow-mcp
  * Nothing appended, no wrapper, no other package.
@@ -413,12 +414,14 @@ export function isOfficialMarrowServerLaunch(command: unknown, args: unknown): b
   const list = args === undefined ? [] : args;
   if (!Array.isArray(list) || list.length > 8 || !list.every((arg) => typeof arg === 'string')) return false;
   const argv = list as string[];
-  if (command === 'npx' || command === 'npx.cmd') {
+  // The `.cmd` shims exist only on Windows; no Marrow installer or README writes them elsewhere.
+  const windows = process.platform === 'win32';
+  if (command === 'npx' || (windows && command === 'npx.cmd')) {
     const rest = argv[0] === '-y' || argv[0] === '--yes' ? argv.slice(1) : argv;
     if (rest.length === 1) return PACKAGE_SPEC.test(rest[0]);
     return rest.length === 2 && rest[0].startsWith('--package=') && PACKAGE_SPEC.test(rest[0].slice('--package='.length)) && rest[1] === 'marrow-mcp';
   }
-  if (command === 'marrow-mcp' || command === 'marrow-mcp.cmd') return argv.length === 0;
+  if (command === 'marrow-mcp' || (windows && command === 'marrow-mcp.cmd')) return argv.length === 0;
   if (command === '/bin/sh') {
     const pinned = argv.length === 5 ? PINNED_SPEC.exec(argv[3]) : null;
     return Boolean(pinned) && argv[0] === '-c' && argv[4] === 'marrow-mcp'
@@ -483,7 +486,8 @@ function upwardHas(starts: string[], present: (dir: string) => boolean): boolean
 }
 
 function localPackageCopy(starts: string[]): boolean {
-  return upwardHas(starts, (dir) => existsSync(join(dir, 'node_modules', '@getmarrow', 'mcp')) || existsSync(join(dir, 'node_modules', '.bin', 'marrow-mcp')));
+  return upwardHas(starts, (dir) => existsSync(join(dir, 'node_modules', '@getmarrow', 'mcp'))
+    || ['marrow-mcp', 'marrow-mcp.cmd', 'npx', 'npx.cmd'].some((name) => existsSync(join(dir, 'node_modules', '.bin', name))));
 }
 
 function projectNpmrc(starts: string[], home: string): boolean {

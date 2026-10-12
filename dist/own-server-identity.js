@@ -512,9 +512,10 @@ function installerLoaderFor(loader, version) {
 /**
  * Whether (command, args) start the official Marrow MCP server, in one of the
  * exact forms Marrow documents or writes:
- *   npx|npx.cmd [-y|--yes] @getmarrow/mcp[@latest|@X.Y.Z]
- *   npx|npx.cmd [-y|--yes] --package=@getmarrow/mcp[@latest|@X.Y.Z] marrow-mcp
- *   marrow-mcp|marrow-mcp.cmd                      (the installed bin, no args)
+ *   npx [-y|--yes] @getmarrow/mcp[@latest|@X.Y.Z]
+ *   npx [-y|--yes] --package=@getmarrow/mcp[@latest|@X.Y.Z] marrow-mcp
+ *   marrow-mcp                                     (the installed bin, no args)
+ * (npx.cmd and marrow-mcp.cmd only on Windows)
  *   /bin/sh -c <installer script> <installer loader> --package=@getmarrow/mcp@V marrow-mcp
  *   node -e <installer loader> -- --package=@getmarrow/mcp@V marrow-mcp
  * Nothing appended, no wrapper, no other package.
@@ -526,13 +527,15 @@ function isOfficialMarrowServerLaunch(command, args) {
     if (!Array.isArray(list) || list.length > 8 || !list.every((arg) => typeof arg === 'string'))
         return false;
     const argv = list;
-    if (command === 'npx' || command === 'npx.cmd') {
+    // The `.cmd` shims exist only on Windows; no Marrow installer or README writes them elsewhere.
+    const windows = process.platform === 'win32';
+    if (command === 'npx' || (windows && command === 'npx.cmd')) {
         const rest = argv[0] === '-y' || argv[0] === '--yes' ? argv.slice(1) : argv;
         if (rest.length === 1)
             return PACKAGE_SPEC.test(rest[0]);
         return rest.length === 2 && rest[0].startsWith('--package=') && PACKAGE_SPEC.test(rest[0].slice('--package='.length)) && rest[1] === 'marrow-mcp';
     }
-    if (command === 'marrow-mcp' || command === 'marrow-mcp.cmd')
+    if (command === 'marrow-mcp' || (windows && command === 'marrow-mcp.cmd'))
         return argv.length === 0;
     if (command === '/bin/sh') {
         const pinned = argv.length === 5 ? PINNED_SPEC.exec(argv[3]) : null;
@@ -597,7 +600,8 @@ function upwardHas(starts, present) {
     return false;
 }
 function localPackageCopy(starts) {
-    return upwardHas(starts, (dir) => (0, node_fs_1.existsSync)((0, node_path_1.join)(dir, 'node_modules', '@getmarrow', 'mcp')) || (0, node_fs_1.existsSync)((0, node_path_1.join)(dir, 'node_modules', '.bin', 'marrow-mcp')));
+    return upwardHas(starts, (dir) => (0, node_fs_1.existsSync)((0, node_path_1.join)(dir, 'node_modules', '@getmarrow', 'mcp'))
+        || ['marrow-mcp', 'marrow-mcp.cmd', 'npx', 'npx.cmd'].some((name) => (0, node_fs_1.existsSync)((0, node_path_1.join)(dir, 'node_modules', '.bin', name))));
 }
 function projectNpmrc(starts, home) {
     const userConfig = (0, node_path_1.resolve)(home, '.npmrc');

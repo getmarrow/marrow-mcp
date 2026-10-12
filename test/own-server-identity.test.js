@@ -46,7 +46,6 @@ test('accepted official launches: README/codex-mcp-add npx forms, the installed 
     ['npx', ['-y', '@getmarrow/mcp@3.9.102']],
     ['npx', ['-y', '--package=@getmarrow/mcp@latest', 'marrow-mcp']],
     ['npx', ['-y', '--package=@getmarrow/mcp@3.9.98', 'marrow-mcp']],
-    ['npx.cmd', ['-y', '@getmarrow/mcp']],
     ['marrow-mcp', []],
     ['marrow-mcp', undefined],
     [INSTALLER.posix.command, INSTALLER.posix.args],
@@ -557,6 +556,30 @@ test('B4 npx and npm config: a project .npmrc (cwd or any ancestor) or npm_confi
     assert.equal(cursor({ marrow: INSTALLER.posix }), true, 'Cursor installer form');
     rmSync(join(project, '.npmrc'));
     assert.equal(cursor(cursorNpx, { env: { npm_config_registry: 'x' } }), false, 'Cursor npx with npm_config_registry');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('F5 .cmd launch forms are accepted only on win32; planted .bin shims (.cmd, npx) unprove the npx and bin forms', () => {
+  const real = Object.getOwnPropertyDescriptor(process, 'platform');
+  const on = (platform, fn) => { Object.defineProperty(process, 'platform', { value: platform }); try { return fn(); } finally { Object.defineProperty(process, 'platform', real); } };
+  for (const [command, args] of [['npx.cmd', ['-y', '@getmarrow/mcp']], ['npx.cmd', ['-y', '--package=@getmarrow/mcp@latest', 'marrow-mcp']], ['marrow-mcp.cmd', []]]) {
+    for (const platform of ['linux', 'darwin', 'freebsd']) assert.equal(on(platform, () => isOfficialMarrowServerLaunch(command, args)), false, `${platform} ${command}`);
+    assert.equal(on('win32', () => isOfficialMarrowServerLaunch(command, args)), true, `win32 ${command}`);
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'marrow-cmd-'));
+  try {
+    const sub = join(dir, 'proj', 'app');
+    mkdirSync(join(sub, 'node_modules', '.bin'), { recursive: true });
+    const run = (text) => codexOfficialMarrowServer({ env: { CODEX_HOME: '/virtual/codex-home' }, processArgs: null, cwds: [sub], processCwd: sub, read: files(global(text)) }).official;
+    assert.equal(run(OFFICIAL_TOML), true);
+    for (const name of ['marrow-mcp.cmd', 'npx', 'npx.cmd']) {
+      writeFileSync(join(sub, 'node_modules', '.bin', name), '');
+      assert.equal(run(OFFICIAL_TOML), false, `planted .bin/${name}, npx form`);
+      assert.equal(run(toml('marrow', 'marrow-mcp', [])), false, `planted .bin/${name}, bin form`);
+      rmSync(join(sub, 'node_modules', '.bin', name));
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
