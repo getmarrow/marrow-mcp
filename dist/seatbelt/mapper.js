@@ -2400,8 +2400,16 @@ function envWrapper(rest, ctx, run, x) {
     let cwds = ctx.cwds;
     while (i < rest.length) {
         const t = rest[i].text;
-        if (t === null)
+        if (t === null) {
+            // `env PATH=$PATH node -v`: an assignment whose value is dynamic is still an assignment.
+            const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(rest[i].pattern);
+            if (m) {
+                extra.set(m[1], null);
+                i += 1;
+                continue;
+            }
             break;
+        }
         if (t === '-i' || t === '--ignore-environment' || t === '-') {
             clean = true;
             i += 1;
@@ -2450,8 +2458,13 @@ function privilegeWrapper(prog, rest, ctx, run, x) {
     let shell = false;
     while (i < rest.length) {
         const t = rest[i].text;
-        if (t === null)
+        if (t === null) {
+            if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[i].pattern)) {
+                i += 1;
+                continue;
+            }
             break;
+        }
         if (t === '--') {
             i += 1;
             break;
@@ -2463,6 +2476,10 @@ function privilegeWrapper(prog, rest, ctx, run, x) {
         if (t.startsWith('-')) {
             if (/^-[a-zA-Z]*[si]/.test(t) && !t.startsWith('--'))
                 shell = true;
+            i += 1;
+            continue;
+        }
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
             i += 1;
             continue;
         }

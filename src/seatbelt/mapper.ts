@@ -1968,7 +1968,12 @@ function envWrapper(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   let cwds = ctx.cwds;
   while (i < rest.length) {
     const t = rest[i].text;
-    if (t === null) break;
+    if (t === null) {
+      // `env PATH=$PATH node -v`: an assignment whose value is dynamic is still an assignment.
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(rest[i].pattern);
+      if (m) { extra.set(m[1], null); i += 1; continue; }
+      break;
+    }
     if (t === '-i' || t === '--ignore-environment' || t === '-') { clean = true; i += 1; continue; }
     if (t === '-u' || t === '--unset' || t === '-C' || t === '--chdir') {
       if ((t === '-C' || t === '--chdir') && rest[i + 1]?.text) cwds = [path.posix.resolve(ctx.cwds[0] || '/__unknown_cwd__', rest[i + 1].text as string)];
@@ -1998,10 +2003,14 @@ function privilegeWrapper(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec
   let shell = false;
   while (i < rest.length) {
     const t = rest[i].text;
-    if (t === null) break;
+    if (t === null) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[i].pattern)) { i += 1; continue; }
+      break;
+    }
     if (t === '--') { i += 1; break; }
     if (valueFlags.has(t)) { i += 2; continue; }
     if (t.startsWith('-')) { if (/^-[a-zA-Z]*[si]/.test(t) && !t.startsWith('--')) shell = true; i += 1; continue; }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { i += 1; continue; }
     break;
   }
   if (i >= rest.length) { if (shell) stdinExec('sh', [], x, ctx, run); return; }
