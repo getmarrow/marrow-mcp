@@ -57,18 +57,36 @@ const DIGEST_PARAM = /\b(response|cnonce|nonce)=("[^"\n]{0,1024}(?:"|$)|[^\s,;"]
 const OWN_MARKER_AHEAD = /^['"]?\[(?:REDACTED(?:_[A-Z_]{1,20})?|redacted)\]/;
 
 function nameValueRedactor(text: string): string {
-  // `NAME=value` / `NAME: value`: the name is a whole word, so the match cannot start inside a run.
-  const pattern = /\b([A-Za-z0-9_]{1,4096})(\s{0,64}[:=]\s{0,64})/g;
+  // `NAME=value` / `NAME: value`: the name is a whole run of name characters (`-` included, as in
+  // `API-KEY`), so a match starts only where a run starts and each run is scanned once. Names and
+  // blanks are unbounded, as in 3.9.102: never fewer names redacted than before.
+  const pattern = /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)(\s*[:=]\s*)/g;
   const quoted = /(["'])([^"'\n]{0,4096})\1/y;
   const value = /['"]?[^'"\s,;]{6,}/y;
   let out = '';
   let copied = 0;
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const end = match.index + match[0].length;
-    if (!SECRET_NAME.test(match[1]) || OWN_MARKER_AHEAD.test(text.slice(end, end + 24))) { pattern.lastIndex = end; continue; }
+    if (!SECRET_NAME.test(match[1])) { pattern.lastIndex = end; continue; }
+    const marker = OWN_MARKER_AHEAD.exec(text.slice(end, end + 24));
+    if (marker) {
+      // Already replaced: it stays as it is, unless text is glued to it (an earlier rule stopped at a
+      // quote that opened the next value). Then the glued text is hidden too, as 3.9.102 did; an
+      // ambiguous marker is never made plain.
+      const after = end + marker[0].length;
+      value.lastIndex = end;
+      const glued = /^[^'"\s,;]/.test(text.slice(after, after + 1)) ? value.exec(text) : null;
+      if (!glued) { pattern.lastIndex = after; continue; }
+      out += text.slice(copied, match.index) + `${match[1]}=${glued[0].includes(AMBIGUOUS_REDACTION_MARKER) ? AMBIGUOUS_REDACTION_MARKER : hide(glued[0].replace(/^['"]/, ''))}`;
+      copied = value.lastIndex;
+      pattern.lastIndex = copied;
+      continue;
+    }
     quoted.lastIndex = end;
     const whole = quoted.exec(text);
-    if (whole && whole[2].length >= 6) {
+    // A quote counts as closing only before a delimiter; otherwise it may open the next value, and
+    // the 3.9.102 rule (up to the next quote or blank) applies.
+    if (whole && whole[2].length >= 6 && /^(?:[\s,;)}\]&|<>]|$)/.test(text.slice(quoted.lastIndex, quoted.lastIndex + 1))) {
       // A quoted value is hidden up to its closing quote, blanks included.
       out += text.slice(copied, match.index) + `${match[1]}=${hide(whole[2], '[REDACTED]', true)}`;
       copied = quoted.lastIndex;
@@ -87,7 +105,7 @@ function nameValueRedactor(text: string): string {
 
 function queryRedactor(text: string): string {
   // `?name=value` / `&name=value`: the name stops at the next `?`, so every start scans its own run only.
-  const pattern = /([?&])([^=&#?\s]{0,4096})=/g;
+  const pattern = /([?&])([^=&#?\s]*)=/g;
   const value = /[^&#\s]*/y;
   let out = '';
   let copied = 0;
@@ -109,31 +127,34 @@ function digestRedactor(text: string): string {
 }
 
 export function redactSensitiveText(value: string): string {
+  // The 3.9.102 rules first, in their 3.9.102 order (with linear scans and context-aware markers), so
+  // no text 3.9.102 hid is ever left; then the shapes 3.9.102 missed.
   let out = value
+    .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)=)([^\s"'`]+|"[^"]*(?:"|$)|'[^']*(?:'|$))/gi, (_m, flag: string, v: string) => `${flag}${hideMaybeQuoted(v)}`)
+    .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)\s+)([^\s"'`]+|"[^"]*(?:"|$)|'[^']*(?:'|$))/gi, (_m, flag: string, v: string) => `${flag}${hideMaybeQuoted(v)}`)
+    .replace(/\b(Bearer|Token|ApiKey|API_KEY|MARROW_API_KEY|MARROW_KEY)\s+[\w.\-+/=]{12,}\b/gi, '$1 [REDACTED]');
+  out = nameValueRedactor(out)
+    .replace(/\b(mrw_[A-Za-z0-9_\-]{8,})\b/g, '[REDACTED_MARROW_KEY]')
+    .replace(/\bmrw_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_[A-Fa-f0-9]{16,}\b/gi, '[REDACTED_MARROW_KEY]')
+    .replace(/\b(?:sk|pk|ghp|github_pat|npm|cfut)_[A-Za-z0-9_\-]{12,}\b/g, '[REDACTED_TOKEN]');
+  out = queryRedactor(out)
+    .replace(/([?&](?:token|key|secret|password|auth|signature|sig|session)=)([^&#\s]*)/gi, (match, name: string, v: string) => (
+      /^\[(?:redacted|REDACTED_AMBIGUOUS)\]$/.test(v) ? match : `${name}${hide(v, '[redacted]')}`
+    ));
+  out = out
     .replace(QUOTED_NAME_VALUE, (match, quote: string, name: string, sep: string, v: string) => (
       SECRET_KEY_NAME.test(name) ? `${quote}${name}${quote}${sep}${quote.length > 1 ? '\\"' : '"'}${hideMaybeQuoted(v)}${quote.length > 1 ? '\\"' : '"'}` : match
     ))
     .replace(URL_USERINFO, (_m, scheme: string, user: string, password: string) => (
       `${scheme}${user}:${password.includes('@') ? AMBIGUOUS_REDACTION_MARKER : hide(password)}@`
     ));
-  out = digestRedactor(out)
+  return digestRedactor(out)
     .replace(AUTH_HEADER, (_match, header: string, sep: string, scheme: string | undefined, v: string) => (
       `${header}${sep}${scheme ? `${scheme} ` : ''}${hide(v)}`
     ))
-    .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)=)([^\s"'`]+|"[^"]*(?:"|$)|'[^']*(?:'|$))/gi, (_m, flag: string, v: string) => `${flag}${hideMaybeQuoted(v)}`)
-    .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)\s+)([^\s"'`]+|"[^"]*(?:"|$)|'[^']*(?:'|$))/gi, (_m, flag: string, v: string) => `${flag}${hideMaybeQuoted(v)}`)
-    .replace(/\b(Bearer|Token|ApiKey|API_KEY|MARROW_API_KEY|MARROW_KEY)\s+[\w.\-+/=]{12,}\b/gi, '$1 [REDACTED]')
     // `Basic <base64>` outside a header: base64 of `user:password` (a digit, `+`, `/`, `=` or an inner capital), not a plain word.
     .replace(/\bBasic([ \t]{1,8})([A-Za-z0-9+/]{8,8192}={0,2})(?![A-Za-z0-9+/=])/g, (match, space: string, token: string) => (
       /[0-9+/=]|.[A-Z]/.test(token) ? `Basic${space}[REDACTED]` : match
-    ));
-  out = nameValueRedactor(out)
-    .replace(/\b(mrw_[A-Za-z0-9_\-]{8,})\b/g, '[REDACTED_MARROW_KEY]')
-    .replace(/\bmrw_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_[A-Fa-f0-9]{16,}\b/gi, '[REDACTED_MARROW_KEY]')
-    .replace(/\b(?:sk|pk|ghp|github_pat|npm|cfut)_[A-Za-z0-9_\-]{12,}\b/g, '[REDACTED_TOKEN]');
-  return queryRedactor(out)
-    .replace(/([?&](?:token|key|secret|password|auth|signature|sig|session)=)([^&#\s]*)/gi, (match, name: string, v: string) => (
-      /^\[(?:redacted|REDACTED_AMBIGUOUS)\]$/.test(v) ? match : `${name}${hide(v, '[redacted]')}`
     ));
 }
 
