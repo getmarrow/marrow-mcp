@@ -156,9 +156,14 @@ function expandPathOperand(raw, context) {
             base = homeForShell;
         }
         else if (prefix === '+') {
-            if (!context.cwd)
+            // `~+` is the shell's $PWD, which an earlier `PWD=…` statement may have changed.
+            if (!cwdForShell)
                 return { kind: 'dynamic', reason: 'no_cwd' };
-            base = context.cwd;
+            base = cwdForShell;
+        }
+        else if (/^[0-9]+$/.test(prefix)) {
+            // `~N` is the Nth entry of the directory stack, which this resolver does not track (`~-` and `~+N`/`~-N` fall to the branch below).
+            return { kind: 'dynamic', reason: 'tilde' };
         }
         else if (/^[A-Za-z0-9._][A-Za-z0-9._-]*$/.test(prefix)) {
             base = context.userHome ? context.userHome(prefix) : null;
@@ -193,6 +198,10 @@ function expandPathOperand(raw, context) {
             : undefined;
         if (assigned === undefined)
             unresolved = { kind: 'dynamic', reason: 'variable' };
+        // The shell tilde-expands an assignment's value when it is assigned: a value that still
+        // starts with `~` was not expanded by the caller, and bash never expands it later.
+        else if (assigned.startsWith('~'))
+            unresolved = { kind: 'dynamic', reason: 'tilde' };
         else if (/[^\x20-\x7e]/.test(assigned))
             nonAscii = true;
         return assigned ?? '';
@@ -232,7 +241,28 @@ function segmentMayMatch(pattern, name) {
     for (let i = 0; i < pattern.length; i += 1) {
         const ch = pattern[i];
         if (ch === '[') {
-            const close = pattern.indexOf(']', i + 2);
+            // A bracket expression: an optional `!`/`^`, a leading `]` is a member, and
+            // `[:class:]`, `[.x.]`, `[=x=]` hold a `]` of their own.
+            let j = i + 1;
+            if (pattern[j] === '!' || pattern[j] === '^')
+                j += 1;
+            if (pattern[j] === ']')
+                j += 1;
+            let close = -1;
+            while (j < pattern.length) {
+                if (pattern[j] === '[' && (pattern[j + 1] === ':' || pattern[j + 1] === '.' || pattern[j + 1] === '=')) {
+                    const end = pattern.indexOf(`${pattern[j + 1]}]`, j + 2);
+                    if (end < 0)
+                        break;
+                    j = end + 2;
+                    continue;
+                }
+                if (pattern[j] === ']') {
+                    close = j;
+                    break;
+                }
+                j += 1;
+            }
             if (close < 0)
                 tokens.push('[');
             else {
