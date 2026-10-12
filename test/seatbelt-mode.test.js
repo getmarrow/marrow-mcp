@@ -166,20 +166,94 @@ test('env vars can never select seatbelt: a claimed machine stays claimed_no_key
   assert.deepEqual(r.homes, [home]);
 });
 
-test('env vars can never select seatbelt: a forged $HOME is never read (mode reads only the listed names)', (t) => {
+test('env vars can never select seatbelt: $HOME is read only to tighten and never becomes the trusted home', (t) => {
   const { base, home } = realHome(t);
   const forged = join(base, 'forged');
-  mkdirSync(join(forged, '.marrow'), { recursive: true, mode: 0o700 });
-  writeFileSync(join(forged, '.marrow', 'claimed'), '');
+  mkdirSync(forged, { mode: 0o700 });
   const read = new Set();
   const env = new Proxy({ ...SEATBELT_CLAIMS, HOME: forged, USERPROFILE: forged }, {
     get(target, name) { if (typeof name === 'string') read.add(name); return target[name]; },
   });
   const r = resolveSeatbeltModeOnHost({ env, passwdHome: home, argv: [] });
-  assert.equal(r.mode, 'seatbelt');
+  // A clean but different $HOME is a contradiction: stricter, and later reads still use the passwd home.
+  assert.equal(r.mode, 'claimed_no_key');
+  assert.ok(r.reasons.includes('home_mismatch'));
   assert.deepEqual(r.homes, [home]);
   for (const name of read) assert.ok(MODE_ENV_NAMES.includes(name), `mode resolution read env ${name}`);
-  assert.ok(!read.has('HOME') && !read.has('MARROW_MODE') && !read.has('MARROW_SEATBELT'));
+  assert.ok(!read.has('MARROW_MODE') && !read.has('MARROW_SEATBELT') && !read.has('MARROW_HOME') && !read.has('XDG_CONFIG_HOME'));
+  // $HOME equal to the passwd home (also through a trailing slash) changes nothing.
+  assert.equal(resolveSeatbeltModeOnHost({ env: { HOME: home }, passwdHome: home, argv: [] }).mode, 'seatbelt');
+  assert.equal(resolveSeatbeltModeOnHost({ env: { HOME: `${home}/` }, passwdHome: home, argv: [] }).mode, 'seatbelt');
+  // 3.9.102 falls through an empty HOME to the passwd home.
+  assert.equal(resolveSeatbeltModeOnHost({ env: { HOME: '' }, passwdHome: home, argv: [] }).mode, 'seatbelt');
+  for (const value of ['relative/home', '/nonexistent-home-x', '/']) {
+    assert.equal(resolveSeatbeltModeOnHost({ env: { HOME: value }, passwdHome: home, argv: [] }).mode, 'claimed_no_key', value);
+  }
+});
+
+test('B1 (Barvis audit 5069b1c6): evidence or a key under $HOME/USERPROFILE != passwd home is never seatbelt, and its key is never used', (t) => {
+  const { base, home } = realHome(t);
+  const envHome = join(base, 'envhome');
+  mkdirSync(join(envHome, '.marrow'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(envHome, '.marrow', 'env'), `MARROW_API_KEY=${dummyKey()}\n`, { mode: 0o600 });
+  for (const name of ['HOME', 'USERPROFILE']) {
+    const r = resolveSeatbeltModeOnHost({ env: { [name]: envHome }, passwdHome: home, argv: [] });
+    assert.equal(r.mode, 'claimed_no_key', name);
+    assert.equal(r.evidence.env_file, 'present', name);
+    assert.deepEqual(r.homes, [home]);
+  }
+  // Fake fs: each evidence item planted only under the env home.
+  const fs = cleanHome().mkdir('/elsewhere', { uid: UID, mode: 0o700 }).file('/elsewhere/.marrow/claimed', '');
+  const r = mode(fs, { envHomes: ['/elsewhere'] });
+  assert.equal(r.mode, 'claimed_no_key');
+  assert.equal(r.evidence.claimed_marker, 'present');
+});
+
+test('F7 (Barvis audit 5069b1c6): relocated harness configs (CODEX_HOME, CLAUDE_CONFIG_DIR, CLINE_DIR, Gemini system settings) and Cline hook dirs are witnesses', (t) => {
+  const { base, home } = realHome(t);
+  const marker = JSON.stringify({ hooks: { PreToolUse: [{ command: 'marrow-mcp pre-action-hook --claimed' }] } });
+  const cases = [
+    ['CODEX_HOME', 'codex', 'hooks.json'],
+    ['CODEX_HOME', 'codex2', 'config.toml'],
+    ['CLAUDE_CONFIG_DIR', 'claude', 'settings.json'],
+    ['CLAUDE_CONFIG_DIR', 'claude2', 'settings.local.json'],
+    ['CLINE_DIR', 'cline', 'hooks/PreToolUse'],
+  ];
+  for (const [name, dir, file] of cases) {
+    const root = join(base, dir);
+    mkdirSync(join(root, file, '..'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(root, file), marker);
+    assert.equal(resolveSeatbeltModeOnHost({ env: { HOME: home, [name]: root }, passwdHome: home, argv: [] }).mode, 'claimed_no_key', `${name}/${file}`);
+    assert.equal(resolveSeatbeltModeOnHost({ env: { HOME: home, [name]: dir }, passwdHome: home, argv: [] }).mode, 'claimed_no_key', `relative ${name}`);
+  }
+  const gemini = join(base, 'gemini-system.json');
+  writeFileSync(gemini, marker);
+  assert.equal(resolveSeatbeltModeOnHost({ env: { GEMINI_CLI_SYSTEM_SETTINGS_PATH: gemini }, passwdHome: home, argv: [] }).mode, 'claimed_no_key');
+  for (const dir of ['Documents/Cline/Hooks', '.cline/hooks']) {
+    const fs = cleanHome().file(`${HOME}/${dir}/PreToolUse`, '#!/bin/sh\nexec marrow-mcp cline-pre-action-hook --claimed\n');
+    assert.equal(mode(fs).mode, 'claimed_no_key', dir);
+    assert.equal(mode(cleanHome().file(`${HOME}/${dir}/PreToolUse`, '#!/bin/sh\nexec marrow-mcp cline-pre-action-hook\n')).mode, 'seatbelt', `${dir} unclaimed`);
+  }
+  assert.equal(mode(cleanHome().file(`${HOME}/.claude/settings.local.json`, '{"c":"x --claimed"}')).mode, 'claimed_no_key');
+});
+
+test('F8/F15 (Barvis audit 5069b1c6): writable or foreign-owned home and evidence dirs, and a passwd home of /, are never seatbelt', () => {
+  for (const dir of ['.marrow/device', '.marrow/spool', '.marrow/host-approvals', '.marrow/runner-holds', '.claude', '.codex', '.grok/hooks', 'Documents/Cline/Hooks']) {
+    for (const opts of [{ mode: 0o777, uid: UID }, { mode: 0o775, uid: UID }, { mode: 0o755, uid: 4242 }]) {
+      const r = mode(cleanHome().mkdir(`${HOME}/${dir}`, opts));
+      assert.equal(r.mode, 'claimed_no_key', `${dir} ${JSON.stringify(opts)}`);
+      assert.equal(r.evidence.evidence_dirs, 'unknown');
+    }
+  }
+  assert.equal(mode(createFakeFs({ uid: UID }).mkdir(HOME, { uid: UID, mode: 0o777 })).mode, 'claimed_no_key');
+  assert.equal(mode(createFakeFs({ uid: UID }).mkdir(HOME, { uid: 4242, mode: 0o755 })).mode, 'claimed_no_key');
+  // A symlinked evidence dir is judged by its target.
+  const linked = cleanHome().mkdir('/shared', { uid: UID, mode: 0o777 }).symlink(`${HOME}/.claude`, '/shared');
+  assert.equal(mode(linked).mode, 'claimed_no_key');
+  assert.equal(mode(createFakeFs({ uid: UID }).mkdir('/x'), { passwdHome: '/' }).mode, 'claimed_no_key');
+  assert.equal(mode(createFakeFs({ uid: UID }).symlink('/home/root-link', '/'), { passwdHome: '/home/root-link' }).mode, 'claimed_no_key');
+  // A private home with 0700 evidence dirs stays seatbelt.
+  assert.equal(mode(cleanHome().mkdir(`${HOME}/.claude`, { uid: UID, mode: 0o700 })).mode, 'seatbelt');
 });
 
 test('an env key can only move the mode to account (stricter than seatbelt), never to seatbelt', (t) => {
@@ -216,9 +290,13 @@ test('A18: a planted repo .env / .marrow/env (key and base URL) is ignored; the 
   const saved = process.cwd();
   process.chdir(repo);
   try {
-    const r = resolveSeatbeltModeOnHost({ env: { HOME: repo }, passwdHome: home, argv: [] });
+    const r = resolveSeatbeltModeOnHost({ env: { HOME: home }, passwdHome: home, argv: [] });
     assert.equal(r.mode, 'seatbelt');
     assert.deepEqual(r.homes, [home]);
+    // HOME pointed at the repo: its planted key is never used (no `account`); the mismatch is stricter.
+    const pointed = resolveSeatbeltModeOnHost({ env: { HOME: repo }, passwdHome: home, argv: [] });
+    assert.equal(pointed.mode, 'claimed_no_key');
+    assert.deepEqual(pointed.homes, [home]);
     // The same planted files in a claimed machine change nothing either.
     mkdirSync(join(home, '.marrow'), { mode: 0o700 });
     writeFileSync(join(home, '.marrow', 'claimed'), '');

@@ -1,6 +1,6 @@
 import { type SeatbeltFs } from './seatbelt-fs';
 export type SeatbeltMode = 'seatbelt' | 'account' | 'claimed_no_key';
-export declare const ACCOUNT_EVIDENCE: readonly ["env_file", "env_local_file", "device_binding", "claimed_marker", "host_approvals_state", "mcp_spool", "runner_holds_salt", "hook_claimed_marker", "marrow_dir"];
+export declare const ACCOUNT_EVIDENCE: readonly ["env_file", "env_local_file", "device_binding", "claimed_marker", "host_approvals_state", "mcp_spool", "runner_holds_salt", "hook_claimed_marker", "marrow_dir", "evidence_dirs"];
 export type AccountEvidence = typeof ACCOUNT_EVIDENCE[number];
 export type EvidenceState = 'present' | 'absent' | 'unknown';
 export type KeyState = 'none' | 'present' | 'rejected';
@@ -15,6 +15,17 @@ export interface SeatbeltModeInput {
     uid?: number | null;
     /** MARROW_SEATBELT_STRICT=1: never seatbelt. */
     strict?: boolean;
+    /**
+     * Homes named only by the environment ($HOME, USERPROFILE): today's writers
+     * (src/env.ts, host-approval-state, lifecycle-spool, grok hooks) put keys
+     * and state there. Probed for evidence only; one that is not a trusted home
+     * gives `home_mismatch`. Never used for keys or later reads.
+     */
+    envHomes?: string[];
+    /** Extra hook config files from env relocation (CODEX_HOME, CLAUDE_CONFIG_DIR ...). Additive; a relative path is unknown. */
+    extraHookConfigs?: string[];
+    /** Extra hook script directories (CLINE_DIR ...). Additive; a relative path is unknown. */
+    extraHookDirs?: string[];
 }
 export interface SeatbeltModeResolution {
     mode: SeatbeltMode;
@@ -25,6 +36,12 @@ export interface SeatbeltModeResolution {
 }
 /** Harness hook configs (user level) that carry the installer's `--claimed` marker after a claim. */
 export declare const HOOK_CONFIG_FILES: string[];
+/**
+ * Hook script directories (Cline runs the executable scripts in its hooks
+ * directory). Every regular file in them is scanned for the marker. U8 must
+ * publish the exact paths it writes; any path it adds must be added here.
+ */
+export declare const HOOK_CONFIG_DIRS: string[];
 /** Every `--home` value in the hook's argv (repeated flags are all kept: a mismatch is contradictory). */
 export declare function homeFlags(argv: string[]): string[];
 export declare function resolveSeatbeltMode(input: SeatbeltModeInput): SeatbeltModeResolution;

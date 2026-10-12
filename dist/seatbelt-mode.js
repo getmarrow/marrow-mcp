@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MODE_ENV_NAMES = exports.HOOK_CONFIG_FILES = exports.ACCOUNT_EVIDENCE = void 0;
+exports.MODE_ENV_NAMES = exports.HOOK_CONFIG_DIRS = exports.HOOK_CONFIG_FILES = exports.ACCOUNT_EVIDENCE = void 0;
 exports.homeFlags = homeFlags;
 exports.resolveSeatbeltMode = resolveSeatbeltMode;
 exports.resolveSeatbeltModeOnHost = resolveSeatbeltModeOnHost;
@@ -18,6 +18,8 @@ exports.ACCOUNT_EVIDENCE = [
     'runner_holds_salt',
     'hook_claimed_marker',
     'marrow_dir',
+    /** The home and every directory holding evidence: owned by this user and not group/world-writable. Never 'present'. */
+    'evidence_dirs',
 ];
 /** Harness hook configs (user level) that carry the installer's `--claimed` marker after a claim. */
 exports.HOOK_CONFIG_FILES = [
@@ -27,7 +29,18 @@ exports.HOOK_CONFIG_FILES = [
     '.gemini/settings.json',
     '.codeium/windsurf/hooks.json',
     '.grok/hooks/marrow.json',
+    '.claude/settings.local.json',
+    '.codex/config.toml',
 ];
+/**
+ * Hook script directories (Cline runs the executable scripts in its hooks
+ * directory). Every regular file in them is scanned for the marker. U8 must
+ * publish the exact paths it writes; any path it adds must be added here.
+ */
+exports.HOOK_CONFIG_DIRS = ['Documents/Cline/Hooks', '.cline/hooks'];
+const MAX_HOOK_DIR_ENTRIES = 64;
+/** Directories under a home whose owner and mode are checked (others could delete evidence in them). */
+const EVIDENCE_DIRS = ['.marrow/device', '.marrow/host-approvals', '.marrow/spool', '.marrow/runner-holds', '.claude', '.codex', '.cursor', '.gemini', '.codeium', '.codeium/windsurf', '.grok', '.grok/hooks', 'Documents', 'Documents/Cline', ...exports.HOOK_CONFIG_DIRS, '.cline'];
 const MAX_HOOK_CONFIG_BYTES = 1024 * 1024;
 const CLAIMED_TOKEN = /(?:^|[\s"'\\])--claimed(?:$|[\s"'=\\])/;
 /** Every `--home` value in the hook's argv (repeated flags are all kept: a mismatch is contradictory). */
@@ -75,10 +88,12 @@ function probeSpool(fs, dir) {
         return 'unknown';
     }
 }
-function probeHookConfig(fs, path) {
+function probeHookConfig(fs, path, skipNonFiles = false) {
     try {
         const entry = fs.lstat(path);
         if (!entry)
+            return 'absent';
+        if (skipNonFiles && entry.type === 'dir')
             return 'absent';
         let target = path;
         if (entry.type === 'symlink') {
@@ -91,6 +106,53 @@ function probeHookConfig(fs, path) {
         if (text === null)
             return 'unknown';
         return CLAIMED_TOKEN.test(text) ? 'present' : 'absent';
+    }
+    catch {
+        return 'unknown';
+    }
+}
+function probeHookDir(fs, dir) {
+    try {
+        const real = (0, seatbelt_path_1.realPath)(fs, dir, { followFinal: true });
+        if (real.status !== 'resolved')
+            return 'unknown';
+        if (!real.exists)
+            return 'absent';
+        const entry = fs.lstat(real.path);
+        if (!entry)
+            return 'absent';
+        if (entry.type !== 'dir')
+            return 'unknown';
+        const names = fs.readdir(real.path);
+        if (names.length > MAX_HOOK_DIR_ENTRIES)
+            return 'unknown';
+        let state = 'absent';
+        for (const name of names)
+            state = worst(state, probeHookConfig(fs, `${real.path}/${name}`, true));
+        return state;
+    }
+    catch {
+        return 'unknown';
+    }
+}
+/** A directory that holds evidence: absent is fine; otherwise its real target must be a dir owned by uid, not group/world-writable. */
+function probeTrustedDir(fs, dir, uid) {
+    try {
+        const real = (0, seatbelt_path_1.realPath)(fs, dir, { followFinal: true });
+        if (real.status !== 'resolved')
+            return 'unknown';
+        if (!real.exists)
+            return 'absent';
+        const entry = fs.lstat(real.path);
+        if (!entry)
+            return 'absent';
+        if (entry.type !== 'dir')
+            return 'unknown';
+        if (uid !== null && entry.uid !== uid)
+            return 'unknown';
+        if ((entry.mode & 0o022) !== 0)
+            return 'unknown';
+        return 'absent';
     }
     catch {
         return 'unknown';
@@ -122,6 +184,11 @@ function probeHome(fs, home, uid) {
     let hooks = 'absent';
     for (const file of exports.HOOK_CONFIG_FILES)
         hooks = worst(hooks, probeHookConfig(fs, `${home}/${file}`));
+    for (const dir of exports.HOOK_CONFIG_DIRS)
+        hooks = worst(hooks, probeHookDir(fs, `${home}/${dir}`));
+    let dirs = probeTrustedDir(fs, home, uid);
+    for (const dir of EVIDENCE_DIRS)
+        dirs = worst(dirs, probeTrustedDir(fs, `${home}/${dir}`, uid));
     return {
         env_file: exists(fs, `${marrow}/env`),
         env_local_file: exists(fs, `${marrow}/env.local`),
@@ -134,14 +201,16 @@ function probeHome(fs, home, uid) {
         runner_holds_salt: exists(fs, `${marrow}/runner-holds/.salt`),
         hook_claimed_marker: hooks,
         marrow_dir: probeMarrowDir(fs, marrow, uid),
+        evidence_dirs: dirs === 'present' ? 'unknown' : dirs,
     };
 }
-/** A usable home: absolute, no `.`/`..` parts, and an existing directory after realpath. */
+/** A usable home: absolute, no `.`/`..` parts, and an existing directory other than `/` after realpath. */
 function trustedHome(fs, value) {
     if (typeof value !== 'string' || !value.startsWith('/') || value.split('/').some((part) => part === '..' || part === '.'))
         return null;
     const real = (0, seatbelt_path_1.realPath)(fs, value, { followFinal: true });
-    if (real.status !== 'resolved' || !real.exists)
+    // A service user's `/` home is shared with everything on the machine.
+    if (real.status !== 'resolved' || !real.exists || real.path === '/')
         return null;
     try {
         return fs.lstat(real.path)?.type === 'dir' ? real.path : null;
@@ -178,11 +247,36 @@ function resolveSeatbeltMode(input) {
         homeProblem = true;
         reasons.push('home_mismatch');
     }
+    // Env homes ($HOME ...) only tighten: probed for evidence, and one that is
+    // not a trusted home is a contradiction. They never join `homes`.
+    const probeHomes = [...homes];
+    for (const value of input.envHomes || []) {
+        const home = trustedHome(input.fs, value);
+        if (home === null) {
+            homeProblem = true;
+            if (!reasons.includes('env_home_unusable'))
+                reasons.push('env_home_unusable');
+            continue;
+        }
+        if (!homes.includes(home)) {
+            homeProblem = true;
+            if (!reasons.includes('home_mismatch'))
+                reasons.push('home_mismatch');
+        }
+        if (!probeHomes.includes(home))
+            probeHomes.push(home);
+    }
     // Every home named anywhere is probed: evidence in any of them counts.
-    for (const home of homes) {
+    for (const home of probeHomes) {
         const probed = probeHome(input.fs, home, uid);
         for (const id of exports.ACCOUNT_EVIDENCE)
             evidence[id] = worst(evidence[id], probed[id]);
+    }
+    for (const file of input.extraHookConfigs || []) {
+        evidence.hook_claimed_marker = worst(evidence.hook_claimed_marker, file.startsWith('/') ? probeHookConfig(input.fs, file) : 'unknown');
+    }
+    for (const dir of input.extraHookDirs || []) {
+        evidence.hook_claimed_marker = worst(evidence.hook_claimed_marker, dir.startsWith('/') ? probeHookDir(input.fs, dir) : 'unknown');
     }
     const present = exports.ACCOUNT_EVIDENCE.filter((id) => evidence[id] === 'present');
     const unknown = exports.ACCOUNT_EVIDENCE.filter((id) => evidence[id] === 'unknown');
@@ -207,9 +301,18 @@ function resolveSeatbeltMode(input) {
         mode = 'seatbelt';
     return { mode, homes, evidence, reasons };
 }
-/** The only environment names mode resolution reads: the key lookup's names and the strict switch. */
+/** The only environment names mode resolution reads: the key lookup's names, the strict switch and the tighten-only evidence relocations. */
 const KEY_ENV_NAMES = ['MARROW_API_KEY', 'MARROW_KEY', 'MARROW_BASE_URL', 'MARROW_SESSION_ID'];
-exports.MODE_ENV_NAMES = [...KEY_ENV_NAMES, 'MARROW_SEATBELT_STRICT'];
+/** Env homes 3.9.102 writes under (src/env.ts: HOME, then USERPROFILE). */
+const ENV_HOME_NAMES = ['HOME', 'USERPROFILE'];
+/** Env-relocated harness config: name -> files (or, for dirs, '' meaning the dir itself is scanned). */
+const ENV_HOOK_FILES = {
+    CODEX_HOME: ['hooks.json', 'config.toml'],
+    CLAUDE_CONFIG_DIR: ['settings.json', 'settings.local.json'],
+    GEMINI_CLI_SYSTEM_SETTINGS_PATH: [''],
+};
+const ENV_HOOK_DIRS = { CLINE_DIR: 'hooks' };
+exports.MODE_ENV_NAMES = [...KEY_ENV_NAMES, 'MARROW_SEATBELT_STRICT', ...ENV_HOME_NAMES, ...Object.keys(ENV_HOOK_FILES), ...Object.keys(ENV_HOOK_DIRS)];
 function passwdHomeDirectory() {
     try {
         const home = (0, node_os_1.userInfo)().homedir;
@@ -230,8 +333,8 @@ function resolveSeatbeltModeOnHost(options = {}) {
     const argv = options.argv || process.argv.slice(2);
     const passwdHome = options.passwdHome === undefined ? passwdHomeDirectory() : options.passwdHome;
     const uid = options.uid === undefined ? (typeof process.getuid === 'function' ? process.getuid() : null) : options.uid;
-    // Only these names are copied out of the environment; HOME and every other
-    // variable stay unread, so no variable can steer the home or the mode.
+    // Only MODE_ENV_NAMES are read. None of them can select seatbelt or the
+    // trusted home: the env homes and relocated configs only add evidence.
     const keyEnv = {};
     for (const name of KEY_ENV_NAMES) {
         const value = env[name];
@@ -254,6 +357,27 @@ function resolveSeatbeltModeOnHost(options = {}) {
     }
     if (key === 'present' && options.keyRejected)
         key = 'rejected';
-    return resolveSeatbeltMode({ fs, passwdHome, argv, key, uid, strict });
+    const envHomes = [];
+    for (const name of ENV_HOME_NAMES) {
+        const value = env[name];
+        // 3.9.102 uses `env.HOME || ...`: an empty value falls through to the next.
+        if (typeof value === 'string' && value !== '')
+            envHomes.push(value);
+    }
+    const extraHookConfigs = [];
+    for (const [name, files] of Object.entries(ENV_HOOK_FILES)) {
+        const value = env[name];
+        if (typeof value !== 'string' || value.trim() === '')
+            continue;
+        for (const file of files)
+            extraHookConfigs.push(file ? `${value.replace(/\/+$/, '')}/${file}` : value);
+    }
+    const extraHookDirs = [];
+    for (const [name, sub] of Object.entries(ENV_HOOK_DIRS)) {
+        const value = env[name];
+        if (typeof value === 'string' && value.trim() !== '')
+            extraHookDirs.push(`${value.replace(/\/+$/, '')}/${sub}`);
+    }
+    return resolveSeatbeltMode({ fs, passwdHome, argv, key, uid, strict, envHomes, extraHookConfigs, extraHookDirs });
 }
 //# sourceMappingURL=seatbelt-mode.js.map
