@@ -467,6 +467,12 @@ test('N6: word count, brace length and tool-input walks are bounded', () => {
   const ms = Date.now() - t;
   assert.equal(d.decision, 'stop');
   assert.ok(ms < 1500, `${ms} ms`);
+  // A native file tool with a long path list: the per-path checks are clocked too.
+  const wpaths = Array.from({ length: 60000 }, (_, i) => `/home/u/proj/x${i}.txt`);
+  const tw = Date.now();
+  const dw = evaluateSeatbelt({ tool_name: 'Write', tool_input: { file_path: '/home/u/proj/a.txt', content: 'x', paths: wpaths } }, prodBudget());
+  assert.equal(dw.decision, 'stop');
+  assert.ok(Date.now() - tw < 1500, `Write took ${Date.now() - tw} ms`);
   // The same walk with a tiny budget stops on the clock, not on the node count.
   const t2 = Date.now();
   const d2 = evaluateSeatbelt({ tool_name: 'mcp__x__write', tool_input: { files: paths } }, makeEnv({ budgetMs: 20 }));

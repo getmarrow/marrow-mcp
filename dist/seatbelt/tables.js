@@ -2,7 +2,7 @@
 // Seatbelt rule tables (spec SEATBELT-SPEC.md §1.2 as amended by the owner decisions of 2026-10-12).
 // Compiled into the package on purpose: no local file can extend or relax them (spec §2.1.7).
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TERMINAL_SEGMENTS = exports.STDIN_KEYS = exports.CODE_KEYS = exports.ARGV_KEYS = exports.COMMAND_KEYS = exports.FILE_TOOL_NAMES = exports.SHELL_TOOL_NAMES = exports.GIT_CONFIG_ENV_FILES = exports.GIT_CONFIG_INCLUDE = exports.GIT_EXEC_CONFIG = exports.NPM_BOOL_FLAGS = exports.NPM_VALUE_FLAGS = exports.NPM_ALIASES = exports.NPM_COMMANDS = exports.EVAL_PRODUCERS = exports.NON_SCRIPT_NAMES = exports.SCRIPT_SUFFIX = exports.INERT_PROGRAMS = exports.KNOWN_COMMANDS = exports.NAME_TRIPWIRE = exports.TRIPWIRE = exports.GIT_PUSH_RISKY_LONG = exports.GIT_PUSH_LONG = exports.GIT_BUILTINS = exports.PACKAGE_BINS = exports.MARROW_OWNER_SUBS = exports.INTERPRETER_EXEC = exports.INTERPRETERS = exports.SHELLS = exports.GIT_S4_EXEMPT_SUBS = exports.S4_EXEMPT_PROGRAMS = exports.PROD_ENV = exports.SECRET_VAR = exports.SSH_PUBLIC = exports.ENV_TEMPLATE_SUFFIX = exports.KEY_FIXTURE_SEGMENTS = exports.KEY_EXTENSIONS = exports.SECRET_PATTERNS = exports.LIMITS = exports.SEATBELT_RULES_VERSION = void 0;
+exports.TERMINAL_SEGMENTS = exports.STDIN_KEYS = exports.CODE_KEYS = exports.ARGV_SEGMENTS = exports.ARGV_KEYS = exports.COMMAND_KEYS = exports.FILE_TOOL_NAMES = exports.SHELL_TOOL_NAMES = exports.GIT_CONFIG_ENV_FILES = exports.GIT_CONFIG_INCLUDE = exports.GIT_EXEC_CONFIG = exports.NPM_BOOL_FLAGS = exports.NPM_VALUE_FLAGS = exports.NPM_ALIASES = exports.NPM_COMMANDS = exports.EVAL_PRODUCERS = exports.NON_SCRIPT_NAMES = exports.SCRIPT_SUFFIX = exports.INERT_PROGRAMS = exports.KNOWN_COMMANDS = exports.NAME_TRIPWIRE = exports.TRIPWIRE = exports.GIT_PUSH_RISKY_LONG = exports.GIT_PUSH_LONG = exports.GIT_BUILTINS = exports.PACKAGE_BINS = exports.MARROW_OWNER_SUBS = exports.INTERPRETER_EXEC = exports.INTERPRETERS = exports.SHELLS = exports.GIT_S4_EXEMPT_SUBS = exports.S4_EXEMPT_PROGRAMS = exports.PROD_ENV = exports.SECRET_VAR = exports.SSH_PUBLIC = exports.ENV_TEMPLATE_SUFFIX = exports.KEY_FIXTURE_SEGMENTS = exports.KEY_EXTENSIONS = exports.SECRET_PATTERNS = exports.LIMITS = exports.SEATBELT_RULES_VERSION = void 0;
 exports.secretSamples = secretSamples;
 exports.interpreterTreeDelete = interpreterTreeDelete;
 exports.interpreterDecodeToken = interpreterDecodeToken;
@@ -290,17 +290,18 @@ exports.FILE_TOOL_NAMES = new Set(['read', 'notebookread', 'read_file', 'view', 
 exports.COMMAND_KEYS = new Set(['command', 'cmd', 'commandline', 'command_line', 'cmdline', 'cmd_line', 'shell_command', 'shellcommand',
     'bash_command', 'script', 'shell', 'bash', 'sh', 'exec', 'run', 'execute', 'argv', 'commands', 'cmds',
     // audit N4: argv-style tools and string-named variants
-    'program', 'executable', 'exe', 'shell_cmd', 'shellcmd', 'cmdstring', 'cmd_string', 'command_string', 'commandstring', 'cmdstr',
+    'program', 'executable', 'exe', 'binary', 'bin', 'shell_cmd', 'shellcmd', 'cmdstring', 'cmd_string', 'command_string', 'commandstring', 'cmdstr',
     'cmd_str', 'command_text', 'commandtext', 'cmd_text', 'shell_script', 'bash_script', 'script_text']);
 // A field name that is not listed above but names a command by word: `cmdString`, `my_shell_cmd`,
 // `run_command`. Matched on name segments, so `description` is not `script`.
 const COMMAND_SEGMENTS = new Set(['cmd', 'cmds', 'command', 'commands', 'shell', 'bash', 'zsh', 'script', 'exec', 'execute', 'argv', 'commandline',
-    'cmdline', 'program', 'executable']);
+    'cmdline', 'program', 'executable', 'binary', 'bin']);
 function commandLikeKey(raw) {
     return raw.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).some((s) => COMMAND_SEGMENTS.has(s));
 }
 // Companion argument-vector fields next to a `command` string (MCP exec servers: {command:'git', args:[…]}).
 exports.ARGV_KEYS = new Set(['args', 'argv', 'arguments', 'params', 'argument']);
+exports.ARGV_SEGMENTS = new Set(['args', 'argv', 'arguments', 'params', 'parameters', 'argument']);
 // Fields that hold interpreter code (scanned like `node -e`).
 exports.CODE_KEYS = new Set(['code', 'python', 'javascript', 'js', 'node', 'ruby', 'perl', 'php', 'python_code', 'source_code',
     // audit N4

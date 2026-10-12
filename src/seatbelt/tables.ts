@@ -302,17 +302,18 @@ export const FILE_TOOL_NAMES = new Set(['read', 'notebookread', 'read_file', 'vi
 export const COMMAND_KEYS = new Set(['command', 'cmd', 'commandline', 'command_line', 'cmdline', 'cmd_line', 'shell_command', 'shellcommand',
   'bash_command', 'script', 'shell', 'bash', 'sh', 'exec', 'run', 'execute', 'argv', 'commands', 'cmds',
   // audit N4: argv-style tools and string-named variants
-  'program', 'executable', 'exe', 'shell_cmd', 'shellcmd', 'cmdstring', 'cmd_string', 'command_string', 'commandstring', 'cmdstr',
+  'program', 'executable', 'exe', 'binary', 'bin', 'shell_cmd', 'shellcmd', 'cmdstring', 'cmd_string', 'command_string', 'commandstring', 'cmdstr',
   'cmd_str', 'command_text', 'commandtext', 'cmd_text', 'shell_script', 'bash_script', 'script_text']);
 // A field name that is not listed above but names a command by word: `cmdString`, `my_shell_cmd`,
 // `run_command`. Matched on name segments, so `description` is not `script`.
 const COMMAND_SEGMENTS = new Set(['cmd', 'cmds', 'command', 'commands', 'shell', 'bash', 'zsh', 'script', 'exec', 'execute', 'argv', 'commandline',
-  'cmdline', 'program', 'executable']);
+  'cmdline', 'program', 'executable', 'binary', 'bin']);
 export function commandLikeKey(raw: string): boolean {
   return raw.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).some((s) => COMMAND_SEGMENTS.has(s));
 }
 // Companion argument-vector fields next to a `command` string (MCP exec servers: {command:'git', args:[…]}).
 export const ARGV_KEYS = new Set(['args', 'argv', 'arguments', 'params', 'argument']);
+export const ARGV_SEGMENTS = new Set(['args', 'argv', 'arguments', 'params', 'parameters', 'argument']);
 // Fields that hold interpreter code (scanned like `node -e`).
 export const CODE_KEYS = new Set(['code', 'python', 'javascript', 'js', 'node', 'ruby', 'perl', 'php', 'python_code', 'source_code',
   // audit N4

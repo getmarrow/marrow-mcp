@@ -64,6 +64,7 @@ export declare const FILE_TOOL_NAMES: Set<string>;
 export declare const COMMAND_KEYS: Set<string>;
 export declare function commandLikeKey(raw: string): boolean;
 export declare const ARGV_KEYS: Set<string>;
+export declare const ARGV_SEGMENTS: Set<string>;
 export declare const CODE_KEYS: Set<string>;
 export declare function codeLikeKey(raw: string): boolean;
 export declare const STDIN_KEYS: Set<string>;

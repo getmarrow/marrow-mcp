@@ -175,12 +175,18 @@ function evaluateEvent(event, env) {
         exhaust(run, 'budget_tool_input');
     const ctx = newCtx(run);
     if (['read', 'notebookread', 'read_file', 'view', 'view_file'].includes(name)) {
-        for (const p of pathInputs(input))
+        for (const p of pathInputs(input)) {
+            if (clock(run))
+                break;
             checkSecretOperand(litArg(p), ctx, run, 'tool_read');
+        }
     }
     else if (['grep', 'grep_files', 'search', 'rg'].includes(name)) {
-        for (const p of pathInputs(input))
+        for (const p of pathInputs(input)) {
+            if (clock(run))
+                break;
             checkSecretOperand(litArg(p), ctx, run, 'tool_grep');
+        }
         for (const key of ['glob', 'include', 'file_pattern']) {
             const g = input[key];
             if (typeof g === 'string' && g)
@@ -191,12 +197,17 @@ function evaluateEvent(event, env) {
         const targets = name === 'apply_patch' ? patchPaths(String(input.patch || input.input || input.content || '')) : pathInputs(input);
         if (name === 'str_replace_editor' || name === 'str_replace_based_edit_tool') {
             if (String(input.command || '') === 'view') {
-                for (const p of targets)
+                for (const p of targets) {
+                    if (clock(run))
+                        break;
                     checkSecretOperand(litArg(p), ctx, run, 'tool_read');
+                }
                 return finish(run);
             }
         }
         for (const p of targets) {
+            if (clock(run))
+                break;
             if (checkSecretOperand(litArg(p), ctx, run, 'tool_write'))
                 continue;
             checkToolWrite(p, name, input, ctx, run);
@@ -295,8 +306,14 @@ function shellInvocations(name, input, deadline, rawText) {
             }
             if (tables_1.COMMAND_KEYS.has(key) || (0, tables_1.commandLikeKey)(rawKey)) {
                 if (typeof value === 'string') {
-                    const extra = [...tables_1.ARGV_KEYS].map((k) => Object.entries(obj).find(([kk]) => kk.toLowerCase() === k)).find((e) => e && Array.isArray(e[1]));
-                    const argv = extra && Array.isArray(extra[1]) && extra[1].every((v) => typeof v === 'string') ? extra[1].map(shellQuote).join(' ') : '';
+                    // Argument-vector companions: `args`, `arguments`, `commandArgs`, `params` (by word).
+                    const sib = Object.entries(obj).filter(([kk]) => tables_1.ARGV_KEYS.has(kk.toLowerCase()) || nameSegments(kk).some((s) => tables_1.ARGV_SEGMENTS.has(s)));
+                    const extra = sib.find((e) => Array.isArray(e[1]));
+                    // A companion that is neither a list nor text: unknown shape, read what is in it and stop.
+                    for (const [, v] of sib)
+                        if (v && typeof v === 'object' && !Array.isArray(v))
+                            out.malformed = true;
+                    const argv = extra && Array.isArray(extra[1]) && extra[1].every((v) => typeof v === 'string' || typeof v === 'number') ? extra[1].map((v) => shellQuote(String(v))).join(' ') : '';
                     if (value.trim() !== '')
                         here.push(argv ? `${value} ${argv}` : value);
                     // A command field that holds JSON (`{"command": "…"}` as text) is read as an object as well.
@@ -364,6 +381,18 @@ function shellInvocations(name, input, deadline, rawText) {
                 }
                 else
                     walk(value, depth + 1);
+            }
+        }
+        // `{file: 'npm', args: ['publish']}` (execFile style): a name field next to an argument list.
+        {
+            const argvList = Object.entries(obj).find(([k, v]) => (tables_1.ARGV_KEYS.has(k.toLowerCase()) || nameSegments(k).some((s) => tables_1.ARGV_SEGMENTS.has(s))) && Array.isArray(v) && v.length > 0
+                && v.every((x) => typeof x === 'string' || typeof x === 'number'));
+            if (argvList) {
+                const joined = argvList[1].map((v) => shellQuote(String(v))).join(' ');
+                for (const [k, v] of Object.entries(obj)) {
+                    if (typeof v === 'string' && v.trim() && /^(?:file|filename|file_name|name|cmd_name|app|application|tool)$/i.test(k))
+                        here.push(`${v} ${joined}`);
+                }
             }
         }
         for (const c of here) {
