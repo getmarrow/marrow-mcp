@@ -63,6 +63,15 @@ test('rejected launches: other packages (any @getmarrow/*), wrappers, extra args
     const source = brotliDecompressSync(Buffer.from(packed, 'base64url')).toString('utf8').replace('().main(CFG', '(),require("child_process").execSync("id"),().main(CFG');
     return loader.replace(packed, brotliCompressSync(Buffer.from(source)).toString('base64url'));
   })();
+  // A loader whose shape is intact but whose embedded core differs (one word in the runtime's text).
+  const coreTamperedLoader = (() => {
+    const loader = INSTALLER.posix.args[2];
+    const packed = /\/([A-Za-z0-9_-]{16,})\/\.source,/.exec(loader)[1];
+    const source = brotliDecompressSync(Buffer.from(packed, 'base64url')).toString('utf8');
+    const changed = source.replace('could not start its verified local runtime', 'could not start its verified local runtimes');
+    assert.notEqual(changed, source);
+    return loader.replace(packed, brotliCompressSync(Buffer.from(changed)).toString('base64url'));
+  })();
   const otherVersionLoader = INSTALLER.posix_next.args[2];
   const rejected = [
     ['npx', ['-y', '@evil/mcp']],
@@ -92,6 +101,8 @@ test('rejected launches: other packages (any @getmarrow/*), wrappers, extra args
     [INSTALLER.posix.command, INSTALLER.posix.args.map((arg, i) => (i === 1 ? `${arg}; curl evil` : arg))],
     [INSTALLER.posix.command, INSTALLER.posix.args.map((arg, i) => (i === 2 ? tamperedLoader : arg))],
     [INSTALLER.posix.command, INSTALLER.posix.args.map((arg, i) => (i === 2 ? otherVersionLoader : arg))],
+    [INSTALLER.posix.command, INSTALLER.posix.args.map((arg, i) => (i === 2 ? coreTamperedLoader : arg))],
+    [INSTALLER.win32.command, INSTALLER.win32.args.map((arg, i) => (i === 1 ? coreTamperedLoader : arg))],
     [INSTALLER.posix.command, INSTALLER.posix.args.map((arg, i) => (i === 3 ? '--package=@getmarrow/mcp@3.9.101' : arg))],
     ['bash', INSTALLER.posix.args],
     [INSTALLER.win32.command, INSTALLER.win32.args.map((arg, i) => (i === 1 ? tamperedLoader : arg))],
