@@ -266,6 +266,7 @@ function shellInvocations(name, input, deadline, rawText) {
     const out = { shell: [], code: [], malformed: false, truncated: false, timedOut: false };
     const terminalTool = nameSegments(name).some((s) => tables_1.TERMINAL_SEGMENTS.has(s));
     let visited = 0;
+    let composed = 0;
     if (rawText !== null && rawText.trim() !== '')
         out.shell.push(rawText);
     const walk = (obj, depth) => {
@@ -396,11 +397,16 @@ function shellInvocations(name, input, deadline, rawText) {
             }
         }
         for (const c of here) {
-            if (stdins.length)
-                for (const s of stdins)
-                    out.shell.push(withStdin(c, s));
-            else
-                out.shell.push(c);
+            out.shell.push(c);
+            for (const s of stdins) {
+                // `commands` x `stdin` is a product: bound the composed text (audit N6).
+                composed += c.length + s.length;
+                if (composed > tables_1.LIMITS.maxCommandBytes * 4 || out.shell.length > tables_1.LIMITS.maxSegments * 4) {
+                    out.truncated = true;
+                    return;
+                }
+                out.shell.push(withStdin(c, s));
+            }
         }
         if (!here.length && stdins.length && terminalTool) {
             for (const s of stdins) {
@@ -608,6 +614,7 @@ function newRun(rawEnv, source, deadline) {
         links: new Map(),
         linksUnknown: false,
         headMayChange: false,
+        decodeMemo: new Map(),
         fsState,
         reads: new Map(),
         packages: new Map(),
@@ -619,7 +626,7 @@ function newCtx(run) {
     return {
         cwds: [cwd], vars: new Map([['HOME', [run.home]]]), exported: new Set(['HOME']), aliases: new Map(), gitAliases: new Map(),
         gitConfig: new Map(), written: new Set(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
-        decodedVars: new Set(), candidates: new Map(), ifs: undefined, backstop: false,
+        decodedVars: new Set(), candidates: new Map(), fds: new Map(), ifs: undefined, backstop: false,
     };
 }
 function childCtx(ctx, overrides = {}) {
@@ -642,7 +649,7 @@ function scriptCtx(ctx, cwds, extraEnv) {
         vars.set(k, v);
         candidates.delete(k);
     }
-    return { ...ctx, cwds, vars, candidates, exported: new Set([...ctx.exported, ...extraEnv.keys()]), aliases: new Map(), depth: ctx.depth + 1, backstop: false };
+    return { ...ctx, cwds, vars, candidates, fds: new Map(), exported: new Set([...ctx.exported, ...extraEnv.keys()]), aliases: new Map(), depth: ctx.depth + 1, backstop: false };
 }
 function hit(run, category, reason) {
     if (!run.hits.some((h) => h.category === category && h.reason === reason))
@@ -1004,6 +1011,22 @@ function gitMayChangeHead(sub, args) {
         return !texts.some((t) => t !== null && /^(?:--get|--get-all|--get-regexp|--list|-l)$/.test(t));
     return false;
 }
+// `name() {`, `name() (`, `function name`, `trap`: code that runs later than it is written.
+const DEFERRED_CODE = /\)[ \t]*\{|\)[ \t]*\(|(?:^|[\s;&|(){}])function\s+[A-Za-z_]|(?:^|[\s;&|(){}])trap(?:\s|$)/;
+// Names defined as shell functions or aliases in this text. A call of one is a command that may read
+// its stdin like a shell (audit N1): the body was flattened into the list and never saw the feed.
+function functionNames(src) {
+    if (src.indexOf('(') < 0 && src.indexOf('function') < 0 && src.indexOf('alias') < 0)
+        return undefined;
+    const out = new Set();
+    for (const m of src.matchAll(/(?:^|[\s;&|(){}])(?:function\s+)?([A-Za-z_][A-Za-z0-9_.:-]*)\s*\(\s*\)/g))
+        out.add(m[1]);
+    for (const m of src.matchAll(/(?:^|[\s;&|(){}])function\s+([A-Za-z_][A-Za-z0-9_.:-]*)/g))
+        out.add(m[1]);
+    for (const m of src.matchAll(/(?:^|[\s;&|(){}])alias\s+(?:-[a-zA-Z]+\s+)*([A-Za-z_][A-Za-z0-9_.:-]*)=/g))
+        out.add(m[1]);
+    return out.size ? out : undefined;
+}
 const LOOP_WORD = /(?:^|[\s;&|(){}])(?:while|until|for|select)(?:[\s;]|$)/;
 const DECLARE_PROGS = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 const ASSIGN_WORD = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
@@ -1154,12 +1177,16 @@ function evalShell(src, ctx, run) {
     // than once, so a later assignment in it is visible to an earlier use: the list runs twice.
     const guards = buildGuards(src, parsed.commands);
     const wordSubs = indexSubstitutions(parsed);
-    const rounds = guards && (guards.unknown ? LOOP_WORD.test(src) : [...guards.byCmd.values()].some((g) => g.assign.concat(g.declare).some((e) => e.inLoop))) ? 2 : 1;
+    const fnNames = functionNames(src);
+    // A function body or a trap string was evaluated where it is defined, with the variables and the
+    // branch of that moment; it runs later, when they may differ: the list runs twice there as well.
+    const rounds = (guards && (guards.unknown ? LOOP_WORD.test(src) : [...guards.byCmd.values()].some((g) => g.assign.concat(g.declare).some((e) => e.inLoop))))
+        || DEFERRED_CODE.test(src) ? 2 : 1;
     for (let round = 0; round < rounds && !run.exhausted; round += 1) {
         for (const pipeline of pipelines) {
             for (let i = 0; i < pipeline.length; i += 1) {
                 const upstream = pipeline.slice(0, i);
-                evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions, groupSource: groupSource.has(pipeline[i]), lost, guards, round2: round > 0, wordSubs });
+                evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions, groupSource: groupSource.has(pipeline[i]), lost, guards, round2: round > 0, wordSubs, fnNames });
             }
         }
     }
@@ -1260,16 +1287,30 @@ function evalCommand(cmd, ctx, run, info) {
     }
     // One command with more words than this is not read word by word (each word costs file system
     // work); it stops (audit N6). The literal text still goes through the lexical tripwire.
-    if (cmd.words.length + cmd.assignments.length > tables_1.LIMITS.maxWords) {
+    if (cmd.words.length + cmd.assignments.length + cmd.redirects.length > tables_1.LIMITS.maxWords) {
         worseParse(run, 'too_large');
         tripwire(run.topSource.slice(0, tables_1.LIMITS.maxCommandBytes), run);
         exhaust(run, 'budget_words');
         return;
     }
+    // `${w:=x}` / `${w=x}` assigns w when it is unset or empty (audit N2): a conditional assignment.
+    for (const w of [...cmd.words, ...cmd.assignments]) {
+        for (const slot of w.slots) {
+            if (slot.type !== 'var' || !slot.name || slot.name.indexOf('=') < 0)
+                continue;
+            const m = /^([A-Za-z_][A-Za-z0-9_]*):?=([\s\S]*)$/.exec(slot.name);
+            if (!m)
+                continue;
+            const def = /[$`]/.test(m[2]) ? null : [m[2].replace(/^(['"])([\s\S]*)\1$/, '$2')];
+            ctx.vars.set(m[1], applyConditional(ctx, m[1], def, false));
+        }
+    }
     // Redirects: writes to protected paths (S0), reads or writes of secret paths (S4).
     for (const r of cmd.redirects) {
         if (!r.target)
             continue;
+        if (clock(run))
+            return;
         const a = resolveWord(r.target, ctx, run);
         if (r.op === '>&' || r.op === '<&' || r.op === '<<<') {
             if (a.text !== null && /^(?:\d+|-)$/.test(a.text))
@@ -1298,6 +1339,10 @@ function evalCommand(cmd, ctx, run, info) {
         const valueWord = { ...w, text: w.text.slice(eq + 1) };
         const v = resolveWord(valueWord, ctx, run);
         let value = v.text !== null ? [v.text] : v.alts;
+        // `w=(a b)`: the parser keeps `w=` and reads the elements as a command; `$w` is the first one.
+        const arr = guard && info.guards && !info.guards.unknown ? guard.assign[ai]?.array : undefined;
+        if (arr !== undefined)
+            value = arr === null || arr.length === 0 ? null : arr;
         // `x+=…` appends to the earlier value (unknown when that is unknown).
         if (/\+$/.test(rawName) && !/\[/.test(rawName)) {
             const before = assignEnv.has(name) ? assignEnv.get(name) : ctx.vars.get(name);
@@ -1325,9 +1370,14 @@ function evalCommand(cmd, ctx, run, info) {
                 ctx.ifs = v && v.length === 1 ? v[0] : null;
         }
         // X=$(… | base64 -d): executing $X later is decoded exec.
-        if (cmd.assignments.some((w) => w.substitution) && substitutionsDecode(info.subs, run))
-            for (const k of assignEnv.keys())
-                ctx.decodedVars.add(k);
+        if (cmd.assignments.some((w) => w.substitution)) {
+            // The substitutions of these assignments only, not of the whole parse (audit N6).
+            const own = cmd.assignments.flatMap((w) => (info.wordSubs && info.wordSubs.get(w)) || []);
+            const texts = own.length ? own : info.subs;
+            if (substitutionsDecode(texts, run))
+                for (const k of assignEnv.keys())
+                    ctx.decodedVars.add(k);
+        }
         return;
     }
     // `… | base64 -d | tee >(sh)`: a process substitution that is a shell or interpreter, fed by a
@@ -1337,6 +1387,72 @@ function evalCommand(cmd, ctx, run, info) {
             const parsedSub = safeParse(sub, { depth: ctx.depth + 1 });
             if (parsedSub.ok && parsedSub.commands.some((c) => { const p0 = (c.words[0]?.text || '').split('/').pop() || ''; return tables_1.SHELLS.has(p0) || tables_1.INTERPRETERS.has(p0); }))
                 hit(run, 'Sx', 'decoded_process_substitution_exec');
+        }
+    }
+    // `… | tee >(bash)`, `echo … > >(bash)`: a process substitution that is a shell or interpreter
+    // reading its stdin is fed what this command writes (audit N1).
+    {
+        const sinkWords = [
+            ...cmd.words.filter((w) => w.substitution),
+            ...cmd.redirects.filter((r) => r.target && r.target.substitution && OUTPUT_REDIRECTS.has(r.op)).map((r) => r.target),
+        ];
+        for (const sw of sinkWords) {
+            const texts = (info.wordSubs && info.wordSubs.get(sw)) || info.subs;
+            for (const s of texts) {
+                const ps = safeParse(s, { depth: ctx.depth + 1 });
+                if (!ps.ok)
+                    continue;
+                const reader = ps.commands.find((c) => stdinReaderCommand(c));
+                if (!reader)
+                    continue;
+                const asShell = tables_1.SHELLS.has((reader.words[0]?.text || '').split('/').pop() || '');
+                const sx = { cmd, info, env: assignEnv };
+                const feed = stdinSource(sx, ctx, run);
+                // What the command itself prints.
+                const resolved = cmd.words.map((w) => resolveWord(w, ctx, run));
+                const p0 = resolved[0] ? progName(resolved[0], run) : null;
+                if (p0 === 'echo' || p0 === 'printf') {
+                    const ops = resolved.slice(1).filter((a) => !(p0 === 'echo' && /^-[neE]+$/.test(a.text || '')));
+                    if (ops.every((a) => a.text !== null))
+                        feed.texts.push(p0 === 'printf' ? printfOutput(ops[0].text || '', ops.slice(1).map((a) => a.text)) : ops.map((a) => a.text).join(' '));
+                    else
+                        feed.unknown = true;
+                }
+                else if (p0 === 'cat') {
+                    for (const a of resolved.slice(1).filter((a) => !(a.text !== null && a.text.startsWith('-') && a.text.length > 1))) {
+                        if (a.text === null)
+                            feed.unknown = true;
+                        else
+                            feed.files.push(a);
+                    }
+                }
+                else if (p0 !== 'tee' && info.upstream.length === 0 && cmd.heredoc === null && !cmd.redirects.some((r) => r.op === '<<<'))
+                    feed.unknown = feed.unknown || false;
+                if (feed.decoded || info.upstream.some((c) => decoderCommand(c, run, info)))
+                    hit(run, 'Sx', 'decoded_process_substitution_exec');
+                for (const tx of feed.texts) {
+                    if (asShell)
+                        evalShell(tx, childCtx(ctx), run);
+                    else {
+                        scanInterpreterCode(tx, run);
+                        evalShell(tx, childCtx(ctx), run);
+                    }
+                }
+                for (const f of feed.files) {
+                    if (asShell)
+                        scriptFile(f, [], ctx, run, null);
+                    else
+                        for (const p of absCandidates(f.text, ctx, run) || []) {
+                            const c = readCached(run, p, tables_1.LIMITS.maxScriptBytes);
+                            if (c !== null)
+                                scanInterpreterCode(c, run);
+                        }
+                }
+                if (feed.unknown || (feed.texts.length === 0 && feed.files.length === 0 && info.upstream.length > 0 && !feed.fetched)) {
+                    worseParse(run, 'dynamic');
+                    hit(run, 'Sx', 'stdin_exec_unknown_source');
+                }
+            }
         }
     }
     // BASH_ENV and ENV name a file a shell runs before its own script: read it as a script.
@@ -1373,7 +1489,8 @@ function evalCommand(cmd, ctx, run, info) {
     if (!first.quoted && !first.dynamic && ctx.aliases.has(first.text) && ctx.depth < tables_1.LIMITS.maxDepth + 2) {
         const args = variants[0] || [];
         const rest = args.slice(1).map((a) => (a.text !== null ? shellQuote(a.text) : '"$__marrow_dynamic"')).join(' ');
-        evalShell(`${ctx.aliases.get(first.text)} ${rest}`, childCtx(ctx), run);
+        const aliasCtx = withFeed(ctx, { cmd, info, env: assignEnv }, run);
+        evalShell(`${ctx.aliases.get(first.text)} ${rest}`, childCtx(ctx, { stdinFeed: aliasCtx.stdinFeed }), run);
         return;
     }
     for (const args of variants)
@@ -1566,6 +1683,16 @@ function dispatch(args, ctx, run, x) {
     const prog = progName(args[0], run);
     if (prog === null)
         return dynamicProgram(args, ctx, run, x);
+    // A glob in the command word names whatever matches it at run time (`/bin/s[h]`, `np[m]`): read each
+    // match as the program, and stop when it matches nothing the mapper can list (audit N1).
+    if (args[0].glob && args[0].text !== null && args[0].text !== '[' && args[0].text !== '[[' && /[*?[]/.test(args[0].text)) {
+        const found = expandGlob(args[0].text, ctx, run);
+        if (found === null || found.length === 0)
+            return dynamicProgram([{ ...args[0], text: null, alts: null, pattern: DYN }, ...args.slice(1)], ctx, run, x);
+        for (const mm of found.slice(0, tables_1.LIMITS.maxVariants))
+            dispatch([litArg(mm), ...args.slice(1)], ctx, run, x);
+        return;
+    }
     const rest = args.slice(1);
     const pathLike = args[0].text !== null && args[0].text.includes('/');
     // Generic operand checks apply to every program (S4 reads, S0 writes by write-programs).
@@ -1592,10 +1719,14 @@ function dispatch(args, ctx, run, x) {
                 }
             return;
         case 'printenv': return printenv(rest, run);
+        case 'read':
+        case 'mapfile':
+        case 'readarray':
+        case 'getopts': return assigningBuiltin(prog, rest, ctx);
         case 'echo':
         case 'printf':
-        case 'print': return echoLike(args, run, x);
-        case 'eval': return evalBuiltin(rest, ctx, run, x.info.subs);
+        case 'print': return echoLike(args, run, x, ctx);
+        case 'eval': return evalBuiltin(rest, withFeed(ctx, x, run), run, x.info.subs);
         case 'source':
         case '.': return sourceFile(rest, ctx, run, x);
         case 'env': return envWrapper(rest, ctx, run, x);
@@ -1639,7 +1770,7 @@ function dispatch(args, ctx, run, x) {
         case 'trap': return trapBuiltin(rest, ctx, run, x);
         case 'awk':
         case 'gawk':
-        case 'mawk': return awkProgram(rest, ctx, run);
+        case 'mawk': return awkProgram(rest, ctx, run, x);
         case 'sed':
         case 'gsed': return sedProgram(rest, ctx, run);
         case 'ps': return psProgram(rest, run);
@@ -1700,6 +1831,9 @@ function dispatch(args, ctx, run, x) {
         return scanHandled();
     if (pathLike)
         return scriptFile(args[0], rest, ctx, run, x);
+    // A function or alias defined in this text: its stdin goes to whatever it runs.
+    if (x.info.fnNames && x.info.fnNames.has(prog))
+        stdinExec('sh', [], x, ctx, run);
     unknownProgram(prog, args, ctx, run, x);
 }
 // Tools whose arguments are mostly data (variables, payloads); their argv is not scanned for commands.
@@ -1761,6 +1895,7 @@ const NESTED_NOT_PROGRAMS = new Set(['set', 'export', 'declare', 'typeset', 'rea
 // publish`, `cross-env NODE_ENV=production vercel --prod`, `tmux new -d 'npm publish'`). Used for
 // unknown programs and for known wrappers with open grammars (docker run IMAGE CMD…).
 function scanArgvForCommands(rest, ctx, run, x, remote = false) {
+    const fed = withFeed(ctx, x, run).stdinFeed;
     const base = remote ? childCtx(ctx, { cwds: [null], remote: true, vars: new Map(), aliases: new Map(), backstop: true }) : { ...ctx, backstop: true };
     const env = new Map(x.env);
     let trials = 0;
@@ -1780,7 +1915,7 @@ function scanArgvForCommands(rest, ctx, run, x, remote = false) {
         const kv = /^[A-Za-z][A-Za-z0-9_.-]*=([\s\S]+)$/.exec(w.text);
         const value = w.text.startsWith('-') ? (w.text.indexOf('=') > 0 ? w.text.slice(w.text.indexOf('=') + 1) : '') : kv ? kv[1] : w.text;
         if (/\s/.test(value) && value.length > 2) {
-            evalShell(value, childCtx(base, { backstop: false }), run);
+            evalShell(value, childCtx(base, { backstop: false, stdinFeed: fed }), run);
             if (w.text.startsWith('-') || kv)
                 continue;
         }
@@ -1867,7 +2002,22 @@ function stdinSource(x, ctx, run) {
         }
         return out;
     }
-    const last = up[up.length - 1];
+    // `… | cat - | sh`: a cat stage whose operands are all stdin is transparent.
+    let upEnd = up.length;
+    while (upEnd > 0) {
+        const w = up[upEnd - 1].words;
+        const isCat = w.length > 0 && (w[0].text.split('/').pop() === 'cat');
+        const ops = w.slice(1).filter((a) => !(a.text.startsWith('-') && a.text.length > 1 && a.text !== '-' && a.text !== '--'));
+        if (isCat && up[upEnd - 1].heredoc === null && !up[upEnd - 1].redirects.some((r) => r.op === '<<<' || r.op === '<') && ops.every((a) => a.text === '-' || a.text === '--' || STDIN_PATHS.has(a.text) || a.text === '/dev/null'))
+            upEnd -= 1;
+        else
+            break;
+    }
+    if (upEnd === 0) {
+        lostSources(x, ctx, run, out, addWord);
+        return out;
+    }
+    const last = up[upEnd - 1];
     const words = last.words.map((w) => resolveWord(w, ctx, run));
     const p = words[0] ? progName(words[0], run) : null;
     if (p === 'echo' || p === 'printf') {
@@ -2013,13 +2163,17 @@ function unknownProgram(prog, args, ctx, run, x) {
     if (STDIN_EXEC_PROGRAMS.has(prog))
         for (const f of src.files)
             scriptFile(f, [], ctx, run, null);
-    // `at now < job.sh`
+    // `at now < job.sh`, `mytool < <(echo …)`
     for (const r of x.cmd.redirects) {
-        if (r.op === '<' && r.target) {
-            const a = resolveWord(r.target, ctx, run);
-            if (a.text !== null && !a.glob)
-                scriptFile(a, [], ctx, run, null);
+        if (r.op !== '<' || !r.target)
+            continue;
+        if (r.target.substitution) {
+            checkSubstitutionExec(x.info.subs, ctx, run);
+            continue;
         }
+        const a = resolveWord(r.target, ctx, run);
+        if (a.text !== null && !a.glob)
+            scriptFile(a, [], ctx, run, null);
     }
 }
 // ---------------------------------------------------------------------------------------------
@@ -2067,6 +2221,23 @@ function tripwire(text, run) {
     if (!any && run.parse !== 'ok')
         run.flags.add('tripwire_clear');
 }
+// A command that is a shell or interpreter reading its program from stdin: no `-c`/`-e` code and no
+// script file operand (or `-s`, `-`).
+function stdinReaderCommand(c) {
+    const words = c.words.map((w) => w.text);
+    let i = 0;
+    while (i < words.length && ['sudo', 'env', 'exec', 'command', 'nohup', 'nice', 'time', 'stdbuf'].includes(words[i]))
+        i += 1;
+    const prog = (words[i] || '').split('/').pop() || '';
+    if (!(tables_1.SHELLS.has(prog) || prog === 'sh' || tables_1.INTERPRETERS.has(prog) || /^python3\.\d+$/.test(prog)))
+        return false;
+    const rest = words.slice(i + 1);
+    if (rest.some((w) => w === '-s' || w === '-' || STDIN_PATHS.has(w)))
+        return true;
+    if (rest.some((w) => /^-[a-zA-Z]*[ce]$/.test(w) || w === '--eval' || w === '--command'))
+        return false;
+    return !rest.some((w) => !w.startsWith('-'));
+}
 function decoderCommand(cmd, _run, info) {
     const words = cmd.words.map((w) => w.text);
     let i = 0;
@@ -2097,18 +2268,27 @@ function decoderCommand(cmd, _run, info) {
         return interpreterDecodes(rest.join(' '));
     return false;
 }
-function substitutionsDecode(subs, run) {
+function substitutionsDecode(subs, run, depth = 0) {
     for (const s of subs) {
-        const parsed = safeParse(s);
-        const info = { upstream: [], ansiC: /\$'[^']*\\(?:x[0-9a-fA-F]|[0-7]{2,3})/.test(s), subs: parsed.substitutions || [] };
-        if (!parsed.ok) {
-            if (/base64|xxd|rev\b|openssl|gunzip|\\x/.test(s))
+        // One decision per text per run, bounded in depth and time (audit N6: nested `x=$(…)` chains).
+        if (depth > tables_1.LIMITS.maxDepth || clock(run))
+            return true;
+        const cached = run.decodeMemo.get(s);
+        if (cached !== undefined) {
+            if (cached)
                 return true;
             continue;
         }
-        if (parsed.commands.some((c) => decoderCommand(c, run, info)))
-            return true;
-        if (substitutionsDecode(parsed.substitutions || [], run))
+        run.decodeMemo.set(s, false);
+        const parsed = safeParse(s);
+        const info = { upstream: [], ansiC: /\$'[^']*\\(?:x[0-9a-fA-F]|[0-7]{2,3})/.test(s), subs: parsed.substitutions || [] };
+        let found = false;
+        if (!parsed.ok)
+            found = /base64|xxd|rev\b|openssl|gunzip|\\x/.test(s);
+        else
+            found = parsed.commands.some((c) => decoderCommand(c, run, info)) || substitutionsDecode(parsed.substitutions || [], run, depth + 1);
+        run.decodeMemo.set(s, found);
+        if (found)
             return true;
     }
     return false;
@@ -2148,32 +2328,30 @@ function stdinExec(prog, rest, x, ctx, run, viaCode = false) {
             if (c !== null)
                 scanInterpreterCode(c, run);
     };
+    const feedToCode = (f) => {
+        if (f.decoded)
+            hit(run, 'Sx', 'decoded_pipe_exec');
+        for (const tx of f.texts)
+            code(tx);
+        for (const fl of f.files)
+            fileCode(fl);
+        if (f.subs)
+            checkSubstitutionExec(x.info.subs, ctx, run, !asShell);
+        if (f.unknown) {
+            worseParse(run, 'dynamic');
+            hit(run, 'Sx', 'dynamic_stdin_code');
+        }
+    };
     const source = stdinSource(x, ctx, run);
     const onCommand = x.cmd.heredoc !== null || x.cmd.redirects.some((r) => r.op === '<<<');
-    if (onCommand) {
-        for (const t of source.texts)
-            code(t);
-        if (source.unknown) {
-            worseParse(run, 'dynamic');
-            hit(run, 'Sx', 'dynamic_stdin_code');
-        }
-        return;
-    }
-    // `bash <&3`: a descriptor opened earlier in the command line (`exec 3<<< '…'`) holds the text.
-    const dup = x.cmd.redirects.find((r) => r.op === '<&' && r.target);
-    if (dup && dup.target) {
-        const a = resolveWord(dup.target, ctx, run);
-        if (a.text === null || !/^(?:0|-)$/.test(a.text)) {
-            worseParse(run, 'dynamic');
-            hit(run, 'Sx', 'dynamic_stdin_code');
-            return;
-        }
-    }
-    // `bash -s < file`, `python3 < file`, `node < <(…)`.
-    const own = x.cmd.redirects.find((r) => r.op === '<' && r.target);
+    // Redirects are applied left to right and the last one wins; the parser does not keep their order
+    // against a heredoc, so every one of them is read (audit N1).
+    const own = x.cmd.redirects.find((r) => (r.op === '<' || r.op === '<>') && r.target);
+    let ownRead = false;
     if (own && own.target) {
+        ownRead = true;
         if (own.target.substitution)
-            checkSubstitutionExec(x.info.subs, ctx, run);
+            checkSubstitutionExec(x.info.subs, ctx, run, !asShell);
         else {
             const a = resolveWord(own.target, ctx, run);
             if (a.text === null) {
@@ -2183,8 +2361,33 @@ function stdinExec(prog, rest, x, ctx, run, viaCode = false) {
             else
                 fileCode(a);
         }
+    }
+    // `bash <&3`: a descriptor opened earlier in the command line (`exec 3<<< '…'`) holds the text.
+    const dup = x.cmd.redirects.find((r) => r.op === '<&' && r.target);
+    if (dup && dup.target) {
+        const a = resolveWord(dup.target, ctx, run);
+        if (a.text === null || !/^(?:0|-)$/.test(a.text)) {
+            const fed = a.text === null ? undefined : ctx.fds.get(a.text);
+            if (fed)
+                feedToCode(fed);
+            else {
+                worseParse(run, 'dynamic');
+                hit(run, 'Sx', 'dynamic_stdin_code');
+                return;
+            }
+        }
+    }
+    if (onCommand) {
+        for (const t of source.texts)
+            code(t);
+        if (source.unknown) {
+            worseParse(run, 'dynamic');
+            hit(run, 'Sx', 'dynamic_stdin_code');
+        }
         return;
     }
+    if (ownRead)
+        return;
     const upstream = x.info.upstream;
     if (upstream.length === 0) {
         // No stdin of its own: whatever a redirect or pipe on an enclosing group carries (audit N1), or
@@ -2200,7 +2403,7 @@ function stdinExec(prog, rest, x, ctx, run, viaCode = false) {
         for (const f of source.files)
             fileCode(f);
         if (source.subs)
-            checkSubstitutionExec(x.info.subs, ctx, run);
+            checkSubstitutionExec(x.info.subs, ctx, run, !asShell);
         if (source.unknown) {
             worseParse(run, 'dynamic');
             if (source.lostPipe) {
@@ -2253,7 +2456,7 @@ function stdinExec(prog, rest, x, ctx, run, viaCode = false) {
     hit(run, 'Sx', 'stdin_exec_unknown_source');
 }
 // `$(…)` used as code: eval "$(…)", sh -c "$(…)", a program word that is a substitution, source <(…).
-function checkSubstitutionExec(subs, ctx, run) {
+function checkSubstitutionExec(subs, ctx, run, asCode = false) {
     let classified = true;
     for (const s of subs) {
         const parsed = safeParse(s, { depth: ctx.depth + 1 });
@@ -2277,10 +2480,23 @@ function checkSubstitutionExec(subs, ctx, run) {
             && simple.words.slice(1).every((w) => !w.dynamic))
             continue;
         if (simple && ['echo', 'printf'].includes(simple.words[0]?.text || '') && simple.words.slice(1).every((w) => !w.dynamic)) {
-            evalShell(simple.words.slice(1).map((w) => w.text).filter((t) => !/^-[neE]+$/.test(t)).join(' '), childCtx(ctx), run);
+            const lit = simple.words.slice(1).map((w) => w.text).filter((t) => !/^-[neE]+$/.test(t)).join(' ');
+            evalShell(lit, childCtx(ctx), run);
+            // The text is the program of an interpreter that reads it from stdin (audit N1).
+            if (asCode)
+                scanInterpreterCode(lit, run);
             continue;
         }
-        if (simple && simple.words[0]?.text === 'cat' && simple.words.length === 2 && !simple.words[1].dynamic) {
+        // `cat -` and `cat /dev/stdin` pass the caller's stdin through: unknown text, not a file.
+        const stdinWord = (w) => w.text === '-' || STDIN_PATHS.has(w.text);
+        if (simple && simple.words[0]?.text === 'cat' && simple.words.length === 2 && !simple.words[1].dynamic && !stdinWord(simple.words[1])) {
+            if (asCode) {
+                for (const p of absCandidates(simple.words[1].text, ctx, run) || []) {
+                    const content = readCached(run, p, tables_1.LIMITS.maxScriptBytes);
+                    if (content !== null)
+                        scanInterpreterCode(content, run);
+                }
+            }
             scriptFile(litArg(simple.words[1].text), [], ctx, run, null);
             continue;
         }
@@ -3267,6 +3483,22 @@ function declareLike(prog, rest, ctx, run, x) {
                 return;
             }
     }
+    // `declare -n ref=target`: assigning ref later assigns target; neither value is known.
+    if (opts.some((o) => /^-[a-zA-Z]*n/.test(o))) {
+        for (const n of names) {
+            if (n.text === null)
+                continue;
+            const eq = n.text.indexOf('=');
+            const ref = eq >= 0 ? n.text.slice(0, eq) : n.text;
+            const target = eq >= 0 ? n.text.slice(eq + 1) : null;
+            for (const v of [ref, target])
+                if (v && /^[A-Za-z_][A-Za-z0-9_]*$/.test(v)) {
+                    ctx.vars.set(v, null);
+                    ctx.candidates.delete(v);
+                }
+        }
+        return;
+    }
     const dg = x.info.guards;
     const declEvents = dg && !dg.unknown ? (dg.byCmd.get(x.cmd) || { assign: [], declare: [] }).declare : [];
     for (const n of names) {
@@ -3297,6 +3529,40 @@ function declareLike(prog, rest, ctx, run, x) {
             ctx.exported.add(name);
     }
 }
+// `read x`, `mapfile x`, `getopts o x`, `printf -v x`, `declare -n ref=x`: the variable gets a value
+// the mapper cannot know (audit N2).
+function assigningBuiltin(prog, rest, ctx) {
+    const valueFlags = prog === 'read' ? new Set(['-p', '-t', '-n', '-N', '-d', '-u', '-i']) : new Set(['-d', '-n', '-O', '-s', '-u', '-C', '-c']);
+    const names = [];
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === null)
+            continue;
+        if (t === '-a' && rest[i + 1] && rest[i + 1].text) {
+            names.push(rest[i + 1].text);
+            i += 1;
+            continue;
+        }
+        if (valueFlags.has(t)) {
+            i += 1;
+            continue;
+        }
+        if (t.startsWith('-'))
+            continue;
+        names.push(t);
+    }
+    if (prog === 'read' && names.length === 0)
+        names.push('REPLY');
+    if ((prog === 'mapfile' || prog === 'readarray') && names.length === 0)
+        names.push('MAPFILE');
+    if (prog === 'getopts')
+        names.push('OPTARG', 'OPTIND');
+    for (const n of names)
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) {
+            ctx.vars.set(n, null);
+            ctx.candidates.delete(n);
+        }
+}
 function setBuiltin(rest, run) {
     if (rest.length === 0)
         hit(run, 'S4', 'env_dump_set');
@@ -3313,7 +3579,16 @@ function printenv(rest, run) {
             return;
         }
 }
-function echoLike(args, run, x) {
+function echoLike(args, run, x, ctx) {
+    // `printf -v NAME …` assigns NAME (audit N2).
+    if (ctx && progName(args[0], run) === 'printf') {
+        for (let i = 1; i < args.length - 1; i += 1) {
+            if (args[i].text === '-v' && args[i + 1].text) {
+                ctx.vars.set(args[i + 1].text, null);
+                ctx.candidates.delete(args[i + 1].text);
+            }
+        }
+    }
     for (const a of args.slice(1)) {
         if (!a.word)
             continue;
@@ -3336,18 +3611,18 @@ function evalBuiltin(rest, ctx, run, subs) {
         if (classified && rest.every((a) => isPureSubstitution(a) || a.text !== null)) {
             const literal = rest.filter((a) => a.text !== null);
             if (literal.length)
-                evalShell(literal.map((a) => a.text).join(' '), childCtx(ctx), run);
+                evalShell(literal.map((a) => a.text).join(' '), childCtx(ctx, { stdinFeed: ctx.stdinFeed }), run);
             return;
         }
     }
     if (rest.every((a) => a.text !== null)) {
-        evalShell(rest.map((a) => a.text).join(' '), childCtx(ctx), run);
+        evalShell(rest.map((a) => a.text).join(' '), childCtx(ctx, { stdinFeed: ctx.stdinFeed }), run);
         return;
     }
     if (rest.every((a) => a.alts !== null)) {
         for (const a of rest)
             for (const v of a.alts || [])
-                evalShell(v, childCtx(ctx), run);
+                evalShell(v, childCtx(ctx, { stdinFeed: ctx.stdinFeed }), run);
         return;
     }
     worseParse(run, 'dynamic');
@@ -3369,7 +3644,7 @@ function sourceFile(rest, ctx, run, x) {
         stdinExec('sh', rest.slice(1), x, ctx, run);
         return;
     }
-    scriptFile(target, rest.slice(1), ctx, run, x);
+    scriptFile(target, rest.slice(1), ctx, run, x, true);
 }
 function envWrapper(rest, ctx, run, x) {
     let i = 0;
@@ -3402,7 +3677,7 @@ function envWrapper(rest, ctx, run, x) {
         if (t === '-S' || t === '--split-string') {
             const s = rest[i + 1];
             if (s && s.text !== null)
-                evalShell([s.text, ...rest.slice(i + 2).map((a) => (a.text !== null ? shellQuote(a.text) : '"$__d"'))].join(' '), childCtx(ctx), run);
+                evalShell([s.text, ...rest.slice(i + 2).map((a) => (a.text !== null ? shellQuote(a.text) : '"$__d"'))].join(' '), childCtx(ctx, { stdinFeed: withFeed(ctx, x, run).stdinFeed }), run);
             else
                 tripwire(rest.map(argText).join(' '), run);
             return;
@@ -3486,7 +3761,19 @@ function suWrapper(rest, ctx, run, x) {
 // inside it inherit this command's stdin (audit N1, nested form).
 function withFeed(ctx, x, run) {
     const hasOwn = x.cmd.heredoc !== null || x.cmd.redirects.some((r) => r.op === '<<<' || r.op === '<') || x.info.upstream.length > 0 || Boolean(x.info.lost) || Boolean(ctx.stdinFeed);
-    return hasOwn ? { ...ctx, stdinFeed: stdinSource(x, ctx, run) } : ctx;
+    let out = ctx;
+    // `w=publish bash -c 'npm $w'`, `env w=publish sh -c …`: the prefix assignments are the child's
+    // variables (audit N2).
+    if (x.env.size) {
+        const vars = new Map(ctx.vars);
+        const candidates = new Map(ctx.candidates);
+        for (const [k, v] of x.env) {
+            vars.set(k, v);
+            candidates.delete(k);
+        }
+        out = { ...ctx, vars, candidates };
+    }
+    return hasOwn ? { ...out, stdinFeed: stdinSource(x, ctx, run) } : out;
 }
 function shellString(a, ctx, run, subs) {
     // The nested text keeps the feed (a stdin-fed `sh -c bash`); text taken from the feed itself does not.
@@ -3562,9 +3849,51 @@ function simpleWrapper(prog, rest, ctx, run, x) {
         if (c >= 0 && rest[c + 1])
             return shellString(rest[c + 1], withFeed(ctx, x, run), run, x.info.subs);
     }
+    if (prog === 'exec' && i >= rest.length) {
+        persistRedirects(ctx, run, x);
+        return;
+    }
     if (i >= rest.length)
         return;
     dispatch(rest.slice(i), ctx, run, x);
+}
+// `exec <<< '…'`, `exec 3< file`: with no command the redirects stay for the rest of the shell, so
+// every later reader of that descriptor reads this text (audit N1).
+function persistRedirects(ctx, run, x) {
+    const feed = stdinSource(x, ctx, run);
+    for (const r of x.cmd.redirects) {
+        if (r.op === '<' || r.op === '<>') {
+            if (!r.target)
+                continue;
+            if (r.target.substitution)
+                feed.subs = true;
+            else {
+                const a = resolveWord(r.target, ctx, run);
+                if (a.text === null)
+                    feed.unknown = true;
+                else
+                    feed.files.push(a);
+            }
+        }
+    }
+    const inputs = x.cmd.redirects.filter((r) => ['<', '<<<', '<<', '<<-', '<>'].includes(r.op));
+    if (inputs.length === 0 && x.cmd.heredoc === null)
+        return;
+    for (const r of inputs.length ? inputs : [{ fd: null }]) {
+        const fd = r.fd === null || r.fd === undefined ? '0' : r.fd;
+        if (fd === '0')
+            ctx.stdinFeed = mergeFeeds(ctx.stdinFeed || null, feed);
+        else
+            ctx.fds.set(fd, mergeFeeds(ctx.fds.get(fd) || null, feed));
+    }
+}
+function mergeFeeds(a, b) {
+    if (!a)
+        return b;
+    return {
+        texts: [...a.texts, ...b.texts], files: [...a.files, ...b.files], unknown: a.unknown || b.unknown, subs: a.subs || b.subs,
+        decoded: a.decoded || b.decoded, fetched: a.fetched || b.fetched, lostPipe: a.lostPipe || b.lostPipe,
+    };
 }
 function xargsWrapper(prog, rest, ctx, run, x) {
     // Options with a separate value. GNU -i, -l and -e take an attached optional value only.
@@ -3696,7 +4025,7 @@ function sshRemote(rest, ctx, run, x) {
             evalShell(t, remote, run);
         return;
     }
-    const remoteCtx = childCtx(ctx, { cwds: [null], remote: true, vars: new Map(), aliases: new Map() });
+    const remoteCtx = childCtx(ctx, { cwds: [null], remote: true, vars: new Map(), aliases: new Map(), stdinFeed: withFeed(ctx, x, run).stdinFeed });
     if (remoteCmd.every((a) => a.text !== null))
         evalShell(remoteCmd.map((a) => a.text).join(' '), remoteCtx, run);
     else
@@ -3723,6 +4052,24 @@ function handleShell(prog, rest, ctx, run, x) {
             dynamicCode(a, ctx, run, 'dynamic_shell_arg');
             return;
         }
+        // A bundle of short options (`-euo pipefail`, `-ec`): `o` and `O` take the next word as their
+        // value and `c` takes the program text; they are read in order (audit N1).
+        if (/^[-+][a-zA-Z]+$/.test(t) && /[coO]/.test(t)) {
+            let used = 0;
+            let codeArg = null;
+            for (const ch of t.slice(1)) {
+                if (ch === 'c' && t[0] === '-') {
+                    codeArg = rest[i + 1 + used] || null;
+                    used += 1;
+                }
+                else if (ch === 'o' || ch === 'O')
+                    used += 1;
+            }
+            if (codeArg)
+                return shellString(codeArg, withFeed(ctx, x, run), run, x.info.subs);
+            i += used;
+            continue;
+        }
         if (t === '-c' || (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(t) && !t.startsWith('--'))) {
             const code = rest[i + 1];
             if (!code)
@@ -3741,14 +4088,8 @@ function handleShell(prog, rest, ctx, run, x) {
             continue;
         return scriptFile(rest[i], rest.slice(i + 1), ctx, run, x);
     }
-    const input = x.cmd.redirects.find((r) => r.op === '<' && r.target);
-    if (input && input.target && x.cmd.heredoc === null) {
-        if (input.target.substitution) {
-            checkSubstitutionExec(x.info.subs, ctx, run);
-            return;
-        }
-        return scriptFile(resolveWord(input.target, ctx, run), [], ctx, run, x);
-    }
+    // A `<` file, and a here-string or heredoc as well when the command has both (the last wins in the
+    // shell; the order is not kept): stdinExec reads every one of them.
     stdinExec(prog, [], x, ctx, run);
 }
 function handleInterpreter(prog, rest, ctx, run, x) {
@@ -3766,7 +4107,7 @@ function handleInterpreter(prog, rest, ctx, run, x) {
             worseParse(run, 'dynamic');
             const dyn = a.word && a.word.substitution;
             if (dyn)
-                checkSubstitutionExec(x.info.subs, ctx, run);
+                checkSubstitutionExec(x.info.subs, ctx, run, true);
             // `python3 $SCRIPT`, `node "$DIR/x.js"`: a script path; with code flags earlier it is the code.
             tripwire(rest.map(argText).join(' '), run);
             if (rest.slice(0, i).some((b) => b.text !== null && (codeRe.test(b.text) || b.text === 'eval')))
@@ -3845,7 +4186,7 @@ function trapBuiltin(rest, ctx, run, x) {
 }
 // awk programs run commands through system() and pipes.
 const AWK_EXEC = /\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b|\bENVIRON\b|\bPROCINFO\b/;
-function awkProgram(rest, ctx, run) {
+function awkProgram(rest, ctx, run, x) {
     const vf = new Set(['-F', '-v', '-W', '--field-separator', '--assign', '-i', '-l', '--include', '--load']);
     let program = null;
     for (let i = 0; i < rest.length; i += 1) {
@@ -3874,9 +4215,12 @@ function awkProgram(rest, ctx, run) {
     if (!program)
         return;
     const code = program.text !== null ? program.text : argText(program);
-    if (AWK_EXEC.test(code))
+    if (AWK_EXEC.test(code)) {
         scanInterpreterCode(code, run);
-    void ctx;
+        // `awk '{system($0)}'` runs the lines it reads: the input is a command text (audit N1).
+        if (/\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b/.test(code))
+            stdinExec('sh', [], x, ctx, run);
+    }
 }
 // GNU sed runs a command with the `e` command and the `s///e` flag.
 function sedProgram(rest, ctx, run) {
@@ -4007,11 +4351,67 @@ function scriptNamesMatching(pattern, ctx, run) {
 }
 // ---------------------------------------------------------------------------------------------
 // script files, package scripts, make
-function scriptFile(target, extra, ctx, run, x) {
+function scriptFile(target, extra, ctx, run, x, inline = false) {
     void extra;
+    // A brace word has several readings; each is a script.
+    if (target.text === null && target.alts && target.alts.length > 0 && target.alts.length <= tables_1.LIMITS.maxVariants) {
+        for (const alt of target.alts)
+            scriptFile(litArg(alt), extra, ctx, run, x, inline);
+        return;
+    }
     if (target.text === null) {
         worseParse(run, 'dynamic');
         tripwire(argText(target), run);
+        return;
+    }
+    // A glob names whatever files match it: read each match, and stop when none can be listed.
+    if (target.glob && /[*?[]/.test(target.text) && target.text !== '[' && target.text !== '[[') {
+        const matches = expandGlob(target.text, ctx, run);
+        if (matches === null || matches.length === 0) {
+            worseParse(run, 'dynamic');
+            tripwire(target.text, run);
+            hit(run, 'Sx', 'script_glob_unresolved');
+            return;
+        }
+        for (const mm of matches.slice(0, tables_1.LIMITS.maxVariants))
+            scriptFile(litArg(mm), extra, ctx, run, x, inline);
+        return;
+    }
+    // `/dev/fd/N`, `/proc/self/fd/N`: a descriptor, not a file.
+    const fdm = /^\/(?:dev\/fd|proc\/(?:self|thread-self|\d+)\/fd)\/(\d+)$/.exec(target.text);
+    if (fdm || /^\/proc\/[^/]*\/fd\/\d+$/.test(target.pattern.replace(new RegExp(DYN, 'g'), '\u0001'))) {
+        const n = fdm ? fdm[1] : (/\/fd\/(\d+)$/.exec(target.text) || [])[1];
+        if (n === '0' && x) {
+            stdinExec('sh', [], x, ctx, run);
+            return;
+        }
+        const own = x ? x.cmd.redirects.filter((r) => r.fd === n && r.target && r.op === '<<<') : [];
+        const fed = n ? ctx.fds.get(n) : undefined;
+        if (fed && x) {
+            for (const tx of fed.texts)
+                evalShell(tx, childCtx(ctx), run);
+            for (const fl of fed.files)
+                scriptFile(fl, [], ctx, run, x);
+            if (fed.unknown) {
+                worseParse(run, 'dynamic');
+                hit(run, 'Sx', 'dynamic_stdin_code');
+            }
+            return;
+        }
+        if (own.length && x) {
+            for (const r of own) {
+                const a = resolveWord(r.target, ctx, run);
+                if (a.text !== null)
+                    evalShell(a.text, childCtx(ctx), run);
+                else {
+                    worseParse(run, 'dynamic');
+                    hit(run, 'Sx', 'dynamic_stdin_code');
+                }
+            }
+            return;
+        }
+        worseParse(run, 'dynamic');
+        hit(run, 'Sx', 'dynamic_stdin_code');
         return;
     }
     const abs = absCandidates(target.text, ctx, run);
@@ -4050,8 +4450,13 @@ function scriptFile(target, extra, ctx, run, x) {
                 hit(run, 'Sx', 'script_decoded_exec');
             continue;
         }
-        const sctx = scriptCtx(ctx, ctx.cwds, x ? x.env : new Map());
+        // `source f` / `. f` runs in the current shell: its assignments and `cd` are the caller's.
+        const sctx = inline ? childCtx(ctx) : scriptCtx(ctx, ctx.cwds, x ? x.env : new Map());
         evalShell(content, sctx, run);
+        if (inline) {
+            ctx.cwds = [...new Set([...ctx.cwds, ...sctx.cwds])];
+            ctx.ifs = sctx.ifs;
+        }
     }
 }
 function nameTripwire(name, run, reason) {
@@ -4592,6 +4997,14 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
     if (subArg.text === null) {
         // `git $sub …`: the subcommand could be push -f (audit F2).
         worseParse(run, 'dynamic');
+        tripwire(rest.map(argText).join(' '), run);
+        hit(run, 'S1', 'git_dynamic_subcommand');
+        return;
+    }
+    if (subArg.glob && /[*?[]/.test(subArg.text)) {
+        // `git pus[h] --force …`: a pattern in the subcommand position (audit N1).
+        worseParse(run, 'dynamic');
+        run.headMayChange = true;
         tripwire(rest.map(argText).join(' '), run);
         hit(run, 'S1', 'git_dynamic_subcommand');
         return;

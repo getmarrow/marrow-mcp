@@ -25,6 +25,8 @@ function scanAssignments(src) {
     let cmdStart = true;
     let declareArgs = false;
     let afterRedir = false;
+    // The last token was `&&`, `||`, `|` or `|&`: a newline does not end the list.
+    let continued = false;
     let pending = []; // events of the simple command being read
     const heredocs = [];
     const finish = (nonPersistent) => {
@@ -123,8 +125,11 @@ function scanAssignments(src) {
         }
         if (ch === '\n') {
             finish(false);
-            andor = false;
-            inPipe = false;
+            // A newline right after `&&`, `||`, `|` or `|&` continues the list: the state is kept.
+            if (!continued) {
+                andor = false;
+                inPipe = false;
+            }
             cmdStart = true;
             i += 1;
             // Heredoc bodies start on the next line and end at a line holding only the delimiter.
@@ -159,6 +164,7 @@ function scanAssignments(src) {
         // Operators.
         if (ch === ';') {
             const m = /^(?:;;&|;;|;&|;)/.exec(src.slice(i, i + 3));
+            continued = false;
             finish(false);
             andor = false;
             inPipe = false;
@@ -172,6 +178,7 @@ function scanAssignments(src) {
                 andor = true;
                 inPipe = false;
                 cmdStart = true;
+                continued = true;
                 i += 2;
                 continue;
             }
@@ -182,6 +189,7 @@ function scanAssignments(src) {
                 continue;
             }
             // Background: the assignment runs in a subshell.
+            continued = false;
             finish(true);
             andor = false;
             inPipe = false;
@@ -195,6 +203,7 @@ function scanAssignments(src) {
                 andor = true;
                 inPipe = false;
                 cmdStart = true;
+                continued = true;
                 i += 2;
                 continue;
             }
@@ -202,6 +211,7 @@ function scanAssignments(src) {
             finish(true);
             inPipe = true;
             cmdStart = true;
+            continued = true;
             i += src[i + 1] === '&' ? 2 : 1;
             continue;
         }
@@ -273,6 +283,7 @@ function scanAssignments(src) {
             continue;
         }
         // A word.
+        continued = false;
         let raw = '';
         let quoted = false;
         const start = i;
@@ -373,6 +384,17 @@ function scanAssignments(src) {
             i += 1;
             continue;
         }
+        // `NAME=(a b c)`: an array literal; `$NAME` is its first element (audit N2).
+        let arrayElements;
+        if (src[i] === '(' && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(raw) && cmdStart && !afterRedir) {
+            const e = skipBalanced(i + 1, '(', ')');
+            if (e < 0)
+                return null;
+            const inner = src.slice(i + 1, e - 1);
+            const els = (inner.match(/'[^']*'|"(?:\\.|[^"\\])*"|[^\s]+/g) || []).map((el) => (/[$`]/.test(el) ? null : el.replace(/^(['"])([\s\S]*)\1$/, '$2')));
+            arrayElements = els.some((el) => el === null) ? null : els;
+            i = e;
+        }
         if (afterRedir) {
             afterRedir = false;
             continue;
@@ -391,6 +413,8 @@ function scanAssignments(src) {
         if (ASSIGN.test(raw)) {
             const eq = raw.indexOf('=');
             record(raw.slice(0, eq).replace(/\+$/, '').replace(/\[.*$/, ''), false);
+            if (arrayElements !== undefined)
+                events[events.length - 1].array = arrayElements;
             continue;
         }
         if (!quoted) {

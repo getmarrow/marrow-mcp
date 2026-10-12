@@ -20,6 +20,8 @@ export interface AssignEvent {
   inLoop: boolean;
   // `export NAME=…`, `declare NAME=…`, `local`, `readonly`, `typeset` (as opposed to a leading `NAME=…`).
   declare: boolean;
+  // `NAME=(a b c)`: the elements (null when one of them is not a plain literal).
+  array?: string[] | null;
 }
 
 const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
@@ -46,6 +48,8 @@ export function scanAssignments(src: string): AssignEvent[] | null {
   let cmdStart = true;
   let declareArgs = false;
   let afterRedir = false;
+  // The last token was `&&`, `||`, `|` or `|&`: a newline does not end the list.
+  let continued = false;
   let pending: number[] = []; // events of the simple command being read
   const heredocs: Array<{ delim: string; strip: boolean }> = [];
 
@@ -109,8 +113,8 @@ export function scanAssignments(src: string): AssignEvent[] | null {
     if (ch === '\\' && src[i + 1] === '\n') { i += 2; continue; }
     if (ch === '\n') {
       finish(false);
-      andor = false;
-      inPipe = false;
+      // A newline right after `&&`, `||`, `|` or `|&` continues the list: the state is kept.
+      if (!continued) { andor = false; inPipe = false; }
       cmdStart = true;
       i += 1;
       // Heredoc bodies start on the next line and end at a line holding only the delimiter.
@@ -134,6 +138,7 @@ export function scanAssignments(src: string): AssignEvent[] | null {
     // Operators.
     if (ch === ';') {
       const m = /^(?:;;&|;;|;&|;)/.exec(src.slice(i, i + 3)) as RegExpExecArray;
+      continued = false;
       finish(false);
       andor = false;
       inPipe = false;
@@ -142,7 +147,7 @@ export function scanAssignments(src: string): AssignEvent[] | null {
       continue;
     }
     if (ch === '&') {
-      if (src[i + 1] === '&') { finish(false); andor = true; inPipe = false; cmdStart = true; i += 2; continue; }
+      if (src[i + 1] === '&') { finish(false); andor = true; inPipe = false; cmdStart = true; continued = true; i += 2; continue; }
       if (src[i + 1] === '>') {
         // `&>` / `&>>` redirect.
         i += src[i + 2] === '>' ? 3 : 2;
@@ -150,6 +155,7 @@ export function scanAssignments(src: string): AssignEvent[] | null {
         continue;
       }
       // Background: the assignment runs in a subshell.
+      continued = false;
       finish(true);
       andor = false;
       inPipe = false;
@@ -158,11 +164,12 @@ export function scanAssignments(src: string): AssignEvent[] | null {
       continue;
     }
     if (ch === '|') {
-      if (src[i + 1] === '|') { finish(false); andor = true; inPipe = false; cmdStart = true; i += 2; continue; }
+      if (src[i + 1] === '|') { finish(false); andor = true; inPipe = false; cmdStart = true; continued = true; i += 2; continue; }
       // A pipeline stage runs in a subshell: its assignments do not persist, and neither do the next stage's.
       finish(true);
       inPipe = true;
       cmdStart = true;
+      continued = true;
       i += src[i + 1] === '&' ? 2 : 1;
       continue;
     }
@@ -221,6 +228,7 @@ export function scanAssignments(src: string): AssignEvent[] | null {
     }
 
     // A word.
+    continued = false;
     let raw = '';
     let quoted = false;
     const start = i;
@@ -297,6 +305,17 @@ export function scanAssignments(src: string): AssignEvent[] | null {
     }
     if (i === start) { i += 1; continue; }
 
+    // `NAME=(a b c)`: an array literal; `$NAME` is its first element (audit N2).
+    let arrayElements: string[] | null | undefined;
+    if (src[i] === '(' && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(raw) && cmdStart && !afterRedir) {
+      const e = skipBalanced(i + 1, '(', ')');
+      if (e < 0) return null;
+      const inner = src.slice(i + 1, e - 1);
+      const els = (inner.match(/'[^']*'|"(?:\\.|[^"\\])*"|[^\s]+/g) || []).map((el) => (/[$`]/.test(el) ? null : el.replace(/^(['"])([\s\S]*)\1$/, '$2')));
+      arrayElements = els.some((el) => el === null) ? null : (els as string[]);
+      i = e;
+    }
+
     if (afterRedir) { afterRedir = false; continue; }
     // `2>file`, `3<&0`: a file descriptor number in front of a redirect is not a word.
     if (/^[0-9]+$/.test(raw) && (src[i] === '<' || src[i] === '>')) continue;
@@ -311,6 +330,7 @@ export function scanAssignments(src: string): AssignEvent[] | null {
     if (ASSIGN.test(raw)) {
       const eq = raw.indexOf('=');
       record(raw.slice(0, eq).replace(/\+$/, '').replace(/\[.*$/, ''), false);
+      if (arrayElements !== undefined) events[events.length - 1].array = arrayElements;
       continue;
     }
     if (!quoted) {

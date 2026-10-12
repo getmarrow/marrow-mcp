@@ -189,7 +189,7 @@ exports.KNOWN_COMMANDS = new Set([
     'builtin', 'exec', 'stdbuf', 'ionice', 'chrt', 'taskset', 'setsid', 'unbuffer', 'caffeinate', 'retry', 'flock', 'xargs', 'parallel',
     'watch', 'ssh', 'git', 'gh', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'bunx', 'corepack', 'make', 'gmake', 'rm', 'rimraf', 'rmdir', 'find',
     'rsync', 'shred', 'dd', 'docker', 'podman', 'kubectl', 'helm', 'marrow', 'marrow-install', 'claude', 'apply_patch', 'applypatch',
-    'trap', 'busybox', 'toybox', 'concurrently', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'railway',
+    'trap', 'read', 'mapfile', 'readarray', 'getopts', 'busybox', 'toybox', 'concurrently', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'railway',
     // deploy tools
     'wrangler', 'vercel', 'netlify', 'ntl', 'fly', 'flyctl', 'firebase', 'heroku', 'gcloud', 'sst', 'serverless', 'sls', 'cdk', 'terraform',
     'tofu', 'terragrunt', 'pulumi', 'eb', 'aws', 'az',
