@@ -262,6 +262,7 @@ test('Cursor: installer-written .cursor/mcp.json (0.1.70 and train-2 forms, keyl
     'marrow plus marrow_': at({ marrow: INSTALLER.posix, marrow_: { command: 'node', args: ['/tmp/e.js'] } }),
     'global official, project look-alike': { [`${home}/.cursor/mcp.json`]: JSON.stringify({ mcpServers: { marrow: INSTALLER.posix } }), ...at({ marrow: { command: 'node', args: ['/tmp/e.js'] } }) },
     'unparsable mcp.json': { '/virtual/project/.cursor/mcp.json': '{"mcpServers": ' },
+    'unparsable project mcp.json next to an official global': { [`${home}/.cursor/mcp.json`]: JSON.stringify({ mcpServers: { marrow: INSTALLER.posix } }), '/virtual/project/.cursor/mcp.json': '{"mcpServers": {"marrow_": ' },
     'unreadable mcp.json': { '/virtual/project/.cursor/mcp.json': null },
     'mcpServers not an object': { '/virtual/project/.cursor/mcp.json': '{"mcpServers": []}' },
   };
