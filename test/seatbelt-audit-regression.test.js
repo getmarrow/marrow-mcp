@@ -39,6 +39,13 @@ const DEVIATIONS = {
     reason: '`git push origin +HEAD` pushes the current branch (feat/work in the fixture) to its own name: not protected.',
     variant: { cmd: 'git push origin +HEAD', expect: 'stop', opts: { current: 'main' } },
   },
+  // Friction trim T1 (owner decision, Bob 2026-10-12): without `--branch` Pages uses the checked-out
+  // branch, so the deploy is a preview when git.currentBranch is a known unprotected branch.
+  'adv2:wrangler-pages-nobranch': {
+    expect: 'pass',
+    reason: 'friction trim T1: `wrangler pages deploy` without --branch passes when git.currentBranch is a known, unprotected branch (the fixture branch is feat/work); on main, or when the branch is unknown, it stops.',
+    variant: { cmd: 'wrangler pages deploy dist', expect: 'stop', opts: { current: 'main' } },
+  },
   // adv4 ran these without the existing settings file; adv5 repeats them with `files` and they stop.
   'adv4:write-home-settings': {
     expect: 'pass',

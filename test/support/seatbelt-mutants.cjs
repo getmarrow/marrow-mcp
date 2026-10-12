@@ -7,6 +7,7 @@
 // mutant survives or an anchor is missing (a mutant that did not apply proves nothing).
 //
 // Mutants 1-9 are the first round. M-F1..M-F11, M-GH and M-TIME revert one patch-round fix each.
+// M-N1..M-N7 and M-T1..M-T3 revert or loosen one r3 fix each (audit of 452da607, friction trims).
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -14,7 +15,7 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.join(__dirname, '..', '..');
 const MAPPER = path.join(ROOT, 'dist', 'seatbelt', 'mapper.js');
 const TABLES = path.join(ROOT, 'dist', 'seatbelt', 'tables.js');
-const TESTS = ['test/seatbelt-mapper.test.js', 'test/seatbelt-patch-r2.test.js', 'test/seatbelt-audit-regression.test.js'];
+const TESTS = ['test/seatbelt-mapper.test.js', 'test/seatbelt-patch-r2.test.js', 'test/seatbelt-audit-regression.test.js', 'test/seatbelt-r3.test.js'];
 
 const M = (file, from, to) => [file, from, to];
 
@@ -58,7 +59,7 @@ const MUTANTS = [
     edits: [
       M(TABLES, 'maxCommandBytes: 64 * 1024', 'maxCommandBytes: 8 * 1024'),
       M(MAPPER, "hit(run, 'Sx', 'budget_size');", 'void 0;'),
-      M(MAPPER, "hit(run, 'Sx', parsed.error === 'too_many_commands' ? 'budget_segments' : 'budget_size');", 'void 0;'),
+      M(MAPPER, "hit(run, 'Sx', parsed.error === 'too_many_commands' ? 'budget_segments' : parsed.error === 'parse_cost' ? 'budget_parse_cost' : 'budget_size');", 'void 0;'),
       M(MAPPER, "hit(run, 'Sx', 'budget_segments');", 'void 0;'),
       M(MAPPER, "hit(run, 'Sx', 'unparsed_dynamic');", 'void 0;'),
     ],
@@ -104,6 +105,7 @@ const MUTANTS = [
       M(MAPPER, 'if (run.work > tables_1.LIMITS.maxWork)', 'if (false)'),
       M(MAPPER, 'if (run.scriptExpansions > tables_1.LIMITS.maxScriptExpansions)', 'if (false)'),
       M(MAPPER, 'if (Date.now() >= run.deadline)', 'if (false)'),
+      M(MAPPER, 'if (!run.exhausted && Date.now() >= run.deadline)', 'if (false)'),
     ],
   },
   {
@@ -112,12 +114,13 @@ const MUTANTS = [
       M(MAPPER, 'if (run.work > tables_1.LIMITS.maxWork)', 'if (false)'),
       M(MAPPER, 'if (run.scriptExpansions > tables_1.LIMITS.maxScriptExpansions)', 'if (false)'),
       M(MAPPER, 'if (Date.now() >= run.deadline)', 'if (false)'),
+      M(MAPPER, 'if (!run.exhausted && Date.now() >= run.deadline)', 'if (false)'),
       M(MAPPER, 'if (run.seen.has(key))', 'if (false)'),
     ],
   },
   {
     name: 'M-TIME only the wall-clock budget removed',
-    edits: [M(MAPPER, 'if (Date.now() >= run.deadline)', 'if (false)')],
+    edits: [M(MAPPER, 'if (Date.now() >= run.deadline)', 'if (false)'), M(MAPPER, 'if (!run.exhausted && Date.now() >= run.deadline)', 'if (false)')],
   },
   {
     name: 'M-F11 shell tools: only the old tool name list is read, command fields are ignored',
@@ -139,6 +142,110 @@ const MUTANTS = [
   {
     name: 'M-FS a throwing file system is no longer a stop',
     edits: [M(MAPPER, "if (run.fsState.errored)\n        hit(run, 'Sx', 'fs_error');", 'void 0;')],
+  },
+  {
+    name: 'M-N1 stdin lost to a group: redirects and pipes on a group, subshell or compound are not read',
+    edits: [M(MAPPER, 'lostSources(x, ctx, run, out, addWord);', 'void 0;')],
+  },
+  {
+    name: 'M-N2 branch assignments: the last assignment in the text wins across branches',
+    edits: [M(MAPPER, 'const certain = Boolean(ev && ev.uncond) && !info.round2;', 'const certain = true;')],
+  },
+  {
+    name: 'M-N2b loops run once and conditional declarations are plain overrides',
+    edits: [
+      M(MAPPER, 'const rounds = guards &&', 'const rounds = false &&'),
+      M(MAPPER, 'const conditional = Boolean(dg) &&', 'const conditional = false &&'),
+    ],
+  },
+  {
+    name: 'M-N3 a moved or copied symlink is just a write: no alias, no unknown target',
+    edits: [M(MAPPER, 'function carryLinks(prog, rest, ctx, run) {', 'function carryLinks(prog, rest, ctx, run) {\n    return;')],
+  },
+  {
+    name: 'M-N4 MCP stdin, input and keys fields are not read as the command',
+    edits: [M(MAPPER, 'if (tables_1.STDIN_KEYS.has(key)) {', 'if (false) {')],
+  },
+  {
+    name: 'M-N4b tool_input given as a string is not parsed or read',
+    edits: [M(MAPPER, "if (typeof rawInput === 'string') {", 'if (false) {')],
+  },
+  {
+    name: 'M-N5 the 1,000-character gaps are back in the interpreter delete and decode scans',
+    edits: [
+      M(TABLES, 'function openWindowHit(code, re) {\n    let open = false;', 'function openWindowHit(code, re) {\n    let open = false;\n    let openedAt = 0;'),
+      M(TABLES, 'if (m[1] !== undefined)\n            open = true;', 'if (m[1] !== undefined) {\n            open = true;\n            openedAt = m.index;\n        }'),
+      M(TABLES, 'else if (open)\n            return true;', 'else if (open && m.index - openedAt < 1000)\n            return true;'),
+    ],
+  },
+  {
+    name: 'M-N6a finish() does not re-check the wall clock',
+    edits: [M(MAPPER, 'if (!run.exhausted && Date.now() >= run.deadline)', 'if (false)')],
+  },
+  {
+    name: 'M-N6b the tool-input walks do not check the clock',
+    edits: [M(MAPPER, '(visited & 255) === 0 && Date.now() >= deadline', 'false')],
+  },
+  {
+    name: 'M-N6c the parse-cost guard before the vendored parser is removed',
+    edits: [M(MAPPER, 'parseCost(src) > tables_1.LIMITS.maxParseCost', 'false')],
+  },
+  {
+    name: 'M-N6d the word-count caps are removed',
+    edits: [
+      M(MAPPER, 'cmd.words.length + cmd.assignments.length > tables_1.LIMITS.maxWords', 'false'),
+      M(MAPPER, 'args.length > tables_1.LIMITS.maxWords', 'false'),
+    ],
+  },
+  {
+    name: 'M-N7 gh api delete through a dot, empty or encoded segment passes',
+    edits: [M(MAPPER, "hit(run, 'S1', 'gh_api_delete_path_unresolved');", 'void 0;')],
+  },
+  {
+    name: 'M-T1 pages deploy without --branch passes whatever the current branch is',
+    edits: [M(MAPPER, 'if (!unprotectedBranch(currentBranchProof(ctx, run, x), ctx, run))', 'if (false)')],
+  },
+  {
+    name: 'M-T1b the fail-closed checks of the branch predicate are dropped (null and protected names pass)',
+    edits: [
+      M(MAPPER, 'function unprotectedBranch(cur, ctx, run) {\n    if (cur === null)\n        return false;', 'function unprotectedBranch(cur, ctx, run) {\n    if (cur === null)\n        return true;'),
+      M(MAPPER, "return !isProtectedBranch(resolved, 'origin', ctx.cwds[0] || null, run);", 'return true;'),
+    ],
+  },
+  {
+    name: 'M-T1c the branch is trusted although the command may have changed it (no head tracking)',
+    edits: [
+      M(MAPPER, 'if (run.headMayChange)\n        return null;', 'void 0;'),
+      M(MAPPER, 'if (!start || ctx.cwds.length !== 1 || ctx.cwds[0] !== start)\n        return null;', 'void 0;'),
+    ],
+  },
+  {
+    name: 'M-T2 $(which NAME) is not resolved',
+    edits: [M(MAPPER, 'const name = inner === null ? null : whichLiteral(inner, ctx.depth + 1);', 'const name = null;')],
+  },
+  {
+    name: 'M-T2b $(which NAME) is read as NAME only, not also as the word vanishing',
+    edits: [M(MAPPER, 'variants = variants.concat(argvVariants(cmd.words.slice(1), ctx, run));', 'void 0;')],
+  },
+  {
+    name: 'M-T2c any substitution is accepted as a which lookup',
+    edits: [M(MAPPER, "return name !== undefined && /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/.test(name) ? name : null;", "return name !== undefined ? name : (texts[0] || null);")],
+  },
+  {
+    name: 'M-T3 the current-branch substitution is not resolved',
+    edits: [M(MAPPER, 'if (inner === null || !branchSubstitutionText(inner, ctx.depth + 1))\n                    return a;', 'return a;')],
+  },
+  {
+    name: 'M-T3b any substitution is read as the current branch (extra words and flags accepted)',
+    edits: [M(MAPPER, 'if (inner === null || !branchSubstitutionText(inner, ctx.depth + 1))', 'if (inner === null)')],
+  },
+  {
+    name: 'M-T3c a protected current branch is substituted (pass with a flag instead of a stop)',
+    edits: [M(MAPPER, 'return cur !== null && unprotectedBranch(cur, ctx, run) ? litArg(cur) : a;', 'return cur !== null ? litArg(cur) : a;')],
+  },
+  {
+    name: 'M-HEAD git commands that switch branches do not mark the branch as changed',
+    edits: [M(MAPPER, 'if (gitMayChangeHead(sub, args))\n        run.headMayChange = true;', 'void 0;')],
   },
 ];
 

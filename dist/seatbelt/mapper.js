@@ -342,6 +342,20 @@ function shellInvocations(name, input, deadline, rawText) {
                     out.code.push(value);
                 continue;
             }
+            // Any other string that holds a JSON object or list (a payload field) is read as one.
+            if (typeof value === 'string' && depth < tables_1.LIMITS.maxToolDepth && value.length <= tables_1.LIMITS.maxToolJsonChars && /^\s*[{[]/.test(value)) {
+                const parsed = tryJson(value);
+                if (parsed && typeof parsed === 'object') {
+                    if (Array.isArray(parsed)) {
+                        for (const item of parsed)
+                            if (item && typeof item === 'object' && !Array.isArray(item))
+                                walk(item, depth + 1);
+                    }
+                    else
+                        walk(parsed, depth + 1);
+                }
+                continue;
+            }
             if (value && typeof value === 'object' && depth < tables_1.LIMITS.maxToolDepth) {
                 if (Array.isArray(value)) {
                     for (const item of value)
@@ -580,7 +594,9 @@ function newCtx(run) {
     };
 }
 function childCtx(ctx, overrides = {}) {
-    return { ...ctx, depth: ctx.depth + 1, backstop: false, ...overrides };
+    // A child context does not inherit the stdin feed unless it asks for it (nested shell text does;
+    // text that was itself read from the feed must not be fed again).
+    return { ...ctx, depth: ctx.depth + 1, backstop: false, stdinFeed: null, ...overrides };
 }
 function scriptCtx(ctx, cwds, extraEnv) {
     // A child process sees exported variables and same-command assignments only.
@@ -770,10 +786,43 @@ function safeParse(src, opts) {
     return shellParse.parseShell(src, opts);
 }
 const STRUCTURAL_REASONS = new Set(['case_statement', 'coproc_statement', 'unterminated_heredoc', 'dangling_redirect']);
-// A pipe whose consumer is a group or compound: `| ( … )`, `| { …; }`, `| while …`. The text test is
+// A pipe whose consumer is a group or compound: `| ( … )`, `| { …; }`, `| while …`. The test is
 // deliberately loose (a quoted `| (` also matches): it only widens which commands are read as
-// consumers, never narrows.
-const PIPE_INTO_GROUP = /\|&?(?:[ \t\r\n]|\\\n|#[^\n]*\n)*(?:[({]|(?:if|while|until|for|select|case)\b)/;
+// consumers, never narrows. One pass: after a `|` it skips blanks, line continuations and comments,
+// then continues from where it stopped, so a long comment is read once.
+function pipeIntoGroup(src) {
+    let i = src.indexOf('|');
+    while (i >= 0) {
+        let j = i + 1;
+        if (src[j] === '&')
+            j += 1;
+        for (;;) {
+            const c = src[j];
+            if (c === ' ' || c === '\t' || c === '\r' || c === '\n')
+                j += 1;
+            else if (c === '\\' && src[j + 1] === '\n')
+                j += 2;
+            else if (c === '#') {
+                const e = src.indexOf('\n', j);
+                j = e < 0 ? src.length : e + 1;
+            }
+            else
+                break;
+        }
+        const c = src[j];
+        if (c === '(' || c === '{')
+            return true;
+        if (c !== undefined && /[a-z]/.test(c)) {
+            let e = j;
+            while (e < src.length && /[a-z]/.test(src[e]))
+                e += 1;
+            if (/^(?:if|while|until|for|select|case)$/.test(src.slice(j, e)) && !/[A-Za-z0-9_]/.test(src[e] || ''))
+                return true;
+        }
+        i = src.indexOf('|', Math.max(j, i + 1));
+    }
+    return false;
+}
 // A command with no words that carries only an input redirect or a heredoc: the redirect that was
 // written after a group, subshell or compound (`{ bash; } <<< 'x'`, `while …; done < f`).
 function isOrphanFeed(c) {
@@ -1056,7 +1105,7 @@ function evalShell(src, ctx, run) {
     }
     // Attachments the parser lost (audit N1): see LostFeeds.
     const orphans = parsed.commands.filter(isOrphanFeed);
-    const pipeIntoGroup = PIPE_INTO_GROUP.test(src);
+    const intoGroup = pipeIntoGroup(src);
     const lostPipes = [];
     for (const p of pipelines) {
         let last = -1;
@@ -1065,9 +1114,12 @@ function evalShell(src, ctx, run) {
         if (last < 0)
             continue;
         // A pipeline whose last stage still pipes its output has no consumer attached: it feeds a group.
-        if (pipeIntoGroup || last === p.length - 1)
+        if (intoGroup || last === p.length - 1)
             lostPipes.push(p.slice(0, last + 1));
     }
+    // `( a; b ) | ( c )`, `{ a; } | { b; }`: the producer is a group whose output the parser dropped.
+    if (intoGroup && /[)}][ \t]*\|(?![|])/.test(src))
+        lostPipes.push([{ words: [], assignments: [], redirects: [], heredoc: null, heredocDynamic: false, pipedInput: false, pipesOutput: true, background: false, subshell: false }]);
     const lost = orphans.length || lostPipes.length ? { orphans, pipes: lostPipes } : undefined;
     // Assignments on branches that exclude each other (audit N2): see Guards. A loop body runs more
     // than once, so a later assignment in it is visible to an earlier use: the list runs twice.
@@ -1773,6 +1825,17 @@ function stdinSource(x, ctx, run) {
     const up = x.info.upstream;
     if (!up.length) {
         lostSources(x, ctx, run, out, addWord);
+        // Nested shell text inherits the stdin of the command that runs it.
+        const feed = ctx.stdinFeed;
+        if (feed) {
+            out.texts.push(...feed.texts);
+            out.files.push(...feed.files);
+            out.unknown = out.unknown || feed.unknown;
+            out.subs = out.subs || feed.subs;
+            out.decoded = out.decoded || feed.decoded;
+            out.fetched = out.fetched || feed.fetched;
+            out.lostPipe = out.lostPipe || feed.lostPipe;
+        }
         return out;
     }
     const last = up[up.length - 1];
@@ -2029,12 +2092,19 @@ function fetcherCommand(cmd) {
 // A shell or interpreter that reads its program from stdin: a heredoc, a here-string (audit F7), or a
 // pipeline. The Q4 pass (`curl … | sh`, flag remote_exec) covers exactly a fetcher that is the stage
 // directly upstream of the shell (audit F8). Any other stage is classified by what it emits.
-function stdinExec(prog, rest, x, ctx, run) {
+function stdinExec(prog, rest, x, ctx, run, viaCode = false) {
     const asShell = tables_1.SHELLS.has(prog) || prog === 'sh';
-    const code = (text) => { if (asShell)
-        evalShell(text, childCtx(ctx), run);
-    else
-        scanInterpreterCode(text, run); };
+    // `viaCode`: interpreter code that reads its own stdin and runs it (`python3 -c 'exec(sys.stdin.read())'`):
+    // the text may be shell text for os.system as well as code.
+    const code = (text) => {
+        if (asShell)
+            evalShell(text, childCtx(ctx), run);
+        else {
+            scanInterpreterCode(text, run);
+            if (viaCode)
+                evalShell(text, childCtx(ctx), run);
+        }
+    };
     // A file the program reads as its program text (`bash -s < f`, `python3 < f`, or a file that a pipe
     // into a group carries): a shell script is evaluated, interpreter code is scanned.
     const fileCode = (f) => {
@@ -2060,6 +2130,16 @@ function stdinExec(prog, rest, x, ctx, run) {
         }
         return;
     }
+    // `bash <&3`: a descriptor opened earlier in the command line (`exec 3<<< '…'`) holds the text.
+    const dup = x.cmd.redirects.find((r) => r.op === '<&' && r.target);
+    if (dup && dup.target) {
+        const a = resolveWord(dup.target, ctx, run);
+        if (a.text === null || !/^(?:0|-)$/.test(a.text)) {
+            worseParse(run, 'dynamic');
+            hit(run, 'Sx', 'dynamic_stdin_code');
+            return;
+        }
+    }
     // `bash -s < file`, `python3 < file`, `node < <(…)`.
     const own = x.cmd.redirects.find((r) => r.op === '<' && r.target);
     if (own && own.target) {
@@ -2078,8 +2158,9 @@ function stdinExec(prog, rest, x, ctx, run) {
     }
     const upstream = x.info.upstream;
     if (upstream.length === 0) {
-        // No stdin of its own: whatever a redirect or pipe on an enclosing group carries (audit N1).
-        if (!x.info.lost)
+        // No stdin of its own: whatever a redirect or pipe on an enclosing group carries (audit N1), or
+        // the stdin of the command that runs this nested shell text.
+        if (!x.info.lost && !ctx.stdinFeed)
             return;
         if (source.decoded)
             hit(run, 'Sx', 'decoded_pipe_exec');
@@ -3365,16 +3446,24 @@ function suWrapper(rest, ctx, run, x) {
     for (let i = 0; i < rest.length; i += 1) {
         const t = rest[i].text;
         if ((t === '-c' || t === '--command') && rest[i + 1])
-            return shellString(rest[i + 1], ctx, run, x.info.subs);
+            return shellString(rest[i + 1], withFeed(ctx, x, run), run, x.info.subs);
         if (t && t.startsWith('--command='))
-            return shellString(litArg(t.slice(10)), ctx, run, x.info.subs);
+            return shellString(litArg(t.slice(10)), withFeed(ctx, x, run), run, x.info.subs);
     }
     if (x.info.upstream.length || x.cmd.heredoc !== null || x.cmd.redirects.some((r) => r.op === '<<<'))
         stdinExec('sh', [], x, ctx, run);
 }
+// The context for shell text that this command runs (`sh -c '…'`, `su -c`, `npx -c`): the readers
+// inside it inherit this command's stdin (audit N1, nested form).
+function withFeed(ctx, x, run) {
+    const hasOwn = x.cmd.heredoc !== null || x.cmd.redirects.some((r) => r.op === '<<<' || r.op === '<') || x.info.upstream.length > 0 || Boolean(x.info.lost) || Boolean(ctx.stdinFeed);
+    return hasOwn ? { ...ctx, stdinFeed: stdinSource(x, ctx, run) } : ctx;
+}
 function shellString(a, ctx, run, subs) {
+    // The nested text keeps the feed (a stdin-fed `sh -c bash`); text taken from the feed itself does not.
+    const keep = { stdinFeed: ctx.stdinFeed };
     if (a.text !== null) {
-        evalShell(a.text, childCtx(ctx), run);
+        evalShell(a.text, childCtx(ctx, keep), run);
         return;
     }
     if (a.word && a.word.substitution) {
@@ -3384,7 +3473,7 @@ function shellString(a, ctx, run, subs) {
     }
     if (a.alts) {
         for (const v of a.alts)
-            evalShell(v, childCtx(ctx), run);
+            evalShell(v, childCtx(ctx, keep), run);
         return;
     }
     dynamicCode(a, ctx, run, 'dynamic_shell_code');
@@ -3402,7 +3491,7 @@ function dynamicCode(a, ctx, run, reason) {
         return;
     }
     tripwire(literal, run);
-    evalShell(a.pattern.replace(new RegExp(DYN, 'g'), '${__marrow_dynamic}'), childCtx(ctx), run);
+    evalShell(a.pattern.replace(new RegExp(DYN, 'g'), '${__marrow_dynamic}'), childCtx(ctx, { stdinFeed: ctx.stdinFeed }), run);
 }
 function simpleWrapper(prog, rest, ctx, run, x) {
     let i = 0;
@@ -3442,7 +3531,7 @@ function simpleWrapper(prog, rest, ctx, run, x) {
         i += 1; // lock file
         const c = rest.findIndex((a) => a.text === '-c' || a.text === '--command');
         if (c >= 0 && rest[c + 1])
-            return shellString(rest[c + 1], ctx, run, x.info.subs);
+            return shellString(rest[c + 1], withFeed(ctx, x, run), run, x.info.subs);
     }
     if (i >= rest.length)
         return;
@@ -3609,7 +3698,9 @@ function handleShell(prog, rest, ctx, run, x) {
             const code = rest[i + 1];
             if (!code)
                 return;
-            return shellString(code, ctx, run, x.info.subs);
+            // What this command's stdin carries (here-string, heredoc, pipe, enclosing group) reaches any
+            // reader inside the `-c` text.
+            return shellString(code, withFeed(ctx, x, run), run, x.info.subs);
         }
         if (t === '-s' || t === '-' || STDIN_PATHS.has(t))
             return stdinExec(prog, [], x, ctx, run);
@@ -3667,9 +3758,16 @@ function handleInterpreter(prog, rest, ctx, run, x) {
                     return;
                 }
             }
-            scanInterpreterCode(code.text !== null ? code.text : argText(code), run);
+            const codeText = code.text !== null ? code.text : argText(code);
+            scanInterpreterCode(codeText, run);
+            // Code that reads its own stdin and runs what it reads: the stdin text is a command too.
+            // Code that can start a process passes its stdin on to it, whether or not it reads it itself.
+            if (tables_1.INTERPRETER_EXEC.test(codeText))
+                stdinExec(prog, [], x, ctx, run, true);
             return;
         }
+        if (prog === 'deno' && (t === 'run' || t === 'repl'))
+            continue;
         if (isPython && t === '-m') {
             const mod = rest[i + 1]?.text || '';
             if (mod === 'twine' && rest.slice(i + 2).some((b) => b.text === 'upload')) {
@@ -3714,7 +3812,7 @@ function trapBuiltin(rest, ctx, run, x) {
         return;
     if (ops[0].text === '' || ops[0].text === '-')
         return;
-    shellString(ops[0], ctx, run, x.info.subs);
+    shellString(ops[0], withFeed(ctx, x, run), run, x.info.subs);
 }
 // awk programs run commands through system() and pipes.
 const AWK_EXEC = /\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b|\bENVIRON\b|\bPROCINFO\b/;
@@ -3824,7 +3922,7 @@ function tarProgram(rest, ctx, run, x) {
 function concurrentlyWrapper(rest, ctx, run, x) {
     for (const a of rest) {
         if (a.text === null) {
-            shellString(a, ctx, run, x.info.subs);
+            shellString(a, withFeed(ctx, x, run), run, x.info.subs);
             continue;
         }
         if (a.text.startsWith('-') && a.text.length > 1)
@@ -4963,6 +5061,12 @@ function handleGh(rest, ctx, run) {
         // Repository, release and branch-protection deletes (S1, owner decision 2026-10-12).
         const base = epDecoded.replace(/^https?:\/\/[^/]+\/(?:api\/v3\/)?/, '').replace(/^\//, '').replace(/\?.*$/, '');
         if (m === 'DELETE' || m === 'UNKNOWN') {
+            // A path with an empty, `.` or `..` segment, or one that is still percent-encoded after one
+            // decode, is normalised by the server in a way the mapper cannot follow (audit N7).
+            if (/^repos\//.test(base) && (/%(?:2e|2f|5c)/i.test(base) || base.split('/').some((seg, k, all) => seg === '.' || seg === '..' || (seg === '' && k < all.length - 1)))) {
+                hit(run, 'S1', 'gh_api_delete_path_unresolved');
+                return;
+            }
             if (/^repos\/[^/]+\/[^/]+\/?$/.test(base)) {
                 hit(run, 'S1', 'gh_api_delete_repo');
                 return;
@@ -5229,7 +5333,7 @@ function npxLike(rest, ctx, run, x) {
         if (t === '-c' || t === '--call') {
             const c = rest[i + 1];
             if (c)
-                shellString(c, ctx, run, x.info.subs);
+                shellString(c, withFeed(ctx, x, run), run, x.info.subs);
             return;
         }
         if (t.startsWith('-')) {
