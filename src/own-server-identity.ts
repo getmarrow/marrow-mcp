@@ -416,6 +416,21 @@ export function serverNameCollidesWithMarrow(name: string): boolean {
   return folded === 'marrow';
 }
 
+const CODEX_PLAIN_SERVER_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
+ * Codex joins namespace and tool name with `__`, so a server whose namespace
+ * trims to `mcp` (`_`, `-`, `__`, `mcp__`, `mcp___`, `MCP__`, and the hashed
+ * duplicates of those) plus a tool `marrow__<own>` gives the exact label
+ * `mcp__marrow__<own>`. On Codex such a name, or any name outside the plain
+ * ASCII form, counts as able to produce the marrow label.
+ */
+export function codexServerNameCanProduceMarrowLabel(name: string): boolean {
+  if (!CODEX_PLAIN_SERVER_NAME.test(name)) return true;
+  const folded = name.normalize('NFKC').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return folded === '' || folded === 'mcp' || serverNameCollidesWithMarrow(name);
+}
+
 const SERVER_ENV_KEYS = new Set(['MARROW_BASE_URL', 'MARROW_FLEET_AGENT_ID', 'MARROW_TOOL_PROFILE', 'MARROW_API_KEY']);
 const CODEX_SERVER_KEYS = new Set(['command', 'args', 'env', 'enabled', 'required', 'startup_timeout_sec', 'startup_timeout_ms', 'tool_timeout_sec', 'enabled_tools', 'disabled_tools']);
 const CURSOR_SERVER_KEYS = new Set(['command', 'args', 'env', 'type']);
@@ -475,9 +490,9 @@ function addServers(into: ServerSet, servers: unknown, where: string): void {
 }
 
 /** The decision over the union of every definition of every server. */
-function decide(set: ServerSet, keys: ReadonlySet<string>, onlyServer: boolean, cwds: string[]): ServerIdentity {
+function decide(set: ServerSet, keys: ReadonlySet<string>, onlyServer: boolean, cwds: string[], codexNames = false): ServerIdentity {
   if (set.bad) return { official: false, reason: set.bad };
-  const colliding = [...set.names.keys()].filter(serverNameCollidesWithMarrow);
+  const colliding = [...set.names.keys()].filter(codexNames ? codexServerNameCanProduceMarrowLabel : serverNameCollidesWithMarrow);
   if (colliding.length !== 1) return { official: false, reason: colliding.length ? 'more than one server can produce the marrow label' : 'no marrow server configured' };
   if (colliding[0] !== 'marrow') return { official: false, reason: 'the colliding server is not named exactly marrow' };
   if (!set.names.get('marrow')!.every((entry) => officialDefinition(entry, keys))) return { official: false, reason: 'the marrow server is not the official Marrow MCP launch' };
@@ -589,7 +604,7 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
       }
     }
   }
-  return decide(set, CODEX_SERVER_KEYS, false, cwds);
+  return decide(set, CODEX_SERVER_KEYS, false, cwds, true);
 }
 
 // ---------------------------------------------------------------------------

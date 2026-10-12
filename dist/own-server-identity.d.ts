@@ -50,6 +50,14 @@ export declare function parseToml(text: string): TomlTable;
 export declare function isOfficialMarrowServerLaunch(command: unknown, args: unknown): boolean;
 /** A server name a host could turn into the `marrow` label: case, separators and leading `mcp` ignored (wider than any host). */
 export declare function serverNameCollidesWithMarrow(name: string): boolean;
+/**
+ * Codex joins namespace and tool name with `__`, so a server whose namespace
+ * trims to `mcp` (`_`, `-`, `__`, `mcp__`, `mcp___`, `MCP__`, and the hashed
+ * duplicates of those) plus a tool `marrow__<own>` gives the exact label
+ * `mcp__marrow__<own>`. On Codex such a name, or any name outside the plain
+ * ASCII form, counts as able to produce the marrow label.
+ */
+export declare function codexServerNameCanProduceMarrowLabel(name: string): boolean;
 export type CodexIdentityOptions = {
     env?: NodeJS.ProcessEnv;
     cwds?: unknown[];

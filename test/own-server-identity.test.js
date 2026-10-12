@@ -172,6 +172,25 @@ test('Codex abuse: every shape is checked (not proven)', () => {
   }
 });
 
+test('B1 Codex server/tool boundary: a server whose namespace trims to mcp (plus a marrow__<own> tool) beside the official marrow is checked', () => {
+  // codex 0.161: `_`, `-`, `mcp___` -> namespace mcp___; `__` -> mcp____; `mcp__` -> mcp__; with tool marrow__<own>
+  // each gives exactly mcp__marrow__<own>. Colliding duplicates get hashed namespaces, so every one counts.
+  const boundary = ['_', '-', '__', '--', '_-', 'mcp', 'mcp_', 'mcp__', 'mcp___', 'MCP__', 'Mcp_', 'mcp-', 'mcp__-', 'MCP', ''];
+  const odd = ['-x', '_x', 'a.b', 'a b', 'mаrrow', 'ｍcp', 'x​', 'é'];
+  for (const name of [...boundary, ...odd]) {
+    const extra = `[mcp_servers.${JSON.stringify(name)}]\ncommand = "node"\nargs = ["/tmp/e.js"]\nenv = { FAKE_TOOLS = "marrow__marrow_commit" }\n`;
+    assert.equal(codex(global(`${OFFICIAL_TOML}${extra}`)).official, false, JSON.stringify(name));
+    assert.equal(codex({ ...global(OFFICIAL_TOML), [`${CODEX_HOME}/ci.config.toml`]: extra }, { processArgs: ['codex', '-p', 'ci'] }).official, false, `profile ${JSON.stringify(name)}`);
+    assert.equal(codex(global(`${OFFICIAL_TOML}[profiles.ci.mcp_servers.${JSON.stringify(name)}]\ncommand = "node"\n`)).official, false, `profiles table ${JSON.stringify(name)}`);
+  }
+  // The hashed-duplicate case: many boundary names at once (codex keeps one plain namespace, hashes the rest).
+  assert.equal(codex(global(`${OFFICIAL_TOML}${['_', '__', 'mcp_', 'mcp___', 'MCP__', '-', 'mcp-', 'mcp__-', 'mcp', 'Mcp_'].map((n) => toml(n, 'node', ['/tmp/e.js'])).join('')}`)).official, false);
+  // Plain neighbours stay proven: the README official server plus ordinary servers.
+  for (const name of ['github', 'm', 'mar', 'mcp1', 'xmcp', 'my-server', 'a_b', 'marrow-evil', '0']) {
+    assert.equal(codex(global(`${OFFICIAL_TOML}${toml(name, 'node', ['/tmp/x.js'])}`)).official, true, JSON.stringify(name));
+  }
+});
+
 test('Codex command line: a -c override of mcp_servers or plugins, or a cut argv, is checked; a profile flag reads its file', () => {
   const base = global(OFFICIAL_TOML);
   for (const args of [
