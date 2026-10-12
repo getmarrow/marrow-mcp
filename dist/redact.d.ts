@@ -16,4 +16,11 @@
 export declare const AMBIGUOUS_REDACTION_MARKER = "[REDACTED_AMBIGUOUS]";
 export declare function redactSensitiveText(value: string): string;
 export declare function redactSensitiveValue(value: unknown, depth?: number): unknown;
+/**
+ * Redacts every string in a value that is sent as data (workflow fields,
+ * context, inputs): the structure, array lengths and every other value are
+ * kept, so nothing is dropped or reshaped; a text field under a credential
+ * name is replaced whole. Past depth 32 a value is withheld.
+ */
+export declare function redactSensitiveStrings<T>(value: T, depth?: number): T;
 //# sourceMappingURL=redact.d.ts.map

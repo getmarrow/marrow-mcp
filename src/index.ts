@@ -49,7 +49,7 @@ import {
   type RevokeApiKeyResult,
   type RotateApiKeyResult,
 } from '@getmarrow/sdk';
-import { redactSensitiveText, redactSensitiveValue } from './redact';
+import { redactSensitiveStrings, redactSensitiveText, redactSensitiveValue } from './redact';
 import { recordLifecycleEvent, type LifecycleEvent } from './lifecycle-spool';
 import { MCP_ADAPTER_VERSION } from './hook-contract';
 import { invalidResponseError, MarrowRequestError, type PendingWriteReceipt, privacySafeIdempotencyKey, normalizeRequestError, reliableFetch, requestErrorFromResponse, responseRetryAfter } from './request-reliability';
@@ -2696,12 +2696,13 @@ export async function marrowWorkflow(
       const json: any = await fetchWorkflowJson(`${baseUrl}/v1/workflows/register`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
+        // Every text leaves the process redacted, like every other tool's text.
+        body: JSON.stringify(redactSensitiveStrings({
           name: params.name,
           description: params.description,
           steps: params.steps,
           tags: params.tags,
-        }),
+        })),
       });
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
@@ -2709,7 +2710,7 @@ export async function marrowWorkflow(
     case 'list': {
       const qs = new URLSearchParams();
       if (params.status) qs.set('status', params.status);
-      if (params.tags && params.tags.length > 0) qs.set('tags', params.tags.join(','));
+      if (params.tags && params.tags.length > 0) qs.set('tags', redactSensitiveStrings(params.tags).join(','));
       const json: any = await fetchWorkflowJson(`${baseUrl}/v1/workflows?${qs.toString()}`, { headers });
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
@@ -2727,12 +2728,12 @@ export async function marrowWorkflow(
       const json: any = await fetchWorkflowJson(`${baseUrl}/v1/workflows/${safeId}`, {
         method: 'PUT',
         headers,
-        body: JSON.stringify({
+        body: JSON.stringify(redactSensitiveStrings({
           name: params.name,
           description: params.description,
           tags: params.tags,
           status: params.status,
-        }),
+        })),
       });
       if (json.error) return { success: false, error: json.error };
       return { success: true, data: json.data };
@@ -2746,8 +2747,8 @@ export async function marrowWorkflow(
         headers,
         body: JSON.stringify({
           agent_id: params.agentId,
-          context: params.context,
-          inputs: params.inputs,
+          context: redactSensitiveStrings(params.context),
+          inputs: redactSensitiveStrings(params.inputs),
         }),
       });
       if (json.error) return { success: false, error: json.error };
@@ -2765,9 +2766,9 @@ export async function marrowWorkflow(
         headers,
         body: JSON.stringify({
           step_completed: params.stepCompleted,
-          outcome: params.outcome,
+          outcome: redactSensitiveStrings(params.outcome),
           next_agent_id: params.nextAgentId,
-          context_update: params.contextUpdate,
+          context_update: redactSensitiveStrings(params.contextUpdate),
         }),
       });
       if (json.error) return { success: false, error: json.error };
@@ -2913,6 +2914,9 @@ export async function marrowDecisionBrief(
 ): Promise<MarrowDecisionBriefResult> {
   const body = {
     ...input,
+    // The action and target leave the process redacted, like marrow_ask's question.
+    action: typeof input.action === 'string' ? redactSensitiveText(input.action) : input.action,
+    ...(typeof input.target === 'string' ? { target: redactSensitiveText(input.target) } : {}),
     agent_id: input.agent_id || agentId,
     session_id: input.session_id || sessionId,
   };

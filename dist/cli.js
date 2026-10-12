@@ -1032,7 +1032,8 @@ if (process.argv[2] !== 'keys') {
         }
         async function marrowRetrieveMemories(apiKey, baseUrl, query, params, sessionId) {
             const qs = new URLSearchParams();
-            qs.set('q', query);
+            // The query leaves the process redacted, like every other tool's text.
+            qs.set('q', (0, redact_1.redactSensitiveText)(query));
             if (params?.limit)
                 qs.set('limit', String(params.limit));
             if (params?.from)

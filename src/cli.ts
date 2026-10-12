@@ -1167,7 +1167,8 @@ async function marrowRetrieveMemories(
   sessionId?: string
 ): Promise<{ memories: MarrowMemory[]; query: string; count: number }> {
   const qs = new URLSearchParams();
-  qs.set('q', query);
+  // The query leaves the process redacted, like every other tool's text.
+  qs.set('q', redactSensitiveText(query));
   if (params?.limit) qs.set('limit', String(params.limit));
   if (params?.from) qs.set('from', params.from);
   if (params?.to) qs.set('to', params.to);

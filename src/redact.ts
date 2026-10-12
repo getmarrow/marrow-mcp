@@ -153,3 +153,27 @@ export function redactSensitiveValue(value: unknown, depth: number = 0): unknown
   }
   return String(value);
 }
+
+const SECRET_FIELD = /(?:secret|token|api[_-]?key|password|credential|authorization|private[_-]?key)/i;
+
+/**
+ * Redacts every string in a value that is sent as data (workflow fields,
+ * context, inputs): the structure, array lengths and every other value are
+ * kept, so nothing is dropped or reshaped; a text field under a credential
+ * name is replaced whole. Past depth 32 a value is withheld.
+ */
+export function redactSensitiveStrings<T>(value: T, depth: number = 0): T {
+  if (depth > 32) return '[redacted-depth]' as unknown as T;
+  if (typeof value === 'string') return redactSensitiveText(value) as unknown as T;
+  if (Array.isArray(value)) return value.map((item) => redactSensitiveStrings(item, depth + 1)) as unknown as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = SECRET_FIELD.test(key) && item !== null && (typeof item === 'string' || typeof item === 'object')
+        ? '[redacted]'
+        : redactSensitiveStrings(item, depth + 1);
+    }
+    return out as T;
+  }
+  return value;
+}

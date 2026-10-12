@@ -2179,12 +2179,13 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
             const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows/register`, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({
+                // Every text leaves the process redacted, like every other tool's text.
+                body: JSON.stringify((0, redact_1.redactSensitiveStrings)({
                     name: params.name,
                     description: params.description,
                     steps: params.steps,
                     tags: params.tags,
-                }),
+                })),
             });
             if (json.error)
                 return { success: false, error: json.error };
@@ -2195,7 +2196,7 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
             if (params.status)
                 qs.set('status', params.status);
             if (params.tags && params.tags.length > 0)
-                qs.set('tags', params.tags.join(','));
+                qs.set('tags', (0, redact_1.redactSensitiveStrings)(params.tags).join(','));
             const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows?${qs.toString()}`, { headers });
             if (json.error)
                 return { success: false, error: json.error };
@@ -2217,12 +2218,12 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
             const json = await fetchWorkflowJson(`${baseUrl}/v1/workflows/${safeId}`, {
                 method: 'PUT',
                 headers,
-                body: JSON.stringify({
+                body: JSON.stringify((0, redact_1.redactSensitiveStrings)({
                     name: params.name,
                     description: params.description,
                     tags: params.tags,
                     status: params.status,
-                }),
+                })),
             });
             if (json.error)
                 return { success: false, error: json.error };
@@ -2239,8 +2240,8 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
                 headers,
                 body: JSON.stringify({
                     agent_id: params.agentId,
-                    context: params.context,
-                    inputs: params.inputs,
+                    context: (0, redact_1.redactSensitiveStrings)(params.context),
+                    inputs: (0, redact_1.redactSensitiveStrings)(params.inputs),
                 }),
             });
             if (json.error)
@@ -2263,9 +2264,9 @@ async function marrowWorkflow(apiKey, baseUrl, params, sessionId, agentId) {
                 headers,
                 body: JSON.stringify({
                     step_completed: params.stepCompleted,
-                    outcome: params.outcome,
+                    outcome: (0, redact_1.redactSensitiveStrings)(params.outcome),
                     next_agent_id: params.nextAgentId,
-                    context_update: params.contextUpdate,
+                    context_update: (0, redact_1.redactSensitiveStrings)(params.contextUpdate),
                 }),
             });
             if (json.error)
@@ -2365,6 +2366,9 @@ async function marrowValueReport(apiKey, baseUrl, period = '7d', agentIdFilter, 
 async function marrowDecisionBrief(apiKey, baseUrl, input, sessionId, agentId) {
     const body = {
         ...input,
+        // The action and target leave the process redacted, like marrow_ask's question.
+        action: typeof input.action === 'string' ? (0, redact_1.redactSensitiveText)(input.action) : input.action,
+        ...(typeof input.target === 'string' ? { target: (0, redact_1.redactSensitiveText)(input.target) } : {}),
         agent_id: input.agent_id || agentId,
         session_id: input.session_id || sessionId,
     };

@@ -18,6 +18,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.AMBIGUOUS_REDACTION_MARKER = void 0;
 exports.redactSensitiveText = redactSensitiveText;
 exports.redactSensitiveValue = redactSensitiveValue;
+exports.redactSensitiveStrings = redactSensitiveStrings;
 exports.AMBIGUOUS_REDACTION_MARKER = '[REDACTED_AMBIGUOUS]';
 const COMMAND_STRUCTURE = /[\s'"`;&|<>()#,?]|\$\(/;
 const UNQUOTED_STRUCTURE = /[&;|<>()`#,?]|\$[({A-Za-z_]/;
@@ -152,5 +153,30 @@ function redactSensitiveValue(value, depth = 0) {
         return out;
     }
     return String(value);
+}
+const SECRET_FIELD = /(?:secret|token|api[_-]?key|password|credential|authorization|private[_-]?key)/i;
+/**
+ * Redacts every string in a value that is sent as data (workflow fields,
+ * context, inputs): the structure, array lengths and every other value are
+ * kept, so nothing is dropped or reshaped; a text field under a credential
+ * name is replaced whole. Past depth 32 a value is withheld.
+ */
+function redactSensitiveStrings(value, depth = 0) {
+    if (depth > 32)
+        return '[redacted-depth]';
+    if (typeof value === 'string')
+        return redactSensitiveText(value);
+    if (Array.isArray(value))
+        return value.map((item) => redactSensitiveStrings(item, depth + 1));
+    if (value && typeof value === 'object') {
+        const out = {};
+        for (const [key, item] of Object.entries(value)) {
+            out[key] = SECRET_FIELD.test(key) && item !== null && (typeof item === 'string' || typeof item === 'object')
+                ? '[redacted]'
+                : redactSensitiveStrings(item, depth + 1);
+        }
+        return out;
+    }
+    return value;
 }
 //# sourceMappingURL=redact.js.map
