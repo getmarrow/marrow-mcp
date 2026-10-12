@@ -92,7 +92,11 @@ function packageCommands(fs, dir, names) {
     return { status: 'absent' };
 }
 const MAKEFILE_NAMES = ['GNUmakefile', 'makefile', 'Makefile'];
-/** Special targets that only tune make's behaviour; every other dot-target (suffix rules, .DEFAULT, .SECONDEXPANSION, .ONESHELL ...) can change which recipe runs. */
+/**
+ * Special targets that only tune make's behaviour; every other dot-target
+ * (suffix rules, .DEFAULT, .SECONDEXPANSION, .ONESHELL ...) can change which
+ * recipe runs.
+ */
 const MAKE_HARMLESS_SPECIAL_TARGETS = new Set(['.PHONY', '.PRECIOUS', '.INTERMEDIATE', '.SECONDARY', '.SILENT', '.IGNORE', '.DELETE_ON_ERROR', '.LOW_RESOLUTION_TIME', '.NOTPARALLEL', '.EXPORT_ALL_VARIABLES', '.POSIX']);
 /** Variables that change which program runs the recipes or which files make reads: assigning one is dynamic. */
 const MAKE_EXECUTION_VARIABLES = new Set(['SHELL', 'MAKE', 'MAKEFLAGS', 'MFLAGS', 'GNUMAKEFLAGS', 'MAKEFILES', 'MAKEOVERRIDES', 'MAKELEVEL', 'MAKE_COMMAND', 'MAKECMDGOALS', 'VPATH', 'CURDIR']);
@@ -141,9 +145,20 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     const env = options.env;
     if (env && MAKE_RELOCATING_ENV.some((name) => env[name] !== undefined))
         dynamic = true;
+    /** make reads this name itself or it changes how recipes run: assigning it on the command line is dynamic. */
+    const changesWhatRuns = (name) => name.startsWith('.') || MAKE_EXECUTION_VARIABLES.has(name);
     const commandLine = new Map(Object.entries(options.overrides || {}));
-    for (const [name, value] of commandLine)
+    // A command-line variable is exported to every recipe and its value is expanded each time make builds a recipe
+    // environment, used or not: only a plain name, a plain value and a name the Makefile itself uses are definite.
+    const referenced = new Set();
+    for (const [name, value] of commandLine) {
+        const shell = name === 'SHELL' && MAKE_SAFE_SHELL.test(value);
+        if (!shell && changesWhatRuns(name))
+            dynamic = true;
+        if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name) || /[$\x00-\x1f\x7f]/.test(value))
+            dynamic = true;
         variables.set(name, { flavor: 'recursive', value, unresolved: false });
+    }
     // Every expansion is charged to one budget, so nested variables cannot blow up.
     let expandedBytes = 0;
     let exhausted = false;
@@ -240,6 +255,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                 out += reference;
                 continue;
             }
+            referenced.add(name);
             const variable = variables.get(name);
             if (variable === undefined) {
                 const fromEnv = env ? env[name] : undefined;
@@ -307,6 +323,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
         if (assign) {
             const [, overrideKeyword, name, op, value] = assign;
             current = null;
+            referenced.add(name);
             if (MAKE_EXECUTION_VARIABLES.has(name) && !(name === 'SHELL' && (op === '=' || op === ':=' || op === '::=') && MAKE_SAFE_SHELL.test(value.trim())))
                 dynamic = true;
             // A variable given on the command line wins over the file's assignments (unless `override`).
@@ -505,6 +522,10 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
         visit(target, 0, new Set());
     if (exhausted)
         return overBudget;
+    // A command-line variable the Makefile never mentions can only act through the environment of the recipes.
+    for (const [name, value] of commandLine)
+        if (!referenced.has(name) && !(name === 'SHELL' && MAKE_SAFE_SHELL.test(value)))
+            dynamic = true;
     return { status: 'ok', makefile: read.path, commands, dynamic: dynamic || wanted.some((t) => !rules.has(t)) };
 }
 const SHELL_PROGRAMS = /^(?:sh|bash|zsh|dash|ksh|ash)$/;

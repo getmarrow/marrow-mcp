@@ -154,3 +154,151 @@ test('F1 oracle: where the kernel + env really run the payload, the resolver nev
     else assert.ok(notShell(r), `${name}: ${JSON.stringify(r.status === 'ok' ? r.interpreter : r)}`);
   }
 });
+
+// ---------------------------------------------------------------- Makefile helpers
+
+const make = (text, targets = ['all'], options = {}) => S.resolveMakeTargets(createFakeFs().file('/m/Makefile', text), '/m', targets, options);
+const definite = (r) => r.status === 'ok' && !r.dynamic;
+/** The environment of a clean developer shell (what the caller of the resolver states). */
+const ENV = { PATH: '/usr/bin:/bin', HOME: '/home/u' };
+
+// GNU make as the oracle: `make -n` and a real run with harmless payloads (a marker file, an echoed variable).
+// Set SEATBELT_ORACLE_MAKE to a GNU make binary, or have `make` on PATH; otherwise the oracle rows are skipped.
+function findMake() {
+  for (const candidate of [process.env.SEATBELT_ORACLE_MAKE, 'make', 'gmake']) {
+    if (!candidate) continue;
+    const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
+    if (probe.status === 0 && /GNU Make/.test(probe.stdout)) return candidate;
+  }
+  return null;
+}
+const MAKE_BINARY = findMake();
+const oracleSkip = MAKE_BINARY === null && 'GNU make not available (set SEATBELT_ORACLE_MAKE)';
+
+/**
+ * Row: { name, makefile, files, overrides, env (null = empty), targets, badOutput }.
+ * `@DIR@` is the row's directory; `RISKY` stands for a deploy command. Hazard:
+ * the real run created the marker, printed `badOutput`, or ran a RISKY command
+ * the resolver did not list. The resolver must then not give a definite answer;
+ * when it does, its command list must equal `make -n`.
+ */
+function checkAgainstMake(rows) {
+  const strip = (command) => command.replace(/^[\s@+-]+/, '').trim().split(MAKE_BINARY).join('make');
+  const failures = [];
+  for (const row of rows) {
+    const dir = fresh();
+    const sub = (text) => text.split('@DIR@').join(dir);
+    fsn.mkdirSync(join(dir, 'tools'));
+    fsn.writeFileSync(join(dir, 'Makefile'), sub(row.makefile));
+    fsn.writeFileSync(join(dir, 'evil.sh'), `#!/bin/sh\n/usr/bin/touch "${dir}/MARKER"\n`, { mode: 0o755 });
+    fsn.copyFileSync(join(dir, 'evil.sh'), join(dir, 'tools', 'git'));
+    for (const [name, text] of Object.entries(row.files || {})) {
+      fsn.mkdirSync(join(dir, name, '..'), { recursive: true });
+      fsn.writeFileSync(join(dir, name), sub(text));
+    }
+    const overrides = Object.fromEntries(Object.entries(row.overrides || {}).map(([k, v]) => [k, sub(v)]));
+    const targets = row.targets || ['all'];
+    const env = row.env === null ? {} : { PATH: '/usr/bin:/bin', ...(row.env || {}) };
+    const args = [...Object.entries(overrides).map(([k, v]) => `${k}=${v}`), ...targets];
+    // stdin is /dev/null: bash reads BASH_ENV only when stdin is not a socket (Node's own pipes are sockets).
+    const run = (extra) => spawnSync(MAKE_BINARY, [...extra, ...args], { cwd: dir, env, encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
+    const dry = run(['-n']);
+    const real = run([]);
+    const hazard = fsn.existsSync(join(dir, 'MARKER')) || (row.badOutput !== undefined && real.stdout.includes(row.badOutput));
+    const resolver = S.resolveMakeTargets(nfs, dir, targets, { overrides, ...(row.omitEnv ? {} : { env }) });
+    if (!(resolver.status === 'ok' && !resolver.dynamic)) continue;
+    if (hazard) failures.push(`${row.name}: definite answer while make changed what runs`);
+    else if (/RISKY/.test(real.stdout) && !resolver.commands.some((c) => /RISKY/.test(c))) failures.push(`${row.name}: definite answer without the RISKY command make ran`);
+    else if (!row.subMake) {
+      const listed = dry.stdout.split('\n').filter(Boolean).map(strip);
+      if (JSON.stringify(resolver.commands.map(strip)) !== JSON.stringify(listed)) failures.push(`${row.name}: resolver ${JSON.stringify(resolver.commands)} vs make -n ${JSON.stringify(listed)}`);
+    }
+  }
+  assert.deepEqual(failures, []);
+}
+
+// ---------------------------------------------------------------- F2: command-line overrides
+
+test('F2: an override of an execution variable, a dot-name or a name make reads at start-up is dynamic', () => {
+  const makefile = 'all:\n\techo hello\n';
+  const names = {
+    SHELL: './evil.sh', MAKEFLAGS: '-f evil.mk', MAKEFILES: 'evil.mk', '.SHELLFLAGS': '-c "echo PAYLOAD_RAN; :"', VPATH: '/tmp',
+    '.DEFAULT_GOAL': 'other', '.RECIPEPREFIX': '>', '.ONESHELL': '1', '.VARIABLES': 'x', '.X': 'y', MAKE: './evil', MFLAGS: '-f x', GNUMAKEFLAGS: '-f x',
+    MAKEOVERRIDES: 'x', MAKELEVEL: '0', MAKE_COMMAND: './evil', MAKECMDGOALS: 'deploy', CURDIR: '/tmp',
+  };
+  for (const [name, value] of Object.entries(names)) {
+    const r = make(makefile, ['all'], { overrides: { [name]: value }, env: ENV });
+    assert.ok(!definite(r), `${name}=${value}: ${JSON.stringify(r)}`);
+  }
+});
+
+test('F2: SHELL on the command line is understood only for a plain system shell, exactly', () => {
+  const makefile = 'all:\n\techo hello\n';
+  for (const shell of ['/bin/sh', '/bin/bash', '/usr/bin/bash', '/usr/local/bin/zsh', '/bin/dash']) {
+    const r = make(makefile, ['all'], { overrides: { SHELL: shell }, env: ENV });
+    assert.ok(definite(r), `${shell}: ${JSON.stringify(r)}`);
+    assert.deepEqual(r.commands, ['echo hello']);
+  }
+  for (const shell of [' /bin/sh', '/bin/sh ', '/bin/sh -x', './sh', 'sh', '/tmp/evil/sh', '/bin/sh\n', '$(HOME)/sh', '/bin/bash -c', '', '/opt/x/bin/bash']) {
+    assert.ok(!definite(make(makefile, ['all'], { overrides: { SHELL: shell }, env: ENV })), JSON.stringify(shell));
+  }
+});
+
+test('F2: a command-line value with `$` or a control character is dynamic even when nothing uses it (make expands exported values for every recipe)', () => {
+  const makefile = 'all:\n\techo hello\n';
+  for (const value of ['$(shell touch x)', '${shell touch x}', '$(eval X=1)', '$X', '$$', 'a$', '$(HOME)/x', 'a\nb', 'a\tb', 'a\0b', 'a\rb']) {
+    assert.ok(!definite(make(makefile, ['all'], { overrides: { X: value }, env: ENV })), JSON.stringify(value));
+  }
+  // The same value on a name the Makefile uses is still not definite: the exported copy is expanded too.
+  assert.ok(!definite(make('X = a\nall:\n\techo $(X)\n', ['all'], { overrides: { X: '$(shell touch x)' }, env: ENV })));
+});
+
+test('F2: a command-line name the Makefile never mentions is dynamic (it can only act through the recipes\' environment)', () => {
+  const makefile = 'all:\n\techo hello\n';
+  for (const name of ['GOFLAGS', 'RUSTFLAGS', 'CARGO_HOME', 'FOO', 'STAGE', 'A B', '1X', '', 'x=y']) {
+    assert.ok(!definite(make(makefile, ['all'], { overrides: { [name]: 'v' }, env: ENV })), JSON.stringify(name));
+  }
+  // Used by the file: referenced in a recipe, a prerequisite, a name, or assigned (command line wins).
+  const used = {
+    recipe: 'all:\n\techo $(STAGE)\n',
+    braces: 'all:\n\techo ${STAGE}\n',
+    prerequisite: 'all: $(STAGE)\nproduction:\n\techo p\n',
+    assigned: 'STAGE = dev\nall:\n\techo hello\n',
+    optional: 'STAGE ?= dev\nall:\n\techo hello\n',
+    appended: 'STAGE += x\nall:\n\techo hello\n',
+    override: 'override STAGE = dev\nall:\n\techo hello\n',
+  };
+  for (const [name, text] of Object.entries(used)) {
+    const r = make(text, ['all'], { overrides: { STAGE: 'production' }, env: ENV });
+    assert.ok(definite(r), `${name}: ${JSON.stringify(r)}`);
+  }
+});
+
+test('F2: a plain override still reaches the recipes and the followed sub-make (visible in the command list)', () => {
+  const r = make('STAGE = dev\nship:\n\twrangler deploy --env $(STAGE)\n', ['ship'], { overrides: { STAGE: 'production' }, env: ENV });
+  assert.ok(definite(r));
+  assert.deepEqual(r.commands, ['wrangler deploy --env production']);
+  const sub = make('STAGE = dev\nall:\n\t$(MAKE) deploy\ndeploy:\n\tvercel --env $(STAGE)\n', ['all'], { overrides: { STAGE: 'production' }, env: ENV });
+  assert.ok(definite(sub));
+  assert.ok(sub.commands.some((c) => /--env production/.test(c)));
+  // A hazard override still stops the sub-make.
+  assert.ok(!definite(make('all:\n\t$(MAKE) deploy\ndeploy:\n\techo d\n', ['all'], { overrides: { SHELL: './evil.sh' }, env: ENV })));
+});
+
+test('F2 oracle: GNU make runs the payload / reads the extra file where the resolver must not be definite', { skip: oracleSkip }, () => {
+  checkAgainstMake([
+    { name: 'SHELL=./evil.sh', makefile: 'all:\n\techo hello\n', overrides: { SHELL: './evil.sh' } },
+    { name: 'SHELL=/bin/sh', makefile: 'all:\n\techo hello\n', overrides: { SHELL: '/bin/sh' } },
+    { name: 'MAKEFLAGS', makefile: 'all:\n\techo hello\n', overrides: { MAKEFLAGS: '-f evil.mk' }, files: { 'evil.mk': 'all:\n\techo RISKY\n' } },
+    { name: 'MAKEFILES', makefile: 'all:\n\techo hello\n', overrides: { MAKEFILES: 'evil.mk' }, files: { 'evil.mk': 'all: deploy\ndeploy:\n\techo RISKY\n' } },
+    { name: '.SHELLFLAGS', makefile: 'all:\n\techo hello\n', overrides: { '.SHELLFLAGS': '-c "touch @DIR@/MARKER; :"' } },
+    { name: 'VPATH', makefile: 'all: gen\n\techo hello\ngen:\n\techo gen\n', overrides: { VPATH: '@DIR@/vp' }, files: { 'vp/gen': 'x\n' } },
+    { name: '.DEFAULT_GOAL', makefile: 'all:\n\techo all\nother:\n\techo RISKY\n', overrides: { '.DEFAULT_GOAL': 'other' }, targets: [] },
+    { name: 'PATH', makefile: 'all:\n\tgit status\n', overrides: { PATH: './tools' } },
+    { name: 'BASH_ENV', makefile: 'SHELL := /bin/bash\nall:\n\t@echo hi; true\n', overrides: { BASH_ENV: '@DIR@/evil.sh' } },
+    { name: 'unused function value', makefile: 'all:\n\techo hello\n', overrides: { X: '$(shell touch @DIR@/MARKER)' } },
+    { name: 'unused exported name', makefile: 'all:\n\t@echo "GOFLAGS=[$$GOFLAGS]"\n', overrides: { GOFLAGS: '-toolexec=./evil' }, badOutput: 'GOFLAGS=[-toolexec=./evil]' },
+    { name: 'STAGE referenced (control)', makefile: 'STAGE = dev\nall:\n\t@echo deploy $(STAGE)\n', overrides: { STAGE: 'production' } },
+    { name: 'STAGE ?= (control)', makefile: 'STAGE ?= dev\nall:\n\t@echo deploy $(STAGE)\n', overrides: { STAGE: 'production' } },
+  ]);
+});
