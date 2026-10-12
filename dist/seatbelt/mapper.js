@@ -831,7 +831,7 @@ function newCtx(run) {
     return {
         cwds: [cwd], vars: new Map([['HOME', [run.home]]]), exported: new Set(['HOME']), aliases: new Map(), gitAliases: new Map(),
         gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
-        decodedVars: new Set(), candidates: new Map(), fds: new Map(), ifs: undefined, backstop: false,
+        decodedVars: new Set(), candidates: new Map(), fds: new Map(), ifs: undefined, backstop: false, arrays: new Set(),
     };
 }
 function childCtx(ctx, overrides = {}) {
@@ -840,7 +840,7 @@ function childCtx(ctx, overrides = {}) {
     // (nested shell text does; text that was itself read from the feed must not be fed again).
     return {
         ...ctx, vars: new Map(ctx.vars), exported: new Set(ctx.exported), candidates: new Map(ctx.candidates), decodedVars: new Set(ctx.decodedVars),
-        fds: new Map(ctx.fds), aliases: new Map(ctx.aliases), depth: ctx.depth + 1, backstop: false, stdinFeed: null, ...overrides,
+        fds: new Map(ctx.fds), aliases: new Map(ctx.aliases), arrays: new Set(ctx.arrays), depth: ctx.depth + 1, backstop: false, stdinFeed: null, ...overrides,
     };
 }
 // Code that runs in the same shell, later or only on some paths: `eval`, `source`, a trap string, an
@@ -863,7 +863,7 @@ function scriptCtx(ctx, cwds, extraEnv) {
         vars.set(k, v);
         candidates.delete(k);
     }
-    return { ...ctx, cwds, vars, candidates, fds: new Map(), exported: new Set([...ctx.exported, ...extraEnv.keys()]), aliases: new Map(), depth: ctx.depth + 1, backstop: false };
+    return { ...ctx, cwds, vars, candidates, fds: new Map(), exported: new Set([...ctx.exported, ...extraEnv.keys()]), aliases: new Map(), arrays: new Set(ctx.arrays), depth: ctx.depth + 1, backstop: false };
 }
 function hit(run, category, reason) {
     if (!run.hits.some((h) => h.category === category && h.reason === reason))
@@ -919,7 +919,7 @@ function alreadySeen(run, ctx, kind, id, env) {
     const e = [...env.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('\u0001');
     const cwd = ctx.cwds.map((c) => c || '?').join(',');
     // Everything a verdict can depend on: the deploy contexts, git aliases and config, IFS, decoded vars.
-    const state = JSON.stringify([ctx.kubeContext, ctx.tfWorkspace, ctx.pulumiStack, [...ctx.gitAliases], [...ctx.gitConfig], ctx.ifs, [...ctx.decodedVars], [...ctx.aliases], ctx.depth, ctx.backstop, [...ctx.candidates]]);
+    const state = JSON.stringify([ctx.kubeContext, ctx.tfWorkspace, ctx.pulumiStack, [...ctx.gitAliases], [...ctx.gitConfig], ctx.ifs, [...ctx.decodedVars], [...ctx.aliases], ctx.depth, ctx.backstop, [...ctx.candidates], [...ctx.arrays].sort()]);
     const key = `${kind}\u0002${id}\u0002${cwd}\u0002${exported}\u0002${e}\u0002${ctx.remote ? 'r' : 'l'}\u0002${state}`;
     if (run.seen.has(key))
         return true;
@@ -1246,6 +1246,59 @@ function functionNames(src) {
         out.add(m[1]);
     return out.size ? out : undefined;
 }
+// Names used with array syntax anywhere in `src` (audit r4 B1): `a=(…)`, `a+=(…)`, `a[i]=…`, `${a[…]}`,
+// `${!a[@]}`, `${#a[@]}`, `unset 'a[1]'`, `declare/typeset/local/readonly -a/-A`, `mapfile`/`readarray`
+// and `read -a`. The scan is by text, linear, and does not look at quotes: a name seen in any spelling
+// is an array name, which only makes more words unresolved (stops).
+const ARRAY_DECLARE = /(?:^|[\s;&|(){}`])(declare|typeset|local|readonly|export|mapfile|readarray|read)(?=[\s;&|)]|$)/g;
+const IDENT_CHAR = /[A-Za-z0-9_]/;
+function collectArrayNames(src, out) {
+    const add = (raw) => {
+        let name = raw.replace(/^['"]+|['"]+$/g, '');
+        const eq = name.indexOf('=');
+        if (eq >= 0)
+            name = name.slice(0, eq);
+        name = name.replace(/\+$/, '').replace(/\[.*$/, '').replace(/^[0-9]+/, '');
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+            out.add(name);
+    };
+    // `name[` and `name=(` / `name+=(`: the name is the identifier characters before the bracket.
+    for (const token of ['[', '=(']) {
+        for (let i = src.indexOf(token); i >= 0; i = src.indexOf(token, i + 1)) {
+            let j = i;
+            if (token === '=(' && j > 0 && src[j - 1] === '+')
+                j -= 1;
+            let k = j;
+            while (k > 0 && IDENT_CHAR.test(src[k - 1]))
+                k -= 1;
+            if (k < j)
+                add(src.slice(k, j));
+        }
+    }
+    // Declarations with an array flag and the array readers: every word of the same simple command that
+    // looks like a name is taken as an array name.
+    let lastEnd = 0;
+    ARRAY_DECLARE.lastIndex = 0;
+    for (let m = ARRAY_DECLARE.exec(src); m !== null; m = ARRAY_DECLARE.exec(src)) {
+        if (m.index < lastEnd)
+            continue;
+        const from = m.index + m[0].length;
+        let end = from;
+        while (end < src.length && ';&|\n)'.indexOf(src[end]) < 0)
+            end += 1;
+        lastEnd = end;
+        const words = src.slice(from, end).split(/\s+/).filter(Boolean);
+        const kind = m[1];
+        const arrayFlag = words.some((w) => /^[-+][A-Za-z]*[aA]/.test(w));
+        if (kind === 'export' || (!arrayFlag && kind !== 'mapfile' && kind !== 'readarray'))
+            continue;
+        for (const w of words)
+            if (!/^[-+]/.test(w))
+                add(w);
+        if (kind === 'mapfile' || kind === 'readarray')
+            out.add('MAPFILE');
+    }
+}
 const LOOP_WORD = /(?:^|[\s;&|(){}])(?:while|until|for|select)(?:[\s;]|$)/;
 const DECLARE_PROGS = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 const ASSIGN_WORD = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
@@ -1314,9 +1367,31 @@ function applyConditional(ctx, name, next, exhaustive) {
     }
     return union;
 }
+// Array names of this text join the context's set; a name that already held a value loses it, so a
+// read that happened to be resolved earlier cannot be used later (audit r4 B1).
+function noteArrays(src, ctx, run) {
+    if (src.indexOf('[') < 0 && src.indexOf('=(') < 0 && src.indexOf('read') < 0 && src.indexOf('mapfile') < 0 && src.indexOf('readarray') < 0 && src.indexOf('declare') < 0
+        && src.indexOf('typeset') < 0 && src.indexOf('local') < 0 && src.indexOf('readonly') < 0)
+        return;
+    const found = new Set();
+    collectArrayNames(src, found);
+    if (found.size > tables_1.LIMITS.maxWords) {
+        exhaust(run, 'budget_words');
+        return;
+    }
+    for (const name of found) {
+        if (ctx.arrays.has(name))
+            continue;
+        ctx.arrays.add(name);
+        if (ctx.vars.has(name))
+            ctx.vars.set(name, null);
+        ctx.candidates.delete(name);
+    }
+}
 function evalShell(src, ctx, run) {
     if (!tick(run))
         return;
+    noteArrays(src, ctx, run);
     if (ctx.depth > tables_1.LIMITS.maxDepth) {
         worseParse(run, 'too_large');
         run.flags.add('depth_limit');
@@ -1457,15 +1532,23 @@ function resolveWordRaw(word, ctx, run) {
             continue;
         let bound = null;
         if (slot && slot.type === 'var' && slot.name) {
-            // `${a[0]}`, `${a[@]}`: the elements of the array variable (all of them: audit N2).
-            const am = /^([A-Za-z_][A-Za-z0-9_]*)\[[^\]]*\]$/.exec(slot.name);
-            const name = am ? am[1] : slot.name;
-            if (name === 'HOME')
+            // `${a[0]}`, `${a[@]}`, `${!a[@]}`, `${#a[@]}`: array contents are not modelled (audit r4 B1). The
+            // read is unresolved, and so is every later read of the name, scalar or not.
+            const am = /^[!#]?([A-Za-z_][A-Za-z0-9_]*)\[/.exec(slot.name);
+            if (am) {
+                ctx.arrays.add(am[1]);
+                ctx.vars.set(am[1], null);
+                ctx.candidates.delete(am[1]);
+                bound = null;
+            }
+            else if (ctx.arrays.has(slot.name))
+                bound = null;
+            else if (slot.name === 'HOME')
                 bound = [run.home];
-            else if (name === 'PWD')
+            else if (slot.name === 'PWD')
                 bound = ctx.cwds.length === 1 && ctx.cwds[0] ? [ctx.cwds[0]] : null;
-            else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
-                bound = ctx.vars.has(name) ? ctx.vars.get(name) : null;
+            else if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(slot.name))
+                bound = ctx.vars.has(slot.name) ? ctx.vars.get(slot.name) : null;
             else
                 bound = null;
         }
@@ -1609,10 +1692,15 @@ function evalCommand(cmd, ctx, run, info) {
         const valueWord = { ...w, text: w.text.slice(eq + 1) };
         const v = resolveWord(valueWord, ctx, run);
         let value = v.text !== null ? [v.text] : v.alts;
-        // `w=(a b)`: the parser keeps `w=` and reads the elements as a command; `$w` is the first one.
-        const arr = guard && info.guards && !info.guards.unknown ? guard.assign[ai]?.array : undefined;
-        if (arr !== undefined)
-            value = arr === null || arr.length === 0 ? null : arr;
+        // An element write (`a[1]=x`), an array literal (`a=(…)`, `a+=(…)`) or any other name that has array
+        // syntax in the text: the variable is unresolved from here on, never a scalar write (audit r4 B1).
+        if (/\[/.test(rawName) || ctx.arrays.has(name)) {
+            ctx.arrays.add(name);
+            ctx.vars.set(name, null);
+            ctx.candidates.delete(name);
+            assignEnv.set(name, null);
+            continue;
+        }
         // `x+=…` appends to the earlier value (unknown when that is unknown).
         if (/\+$/.test(rawName) && !/\[/.test(rawName)) {
             const before = assignEnv.has(name) ? assignEnv.get(name) : ctx.vars.get(name);
@@ -1814,7 +1902,7 @@ function candidateReadings(word, ctx, run) {
     let used = false;
     for (let k = 0; k < word.slots.length; k += 1) {
         const slot = word.slots[k];
-        if (!slot || slot.type !== 'var' || !slot.name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(slot.name))
+        if (!slot || slot.type !== 'var' || !slot.name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(slot.name) || ctx.arrays.has(slot.name))
             return null;
         let bound;
         if (slot.name === 'HOME')
@@ -3928,6 +4016,8 @@ function assigningBuiltin(prog, rest, ctx) {
         if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) {
             ctx.vars.set(n, null);
             ctx.candidates.delete(n);
+            if (prog !== 'getopts')
+                ctx.arrays.add(n);
         }
 }
 function setBuiltin(rest, run) {

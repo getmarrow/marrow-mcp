@@ -752,7 +752,9 @@ test('adversarial 2: child shells, loops, eval, traps and wrappers do not decide
   ]) stops(c);
   passes('for f in a b; do echo $f; done');
   passes('for f in a b; do rm -rf $f; done');
-  passes('dirs=(dist coverage); for d in "${dirs[@]}"; do rm -rf "$d"; done');
+  // r4 B1: array contents are not modelled, so a name read through an array expansion is unresolved and
+  // the recursive delete of it stops, as at 452da607 (it passed at c7947a36 by modelling the elements).
+  stops('dirs=(dist coverage); for d in "${dirs[@]}"; do rm -rf "$d"; done');
   passes('x=$(w=1); echo $x');
   stops('for f in ~/.aws/*; do cat "$f"; done');
   stops('for f in ~/.ssh/*; do base64 "$f"; done');
