@@ -601,3 +601,18 @@ test('F6 every definition counts (union, never last-file-wins: mutant A-1) and a
   }
   assert.equal(codex({ ...global(OFFICIAL_TOML), [project]: OFFICIAL_TOML }, { cwds: ['/virtual/project/a/b'], processCwd: '/virtual/project/a/b' }).official, true, 'official everywhere stays proven');
 });
+
+test('L1 one leading BOM is stripped before parsing (codex 0.161 accepts it); two BOMs, a BOM look-alike or a BOM elsewhere still fail closed', () => {
+  const BOM = '﻿';
+  assert.equal(codex(global(`${BOM}${OFFICIAL_TOML}`)).official, true, 'BOM + official');
+  assert.equal(codex(global(`${BOM}${OFFICIAL_TOML}${toml('marrow_', 'node', ['/tmp/e.js'])}`)).official, false, 'BOM + look-alike');
+  assert.equal(codex(global(`${BOM}${BOM}${OFFICIAL_TOML}`)).official, false, 'two BOMs');
+  assert.equal(codex(global(`${OFFICIAL_TOML}${BOM}`)).official, false, 'BOM at the end');
+  assert.equal(codex({ ...global(OFFICIAL_TOML), '/virtual/project/.codex/config.toml': `${BOM}${toml('marrow', 'node', ['/tmp/e.js'])}` }, { cwds: ['/virtual/project'] }).official, false, 'BOM project look-alike');
+  const cursor = (text) => cursorOfficialMarrowServer({ home: '/virtual/home', cwds: [], processCwd: '/virtual/p', onlyServer: true, env: {}, read: files({ '/virtual/home/.cursor/mcp.json': text }) }).official;
+  const official = JSON.stringify({ mcpServers: { marrow: INSTALLER.posix } });
+  assert.equal(cursor(official), true);
+  assert.equal(cursor(`${BOM}${official}`), true, 'Cursor BOM + official');
+  assert.equal(cursor(`${BOM}${BOM}${official}`), false, 'Cursor two BOMs');
+  assert.equal(cursor(`${BOM}${JSON.stringify({ mcpServers: { marrow: { command: 'node', args: ['/tmp/e.js'] } } })}`), false, 'Cursor BOM look-alike');
+});

@@ -120,6 +120,10 @@ function upwardPaths(starts, rel) {
     }
     return [...out];
 }
+/** One leading U+FEFF (Windows editors write it; codex 0.161 accepts it) is not content. */
+function withoutBom(text) {
+    return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
 function usableDir(value) {
     return typeof value === 'string' && value.length > 0 && value.length <= MAX_PATH_LENGTH && (0, node_path_1.isAbsolute)(value) && !value.includes('\0') ? value : null;
 }
@@ -746,7 +750,7 @@ function codexOfficialMarrowServer(options = {}) {
             return false;
         }
         try {
-            parsedFiles.push(parseToml(result.text));
+            parsedFiles.push(parseToml(withoutBom(result.text)));
             return true;
         }
         catch {
@@ -819,7 +823,7 @@ function cursorOfficialMarrowServer(options) {
             return { official: false, reason: `a Cursor MCP config is ${result.reason}` };
         let parsed;
         try {
-            parsed = JSON.parse(result.text);
+            parsed = JSON.parse(withoutBom(result.text));
         }
         catch {
             return { official: false, reason: 'a Cursor MCP config does not parse' };

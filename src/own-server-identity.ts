@@ -113,6 +113,11 @@ function upwardPaths(starts: string[], rel: string): string[] | null {
   return [...out];
 }
 
+/** One leading U+FEFF (Windows editors write it; codex 0.161 accepts it) is not content. */
+function withoutBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 function usableDir(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_PATH_LENGTH && isAbsolute(value) && !value.includes('\0') ? value : null;
 }
@@ -626,7 +631,7 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
     if (result.state === 'missing') return true;
     if (result.state === 'bad') { set.bad = `a Codex config is ${result.reason}`; return false; }
     try {
-      parsedFiles.push(parseToml(result.text));
+      parsedFiles.push(parseToml(withoutBom(result.text)));
       return true;
     } catch {
       set.bad = 'a Codex config does not parse';
@@ -689,7 +694,7 @@ export function cursorOfficialMarrowServer(options: CursorIdentityOptions): Serv
     if (result.state === 'missing') continue;
     if (result.state === 'bad') return { official: false, reason: `a Cursor MCP config is ${result.reason}` };
     let parsed: unknown;
-    try { parsed = JSON.parse(result.text); } catch { return { official: false, reason: 'a Cursor MCP config does not parse' }; }
+    try { parsed = JSON.parse(withoutBom(result.text)); } catch { return { official: false, reason: 'a Cursor MCP config does not parse' }; }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { official: false, reason: 'a Cursor MCP config is not an object' };
     addServers(set, (parsed as Record<string, unknown>).mcpServers, 'mcpServers');
   }
