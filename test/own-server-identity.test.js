@@ -147,6 +147,8 @@ test('Codex abuse: every shape is checked (not proven)', () => {
     'unreadable global config': { [`${CODEX_HOME}/config.toml`]: null },
     'unreadable project config': { ...global(OFFICIAL_TOML), '/virtual/project/.codex/config.toml': null },
     'unparsable config': global(`${OFFICIAL_TOML}[[broken`),
+    'unparsable project config next to an official global': { ...global(OFFICIAL_TOML), '/virtual/project/.codex/config.toml': '[mcp_servers.marrow_\ncommand = "node"\n' },
+    'unparsable profile file': { ...global(`profile = "ci"\n${OFFICIAL_TOML}`), [`${CODEX_HOME}/ci.config.toml`]: 'x = ' },
     'duplicate key': global(`${OFFICIAL_TOML}command = "node"\n`),
     'duplicate table': global(`${OFFICIAL_TOML}${OFFICIAL_TOML}`),
     'project_root_markers moves the project root': global(`project_root_markers = []\n${OFFICIAL_TOML}`),
@@ -385,6 +387,30 @@ test('end to end (built hook, no key): Cursor installer config skips all 58 at b
       write(servers);
       assert.notEqual(hook('cursor-pre-action-hook', before('marrow_commit'), { home, cwd: project }), allow, JSON.stringify(Object.keys(servers)));
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a project-local @getmarrow/mcp copy (planted node_modules) unproves the npx and bin forms, not the integrity-pinned installer runtime', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'marrow-identity-planted-'));
+  try {
+    const project = join(dir, 'project');
+    const sub = join(project, 'packages', 'app');
+    mkdirSync(join(project, '.git'), { recursive: true });
+    mkdirSync(sub, { recursive: true });
+    const run = (text, cwd) => codexOfficialMarrowServer({ env: { CODEX_HOME: '/virtual/codex-home' }, processArgs: null, cwds: [cwd], read: files(global(text)) }).official;
+    const bin = toml('marrow', 'marrow-mcp', []);
+    assert.equal(run(OFFICIAL_TOML, sub), true, 'no local copy');
+    mkdirSync(join(project, 'node_modules', '@getmarrow', 'mcp'), { recursive: true });
+    assert.equal(run(OFFICIAL_TOML, sub), false, 'npx form with a planted copy above the working dir');
+    assert.equal(run(bin, sub), false, 'bin form with a planted copy');
+    rmSync(join(project, 'node_modules'), { recursive: true });
+    mkdirSync(join(sub, 'node_modules', '.bin'), { recursive: true });
+    writeFileSync(join(sub, 'node_modules', '.bin', 'marrow-mcp'), '#!/bin/sh\n');
+    assert.equal(run(OFFICIAL_TOML, sub), false, 'planted bin');
+    const cursor = cursorOfficialMarrowServer({ home: '/virtual/home', cwds: [sub], onlyServer: true, read: files({ [join(sub, '.cursor', 'mcp.json')]: JSON.stringify({ mcpServers: { marrow: INSTALLER.posix } }) }) });
+    assert.equal(cursor.official, true, 'the installer runtime verifies its own copy; a local node_modules does not shadow it');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

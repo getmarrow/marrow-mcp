@@ -420,6 +420,33 @@ const SERVER_ENV_KEYS = new Set(['MARROW_BASE_URL', 'MARROW_FLEET_AGENT_ID', 'MA
 const CODEX_SERVER_KEYS = new Set(['command', 'args', 'env', 'enabled', 'required', 'startup_timeout_sec', 'startup_timeout_ms', 'tool_timeout_sec', 'enabled_tools', 'disabled_tools']);
 const CURSOR_SERVER_KEYS = new Set(['command', 'args', 'env', 'type']);
 
+/**
+ * npx and a bare bin name resolve a project-local copy first: a
+ * `node_modules/@getmarrow/mcp` or `node_modules/.bin/marrow-mcp` in any
+ * working directory or above it could be planted project content, so with
+ * one present those two forms prove nothing.
+ */
+function localPackageCopy(starts: string[]): boolean {
+  const seen = new Set<string>();
+  for (const start of starts) {
+    let dir = resolve(start);
+    for (let depth = 0; depth < MAX_DIR_DEPTH && !seen.has(dir); depth += 1) {
+      seen.add(dir);
+      if (existsSync(join(dir, 'node_modules', '@getmarrow', 'mcp')) || existsSync(join(dir, 'node_modules', '.bin', 'marrow-mcp'))) return true;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return false;
+}
+
+/** Whether a launch resolves through npx or PATH (the forms a local copy can shadow). */
+function resolvesLocally(entry: unknown): boolean {
+  const command = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).command : undefined;
+  return command === 'npx' || command === 'npx.cmd' || command === 'marrow-mcp' || command === 'marrow-mcp.cmd';
+}
+
 /** One server definition: an official launch with only the keys and env names Marrow writes. */
 function officialDefinition(entry: unknown, keys: ReadonlySet<string>): boolean {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
@@ -448,12 +475,13 @@ function addServers(into: ServerSet, servers: unknown, where: string): void {
 }
 
 /** The decision over the union of every definition of every server. */
-function decide(set: ServerSet, keys: ReadonlySet<string>, onlyServer: boolean): ServerIdentity {
+function decide(set: ServerSet, keys: ReadonlySet<string>, onlyServer: boolean, cwds: string[]): ServerIdentity {
   if (set.bad) return { official: false, reason: set.bad };
   const colliding = [...set.names.keys()].filter(serverNameCollidesWithMarrow);
   if (colliding.length !== 1) return { official: false, reason: colliding.length ? 'more than one server can produce the marrow label' : 'no marrow server configured' };
   if (colliding[0] !== 'marrow') return { official: false, reason: 'the colliding server is not named exactly marrow' };
   if (!set.names.get('marrow')!.every((entry) => officialDefinition(entry, keys))) return { official: false, reason: 'the marrow server is not the official Marrow MCP launch' };
+  if (set.names.get('marrow')!.some(resolvesLocally) && localPackageCopy(cwds)) return { official: false, reason: 'a project-local Marrow MCP copy could shadow the npx or bin launch' };
   if (onlyServer && set.names.size !== 1) return { official: false, reason: 'other MCP servers could expose a tool with this name' };
   return { official: true, reason: 'official' };
 }
@@ -561,7 +589,7 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
       }
     }
   }
-  return decide(set, CODEX_SERVER_KEYS, false);
+  return decide(set, CODEX_SERVER_KEYS, false, cwds);
 }
 
 // ---------------------------------------------------------------------------
@@ -586,7 +614,7 @@ export function cursorOfficialMarrowServer(options: CursorIdentityOptions): Serv
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { official: false, reason: 'a Cursor MCP config is not an object' };
     addServers(set, (parsed as Record<string, unknown>).mcpServers, 'mcpServers');
   }
-  return decide(set, CURSOR_SERVER_KEYS, options.onlyServer);
+  return decide(set, CURSOR_SERVER_KEYS, options.onlyServer, cwds);
 }
 
 // ---------------------------------------------------------------------------
