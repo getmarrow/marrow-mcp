@@ -23,6 +23,7 @@ exports.parseToml = parseToml;
 exports.isOfficialMarrowServerLaunch = isOfficialMarrowServerLaunch;
 exports.serverNameCollidesWithMarrow = serverNameCollidesWithMarrow;
 exports.codexServerNameCanProduceMarrowLabel = codexServerNameCanProduceMarrowLabel;
+exports.npmProjectConfigIsHarmless = npmProjectConfigIsHarmless;
 exports.codexOfficialMarrowServer = codexOfficialMarrowServer;
 exports.cursorOfficialMarrowServer = cursorOfficialMarrowServer;
 exports.resetOwnServerIdentityCache = resetOwnServerIdentityCache;
@@ -44,8 +45,8 @@ function readHostConfigFile(path) {
     const read = readHostConfigBytes(path);
     return read.state === 'ok' ? { state: 'ok', text: read.bytes.toString('utf8') } : read;
 }
-/** The same bounded read, as raw bytes (for content pins). */
-function readHostConfigBytes(path) {
+/** The same bounded read, as raw bytes (for content pins); `maxBytes` is the size cap. */
+function readHostConfigBytes(path, maxBytes = exports.MAX_HOST_CONFIG_BYTES) {
     let fd;
     try {
         fd = (0, node_fs_1.openSync)(path, node_fs_1.constants.O_RDONLY | (node_fs_1.constants.O_NONBLOCK ?? 0));
@@ -58,16 +59,16 @@ function readHostConfigBytes(path) {
         const stat = (0, node_fs_1.fstatSync)(fd);
         if (!stat.isFile())
             return { state: 'bad', reason: 'not a regular file' };
-        if (stat.size > exports.MAX_HOST_CONFIG_BYTES)
+        if (stat.size > maxBytes)
             return { state: 'bad', reason: 'over the size cap' };
-        const buffer = Buffer.alloc(exports.MAX_HOST_CONFIG_BYTES + 1);
+        const buffer = Buffer.alloc(maxBytes + 1);
         let total = 0;
         for (;;) {
             const read = (0, node_fs_1.readSync)(fd, buffer, total, buffer.length - total, null);
             if (read <= 0)
                 break;
             total += read;
-            if (total > exports.MAX_HOST_CONFIG_BYTES)
+            if (total > maxBytes)
                 return { state: 'bad', reason: 'over the size cap' };
         }
         return { state: 'ok', bytes: Buffer.from(buffer.subarray(0, total)) };
@@ -588,9 +589,10 @@ const CURSOR_SERVER_KEYS = new Set(['command', 'args', 'env', 'type']);
  * `node_modules/@getmarrow/mcp` or `node_modules/.bin/marrow-mcp` in any
  * working directory or above it could be planted project content, so with
  * one present those two forms prove nothing. npx also reads the project's
- * `.npmrc` (registry, scoped registry), so any `.npmrc` in a working
- * directory or above it, other than the user's own `$HOME/.npmrc`, unproves
- * the npx forms. A path deeper than the walk bound proves nothing.
+ * `.npmrc` (registry, scoped registry), so a `.npmrc` in a working directory
+ * or above it, other than the user's own `$HOME/.npmrc`, unproves the npx
+ * forms unless it only sets keys that cannot change what npx gets or runs
+ * (`projectNpmrc`). A path deeper than the walk bound proves nothing.
  */
 function upwardHas(starts, present) {
     const seen = new Set();
@@ -614,11 +616,108 @@ function localPackageCopy(starts) {
     return upwardHas(starts, (dir) => (0, node_fs_1.existsSync)((0, node_path_1.join)(dir, 'node_modules', '@getmarrow', 'mcp'))
         || ['marrow-mcp', 'marrow-mcp.cmd', 'npx', 'npx.cmd'].some((name) => (0, node_fs_1.existsSync)((0, node_path_1.join)(dir, 'node_modules', '.bin', name))));
 }
+/** A project npm config larger than this proves nothing; real ones are a few lines. */
+const MAX_NPM_PROJECT_CONFIG_BYTES = 64 * 1024;
+/**
+ * The project npm config keys that cannot change what npx downloads, from
+ * where, with what trust, or what it runs: output and logging, `npm install`
+ * save and `npm version` / `npm init` settings, lockfile and peer-resolution
+ * switches within the same registry tree, and pnpm/yarn names npm ignores.
+ * Matching is exact and case-sensitive. Registry, scoped registry, proxy, TLS,
+ * cache, prefix, script, include/omit and location keys are deliberately not
+ * here, and neither is anything not listed.
+ */
+const NPM_PROJECT_CONFIG_KEYS = new Set([
+    'save-exact', 'save-prefix', 'fund', 'audit', 'audit-level', 'loglevel', 'progress', 'color', 'unicode', 'update-notifier',
+    'package-lock', 'package-lock-only', 'lockfile-version', 'legacy-peer-deps', 'strict-peer-deps',
+    'git-tag-version', 'sign-git-tag', 'tag-version-prefix', 'message',
+    'init-author-name', 'init-author-email', 'init-license', 'init-version',
+    'auto-install-peers', 'shamefully-hoist', 'strict-peer-dependencies', 'node-linker', 'link-workspace-packages', 'prefer-workspace-packages',
+]);
+/** The default registry's own credential fields. The value is never read or logged. */
+const NPM_DEFAULT_REGISTRY_AUTH_KEY = /^\/\/registry\.npmjs\.org\/:(?:_authToken|_auth|_password|username|email|always-auth)$/;
+/** Control characters (NUL, VT, FF, DEL, …) and the Unicode line separators: text a line reader may split or truncate at. */
+const NPM_CONFIG_ODD_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u0085\u{2028}\u{2029}]/u;
+/** ASCII blanks only: a key padded with any other whitespace is not a key on the list. */
+function trimBlanks(text) {
+    let start = 0;
+    let end = text.length;
+    while (start < end && (text[start] === ' ' || text[start] === '\t'))
+        start += 1;
+    while (end > start && (text[end - 1] === ' ' || text[end - 1] === '\t'))
+        end -= 1;
+    return text.slice(start, end);
+}
+/** A value the way npm's ini reader sees it: trimmed, then unquoted or cut at the first `;` or `#`. */
+function npmIniValue(raw) {
+    const value = trimBlanks(raw);
+    const quote = value[0];
+    if ((quote === '"' || quote === "'") && value.length >= 2 && value[value.length - 1] === quote)
+        return value.slice(1, -1);
+    const comment = value.search(/[;#]/);
+    return trimBlanks(comment < 0 ? value : value.slice(0, comment));
+}
+/**
+ * Whether the text of a project npm config file only sets keys on the list
+ * above (or the default registry's credential fields), so it cannot change
+ * what `npx -y @getmarrow/mcp` gets or runs. It reads like npm's ini reader
+ * where that is exact, and answers false for anything it does not understand:
+ * a section header, a line without `=`, a line ending in a backslash (a
+ * continuation in other ini dialects), a quoted or bracketed key, a key with
+ * a comment mark, `${…}` or any non-ASCII character in it, a lone CR (npm
+ * splits lines there, other readers do not), a control character or Unicode
+ * line separator anywhere, a BOM, a key that is not listed
+ * (so `registry`, any `@scope:registry`, any other `//host/:…`, `cache`,
+ * `proxy`, `cafile`, `node-options` and every other key). Comments (`;`, `#`)
+ * and blank lines are ignored. The last `engine-strict` line wins and must be
+ * `true` or `false`.
+ */
+function npmProjectConfigIsHarmless(text) {
+    if (NPM_CONFIG_ODD_CHARS.test(text))
+        return false;
+    const lines = text.split('\n');
+    let engineStrict = null;
+    for (let index = 0; index < lines.length; index += 1) {
+        let line = lines[index];
+        if (index < lines.length - 1 && line.endsWith('\r'))
+            line = line.slice(0, -1);
+        if (line.includes('\r'))
+            return false;
+        const trimmed = trimBlanks(line);
+        if (trimmed.endsWith('\\'))
+            return false;
+        if (trimmed === '' || trimmed[0] === ';' || trimmed[0] === '#')
+            continue;
+        const equals = trimmed.indexOf('=');
+        if (equals < 0)
+            return false;
+        const key = trimBlanks(trimmed.slice(0, equals));
+        if (key === 'engine-strict') {
+            engineStrict = npmIniValue(trimmed.slice(equals + 1));
+            continue;
+        }
+        if (!NPM_PROJECT_CONFIG_KEYS.has(key) && !NPM_DEFAULT_REGISTRY_AUTH_KEY.test(key))
+            return false;
+    }
+    return engineStrict === null || engineStrict === 'true' || engineStrict === 'false';
+}
+/** One project npm config file: absent, or a plain readable text file whose keys are all harmless. */
+function npmProjectConfigIsInert(file) {
+    const read = readHostConfigBytes(file, MAX_NPM_PROJECT_CONFIG_BYTES);
+    if (read.state === 'missing')
+        return true;
+    if (read.state === 'bad')
+        return false;
+    const text = read.bytes.toString('utf8');
+    if (!Buffer.from(text, 'utf8').equals(read.bytes))
+        return false;
+    return npmProjectConfigIsHarmless(text);
+}
 function projectNpmrc(starts, home) {
     const userConfig = (0, node_path_1.resolve)(home, '.npmrc');
     return upwardHas(starts, (dir) => {
         const file = (0, node_path_1.join)(dir, '.npmrc');
-        return file !== userConfig && (0, node_fs_1.existsSync)(file);
+        return file !== userConfig && !npmProjectConfigIsInert(file);
     });
 }
 /** npm reads any `npm_config_*` variable (any case) as config: registry, userconfig, globalconfig. */

@@ -35,8 +35,8 @@ export type HostConfigRead = {
 export type HostConfigReader = (path: string) => HostConfigRead;
 /** One config file: missing adds nothing; anything but a readable regular file within the cap is bad. */
 export declare function readHostConfigFile(path: string): HostConfigRead;
-/** The same bounded read, as raw bytes (for content pins). */
-export declare function readHostConfigBytes(path: string): {
+/** The same bounded read, as raw bytes (for content pins); `maxBytes` is the size cap. */
+export declare function readHostConfigBytes(path: string, maxBytes?: number): {
     state: 'missing';
 } | {
     state: 'bad';
@@ -69,6 +69,22 @@ export declare function serverNameCollidesWithMarrow(name: string): boolean;
  * ASCII form, counts as able to produce the marrow label.
  */
 export declare function codexServerNameCanProduceMarrowLabel(name: string): boolean;
+/**
+ * Whether the text of a project npm config file only sets keys on the list
+ * above (or the default registry's credential fields), so it cannot change
+ * what `npx -y @getmarrow/mcp` gets or runs. It reads like npm's ini reader
+ * where that is exact, and answers false for anything it does not understand:
+ * a section header, a line without `=`, a line ending in a backslash (a
+ * continuation in other ini dialects), a quoted or bracketed key, a key with
+ * a comment mark, `${…}` or any non-ASCII character in it, a lone CR (npm
+ * splits lines there, other readers do not), a control character or Unicode
+ * line separator anywhere, a BOM, a key that is not listed
+ * (so `registry`, any `@scope:registry`, any other `//host/:…`, `cache`,
+ * `proxy`, `cafile`, `node-options` and every other key). Comments (`;`, `#`)
+ * and blank lines are ignored. The last `engine-strict` line wins and must be
+ * `true` or `false`.
+ */
+export declare function npmProjectConfigIsHarmless(text: string): boolean;
 export type CodexIdentityOptions = {
     env?: NodeJS.ProcessEnv;
     cwds?: unknown[];
