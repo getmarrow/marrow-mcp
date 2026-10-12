@@ -750,6 +750,7 @@ test('collisions: actions that differ outside a secret get different outcomes; s
     [`mv link y && ls ${A}`, `mv link y && rm -rf y/ # ${A}`],
     [{ tool_name: 'mcp__x__run', tool_input: { env: { TOKEN: A }, command: 'npm test' } }, { tool_name: 'mcp__x__run', tool_input: { env: { TOKEN: A }, command: 'npm publish' } }],
     [{ tool_name: 'mcp__c__run_command', tool_input: { command: 'bash', stdin: `echo ${A}` } }, { tool_name: 'mcp__c__run_command', tool_input: { command: 'bash', stdin: `echo ${A}; npm publish` } }],
+    [`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: ${A}" git push origin feat/x`, `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: ${A}" git push origin x:heads/main -f`],
     [`TF_VAR_token=${A} terraform plan`, `TF_VAR_token=${A} terraform apply`],
     [`wrangler pages deploy dist --branch feat --api-token=${A}`, `wrangler pages deploy dist --branch main --api-token=${A}`],
   ];
@@ -764,7 +765,12 @@ test('collisions: actions that differ outside a secret get different outcomes; s
 
 test('no secret reaches the decision: 150 runtime dummy tokens across the new shapes', () => {
   const shapes = (t) => [
-    `{ bash; } <<< 'echo ${t}'`, `(bash) <<< 'export K=${t}; npm publish'`, `echo ${t} | (bash)`, `if y; then w=${t}; else w=publish; fi; npm $w`,
+    // the delta audit's own leak-fuzz shapes (collisions.cjs)
+    `{ bash; } <<< 'echo ${t}'`, `(bash) <<< 'export K=${t}; npm publish'`, `x=${t}; $x`, `$${t} run`, `git push origin ${t}:heads/main -f`,
+    `gh api -X DELETE repos/acme/${t}`, `terraform apply -var token=${t}`, `printf '%s' ${t} | git credential fill`,
+    `echo \${${t}_KEY}`, `rm -rf ${t}*/`, `ln -s ~ ${t}; rm -rf ${t}/`, `kubectl get secret ${t} -o yaml`,
+    // this round's
+    `echo ${t} | (bash)`, `if y; then w=${t}; else w=publish; fi; npm $w`,
     `mv link ${t} && rm -rf ${t}/`, `mv awslink ${t} && cat ${t}/credentials`, `git push origin "${t}:heads/main" -f`,
     `$(which ${t}) publish`, `git push origin "$(git branch --show-current)" ${t}`, `wrangler pages deploy ${t}`,
     `node -e "fs.rm('/home/u',{a:'${t}',${' '.repeat(1100)}recursive:true})"`, `${t}=1 npm publish`,
