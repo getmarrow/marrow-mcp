@@ -1,5 +1,6 @@
 import type { SeatbeltFs } from './seatbelt-fs';
 import { realPath } from './seatbelt-path';
+import { GIT_RELOCATING_ENV } from './seatbelt-git';
 
 // Indirect command resolution for S2/S3 (spec §1.2, abuse rows A11/A12):
 // package.json scripts, Makefile recipes and script files are read at hook
@@ -154,6 +155,26 @@ const MAKE_RECIPE_ENV_DENY = new RegExp(
 /** npm reads its configuration from `npm_config_*` in either case. */
 const MAKE_RECIPE_ENV_DENY_ANY_CASE = /^(?:npm_config_.*|path)$/i;
 
+/**
+ * Names that make every recipe (or the git, node or tool it starts) run other
+ * code or somewhere else: shell start-up files, the dynamic loader, relocated
+ * git. A routine environment has none of them, so one present in the caller's
+ * environment (the hook's, or a prefix assignment of the command) is dynamic.
+ */
+const MAKE_INJECTION_ENV = new RegExp(`^(?:BASH_ENV|ENV|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|IFS|CDPATH|ZDOTDIR|BASH_FUNC_.*|LD_.*|DYLD_.*|${GIT_RELOCATING_ENV.join('|')})$`);
+
+/**
+ * Variables GNU make defines before it reads any file (`make -p -f /dev/null`
+ * 4.3, plus the names of later versions). `CC ?= gcc` does not assign (CC is
+ * `cc`) and `RM += -r` is `rm -f -r`: with no assignment from the file their
+ * value is not known here, so `?=` and `+=` on them are unresolved.
+ */
+const MAKE_BUILTIN_VARIABLES = new Set([
+  'AR', 'ARFLAGS', 'AS', 'CC', 'CO', 'COFLAGS', 'CPP', 'CTANGLE', 'CWEAVE', 'CXX', 'F77', 'F77FLAGS', 'FC', 'GET', 'LD', 'LEX', 'LINT', 'M2C', 'MAKEINFO', 'OBJC', 'OUTPUT_OPTION', 'PC', 'RM', 'TANGLE', 'TEX', 'TEXI2DVI', 'WEAVE', 'YACC',
+  'MAKE_HOST', 'MAKE_VERSION', 'MAKE_TERMOUT', 'MAKE_TERMERR', 'MAKEFILE_LIST', 'SUFFIXES', 'GPATH',
+]);
+const MAKE_BUILTIN_VARIABLE_FAMILIES = /^(?:COMPILE|LINK|PREPROCESS|YACC|LEX|LINT)\./;
+
 /** Make functions with no side effect (not evaluated here, but a use of their result is unresolved, not an execution at read time). */
 const MAKE_PURE_FUNCTIONS = new Set(['subst', 'patsubst', 'strip', 'findstring', 'filter', 'filter-out', 'sort', 'word', 'wordlist', 'words', 'firstword', 'lastword', 'dir', 'notdir', 'suffix', 'basename', 'addsuffix', 'addprefix', 'join', 'wildcard', 'realpath', 'abspath']);
 
@@ -188,7 +209,9 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
   if (read.status !== 'ok') return read.status === 'absent' ? read : { status: 'unknown', reason: read.reason };
   const variables = new Map<string, MakeVariable>();
   const rules = new Map<string, MakeRule>();
+  const makefileNames = new Set<string>([...MAKEFILE_NAMES, read.path.slice(read.path.lastIndexOf('/') + 1)]);
   let firstTarget: string | null = null;
+  const phony = new Set<string>();
   let dynamic = false;
   let current: MakeRuleLine | null = null;
   let prerequisiteCount = 0;
@@ -205,13 +228,26 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
     return typeof value === 'string' ? value : undefined;
   };
   if (!env || MAKE_RELOCATING_ENV.some((name) => envValue(name) !== undefined)) dynamic = true;
+  const makeDirectories = [dir, read.path.slice(0, read.path.lastIndexOf('/')) || '/'].map((directory) => directory.replace(/\/+$/, '') || '/');
+  const isTrustedPathEntry = (entry: string): boolean => {
+    if (!/^(?:\/|[A-Za-z]:[\\/])/.test(entry) || /(?:^|[\\/])\.{1,2}(?:[\\/]|$)/.test(entry)) return false;
+    const bare = entry.replace(/\/+$/, '') || '/';
+    return !makeDirectories.some((directory) => directory === '/' || bare === directory || bare.startsWith(`${directory}/`));
+  };
   const envNames = new Set<string>();
   if (env) {
     // for...in: a name an object only inherits is still a name make would see. A value that is not a string is not understood.
     for (const name in env) {
       const value = env[name];
-      if (typeof value === 'string') envNames.add(name.toUpperCase());
-      else if (value !== undefined) dynamic = true;
+      if (typeof value !== 'string') {
+        if (value !== undefined) dynamic = true;
+        continue;
+      }
+      envNames.add(name.toUpperCase());
+      if (MAKE_INJECTION_ENV.test(name.toUpperCase())) dynamic = true;
+      // A PATH entry that is relative, empty, not canonical or inside the directory make runs in makes `git` or
+      // `make` in a recipe a file of the project (the workspace root above it is the mapper's to model).
+      if (name.toUpperCase() === 'PATH' && value.split(value.includes(';') ? ';' : ':').some((entry) => !isTrustedPathEntry(entry))) dynamic = true;
     }
   }
   /**
@@ -222,6 +258,7 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
    */
   const changesWhatRuns = (name: string): boolean =>
     name.startsWith('.') || MAKE_EXECUTION_VARIABLES.has(name) || MAKE_RECIPE_ENV_DENY.test(name) || MAKE_RECIPE_ENV_DENY_ANY_CASE.test(name) || envNames.has(name.toUpperCase());
+  const isBuiltin = (name: string): boolean => MAKE_BUILTIN_VARIABLES.has(name) || MAKE_BUILTIN_VARIABLE_FAMILIES.test(name);
   const commandLine = new Map<string, string>(Object.entries(options.overrides || {}));
   // A command-line variable is exported to every recipe and its value is expanded each time make builds a recipe
   // environment, used or not: only a plain value and a name the Makefile itself uses (and that is not one of the lists) are definite.
@@ -380,7 +417,6 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
     if (assign) {
       const [, overrideKeyword, name, op, value] = assign;
       current = null;
-      referenced.add(name);
       const safeShell = name === 'SHELL' && (op === '=' || op === ':=' || op === '::=') && MAKE_SAFE_SHELL.test(value.trim());
       if (!safeShell && changesWhatRuns(name)) dynamic = true;
       // A variable given on the command line wins over the file's assignments (unless `override`).
@@ -402,15 +438,15 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
         // Defined already (in the file or on the command line): unchanged. Otherwise the environment decides.
         if (existing === undefined) {
           const fromEnv = envValue(name);
-          if (env && fromEnv === undefined) variables.set(name, { flavor: 'recursive', value, unresolved: false });
-          else if (fromEnv !== undefined) variables.set(name, { flavor: 'recursive', value: fromEnv, unresolved: false });
+          if (fromEnv !== undefined) variables.set(name, { flavor: 'recursive', value: fromEnv, unresolved: false });
+          else if (env && !isBuiltin(name)) variables.set(name, { flavor: 'recursive', value, unresolved: false });
           else variables.set(name, { flavor: 'recursive', value, unresolved: true });
         }
       } else if (op === '+=') {
         if (existing === undefined) {
           const fromEnv = envValue(name);
-          if (env && fromEnv === undefined) variables.set(name, { flavor: 'recursive', value, unresolved: false });
-          else if (fromEnv !== undefined) variables.set(name, { flavor: 'recursive', value: `${fromEnv} ${value}`, unresolved: false });
+          if (fromEnv !== undefined) variables.set(name, { flavor: 'recursive', value: `${fromEnv} ${value}`, unresolved: false });
+          else if (env && !isBuiltin(name)) variables.set(name, { flavor: 'recursive', value, unresolved: false });
           else variables.set(name, { flavor: 'recursive', value, unresolved: true });
         } else if (existing.flavor === 'simple') {
           const state = { bad: false, fn: false };
@@ -457,8 +493,11 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
     if (prerequisiteCount > MAX_MAKE_PREREQUISITES) return overBudget;
     current = ruleLine;
     for (const name of names) {
+      // make brings the makefile itself up to date first: a rule for it runs whatever target is wanted.
+      if (makefileNames.has(name.replace(/^(?:\.\/)+/, ''))) dynamic = true;
       if (name.includes('%')) dynamic = true;
       if (name.startsWith('.') && !MAKE_HARMLESS_SPECIAL_TARGETS.has(name)) dynamic = true;
+      if (name === '.PHONY') for (const word of prerequisiteWords) phony.add(word);
       if (name.startsWith('.') && MAKE_HARMLESS_SPECIAL_TARGETS.has(name)) continue;
       if (firstTarget === null && !name.includes('%') && !name.startsWith('.')) firstTarget = name;
       let entry = rules.get(name);
@@ -472,10 +511,37 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
   }
 
   const commands: string[] = [];
+  const listings = new Map<string, string[] | null>();
+  /**
+   * A target with no recipe of its own that is not .PHONY is searched for in
+   * make's built-in rules (`%.o: %.c`, `%: %.c`, `%: %.sh`, RCS/SCCS ...), which
+   * run `$(CC)`, `$(COMPILE.c)` ... on a source file. With a file in the
+   * directory that could be that source (or one that cannot be listed) the
+   * commands make runs are not in the file: dynamic.
+   */
+  const implicitRuleMayApply = (target: string): boolean => {
+    if (/[()$%*?[\]]/.test(target)) return true;
+    const slash = target.lastIndexOf('/');
+    const where = slash < 0 ? dir : target.startsWith('/') ? target.slice(0, slash) || '/' : `${dir}/${target.slice(0, slash)}`;
+    let entries = listings.get(where);
+    if (entries === undefined) {
+      try {
+        entries = fs.readdir(where);
+      } catch {
+        entries = null;
+      }
+      listings.set(where, entries);
+    }
+    if (entries === null) return true;
+    const base = target.slice(slash + 1);
+    const stem = base.split('.')[0];
+    return entries.some((entry) => entry === 'RCS' || entry === 'SCCS' || (entry !== base && (entry.startsWith(`${stem}.`) || entry === `${base},v` || entry === `s.${base}`)));
+  };
   const visit = (target: string, depth: number, seen: Set<string>) => {
     if (exhausted || seen.has(target)) return;
     seen.add(target);
     const rule = rules.get(target);
+    if (!rule?.lines.some((ruleLine) => ruleLine.recipe.length > 0) && !phony.has(target) && implicitRuleMayApply(target)) dynamic = true;
     if (!rule) return;
     for (const ruleLine of rule.lines) {
       if (ruleLine.unresolved) dynamic = true;

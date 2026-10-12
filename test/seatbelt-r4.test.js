@@ -221,7 +221,7 @@ function checkAgainstMake(rows) {
     }
     const overrides = Object.fromEntries(Object.entries(row.overrides || {}).map(([k, v]) => [k, sub(v)]));
     const targets = row.targets || ['all'];
-    const env = row.env === null ? {} : { PATH: '/usr/bin:/bin', ...(row.env || {}) };
+    const env = row.env === null ? {} : { PATH: '/usr/bin:/bin', ...Object.fromEntries(Object.entries(row.env || {}).map(([k, v]) => [k, sub(v)])) };
     const args = [...Object.entries(overrides).map(([k, v]) => `${k}=${v}`), ...targets];
     // stdin is /dev/null: bash reads BASH_ENV only when stdin is not a socket (Node's own pipes are sockets).
     const run = (extra) => spawnSync(MAKE_BINARY, [...extra, ...args], { cwd: dir, env, encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -233,7 +233,7 @@ function checkAgainstMake(rows) {
     if (hazard) failures.push(`${row.name}: definite answer while make changed what runs`);
     else if (/RISKY/.test(real.stdout) && !resolver.commands.some((c) => /RISKY/.test(c))) failures.push(`${row.name}: definite answer without the RISKY command make ran`);
     else if (!row.subMake) {
-      const listed = dry.stdout.split('\n').filter(Boolean).map(strip);
+      const listed = dry.stdout.split('\n').filter((line) => line && !/^make(\[\d+\])?: /.test(line)).map(strip);
       if (JSON.stringify(resolver.commands.map(strip)) !== JSON.stringify(listed)) failures.push(`${row.name}: resolver ${JSON.stringify(resolver.commands)} vs make -n ${JSON.stringify(listed)}`);
     }
   }
@@ -276,24 +276,36 @@ test('F2: a command-line value with `$` or a control character is dynamic even w
   assert.ok(!definite(make('X = a\nall:\n\techo $(X)\n', ['all'], { overrides: { X: '$(shell touch x)' }, env: ENV })));
 });
 
-test('F2: a command-line name the Makefile never mentions is dynamic (it can only act through the recipes\' environment)', () => {
+test('F2: a command-line name the Makefile never expands is dynamic (its value then only reaches the recipes through the environment)', () => {
   const makefile = 'all:\n\techo hello\n';
   for (const name of ['GOFLAGS', 'RUSTFLAGS', 'CARGO_HOME', 'FOO', 'STAGE', 'A B', '1X', '', 'x=y']) {
     assert.ok(!definite(make(makefile, ['all'], { overrides: { [name]: 'v' }, env: ENV })), JSON.stringify(name));
   }
-  // Used by the file: referenced in a recipe, a prerequisite, a name, or assigned (command line wins).
-  const used = {
-    recipe: 'all:\n\techo $(STAGE)\n',
-    braces: 'all:\n\techo ${STAGE}\n',
-    prerequisite: 'all: $(STAGE)\nproduction:\n\techo p\n',
+  // Only assigned by the file, or only read by the shell as $$STAGE: the value is not in the command list.
+  const unexpanded = {
     assigned: 'STAGE = dev\nall:\n\techo hello\n',
     optional: 'STAGE ?= dev\nall:\n\techo hello\n',
     appended: 'STAGE += x\nall:\n\techo hello\n',
     override: 'override STAGE = dev\nall:\n\techo hello\n',
+    shell_variable: 'all:\n\techo $$STAGE\n',
+    other_target: 'STAGE = dev\nall:\n\techo hello\nship:\n\techo $(STAGE)\n',
   };
-  for (const [name, text] of Object.entries(used)) {
+  for (const [name, text] of Object.entries(unexpanded)) {
+    assert.ok(!definite(make(text, ['all'], { overrides: { STAGE: 'production' }, env: ENV })), name);
+  }
+  // Expanded by a visited recipe, prerequisite or target name: the value is in the command list.
+  const expanded = {
+    recipe: 'all:\n\techo $(STAGE)\n',
+    braces: 'all:\n\techo ${STAGE}\n',
+    prerequisite: 'all: $(STAGE)\nproduction:\n\techo p\n',
+    assigned_and_used: 'STAGE = dev\nall:\n\techo $(STAGE)\n',
+    optional_and_used: 'STAGE ?= dev\nall:\n\techo deploy $(STAGE)\n',
+    through_another_variable: 'ARGS = --env $(STAGE)\nall:\n\techo $(ARGS)\n',
+  };
+  for (const [name, text] of Object.entries(expanded)) {
     const r = make(text, ['all'], { overrides: { STAGE: 'production' }, env: ENV });
     assert.ok(definite(r), `${name}: ${JSON.stringify(r)}`);
+    assert.ok(r.commands.every((c) => !/\$\(STAGE\)/.test(c)), name);
   }
 });
 
@@ -309,11 +321,14 @@ test('F2 (each rule alone): the Makefile uses the name and the value is plain, s
   assert.ok(!definite(make('SHELL = /bin/sh\nall:\n\techo hi\n', ['all'], { overrides: { SHELL: './evil.sh' }, env: {} })));
   assert.ok(definite(make('SHELL = /bin/sh\nall:\n\techo hi\n', ['all'], { overrides: { SHELL: '/bin/bash' }, env: {} })));
   assert.ok(definite(make('all:\n\techo $(SHELL)\n', ['all'], { overrides: { SHELL: '/bin/bash' }, env: {} })));
-  // A value rule: the name is assigned (used) but never expanded, so the value alone must stop it.
-  for (const value of ['$(shell touch x)', '${shell touch x}', '$X', '$$', 'a$', 'a\nb', 'a\tb', 'a\0b', 'a\rb', 'a\x7fb']) {
+  // A value rule: the name is expanded into the recipe, so only the value can make it dynamic.
+  for (const value of ['$$', 'a\nb', 'a\tb', 'a\0b', 'a\rb', 'a\x7fb', 'a\x1bb']) {
+    assert.ok(!definite(make('all:\n\techo $(X)\n', ['all'], { overrides: { X: value }, env: {} })), JSON.stringify(value));
+  }
+  for (const value of ['$(shell touch x)', '${shell touch x}', '$Y', 'a$']) {
     assert.ok(!definite(make('X = a\nall:\n\techo hello\n', ['all'], { overrides: { X: value }, env: {} })), JSON.stringify(value));
   }
-  assert.ok(definite(make('X = a\nall:\n\techo hello\n', ['all'], { overrides: { X: 'plain value with spaces' }, env: {} })));
+  assert.ok(definite(make('all:\n\techo $(X)\n', ['all'], { overrides: { X: 'plain value with spaces' }, env: {} })));
 });
 
 test('F2: a plain override still reaches the recipes and the followed sub-make (visible in the command list)', () => {
@@ -516,4 +531,151 @@ test('L4: a name the env object only inherits is still an environment name (neve
   const assigned = make('FOO = changed\nall:\n\techo hi\n', ['all'], { env: Object.create({ FOO: 'orig' }) });
   assert.equal(assigned.dynamic, true, 'assignment to an inherited name');
   assert.equal(make('all:\n\techo $(FOO)\n', ['all'], { env: Object.create({ FOO: 'orig' }) }).commands[0], 'echo orig');
+});
+
+// ---------------------------------------------------------------- what the caller's environment carries into every recipe
+
+test('F3 (environment): shell start-up files, the loader and relocated git in the caller\'s environment make the answer dynamic', () => {
+  const plain = 'all:\n\techo hi\n';
+  const injected = [
+    'BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'PS4', 'PROMPT_COMMAND', 'IFS', 'CDPATH', 'ZDOTDIR', 'BASH_FUNC_git%%', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT',
+    'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_EXEC_PATH', 'GIT_NAMESPACE', 'bash_env',
+  ];
+  for (const name of injected) assert.ok(!definite(make(plain, ['all'], { env: { ...ENV, [name]: './evil' } })), name);
+  // A routine developer environment has none of them: nothing here is new friction.
+  const routine = {
+    PATH: '/usr/local/bin:/usr/bin:/bin:/home/u/.cargo/bin', HOME: '/home/u', SHELL: '/bin/zsh', USER: 'u', LANG: 'en_US.UTF-8', TERM: 'xterm-256color', TMPDIR: '/tmp',
+    NODE_OPTIONS: '--max-old-space-size=4096', GIT_ASKPASS: '/usr/lib/git-core/askpass', EDITOR: 'vim', XDG_CONFIG_HOME: '/home/u/.config', SSH_AUTH_SOCK: '/run/agent', PWD: '/w', OLDPWD: '/',
+  };
+  const r = make(plain, ['all'], { env: routine });
+  assert.ok(definite(r), JSON.stringify(r));
+});
+
+test('F3 (environment): a PATH with a relative or empty entry makes `git` or `make` in a recipe a file of the current directory: dynamic', () => {
+  const plain = 'all:\n\tgit status\n';
+  for (const value of ['./tools:/usr/bin', 'tools:/usr/bin', '/usr/bin::/bin', ':/usr/bin', '/usr/bin:', '.', '', '/usr/bin:./bin', '~/bin:/usr/bin', '$HOME/bin:/usr/bin']) {
+    assert.ok(!definite(make(plain, ['all'], { env: { PATH: value } })), JSON.stringify(value));
+  }
+  for (const value of ['/usr/bin:/bin', '/usr/local/bin:/opt/homebrew/bin:/home/u/.cargo/bin', '/bin', 'C:\\Windows;C:\\Windows\\System32']) {
+    assert.ok(definite(make(plain, ['all'], { env: { PATH: value } })), JSON.stringify(value));
+  }
+  assert.ok(!definite(make(plain, ['all'], { env: { Path: './tools' } })));
+});
+
+test('F3 (environment) oracle: env-borne BASH_ENV and a relative PATH run the payload; the resolver is dynamic', { skip: oracleSkip }, () => {
+  checkAgainstMake([
+    { name: 'env BASH_ENV, SHELL = /bin/bash', makefile: 'SHELL = /bin/bash\nall:\n\t@echo hi; true\n', env: { BASH_ENV: '@DIR@/evil.sh' } },
+    { name: 'env BASH_ENV, SHELL := /bin/bash (control: file does not mention it)', makefile: 'SHELL := /bin/bash\nall:\n\t@echo hi; true\n', env: { BASH_ENV: '@DIR@/evil.sh' } },
+    { name: 'env PATH relative', makefile: 'all:\n\tgit status\n', env: { PATH: '@DIR@/tools:/usr/bin:/bin' } },
+    { name: 'env PATH relative (./)', makefile: 'all:\n\tgit status\n', env: { PATH: './tools:/usr/bin:/bin' } },
+    { name: 'env PATH absolute (control)', makefile: 'all:\n\t@echo hi\n', env: { PATH: '/usr/bin:/bin' } },
+  ]);
+});
+
+// ---------------------------------------------------------------- make's own variables (found by the oracle fuzz)
+
+test('G1: ?= and += on a variable make defines itself (CC, RM, AR, COMPILE.c ...) are unresolved unless the environment or the file sets it', () => {
+  const builtin = ['CC', 'CXX', 'RM', 'AR', 'AS', 'LD', 'CPP', 'FC', 'YACC', 'LEX', 'COMPILE.c', 'LINK.o', 'PREPROCESS.S', 'ARFLAGS', 'MAKE_VERSION'];
+  for (const name of builtin) {
+    for (const op of ['?=', '+=']) {
+      const r = make(`${name} ${op} -r\nall:\n\techo $(${name}) build\n`, ['all'], { env: ENV });
+      assert.ok(!definite(r), `${name} ${op}: ${JSON.stringify(r)}`);
+    }
+  }
+  // Not used by any command: nothing to resolve.
+  assert.ok(definite(make('RM += -r\nall:\n\techo hi\n', ['all'], { env: ENV })));
+  // The file's own assignment, the environment and the command line decide the value.
+  const assigned = make('CC = gcc\nCC += -O2\nall:\n\techo $(CC)\n', ['all'], { env: ENV });
+  assert.ok(definite(assigned));
+  assert.deepEqual(assigned.commands, ['echo gcc -O2']);
+  // (The environment's CC is the value; the assignment to a name in the environment is dynamic by the F3 rule.)
+  const fromEnv = make('CC ?= gcc\nall:\n\techo $(CC)\n', ['all'], { env: { ...ENV, CC: 'clang' } });
+  assert.ok(!definite(fromEnv));
+  assert.deepEqual(fromEnv.commands, ['echo clang']);
+  const overridden = make('CC ?= gcc\nall:\n\techo $(CC)\n', ['all'], { env: ENV, overrides: { CC: 'tcc' } });
+  assert.ok(definite(overridden));
+  assert.deepEqual(overridden.commands, ['echo tcc']);
+  // A name make does not define keeps the round-3 behaviour.
+  assert.deepEqual(make('OUT ?= build\nall:\n\techo $(OUT)\n', ['all'], { env: ENV }).commands, ['echo build']);
+  assert.deepEqual(make('FLAGS += -x\nall:\n\techo $(FLAGS)\n', ['all'], { env: ENV }).commands, ['echo -x']);
+});
+
+test('G1 oracle: GNU make\'s defaults are not what a ?= or += on them says', { skip: oracleSkip }, () => {
+  checkAgainstMake([
+    { name: 'RM += -r', makefile: 'RM += -r\nall:\n\t@echo $(RM) build\n' },
+    { name: 'CC ?= gcc', makefile: 'CC ?= gcc\nall:\n\t@echo $(CC) -o app\n' },
+    { name: 'CC += flag', makefile: 'CC += -O2\nall:\n\t@echo $(CC) x\n' },
+    { name: 'AR +=', makefile: 'AR += x\nall:\n\t@echo $(AR) y\n' },
+    { name: 'COMPILE.c +=', makefile: 'COMPILE.c += -g\nall:\n\t@echo $(COMPILE.c) z\n' },
+    { name: 'CC = (control)', makefile: 'CC = gcc\nall:\n\t@echo $(CC) -o app\n' },
+    { name: 'CC ?= with env CC (control)', makefile: 'CC ?= gcc\nall:\n\t@echo $(CC) -o app\n', env: { CC: 'clang' } },
+    { name: 'override assigned but not expanded', makefile: 'FOO = x\nall:\n\t@echo "FOO=[$$FOO]"\n', overrides: { FOO: 'new' }, badOutput: 'FOO=[new]' },
+    { name: 'override read by the shell only', makefile: 'all:\n\t@echo "STAGE=[$$STAGE]"\n', overrides: { STAGE: 'production' }, badOutput: 'STAGE=[production]' },
+    { name: 'override expanded into the command (control)', makefile: 'STAGE = dev\nall:\n\t@echo deploy $(STAGE)\n', overrides: { STAGE: 'production' } },
+  ]);
+});
+
+test('F3 (environment): a PATH entry inside the directory make runs in is the project\'s file, not the system\'s', () => {
+  const plain = 'all:\n\tgit status\n';
+  for (const value of ['/m/tools:/usr/bin', '/usr/bin:/m', '/usr/bin:/m/node_modules/.bin', '/m/:/usr/bin', '/usr/bin:/usr/../m/tools', '/usr/bin/.:/bin', '/usr/./bin']) {
+    assert.ok(!definite(make(plain, ['all'], { env: { PATH: value } })), JSON.stringify(value));
+  }
+  for (const value of ['/usr/bin:/bin', '/mm/bin:/usr/bin', '/usr/bin:/home/u/.cargo/bin']) {
+    assert.ok(definite(make(plain, ['all'], { env: { PATH: value } })), JSON.stringify(value));
+  }
+});
+
+// ---------------------------------------------------------------- what make runs that the file does not say (found by the oracle fuzz)
+
+const withFiles = (text, files = [], targets = ['all'], options = { env: ENV }) => {
+  const fake = createFakeFs().file('/m/Makefile', text);
+  for (const name of files) fake.file(`/m/${name}`, 'x\n');
+  return S.resolveMakeTargets(fake, '/m', targets, options);
+};
+
+test('G2: a target with no recipe is searched for in make\'s built-in rules: dynamic when a file could be its source', () => {
+  // The classic: CC and the flags are assigned, no recipe names the compiler.
+  assert.ok(!definite(withFiles('CC = ./evil.sh\nall: main.o\n', ['main.c'])));
+  assert.ok(definite(withFiles('CC = ./evil.sh\nall: main.o\n', [])), 'no source: make has nothing to run');
+  const sources = { c: 'main.c', cc: 'main.cc', cpp: 'main.cpp', sh: 'main.sh', y: 'main.y', l: 'main.l', s: 'main.s', o: 'main.o', texi: 'main.texi', f: 'main.f', p: 'main.p', def: 'main.def' };
+  for (const [kind, file] of Object.entries(sources)) assert.ok(!definite(withFiles('all: main\n', [file])), kind);
+  assert.ok(!definite(withFiles('all: app\n', ['app.c'])), 'link rule');
+  assert.ok(!definite(withFiles('all:\n', ['all.c'])), 'the wanted target itself');
+  assert.ok(!definite(withFiles('all: sub/x.o\n', ['sub/x.c'])), 'a source in a subdirectory');
+  assert.ok(!definite(withFiles('all: lib.a(x.o)\n', [])), 'archive member');
+  assert.ok(!definite(withFiles('all: main\n', ['RCS/main,v'])));
+  assert.ok(!definite(withFiles('all: main\n', ['main,v'])));
+  assert.ok(!definite(withFiles('all: main\n', ['s.main'])));
+  // A recipe, .PHONY, no possible source, or a data file with no sibling is nothing to search for.
+  assert.ok(definite(withFiles('CC = gcc\nmain.o:\n\t$(CC) -c main.c\nall: main.o\n', ['main.c'])));
+  assert.ok(definite(withFiles('.PHONY: all build\nall: build\nbuild:\n\techo b\n', ['all.c', 'build.c'])));
+  assert.ok(definite(withFiles('all: data.txt\n', ['data.txt'])));
+  assert.ok(definite(withFiles('all: nothing\n', [])));
+  // An unreadable directory is not known to be free of sources.
+  const unreadable = createFakeFs().file('/m/Makefile', 'all: main.o\n').file('/m/main.c', 'x').fail('/m');
+  assert.ok(!definite(S.resolveMakeTargets(unreadable, '/m', ['all'], { env: ENV })));
+});
+
+test('G3: a rule for the makefile itself runs first, whatever target is wanted: dynamic', () => {
+  for (const text of ['all:\n\techo hi\nMakefile: gen.sh\n\t./gen.sh\n', 'all:\n\techo hi\nMakefile:\n', 'all:\n\techo hi\n./Makefile: gen\n', 'all:\n\techo hi\nGNUmakefile: x\n', 'all:\n\techo hi\nmakefile: x\n', 'all:\n\techo hi\nMakefile Other: x\n']) {
+    assert.ok(!definite(withFiles(text, ['gen.sh'])), JSON.stringify(text));
+  }
+  // The file given with -f is a makefile too.
+  const named = createFakeFs().file('/m/build/ops.mk', 'all:\n\techo hi\nops.mk: gen\n\t./gen\n');
+  assert.ok(!definite(S.resolveMakeTargets(named, '/m', ['all'], { makefile: 'build/ops.mk', env: ENV })));
+  assert.ok(definite(withFiles('all:\n\techo hi\nMakefiles:\n\techo x\n', [])), 'a target that only starts with the name');
+});
+
+test('G2/G3 oracle: GNU make runs the built-in rule and the makefile\'s own rule', { skip: oracleSkip }, () => {
+  checkAgainstMake([
+    { name: 'implicit .o, CC assigned', makefile: 'CC = @DIR@/evil.sh\nall: main.o\n', files: { 'main.c': 'int main(){return 0;}\n' } },
+    { name: 'implicit .o', makefile: 'all: main.o\n', files: { 'main.c': 'int main(){return 0;}\n' } },
+    { name: 'implicit link', makefile: 'all: app\n', files: { 'app.c': 'int main(){return 0;}\n' } },
+    { name: 'implicit .sh', makefile: 'all: gen\n', files: { 'gen.sh': 'echo hi\n' } },
+    { name: 'implicit, the wanted target', makefile: 'all:\n', files: { 'all.c': 'int main(){return 0;}\n' } },
+    { name: 'CFLAGS plugin on an implicit rule', makefile: 'CFLAGS = -fplugin=@DIR@/evil.so\nall: main.o\n', files: { 'main.c': 'int main(){return 0;}\n' } },
+    { name: 'data file (control)', makefile: 'all: data.txt\n', files: { 'data.txt': 'x\n' } },
+    { name: 'phony grouping (control)', makefile: '.PHONY: all\nall: build\nbuild:\n\t@echo b\n' },
+    { name: 'makefile remake rule', makefile: 'all:\n\t@echo hi\nMakefile: gen.sh\n\t/bin/sh ./gen.sh\n', files: { 'gen.sh': '#!/bin/sh\n/usr/bin/touch @DIR@/MARKER\n' } },
+  ]);
 });
