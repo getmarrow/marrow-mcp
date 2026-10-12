@@ -71,10 +71,12 @@ export declare function codeLikeKey(raw: string): boolean;
 export declare const STDIN_KEYS: Set<string>;
 export declare const TERMINAL_SEGMENTS: Set<string>;
 export declare const BUILD_TOOLS: Set<string>;
+export declare const HEAD_RUNNERS: Set<string>;
 export declare const HEAD_CHANGERS: Set<string>;
 export declare const GH_HEAD_SAFE: Set<string>;
 export declare const TERMINAL_TEXT_KEYS: Set<string>;
 export declare const ENV_KEYS: Set<string>;
 export declare const CWD_KEYS: Set<string>;
+export declare const OPTION_OBJECT_KEYS: Set<string>;
 export declare const LANGUAGE_KEYS: Set<string>;
 //# sourceMappingURL=tables.d.ts.map

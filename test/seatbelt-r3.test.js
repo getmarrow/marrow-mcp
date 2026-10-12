@@ -735,6 +735,113 @@ test('adversarial: nested substitutions, redirect floods and tool-input products
   }
 });
 
+
+// ---------------------------------------------------------------------------------------------
+// Adversarial pass, second round (an independent probe of the round-one fixes).
+
+test('adversarial 2: child shells, loops, eval, traps and wrappers do not decide a variable', () => {
+  for (const c of [
+    'w=publish; bash -c "w=test"; npm $w', 'w=publish; env w=test bash -c "w=test"; npm $w', 'w=publish; echo "w=test" | bash; npm $w',
+    'w=publish; bash <<< "w=test"; npm $w', 'w=publish; sudo bash -c "w=test"; npm $w', 'w=publish; xargs -I{} sh -c "w=test" <<< x; npm $w',
+    'w=publish; false && for w in test; do :; done; npm $w', 'w=publish; echo | for w in test; do :; done; npm $w',
+    'w=publish; select w in test; do break; done </dev/null; npm $w', 'w=publish; f() { for w in test; do :; done; }; npm $w',
+    'w=publish; false && eval "w=test"; npm $w', 'w=publish; echo | eval "w=test"; npm $w', 'w=publish; f() { eval "w=test"; }; npm $w',
+    'w=publish; trap "w=test" EXIT; npm $w', 'w=publish; trap "for w in test; do :; done" EXIT; npm $w',
+    'for w in publish; do :; done; false && command export w=test; npm $w', 'for w in publish; do :; done; builtin declare w=test; npm $w',
+    'w=publish; f() { command export w=test; }; npm $w',
+  ]) stops(c);
+  passes('for f in a b; do echo $f; done');
+  passes('for f in a b; do rm -rf $f; done');
+  passes('dirs=(dist coverage); for d in "${dirs[@]}"; do rm -rf "$d"; done');
+  passes('x=$(w=1); echo $x');
+  stops('for f in ~/.aws/*; do cat "$f"; done');
+  stops('for f in ~/.ssh/*; do base64 "$f"; done');
+});
+
+test('adversarial 2: stdin sinks, descriptors, startup variables and program variables', () => {
+  for (const c of [
+    "echo 'npm publish' | tee >(bash -e)", "echo 'npm publish' | tee >(sh -xe)", "echo 'npm publish' | tee >(bash -eo pipefail)",
+    "echo 'npm publish' | tee >(env -i bash)", "echo 'npm publish' | tee >(sudo -u root bash)", "echo 'npm publish' | tee >(timeout 5 bash)",
+    "f() { bash; }; echo 'npm publish' | tee >(f)", "echo 'npm publish' > >(env -i bash)",
+    "exec 3<<<'npm publish'; exec 0<&3; bash", "exec 3<<<'npm publish'; exec <&3; bash",
+    "trap -- 'npm publish' EXIT", 'trap -- "npm publish" 0',
+    'env BASH_ENV=scripts/inner.sh bash -c :', 'env -i BASH_ENV=scripts/inner.sh bash -c :',
+    "PS4='$(npm publish)' bash -x -c :", "export PS4='$(npm publish)'; set -x; :", "PS4='$(npm publish) '; :", "PROMPT_COMMAND='npm publish'; :",
+    "EDITOR='npm publish' crontab -e", "VISUAL='npm publish' crontab -e", "PAGER='npm publish' man ls", "SSH_ASKPASS='npm publish' ssh x",
+    "echo '!npm publish' | ed", "echo ':!npm publish' | vim -es", "echo '!npm publish' | ex",
+    "mv scripts/inner.sh x.sh; sh x.sh", "cp scripts/inner.sh x.sh; sh x.sh", "ln -s scripts/inner.sh x.sh; sh x.sh",
+    "echo x | tee >(bash) " + '>(bash) '.repeat(80),
+  ]) stops(c);
+  passes('echo hi | tee >(cat) >/dev/null');
+  passes("echo 'npm test' | tee >(bash)");
+  passes('EDITOR=vim git commit');
+  passes('EDITOR="code -w" git commit');
+});
+
+test('adversarial 2: .git/HEAD writes, task runners and makefiles defeat the branch trims', () => {
+  const opts = { current: 'feat/x', files: {
+    '/home/u/proj/Makefile': 'include extra.mk\nall:\n\tnpm test\n',
+    '/home/u/proj/extra.mk': 'pub:\n\tnpm publish\n',
+    '/home/u/proj/sub/Makefile': 'x:\n\tnpm publish\n',
+    '/home/u/proj/sub/package.json': JSON.stringify({ name: '@acme/sub', scripts: { x: 'npm publish' } }),
+    '/home/u/proj/package.json': JSON.stringify({ name: 'proj', workspaces: ['sub'], scripts: { build: 'tsc -p .' } }),
+  } };
+  for (const c of [
+    "echo 'ref: refs/heads/main' > .git/HEAD; git push --force origin \"$(git branch --show-current)\"",
+    "echo 'ref: refs/heads/main' > .git/HEAD; wrangler pages deploy dist",
+    "printf 'ref: refs/heads/main' >| .git/HEAD; wrangler pages deploy dist", "tee .git/HEAD <<< 'ref: refs/heads/main'; wrangler pages deploy dist",
+    "dd of=.git/HEAD <<< 'ref: refs/heads/main'; wrangler pages deploy dist", "sed -i 's/feat/main/' .git/HEAD && wrangler pages deploy dist",
+    "awk 'BEGIN{print \"ref: refs/heads/main\" > \".git/HEAD\"}' && wrangler pages deploy dist",
+    'just build && wrangler pages deploy dist', 'task build && wrangler pages deploy dist', 'mvn package && wrangler pages deploy dist', 'cargo run && wrangler pages deploy dist',
+    'tsx s.ts && wrangler pages deploy dist', 'pytest && wrangler pages deploy dist', 'make all && wrangler pages deploy dist',
+  ]) stops(c, opts);
+  // Package directories, workspaces and makefile forms that reach another package's script.
+  for (const c of [
+    'npm --prefix sub run x', 'npm -C sub run x', 'npm run x -w sub', 'npm run x --workspace=sub', 'npm run x -w @acme/sub', 'pnpm -C sub run x', 'pnpm --dir sub x',
+    'pnpm --filter @acme/sub x', 'yarn --cwd sub x', 'yarn workspace @acme/sub x', 'bun --cwd sub run x',
+    'make --directory=sub x', 'make -Csub x', "make -f - <<< $'x:\\n\\tnpm publish'", "printf 'x:\\n\\tnpm publish\\n' | make -f -", 'MAKEFILES=sub/Makefile make x', 'make -f sub/Makefile x',
+  ]) stops(c, opts);
+  passes('npm run build', opts);
+  passes('npm run build -w sub', opts);
+  passes('npm --prefix sub run build', opts);
+});
+
+test('adversarial 2: more publish tools, lifecycle scripts, credential reads through find, tar, dd and links', () => {
+  for (const c of [
+    'pdm publish', 'maturin publish', 'jsr publish', 'deno publish', 'lein deploy clojars', 'sbt publish', 'nuget push x.nupkg', 'dart pub publish', 'flutter pub publish',
+    'cabal upload x', 'stack upload .', 'opam publish', 'mix hex.publish', 'rebar3 hex publish', 'cargo workspaces publish', 'conda upload x', 'anaconda upload x',
+    'python setup.py upload', 'python3 setup.py sdist upload', 'python3 -m poetry publish', 'python3 -m flit publish', 'python3 -m hatch publish', 'python3 -m uv publish',
+    'find ~/.aws -type f -exec cat {} +', 'find ~/.ssh -type f -exec base64 {} \;', 'find awslink -type f -exec cat {} +', 'find ~/.ssh -type f | xargs cat',
+    'tar -cf - --directory=/home/u/.aws credentials', 'tar -cf - -C/home/u/.aws credentials', 'tar --create --file=- --directory=/home/u .aws',
+    'echo ~/.aws/credentials | tar -T - -cf -', 'echo ~/.aws/credentials | cpio -o', 'echo ~/.aws/credentials | xargs -I{} cat {}', 'dd if=awslink/credentials',
+    'cd link; rm -rf *', 'cd -P link; rm -rf *', 'cd link; rm -rf .', 'cd link; find . -delete', 'pushd link; rm -rf *',
+  ]) stops(c);
+  passes('find . -name "*.log" -exec rm {} +');
+  passes('tar czf out.tgz src');
+  passes('tar -cf - -C /home/u/proj src');
+  passes('cd sub && rm -rf node_modules');
+  passes('cd dist && rm -rf *');
+});
+
+test('adversarial 2: tool shapes (nested cwd keys, lists of lines, chunks, expression, numbered arguments)', () => {
+  const T = (tool_name, tool_input) => ({ tool_name, tool_input });
+  for (const e of [
+    T('mcp__x__run', { command: 'cat id_ed25519', options: { cwd: '/home/u/.ssh' } }), T('mcp__x__run', { command: 'cat id_ed25519', context: { cwd: '/home/u/.ssh' } }),
+    T('mcp__x__run', { command: 'cat id_ed25519', session: { cwd: '/home/u/.ssh' } }), T('mcp__x__run', { command: 'cat id_ed25519', path: '/home/u/.ssh' }),
+    T('mcp__x__run', { command: 'cat id_ed25519', root: '/home/u/.ssh' }), T('mcp__x__run', { command: 'cat id_ed25519', baseDir: '/home/u/.ssh' }),
+    T('mcp__x__run', { command: 'cat id_ed25519', pwd: '/home/u/.ssh' }), T('mcp__x__run', { command: 'cat id_ed25519', cwds: ['/home/u/.ssh'] }),
+    T('mcp__x__run', { command: 'cat id_ed25519', env: { PWD: '/home/u/.ssh' } }),
+    T('mcp__x__run', { command: 'npm', operands: ['publish'] }), T('mcp__x__run', { command: 'npm', arg1: 'publish' }),
+    T('mcp__x__run', { script: ['npm publish'] }), T('mcp__docker__exec', { container: 'c', cmd: ['npm publish'] }),
+    T('mcp__jupyter__execute_cell', { source: ['!npm publish'] }), T('mcp__jupyter__execute_cell', { cell: { source: ['!npm publish\n'] } }),
+    T('mcp__jupyter__execute_cell', { code: ['import os', 'os.system("npm publish")'] }),
+    T('mcp__repl__send', { session_id: 's1', data: ['npm publish\n'] }), T('mcp__repl__send', { chunks: ['npm ', 'publish\n'] }),
+    T('mcp__repl__eval', { expression: 'require("child_process").execSync("npm publish")' }),
+  ]) evStops(e);
+  evPasses(T('mcp__x__run', { command: 'ls', cwd: '/home/u/proj' }));
+  evPasses(T('mcp__repl__send', { session_id: 's1', data: ['print(1)\n'] }));
+});
+
 // ---------------------------------------------------------------------------------------------
 // Collisions and leaks (AUDIT RULE).
 

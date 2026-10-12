@@ -88,7 +88,8 @@ export const S4_EXEMPT_PROGRAMS = new Set([
 export const GIT_S4_EXEMPT_SUBS = new Set(['rm', 'check-ignore', 'check-attr', 'ls-files', 'status', 'log', 'restore']);
 
 export const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh', 'yash', 'rbash', 'csh', 'tcsh']);
-export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'bun', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh', 'irb', 'ipython']);
+export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'bun', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh', 'irb', 'ipython',
+  'tsx', 'ts-node', 'pypy', 'pypy3', 'luajit', 'php-cli', 'rscript', 'texlua', 'julia', 'groovy', 'racket', 'guile', 'runghc', 'raku', 'perl6', 'Rscript', 'R']);
 
 // Interpreter one-liners that delete trees (S5). The two forms that need "a call, then an option
 // before its closing parenthesis" are not regexes with a gap: a bounded gap lets padding turn a stop
@@ -188,13 +189,14 @@ export const KNOWN_COMMANDS = new Set([
   'builtin', 'exec', 'stdbuf', 'ionice', 'chrt', 'taskset', 'setsid', 'unbuffer', 'caffeinate', 'retry', 'flock', 'xargs', 'parallel',
   'watch', 'ssh', 'git', 'gh', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'bunx', 'corepack', 'make', 'gmake', 'rm', 'rimraf', 'rmdir', 'find',
   'rsync', 'shred', 'dd', 'docker', 'podman', 'kubectl', 'helm', 'marrow', 'marrow-install', 'claude', 'apply_patch', 'applypatch',
-  'trap', 'script', 'read', 'mapfile', 'readarray', 'getopts', 'busybox', 'toybox', 'concurrently', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'railway',
+  'trap', 'script', 'cpio', 'pax', 'read', 'mapfile', 'readarray', 'getopts', 'busybox', 'toybox', 'concurrently', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'railway',
   // deploy tools
   'wrangler', 'vercel', 'netlify', 'ntl', 'fly', 'flyctl', 'firebase', 'heroku', 'gcloud', 'sst', 'serverless', 'sls', 'cdk', 'terraform',
   'tofu', 'terragrunt', 'pulumi', 'eb', 'aws', 'az',
   // publish tools and task runners
   'np', 'just', 'task', 'mage', 'rake', 'invoke', 'nx', 'turbo', 'release-it', 'semantic-release', 'changeset', 'changesets', 'lerna',
-  'cargo', 'twine', 'uv', 'poetry', 'hatch', 'flit', 'gem', 'mvn', 'mvnw', 'gradle', 'gradlew', 'dotnet', 'pod', 'vsce', 'ovsx', 'goreleaser',
+  'cargo', 'twine', 'uv', 'poetry', 'hatch', 'flit', 'gem', 'pdm', 'maturin', 'jsr', 'lein', 'sbt', 'nuget', 'dart', 'flutter', 'cabal', 'stack', 'opam',
+  'mix', 'rebar3', 'conda', 'anaconda', 'mamba', 'mvn', 'mvnw', 'gradle', 'gradlew', 'dotnet', 'pod', 'vsce', 'ovsx', 'goreleaser',
   // secret dumpers
   'security', 'secret-tool', 'op', 'vault', 'pass', 'gpg', 'gpg2',
   // shells and interpreters
@@ -300,13 +302,13 @@ export const COMMAND_KEYS = new Set(['command', 'cmd', 'commandline', 'command_l
 // A field name that is not listed above but names a command by word: `cmdString`, `my_shell_cmd`,
 // `run_command`. Matched on name segments, so `description` is not `script`.
 const COMMAND_SEGMENTS = new Set(['cmd', 'cmds', 'command', 'commands', 'shell', 'bash', 'zsh', 'script', 'scripts', 'exec', 'execute', 'argv', 'commandline',
-  'cmdline', 'program', 'executable', 'binary', 'bin']);
+  'cmdline', 'program', 'executable', 'binary', 'bin', 'cmdstring']);
 export function commandLikeKey(raw: string): boolean {
   return raw.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).some((s) => COMMAND_SEGMENTS.has(s));
 }
 // Companion argument-vector fields next to a `command` string (MCP exec servers: {command:'git', args:[…]}).
 export const ARGV_KEYS = new Set(['args', 'argv', 'arguments', 'params', 'argument']);
-export const ARGV_SEGMENTS = new Set(['args', 'argv', 'arguments', 'params', 'parameters', 'argument', 'arg', 'options', 'option', 'flags', 'flag', 'subcommand',
+export const ARGV_SEGMENTS = new Set(['args', 'argv', 'arguments', 'params', 'parameters', 'argument', 'arg', 'arg1', 'arg2', 'arg3', 'operands', 'operand', 'options', 'option', 'flags', 'flag', 'subcommand',
   'subcommands', 'positional', 'positionals', 'opts', 'rest', 'remaining', 'tail', 'more']);
 // The argument-list names whose value must be a list or text; any other shape is unknown.
 export const ARGV_STRICT = new Set(['args', 'argv', 'arguments', 'params', 'parameters', 'argument']);
@@ -338,9 +340,12 @@ export const TERMINAL_SEGMENTS = new Set(['terminal', 'shell', 'process', 'inter
 // handler is "may change the branch" for the trims (audit T1).
 export const BUILD_TOOLS = new Set(['vite', 'astro', 'next', 'nuxt', 'nuxi', 'webpack', 'rollup', 'esbuild', 'tsup', 'parcel', 'gatsby', 'hugo',
   'jekyll', 'zola', 'mkdocs', 'sphinx-build', 'eleventy', '11ty', 'hexo', 'docusaurus', 'vuepress', 'vitepress', 'svelte-kit', 'sass', 'postcss',
-  'tailwindcss', 'ng', 'vue-cli-service', 'react-scripts', 'expo', 'remix', 'solid-start', 'qwik', 'biome', 'swc', 'babel', 'cargo', 'go', 'rustc',
-  'gcc', 'g++', 'clang', 'cc', 'pytest', 'tox', 'nodemon', 'ts-node', 'tsx', 'zip', 'jq', 'yq', 'sort', 'uniq', 'cmake', 'ninja', 'pip', 'pip3',
-  'bundle', 'rake', 'dotnet', 'swift', 'xcodebuild', 'flutter', 'dart', 'deno', 'gradle', 'gradlew', 'mvn', 'mvnw', 'sbt']);
+  'tailwindcss', 'ng', 'vue-cli-service', 'react-scripts', 'expo', 'remix', 'solid-start', 'qwik', 'biome', 'swc', 'babel', 'rustc',
+  'gcc', 'g++', 'clang', 'cc', 'nodemon', 'zip', 'jq', 'yq', 'sort', 'uniq', 'cmake', 'ninja', 'swift', 'xcodebuild']);
+// Task runners and package builders that run project code (recipes, build scripts, plugins) the
+// mapper does not read: a command before the trims may have switched the branch in one of them.
+export const HEAD_RUNNERS = new Set(['just', 'task', 'mage', 'rake', 'invoke', 'nx', 'turbo', 'lerna', 'mvn', 'mvnw', 'gradle', 'gradlew', 'dotnet',
+  'sbt', 'ant', 'bazel', 'buck', 'pants', 'tsx', 'ts-node', 'pytest', 'tox', 'nox', 'pip', 'pip3', 'bundle', 'cargo', 'go', 'deno', 'flutter', 'dart']);
 // Programs whose purpose is to switch branches, worktrees or revisions.
 export const HEAD_CHANGERS = new Set(['hub', 'jj', 'sl', 'hg', 'git-town', 'gt', 'gitui', 'lazygit', 'tig', 'git-branchless', 'stg', 'git-flow',
   'gitflow', 'svn', 'bzr', 'pijul', 'fossil', 'repo', 'west']);
@@ -348,12 +353,15 @@ export const HEAD_CHANGERS = new Set(['hub', 'jj', 'sl', 'hg', 'git-town', 'gt',
 export const GH_HEAD_SAFE = new Set(['api', 'auth', 'issue', 'run', 'workflow', 'release', 'label', 'gist', 'status', 'search', 'browse',
   'config', 'extension', 'ruleset', 'secret', 'variable', 'cache', 'codespace', 'ssh-key', 'gpg-key', 'org', 'project', 'alias', 'completion', 'help', 'version']);
 // Fields of a terminal or process tool that hold typed text (next to, or instead of, stdin/input).
-export const TERMINAL_TEXT_KEYS = new Set(['text', 'data', 'content', 'message', 'payload', 'body', 'value', 'line', 'lines', 'statement', 'task',
+export const TERMINAL_TEXT_KEYS = new Set(['chunks', 'chunk', 'expression', 'expr', 'source', 'cells', 'cell', 'text', 'data', 'content', 'message', 'payload', 'body', 'value', 'line', 'lines', 'statement', 'task',
   'job', 'action', 'string', 'chars', 'characters', 'typed', 'write', 'send', 'prompt']);
 // Fields that give a command's environment.
 export const ENV_KEYS = new Set(['env', 'environment', 'envs', 'env_vars', 'envvars', 'environment_variables', 'extra_env', 'env_vars_override']);
 // Fields that give a command's working directory.
 export const CWD_KEYS = new Set(['cwd', 'workdir', 'working_dir', 'working_directory', 'work_dir', 'workingdir', 'workingdirectory', 'current_directory',
-  'currentdir', 'directory', 'dir', 'folder', 'cwd_path', 'run_in']);
+  'currentdir', 'directory', 'dir', 'folder', 'cwd_path', 'run_in', 'cwds', 'workdirs', 'root', 'base_dir', 'basedir', 'base_directory', 'pwd', 'chdir', 'cd', 'project', 'project_dir',
+  'project_path', 'repo_path', 'repo_dir', 'working_path', 'path', 'rootdir', 'root_dir', 'workspace', 'workspace_dir']);
+// Option objects that may hold the working directory or environment of the command next to them.
+export const OPTION_OBJECT_KEYS = new Set(['options', 'opts', 'context', 'session', 'execution', 'spawn_options', 'exec_options', 'config', 'settings', 'env_options', 'process', 'run_options']);
 // A sibling that names the language of a code field.
 export const LANGUAGE_KEYS = new Set(['runtime', 'language', 'lang', 'interpreter', 'engine', 'kind', 'type', 'shell', 'mode']);

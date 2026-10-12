@@ -11,7 +11,7 @@
 
 import * as path from 'node:path';
 import {
-  ARGV_STRICT, BUILD_TOOLS, CWD_KEYS, ENV_KEYS, GH_HEAD_SAFE, HEAD_CHANGERS, LANGUAGE_KEYS, TERMINAL_TEXT_KEYS,
+  ARGV_STRICT, BUILD_TOOLS, CWD_KEYS, ENV_KEYS, GH_HEAD_SAFE, HEAD_CHANGERS, HEAD_RUNNERS, LANGUAGE_KEYS, OPTION_OBJECT_KEYS, TERMINAL_TEXT_KEYS,
   ARGV_KEYS, CODE_KEYS, COMMAND_KEYS, ARGV_SEGMENTS, STDIN_KEYS, TERMINAL_SEGMENTS, codeLikeKey, commandLikeKey, ENV_TEMPLATE_SUFFIX, EVAL_PRODUCERS, FILE_TOOL_NAMES, GIT_BUILTINS, GIT_CONFIG_ENV_FILES,
   GIT_CONFIG_INCLUDE, GIT_EXEC_CONFIG, GIT_PUSH_LONG, GIT_PUSH_RISKY_LONG, GIT_S4_EXEMPT_SUBS, INERT_PROGRAMS, INTERPRETERS,
   INTERPRETER_EXEC, KEY_EXTENSIONS, KEY_FIXTURE_SEGMENTS, KNOWN_COMMANDS, LIMITS,
@@ -145,6 +145,8 @@ interface Ctx {
   gitAliases: Map<string, string>;
   gitConfig: Map<string, string[]>;
   written: Set<string>;
+  // Files copied or moved in this command: new path -> the path they came from (for a later run).
+  writtenFrom: Map<string, string>;
   depth: number;
   remote: boolean;
   kubeContext: string | null | undefined;
@@ -154,6 +156,8 @@ interface Ctx {
   // The stdin of the command that runs this nested shell text (`sh -c '…' <<< '…'`): a reader inside
   // it that has no stdin of its own reads this (audit N1, nested form).
   stdinFeed?: StdinSource | null;
+  // Same-shell code (eval, source, trap, alias): every assignment in it is conditional.
+  condAssign?: boolean;
   // Descriptors opened for reading earlier in the command line (`exec 3<<< '…'`): number -> source.
   fds: Map<string, StdinSource>;
   // Variables that are unknown (null in `vars`) but have these known readings as well (audit N2): a
@@ -348,14 +352,22 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
     const here: string[] = [];
     const stdins: string[] = [];
     // Siblings that shape the command: its working directory, its environment, its language.
-    let cwd: string | null = null;
+    const cwdCandidates: string[] = [];
     let envPrefix = '';
     let lang = false;
     let b64Mode = false;
+    // The entries that shape the command: this object's own, and one level into its option objects.
+    const shaping: Array<[string, unknown]> = [];
     for (const [rk, v] of Object.entries(obj)) {
+      shaping.push([rk, v]);
+      const lk0 = rk.toLowerCase().replace(/[-\s]/g, '_');
+      if (OPTION_OBJECT_KEYS.has(lk0) && v && typeof v === 'object' && !Array.isArray(v)) for (const e of Object.entries(v as Record<string, unknown>)) shaping.push(e);
+    }
+    for (const [rk, v] of shaping) {
       const lk = rk.toLowerCase().replace(/[-\s]/g, '_');
       if (/^(?:encoding|format|content_encoding|transfer_encoding|stdin_encoding|input_encoding|command_encoding)$/.test(lk) && typeof v === 'string' && /^(?:base64|b64)$/i.test(v)) b64Mode = true;
-      if (CWD_KEYS.has(lk) && typeof v === 'string' && v.trim() !== '') cwd = v;
+      if (CWD_KEYS.has(lk) && Array.isArray(v) && v.every((e) => typeof e === 'string')) for (const e of v as string[]) { if (e.trim()) cwdCandidates.push(e); }
+      else if (CWD_KEYS.has(lk) && typeof v === 'string' && v.trim() !== '') cwdCandidates.push(v);
       else if (CWD_KEYS.has(lk) && v !== null && v !== undefined && typeof v !== 'string') out.malformed = true;
       if (ENV_KEYS.has(lk)) {
         const pairs: Array<[string, string]> = [];
@@ -373,6 +385,8 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
         }
         for (const [ek, ev] of pairs) {
           if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(ek)) envPrefix += `export ${ek}=${shellQuote(ev)}; `; else out.malformed = true;
+          // `env: {PWD: dir}` is the working directory for tools that start the process there.
+          if ((ek === 'PWD' || ek === 'OLDPWD') && ev.trim()) cwdCandidates.push(ev);
         }
       }
       if (LANGUAGE_KEYS.has(lk) && typeof v === 'string') {
@@ -387,14 +401,17 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
       if (compact.length < 4 || !/^[A-Za-z0-9+/_-]+=*$/.test(compact)) return null;
       try { return Buffer.from(compact.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'); } catch { return null; }
     };
-    const wrap = (cmd: string): string => {
-      let r = cmd;
-      if (envPrefix) r = `${envPrefix}${r}`;
-      if (cwd !== null) {
+    const withEnv = (cmd: string): string => (envPrefix ? `${envPrefix}${cmd}` : cmd);
+    // One reading per working-directory field that is present, and one with none (a field named
+    // `path` may be an operand and not a directory): every reading is classified.
+    const wraps = (cmd: string): string[] => {
+      const base = withEnv(cmd);
+      const out2 = [base];
+      for (const cwd of [...new Set(cwdCandidates)].slice(0, 4)) {
         const dir = /^~[A-Za-z0-9_.\/-]*$/.test(cwd) ? cwd : `"${cwd.replace(/(["\\`])/g, '\\$1')}"`;
-        r = `cd -- ${dir} && { ${r}\n}`;
+        out2.push(`cd -- ${dir} && { ${base}\n}`);
       }
-      return r;
+      return out2;
     };
     for (const [rawKey, value] of Object.entries(obj)) {
       visited += 1;
@@ -476,6 +493,8 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
             else if (value.length) {
               const argv = key === 'argv' ? '' : argvText();
               here.push(`${(value as unknown[]).map((v) => shellQuote(String(v))).join(' ')}${argv ? ` ${argv}` : ''}`);
+              // A list of words may also be a list of command lines (`script: ['npm publish']`).
+              if (value.length <= 256) for (const v of value) if (typeof v === 'string' && /\s/.test(v.trim())) here.push(v);
             }
           } else if (value.every((v) => v && typeof v === 'object' && !Array.isArray(v))) {
             // commands: [{command: …}, …]
@@ -490,7 +509,22 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
         }
         continue;
       }
-      if ((CODE_KEYS.has(key) || codeLikeKey(rawKey)) && typeof value === 'string') { if (value.trim()) out.code.push(value); continue; }
+      if ((CODE_KEYS.has(key) || codeLikeKey(rawKey)) && typeof value === 'string') {
+        if (value.trim()) { out.code.push(value); if (/^\s*[!%]/.test(value)) out.shell.push(value.replace(/^\s*[!%]+(?:bash|sh)?\s*/, '')); }
+        continue;
+      }
+      // A list of lines (nbformat `source`, `code: ['import os', …]`): read joined each way.
+      if ((CODE_KEYS.has(key) || codeLikeKey(rawKey) || COMMAND_KEYS.has(key) || (terminalTool && TERMINAL_TEXT_KEYS.has(key))) && Array.isArray(value) && value.length > 0
+        && value.length <= 4096 && value.every((v) => typeof v === 'string')) {
+        const lines = value as string[];
+        for (const joined of [lines.join('\n'), lines.join('')]) {
+          if (joined.trim() === '') continue;
+          out.code.push(joined);
+          out.shell.push(joined.replace(/^\s*[!%]+(?:bash|sh)?\s*/gm, ''));
+        }
+        for (const ln of lines.slice(0, 256)) if (ln.trim()) out.shell.push(ln.replace(/^\s*[!%]+(?:bash|sh)?\s*/, ''));
+        if (!COMMAND_KEYS.has(key)) continue;
+      }
       // Any other string that holds a JSON object or list (a payload field) is read as one.
       if (typeof value === 'string' && depth < LIMITS.maxToolDepth && value.length <= LIMITS.maxToolJsonChars && /^\s*[{[]/.test(value)) {
         const parsed = tryJson(value);
@@ -518,13 +552,14 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
       }
     }
     for (const c0 of here) {
-      const c = wrap(c0);
-      out.shell.push(c);
-      for (const s of stdins) {
-        // `commands` x `stdin` is a product: bound the composed text (audit N6).
-        composed += c.length + s.length;
-        if (composed > LIMITS.maxCommandBytes * 4 || out.shell.length > LIMITS.maxSegments * 4) { out.truncated = true; return; }
-        out.shell.push(withStdin(c, s));
+      for (const c of wraps(c0)) {
+        out.shell.push(c);
+        for (const s of stdins) {
+          // `commands` x `stdin` is a product: bound the composed text (audit N6).
+          composed += c.length + s.length;
+          if (composed > LIMITS.maxCommandBytes * 4 || out.shell.length > LIMITS.maxSegments * 4) { out.truncated = true; return; }
+          out.shell.push(withStdin(c, s));
+        }
       }
     }
     // A sibling that names a language (`runtime: 'node'`, `language: 'python'`): the other text fields
@@ -535,7 +570,7 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
         if (typeof v !== 'string' || v.trim() === '' || LANGUAGE_KEYS.has(lk) || CWD_KEYS.has(lk) || ENV_KEYS.has(lk)) continue;
         if (/^(?:id|name|description|title|label|version|timeout|encoding|format|mode)$/.test(lk)) continue;
         out.code.push(v);
-        out.shell.push(wrap(v));
+        for (const w of wraps(v)) out.shell.push(w);
       }
     }
     if (!here.length && stdins.length && terminalTool) {
@@ -703,15 +738,25 @@ function newCtx(run: Run): Ctx {
   const cwd = typeof run.env.cwd === 'string' && path.posix.isAbsolute(run.env.cwd) ? path.posix.normalize(run.env.cwd) : null;
   return {
     cwds: [cwd], vars: new Map([['HOME', [run.home]]]), exported: new Set(['HOME']), aliases: new Map(), gitAliases: new Map(),
-    gitConfig: new Map(), written: new Set(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
+    gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
     decodedVars: new Set(), candidates: new Map(), fds: new Map(), ifs: undefined, backstop: false,
   };
 }
 
 function childCtx(ctx: Ctx, overrides: Partial<Ctx> = {}): Ctx {
-  // A child context does not inherit the stdin feed unless it asks for it (nested shell text does;
-  // text that was itself read from the feed must not be fed again).
-  return { ...ctx, depth: ctx.depth + 1, backstop: false, stdinFeed: null, ...overrides };
+  // A child process, a subshell or a substitution: what it assigns does not reach the caller, so it
+  // works on copies (audit N2). A child context does not inherit the stdin feed unless it asks for it
+  // (nested shell text does; text that was itself read from the feed must not be fed again).
+  return {
+    ...ctx, vars: new Map(ctx.vars), exported: new Set(ctx.exported), candidates: new Map(ctx.candidates), decodedVars: new Set(ctx.decodedVars),
+    fds: new Map(ctx.fds), aliases: new Map(ctx.aliases), depth: ctx.depth + 1, backstop: false, stdinFeed: null, ...overrides,
+  };
+}
+
+// Code that runs in the same shell, later or only on some paths: `eval`, `source`, a trap string, an
+// alias. Its assignments are the caller's, but they may not have run (audit N2).
+function sameShellCtx(ctx: Ctx, overrides: Partial<Ctx> = {}): Ctx {
+  return { ...ctx, depth: ctx.depth + 1, backstop: false, stdinFeed: null, condAssign: true, ...overrides };
 }
 
 function scriptCtx(ctx: Ctx, cwds: Array<string | null>, extraEnv: Map<string, string[] | null>): Ctx {
@@ -1231,18 +1276,50 @@ function resolveWordRaw(word: Word, ctx: Ctx, run: Run): Arg {
 
 function argText(a: Arg): string { return a.text !== null ? a.text : a.pattern.replace(new RegExp(DYN, 'g'), ''); }
 
+// Variables whose value some program runs (an editor, a pager, a prompt expanded at trace time): the
+// value is read as shell text when it is more than a bare word (audit N1).
+const PROGRAM_ENV = ['EDITOR', 'VISUAL', 'PAGER', 'MANPAGER', 'BROWSER', 'LESSOPEN', 'LESSCLOSE', 'SSH_ASKPASS', 'SUDO_ASKPASS', 'FCEDIT', 'LESSEDIT', 'PS0', 'PS1', 'PS2', 'PS4', 'PROMPT_COMMAND'];
+function programEnvCheck(values: Map<string, string[] | null>, ctx: Ctx, run: Run, includeExported: boolean): void {
+  for (const name of PROGRAM_ENV) {
+    const v = values.has(name) ? values.get(name) : includeExported && ctx.exported.has(name) ? ctx.vars.get(name) : undefined;
+    if (v === undefined) continue;
+    if (v === null) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_program_env'); continue; }
+    for (const val of v) {
+      const bare = /^[A-Za-z0-9_./+-]+$/.test(val.trim());
+      if (!bare && val.trim() !== '' && !/^(?:less|more|vim?|nano|emacs|cat|code(?:\s+-[a-z-]+)?|subl(?:\s+-w)?|open|xdg-open)$/.test(val.trim())) evalShell(val.replace(/\\([\\$`"])/g, '$1'), childCtx(ctx), run);
+    }
+  }
+}
+
 function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void {
   if (cmd.forLoop) {
     const items = cmd.forLoop.items;
     if (!items) { ctx.vars.set(cmd.forLoop.name, null); return; }
     const values: string[] = [];
+    const loopName = cmd.forLoop.name;
+    // The loop may not run (`false && for …`, an empty list, `select` at end of input): an earlier
+    // value of the variable stays possible (audit N2).
+    const prev = ctx.vars.has(loopName) ? ctx.vars.get(loopName) : undefined;
+    const setLoopVar = (vals: string[] | null) => {
+      if (vals === null || prev === null) { ctx.vars.set(loopName, null); ctx.candidates.set(loopName, [...new Set([...(prev || []), ...(vals || [])])].slice(0, LIMITS.maxVariants)); return; }
+      ctx.vars.set(loopName, prev === undefined ? vals : [...new Set([...prev, ...vals])].slice(0, LIMITS.maxVariants));
+      ctx.candidates.delete(loopName);
+    };
     for (const w of items) {
       const a = resolveWord(w, ctx, run);
-      if (a.text === null || a.glob) { ctx.vars.set(cmd.forLoop.name, null); return; }
+      if (a.glob && a.text !== null) {
+        // A glob item that can name a credential file is a stop; one that can be listed gives its matches.
+        checkSecretOperand(a, ctx, run, 'for_item');
+        const matches = expandGlob(a.text, ctx, run);
+        if (matches !== null && matches.length > 0 && matches.length <= LIMITS.maxVariants) { values.push(...matches); continue; }
+        setLoopVar(null);
+        return;
+      }
+      if (a.text === null && a.alts && a.alts.length > 0 && a.alts.length <= LIMITS.maxVariants) { values.push(...a.alts); continue; }
+      if (a.text === null) { setLoopVar(null); return; }
       values.push(a.text);
     }
-    ctx.vars.set(cmd.forLoop.name, values.length ? values : null);
-    ctx.candidates.delete(cmd.forLoop.name);
+    setLoopVar(values.length ? values : null);
     return;
   }
 
@@ -1279,6 +1356,7 @@ function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void
       if (a.text && SAFE_DEVICES.test(a.text)) continue;
       checkSecretOperand(a, ctx, run, 'redirect_write');
       checkProtectedWrite(a, ctx, run, 'redirect_write', false);
+      if (a.text !== null && /\.git\/(?:HEAD|refs\/|packed-refs)|\.git\/worktrees\//.test(a.text)) run.headMayChange = true;
       markWritten(a, ctx);
     } else if (r.op === '<') {
       checkSecretOperand(a, ctx, run, 'redirect_read');
@@ -1308,13 +1386,14 @@ function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void
     if (cmd.words.length === 0) {
       const ev = guard && info.guards && !info.guards.unknown ? guard.assign[ai] : undefined;
       // A second round over a loop body: nothing is certain to have run again.
-      const certain = Boolean(ev && ev.uncond) && !info.round2;
+      const certain = Boolean(ev && ev.uncond) && !info.round2 && !ctx.condAssign;
       if (certain) ctx.candidates.delete(name);
       else if (info.guards) value = applyConditional(ctx, name, value, Boolean(ev && ev.exhaustive));
       else ctx.candidates.delete(name);
     }
     assignEnv.set(name, value);
   }
+  programEnvCheck(assignEnv, ctx, run, cmd.words.length > 0);
   if (cmd.words.length === 0) {
     for (const [k, v] of assignEnv) {
       ctx.vars.set(k, v);
@@ -1339,44 +1418,42 @@ function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void
     }
   }
 
-  // `… | tee >(bash)`, `echo … > >(bash)`: a process substitution that is a shell or interpreter
-  // reading its stdin is fed what this command writes (audit N1).
+  // `… | tee >(bash)`, `echo … > >(bash)`: a process substitution reads what this command writes
+  // (audit N1). Its text runs once more with that text as its stdin, through the ordinary handlers
+  // (wrappers with flags, functions, interpreters, `ssh host bash` …).
   {
     const sinkWords: Word[] = [
       ...cmd.words.filter((w) => w.substitution),
       ...cmd.redirects.filter((r) => r.target && r.target.substitution && OUTPUT_REDIRECTS.has(r.op)).map((r) => r.target as Word),
     ];
-    for (const sw of sinkWords) {
-      const texts = (info.wordSubs && info.wordSubs.get(sw)) || info.subs;
-      for (const s of texts) {
-        const ps = safeParse(s, { depth: ctx.depth + 1 });
-        if (!ps.ok) continue;
-        const reader = ps.commands.find((c) => stdinReaderCommand(c));
-        if (!reader) continue;
-        const asShell = SHELLS.has((reader.words[0]?.text || '').split('/').pop() || '');
-        const sx: Exec = { cmd, info, env: assignEnv };
-        const feed = stdinSource(sx, ctx, run);
-        // What the command itself prints.
-        const resolved = cmd.words.map((w) => resolveWord(w, ctx, run));
-        const p0 = resolved[0] ? progName(resolved[0], run) : null;
-        if (p0 === 'echo' || p0 === 'printf') {
-          const ops = resolved.slice(1).filter((a) => !(p0 === 'echo' && /^-[neE]+$/.test(a.text || '')));
-          if (ops.every((a) => a.text !== null)) feed.texts.push(p0 === 'printf' ? printfOutput((ops[0].text as string) || '', ops.slice(1).map((a) => a.text as string)) : ops.map((a) => a.text).join(' '));
-          else feed.unknown = true;
-        } else if (p0 === 'cat') {
-          for (const a of resolved.slice(1).filter((a) => !(a.text !== null && a.text.startsWith('-') && a.text.length > 1))) {
-            if (a.text === null) feed.unknown = true; else feed.files.push(a);
-          }
-        } else if (p0 !== 'tee' && info.upstream.length === 0 && cmd.heredoc === null && !cmd.redirects.some((r) => r.op === '<<<')) feed.unknown = feed.unknown || false;
-        if (feed.decoded || info.upstream.some((c) => decoderCommand(c, run, info))) hit(run, 'Sx', 'decoded_process_substitution_exec');
-        for (const tx of feed.texts) { if (asShell) evalShell(tx, childCtx(ctx), run); else { scanInterpreterCode(tx, run); evalShell(tx, childCtx(ctx), run); } }
-        for (const f of feed.files) {
-          if (asShell) scriptFile(f, [], ctx, run, null);
-          else for (const p of absCandidates(f.text as string, ctx, run) || []) { const c = readCached(run, p, LIMITS.maxScriptBytes); if (c !== null) scanInterpreterCode(c, run); }
+    if (sinkWords.length > 64) { worseParse(run, 'too_large'); exhaust(run, 'budget_words'); return; }
+    if (sinkWords.length) {
+      const sx: Exec = { cmd, info, env: assignEnv };
+      const feed = stdinSource(sx, ctx, run);
+      // What the command itself prints.
+      const resolved = cmd.words.map((w) => resolveWord(w, ctx, run));
+      const p0 = resolved[0] ? progName(resolved[0], run) : null;
+      if (p0 === 'echo' || p0 === 'printf') {
+        const ops = resolved.slice(1).filter((a) => !(p0 === 'echo' && /^-[neE]+$/.test(a.text || '')) && !a.word?.substitution);
+        if (ops.every((a) => a.text !== null)) feed.texts.push(p0 === 'printf' ? printfOutput((ops[0] && ops[0].text) || '', ops.slice(1).map((a) => a.text as string)) : ops.map((a) => a.text).join(' '));
+        else feed.unknown = true;
+      } else if (p0 === 'cat') {
+        for (const a of resolved.slice(1).filter((a) => !(a.text !== null && a.text.startsWith('-') && a.text.length > 1) && !a.word?.substitution)) {
+          if (a.text === null) feed.unknown = true; else feed.files.push(absFile(a, ctx, run));
         }
-        if (feed.unknown || (feed.texts.length === 0 && feed.files.length === 0 && info.upstream.length > 0 && !feed.fetched)) {
-          worseParse(run, 'dynamic');
-          hit(run, 'Sx', 'stdin_exec_unknown_source');
+      } else if (p0 !== null && p0 !== 'tee' && info.upstream.length === 0 && cmd.heredoc === null && !cmd.redirects.some((r) => r.op === '<<<' || r.op === '<')) {
+        // Output of some other command: unknown text.
+        feed.unknown = true;
+      }
+      if (info.upstream.some((c) => decoderCommand(c, run, info))) feed.decoded = true;
+      const seen = new Set<string>();
+      for (const sw of sinkWords) {
+        if (clock(run)) return;
+        const texts = (info.wordSubs && info.wordSubs.get(sw)) || info.subs;
+        for (const s of texts) {
+          if (seen.has(s)) continue;
+          seen.add(s);
+          evalShell(s, childCtx(ctx, { stdinFeed: feed }), run);
         }
       }
     }
@@ -1424,7 +1501,7 @@ function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void
     const args = variants[0] || [];
     const rest = args.slice(1).map((a) => (a.text !== null ? shellQuote(a.text) : '"$__marrow_dynamic"')).join(' ');
     const aliasCtx = withFeed(ctx, { cmd, info, env: assignEnv }, run);
-    evalShell(`${ctx.aliases.get(first.text)} ${rest}`, childCtx(ctx, { stdinFeed: aliasCtx.stdinFeed }), run);
+    evalShell(`${ctx.aliases.get(first.text)} ${rest}`, sameShellCtx(ctx, { stdinFeed: aliasCtx.stdinFeed }), run);
     return;
   }
   for (const args of variants) dispatch(args, ctx, run, { cmd, info, env: assignEnv });
@@ -1593,6 +1670,12 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   const rest = args.slice(1);
   const pathLike = args[0].text !== null && args[0].text.includes('/');
 
+  // Task runners and builders run project code the mapper does not read (audit T1/T3).
+  if (HEAD_RUNNERS.has(prog) || HEAD_CHANGERS.has(prog)) run.headMayChange = true;
+  // A write to a file that names the checked-out branch (`.git/HEAD`, refs): the branch changed.
+  if (!['cat', 'ls', 'head', 'tail', 'less', 'more', 'grep', 'stat', 'wc', 'file', 'test', '[', 'git', 'rm', 'realpath', 'readlink', 'basename', 'dirname'].includes(prog)
+    && args.some((a) => a.text !== null && /\.git\/(?:HEAD|refs\/|packed-refs)|\.git\/worktrees\//.test(a.text))) run.headMayChange = true;
+
   // Generic operand checks apply to every program (S4 reads, S0 writes by write-programs).
   genericOperandChecks(prog, args, ctx, run, x.info.subs);
 
@@ -1621,10 +1704,11 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
     case 'gh': return handleGh(rest, ctx, run);
     case 'npm': case 'pnpm': case 'yarn': case 'bun':
       // `bun -e '…'` is bun's interpreter, not a package command (audit N5).
-      if (prog === 'bun' && rest.some((a) => a.text !== null && /^(?:-e|--eval|-p|--print)$/.test(a.text))) return handleInterpreter(prog, rest, ctx, run, x);
+      if (prog === 'bun' && rest.some((a) => a.text !== null && (/^(?:-e|--eval|-p|--print)$/.test(a.text) || a.text === '-' || STDIN_PATHS.has(a.text)))) return handleInterpreter(prog, rest, ctx, run, x);
       return handlePackageManager(prog, rest, ctx, run, x);
     case 'npx': case 'bunx': return handleNpx(rest, ctx, run, x);
     case 'corepack': case 'busybox': case 'toybox': return dispatch(rest, ctx, run, x);
+    case 'cpio': case 'pax': archiveNamesFromStdin(ctx, run, x); return;
     case 'trap': return trapBuiltin(rest, ctx, run, x);
     case 'script': return scriptSession(rest, ctx, run, x);
     case 'awk': case 'gawk': case 'mawk': return awkProgram(rest, ctx, run, x);
@@ -1668,7 +1752,7 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   if (handlePublishTool(prog, rest, ctx, run)) return scanHandled();
   if (handleSecretDumper(prog, rest, run)) return scanHandled();
   if (pathLike) return scriptFile(args[0], rest, ctx, run, x);
-  if (HEAD_CHANGERS.has(prog)) run.headMayChange = true;
+  if (HEAD_CHANGERS.has(prog) || HEAD_RUNNERS.has(prog)) run.headMayChange = true;
   // A function or alias defined in this text: its stdin goes to whatever it runs.
   if (x.info.fnNames && x.info.fnNames.has(prog)) stdinExec('sh', [], x, ctx, run);
   unknownProgram(prog, args, ctx, run, x);
@@ -1725,7 +1809,7 @@ function isCommandWord(a: Arg, run: Run): boolean {
 const STDIN_PATHS = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '/proc/self/fd/0/']);
 
 // Programs that read their commands from stdin.
-const STDIN_EXEC_PROGRAMS = new Set(['at', 'batch', 'atq-run', 'crontab']);
+const STDIN_EXEC_PROGRAMS = new Set(['at', 'batch', 'atq-run', 'crontab', 'ed', 'ex', 'vi', 'vim', 'nvim', 'view']);
 const NESTED_NOT_PROGRAMS = new Set(['set', 'export', 'declare', 'typeset', 'readonly', 'local', 'unset', 'alias', 'cd', 'pushd', 'popd',
   'eval', 'source', '.', 'trap', 'type', 'command', 'builtin', 'exec', 'print']);
 
@@ -1932,6 +2016,11 @@ function unknownProgram(prog: string, args: Arg[], ctx: Ctx, run: Run, x: Exec):
       }
       continue;
     }
+    // `ed`, `ex`, `vi -s`: a line `!cmd` or `:!cmd` runs cmd.
+    if (['ed', 'ex', 'vi', 'vim', 'nvim', 'view'].includes(prog)) {
+      for (const line of t.split('\n')) { const cmdText = line.replace(/^\s*:?\s*!/, ''); if (cmdText !== line && cmdText.trim()) evalShell(cmdText, childCtx(ctx), run); }
+      continue;
+    }
     evalShell(t, childCtx(ctx), run);
   }
   if (STDIN_EXEC_PROGRAMS.has(prog)) for (const f of src.files) scriptFile(f, [], ctx, run, null);
@@ -1976,20 +2065,6 @@ function tripwire(text: string, run: Run): void {
   }
   if (recursiveDeleteInText(norm)) { hit(run, 'S5', 'tripwire_recursive_delete'); any = true; }
   if (!any && run.parse !== 'ok') run.flags.add('tripwire_clear');
-}
-
-// A command that is a shell or interpreter reading its program from stdin: no `-c`/`-e` code and no
-// script file operand (or `-s`, `-`).
-function stdinReaderCommand(c: ShellCommand): boolean {
-  const words = c.words.map((w) => w.text);
-  let i = 0;
-  while (i < words.length && ['sudo', 'env', 'exec', 'command', 'nohup', 'nice', 'time', 'stdbuf'].includes(words[i])) i += 1;
-  const prog = (words[i] || '').split('/').pop() || '';
-  if (!(SHELLS.has(prog) || prog === 'sh' || INTERPRETERS.has(prog) || /^python3\.\d+$/.test(prog))) return false;
-  const rest = words.slice(i + 1);
-  if (rest.some((w) => w === '-s' || w === '-' || STDIN_PATHS.has(w))) return true;
-  if (rest.some((w) => /^-[a-zA-Z]*[ce]$/.test(w) || w === '--eval' || w === '--command')) return false;
-  return !rest.some((w) => !w.startsWith('-'));
 }
 
 function decoderCommand(cmd: ShellCommand, _run: Run, info: CmdInfo): boolean {
@@ -2604,7 +2679,7 @@ function operandPaths(a: Arg): string[] {
   // Only the head of a long argument can be a path (`--opt=<path>`, `@<path>`, `REV:<path>`).
   const t = (a.text !== null ? a.text : a.pattern).slice(0, LIMITS.maxPathChars);
   const out = [t];
-  const eq = t.match(/^--?[A-Za-z0-9-]+=(.+)$/);
+  const eq = t.match(/^--?[A-Za-z0-9-]+=(.+)$/) || t.match(/^[A-Za-z_][A-Za-z0-9_]*=(.+)$/);
   if (eq) out.push(eq[1]);
   const at = t.match(/(?:^|=)@(.+)$/);
   if (at) out.push(at[1]);
@@ -2872,6 +2947,15 @@ function genericOperandChecks(prog: string, args: Arg[], ctx: Ctx, run: Run, sub
   }
   recordLinks(prog, rest, ctx, run);
   carryLinks(prog, rest, ctx, run);
+  // `cp a.sh b.sh`, `mv a.sh b.sh`: b.sh later runs as a.sh.
+  if ((prog === 'cp' || prog === 'mv' || prog === 'install') && !rest.some((a) => a.text === '-t' || a.text === '--target-directory')) {
+    const ops = nonOptions(rest);
+    if (ops.length === 2 && ops[0].text !== null && ops[1].text !== null && !ops[0].glob) {
+      const srcs = absCandidates(ops[0].text, ctx, run) || [];
+      const dsts = absCandidates(ops[1].text, ctx, run) || [];
+      if (srcs.length === 1) for (const d of dsts) { ctx.writtenFrom.set(d, srcs[0]); ctx.writtenFrom.set(path.posix.join(d, path.posix.basename(srcs[0])), srcs[0]); }
+    }
+  }
 }
 
 const COPY_PROGRAMS = new Set(['cp', 'scp', 'rsync', 'tar', 'zip', '7z', '7za', 'rclone', 'gtar', 'bsdtar', 'ditto']);
@@ -2969,7 +3053,15 @@ function changeDir(rest: Arg[], ctx: Ctx, run: Run, subshell: boolean): void {
   }
   // A cd that may fail (missing dir) or runs in a subshell leaves the old cwd possible too.
   const certain = !subshell && next.every((n) => n !== null && safeRealpath(run.env, n) !== null);
-  ctx.cwds = certain ? [...new Set(next)] : [...new Set([...ctx.cwds, ...next])];
+  // `cd link`: the shell keeps the logical name, the process works in the target. Relative operands
+  // are read under both (audit N3).
+  const physical: Array<string | null> = [];
+  for (const n of next) {
+    if (n === null) continue;
+    const r = safeRealpath(run.env, n);
+    if (r !== null && r !== n) physical.push(r);
+  }
+  ctx.cwds = certain ? [...new Set([...next, ...physical])] : [...new Set([...ctx.cwds, ...next, ...physical])];
 }
 
 function defineAliases(rest: Arg[], ctx: Ctx, run: Run): void {
@@ -3016,7 +3108,8 @@ function declareLike(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): vo
     const name = eq >= 0 ? n.text.slice(0, eq) : n.text;
     // A declaration that may not have run keeps the variable's earlier values too (audit N2).
     const evs = declEvents.filter((e) => e.name === name.replace(/\+$/, ''));
-    const conditional = Boolean(dg) && (dg?.unknown || evs.length === 0 || x.info.round2 || evs.some((e) => !e.uncond));
+    // No guard for this command (`command export w=x`, `builtin declare`): not known to have run.
+    const conditional = !dg || dg.unknown || ctx.condAssign === true || evs.length === 0 || x.info.round2 === true || evs.some((e) => !e.uncond);
     const exhaustive = evs.length > 0 && evs.every((e) => e.exhaustive);
     if (eq >= 0) {
       const next = [n.text.slice(eq + 1)];
@@ -3083,13 +3176,13 @@ function evalBuiltin(rest: Arg[], ctx: Ctx, run: Run, subs: string[]): void {
     // `eval "$(ssh-agent -s)"`: every substitution is a known producer, fetched or literal text.
     if (classified && rest.every((a) => isPureSubstitution(a) || a.text !== null)) {
       const literal = rest.filter((a) => a.text !== null);
-      if (literal.length) evalShell(literal.map((a) => a.text).join(' '), childCtx(ctx, { stdinFeed: ctx.stdinFeed }), run);
+      if (literal.length) evalShell(literal.map((a) => a.text).join(' '), sameShellCtx(ctx, { stdinFeed: ctx.stdinFeed }), run);
       return;
     }
   }
-  if (rest.every((a) => a.text !== null)) { evalShell(rest.map((a) => a.text).join(' '), childCtx(ctx, { stdinFeed: ctx.stdinFeed }), run); return; }
+  if (rest.every((a) => a.text !== null)) { evalShell(rest.map((a) => a.text).join(' '), sameShellCtx(ctx, { stdinFeed: ctx.stdinFeed }), run); return; }
   if (rest.every((a) => a.alts !== null)) {
-    for (const a of rest) for (const v of a.alts || []) evalShell(v, childCtx(ctx, { stdinFeed: ctx.stdinFeed }), run);
+    for (const a of rest) for (const v of a.alts || []) evalShell(v, sameShellCtx(ctx, { stdinFeed: ctx.stdinFeed }), run);
     return;
   }
   worseParse(run, 'dynamic');
@@ -3199,15 +3292,16 @@ function withFeed(ctx: Ctx, x: Exec, run: Run): Ctx {
   return hasOwn ? { ...out, stdinFeed: stdinSource(x, ctx, run) } : out;
 }
 
-function shellString(a: Arg, ctx: Ctx, run: Run, subs: string[]): void {
+function shellString(a: Arg, ctx: Ctx, run: Run, subs: string[], sameShell = false): void {
   // The nested text keeps the feed (a stdin-fed `sh -c bash`); text taken from the feed itself does not.
   const keep = { stdinFeed: ctx.stdinFeed };
-  if (a.text !== null) { evalShell(a.text, childCtx(ctx, keep), run); return; }
+  const mk = (c: Ctx) => (sameShell ? sameShellCtx(c, keep) : childCtx(c, keep));
+  if (a.text !== null) { evalShell(a.text, mk(ctx), run); return; }
   if (a.word && a.word.substitution) {
     const classified = checkSubstitutionExec(subs, ctx, run);
     if (classified && isPureSubstitution(a)) return;
   }
-  if (a.alts) { for (const v of a.alts) evalShell(v, childCtx(ctx, keep), run); return; }
+  if (a.alts) { for (const v of a.alts) evalShell(v, mk(ctx), run); return; }
   dynamicCode(a, ctx, run, 'dynamic_shell_code');
 }
 
@@ -3268,6 +3362,15 @@ function persistRedirects(ctx: Ctx, run: Run, x: Exec): void {
       else { const a = resolveWord(r.target, ctx, run); if (a.text === null) feed.unknown = true; else feed.files.push(a); }
     }
   }
+  // `exec 0<&3`: descriptor 0 becomes a copy of descriptor 3.
+  for (const r of x.cmd.redirects) {
+    if (r.op !== '<&' || !r.target) continue;
+    const a = resolveWord(r.target, ctx, run);
+    const src = a.text !== null ? ctx.fds.get(a.text) : undefined;
+    const dst = r.fd === null || r.fd === undefined ? '0' : r.fd;
+    if (src) { if (dst === '0') ctx.stdinFeed = mergeFeeds(ctx.stdinFeed || null, src); else ctx.fds.set(dst, src); }
+    else if (a.text === null || !/^(?:-|0)$/.test(a.text)) { if (dst === '0') ctx.stdinFeed = mergeFeeds(ctx.stdinFeed || null, { texts: [], files: [], unknown: true, subs: false, decoded: false, fetched: false, lostPipe: false }); }
+  }
   const inputs = x.cmd.redirects.filter((r) => ['<', '<<<', '<<', '<<-', '<>'].includes(r.op));
   if (inputs.length === 0 && x.cmd.heredoc === null) return;
   for (const r of inputs.length ? inputs : [{ fd: null as string | null }]) {
@@ -3285,7 +3388,28 @@ function mergeFeeds(a: StdinSource | null, b: StdinSource): StdinSource {
   };
 }
 
+// File names on stdin (`tar -T -`, `cpio -o`): each is read (audit S4).
+function archiveNamesFromStdin(ctx: Ctx, run: Run, x: Exec): void {
+  const src = stdinSource(x, ctx, run);
+  for (const text of src.texts) for (const line of text.split('\n')) { const n = line.trim(); if (n) { checkSecretOperand(litArg(n), ctx, run, 'archive_name'); if (isSecretDirOrAncestor(n, ctx, run)) hit(run, 'S4', 'archive_secret_dir'); } }
+  for (const f of src.files) if (f.text !== null) for (const pth of absCandidates(f.text, ctx, run) || []) {
+    const c = readCached(run, pth, LIMITS.maxScriptBytes);
+    if (c !== null) for (const line of c.split('\n')) { const n = line.trim(); if (n) checkSecretOperand(litArg(n), ctx, run, 'archive_name'); }
+  }
+}
+
 function xargsWrapper(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  // `find ~/.ssh -type f | xargs cat`: the names it lists are read by the command (audit S4).
+  {
+    const up = x.info.upstream;
+    const last = up.length ? up[up.length - 1] : null;
+    if (last && (last.words[0]?.text || '').split('/').pop() === 'find') {
+      const starts = last.words.slice(1).filter((w, k, all) => !w.text.startsWith('-') && all.slice(0, k).every((q) => !q.text.startsWith('-')));
+      const cmdWord = rest.find((a) => a.text !== null && !a.text.startsWith('-'));
+      const exempt = cmdWord && cmdWord.text !== null && S4_EXEMPT_PROGRAMS.has((cmdWord.text.split('/').pop() || ''));
+      if (!exempt && starts.some((w) => isSecretDirOrAncestor(w.text, ctx, run))) hit(run, 'S4', 'find_xargs_secret_dir');
+    }
+  }
   // Options with a separate value. GNU -i, -l and -e take an attached optional value only.
   const vf = new Set(['-d', '--delimiter', '-E', '--eof', '-I', '-L', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars', '-a',
     '--arg-file', '--max-lines', '-j', '--jobs', '--replace-str', '--sshlogin', '-S', '--results', '--joblog', '--tagstring', '-N']);
@@ -3339,6 +3463,15 @@ function xargsWrapper(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): v
     }
     return a;
   });
+  // `echo ~/.aws/credentials | xargs -I{} cat {}`: the upstream lines replace the placeholder (audit S4).
+  if (replaced && replacement) {
+    const src0 = stdinSource(x, ctx, run);
+    if (src0.texts.length === 1 && !src0.unknown && src0.files.length === 0) {
+      for (const line of src0.texts[0].split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 16)) {
+        dispatch(inner.map((a) => (a.text !== null && a.text.includes(replacement) ? litArg(a.text.split(replacement).join(line)) : a)), ctx, run, x);
+      }
+    }
+  }
   // The input is an unknown operand (spec A6: S1 and S5 targets become unknown and stop). When the
   // upstream stage's output is a literal (`echo ~/.ssh/id_rsa | xargs cat`) that text is read as well,
   // as a second reading: it can only add a stop.
@@ -3407,6 +3540,13 @@ function sshRemote(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
 }
 
 function handleShell(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  // `env BASH_ENV=f bash -c :`: a startup file named by a wrapper's assignment (audit N1).
+  for (const name of ['BASH_ENV', 'ENV']) {
+    const v = x.env.get(name);
+    if (v === undefined) continue;
+    if (v === null || v.length !== 1) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_startup_file'); continue; }
+    if (v[0]) scriptFile(litArg(v[0]), [], ctx, run, null);
+  }
   for (let i = 0; i < rest.length; i += 1) {
     const t = rest[i].text;
     if (t === null) {
@@ -3492,21 +3632,46 @@ function handleInterpreter(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exe
       }
       return;
     }
-    if (prog === 'deno' && (t === 'run' || t === 'repl')) continue;
+    if ((prog === 'deno' || prog === 'bun') && (t === 'run' || t === 'repl')) continue;
     if (isPython && t === '-m') {
       const mod = rest[i + 1]?.text || '';
       if (mod === 'twine' && rest.slice(i + 2).some((b) => b.text === 'upload')) { hit(run, 'S3', 'twine_upload'); }
+      // `python -m poetry publish`, `-m flit publish`, `-m hatch publish`, `-m uv publish` …
+      else if (['poetry', 'flit', 'hatch', 'uv', 'pdm', 'maturin', 'build', 'setuptools'].includes(mod)) dispatch([litArg(mod), ...rest.slice(i + 2)], ctx, run, x);
+      // REPL-like modules read their program from stdin.
+      else if (['code', 'pdb', 'IPython', 'idlelib', 'cmd', 'ptpython', 'bpython'].includes(mod)) stdinInterpreter(prog, x, ctx, run);
       return;
     }
+    if (prog === 'deno' && t === 'publish') { hit(run, 'S3', 'deno_publish'); return; }
     if (t === '-' || STDIN_PATHS.has(t)) return stdinInterpreter(prog, x, ctx, run);
     if (t.startsWith('-')) {
       if (isPython && ['-W', '-X', '-Q'].includes(t)) i += 1;
       if (!isPython && ['-r', '--require', '--import', '--loader', '-I', '-M', '--experimental-loader', '--env-file', '--conditions', '-C'].includes(t)) {
         if (t === '--env-file') checkSecretOperand(rest[i + 1] || dynArg(), ctx, run, 'operand');
+        // A preloaded module runs before the program: read it like a script (audit N5).
+        if (['-r', '--require', '--import', '--loader', '--experimental-loader'].includes(t) && rest[i + 1] && rest[i + 1].text !== null) {
+          for (const pth of absCandidates(rest[i + 1].text as string, ctx, run) || []) {
+            const content = readCached(run, pth, LIMITS.maxScriptBytes);
+            if (content !== null) { scanInterpreterCode(content, run); if (/\bgit\b|checkout|child_process|spawn|\bexec|system/.test(content)) run.headMayChange = true; }
+            else run.headMayChange = true;
+          }
+        }
         i += 1;
       }
+      // `node --require=./f`: the attached forms.
+      const att = /^--(?:require|import|loader|experimental-loader)=([\s\S]+)$/.exec(t);
+      if (att) {
+        for (const pth of absCandidates(att[1], ctx, run) || []) {
+          const content = readCached(run, pth, LIMITS.maxScriptBytes);
+          if (content !== null) { scanInterpreterCode(content, run); if (/\bgit\b|checkout|child_process|spawn|\bexec|system/.test(content)) run.headMayChange = true; } else run.headMayChange = true;
+        }
+      }
+      // `node --run NAME` runs a package.json script.
+      if (prog === 'node' && t === '--run' && rest[i + 1] && rest[i + 1].text !== null) return runPackageScript(rest[i + 1].text as string, [], ctx, run, x, false);
       continue;
     }
+    // `python setup.py upload` / `register`: the package index (S3).
+    if (/(?:^|\/)setup\.py$/.test(t) && rest.slice(i + 1).some((b) => b.text === null || /^(?:upload|register)$/.test(b.text))) { hit(run, 'S3', 'setup_py_upload'); return; }
     // A script file: interpreted programs are a documented residual (spec A12). For the trims it is
     // read for `git` and process calls; an unreadable or git-touching script may change the branch.
     {
@@ -3547,7 +3712,10 @@ function trapBuiltin(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   const ops = rest.filter((a) => !(a.text !== null && /^-[lp]+$/.test(a.text)));
   if (ops.length < 2) return;
   if (ops[0].text === '' || ops[0].text === '-') return;
-  shellString(ops[0], withFeed(ctx, x, run), run, x.info.subs);
+  // `trap -- 'cmd' EXIT`: `--` ends the options. The string runs later, in this shell.
+  const operands = ops[0].text === '--' ? ops.slice(1) : ops;
+  if (operands.length < 2 || operands[0].text === '' || operands[0].text === '-') return;
+  shellString(operands[0], withFeed(ctx, x, run), run, x.info.subs, true);
 }
 
 // awk programs run commands through system() and pipes.
@@ -3559,6 +3727,14 @@ function awkProgram(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
     const t = rest[i].text;
     if (t === '-f' || t === '--file') {
       const f = rest[i + 1];
+      // `awk -f -`: the program arrives on stdin.
+      if (f && f.text !== null && (f.text === '-' || STDIN_PATHS.has(f.text))) {
+        const src = stdinSource(x, ctx, run);
+        for (const text of src.texts) if (AWK_EXEC.test(text)) scanInterpreterCode(text, run);
+        if (src.unknown || (src.texts.length === 0 && src.files.length === 0)) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_stdin_code'); }
+        i += 1;
+        continue;
+      }
       if (f && f.text !== null) {
         for (const abs of absCandidates(f.text, ctx, run) || []) {
           const content = safeRead(run.env, abs, LIMITS.maxScriptBytes);
@@ -3627,6 +3803,28 @@ function tarProgram(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
       }
     }
     if (extracting && run.archivedLinks) { run.linksUnknown = true; run.links.set('/__unknown_link_dest__', null); }
+    // Operands are relative to -C / --directory; names may come from a list on stdin (`-T -`).
+    if (creating) {
+      let dir: string | null = null;
+      const names: Arg[] = [];
+      for (let i = first ? 1 : 0; i < rest.length; i += 1) {
+        const tx = rest[i].text;
+        if (tx === null) { names.push(rest[i]); continue; }
+        const d1 = /^--directory=([\s\S]+)$/.exec(tx) || /^-C(.+)$/.exec(tx);
+        if (d1) { dir = d1[1]; continue; }
+        if (tx === '-C' || tx === '--directory') { dir = rest[i + 1]?.text ?? null; i += 1; continue; }
+        if (tx === '-T' || tx === '--files-from' || tx === '--file' || tx === '-f' || tx === '-X') { i += 1; continue; }
+        if (tx.startsWith('-')) continue;
+        names.push(rest[i]);
+      }
+      for (const nm of names) {
+        if (nm.text === null) continue;
+        const joined = dir !== null && !path.posix.isAbsolute(nm.text) ? path.posix.join(dir, nm.text) : nm.text;
+        checkSecretOperand(litArg(joined), ctx, run, 'tar_operand');
+        if (isSecretDirOrAncestor(joined, ctx, run)) hit(run, 'S4', 'tar_secret_dir');
+      }
+      if (rest.some((a) => a.text === '-T' || a.text === '--files-from=-' || a.text === '--files-from')) archiveNamesFromStdin(ctx, run, x);
+    }
   }
   const named = new Set(['--to-command', '--checkpoint-action', '--use-compress-program', '--rsh-command', '--info-script', '--new-volume-script', '-I', '-F']);
   for (let i = 0; i < rest.length; i += 1) {
@@ -3689,7 +3887,7 @@ function scriptNamesMatching(pattern: string, ctx: Ctx, run: Run): string[] {
 // ---------------------------------------------------------------------------------------------
 // script files, package scripts, make
 
-function scriptFile(target: Arg, extra: Arg[], ctx: Ctx, run: Run, x: Exec | null, inline = false): void {
+function scriptFile(target: Arg, extra: Arg[], ctx: Ctx, run: Run, x: Exec | null, inline = false, viaCopy = false): void {
   void extra;
   // A brace word has several readings; each is a script.
   if (target.text === null && target.alts && target.alts.length > 0 && target.alts.length <= LIMITS.maxVariants) {
@@ -3725,10 +3923,19 @@ function scriptFile(target: Arg, extra: Arg[], ctx: Ctx, run: Run, x: Exec | nul
     hit(run, 'Sx', 'dynamic_stdin_code');
     return;
   }
-  const abs = absCandidates(target.text, ctx, run);
+  let abs = absCandidates(target.text, ctx, run);
   const name = path.posix.basename(target.text);
+  // A name made by `ln -s` or `mv` in this command runs as what it stands for.
+  if (abs && run.links.size > 0) abs = abs.map((p) => { const r = applyLinks(p, run); return r === '/__unknown_link__' ? p : r; });
   if (!abs || abs.some((p) => p.startsWith('/__unknown_cwd__'))) { nameTripwire(name, run, 'script_unreadable'); return; }
-  if (abs.some((p) => ctx.written.has(p))) { worseParse(run, 'dynamic'); tripwire(run.topSource, run); return; }
+  if (!viaCopy && abs.some((p) => ctx.written.has(p))) {
+    // A file this command copied or moved from a readable one runs as that file does.
+    const from = abs.map((p) => ctx.writtenFrom.get(p)).filter((p): p is string => typeof p === 'string');
+    if (from.length === abs.length && from.length > 0) { for (const f of from) scriptFile(litArg(f), extra, ctx, run, x, inline, true); return; }
+    worseParse(run, 'dynamic');
+    tripwire(run.topSource, run);
+    return;
+  }
   if (ctx.depth >= LIMITS.maxDepth) { worseParse(run, 'too_large'); hit(run, 'Sx', 'budget_depth'); nameTripwire(name, run, 'script_depth'); return; }
   for (const p of abs) {
     if (alreadySeen(run, ctx, 'script', p, x ? x.env : new Map())) continue;
@@ -3743,7 +3950,7 @@ function scriptFile(target: Arg, extra: Arg[], ctx: Ctx, run: Run, x: Exec | nul
       continue;
     }
     // `source f` / `. f` runs in the current shell: its assignments and `cd` are the caller's.
-    const sctx = inline ? childCtx(ctx) : scriptCtx(ctx, ctx.cwds, x ? x.env : new Map());
+    const sctx = inline ? sameShellCtx(ctx) : scriptCtx(ctx, ctx.cwds, x ? x.env : new Map());
     evalShell(content, sctx, run);
     if (inline) { ctx.cwds = [...new Set([...ctx.cwds, ...sctx.cwds])]; ctx.ifs = sctx.ifs; }
   }
@@ -3817,16 +4024,41 @@ function lifecycleScripts(names: string[], ctx: Ctx, run: Run, x: Exec): void {
   }
 }
 
-function handleMake(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+function handleMake(rest0: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  // MAKEFLAGS in the environment carries options of its own (`-C dir`, `-f file`).
+  const mf = x.env.has('MAKEFLAGS') ? x.env.get('MAKEFLAGS') : ctx.exported.has('MAKEFLAGS') ? ctx.vars.get('MAKEFLAGS') : undefined;
+  const rest = mf && mf.length === 1 ? [...mf[0].split(/\s+/).filter(Boolean).map((w) => litArg(w)), ...rest0] : rest0;
+  if (mf === null) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_make_flags'); }
   let dirs = ctx.cwds;
-  let file: string | null = null;
+  const files: string[] = [];
+  const extraTexts: string[] = [];
+  let stdinMakefile = false;
+  let dynamicFile = false;
   const targets: Arg[] = [];
   const vars = new Map<string, string | null>();
+  const isStdin = (n: string) => n === '-' || STDIN_PATHS.has(n);
   for (let i = 0; i < rest.length; i += 1) {
     const t = rest[i].text;
-    if (t === null) { targets.push(rest[i]); continue; }
+    if (t === null) {
+      // `-f <(…)` and `-f $F`
+      if (rest[i].word && rest[i].word!.substitution && i > 0 && /^(?:-f|--file|--makefile)$/.test(rest[i - 1].text || '')) {
+        for (const s of x.info.subs) extraTexts.push(s);
+        checkSubstitutionExec(x.info.subs, ctx, run);
+      } else if (i > 0 && /^(?:-f|--file|--makefile)$/.test(rest[i - 1].text || '')) dynamicFile = true;
+      targets.push(rest[i]);
+      continue;
+    }
+    const dirEq = /^--directory=([\s\S]+)$/.exec(t) || /^-C(.+)$/.exec(t);
+    if (dirEq) { const d = dirEq[1]; dirs = dirs.map((c) => (c ? path.posix.resolve(c, d) : null)); continue; }
+    const fileEq = /^--(?:file|makefile)=([\s\S]+)$/.exec(t) || /^-f(.+)$/.exec(t);
+    if (fileEq) { if (isStdin(fileEq[1])) stdinMakefile = true; else files.push(fileEq[1]); continue; }
     if (t === '-C' || t === '--directory') { const d = rest[i + 1]?.text; dirs = d ? dirs.map((c) => (c ? path.posix.resolve(c, d) : null)) : [null]; i += 1; continue; }
-    if (t === '-f' || t === '--file' || t === '--makefile') { file = rest[i + 1]?.text ?? null; i += 1; continue; }
+    if (t === '-f' || t === '--file' || t === '--makefile') {
+      const v = rest[i + 1]?.text;
+      if (v === null || v === undefined) { if (rest[i + 1] && !(rest[i + 1].word && rest[i + 1].word!.substitution)) dynamicFile = true; } else if (isStdin(v)) stdinMakefile = true; else files.push(v);
+      i += 1;
+      continue;
+    }
     if (t === '-j' || t === '-l' || t === '-o' || t === '-W' || t === '-I') { i += 1; continue; }
     if (t.startsWith('-')) continue;
     const eq = t.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
@@ -3834,19 +4066,71 @@ function handleMake(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
     targets.push(rest[i]);
   }
   if (ctx.depth >= LIMITS.maxDepth) { worseParse(run, 'too_large'); hit(run, 'Sx', 'budget_depth'); for (const tg of targets) nameTripwire(argText(tg), run, 'make_depth'); return; }
+  // A makefile that arrives on stdin: its recipes are shell lines (every rule is read: the target is
+  // not known to be the one that runs).
+  if (stdinMakefile) {
+    const src = stdinSource(x, ctx, run);
+    for (const text of src.texts) extraTexts.push(text);
+    for (const f of src.files) if (f.text !== null) for (const p of absCandidates(f.text, ctx, run) || []) { const c = readCached(run, p, LIMITS.maxScriptBytes); if (c !== null) extraTexts.push(c); }
+    if (src.unknown || (src.texts.length === 0 && src.files.length === 0)) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'make_stdin_unknown'); }
+  }
+  if (dynamicFile) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_makefile'); }
+  const userMakefiles = x.env.has('MAKEFILES') ? x.env.get('MAKEFILES') : ctx.exported.has('MAKEFILES') ? ctx.vars.get('MAKEFILES') : undefined;
+  if (userMakefiles === null) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_makefiles'); }
+  const runText = (text: string, dir: string | null) => {
+    const mk = parseMakefile(text);
+    for (const sh of mk.shells.slice(0, 16)) evalShell(sh, scriptCtx(ctx, [dir], x.env), run);
+    for (const rule of mk.rules.values()) for (const line of rule.recipe) { if (!expandScript(run)) return; evalShell(expandMakeLine(line, mk.vars), scriptCtx(ctx, [dir], x.env), run); }
+  };
+  for (const text of extraTexts.slice(0, 16)) runText(text, dirs[0] ?? null);
   for (const dir of dirs) {
-    let content: string | null = null;
-    const names = file ? [file] : ['GNUmakefile', 'makefile', 'Makefile'];
+    const names = files.length ? files : userMakefiles && userMakefiles.length === 1 ? [...userMakefiles[0].split(/\s+/).filter(Boolean), 'GNUmakefile', 'makefile', 'Makefile'] : ['GNUmakefile', 'makefile', 'Makefile'];
+    const chosen: string[] = [];
+    let contentAll = '';
+    // MAKEFILES (all of them), then the makefile (-f files: all; otherwise the first that exists).
+    if (userMakefiles && userMakefiles.length === 1) {
+      for (const n of userMakefiles[0].split(/\s+/).filter(Boolean)) {
+        const p = path.posix.resolve(dir || '/', n);
+        const c = dir || path.posix.isAbsolute(n) ? readCached(run, p, LIMITS.maxScriptBytes) : null;
+        if (c !== null) { contentAll += `\n${c}`; chosen.push(p); }
+      }
+    }
+    let found = false;
     for (const n of names) {
+      if (userMakefiles && userMakefiles.length === 1 && userMakefiles[0].split(/\s+/).includes(n) && !files.length) continue;
       if (!dir && !path.posix.isAbsolute(n)) break;
       const p = path.posix.resolve(dir || '/', n);
       if (ctx.written.has(p)) { worseParse(run, 'dynamic'); tripwire(run.topSource, run); return; }
-      content = readCached(run, p, LIMITS.maxScriptBytes);
-      if (content !== null) break;
+      const c = readCached(run, p, LIMITS.maxScriptBytes);
+      if (c === null) continue;
+      contentAll += `\n${c}`;
+      chosen.push(p);
+      found = true;
+      if (!files.length) break;
     }
-    if (content === null) { for (const tg of targets) nameTripwire(argText(tg), run, 'make_unreadable'); continue; }
-    const mk = parseMakefile(content);
+    // `include` lines (a bounded number of levels): each file is part of the makefile.
+    let expanded = contentAll;
+    for (let level = 0; level < 3; level += 1) {
+      const incs = [...expanded.matchAll(/^[ \t]*-?(?:s?include)[ \t]+([^\n#]+)/gm)].flatMap((mm) => mm[1].trim().split(/\s+/));
+      let added = '';
+      for (const inc of incs.slice(0, 16)) {
+        if (/[$]/.test(inc)) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_make_include'); continue; }
+        const p = path.posix.resolve(dir || '/', inc);
+        if (chosen.includes(p)) continue;
+        const c = readCached(run, p, LIMITS.maxScriptBytes);
+        if (c !== null) { added += `\n${c}`; chosen.push(p); }
+      }
+      if (!added) break;
+      expanded += added;
+    }
+    if (!found && chosen.length === 0) { for (const tg of targets) nameTripwire(argText(tg), run, 'make_unreadable'); continue; }
+    const mk = parseMakefile(expanded);
     for (const [k, v] of vars) mk.vars.set(k, v);
+    // Every recipe line goes through SHELL.
+    const sh = mk.vars.get('SHELL');
+    if (sh && !SHELLS.has((sh.split(/\s+/)[0] || '').split('/').pop() || '')) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'make_custom_shell'); }
+    // `$(shell …)` runs while the makefile is read.
+    for (const cmdText of mk.shells.slice(0, 16)) evalShell(cmdText, scriptCtx(ctx, [dir], x.env), run);
     const wanted = targets.length ? targets.map((tg) => tg.text) : [mk.first];
     const seen = new Set<string>();
     const visit = (target: string | null, depth: number) => {
@@ -3864,7 +4148,7 @@ function handleMake(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   }
 }
 
-function parseMakefile(content: string): { rules: Map<string, { deps: string[]; recipe: string[] }>; vars: Map<string, string | null>; first: string | null } {
+function parseMakefile(content: string): { rules: Map<string, { deps: string[]; recipe: string[] }>; vars: Map<string, string | null>; first: string | null; shells: string[] } {
   const rules = new Map<string, { deps: string[]; recipe: string[] }>();
   const vars = new Map<string, string | null>();
   let first: string | null = null;
@@ -3892,7 +4176,10 @@ function parseMakefile(content: string): { rules: Map<string, { deps: string[]; 
     }
     current = [];
   }
-  return { rules, vars, first };
+  // `$(shell cmd)` and `$(shell cmd)` in recipes and assignments: commands that run when the file is read.
+  const shells: string[] = [];
+  for (const mm of content.matchAll(/\$\(shell\s+((?:[^()]|\([^()]*\))*)\)/g)) { shells.push(mm[1]); if (shells.length >= 32) break; }
+  return { rules, vars, first, shells };
 }
 
 function expandMakeLine(line: string, vars: Map<string, string | null>): string {
@@ -4563,7 +4850,93 @@ function pmSubCandidates(rest: Arg[]): { idx: number[]; dynamic: boolean } {
   return { idx, dynamic: false };
 }
 
+// `--prefix DIR`, `-C DIR`, `--dir DIR`, `--cwd DIR`, `-w NAME`, `--filter NAME`, `-r`, `--workspaces`,
+// `yarn workspace NAME …`: the script runs from another package (audit N3 family). Returns the
+// directories, [null] when they cannot be told, or null when no such flag is present.
+function packageScope(prog: string, rest: Arg[], ctx: Ctx, run: Run): { dirs: Array<string | null>; skip: number } | null {
+  const dirFlags = new Set(['--prefix', '-C', '--dir', '--cwd']);
+  const selFlags = new Set(['-w', '--workspace', '--filter', '-F']);
+  const dirs: Array<string | null> = [];
+  let selector: string | null | undefined;
+  let all = false;
+  let skip = 0;
+  let any = false;
+  for (let i = 0; i < rest.length; i += 1) {
+    const a = rest[i].text;
+    if (a === null) continue;
+    const eq = /^(--[a-z-]+)=([\s\S]*)$/.exec(a);
+    const flag = eq ? eq[1] : a;
+    const value = eq ? litArg(eq[2]) : rest[i + 1];
+    if (a === 'workspaces' && prog === 'yarn' && i === 0) { any = true; all = true; continue; }
+    if (a === 'workspace' && prog === 'yarn' && i === 0 && rest[1]) { any = true; selector = rest[1].text; skip = 2; i += 1; continue; }
+    if (dirFlags.has(flag) && value) {
+      any = true;
+      if (value.text === null) { dirs.push(null); continue; }
+      for (const c of ctx.cwds) dirs.push(c ? path.posix.resolve(c, value.text) : null);
+      if (!eq) i += 1;
+      continue;
+    }
+    if (selFlags.has(flag) && value) { any = true; selector = value.text; if (!eq) i += 1; continue; }
+    if (['--workspaces', '-ws', '-r', '--recursive', '--include-workspace-root'].includes(a)) { any = true; all = true; }
+  }
+  if (!any) return null;
+  if (selector !== undefined || all) {
+    // Find the workspace packages from the root package.json.
+    const found = ctx.cwds.map((c) => findPackageJson(ctx, run, c));
+    let matched = 0;
+    // A selector that is a directory holding a package.json.
+    if (typeof selector === 'string' && selector !== '') {
+      for (const c of ctx.cwds) {
+        if (!c) continue;
+        const cand = path.posix.resolve(c, selector);
+        if (readCached(run, path.posix.join(cand, 'package.json'), LIMITS.maxPackageJsonBytes) !== null) { dirs.push(cand); matched += 1; }
+      }
+    }
+    for (const f of found) {
+      if (!f.pkg || !f.dir) continue;
+      const ws = f.pkg.workspaces;
+      const patterns: unknown[] = Array.isArray(ws) ? [...ws] : ws && typeof ws === 'object' && Array.isArray((ws as { packages?: unknown }).packages) ? [...(ws as { packages: unknown[] }).packages] : [];
+      // pnpm keeps its workspace list in pnpm-workspace.yaml.
+      const yaml = readCached(run, path.posix.join(f.dir, 'pnpm-workspace.yaml'), LIMITS.maxPackageJsonBytes);
+      if (yaml) for (const mm of yaml.matchAll(/^\s*-\s*['"]?([^'"#\n]+?)['"]?\s*$/gm)) patterns.push(mm[1]);
+      for (const p of patterns) {
+        if (typeof p !== 'string') continue;
+        const globbed = /[*?[]/.test(p) ? expandGlob(path.posix.join(f.dir, p), litCtx(f.dir, ctx), run) : [path.posix.join(f.dir, p)];
+        if (globbed === null) { dirs.push(null); continue; }
+        for (const d of globbed.slice(0, 64)) {
+          const pj = readCached(run, path.posix.join(d, 'package.json'), LIMITS.maxPackageJsonBytes);
+          let name = '';
+          try { name = pj ? String((JSON.parse(pj) as { name?: unknown }).name || '') : ''; } catch { name = ''; }
+          const sel = selector === null ? null : (selector || '');
+          if (all || sel === null || sel === '' || name === sel || path.posix.basename(d) === sel || d.endsWith(`/${sel}`) || (sel.endsWith('*') && name.startsWith(sel.slice(0, -1)))) { dirs.push(d); matched += 1; }
+        }
+      }
+    }
+    // No workspace list at all but every package was asked for: the sub-directories that are packages.
+    if (all && matched === 0 && dirs.length === 0) {
+      for (const c of ctx.cwds) {
+        const names = c && run.env.fs.readdir ? run.env.fs.readdir(c) : null;
+        for (const n of (names || []).slice(0, 64)) {
+          const d = path.posix.join(c as string, n);
+          if (readCached(run, path.posix.join(d, 'package.json'), LIMITS.maxPackageJsonBytes) !== null) dirs.push(d);
+        }
+      }
+    }
+    // Nothing found (no workspace list, or a name that is not in it): the directories stay as they were
+    // and the script name is judged by name, as before.
+  }
+  return { dirs, skip };
+}
+function litCtx(dir: string, ctx: Ctx): Ctx { return { ...ctx, cwds: [dir] }; }
+
 function handlePackageManager(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  const scope = packageScope(prog, rest, ctx, run);
+  if (scope) {
+    // The script may be in the directory itself or in the package it names: read both.
+    const dirs = [...new Set([...scope.dirs, ...ctx.cwds])];
+    ctx = { ...ctx, cwds: dirs };
+    if (scope.skip) rest = rest.slice(scope.skip);
+  }
   // `npm pub*`: the shell expands a pattern that matches a file; otherwise npm sees it as written.
   // Either way the subcommand is not the one that was typed (audit N1).
   if (rest.some((a) => a.glob && a.text !== null && /[*?[]/.test(a.text) && !a.text.startsWith('-'))) {
@@ -4663,6 +5036,10 @@ function packageManagerCommand(prog: string, sub: string, tail: Arg[], all: Arg[
     if (prog === 'bun' && isRun && /[./]/.test(name.text) && !/^[a-z0-9:_-]+$/i.test(name.text)) return;
     return runPackageScript(name.text, extra, ctx, run, x, true);
   }
+  if (prog === 'npm' && ['version', 'link', 'ln', 'rebuild', 'rb', 'update', 'up', 'dedupe', 'uninstall', 'remove', 'rm', 'add', 'it', 'cit'].includes(sub)) {
+    // Lifecycle scripts of the commands that install, link or version a package.
+    lifecycleScripts(sub === 'version' ? ['preversion', 'version', 'postversion'] : ['preinstall', 'install', 'postinstall', 'prepublish', 'preprepare', 'prepare', 'postprepare'], ctx, run, x);
+  }
   if (['install', 'install-test', 'install-ci-test', 'ci', 'pack', 'i'].includes(sub) && pos.length === 1) {
     lifecycleScripts(sub === 'pack' ? ['prepack', 'prepare', 'postpack'] : ['preinstall', 'install', 'postinstall', 'prepublish', 'preprepare', 'prepare', 'postprepare'], ctx, run, x);
     return;
@@ -4741,12 +5118,23 @@ function handlePublishTool(prog: string, rest: Arg[], ctx: Ctx, run: Run): boole
       return true;
     }
     case 'cargo': {
+      if (sub === 'workspaces' && positionals(rest, [])[1]?.text === 'publish') return stop('cargo_workspaces_publish');
       if (sub === 'release') return rest.some((a) => a.text === '--execute' || a.text === '-x' || a.text === null) ? stop('cargo_release') : true;
       if (sub !== 'publish') return false;
       if (boolFlag(rest, ['--dry-run', '-n'], []) === 'true') { run.flags.add('dry_run_final_true'); return true; }
       return stop('cargo_publish');
     }
     case 'twine': return sub === 'upload' ? stop('twine_upload') : true;
+    case 'pdm': case 'jsr': case 'opam': return sub === 'publish' ? stop(`${prog}_publish`) : false;
+    case 'maturin': return sub === 'publish' || sub === 'upload' ? stop('maturin_publish') : false;
+    case 'lein': return sub === 'deploy' ? stop('lein_deploy') : false;
+    case 'sbt': return rest.some((a) => a.text === null || /^\+?publish/i.test(a.text)) ? stop('sbt_publish') : true;
+    case 'nuget': return sub === 'push' ? stop('nuget_push') : false;
+    case 'dart': case 'flutter': return sub === 'pub' && positionals(rest, [])[1]?.text === 'publish' ? stop(`${prog}_pub_publish`) : false;
+    case 'cabal': case 'stack': return sub === 'upload' ? stop(`${prog}_upload`) : false;
+    case 'mix': return sub === 'hex.publish' ? stop('mix_hex_publish') : false;
+    case 'rebar3': return rest.some((a) => a.text === 'publish') && rest.some((a) => a.text === 'hex') ? stop('rebar3_hex_publish') : false;
+    case 'conda': case 'anaconda': case 'mamba': return sub === 'upload' ? stop(`${prog}_upload`) : false;
     case 'uv': case 'poetry': {
       if (sub !== 'publish') return false;
       if (boolFlag(rest, ['--dry-run'], []) === 'true') { run.flags.add('dry_run_final_true'); return true; }
@@ -5215,6 +5603,11 @@ function handleFind(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
     if ((t === '-exec' || t === '-execdir' || t === '-ok' || t === '-okdir') && expr[k + 1]) {
       const p = progName(expr[k + 1], run);
       if (p === null || !S4_EXEMPT_PROGRAMS.has(p)) readerExec = true;
+    }
+  }
+  if (readerExec) {
+    for (const st of starts) {
+      if (st.text !== null && isSecretDirOrAncestor(st.text, ctx, run)) { hit(run, 'S4', 'find_exec_secret_dir'); break; }
     }
   }
   if (readerExec && names.length) {
