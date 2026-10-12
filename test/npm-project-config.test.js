@@ -367,10 +367,17 @@ test('B4 follow-up: the file itself — size, NUL, UTF-8, links, folders and pip
 });
 
 test('B4 follow-up: what stays as round 2 built it (user config, bin and installer forms, npm_config_* env, local copies)', () => {
-  // $HOME/.npmrc is npm's user config, not project content: any content, still proven
-  scratch(({ home, proj }) => {
+  // $HOME/.npmrc is npm's user config, not project content: any content, still proven (the project sits under the home, so the walk reaches it)
+  scratch(({ home }) => {
+    const underHome = join(home, 'work', 'proj');
+    mkdirSync(underHome, { recursive: true });
     put(home, `registry=${EVIL}\n`);
-    assert.equal(codexNpx(proj, home).official, true);
+    assert.equal(codexNpx(underHome, home).official, true, 'user config with a registry');
+    put(home, '[x]\n\0 not even text\n');
+    assert.equal(codexNpx(underHome, home).official, true, 'user config that is not parsable');
+    // ... but a project config beside it is still judged on its own
+    put(join(home, 'work'), `registry=${EVIL}\n`);
+    assert.equal(codexNpx(underHome, home).official, false, 'a project config under the home is not the user config');
   });
   // the installed bin form never reads a project config
   scratch(({ home, proj }) => {
