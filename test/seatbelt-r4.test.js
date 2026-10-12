@@ -69,6 +69,36 @@ test('B1: declare -a/-A, local -a, mapfile, readarray and read -a make the name 
   ]) stops(cmd, F);
 });
 
+test('B1: a literal element of an array stays a classified reading (never looser than c7947a36)', () => {
+  for (const cmd of [
+    'f=(/home/u/.aws/credentials); cat "${f[@]}"',
+    'f=(~/.aws/credentials); cat ${f[0]}',
+    'f=(a); f[1]=/home/u/.ssh/id_ed25519; cat "${f[@]}"',
+    'f=(a /home/u/.aws/credentials); cat "${f[@]}"',
+    'f=(~/.aws/credentials); cat "$f"',
+    'p=(/home/u); rm -rf "${p[@]}"',
+    'c=(/home/u/.claude/settings.json); echo x > "${c[0]}"',
+    'f=(a); f+=(/home/u/.aws/credentials); cat "${f[@]}"',
+    'bash -c \'f=(/home/u/.aws/credentials); cat "${f[@]}"\'',
+  ]) stops(cmd, F);
+  // The readings follow the name through an assignment, a loop variable, a redirect target and `cd`.
+  for (const cmd of [
+    'c=(/home/u/.aws/credentials); x="${c[0]}"; cat "$x"',
+    'c=(a /home/u/.aws/credentials); x="${c[@]}"; cat $x',
+    'c=(/home/u/.aws/credentials); for f in "${c[@]}"; do cat "$f"; done',
+    'c=(a /home/u/.ssh/id_ed25519); for f in x "${c[@]}"; do cat "$f"; done',
+    'c=(/home/u/.claude/settings.json); echo x > "${c[0]}"',
+    'c=(/home/u/.aws); cd "${c[0]}"; cat credentials',
+    'c=(/home/u/.aws); cd "$c" && cat credentials',
+  ]) stops(cmd, F);
+  // Elements that are not secret stay quiet.
+  passes('c=(README.md); x="${c[0]}"; cat "$x"', F);
+  passes('c=(a b); for f in "${c[@]}"; do cat "$f"; done', F);
+  passes('c=(src); cd "${c[0]}"; cat index.ts', F);
+  passes('f=(README.md package.json); cat "${f[@]}"', F);
+  passes('f=(dist coverage); echo "${f[0]}"', F);
+});
+
 test('B1: the audit array rows behave as the auditor expected, except the two documented pass rows', () => {
   const rows = require('./fixtures/seatbelt/audit-r4/arrays.cjs');
   // Documented deviation (brief r4, B1): array contents are not modelled, so a command word that is an

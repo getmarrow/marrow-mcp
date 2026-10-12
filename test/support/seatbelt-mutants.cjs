@@ -253,10 +253,30 @@ const MUTANTS = [
     name: 'M-B1 array syntax is not tracked: element writes are scalar writes and ${a[@]} reads the scalar',
     edits: [
       M(MAPPER, '    noteArrays(src, ctx, run);\n', ''),
-      M(MAPPER, "            if (am) {\n                ctx.arrays.add(am[1]);\n                ctx.vars.set(am[1], null);\n                ctx.candidates.delete(am[1]);\n                bound = null;\n            }\n            else if (ctx.arrays.has(slot.name))\n                bound = null;\n",
+      M(MAPPER, "            if (am) {\n                ctx.arrays.add(am[1]);\n                ctx.vars.set(am[1], null);\n                bound = null;\n            }\n            else if (ctx.arrays.has(slot.name))\n                bound = null;\n",
         "            if (am) {\n                bound = ctx.vars.has(am[1]) ? ctx.vars.get(am[1]) : null;\n            }\n"),
       M(MAPPER, 'if (/\\[/.test(rawName) || ctx.arrays.has(name)) {', 'if (false) {'),
     ],
+  },
+  {
+    name: 'M-B1c the literal elements of an array are not kept as readings (a secret path in an array passes)',
+    edits: [M(MAPPER, "            if (lits.length)\n                ctx.candidates.set(name, [...new Set([...prevCands, ...lits])].slice(0, tables_1.LIMITS.maxVariants));\n", '')],
+  },
+  {
+    name: 'M-B1d the readings of an unresolved loop item are not kept for the loop variable',
+    edits: [M(MAPPER, 'setLoopVar(null, [...values, ...(candidateReadings(w, ctx, run) || [])]);', 'setLoopVar(null);')],
+  },
+  {
+    name: 'M-B1e the readings of an unresolved assignment value are not kept for the variable',
+    edits: [M(MAPPER, '        if (value === null && cmd.words.length === 0) {\n            const rd = candidateReadings(valueWord, ctx, run);', '        if (false) {\n            const rd = candidateReadings(valueWord, ctx, run);')],
+  },
+  {
+    name: 'M-B1f the readings of an unresolved redirect target are not checked',
+    edits: [M(MAPPER, "        if (a.text === null && (OUTPUT_REDIRECTS.has(r.op) || r.op === '<')) {\n            const readings = candidateReadings(r.target, ctx, run);", "        if (false) {\n            const readings = candidateReadings(r.target, ctx, run);")],
+  },
+  {
+    name: 'M-B1g the readings of an unresolved cd target are not directories',
+    edits: [M(MAPPER, 'const readings = target.text === null && target.word ? candidateReadings(target.word, ctx, run) : null;', 'const readings = null;')],
   },
   {
     name: 'M-B1b array names are not collected from the text (declare -a, mapfile, read -a, a[i]=, a=( )',

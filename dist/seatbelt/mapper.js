@@ -1450,9 +1450,13 @@ function noteArrays(src, ctx, run) {
         if (ctx.arrays.has(name))
             continue;
         ctx.arrays.add(name);
-        if (ctx.vars.has(name))
+        // The known value becomes a reading: classified wherever the name is read, never trusted.
+        if (ctx.vars.has(name)) {
+            const was = ctx.vars.get(name);
             ctx.vars.set(name, null);
-        ctx.candidates.delete(name);
+            if (was && was.length)
+                ctx.candidates.set(name, [...new Set([...(ctx.candidates.get(name) || []), ...was])].slice(0, tables_1.LIMITS.maxVariants));
+        }
     }
 }
 function evalShell(src, ctx, run) {
@@ -1607,7 +1611,6 @@ function resolveWordRaw(word, ctx, run) {
             if (am) {
                 ctx.arrays.add(am[1]);
                 ctx.vars.set(am[1], null);
-                ctx.candidates.delete(am[1]);
                 bound = null;
             }
             else if (ctx.arrays.has(slot.name))
@@ -1670,10 +1673,12 @@ function evalCommand(cmd, ctx, run, info) {
         // The loop may not run (`false && for …`, an empty list, `select` at end of input): an earlier
         // value of the variable stays possible (audit N2).
         const prev = ctx.vars.has(loopName) ? ctx.vars.get(loopName) : undefined;
-        const setLoopVar = (vals) => {
+        // `extra`: readings of an item that is unresolved (the literal elements of an array, audit r4 B1):
+        // classified wherever the variable is read, never trusted.
+        const setLoopVar = (vals, extra = []) => {
             if (vals === null || prev === null) {
                 ctx.vars.set(loopName, null);
-                ctx.candidates.set(loopName, [...new Set([...(prev || []), ...(vals || [])])].slice(0, tables_1.LIMITS.maxVariants));
+                ctx.candidates.set(loopName, [...new Set([...(prev || []), ...(vals || []), ...extra])].slice(0, tables_1.LIMITS.maxVariants));
                 return;
             }
             ctx.vars.set(loopName, prev === undefined ? vals : [...new Set([...prev, ...vals])].slice(0, tables_1.LIMITS.maxVariants));
@@ -1697,7 +1702,7 @@ function evalCommand(cmd, ctx, run, info) {
                 continue;
             }
             if (a.text === null) {
-                setLoopVar(null);
+                setLoopVar(null, [...values, ...(candidateReadings(w, ctx, run) || [])]);
                 return;
             }
             values.push(a.text);
@@ -1732,6 +1737,24 @@ function evalCommand(cmd, ctx, run, info) {
         if (clock(run))
             return;
         const a = resolveWord(r.target, ctx, run);
+        // A target that is unresolved but has known readings (a conditional assignment, the literal
+        // elements of an array): every reading is checked as well (audit r4 B1, never looser than c7947a36).
+        if (a.text === null && (OUTPUT_REDIRECTS.has(r.op) || r.op === '<')) {
+            const readings = candidateReadings(r.target, ctx, run);
+            if (readings) {
+                for (const value of readings) {
+                    const lit = litArg(value);
+                    if (r.op === '<') {
+                        checkSecretOperand(lit, ctx, run, 'redirect_read');
+                        continue;
+                    }
+                    if (SAFE_DEVICES.test(value))
+                        continue;
+                    checkSecretOperand(lit, ctx, run, 'redirect_write');
+                    checkProtectedWrite(lit, ctx, run, 'redirect_write', false);
+                }
+            }
+        }
         if (r.op === '>&' || r.op === '<&' || r.op === '<<<') {
             if (a.text !== null && /^(?:\d+|-)$/.test(a.text))
                 continue;
@@ -1766,7 +1789,24 @@ function evalCommand(cmd, ctx, run, info) {
         if (/\[/.test(rawName) || ctx.arrays.has(name)) {
             ctx.arrays.add(name);
             ctx.vars.set(name, null);
-            ctx.candidates.delete(name);
+            // The literal elements written here are not the value, but each stays a reading that is
+            // classified wherever the name is read: a secret path or a protected target in an element still
+            // stops (never looser than c7947a36), and nothing is added to what a command word can be.
+            const lits = [];
+            const arr = guard && info.guards && !info.guards.unknown ? guard.assign[ai]?.array : undefined;
+            if (arr)
+                lits.push(...arr);
+            // `a=(…)` reaches here as an empty value; an empty reading says nothing and is not kept.
+            if (v.text !== null)
+                lits.push(v.text);
+            else if (v.alts)
+                lits.push(...v.alts);
+            for (let k = lits.length - 1; k >= 0; k -= 1)
+                if (lits[k] === '')
+                    lits.splice(k, 1);
+            const prevCands = ctx.candidates.get(name) || [];
+            if (lits.length)
+                ctx.candidates.set(name, [...new Set([...prevCands, ...lits])].slice(0, tables_1.LIMITS.maxVariants));
             assignEnv.set(name, null);
             continue;
         }
@@ -1789,6 +1829,13 @@ function evalCommand(cmd, ctx, run, info) {
                 ctx.candidates.delete(name);
         }
         assignEnv.set(name, value);
+        // An unresolved value that has known readings (the literal elements of an array): the variable is
+        // unresolved and keeps them as readings, classified wherever it is read (audit r4 B1).
+        if (value === null && cmd.words.length === 0) {
+            const rd = candidateReadings(valueWord, ctx, run);
+            if (rd)
+                ctx.candidates.set(name, [...new Set([...(ctx.candidates.get(name) || []), ...rd])].slice(0, tables_1.LIMITS.maxVariants));
+        }
     }
     programEnvCheck(assignEnv, ctx, run, cmd.words.length > 0);
     if (cmd.words.length === 0) {
@@ -1971,14 +2018,19 @@ function candidateReadings(word, ctx, run) {
     let used = false;
     for (let k = 0; k < word.slots.length; k += 1) {
         const slot = word.slots[k];
-        if (!slot || slot.type !== 'var' || !slot.name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(slot.name) || ctx.arrays.has(slot.name))
+        // `$a`, `${a}`, and for an array `${a[@]}`, `${a[*]}`, `${a[3]}`: the elements are readings.
+        const nm = slot && slot.type === 'var' && slot.name ? /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?$/.exec(slot.name) : null;
+        if (!slot || !nm)
+            return null;
+        const vname = nm[1];
+        if (vname !== slot.name && !ctx.arrays.has(vname))
             return null;
         let bound;
-        if (slot.name === 'HOME')
+        if (vname === 'HOME' && vname === slot.name)
             bound = [run.home];
         else {
-            const known = ctx.vars.has(slot.name) ? ctx.vars.get(slot.name) : undefined;
-            const cand = ctx.candidates.get(slot.name);
+            const known = ctx.vars.has(vname) ? ctx.vars.get(vname) : undefined;
+            const cand = ctx.candidates.get(vname);
             if (known)
                 bound = known;
             else if (cand) {
@@ -3935,7 +3987,23 @@ function changeDir(rest, ctx, run, subshell) {
         return;
     }
     if (target.text === null || target.text === '-' || target.glob) {
-        ctx.cwds = [...new Set([...ctx.cwds, null])];
+        // An unresolved target that has known readings (the literal elements of an array, audit r4 B1):
+        // each reading is a directory the commands after it may run in, next to the unknown one.
+        const extra = [null];
+        const readings = target.text === null && target.word ? candidateReadings(target.word, ctx, run) : null;
+        if (readings) {
+            for (const v of readings) {
+                const t = expandTilde(v, run);
+                if (t === null)
+                    continue;
+                if (path.posix.isAbsolute(t))
+                    extra.push(path.posix.normalize(t));
+                else
+                    for (const c of ctx.cwds)
+                        extra.push(c ? path.posix.resolve(c, t) : null);
+            }
+        }
+        ctx.cwds = [...new Set([...ctx.cwds, ...extra])];
         return;
     }
     const next = [];
