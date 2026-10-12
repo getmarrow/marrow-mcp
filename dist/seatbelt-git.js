@@ -136,7 +136,12 @@ exports.GIT_RELOCATING_ENV = ['GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT
  */
 exports.GIT_EXEC_ENV = ['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_PROXY_COMMAND', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_PAGER', 'PAGER', 'GIT_EDITOR', 'GIT_SEQUENCE_EDITOR', 'EDITOR', 'VISUAL', 'GIT_EXTERNAL_DIFF', 'GIT_EXEC_PATH'];
 const GIT_EXEC_CONFIG = /^(?:core\.(?:sshcommand|pager|editor|fsmonitor|hookspath|gitproxy|askpass)|sequence\.editor|diff\.external|diff\..+\.(?:command|textconv)|merge\..+\.driver|filter\..+\.(?:clean|smudge|process)|credential(?:\..+)?\.helper|pager\..+|gpg(?:\..+)?\.program|uploadpack\.packobjectshook|remote\..+\.(?:receivepack|uploadpack|vcs)|url\..+\.insteadof|protocol\..+\.allow|http\..*proxy|alias\..+)$/;
-/** Names of exec-capable env vars and config keys present (alias.* with a leading `!` only). Names only, never values. */
+/**
+ * Names of exec-capable env vars and config keys present (alias.* with a
+ * leading `!` only). Names only, never values. `env` is what the agent set:
+ * the git command's prefix assignments and earlier `export`s in the same
+ * command line, not the hook's own environment (the user's EDITOR/PAGER).
+ */
 function gitExecVectors(config, env) {
     const out = new Set();
     for (const name of exports.GIT_EXEC_ENV)

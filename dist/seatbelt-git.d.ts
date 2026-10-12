@@ -39,7 +39,12 @@ export declare const GIT_RELOCATING_ENV: string[];
  * treats any of them present as a shell command it cannot see: stop.
  */
 export declare const GIT_EXEC_ENV: string[];
-/** Names of exec-capable env vars and config keys present (alias.* with a leading `!` only). Names only, never values. */
+/**
+ * Names of exec-capable env vars and config keys present (alias.* with a
+ * leading `!` only). Names only, never values. `env` is what the agent set:
+ * the git command's prefix assignments and earlier `export`s in the same
+ * command line, not the hook's own environment (the user's EDITOR/PAGER).
+ */
 export declare function gitExecVectors(config: GitConfig, env?: Record<string, string | undefined>): string[];
 /** The relocating names present in env (any value, even empty, counts). */
 export declare function gitRelocatingEnv(env: Record<string, string | undefined> | undefined): string[];
