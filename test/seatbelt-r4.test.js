@@ -274,6 +274,25 @@ test('F2: a command-line name the Makefile never mentions is dynamic (it can onl
   }
 });
 
+test('F2 (each rule alone): the Makefile uses the name and the value is plain, so only the name or value rule can make it dynamic', () => {
+  // A name the Makefile references (`$(NAME)`) is not "unused": the hazard-name rule has to decide on its own.
+  const hazards = ['SHELL', 'MAKE', 'MAKEFLAGS', 'MFLAGS', 'GNUMAKEFLAGS', 'MAKEFILES', 'MAKEOVERRIDES', 'MAKELEVEL', 'MAKE_COMMAND', 'MAKECMDGOALS', 'VPATH', 'CURDIR',
+    'PATH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'IFS', 'HOME', 'TMPDIR', 'GIT_DIR', 'LD_PRELOAD', 'NODE_OPTIONS', 'npm_config_registry', 'PYTHONPATH', 'PERL5LIB', 'RUBYOPT', 'XDG_CONFIG_HOME'];
+  for (const name of hazards) {
+    const r = make(`all:\n\techo $(${name})\n`, ['all'], { overrides: { [name]: './evil' }, env: {} });
+    assert.ok(!definite(r), `${name}: ${JSON.stringify(r)}`);
+  }
+  // SHELL: referenced, so only the value decides.
+  assert.ok(!definite(make('SHELL = /bin/sh\nall:\n\techo hi\n', ['all'], { overrides: { SHELL: './evil.sh' }, env: {} })));
+  assert.ok(definite(make('SHELL = /bin/sh\nall:\n\techo hi\n', ['all'], { overrides: { SHELL: '/bin/bash' }, env: {} })));
+  assert.ok(definite(make('all:\n\techo $(SHELL)\n', ['all'], { overrides: { SHELL: '/bin/bash' }, env: {} })));
+  // A value rule: the name is assigned (used) but never expanded, so the value alone must stop it.
+  for (const value of ['$(shell touch x)', '${shell touch x}', '$X', '$$', 'a$', 'a\nb', 'a\tb', 'a\0b', 'a\rb', 'a\x7fb']) {
+    assert.ok(!definite(make('X = a\nall:\n\techo hello\n', ['all'], { overrides: { X: value }, env: {} })), JSON.stringify(value));
+  }
+  assert.ok(definite(make('X = a\nall:\n\techo hello\n', ['all'], { overrides: { X: 'plain value with spaces' }, env: {} })));
+});
+
 test('F2: a plain override still reaches the recipes and the followed sub-make (visible in the command list)', () => {
   const r = make('STAGE = dev\nship:\n\twrangler deploy --env $(STAGE)\n', ['ship'], { overrides: { STAGE: 'production' }, env: ENV });
   assert.ok(definite(r));
@@ -462,4 +481,12 @@ test('L4 oracle: environment MAKEFILES / MAKEFLAGS change what make reads; the r
     { name: 'env MAKEFLAGS -f, env omitted', makefile: 'all:\n\techo hello\n', env: { MAKEFLAGS: '-f evil.mk' }, files, omitEnv: true },
     { name: 'clean env (control)', makefile: 'all:\n\techo hello\n' },
   ]);
+});
+
+test('L4: a name the env object only inherits is still an environment name (never looser than an own property)', () => {
+  const inherited = Object.create({ MAKEFLAGS: '-f evil.mk', FOO: 'orig' });
+  assert.equal(make('all:\n\techo hi\n', ['all'], { env: inherited }).dynamic, true, 'inherited MAKEFLAGS');
+  const assigned = make('FOO = changed\nall:\n\techo hi\n', ['all'], { env: Object.create({ FOO: 'orig' }) });
+  assert.equal(assigned.dynamic, true, 'assignment to an inherited name');
+  assert.equal(make('all:\n\techo $(FOO)\n', ['all'], { env: Object.create({ FOO: 'orig' }) }).commands[0], 'echo orig');
 });

@@ -199,15 +199,15 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
   // MAKEFLAGS / MAKEFILES / exported names cannot be ruled out: the answer is
   // dynamic. A caller that states no environment never gets a definite answer.
   const env = options.env;
-  /** An own string value only: `constructor`, `__proto__` and `toString` are not environment variables. */
+  /** A string value only: `constructor`, `__proto__` and `toString` (functions and objects of Object.prototype) are not environment variables. */
   const envValue = (name: string): string | undefined => {
-    if (!env || !Object.prototype.hasOwnProperty.call(env, name)) return undefined;
-    const value = env[name];
+    const value = env ? env[name] : undefined;
     return typeof value === 'string' ? value : undefined;
   };
   if (!env || MAKE_RELOCATING_ENV.some((name) => envValue(name) !== undefined)) dynamic = true;
   const envNames = new Set<string>();
-  if (env) for (const [name, value] of Object.entries(env)) if (typeof value === 'string') envNames.add(name.toUpperCase());
+  // for...in: a name an object only inherits is still a name make would see.
+  if (env) for (const name in env) if (typeof env[name] === 'string') envNames.add(name.toUpperCase());
   /**
    * make hands this name to every recipe, or it changes what runs or where:
    * assigning it (in the file or on the command line, any operator) is dynamic.
@@ -218,12 +218,12 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
     name.startsWith('.') || MAKE_EXECUTION_VARIABLES.has(name) || MAKE_RECIPE_ENV_DENY.test(name) || MAKE_RECIPE_ENV_DENY_ANY_CASE.test(name) || envNames.has(name.toUpperCase());
   const commandLine = new Map<string, string>(Object.entries(options.overrides || {}));
   // A command-line variable is exported to every recipe and its value is expanded each time make builds a recipe
-  // environment, used or not: only a plain name, a plain value and a name the Makefile itself uses are definite.
+  // environment, used or not: only a plain value and a name the Makefile itself uses (and that is not one of the lists) are definite.
   const referenced = new Set<string>();
   for (const [name, value] of commandLine) {
     const shell = name === 'SHELL' && MAKE_SAFE_SHELL.test(value);
     if (!shell && changesWhatRuns(name)) dynamic = true;
-    if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name) || /[$\x00-\x1f\x7f]/.test(value)) dynamic = true;
+    if (/[$\x00-\x1f\x7f]/.test(value)) dynamic = true;
     variables.set(name, { flavor: 'recursive', value, unresolved: false });
   }
 
