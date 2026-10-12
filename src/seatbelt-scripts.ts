@@ -128,6 +128,9 @@ const MAKE_RELOCATING_ENV = ['MAKEFLAGS', 'GNUMAKEFLAGS', 'MFLAGS', 'MAKEFILES',
 /** A plain system shell path is the one SHELL value that is understood. */
 const MAKE_SAFE_SHELL = /^(?:\/usr)?(?:\/local)?\/bin\/(?:sh|bash|zsh|dash|ksh|ash)$/;
 
+/** Make functions with no side effect (not evaluated here, but a use of their result is unresolved, not an execution at read time). */
+const MAKE_PURE_FUNCTIONS = new Set(['subst', 'patsubst', 'strip', 'findstring', 'filter', 'filter-out', 'sort', 'word', 'wordlist', 'words', 'firstword', 'lastword', 'dir', 'notdir', 'suffix', 'basename', 'addsuffix', 'addprefix', 'join', 'wildcard', 'realpath', 'abspath']);
+
 const MAKE_SIMPLE_FLAGS = new Set(['-s', '-k', '-w', '--silent', '--quiet', '--keep-going', '--no-print-directory', '--print-directory']);
 
 /**
@@ -171,8 +174,14 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
   let expandedBytes = 0;
   let exhausted = false;
   const MAKE_AUTOMATIC = /^[@<^*?%+|]$/;
-  /** `state.bad` is set when a reference could not be resolved; the reference text is kept as written. */
-  const expand = (text: string, state: { bad: boolean }, depth = 0): string => {
+  /**
+   * `state.bad` is set when a reference could not be resolved (the reference
+   * text is kept as written). `state.fn` is set when make would run a function
+   * with side effects (`$(shell …)`, `$(eval …)`, `$(file …)`, unparsed syntax):
+   * in a context make expands when it reads the line, that executes whether or
+   * not the target is wanted.
+   */
+  const expand = (text: string, state: { bad: boolean; fn: boolean }, depth = 0): string => {
     if (!text.includes('$')) return text;
     expandedBytes += text.length;
     if (expandedBytes > MAX_MAKE_EXPANDED_BYTES) {
@@ -181,6 +190,7 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
     }
     if (depth > 8) {
       state.bad = true;
+      state.fn = true;
       return text;
     }
     let out = '';
@@ -195,6 +205,7 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       const next = text[i + 1];
       if (next === undefined) {
         state.bad = true;
+        state.fn = true;
         out += '$';
         i += 1;
         continue;
@@ -218,6 +229,7 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
         if (level !== 0) {
           // Unbalanced: nothing after this point can be read reliably.
           state.bad = true;
+          state.fn = true;
           out += text.slice(i);
           break;
         }
@@ -239,6 +251,10 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       // or an automatic-variable modifier is not evaluated here.
       if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
         state.bad = true;
+        const functionName = /^([A-Za-z][A-Za-z-]*)\s/.exec(name)?.[1];
+        if (functionName !== undefined) {
+          if (!MAKE_PURE_FUNCTIONS.has(functionName)) state.fn = true;
+        } else if (!/^[A-Za-z_][A-Za-z0-9_.-]*:[^\s=]*=\S*$/.test(name)) state.fn = true;
         out += reference;
         continue;
       }
@@ -246,9 +262,10 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       if (variable === undefined) {
         const fromEnv = env ? env[name] : undefined;
         if (fromEnv !== undefined) {
-          const inner = { bad: false };
+          const inner = { bad: false, fn: false };
           out += expand(fromEnv, inner, depth + 1);
           if (inner.bad) state.bad = true;
+          if (inner.fn) state.fn = true;
         } else if (name === 'MAKE' && !options.overrides?.MAKE) out += 'make';
         else {
           state.bad = true;
@@ -263,9 +280,10 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       }
       if (variable.flavor === 'simple') out += variable.value;
       else {
-        const inner = { bad: false };
+        const inner = { bad: false, fn: false };
         out += expand(variable.value, inner, depth + 1);
         if (inner.bad) state.bad = true;
+        if (inner.fn) state.fn = true;
       }
     }
     return out;
@@ -307,11 +325,13 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
         variables.set(name, { flavor: 'simple', value: '', unresolved: true });
       } else if (op === '=') variables.set(name, { flavor: 'recursive', value, unresolved: false });
       else if (op === ':=' || op === '::=') {
-        const state = { bad: false };
+        const state = { bad: false, fn: false };
         variables.set(name, { flavor: 'simple', value: expand(value, state), unresolved: state.bad });
+        if (state.fn) dynamic = true;
       } else if (op === ':::=') {
-        const state = { bad: false };
+        const state = { bad: false, fn: false };
         variables.set(name, { flavor: 'recursive', value: expand(value, state).replace(/\$/g, '$$$$'), unresolved: state.bad });
+        if (state.fn) dynamic = true;
       } else if (op === '?=') {
         // Defined already (in the file or on the command line): unchanged. Otherwise the environment decides.
         if (existing === undefined) {
@@ -327,9 +347,10 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
           else if (fromEnv !== undefined) variables.set(name, { flavor: 'recursive', value: `${fromEnv} ${value}`, unresolved: false });
           else variables.set(name, { flavor: 'recursive', value, unresolved: true });
         } else if (existing.flavor === 'simple') {
-          const state = { bad: false };
+          const state = { bad: false, fn: false };
           const added = expand(value, state);
           variables.set(name, { flavor: 'simple', value: `${existing.value} ${added}`.trim(), unresolved: existing.unresolved || state.bad });
+          if (state.fn) dynamic = true;
         } else variables.set(name, { flavor: 'recursive', value: `${existing.value} ${value}`.trim(), unresolved: existing.unresolved });
       }
       const stored = variables.get(name);
@@ -351,15 +372,17 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       inlineRecipe = prereqs.slice(semi + 1).trim();
       prereqs = prereqs.slice(0, semi);
     }
-    const nameState = { bad: false };
+    const nameState = { bad: false, fn: false };
     const names = words(expand(rule[1].trim(), nameState));
     if (exhausted) return overBudget;
     // A name that cannot be expanded may be the wanted target.
     if (nameState.bad) dynamic = true;
     if (names.length > MAX_MAKE_TARGETS_PER_RULE) return overBudget;
-    const prerequisiteState = { bad: false };
+    const prerequisiteState = { bad: false, fn: false };
     const expandedPrerequisites = expand(prereqs, prerequisiteState);
     if (exhausted) return overBudget;
+    // Make expands prerequisites when it reads the line: a function with effects runs for every rule, wanted or not.
+    if (prerequisiteState.fn) dynamic = true;
     const prerequisiteWords = words(expandedPrerequisites).filter((word) => word !== '|');
     // `$` left over (automatic variables, `$$`), a second `:` (static pattern rule) or a wildcard cannot be followed.
     const unresolved = prerequisiteState.bad || /[$:%*?[]/.test(expandedPrerequisites);
@@ -399,11 +422,16 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
           exhausted = true;
           return;
         }
-        const state = { bad: false };
+        const state = { bad: false, fn: false };
         const command = expand(line, state).replace(/^[\s@+-]+/, '');
         if (state.bad) dynamic = true;
         commands.push(command);
-        if (/\$[({]MAKE[)}]/.test(line)) followSubMake(command, depth, seen);
+        // `$(MAKE) …` or a command that starts with `make` (also through a variable: RUN = $(MAKE) x).
+        if (/\$[({]MAKE[)}]/.test(line) || /^g?make(\s|$)/.test(command)) {
+          // A sub-make reads the default makefile of its directory: -f is not passed down in MAKEFLAGS.
+          if (options.makefile) dynamic = true;
+          else followSubMake(command, depth, seen);
+        }
       }
     }
   };

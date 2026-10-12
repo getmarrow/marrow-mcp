@@ -100,6 +100,8 @@ const MAKE_EXECUTION_VARIABLES = new Set(['SHELL', 'MAKE', 'MAKEFLAGS', 'MFLAGS'
 const MAKE_RELOCATING_ENV = ['MAKEFLAGS', 'GNUMAKEFLAGS', 'MFLAGS', 'MAKEFILES', 'MAKEOVERRIDES'];
 /** A plain system shell path is the one SHELL value that is understood. */
 const MAKE_SAFE_SHELL = /^(?:\/usr)?(?:\/local)?\/bin\/(?:sh|bash|zsh|dash|ksh|ash)$/;
+/** Make functions with no side effect (not evaluated here, but a use of their result is unresolved, not an execution at read time). */
+const MAKE_PURE_FUNCTIONS = new Set(['subst', 'patsubst', 'strip', 'findstring', 'filter', 'filter-out', 'sort', 'word', 'wordlist', 'words', 'firstword', 'lastword', 'dir', 'notdir', 'suffix', 'basename', 'addsuffix', 'addprefix', 'join', 'wildcard', 'realpath', 'abspath']);
 const MAKE_SIMPLE_FLAGS = new Set(['-s', '-k', '-w', '--silent', '--quiet', '--keep-going', '--no-print-directory', '--print-directory']);
 /**
  * A simple Makefile recipe parse: explicit rules, recipe lines, prerequisites
@@ -146,7 +148,13 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     let expandedBytes = 0;
     let exhausted = false;
     const MAKE_AUTOMATIC = /^[@<^*?%+|]$/;
-    /** `state.bad` is set when a reference could not be resolved; the reference text is kept as written. */
+    /**
+     * `state.bad` is set when a reference could not be resolved (the reference
+     * text is kept as written). `state.fn` is set when make would run a function
+     * with side effects (`$(shell …)`, `$(eval …)`, `$(file …)`, unparsed syntax):
+     * in a context make expands when it reads the line, that executes whether or
+     * not the target is wanted.
+     */
     const expand = (text, state, depth = 0) => {
         if (!text.includes('$'))
             return text;
@@ -157,6 +165,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
         }
         if (depth > 8) {
             state.bad = true;
+            state.fn = true;
             return text;
         }
         let out = '';
@@ -171,6 +180,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             const next = text[i + 1];
             if (next === undefined) {
                 state.bad = true;
+                state.fn = true;
                 out += '$';
                 i += 1;
                 continue;
@@ -196,6 +206,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                 if (level !== 0) {
                     // Unbalanced: nothing after this point can be read reliably.
                     state.bad = true;
+                    state.fn = true;
                     out += text.slice(i);
                     break;
                 }
@@ -219,6 +230,13 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             // or an automatic-variable modifier is not evaluated here.
             if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
                 state.bad = true;
+                const functionName = /^([A-Za-z][A-Za-z-]*)\s/.exec(name)?.[1];
+                if (functionName !== undefined) {
+                    if (!MAKE_PURE_FUNCTIONS.has(functionName))
+                        state.fn = true;
+                }
+                else if (!/^[A-Za-z_][A-Za-z0-9_.-]*:[^\s=]*=\S*$/.test(name))
+                    state.fn = true;
                 out += reference;
                 continue;
             }
@@ -226,10 +244,12 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             if (variable === undefined) {
                 const fromEnv = env ? env[name] : undefined;
                 if (fromEnv !== undefined) {
-                    const inner = { bad: false };
+                    const inner = { bad: false, fn: false };
                     out += expand(fromEnv, inner, depth + 1);
                     if (inner.bad)
                         state.bad = true;
+                    if (inner.fn)
+                        state.fn = true;
                 }
                 else if (name === 'MAKE' && !options.overrides?.MAKE)
                     out += 'make';
@@ -247,10 +267,12 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             if (variable.flavor === 'simple')
                 out += variable.value;
             else {
-                const inner = { bad: false };
+                const inner = { bad: false, fn: false };
                 out += expand(variable.value, inner, depth + 1);
                 if (inner.bad)
                     state.bad = true;
+                if (inner.fn)
+                    state.fn = true;
             }
         }
         return out;
@@ -298,12 +320,16 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             else if (op === '=')
                 variables.set(name, { flavor: 'recursive', value, unresolved: false });
             else if (op === ':=' || op === '::=') {
-                const state = { bad: false };
+                const state = { bad: false, fn: false };
                 variables.set(name, { flavor: 'simple', value: expand(value, state), unresolved: state.bad });
+                if (state.fn)
+                    dynamic = true;
             }
             else if (op === ':::=') {
-                const state = { bad: false };
+                const state = { bad: false, fn: false };
                 variables.set(name, { flavor: 'recursive', value: expand(value, state).replace(/\$/g, '$$$$'), unresolved: state.bad });
+                if (state.fn)
+                    dynamic = true;
             }
             else if (op === '?=') {
                 // Defined already (in the file or on the command line): unchanged. Otherwise the environment decides.
@@ -328,9 +354,11 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                         variables.set(name, { flavor: 'recursive', value, unresolved: true });
                 }
                 else if (existing.flavor === 'simple') {
-                    const state = { bad: false };
+                    const state = { bad: false, fn: false };
                     const added = expand(value, state);
                     variables.set(name, { flavor: 'simple', value: `${existing.value} ${added}`.trim(), unresolved: existing.unresolved || state.bad });
+                    if (state.fn)
+                        dynamic = true;
                 }
                 else
                     variables.set(name, { flavor: 'recursive', value: `${existing.value} ${value}`.trim(), unresolved: existing.unresolved });
@@ -356,7 +384,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             inlineRecipe = prereqs.slice(semi + 1).trim();
             prereqs = prereqs.slice(0, semi);
         }
-        const nameState = { bad: false };
+        const nameState = { bad: false, fn: false };
         const names = words(expand(rule[1].trim(), nameState));
         if (exhausted)
             return overBudget;
@@ -365,10 +393,13 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             dynamic = true;
         if (names.length > exports.MAX_MAKE_TARGETS_PER_RULE)
             return overBudget;
-        const prerequisiteState = { bad: false };
+        const prerequisiteState = { bad: false, fn: false };
         const expandedPrerequisites = expand(prereqs, prerequisiteState);
         if (exhausted)
             return overBudget;
+        // Make expands prerequisites when it reads the line: a function with effects runs for every rule, wanted or not.
+        if (prerequisiteState.fn)
+            dynamic = true;
         const prerequisiteWords = words(expandedPrerequisites).filter((word) => word !== '|');
         // `$` left over (automatic variables, `$$`), a second `:` (static pattern rule) or a wildcard cannot be followed.
         const unresolved = prerequisiteState.bad || /[$:%*?[]/.test(expandedPrerequisites);
@@ -420,13 +451,19 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                     exhausted = true;
                     return;
                 }
-                const state = { bad: false };
+                const state = { bad: false, fn: false };
                 const command = expand(line, state).replace(/^[\s@+-]+/, '');
                 if (state.bad)
                     dynamic = true;
                 commands.push(command);
-                if (/\$[({]MAKE[)}]/.test(line))
-                    followSubMake(command, depth, seen);
+                // `$(MAKE) …` or a command that starts with `make` (also through a variable: RUN = $(MAKE) x).
+                if (/\$[({]MAKE[)}]/.test(line) || /^g?make(\s|$)/.test(command)) {
+                    // A sub-make reads the default makefile of its directory: -f is not passed down in MAKEFLAGS.
+                    if (options.makefile)
+                        dynamic = true;
+                    else
+                        followSubMake(command, depth, seen);
+                }
             }
         }
     };
