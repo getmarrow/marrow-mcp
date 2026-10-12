@@ -417,7 +417,11 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       }
       if (variable.unresolved) {
         state.bad = true;
-        if (probing) state.fn = true;
+        // A deferred value that holds a `$` may hold a call with effects (`CC += $(shell …)` on a variable make defines
+        // itself): wherever make expands it when it reads the line, it runs, used or not. A simple value is text make has
+        // already expanded (its calls ran when it was assigned and set `fn` then). While a dropped right side is only
+        // looked at, any unresolved value counts.
+        if (probing || (variable.flavor === 'recursive' && variable.value.includes('$'))) state.fn = true;
         out += reference;
         continue;
       }
