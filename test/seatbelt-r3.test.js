@@ -470,8 +470,9 @@ test('N5: environment assignments, env options, relative or planted interpreters
   for (const line of unknown) assert.deepEqual(shebang(line), { status: 'unknown', reason: 'shebang' }, line);
 });
 
-test('N5: the shebang must be the first line; later `#!` lines and CRLF do not change the answer', () => {
+test('N5: the shebang must be the first line; later `#!` lines do not change the answer, a CRLF line is never a shell (F1)', () => {
   assert.equal(shebang('# comment', '#!/usr/bin/env -S bash -c "x"\n').interpreter, 'shell');
-  assert.equal(S.readScriptFile(createFakeFs().file('/s/x.sh', '#!/usr/bin/env bash\r\necho\r\n'), '/s/x.sh').interpreter, 'shell');
+  // Round 4 (audit F1): the kernel ends the line at \n only and \r stays in it, so a CRLF line is never a definite shell.
+  assert.equal(S.readScriptFile(createFakeFs().file('/s/x.sh', '#!/usr/bin/env bash\r\necho\r\n'), '/s/x.sh').interpreter, 'other');
   assert.equal(S.readScriptFile(createFakeFs().file('/s/x.sh', '#!/usr/bin/env -S bash -c "x"\r\n'), '/s/x.sh').interpreter, 'other');
 });

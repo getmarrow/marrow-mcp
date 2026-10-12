@@ -77,6 +77,11 @@ export type ScriptFile = {
     status: 'unknown';
     reason: 'unreadable' | 'too_large' | 'not_file' | 'shebang';
 };
-/** A script file run as `./x.sh` or `bash x.sh` (≤64 KB), realpath-ed; the interpreter comes from the shebang. */
+/**
+ * A script file run as `./x.sh` or `bash x.sh` (≤64 KB), realpath-ed; the
+ * interpreter comes from the shebang, which is the first line up to `\n` only.
+ * With no shebang the kernel fails the exec and the invoking shell runs the file
+ * as a sh script, unless its first line carries binary magic (control characters).
+ */
 export declare function readScriptFile(fs: SeatbeltFs, path: string): ScriptFile;
 //# sourceMappingURL=seatbelt-scripts.d.ts.map

@@ -514,6 +514,21 @@ const SHELL_FLAG_LETTERS = 'euxvfnCabhEBHPkT';
 const SHELL_OPTION_NAMES = new Set(['pipefail', 'errexit', 'nounset', 'xtrace', 'noglob', 'noclobber', 'verbose', 'noexec', 'posix', 'allexport', 'errtrace', 'functrace']);
 const SHELL_LONG_FLAGS = new Set(['--posix', '--noprofile', '--norc']);
 const MAX_ENV_SPLIT_DEPTH = 4;
+/**
+ * The only shebang lines a definite `shell` answer is given for: at most this
+ * many bytes (Linux before 5.1 cuts the line at 127; later kernels fail or cut at
+ * 255) of printable ASCII and tab. Anything else (CR, VT, FF, NUL, DEL, other
+ * control or non-ASCII characters) is split differently by the kernel, env -S and
+ * this parser, so it is never `shell`.
+ */
+const MAX_SHEBANG_LINE = 127;
+const PLAIN_SHEBANG_LINE = /^[\x20-\x7e\t]*$/;
+/** A control character (anything below space except tab, DEL, NUL ...). */
+const CONTROL_CHARACTER = /[\x00-\x08\x0a-\x1f\x7f]/;
+/** A line that is not on the allowlist is never a definite shell; an answer that was already `other` or `unknown` is kept (never looser). */
+function degrade(result) {
+    return result.kind === 'shell' ? { kind: 'other' } : result;
+}
 /** coreutils `env -S` split-string: quotes, backslash escapes, `#` comment. Null for anything else (`$` expansion, `\c`, unknown escapes, unclosed quote). */
 function splitEnvString(value) {
     const escapes = { n: '\n', t: '\t', r: '\r', f: '\f', v: '\v', '\\': '\\', '"': '"', "'": "'", '#': '#', $: '$' };
@@ -639,7 +654,7 @@ function classifyShellArguments(tokens) {
  * `tokens` are argv words; `raw` (with each word's end offset) is the shebang
  * text itself, which `-S` consumes verbatim and splits with env's own quoting.
  */
-function walkEnv(tokens, ends, raw, depth) {
+function walkEnv(tokens, ends, raw, depth, flags) {
     if (depth > MAX_ENV_SPLIT_DEPTH)
         return { kind: 'unknown' };
     const split = (attached, index) => {
@@ -658,17 +673,25 @@ function walkEnv(tokens, ends, raw, depth) {
         const words = splitEnvString(value);
         if (!words || words.length === 0)
             return { kind: 'unknown' };
-        return walkEnv(ends ? words : [...words, ...tokens.slice(consumed + 1)], null, '', depth + 1);
+        // An escape (`\r`, `\t`, `\f` ...) can put a control character, tab included, into a word.
+        if (words.some((word) => /[^\x20-\x7e]/.test(word)))
+            flags.degraded = true;
+        return walkEnv(ends ? words : [...words, ...tokens.slice(consumed + 1)], null, '', depth + 1, flags);
     };
     for (let i = 0; i < tokens.length; i += 1) {
         const word = tokens[i];
         if (word === '--')
-            return classifyProgram(tokens.slice(i + 1), depth);
+            return classifyProgram(tokens.slice(i + 1), depth, flags);
         if (word === '-')
             continue;
         if (word.startsWith('--')) {
-            if (word === '--ignore-environment' || word === '--null' || word === '--debug')
+            if (word === '--ignore-environment')
                 continue;
+            // Harmless to env itself, but not on the allowlist: never a definite shell.
+            if (word === '--null' || word === '--debug') {
+                flags.degraded = true;
+                continue;
+            }
             if (word === '--unset') {
                 if (tokens[i + 1] === undefined)
                     return { kind: 'unknown' };
@@ -686,8 +709,12 @@ function walkEnv(tokens, ends, raw, depth) {
         if (word.startsWith('-')) {
             for (let j = 1; j < word.length; j += 1) {
                 const letter = word[j];
-                if (letter === 'i' || letter === '0' || letter === 'v')
+                if (letter === 'i')
                     continue;
+                if (letter === '0' || letter === 'v') {
+                    flags.degraded = true;
+                    continue;
+                }
                 if (letter === 'u') {
                     // The name is the rest of this word or the next one.
                     if (j === word.length - 1) {
@@ -706,11 +733,11 @@ function walkEnv(tokens, ends, raw, depth) {
         // NAME=value (BASH_ENV, ENV, PATH, SHELLOPTS, PS4 ...): the interpreter's environment is not modelled.
         if (word.includes('='))
             return { kind: 'unknown' };
-        return classifyProgram(tokens.slice(i), depth);
+        return classifyProgram(tokens.slice(i), depth, flags);
     }
     return { kind: 'unknown' };
 }
-function classifyEnvArguments(raw) {
+function classifyEnvArguments(raw, flags) {
     const tokens = [];
     const ends = [];
     const re = /[^ \t]+/g;
@@ -718,9 +745,9 @@ function classifyEnvArguments(raw) {
         tokens.push(match[0]);
         ends.push(match.index + match[0].length);
     }
-    return walkEnv(tokens, ends, raw, 0);
+    return walkEnv(tokens, ends, raw, 0, flags);
 }
-function classifyProgram(tokens, depth) {
+function classifyProgram(tokens, depth, flags) {
     const program = tokens[0];
     if (program === undefined || program === '')
         return { kind: 'unknown' };
@@ -733,10 +760,15 @@ function classifyProgram(tokens, depth) {
     if (slash >= 0 && !SYSTEM_BIN_DIRS.has(slash === 0 ? '/' : program.slice(0, slash)))
         return { kind: 'unknown' };
     if (base === 'env')
-        return walkEnv(tokens.slice(1), null, '', depth + 1);
+        return walkEnv(tokens.slice(1), null, '', depth + 1, flags);
     return classifyShellArguments(tokens.slice(1));
 }
-/** `#!` line → what really runs. 'shell' only for a system shell with plain flags; every other form that is not understood is 'unknown'. */
+/**
+ * `#!` line → what really runs. 'shell' only for a system shell with plain flags
+ * on a plain line; every form that is not understood is 'unknown', and a line
+ * that is understood but not plain (control or non-ASCII characters, too long,
+ * an env option off the allowlist) is 'other', never 'shell'.
+ */
 function classifyShebang(line) {
     const body = line.trim();
     const space = body.search(/[ \t]/);
@@ -747,23 +779,40 @@ function classifyShebang(line) {
     const slash = interpreter.lastIndexOf('/');
     const dir = interpreter.slice(0, slash) || '/';
     const base = interpreter.slice(slash + 1);
+    let result;
+    const flags = { degraded: false };
     if (base === 'env' || SHELL_PROGRAMS.test(base)) {
         if (!SYSTEM_BIN_DIRS.has(dir))
             return { kind: 'unknown' };
         if (base === 'env')
-            return classifyEnvArguments(rest);
-        return classifyShellArguments(rest.split(/[ \t]+/).filter(Boolean));
+            result = classifyEnvArguments(rest, flags);
+        else
+            result = classifyShellArguments(rest.split(/[ \t]+/).filter(Boolean));
     }
-    return { kind: 'other' };
+    else
+        result = { kind: 'other' };
+    // The kernel ends the line at \n only; \r and the other control characters stay in it.
+    if (line.length + 2 > MAX_SHEBANG_LINE || !PLAIN_SHEBANG_LINE.test(line))
+        flags.degraded = true;
+    return flags.degraded ? degrade(result) : result;
 }
-/** A script file run as `./x.sh` or `bash x.sh` (≤64 KB), realpath-ed; the interpreter comes from the shebang. */
+/**
+ * A script file run as `./x.sh` or `bash x.sh` (≤64 KB), realpath-ed; the
+ * interpreter comes from the shebang, which is the first line up to `\n` only.
+ * With no shebang the kernel fails the exec and the invoking shell runs the file
+ * as a sh script, unless its first line carries binary magic (control characters).
+ */
 function readScriptFile(fs, path) {
     const read = readResolved(fs, path, exports.MAX_SCRIPT_BYTES);
     if (read.status !== 'ok')
         return read;
-    const shebang = /^#![ \t]*([^\r\n]*)/.exec(read.text);
-    // No shebang: the invoking shell runs it as a sh script.
-    const result = shebang ? classifyShebang(shebang[1]) : { kind: 'shell' };
+    const newline = read.text.indexOf('\n');
+    const firstLine = newline < 0 ? read.text : read.text.slice(0, newline);
+    let result;
+    if (read.text.startsWith('#!'))
+        result = classifyShebang(firstLine.slice(2));
+    else
+        result = CONTROL_CHARACTER.test(firstLine) ? { kind: 'other' } : { kind: 'shell' };
     if (result.kind === 'unknown')
         return { status: 'unknown', reason: 'shebang' };
     if (result.kind === 'shell')
