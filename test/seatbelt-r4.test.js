@@ -305,6 +305,21 @@ test('B3: MCP shell tool events apply the same shape rule (the last text only)',
   assert.equal(ev({ command: `${W} & git checkout main` }).decision, 'stop');
   assert.equal(ev({ command: `npm run build && ${T3}` }).decision, 'pass');
   assert.equal(ev({ command: `${T3} | cat` }).decision, 'stop');
+  // Several commands in one event: only the last can be trimmed, and an earlier head change counts.
+  assert.equal(ev({ commands: ['npm run build', W] }).decision, 'pass');
+  assert.equal(ev({ commands: [W, 'git checkout main'] }).decision, 'stop');
+  assert.equal(ev({ commands: [W, 'echo done'] }).decision, 'stop');
+  assert.equal(ev({ commands: ['git checkout main', W] }).decision, 'stop');
+  // The working-directory reading of one command is not a command after it; another directory is a stop.
+  const evMcp = (tool_input) => evaluateSeatbelt({ tool_name: 'mcp__x__run', tool_input }, makeEnv(F));
+  assert.equal(evMcp({ command: W, cwd: '/home/u/proj' }).decision, 'pass');
+  assert.equal(evMcp({ command: W, cwd: '/home/u/other-repo' }).decision, 'stop');
+  assert.equal(evMcp({ command: W, env: { WRANGLER_LOG: 'debug' } }).decision, 'stop');
+  assert.equal(evMcp({ command: T3, env: { GIT_DIR: '/x' } }).decision, 'stop');
+  // A stdin feed makes the command a group with a here-document: no trim.
+  assert.equal(ev({ command: W, stdin: 'x' }).decision, 'stop');
+  // Text in a field that is not the command (a description) is not the line.
+  assert.equal(ev({ command: T3, description: 'push & done' }).decision, 'pass');
 });
 
 // ---------------------------------------------------------------------------------------------
