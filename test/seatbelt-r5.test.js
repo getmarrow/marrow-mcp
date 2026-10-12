@@ -233,3 +233,90 @@ test('B1 controls: an override over a plain assignment (no call, no unknown valu
   }
 });
 
+// ---------------------------------------------------------------- B2: NUL and lone CR in the Makefile text
+
+/**
+ * GNU make 4.3 drops the rest of a line after a NUL, and the newline with it: the
+ * next line is joined to this one, so a NUL at the end of a recipe line hides the
+ * next rule header (and that rule's recipe becomes part of the wanted target). A CR
+ * that does not end a CRLF is not a line end to make, though it is one to other
+ * readers. A Makefile with either is not read: `unknown`, whole file.
+ */
+const B2_ROWS = [
+  // The audit's repro and the other four rows of its nul.log.
+  { name: 'audit: NUL ends a recipe line, the deploy header is joined to it', makefile: 'all:\n\t@echo a\0\ndeploy:\n\t@touch @M@\n' },
+  { name: 'audit: NUL then a rule header joins the recipe', makefile: 'all:\n\t@echo hi;\0\nevil:\n\t@touch @M@\n' },
+  { name: 'audit: NUL in a comment hides the next rule line', makefile: 'all:\n\t@echo hi\n# note\0\nall: evil\nevil:\n\t@touch @M@\n' },
+  { name: 'audit: NUL then a .PHONY header', makefile: 'all:\n\t@true;\0\n.PHONY: x\n\t@touch @M@\n' },
+  { name: 'audit: NUL in an assignment swallows the next line', makefile: 'X = hi\0\nall:\n\t@echo $(X)\n\t@touch @M@\n' },
+  // NUL variants.
+  { name: 'NUL in the middle of a recipe line', makefile: 'all:\n\t@ec\0ho a\n\t@touch @M@\n' },
+  { name: 'NUL in the middle of a word, the next line stays', makefile: 'all:\n\t@echo a\0b\n\t@touch @M@\n' },
+  { name: 'NUL in a comment line', makefile: '# note\0\nall:\n\t@echo a\n' },
+  { name: 'NUL in a comment between recipe lines', makefile: 'all:\n# note\0\n\t@echo a\n\t@touch @M@\n' },
+  { name: 'NUL in an include line', makefile: 'include nothing.mk\0\nall:\n\t@echo a\n' },
+  { name: 'NUL in a -include line', makefile: '-include nothing.mk\0\nall:\n\t@echo a\n' },
+  { name: 'NUL at the start of the file', makefile: '\0all:\n\t@echo a\n' },
+  { name: 'NUL at the end of the file', makefile: 'all:\n\t@echo a\n\0' },
+  { name: 'NUL in a target name', makefile: 'al\0l:\n\t@echo a\n' },
+  { name: 'NUL right after the colon', makefile: 'all:\0\n\t@echo a\n' },
+  { name: 'NUL on a line of its own', makefile: 'all:\n\0\n\t@echo a\n' },
+  { name: 'NUL before a line continuation', makefile: 'X = a\0\\\nb\nall:\n\t@echo $(X)\n' },
+  { name: 'NUL inside a function call', makefile: 'X := $(sub\0st a,b,c)\nall:\n\t@echo $(X)\n' },
+  { name: 'NUL in a define block', makefile: 'define X\na\0b\nendef\nall:\n\t@echo a\n' },
+  { name: 'NUL after a CRLF', makefile: 'all:\r\n\t@echo a\0\r\ndeploy:\r\n\t@touch @M@\r\n' },
+  // Lone CR variants.
+  { name: 'CR-only line endings', makefile: 'all:\r\t@echo a\r\t@touch @M@\r' },
+  { name: 'a lone CR in the middle of a recipe line', makefile: 'all:\n\t@echo a\r@touch @M@\n' },
+  { name: 'a lone CR in front of a rule header', makefile: 'all:\n\t@echo a\rdeploy:\n\t@touch @M@\n' },
+  { name: 'a lone CR at the end of the file', makefile: 'all:\n\t@echo a\n\t@touch @M@\r' },
+  { name: 'CR CR LF', makefile: 'all:\n\t@echo a\r\r\n\t@touch @M@\n' },
+  { name: 'a lone CR in a comment', makefile: '# note\rall:\n\t@echo a\n' },
+  { name: 'a lone CR in an include line', makefile: 'include nothing.mk\rall:\n\t@echo a\n' },
+  { name: 'a lone CR in an assignment', makefile: 'X = a\rb\nall:\n\t@echo $(X)\n' },
+  { name: 'CRLF everywhere and one lone CR', makefile: 'all:\r\n\t@echo a\r\n\t@echo b\r' },
+];
+
+test('B2: a NUL byte or a CR that does not end a CRLF anywhere in the Makefile text is `unknown` (audit repro and variants)', () => {
+  const failures = [];
+  for (const row of B2_ROWS) {
+    for (const options of [{ env: ENV }, { env: ENV, makefile: 'Makefile' }, { env: ENV, overrides: { STAGE: 'prod' } }, {}]) {
+      const r = make(row.makefile.split('@M@').join('/m/MARKER'), ['all'], options);
+      if (!(r.status === 'unknown' && r.reason === 'control_character')) failures.push(`${row.name} [${Object.keys(options).join(',')}]: ${show(r)}`);
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
+test('B2: the answer is `unknown` for every wanted target and for a target the file does not have', () => {
+  const text = 'all:\n\t@echo a\0\ndeploy:\n\t@touch x\n';
+  for (const targets of [['all'], ['deploy'], ['nothing'], ['all', 'deploy'], []]) assert.equal(show(make(text, targets, { env: ENV })), 'unknown/control_character', JSON.stringify(targets));
+});
+
+test('B2 oracle: GNU make 4.3 joins the next line after a NUL, and the resolver does not read the file', { skip: oracleSkip }, () => {
+  const rows = B2_ROWS;
+  const failures = [];
+  for (const row of rows) {
+    const run = oracle({ makefile: row.makefile, targets: ['all'] });
+    const r = S.resolveMakeTargets(nfs, run.dir, ['all'], { env: ENV });
+    if (r.status !== 'unknown') failures.push(`${row.name}: ${show(r)}`);
+  }
+  assert.deepEqual(failures, []);
+  if (!MAKE_43) return;
+  // The audit's repro: the NUL ends the recipe line and the newline with it, so make runs `touch` for `all`.
+  const hidden = oracle({ makefile: rows[0].makefile, targets: ['all'] });
+  assert.equal(hidden.ranReal, true, 'make all creates the marker');
+  assert.equal(hidden.real.status, 0);
+  const listing = hidden.dry.stdout.split('\n').filter(Boolean);
+  assert.deepEqual(listing, ['echo adeploy:', `touch ${join(hidden.dir, 'MARKER')}`]);
+});
+
+test('B2 controls: LF and CRLF files are read as before; CR and NUL inside a string of another file kind are not this rule', () => {
+  assert.deepEqual(make('all:\n\t@echo a\n', ['all'], { env: ENV }).commands, ['echo a']);
+  const crlf = make('all:\r\n\t@echo a\r\n\t@echo b\r\n', ['all'], { env: ENV });
+  assert.ok(definite(crlf), show(crlf));
+  assert.deepEqual(crlf.commands, ['echo a', 'echo b']);
+  // The rule is on the Makefile text only: a NUL in a script file is the shebang code's business (F1), not this one.
+  assert.equal(S.readScriptFile(createFakeFs().file('/s/x.sh', 'echo a\0b\n'), '/s/x.sh').status, 'ok');
+});
+

@@ -209,7 +209,8 @@ const MAKE_SIMPLE_FLAGS = new Set(['-s', '-k', '-w', '--silent', '--quiet', '--k
  * command-line name no expansion reaches; an assignment the command line overrides
  * (make still reads it) that is `!=` or has a right side not proven inert; a recipe-less target that is not
  * .PHONY and could have a source file (built-in rules); a rule for the makefile
- * itself; two recipes for one target. The mapper must re-classify `commands`.
+ * itself; two recipes for one target. A Makefile with a NUL byte, or a CR that
+ * does not end a CRLF, is `unknown` (control_character). The mapper must re-classify `commands`.
  */
 export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[], options: { makefile?: string; overrides?: Record<string, string>; env?: Record<string, string | undefined> } = {}): MakeResolution {
   let read: Read = { status: 'absent' };
@@ -221,6 +222,10 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
     }
   }
   if (read.status !== 'ok') return read.status === 'absent' ? read : { status: 'unknown', reason: read.reason };
+  // make drops the rest of a line after a NUL, and the newline with it: the next line is joined to this one, so a NUL
+  // can hide a rule header or a recipe line from a reader that keeps the text. A CR that does not end a CRLF is not a
+  // line end to make, though it is one to other readers. Neither is modelled: the file is not read.
+  if (read.text.includes('\0') || /\r(?!\n)/.test(read.text)) return { status: 'unknown', reason: 'control_character' };
   const variables = new Map<string, MakeVariable>();
   const rules = new Map<string, MakeRule>();
   const makefileNames = new Set<string>([...MAKEFILE_NAMES, read.path.slice(read.path.lastIndexOf('/') + 1)]);
