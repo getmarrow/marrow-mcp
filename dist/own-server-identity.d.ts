@@ -66,6 +66,8 @@ export type CodexIdentityOptions = {
     processArgs?: string[] | null;
     /** Test seam: the hook's own working directory (default process.cwd()). */
     processCwd?: string;
+    /** The user's home, whose own `.npmrc` is npm's user config (default os.homedir()). */
+    userHome?: string;
 };
 /** Whether the Codex `marrow` server is provably the official Marrow MCP server. */
 export declare function codexOfficialMarrowServer(options?: CodexIdentityOptions): ServerIdentity;
@@ -75,6 +77,7 @@ export type CursorIdentityOptions = {
     read?: HostConfigReader;
     onlyServer: boolean;
     processCwd?: string;
+    env?: NodeJS.ProcessEnv;
 };
 /** Whether Cursor's `marrow` server is provably the official one (and, at preToolUse, the only server). */
 export declare function cursorOfficialMarrowServer(options: CursorIdentityOptions): ServerIdentity;

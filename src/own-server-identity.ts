@@ -461,15 +461,19 @@ const CURSOR_SERVER_KEYS = new Set(['command', 'args', 'env', 'type']);
  * npx and a bare bin name resolve a project-local copy first: a
  * `node_modules/@getmarrow/mcp` or `node_modules/.bin/marrow-mcp` in any
  * working directory or above it could be planted project content, so with
- * one present those two forms prove nothing.
+ * one present those two forms prove nothing. npx also reads the project's
+ * `.npmrc` (registry, scoped registry), so any `.npmrc` in a working
+ * directory or above it, other than the user's own `$HOME/.npmrc`, unproves
+ * the npx forms. A path deeper than the walk bound proves nothing.
  */
-function localPackageCopy(starts: string[]): boolean {
+function upwardHas(starts: string[], present: (dir: string) => boolean): boolean {
   const seen = new Set<string>();
   for (const start of starts) {
     let dir = resolve(start);
-    for (let depth = 0; depth < MAX_DIR_DEPTH && !seen.has(dir); depth += 1) {
+    for (let depth = 0; !seen.has(dir); depth += 1) {
+      if (depth >= MAX_DIR_DEPTH) return true;
       seen.add(dir);
-      if (existsSync(join(dir, 'node_modules', '@getmarrow', 'mcp')) || existsSync(join(dir, 'node_modules', '.bin', 'marrow-mcp'))) return true;
+      if (present(dir)) return true;
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -478,10 +482,33 @@ function localPackageCopy(starts: string[]): boolean {
   return false;
 }
 
+function localPackageCopy(starts: string[]): boolean {
+  return upwardHas(starts, (dir) => existsSync(join(dir, 'node_modules', '@getmarrow', 'mcp')) || existsSync(join(dir, 'node_modules', '.bin', 'marrow-mcp')));
+}
+
+function projectNpmrc(starts: string[], home: string): boolean {
+  const userConfig = resolve(home, '.npmrc');
+  return upwardHas(starts, (dir) => {
+    const file = join(dir, '.npmrc');
+    return file !== userConfig && existsSync(file);
+  });
+}
+
+/** npm reads any `npm_config_*` variable (any case) as config: registry, userconfig, globalconfig. */
+function npmConfigEnv(env: NodeJS.ProcessEnv): boolean {
+  return Object.keys(env).some((key) => /^npm_config_/i.test(key));
+}
+
 /** Whether a launch resolves through npx or PATH (the forms a local copy can shadow). */
 function resolvesLocally(entry: unknown): boolean {
   const command = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).command : undefined;
   return command === 'npx' || command === 'npx.cmd' || command === 'marrow-mcp' || command === 'marrow-mcp.cmd';
+}
+
+/** Whether a launch goes through npx (the forms npm config can redirect). */
+function launchesWithNpx(entry: unknown): boolean {
+  const command = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).command : undefined;
+  return command === 'npx' || command === 'npx.cmd';
 }
 
 /** One server definition: an official launch with only the keys and env names Marrow writes. */
@@ -512,13 +539,16 @@ function addServers(into: ServerSet, servers: unknown, where: string): void {
 }
 
 /** The decision over the union of every definition of every server. */
-function decide(set: ServerSet, keys: ReadonlySet<string>, onlyServer: boolean, cwds: string[], codexNames = false): ServerIdentity {
+type NpmContext = { env: NodeJS.ProcessEnv; home: string };
+
+function decide(set: ServerSet, keys: ReadonlySet<string>, onlyServer: boolean, cwds: string[], npm: NpmContext, codexNames = false): ServerIdentity {
   if (set.bad) return { official: false, reason: set.bad };
   const colliding = [...set.names.keys()].filter(codexNames ? codexServerNameCanProduceMarrowLabel : serverNameCollidesWithMarrow);
   if (colliding.length !== 1) return { official: false, reason: colliding.length ? 'more than one server can produce the marrow label' : 'no marrow server configured' };
   if (colliding[0] !== 'marrow') return { official: false, reason: 'the colliding server is not named exactly marrow' };
   if (!set.names.get('marrow')!.every((entry) => officialDefinition(entry, keys))) return { official: false, reason: 'the marrow server is not the official Marrow MCP launch' };
   if (set.names.get('marrow')!.some(resolvesLocally) && localPackageCopy(cwds)) return { official: false, reason: 'a project-local Marrow MCP copy could shadow the npx or bin launch' };
+  if (set.names.get('marrow')!.some(launchesWithNpx) && (npmConfigEnv(npm.env) || projectNpmrc(cwds, npm.home))) return { official: false, reason: 'npm config in the project or the environment could redirect the npx launch' };
   if (onlyServer && set.names.size !== 1) return { official: false, reason: 'other MCP servers could expose a tool with this name' };
   return { official: true, reason: 'official' };
 }
@@ -535,6 +565,8 @@ export type CodexIdentityOptions = {
   processArgs?: string[] | null;
   /** Test seam: the hook's own working directory (default process.cwd()). */
   processCwd?: string;
+  /** The user's home, whose own `.npmrc` is npm's user config (default os.homedir()). */
+  userHome?: string;
 };
 
 const PROFILE_NAME = /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$/;
@@ -630,14 +662,14 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
       }
     }
   }
-  return decide(set, CODEX_SERVER_KEYS, false, cwds, true);
+  return decide(set, CODEX_SERVER_KEYS, false, cwds, { env, home: options.userHome ?? homedir() }, true);
 }
 
 // ---------------------------------------------------------------------------
 // Cursor
 // ---------------------------------------------------------------------------
 
-export type CursorIdentityOptions = { home?: string; cwds?: unknown[]; read?: HostConfigReader; onlyServer: boolean; processCwd?: string };
+export type CursorIdentityOptions = { home?: string; cwds?: unknown[]; read?: HostConfigReader; onlyServer: boolean; processCwd?: string; env?: NodeJS.ProcessEnv };
 
 /** Whether Cursor's `marrow` server is provably the official one (and, at preToolUse, the only server). */
 export function cursorOfficialMarrowServer(options: CursorIdentityOptions): ServerIdentity {
@@ -657,7 +689,7 @@ export function cursorOfficialMarrowServer(options: CursorIdentityOptions): Serv
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { official: false, reason: 'a Cursor MCP config is not an object' };
     addServers(set, (parsed as Record<string, unknown>).mcpServers, 'mcpServers');
   }
-  return decide(set, CURSOR_SERVER_KEYS, options.onlyServer, cwds);
+  return decide(set, CURSOR_SERVER_KEYS, options.onlyServer, cwds, { env: options.env ?? process.env, home });
 }
 
 // ---------------------------------------------------------------------------

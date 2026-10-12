@@ -18,6 +18,9 @@ const keep = new Set(['MARROW_TEST_CLAUDE_CODE_BUNDLE']);
 for (const key of Object.keys(process.env)) {
   if (keep.has(key)) continue;
   if (/^(?:MARROW_|CLAUDE_CODE_)/.test(key) || key === 'CLAUDECODE' || key === 'CODEX_HOME') delete process.env[key];
+  // `npm test` exports npm_config_* to its children; the own-tool identity check treats those as
+  // a possible npx redirect, so a hook under test starts from a shell-like environment.
+  if (/^npm_config_/i.test(key)) delete process.env[key];
 }
 process.on('exit', () => {
   try { rmSync(home, { recursive: true, force: true }); } catch { /* best-effort temp cleanup */ }

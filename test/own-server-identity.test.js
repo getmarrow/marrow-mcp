@@ -517,3 +517,47 @@ test('B3 Cursor workspace_roots: more than 8, a non-array, or any root that is n
     resetOwnServerIdentityCache();
   }
 });
+
+test('B4 npx and npm config: a project .npmrc (cwd or any ancestor) or npm_config_* in the hook env unproves the npx forms; $HOME/.npmrc does not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'marrow-npmrc-'));
+  try {
+    const userHome = join(dir, 'home');
+    const project = join(userHome, 'work', 'proj');
+    const sub = join(project, 'packages', 'app');
+    mkdirSync(sub, { recursive: true });
+    const run = (text, { cwd = sub, env = { CODEX_HOME: '/virtual/codex-home' } } = {}) => codexOfficialMarrowServer({ env, processArgs: null, cwds: [cwd], processCwd: cwd, userHome, read: files({ '/virtual/codex-home/config.toml': text }) }).official;
+    const npxPkg = toml('marrow', 'npx', ['-y', '--package=@getmarrow/mcp@latest', 'marrow-mcp']);
+    const bin = toml('marrow', 'marrow-mcp', []);
+    const installer = `[mcp_servers.marrow]\ncommand = ${JSON.stringify(INSTALLER.posix.command)}\nargs = ${JSON.stringify(INSTALLER.posix.args)}\n`;
+    assert.equal(run(OFFICIAL_TOML), true, 'no .npmrc anywhere');
+    writeFileSync(join(userHome, '.npmrc'), '# user config (corporate mirror users keep working)\n');
+    assert.equal(run(OFFICIAL_TOML), true, '$HOME/.npmrc is the user config, not project content');
+    for (const where of [sub, project, join(userHome, 'work')]) {
+      writeFileSync(join(where, '.npmrc'), 'x\n');
+      assert.equal(run(OFFICIAL_TOML), false, `npx -y form, .npmrc at ${where.slice(dir.length)}`);
+      assert.equal(run(npxPkg), false, `npx --package form, .npmrc at ${where.slice(dir.length)}`);
+      assert.equal(run(bin), true, 'the installed bin form does not read .npmrc');
+      assert.equal(run(installer), true, 'the installer runtime verifies its own copy');
+      rmSync(join(where, '.npmrc'));
+    }
+    mkdirSync(join(sub, '.npmrc'));
+    assert.equal(run(OFFICIAL_TOML), false, 'a .npmrc directory (or any non-file) is not ignored');
+    rmSync(join(sub, '.npmrc'), { recursive: true });
+    assert.equal(run(OFFICIAL_TOML), true);
+    for (const key of ['npm_config_registry', 'NPM_CONFIG_REGISTRY', 'npm_config_@getmarrow:registry', 'Npm_Config_userconfig', 'npm_config_globalconfig']) {
+      assert.equal(run(OFFICIAL_TOML, { env: { CODEX_HOME: '/virtual/codex-home', [key]: 'x' } }), false, key);
+      assert.equal(run(bin, { env: { CODEX_HOME: '/virtual/codex-home', [key]: 'x' } }), true, `${key}: bin form`);
+    }
+    // Cursor: the same rule.
+    const cursor = (servers, extra = {}) => cursorOfficialMarrowServer({ home: userHome, cwds: [sub], processCwd: sub, onlyServer: false, env: {}, read: files({ [join(sub, '.cursor', 'mcp.json')]: JSON.stringify({ mcpServers: servers }) }), ...extra }).official;
+    const cursorNpx = { marrow: { command: 'npx', args: ['-y', '--package=@getmarrow/mcp@latest', 'marrow-mcp'] } };
+    assert.equal(cursor(cursorNpx), true);
+    writeFileSync(join(project, '.npmrc'), 'x\n');
+    assert.equal(cursor(cursorNpx), false, 'Cursor npx with a project .npmrc');
+    assert.equal(cursor({ marrow: INSTALLER.posix }), true, 'Cursor installer form');
+    rmSync(join(project, '.npmrc'));
+    assert.equal(cursor(cursorNpx, { env: { npm_config_registry: 'x' } }), false, 'Cursor npx with npm_config_registry');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
