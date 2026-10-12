@@ -26,15 +26,43 @@ export interface GitDirs {
     /** The common dir (config, refs, packed-refs). */
     commonDir: string;
 }
-/** Finds the git dirs for a working directory: a `.git` directory, or a `.git` file (`gitdir:`) plus `commondir`. */
-export declare function discoverGitDirs(fs: SeatbeltFs, cwd: string): GitDirs | null | 'unknown';
+/**
+ * Env that makes git use a different repository, config or work tree than
+ * discovery from the cwd finds. The resolvers do not model these: any of
+ * them set (in the hook env or as a prefix assignment of the git command)
+ * makes discovery and config 'unknown'/incomplete, never a definite answer.
+ */
+export declare const GIT_RELOCATING_ENV: string[];
+/**
+ * Env and config that make git run another program (ssh, pager, editor,
+ * diff/merge drivers, credential helpers, hooks, fsmonitor). The mapper (U2)
+ * treats any of them present as a shell command it cannot see: stop.
+ */
+export declare const GIT_EXEC_ENV: string[];
+/** Names of exec-capable env vars and config keys present (alias.* with a leading `!` only). Names only, never values. */
+export declare function gitExecVectors(config: GitConfig, env?: Record<string, string | undefined>): string[];
+/** The relocating names present in env (any value, even empty, counts). */
+export declare function gitRelocatingEnv(env: Record<string, string | undefined> | undefined): string[];
+/**
+ * Finds the git dirs for a working directory the way git's discovery does: at
+ * each level a `.git` directory, a `.git` file (`gitdir:`) plus `commondir`,
+ * or the level itself as a git directory (bare repo). With relocating env
+ * (`env`: hook env merged with the command's prefix assignments) the answer
+ * is 'unknown'.
+ */
+export declare function discoverGitDirs(fs: SeatbeltFs, cwd: string, env?: Record<string, string | undefined>): GitDirs | null | 'unknown';
 export interface GitConfigSources {
     /** Trusted home (passwd or --home), for ~/.gitconfig, ~/.config/git/config and `~/` in include paths. */
     home: string | null;
     dirs?: GitDirs | null;
     /** `git -c key=value` pairs, in order. */
     commandConfig?: Array<[string, string]>;
-    /** The hook's own environment merged with same-command assignments (GIT_CONFIG_*). */
+    /**
+     * The hook's own environment merged with the git command's prefix
+     * assignments (they reach git's environment). GIT_CONFIG_* are modelled;
+     * GIT_RELOCATING_ENV, a HOME other than `home`, or a relative config path
+     * make the config incomplete.
+     */
     env?: Record<string, string | undefined>;
     /** System config files; default /etc/gitconfig plus common package-manager prefixes. */
     systemFiles?: string[];
@@ -82,7 +110,7 @@ export type GitExpansion = {
     args: string[];
 } | {
     kind: 'unknown';
-    reason: 'not_found' | 'loop' | 'too_deep' | 'unparsed' | 'config_incomplete' | 'dynamic_config';
+    reason: 'not_found' | 'loop' | 'too_deep' | 'unparsed' | 'config_incomplete' | 'dynamic_config' | 'relocated';
 };
 /**
  * Expands git aliases the way git would, keeping every candidate: each
@@ -94,6 +122,12 @@ export declare function expandGitAliases(argv: string[], context: {
     config: GitConfig;
     env?: Record<string, string | undefined>;
 }): GitExpansion[];
+/**
+ * `git push` long options that can rewrite or delete remote refs (S1): the
+ * mapper treats a candidate in this set as risky. `prune` deletes remote
+ * branches that have no local counterpart under `--all`/a pattern refspec.
+ */
+export declare const GIT_PUSH_RISKY_OPTIONS: string[];
 /** Long options of `git push` (builtin/push.c), for prefix abbreviation. */
 export declare const GIT_PUSH_LONG_OPTIONS: string[];
 /**

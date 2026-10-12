@@ -122,8 +122,67 @@ function dirname(path: string): string {
   return cut <= 0 ? '/' : path.slice(0, cut);
 }
 
-/** Finds the git dirs for a working directory: a `.git` directory, or a `.git` file (`gitdir:`) plus `commondir`. */
-export function discoverGitDirs(fs: SeatbeltFs, cwd: string): GitDirs | null | 'unknown' {
+/**
+ * Env that makes git use a different repository, config or work tree than
+ * discovery from the cwd finds. The resolvers do not model these: any of
+ * them set (in the hook env or as a prefix assignment of the git command)
+ * makes discovery and config 'unknown'/incomplete, never a definite answer.
+ */
+export const GIT_RELOCATING_ENV = ['GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT_CEILING_DIRECTORIES', 'GIT_DISCOVERY_ACROSS_FILESYSTEM', 'GIT_NAMESPACE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_EXEC_PATH', 'GIT_TEMPLATE_DIR'];
+
+/**
+ * Env and config that make git run another program (ssh, pager, editor,
+ * diff/merge drivers, credential helpers, hooks, fsmonitor). The mapper (U2)
+ * treats any of them present as a shell command it cannot see: stop.
+ */
+export const GIT_EXEC_ENV = ['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_PROXY_COMMAND', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_PAGER', 'PAGER', 'GIT_EDITOR', 'GIT_SEQUENCE_EDITOR', 'EDITOR', 'VISUAL', 'GIT_EXTERNAL_DIFF', 'GIT_EXEC_PATH'];
+const GIT_EXEC_CONFIG = /^(?:core\.(?:sshcommand|pager|editor|fsmonitor|hookspath|gitproxy|askpass)|sequence\.editor|diff\.external|diff\..+\.(?:command|textconv)|merge\..+\.driver|filter\..+\.(?:clean|smudge|process)|credential(?:\..+)?\.helper|pager\..+|gpg(?:\..+)?\.program|uploadpack\.packobjectshook|remote\..+\.(?:receivepack|uploadpack|vcs)|url\..+\.insteadof|protocol\..+\.allow|http\..*proxy|alias\..+)$/;
+
+/** Names of exec-capable env vars and config keys present (alias.* with a leading `!` only). Names only, never values. */
+export function gitExecVectors(config: GitConfig, env?: Record<string, string | undefined>): string[] {
+  const out = new Set<string>();
+  for (const name of GIT_EXEC_ENV) if (env && env[name] !== undefined) out.add(name);
+  for (const entry of config.entries) {
+    if (!GIT_EXEC_CONFIG.test(entry.key)) continue;
+    if (entry.key.startsWith('alias.') && !entry.value.startsWith('!')) continue;
+    // Subsections (remote names, URLs that may carry credentials) are never returned.
+    const first = entry.key.indexOf('.');
+    const last = entry.key.lastIndexOf('.');
+    if (entry.key.startsWith('alias.')) out.add('alias.*');
+    else out.add(first === last ? entry.key : `${entry.key.slice(0, first)}.*.${entry.key.slice(last + 1)}`);
+  }
+  return [...out];
+}
+
+/** The relocating names present in env (any value, even empty, counts). */
+export function gitRelocatingEnv(env: Record<string, string | undefined> | undefined): string[] {
+  if (!env) return [];
+  return GIT_RELOCATING_ENV.filter((name) => env[name] !== undefined);
+}
+
+/** git's is_git_directory: HEAD plus objects/ and refs/ (a bare repo, or cwd inside a .git dir). */
+function isGitDirectory(fs: SeatbeltFs, dir: string): boolean | 'unknown' {
+  try {
+    const base = dir === '/' ? '' : dir;
+    const head = fs.lstat(`${base}/HEAD`);
+    if (!head || (head.type !== 'file' && head.type !== 'symlink')) return false;
+    const objects = fs.lstat(`${base}/objects`);
+    const refs = fs.lstat(`${base}/refs`);
+    return Boolean(objects && refs && objects.type !== 'file' && refs.type !== 'file');
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
+ * Finds the git dirs for a working directory the way git's discovery does: at
+ * each level a `.git` directory, a `.git` file (`gitdir:`) plus `commondir`,
+ * or the level itself as a git directory (bare repo). With relocating env
+ * (`env`: hook env merged with the command's prefix assignments) the answer
+ * is 'unknown'.
+ */
+export function discoverGitDirs(fs: SeatbeltFs, cwd: string, env?: Record<string, string | undefined>): GitDirs | null | 'unknown' {
+  if (gitRelocatingEnv(env).length > 0) return 'unknown';
   const real = realPath(fs, cwd, { followFinal: true });
   if (real.status !== 'resolved') return 'unknown';
   let dir = real.path;
@@ -144,6 +203,10 @@ export function discoverGitDirs(fs: SeatbeltFs, cwd: string): GitDirs | null | '
       const gitDir = joinPath(dir, match[1]);
       return { gitDir, commonDir: commonDirOf(fs, gitDir) };
     }
+    if (entry) return 'unknown';
+    const bare = isGitDirectory(fs, dir);
+    if (bare === 'unknown') return 'unknown';
+    if (bare) return { gitDir: dir, commonDir: commonDirOf(fs, dir) };
     if (dir === '/') return null;
     dir = dirname(dir);
   }
@@ -160,7 +223,12 @@ export interface GitConfigSources {
   dirs?: GitDirs | null;
   /** `git -c key=value` pairs, in order. */
   commandConfig?: Array<[string, string]>;
-  /** The hook's own environment merged with same-command assignments (GIT_CONFIG_*). */
+  /**
+   * The hook's own environment merged with the git command's prefix
+   * assignments (they reach git's environment). GIT_CONFIG_* are modelled;
+   * GIT_RELOCATING_ENV, a HOME other than `home`, or a relative config path
+   * make the config incomplete.
+   */
   env?: Record<string, string | undefined>;
   /** System config files; default /etc/gitconfig plus common package-manager prefixes. */
   systemFiles?: string[];
@@ -227,6 +295,10 @@ export function loadGitConfig(fs: SeatbeltFs, sources: GitConfigSources): GitCon
 
   let files = 0;
   const addFile = (path: string, depth: number) => {
+    if (!path.startsWith('/')) {
+      incomplete = true;
+      return;
+    }
     files += 1;
     if (files > MAX_CONFIG_FILES) {
       incomplete = true;
@@ -241,15 +313,39 @@ export function loadGitConfig(fs: SeatbeltFs, sources: GitConfigSources): GitCon
     addEntries(parseGitConfigText(read.text, path), path, depth);
   };
 
-  if (!env.GIT_CONFIG_NOSYSTEM) for (const file of sources.systemFiles || DEFAULT_SYSTEM_FILES) addFile(file, 0);
-  if (env.GIT_CONFIG_SYSTEM) addFile(env.GIT_CONFIG_SYSTEM, 0);
+  // Env-named config files are added to the defaults, never substituted for
+  // them (a superset of candidates). A relative one depends on the command's
+  // cwd, which is not modelled.
+  const addEnvFile = (value: string | undefined) => {
+    if (value === undefined || value === '') return;
+    if (!value.startsWith('/')) incomplete = true;
+    else addFile(value, 0);
+  };
+  if (gitRelocatingEnv(env).length > 0) incomplete = true;
+  // GIT_CONFIG_NOSYSTEM is ignored: reading the system files anyway can only add candidates.
+  for (const file of sources.systemFiles || DEFAULT_SYSTEM_FILES) addFile(file, 0);
+  addEnvFile(env.GIT_CONFIG_SYSTEM);
   if (home) {
     addFile(`${home}/.config/git/config`, 0);
     addFile(`${home}/.gitconfig`, 0);
   } else {
     incomplete = true;
   }
-  if (env.GIT_CONFIG_GLOBAL) addFile(env.GIT_CONFIG_GLOBAL, 0);
+  // git reads $HOME and $XDG_CONFIG_HOME, not the trusted home: add theirs, and
+  // a different HOME also changes `~/` in include paths, so it is incomplete.
+  if (env.HOME !== undefined && env.HOME !== home) {
+    incomplete = true;
+    if (env.HOME.startsWith('/')) {
+      addFile(`${env.HOME.replace(/\/+$/, '')}/.gitconfig`, 0);
+      if (env.XDG_CONFIG_HOME === undefined) addFile(`${env.HOME.replace(/\/+$/, '')}/.config/git/config`, 0);
+    }
+  }
+  if (env.XDG_CONFIG_HOME !== undefined && env.XDG_CONFIG_HOME !== '') {
+    if (env.XDG_CONFIG_HOME.startsWith('/')) addFile(`${env.XDG_CONFIG_HOME.replace(/\/+$/, '')}/git/config`, 0);
+    else incomplete = true;
+  }
+  addEnvFile(env.GIT_CONFIG_GLOBAL);
+  addEnvFile(env.GIT_CONFIG);
   if (sources.dirs) {
     addFile(`${sources.dirs.commonDir}/config`, 0);
     addFile(`${sources.dirs.gitDir}/config.worktree`, 0);
@@ -286,14 +382,14 @@ export function gitConfigValues(config: GitConfig, key: string): string[] {
  * Built-ins of every supported git (≥2.20): git runs these before it looks at
  * aliases, so an alias with one of these names never applies.
  */
-export const GIT_CORE_BUILTINS = new Set('add am annotate apply archive bisect blame branch bundle cat-file check-attr check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick clean clone column commit commit-graph commit-tree config count-objects credential credential-cache credential-cache--daemon credential-store describe diff diff-files diff-index diff-tree difftool fast-export fast-import fetch fetch-pack fmt-merge-msg for-each-ref format-patch fsck fsck-objects gc get-tar-commit-id grep hash-object help index-pack init init-db interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit merge merge-base merge-file merge-index merge-ours merge-recursive merge-recursive-ours merge-recursive-theirs merge-subtree merge-tree mktag mktree multi-pack-index mv name-rev notes pack-objects pack-redundant pack-refs patch-id pickaxe prune prune-packed pull push range-diff read-tree rebase receive-pack reflog remote remote-ext remote-fd repack replace rerere reset rev-list rev-parse revert rm send-pack shortlog show show-branch show-index show-ref stage stash status stripspace symbolic-ref tag unpack-file unpack-objects update-index update-ref update-server-info upload-archive upload-pack var verify-commit verify-pack verify-tag version whatchanged worktree write-tree'.split(' '));
+export const GIT_CORE_BUILTINS = new Set('add am annotate apply archive bisect blame branch bundle cat-file check-attr check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick clean clone column commit commit-graph commit-tree config count-objects credential credential-cache credential-cache--daemon credential-store describe diff diff-files diff-index diff-tree difftool fast-export fast-import fetch fetch-pack fmt-merge-msg for-each-ref format-patch fsck fsck-objects gc get-tar-commit-id grep hash-object help index-pack init init-db interpret-trailers log ls-files ls-remote ls-tree mailinfo mailsplit merge merge-base merge-file merge-index merge-ours merge-recursive merge-recursive-ours merge-recursive-theirs merge-subtree merge-tree mktag mktree multi-pack-index mv name-rev notes pack-objects pack-refs patch-id pickaxe prune prune-packed pull push range-diff read-tree rebase receive-pack reflog remote remote-ext remote-fd repack replace rerere reset rev-list rev-parse revert rm send-pack shortlog show show-branch show-index show-ref stage stash status stripspace symbolic-ref tag unpack-file unpack-objects update-index update-ref update-server-info upload-archive upload-pack var verify-commit verify-pack verify-tag version worktree write-tree'.split(' '));
 
 /**
  * Commands that shadow an alias only when present: exec-path programs that may
  * not be installed (git-lfs, git-svn ...) and built-ins newer than 2.20. For
  * these the alias is kept as a candidate next to the command itself.
  */
-export const GIT_MAYBE_COMMANDS = new Set('diagnose bugreport for-each-repo maintenance hook fsmonitor--daemon sparse-checkout switch restore replay refs checkout--worker submodule--helper upload-archive--writer daemon difftool--helper filter-branch http-backend http-fetch http-push imap-send instaweb merge-octopus merge-one-file merge-resolve mergetool quiltimport remote-ftp remote-ftps remote-http remote-https request-pull send-email sh-i18n--envsubst shell submodule subtree web--browse gui citool svn p4 lfs'.split(' '));
+export const GIT_MAYBE_COMMANDS = new Set('diagnose bugreport for-each-repo maintenance hook fsmonitor--daemon sparse-checkout switch restore replay refs checkout--worker submodule--helper upload-archive--writer daemon difftool--helper filter-branch http-backend http-fetch http-push imap-send instaweb merge-octopus merge-one-file merge-resolve mergetool quiltimport whatchanged pack-redundant remote-ftp remote-ftps remote-http remote-https request-pull send-email sh-i18n--envsubst shell submodule subtree web--browse gui citool svn p4 lfs'.split(' '));
 
 /** git's split_cmdline: whitespace-separated words with single/double quotes and backslash escapes. Null on an unclosed quote. */
 export function splitGitCmdline(value: string): string[] | null {
@@ -392,7 +488,7 @@ export function parseGitInvocation(argv: string[]): GitInvocation {
 export type GitExpansion =
   | { kind: 'git'; invocation: GitInvocation }
   | { kind: 'shell'; command: string; args: string[] }
-  | { kind: 'unknown'; reason: 'not_found' | 'loop' | 'too_deep' | 'unparsed' | 'config_incomplete' | 'dynamic_config' };
+  | { kind: 'unknown'; reason: 'not_found' | 'loop' | 'too_deep' | 'unparsed' | 'config_incomplete' | 'dynamic_config' | 'relocated' };
 
 /**
  * Expands git aliases the way git would, keeping every candidate: each
@@ -420,6 +516,11 @@ export function expandGitAliases(argv: string[], context: { config: GitConfig; e
     }
     const merged: GitInvocation = { ...invocation, config: extra };
     const name = invocation.subcommand;
+    // -C / --git-dir / --work-tree, or relocating env: the config this expansion
+    // used is not the one git reads, so no answer here is definite.
+    if (invocation.directories.length > 0 || gitRelocatingEnv(context.env).length > 0) {
+      if (!results.some((r) => r.kind === 'unknown' && r.reason === 'relocated')) results.push({ kind: 'unknown', reason: 'relocated' });
+    }
     if (name === null || GIT_CORE_BUILTINS.has(name)) {
       results.push({ kind: 'git', invocation: merged });
       return;
@@ -443,6 +544,8 @@ export function expandGitAliases(argv: string[], context: { config: GitConfig; e
       if (!GIT_MAYBE_COMMANDS.has(name)) results.push({ kind: 'unknown', reason: context.config.incomplete ? 'config_incomplete' : 'not_found' });
       return;
     }
+    // Config that could not be read in full may hold a later definition (git uses the last).
+    if (context.config.incomplete && !results.some((r) => r.kind === 'unknown' && r.reason === 'config_incomplete')) results.push({ kind: 'unknown', reason: 'config_incomplete' });
     for (const definition of new Set(definitions)) {
       if (definition.startsWith('!')) {
         results.push({ kind: 'shell', command: definition.slice(1), args: invocation.args });
@@ -460,6 +563,13 @@ export function expandGitAliases(argv: string[], context: { config: GitConfig; e
   walk(parseGitInvocation(argv), [], [], 0);
   return results;
 }
+
+/**
+ * `git push` long options that can rewrite or delete remote refs (S1): the
+ * mapper treats a candidate in this set as risky. `prune` deletes remote
+ * branches that have no local counterpart under `--all`/a pattern refspec.
+ */
+export const GIT_PUSH_RISKY_OPTIONS = ['force', 'force-with-lease', 'force-if-includes', 'mirror', 'delete', 'prune'];
 
 /** Long options of `git push` (builtin/push.c), for prefix abbreviation. */
 export const GIT_PUSH_LONG_OPTIONS = ['repo', 'all', 'branches', 'mirror', 'delete', 'tags', 'dry-run', 'porcelain', 'force', 'force-with-lease', 'force-if-includes', 'recurse-submodules', 'thin', 'receive-pack', 'exec', 'set-upstream', 'progress', 'prune', 'no-verify', 'verify', 'follow-tags', 'signed', 'atomic', 'push-option', 'ipv4', 'ipv6', 'quiet', 'verbose'];
@@ -527,6 +637,8 @@ export interface PushRefspec {
   all: boolean;
 }
 
+const AMBIGUOUS_REF_PREFIX = /^(?:refs|heads|tags|remotes)(?:\/|$)/i;
+
 /** Resolves one push refspec's destination against HEAD and the upstream config. */
 export function resolvePushRefspec(refspec: string, head: GitHead): PushRefspec {
   let spec = refspec;
@@ -538,11 +650,21 @@ export function resolvePushRefspec(refspec: string, head: GitHead): PushRefspec 
   const dst = colon < 0 ? null : spec.slice(colon + 1);
   const del = colon >= 0 && src === '';
   if (spec.includes('*')) return { force, delete: del, destination: null, all: true };
+  // git matches a short name with ref_rev_parse_rules (`%s`, `refs/%s`,
+  // `refs/tags/%s`, `refs/heads/%s`, `refs/remotes/%s`, `refs/remotes/%s/HEAD`):
+  // `heads/main` is refs/heads/main, `tags/x` or `remotes/x` may name a
+  // branch too. Any short name whose first part is one of those namespaces
+  // (compared case-insensitively: loose refs on a case-insensitive volume)
+  // has more than one reading, so it is unresolved, which is protected.
   const name = (ref: string): string | null => {
     if (ref === 'HEAD' || ref === '@') return head.kind === 'branch' ? head.branch : null;
-    if (ref.startsWith('refs/heads/')) return ref.slice('refs/heads/'.length) || null;
-    if (ref.startsWith('refs/')) return null;
-    if (/[$`~^:?\\\s]/.test(ref)) return null;
+    if (/[$`~^:?*[\\\s{}]|@\{|\.\.|\/\/|^\/|\/$|\.lock(?:\/|$)/.test(ref)) return null;
+    if (ref.startsWith('refs/heads/')) {
+      const branch = ref.slice('refs/heads/'.length);
+      return branch && !AMBIGUOUS_REF_PREFIX.test(branch) ? branch : null;
+    }
+    if (/^refs\//i.test(ref)) return null;
+    if (AMBIGUOUS_REF_PREFIX.test(ref) || /^(?:head|fetch_head|orig_head|merge_head)$/i.test(ref)) return null;
     return ref || null;
   };
   return { force, delete: del, destination: dst !== null ? name(dst) : name(src), all: false };
@@ -604,7 +726,7 @@ export function implicitPushTargets(config: GitConfig, head: GitHead, remote: st
     out.branches.push(current);
     if (m === 'upstream' || m === 'tracking' || m === 'simple') {
       for (const merge of gitConfigValues(config, `branch.${current}.merge`)) {
-        const upstream = merge.startsWith('refs/heads/') ? merge.slice('refs/heads/'.length) : null;
+        const upstream = merge.startsWith('refs/heads/') ? merge.slice('refs/heads/'.length) || null : null;
         if (upstream) out.branches.push(upstream);
         else out.unknown = true;
       }
