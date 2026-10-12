@@ -77,6 +77,13 @@ export interface GitConfigSources {
  * (conditions are not evaluated: including more can only add candidates).
  */
 export declare function loadGitConfig(fs: SeatbeltFs, sources: GitConfigSources): GitConfig;
+/**
+ * The config an invocation's own `-c` / `--config-env` pairs (and what they
+ * include) add to the loaded config, for resolvers that take a GitConfig
+ * (implicitPushTargets): `git -c remote.origin.push=+refs/heads/*:refs/heads/main push`
+ * must be judged with that pair, not without it.
+ */
+export declare function withInvocationConfig(config: GitConfig, invocation: GitInvocation): GitConfig;
 /** Every value of a key across all scopes, in load order (git uses the last). */
 export declare function gitConfigValues(config: GitConfig, key: string): string[];
 /**
@@ -99,6 +106,13 @@ export interface GitInvocation {
     directories: string[];
     /** Global options seen whose effect is not modelled (or whose value is dynamic). */
     unknownGlobals: string[];
+    /**
+     * Global options that point git at another repository, config, namespace or
+     * exec path than discovery from the cwd finds (`--bare` is `GIT_DIR=$PWD`):
+     * the config this resolver loaded is not the one git reads. Also in
+     * `unknownGlobals`, so a caller that checks only that list stops too.
+     */
+    relocated: string[];
     /** `--config-env` pairs: key and the env var name supplying its value. */
     configEnv: Array<[string, string]>;
     subcommand: string | null;
@@ -122,10 +136,19 @@ export type GitExpansion = {
  * definition of alias.<name> from any scope or include, and `-c alias.*` from
  * the command. Core built-in names are never expanded (git ignores aliases
  * for them); maybe-installed commands keep both answers. `!` aliases become shell commands with the remaining args appended.
+ *
+ * `config` must be loaded with the same `env`. A per-invocation `-c` or
+ * `--config-env` pair that names `include.path` / `includeIf.*.path` is
+ * followed like git does when `fs` is given (`home` for `~/`); without `fs`, or
+ * when the file cannot be read in full, the answer is `unknown/config_incomplete`.
+ * `--bare`, `--exec-path`, `--namespace`, `--attr-source`, `--super-prefix`,
+ * `-C`, `--git-dir` and `--work-tree` make it `unknown/relocated`.
  */
 export declare function expandGitAliases(argv: string[], context: {
     config: GitConfig;
     env?: Record<string, string | undefined>;
+    fs?: SeatbeltFs;
+    home?: string | null;
 }): GitExpansion[];
 /**
  * `git push` long options that can rewrite or delete remote refs (S1): the

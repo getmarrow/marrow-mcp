@@ -263,15 +263,17 @@ function parseConfigParameters(raw: string): Array<[string, string]> | null {
   return out;
 }
 
+const INCLUDE_KEY = /^include(?:if\..*)?\.path$/;
+
 /**
- * Loads config from every scope git reads, plus every include and includeIf
- * (conditions are not evaluated: including more can only add candidates).
+ * Reads config files and follows `include.path` / `includeIf.<cond>.path` the
+ * way git does for config text (conditions are not evaluated: including more
+ * can only add candidates). One loader shares one file budget, so a planted
+ * include chain cannot fan out without bound.
  */
-export function loadGitConfig(fs: SeatbeltFs, sources: GitConfigSources): GitConfig {
+function createConfigLoader(fs: SeatbeltFs, home: string | null) {
   const entries: GitConfigEntry[] = [];
-  let incomplete = false;
-  const env = sources.env || {};
-  const home = sources.home;
+  const state = { incomplete: false, files: 0 };
 
   const expandIncludePath = (path: string, from: string): string | null => {
     if (path.startsWith('~/')) return home ? `${home}${path.slice(1)}` : null;
@@ -282,80 +284,49 @@ export function loadGitConfig(fs: SeatbeltFs, sources: GitConfigSources): GitCon
   const addEntries = (list: GitConfigEntry[], from: string | null, depth: number) => {
     for (const entry of list) {
       entries.push(entry);
-      if (!/^include(?:if\..*)?\.path$/.test(entry.key)) continue;
+      if (!INCLUDE_KEY.test(entry.key)) continue;
       if (depth >= MAX_INCLUDE_DEPTH) {
-        incomplete = true;
+        state.incomplete = true;
         continue;
       }
+      // Command-line config (from === null) has no including file: git accepts only an absolute or `~/` path there.
       const target = from === null
         ? (entry.value.startsWith('/') ? entry.value : entry.value.startsWith('~/') && home ? `${home}${entry.value.slice(1)}` : null)
         : expandIncludePath(entry.value, from);
       if (!target) {
-        incomplete = true;
+        state.incomplete = true;
         continue;
       }
       addFile(target, depth + 1);
     }
   };
 
-  let files = 0;
   const addFile = (path: string, depth: number) => {
     if (!path.startsWith('/')) {
-      incomplete = true;
+      state.incomplete = true;
       return;
     }
-    files += 1;
-    if (files > MAX_CONFIG_FILES) {
-      incomplete = true;
+    state.files += 1;
+    if (state.files > MAX_CONFIG_FILES) {
+      state.incomplete = true;
       return;
     }
     const read = readSmall(fs, path);
     if (read.status === 'absent') return;
     if (read.status === 'unknown') {
-      incomplete = true;
+      state.incomplete = true;
       return;
     }
     addEntries(parseGitConfigText(read.text, path), path, depth);
   };
 
-  // Env-named config files are added to the defaults, never substituted for
-  // them (a superset of candidates). A relative one depends on the command's
-  // cwd, which is not modelled.
-  const addEnvFile = (value: string | undefined) => {
-    if (value === undefined || value === '') return;
-    if (!value.startsWith('/')) incomplete = true;
-    else addFile(value, 0);
-  };
-  if (gitRelocatingEnv(env).length > 0) incomplete = true;
-  // GIT_CONFIG_NOSYSTEM is ignored: reading the system files anyway can only add candidates.
-  for (const file of sources.systemFiles || DEFAULT_SYSTEM_FILES) addFile(file, 0);
-  addEnvFile(env.GIT_CONFIG_SYSTEM);
-  if (home) {
-    addFile(`${home}/.config/git/config`, 0);
-    addFile(`${home}/.gitconfig`, 0);
-  } else {
-    incomplete = true;
-  }
-  // git reads $HOME and $XDG_CONFIG_HOME, not the trusted home: add theirs, and
-  // a different HOME also changes `~/` in include paths, so it is incomplete.
-  if (env.HOME !== undefined && env.HOME !== home) {
-    incomplete = true;
-    if (env.HOME.startsWith('/')) {
-      addFile(`${env.HOME.replace(/\/+$/, '')}/.gitconfig`, 0);
-      if (env.XDG_CONFIG_HOME === undefined) addFile(`${env.HOME.replace(/\/+$/, '')}/.config/git/config`, 0);
-    }
-  }
-  if (env.XDG_CONFIG_HOME !== undefined && env.XDG_CONFIG_HOME !== '') {
-    if (env.XDG_CONFIG_HOME.startsWith('/')) addFile(`${env.XDG_CONFIG_HOME.replace(/\/+$/, '')}/git/config`, 0);
-    else incomplete = true;
-  }
-  addEnvFile(env.GIT_CONFIG_GLOBAL);
-  addEnvFile(env.GIT_CONFIG);
-  if (sources.dirs) {
-    addFile(`${sources.dirs.commonDir}/config`, 0);
-    addFile(`${sources.dirs.gitDir}/config.worktree`, 0);
-  }
-  const fromEnv: Array<[string, string]> = [];
+  return { entries, state, addEntries, addFile };
+}
+
+/** Pairs git reads from the environment: GIT_CONFIG_COUNT/KEY_n/VALUE_n and GIT_CONFIG_PARAMETERS. */
+function configPairsFromEnv(env: Record<string, string | undefined>): { pairs: Array<[string, string]>; incomplete: boolean } {
+  const pairs: Array<[string, string]> = [];
+  let incomplete = false;
   const count = env.GIT_CONFIG_COUNT;
   if (count !== undefined) {
     const n = /^\d{1,4}$/.test(count) ? Number(count) : NaN;
@@ -364,17 +335,81 @@ export function loadGitConfig(fs: SeatbeltFs, sources: GitConfigSources): GitCon
       const key = env[`GIT_CONFIG_KEY_${i}`];
       const value = env[`GIT_CONFIG_VALUE_${i}`];
       if (key === undefined || value === undefined) incomplete = true;
-      else fromEnv.push([key, value]);
+      else pairs.push([key, value]);
     }
   }
   if (env.GIT_CONFIG_PARAMETERS) {
     const parsed = parseConfigParameters(env.GIT_CONFIG_PARAMETERS);
-    if (parsed) fromEnv.push(...parsed);
+    if (parsed) pairs.push(...parsed);
     else incomplete = true;
   }
-  const command = [...fromEnv, ...(sources.commandConfig || [])];
+  return { pairs, incomplete };
+}
+
+/**
+ * Loads config from every scope git reads, plus every include and includeIf
+ * (conditions are not evaluated: including more can only add candidates).
+ */
+export function loadGitConfig(fs: SeatbeltFs, sources: GitConfigSources): GitConfig {
+  const env = sources.env || {};
+  const home = sources.home;
+  const loader = createConfigLoader(fs, home);
+  const { entries, state, addEntries, addFile } = loader;
+
+  // Env-named config files are added to the defaults, never substituted for
+  // them (a superset of candidates). A relative one depends on the command's
+  // cwd, which is not modelled.
+  const addEnvFile = (value: string | undefined) => {
+    if (value === undefined || value === '') return;
+    if (!value.startsWith('/')) state.incomplete = true;
+    else addFile(value, 0);
+  };
+  if (gitRelocatingEnv(env).length > 0) state.incomplete = true;
+  // GIT_CONFIG_NOSYSTEM is ignored: reading the system files anyway can only add candidates.
+  for (const file of sources.systemFiles || DEFAULT_SYSTEM_FILES) addFile(file, 0);
+  addEnvFile(env.GIT_CONFIG_SYSTEM);
+  if (home) {
+    addFile(`${home}/.config/git/config`, 0);
+    addFile(`${home}/.gitconfig`, 0);
+  } else {
+    state.incomplete = true;
+  }
+  // git reads $HOME and $XDG_CONFIG_HOME, not the trusted home: add theirs, and
+  // a different HOME also changes `~/` in include paths, so it is incomplete.
+  if (env.HOME !== undefined && env.HOME !== home) {
+    state.incomplete = true;
+    if (env.HOME.startsWith('/')) {
+      addFile(`${env.HOME.replace(/\/+$/, '')}/.gitconfig`, 0);
+      if (env.XDG_CONFIG_HOME === undefined) addFile(`${env.HOME.replace(/\/+$/, '')}/.config/git/config`, 0);
+    }
+  }
+  if (env.XDG_CONFIG_HOME !== undefined && env.XDG_CONFIG_HOME !== '') {
+    if (env.XDG_CONFIG_HOME.startsWith('/')) addFile(`${env.XDG_CONFIG_HOME.replace(/\/+$/, '')}/git/config`, 0);
+    else state.incomplete = true;
+  }
+  addEnvFile(env.GIT_CONFIG_GLOBAL);
+  addEnvFile(env.GIT_CONFIG);
+  if (sources.dirs) {
+    addFile(`${sources.dirs.commonDir}/config`, 0);
+    addFile(`${sources.dirs.gitDir}/config.worktree`, 0);
+  }
+  const fromEnv = configPairsFromEnv(env);
+  if (fromEnv.incomplete) state.incomplete = true;
+  const command = [...fromEnv.pairs, ...(sources.commandConfig || [])];
   addEntries(command.map(([key, value]) => ({ key: canonicalGitKey(key), value, source: 'command' })), null, 0);
-  return { entries, incomplete };
+  return { entries, incomplete: state.incomplete };
+}
+
+/**
+ * The config an invocation's own `-c` / `--config-env` pairs (and what they
+ * include) add to the loaded config, for resolvers that take a GitConfig
+ * (implicitPushTargets): `git -c remote.origin.push=+refs/heads/*:refs/heads/main push`
+ * must be judged with that pair, not without it.
+ */
+export function withInvocationConfig(config: GitConfig, invocation: GitInvocation): GitConfig {
+  const entries = [...config.entries];
+  for (const [key, value] of invocation.config) entries.push({ key: canonicalGitKey(key), value, source: 'command' });
+  return { entries, incomplete: config.incomplete };
 }
 
 /** Every value of a key across all scopes, in load order (git uses the last). */
@@ -433,17 +468,31 @@ export interface GitInvocation {
   directories: string[];
   /** Global options seen whose effect is not modelled (or whose value is dynamic). */
   unknownGlobals: string[];
+  /**
+   * Global options that point git at another repository, config, namespace or
+   * exec path than discovery from the cwd finds (`--bare` is `GIT_DIR=$PWD`):
+   * the config this resolver loaded is not the one git reads. Also in
+   * `unknownGlobals`, so a caller that checks only that list stops too.
+   */
+  relocated: string[];
   /** `--config-env` pairs: key and the env var name supplying its value. */
   configEnv: Array<[string, string]>;
   subcommand: string | null;
   args: string[];
 }
 
-const GLOBAL_FLAGS = new Set(['-p', '--paginate', '-P', '--no-pager', '--bare', '--no-replace-objects', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs', '--no-optional-locks', '--no-advice', '--no-lazy-fetch']);
+/** Global flags that relocate git's repository, config or exec path (the env twins are in GIT_RELOCATING_ENV). */
+const RELOCATING_FLAGS = new Set(['--bare', '--namespace', '--exec-path', '--attr-source', '--super-prefix']);
+
+const GLOBAL_FLAGS = new Set(['-p', '--paginate', '-P', '--no-pager', '--no-replace-objects', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs', '--no-optional-locks', '--no-advice', '--no-lazy-fetch']);
 
 /** Splits `git <global options> <subcommand> <args>` (git.c handle_options: exact option names only). */
 export function parseGitInvocation(argv: string[]): GitInvocation {
-  const out: GitInvocation = { config: [], directories: [], unknownGlobals: [], configEnv: [], subcommand: null, args: [] };
+  const out: GitInvocation = { config: [], directories: [], unknownGlobals: [], relocated: [], configEnv: [], subcommand: null, args: [] };
+  const relocate = (name: string) => {
+    if (!out.relocated.includes(name)) out.relocated.push(name);
+    if (!out.unknownGlobals.includes(name)) out.unknownGlobals.push(name);
+  };
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
@@ -455,7 +504,8 @@ export function parseGitInvocation(argv: string[]): GitInvocation {
     if (arg === '-c' || arg === '--config-env' || arg === '-C' || arg === '--git-dir' || arg === '--work-tree' || arg === '--namespace' || arg === '--exec-path' || arg === '--super-prefix' || arg === '--attr-source') {
       const value = argv[i + 1];
       if (value === undefined) {
-        out.unknownGlobals.push(arg);
+        if (RELOCATING_FLAGS.has(arg)) relocate(arg);
+        else out.unknownGlobals.push(arg);
         i += 1;
         continue;
       }
@@ -467,7 +517,7 @@ export function parseGitInvocation(argv: string[]): GitInvocation {
         if (eq < 0) out.unknownGlobals.push(arg);
         else out.configEnv.push([value.slice(0, eq), value.slice(eq + 1)]);
       } else if (arg === '-C' || arg === '--git-dir' || arg === '--work-tree') out.directories.push(value);
-      else if (arg !== '--namespace' && arg !== '--attr-source') out.unknownGlobals.push(arg);
+      else relocate(arg);
       i += 2;
       continue;
     }
@@ -478,11 +528,12 @@ export function parseGitInvocation(argv: string[]): GitInvocation {
         const eq = eqForm[2].indexOf('=');
         if (eq < 0) out.unknownGlobals.push(arg);
         else out.configEnv.push([eqForm[2].slice(0, eq), eqForm[2].slice(eq + 1)]);
-      } else if (eqForm[1] !== '--namespace' && eqForm[1] !== '--attr-source') out.unknownGlobals.push(eqForm[1]);
+      } else relocate(eqForm[1]);
       i += 1;
       continue;
     }
-    if (!GLOBAL_FLAGS.has(arg) && arg !== '--exec-path') out.unknownGlobals.push(arg);
+    if (RELOCATING_FLAGS.has(arg)) relocate(arg);
+    else if (!GLOBAL_FLAGS.has(arg)) out.unknownGlobals.push(arg);
     i += 1;
   }
   out.subcommand = i < argv.length ? argv[i] : null;
@@ -500,44 +551,71 @@ export type GitExpansion =
  * definition of alias.<name> from any scope or include, and `-c alias.*` from
  * the command. Core built-in names are never expanded (git ignores aliases
  * for them); maybe-installed commands keep both answers. `!` aliases become shell commands with the remaining args appended.
+ *
+ * `config` must be loaded with the same `env`. A per-invocation `-c` or
+ * `--config-env` pair that names `include.path` / `includeIf.*.path` is
+ * followed like git does when `fs` is given (`home` for `~/`); without `fs`, or
+ * when the file cannot be read in full, the answer is `unknown/config_incomplete`.
+ * `--bare`, `--exec-path`, `--namespace`, `--attr-source`, `--super-prefix`,
+ * `-C`, `--git-dir` and `--work-tree` make it `unknown/relocated`.
  */
-export function expandGitAliases(argv: string[], context: { config: GitConfig; env?: Record<string, string | undefined> }): GitExpansion[] {
+export function expandGitAliases(argv: string[], context: { config: GitConfig; env?: Record<string, string | undefined>; fs?: SeatbeltFs; home?: string | null }): GitExpansion[] {
   const results: GitExpansion[] = [];
   let steps = 0;
+  let loader: ReturnType<typeof createConfigLoader> | null = null;
+  const addUnknown = (reason: 'relocated' | 'config_incomplete' | 'too_deep' | 'loop' | 'unparsed' | 'dynamic_config' | 'not_found') => {
+    if (!results.some((r) => r.kind === 'unknown' && r.reason === reason)) results.push({ kind: 'unknown', reason });
+  };
   const walk = (invocation: GitInvocation, inherited: Array<[string, string]>, seen: string[], depth: number) => {
     steps += 1;
     if (steps > MAX_ALIAS_STEPS) {
-      if (!results.some((r) => r.kind === 'unknown' && r.reason === 'too_deep')) results.push({ kind: 'unknown', reason: 'too_deep' });
+      addUnknown('too_deep');
       return;
     }
-    const extra: Array<[string, string]> = [...inherited, ...invocation.config];
+    const own: Array<[string, string]> = [...invocation.config];
     for (const [key, envName] of invocation.configEnv) {
       const value = context.env?.[envName];
       if (value === undefined) {
         results.push({ kind: 'unknown', reason: 'dynamic_config' });
         return;
       }
-      extra.push([key, value]);
+      own.push([key, value]);
     }
+    // include.path / includeIf.*.path given on this invocation: expand like git, or the config is incomplete.
+    const included: Array<[string, string]> = [];
+    let includeIncomplete = false;
+    for (const [key, value] of own) {
+      const canonical = canonicalGitKey(key);
+      if (!INCLUDE_KEY.test(canonical)) continue;
+      if (!context.fs) {
+        includeIncomplete = true;
+        continue;
+      }
+      loader = loader || createConfigLoader(context.fs, context.home ?? null);
+      const before = loader.entries.length;
+      loader.addEntries([{ key: canonical, value, source: 'command' }], null, 0);
+      for (const entry of loader.entries.slice(before + 1)) included.push([entry.key, entry.value]);
+    }
+    if (loader && loader.state.incomplete) includeIncomplete = true;
+    if (includeIncomplete) addUnknown('config_incomplete');
+    const extra: Array<[string, string]> = [...inherited, ...own, ...included];
     const merged: GitInvocation = { ...invocation, config: extra };
     const name = invocation.subcommand;
-    // -C / --git-dir / --work-tree, or relocating env: the config this expansion
-    // used is not the one git reads, so no answer here is definite.
-    if (invocation.directories.length > 0 || gitRelocatingEnv(context.env).length > 0) {
-      if (!results.some((r) => r.kind === 'unknown' && r.reason === 'relocated')) results.push({ kind: 'unknown', reason: 'relocated' });
-    }
+    // -C / --git-dir / --work-tree / --bare ..., or relocating env: the config
+    // this expansion used is not the one git reads, so no answer here is definite.
+    if (invocation.directories.length > 0 || invocation.relocated.length > 0 || gitRelocatingEnv(context.env).length > 0) addUnknown('relocated');
     if (name === null || GIT_CORE_BUILTINS.has(name)) {
       results.push({ kind: 'git', invocation: merged });
       return;
     }
     if (GIT_MAYBE_COMMANDS.has(name)) results.push({ kind: 'git', invocation: merged });
     if (depth >= MAX_ALIAS_DEPTH) {
-      results.push({ kind: 'unknown', reason: 'too_deep' });
+      addUnknown('too_deep');
       return;
     }
     const lowered = name.toLowerCase();
     if (seen.includes(lowered)) {
-      results.push({ kind: 'unknown', reason: 'loop' });
+      addUnknown('loop');
       return;
     }
     const want = `alias.${lowered}`;
@@ -550,7 +628,7 @@ export function expandGitAliases(argv: string[], context: { config: GitConfig; e
       return;
     }
     // Config that could not be read in full may hold a later definition (git uses the last).
-    if (context.config.incomplete && !results.some((r) => r.kind === 'unknown' && r.reason === 'config_incomplete')) results.push({ kind: 'unknown', reason: 'config_incomplete' });
+    if (context.config.incomplete) addUnknown('config_incomplete');
     for (const definition of new Set(definitions)) {
       if (definition.startsWith('!')) {
         results.push({ kind: 'shell', command: definition.slice(1), args: invocation.args });
