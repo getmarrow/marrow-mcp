@@ -320,3 +320,135 @@ test('B2 controls: LF and CRLF files are read as before; CR and NUL inside a str
   assert.equal(S.readScriptFile(createFakeFs().file('/s/x.sh', 'echo a\0b\n'), '/s/x.sh').status, 'ok');
 });
 
+// ---------------------------------------------------------------- A1: an env value that is neither undefined nor a string
+
+const MAKEFILE_HI = 'all:\n\t@echo hi\n';
+const BASE_ENV = { PATH: '/usr/bin:/bin' };
+/** An object with the given own properties; `hidden` ones are not enumerable (Node's spawn and JSON never see those). */
+const envWith = (visible, hidden = {}, base = BASE_ENV) => {
+  const env = { ...base, ...visible };
+  for (const [name, value] of Object.entries(hidden)) Object.defineProperty(env, name, { value, enumerable: false, configurable: true, writable: true });
+  return env;
+};
+const RELOCATING = ['MAKEFLAGS', 'MAKEFILES', 'GNUMAKEFLAGS', 'MFLAGS', 'MAKEOVERRIDES'];
+const NOT_STRINGS = { number: 1, zero: 0, true: true, false: false, null: null, object: {}, array: ['-e'], function: () => '-e', bigint: 1n };
+
+test('A1: an env value that is neither undefined nor a string is `dynamic`, enumerable or not, for every name make reads at start-up', () => {
+  const failures = [];
+  for (const name of [...RELOCATING, 'BASH_ENV', 'FOO', 'PATH']) {
+    for (const [kind, value] of Object.entries(NOT_STRINGS)) {
+      for (const [shape, env] of [['own enumerable', envWith({ [name]: value })], ['own non-enumerable', envWith({}, { [name]: value })]]) {
+        const r = make(MAKEFILE_HI, ['all'], { env });
+        if (definite(r)) failures.push(`${name}=${kind} (${shape}): ${show(r)}`);
+      }
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
+test('A1: the audit repro: defineProperty(env, MAKEFLAGS, {value: 1}) is dynamic (was DEFINITE)', () => {
+  const env = { PATH: '/usr/bin' };
+  Object.defineProperty(env, 'MAKEFLAGS', { value: 1 });
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env })), 'dynamic');
+  // The same object with the property enumerable, a string, and absent: dynamic / dynamic / definite.
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: { PATH: '/usr/bin', MAKEFLAGS: 1 } })), 'dynamic');
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: { PATH: '/usr/bin', MAKEFLAGS: '-e' } })), 'dynamic');
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: { PATH: '/usr/bin' } })), 'DEFINITE ["echo hi"]');
+});
+
+test('A1: a non-enumerable own value that is a string is looked at like an enumerable one (start-up names, injection names, PATH entries)', () => {
+  const dynamicRows = {
+    MAKEFLAGS: { MAKEFLAGS: '-e' },
+    MAKEFILES: { MAKEFILES: 'evil.mk' },
+    GNUMAKEFLAGS: { GNUMAKEFLAGS: '-B' },
+    MFLAGS: { MFLAGS: '-e' },
+    MAKEOVERRIDES: { MAKEOVERRIDES: 'x' },
+    BASH_ENV: { BASH_ENV: '/tmp/x' },
+    LD_PRELOAD: { LD_PRELOAD: '/tmp/x.so' },
+    GIT_DIR: { GIT_DIR: '/tmp/x' },
+    relative_PATH: { PATH: 'bin:/usr/bin' },
+    empty_PATH_entry: { PATH: '/usr/bin::/bin' },
+  };
+  const failures = [];
+  for (const [name, hidden] of Object.entries(dynamicRows)) {
+    const r = make(MAKEFILE_HI, ['all'], { env: envWith({}, hidden, {}) });
+    if (definite(r)) failures.push(`${name}: ${show(r)}`);
+  }
+  assert.deepEqual(failures, []);
+  // A harmless name, hidden or not, is not a reason.
+  const r = make(MAKEFILE_HI, ['all'], { env: envWith({}, { FOO: 'x' }) });
+  assert.equal(show(r), 'DEFINITE ["echo hi"]');
+  // A name the file assigns is a name make exports: the hidden twin is the same as the visible one.
+  const assigns = 'FOO = a\nall:\n\t@echo hi\n';
+  assert.equal(show(make(assigns, ['all'], { env: envWith({ FOO: 'x' }) })), 'dynamic');
+  assert.equal(show(make(assigns, ['all'], { env: envWith({}, { FOO: 'x' }) })), 'dynamic');
+});
+
+test('A1: envValue sees a value it is asked for even when no loop lists it (inherited, non-enumerable, accessor)', () => {
+  class Env {
+    get MAKEFLAGS() {
+      return 1;
+    }
+    get FOO() {
+      return 2;
+    }
+  }
+  const inherited = Object.assign(new Env(), BASE_ENV);
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: inherited })), 'dynamic');
+  // A name only the file reads (`?=` asks the environment for it).
+  assert.equal(show(make('FOO ?= a\nall:\n\t@echo $(FOO)\n', ['all'], { env: Object.assign(new Env(), BASE_ENV) })), 'dynamic');
+  const own = envWith({});
+  Object.defineProperty(own, 'FOO', { get: () => 2, enumerable: false });
+  assert.equal(show(make('FOO ?= a\nall:\n\t@echo $(FOO)\n', ['all'], { env: own })), 'dynamic');
+  const flagged = envWith({});
+  Object.defineProperty(flagged, 'MAKEFLAGS', { get: () => 1, enumerable: false });
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: flagged })), 'dynamic');
+  // An inherited enumerable one (the existing rule) is still dynamic.
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: Object.create({ MAKEFLAGS: 1, PATH: '/usr/bin' }) })), 'dynamic');
+});
+
+test('A1 controls: undefined values, symbols and the names Object.prototype owns are not environment variables', () => {
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: { ...BASE_ENV, MAKEFLAGS: undefined, FOO: undefined } })), 'DEFINITE ["echo hi"]');
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: envWith({}, { MAKEFLAGS: undefined }) })), 'DEFINITE ["echo hi"]');
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: { ...BASE_ENV, [Symbol('MAKEFLAGS')]: 1 } })), 'DEFINITE ["echo hi"]');
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: Object.assign(Object.create(null), BASE_ENV) })), 'DEFINITE ["echo hi"]');
+  assert.equal(show(make(MAKEFILE_HI, ['all'], { env: JSON.parse('{"PATH":"/usr/bin:/bin","HOME":"/home/u"}') })), 'DEFINITE ["echo hi"]');
+  for (const name of ['toString', 'constructor', 'hasOwnProperty', 'valueOf', '__proto__', '__defineGetter__']) {
+    // `?=` asks the environment: the function or object Object.prototype hands back is not a value.
+    const r = make(`${name} ?= x\nall:\n\t@echo $(${name})\n`, ['all'], { env: BASE_ENV });
+    assert.equal(show(r), 'DEFINITE ["echo x"]', name);
+  }
+  // An own `__proto__` from JSON is a variable of that name, and a string: read, it is its value.
+  const parsed = JSON.parse('{"PATH":"/usr/bin:/bin","__proto__":"v"}');
+  assert.equal(show(make('all:\n\t@echo $(__proto__)\n', ['all'], { env: parsed })), 'DEFINITE ["echo v"]');
+});
+
+test('A1: only the very function or object Object.prototype hands out is exempt: a shadowing accessor or an own property is a value', () => {
+  class Shadow {
+    get toString() {
+      return 1;
+    }
+  }
+  const shadow = Object.assign(new Shadow(), BASE_ENV);
+  assert.equal(show(make('toString ?= x\nall:\n\t@echo $(toString)\n', ['all'], { env: shadow })), 'dynamic');
+  const own = envWith({}, { valueOf: 1 });
+  assert.equal(show(make('valueOf ?= x\nall:\n\t@echo $(valueOf)\n', ['all'], { env: own })), 'dynamic');
+  // The prototype of a class instance is what `__proto__` reads: still not a variable.
+  class Plain {}
+  const instance = Object.assign(new Plain(), BASE_ENV);
+  assert.equal(show(make('__proto__ ?= x\nall:\n\t@echo $(__proto__)\n', ['all'], { env: instance })), 'DEFINITE ["echo x"]');
+});
+
+test('A1 oracle: a MAKEFLAGS that is not a string reaches make as text and changes what it does (`true` is `t`: touch only)', { skip: oracleSkip }, () => {
+  const dir = fresh();
+  fsn.writeFileSync(join(dir, 'Makefile'), MAKEFILE_HI);
+  const listing = (env) => spawnSync(MAKE_BINARY, ['-n', 'all'], { cwd: dir, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).stdout.split('\n').filter(Boolean);
+  assert.deepEqual(listing({ PATH: '/usr/bin:/bin' }), ['echo hi']);
+  // Node hands the value to make as `MAKEFLAGS=true`.
+  const enumerable = { PATH: '/usr/bin:/bin', MAKEFLAGS: true };
+  if (MAKE_43) assert.deepEqual(listing(enumerable), ['touch all']);
+  for (const env of [enumerable, envWith({}, { MAKEFLAGS: true })]) {
+    const r = S.resolveMakeTargets(nfs, dir, ['all'], { env });
+    assert.ok(!definite(r), show(r));
+  }
+});

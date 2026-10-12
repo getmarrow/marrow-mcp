@@ -145,6 +145,14 @@ const MAKE_BUILTIN_VARIABLE_FAMILIES = /^(?:COMPILE|LINK|PREPROCESS|YACC|LEX|LIN
 /** Make functions with no side effect (not evaluated here, but a use of their result is unresolved, not an execution at read time). */
 const MAKE_PURE_FUNCTIONS = new Set(['subst', 'patsubst', 'strip', 'findstring', 'filter', 'filter-out', 'sort', 'word', 'wordlist', 'words', 'firstword', 'lastword', 'dir', 'notdir', 'suffix', 'basename', 'addsuffix', 'addprefix', 'join', 'wildcard', 'realpath', 'abspath']);
 const MAKE_SIMPLE_FLAGS = new Set(['-s', '-k', '-w', '--silent', '--quiet', '--keep-going', '--no-print-directory', '--print-directory']);
+/** The very function or object Object.prototype hands every object under this name (`toString`, `constructor`, `__proto__` ...): not an environment variable. */
+function inheritedBuiltin(env, name, value) {
+    if (Object.prototype.hasOwnProperty.call(env, name))
+        return false;
+    if (name === '__proto__')
+        return value === Object.getPrototypeOf(env);
+    return name in Object.prototype && value === Object.prototype[name];
+}
 /**
  * A simple Makefile recipe parse: explicit rules, recipe lines, prerequisites
  * (depth ≤3) and variable references. Expansion follows GNU make: `=` is
@@ -164,7 +172,8 @@ const MAKE_SIMPLE_FLAGS = new Set(['-s', '-k', '-w', '--silent', '--quiet', '--k
  *
  * Allowlist: an answer is definite only when none of these holds, each of which
  * makes make run something the file does not say, or run it differently:
- * `options.env` omitted, holding a non-string, MAKEFLAGS-like names, shell
+ * `options.env` omitted, holding a non-string (an own property, enumerable or
+ * not), MAKEFLAGS-like names, shell
  * start-up / loader / git-relocating names, or a PATH entry that is relative,
  * non-canonical or inside the makefile's directory; an assignment (file or
  * command line) to a dot-name, an execution variable, a name make hands to
@@ -210,10 +219,20 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     // MAKEFLAGS / MAKEFILES / exported names cannot be ruled out: the answer is
     // dynamic. A caller that states no environment never gets a definite answer.
     const env = options.env;
-    /** A string value only: `constructor`, `__proto__` and `toString` (functions and objects of Object.prototype) are not environment variables. */
+    /**
+     * A string value only. `constructor`, `__proto__` and `toString` (functions and objects Object.prototype hands every
+     * object) are not environment variables. Any other value that is neither undefined nor a string is not understood
+     * (make is handed it as some text): the answer is dynamic, whichever way the value was reached.
+     */
     const envValue = (name) => {
-        const value = env ? env[name] : undefined;
-        return typeof value === 'string' ? value : undefined;
+        if (!env)
+            return undefined;
+        const value = env[name];
+        if (typeof value === 'string')
+            return value;
+        if (value !== undefined && !inheritedBuiltin(env, name, value))
+            dynamic = true;
+        return undefined;
     };
     if (!env || MAKE_RELOCATING_ENV.some((name) => envValue(name) !== undefined))
         dynamic = true;
@@ -226,8 +245,14 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     };
     const envNames = new Set();
     if (env) {
-        // for...in: a name an object only inherits is still a name make would see. A value that is not a string is not understood.
-        for (const name in env) {
+        // for...in: a name an object only inherits is still a name make would see; an own property that is not enumerable
+        // is one too (the same value `envValue` reads). A value that is not a string is not understood.
+        const names = new Set();
+        for (const name in env)
+            names.add(name);
+        for (const name of Object.getOwnPropertyNames(env))
+            names.add(name);
+        for (const name of names) {
             const value = env[name];
             if (typeof value !== 'string') {
                 if (value !== undefined)

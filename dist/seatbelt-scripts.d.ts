@@ -61,7 +61,8 @@ export type MakeResolution = {
  *
  * Allowlist: an answer is definite only when none of these holds, each of which
  * makes make run something the file does not say, or run it differently:
- * `options.env` omitted, holding a non-string, MAKEFLAGS-like names, shell
+ * `options.env` omitted, holding a non-string (an own property, enumerable or
+ * not), MAKEFLAGS-like names, shell
  * start-up / loader / git-relocating names, or a PATH entry that is relative,
  * non-canonical or inside the makefile's directory; an assignment (file or
  * command line) to a dot-name, an execution variable, a name make hands to
