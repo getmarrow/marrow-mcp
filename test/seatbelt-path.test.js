@@ -35,7 +35,7 @@ function linuxTree() {
 
 function classify(fs, cwd, raw, extra = {}) {
   const ws = resolveWorkspace(fs, { eventCwd: cwd, home: '/home/u', tmpdir: extra.tmpdir });
-  const context = { home: '/home/u', cwd, assignments: extra.assignments, userHome: extra.userHome };
+  const context = { home: '/home/u', cwd, variables: extra.variables, prefixAssignments: extra.prefixAssignments, userHome: extra.userHome };
   return classifyDeleteTarget(fs, ws, resolveOperand(fs, context, raw, 'delete'));
 }
 
@@ -94,11 +94,23 @@ for (const [raw, expected] of MATRIX) {
   });
 }
 
-test('T-path: same-command assignments resolve, unset ones stay unknown', () => {
+test('T-path: variables set by an earlier statement resolve (`DIR=dist; rm -rf "$DIR/"`), unset ones stay unknown', () => {
   const fs = linuxTree();
-  assert.equal(classify(fs, '/work/repo', '$DIR/', { assignments: { DIR: 'dist' } }), 'in_workspace');
-  assert.equal(classify(fs, '/work/repo', '$DIR', { assignments: { DIR: '/home/u' } }), 'home');
-  assert.equal(classify(fs, '/work/repo', '$DIR', { assignments: { DIR: '' } }), 'unknown');
+  assert.equal(classify(fs, '/work/repo', '$DIR/', { variables: { DIR: 'dist' } }), 'in_workspace');
+  assert.equal(classify(fs, '/work/repo', '$DIR', { variables: { DIR: '/home/u' } }), 'home');
+  assert.equal(classify(fs, '/work/repo', '$DIR', { variables: { DIR: '' } }), 'unknown');
+});
+
+test('B5 (Barvis audit 5069b1c6): a prefix assignment never reaches the command\'s own argument expansion (bash semantics)', () => {
+  // bash: `unset DIR; DIR=x printf %s "$DIR/"` prints `/`, so `DIR=dist rm -rf "$DIR/"*` is `rm -rf /*`.
+  const fs = linuxTree();
+  assert.equal(classify(fs, '/work/repo', '$DIR/*', { prefixAssignments: { DIR: 'dist' } }), 'unknown');
+  assert.equal(classify(fs, '/work/repo', '$DIR/', { prefixAssignments: { DIR: 'dist' } }), 'unknown');
+  // A prefix assignment never overrides the shell's prior value either.
+  assert.equal(classify(fs, '/work/repo', '$DIR', { variables: { DIR: '/home/u' }, prefixAssignments: { DIR: 'dist' } }), 'home');
+  // The old field name is not read at all.
+  const ws = resolveWorkspace(fs, { eventCwd: '/work/repo', home: '/home/u' });
+  assert.equal(classifyDeleteTarget(fs, ws, resolveOperand(fs, { home: '/home/u', cwd: '/work/repo', assignments: { DIR: 'dist' } }, '$DIR/', 'delete')), 'unknown');
 });
 
 test('T-path: ~user only through the passwd lookup', () => {
@@ -184,8 +196,13 @@ test('$HOME and ~ come from the trusted home, never from an assignment or the pr
   const saved = process.env.HOME;
   process.env.HOME = '/work/repo';
   try {
-    const expanded = expandPathOperand('$HOME/.ssh/id_rsa', { home: '/home/u', cwd: '/work/repo', assignments: { HOME: '/work/repo' } });
+    // A prefix assignment of HOME is not seen by expansion; the process env is never read.
+    const expanded = expandPathOperand('$HOME/.ssh/id_rsa', { home: '/home/u', cwd: '/work/repo', prefixAssignments: { HOME: '/work/repo' } });
     assert.equal(expanded.path, '/home/u/.ssh/id_rsa');
+    // An earlier `HOME=/work/repo;` or a shell $HOME other than the trusted home makes ~ and $HOME unknown, never the other value.
+    assert.deepEqual(expandPathOperand('$HOME/.ssh', { home: '/home/u', cwd: '/x', variables: { HOME: '/work/repo' } }), { kind: 'dynamic', reason: 'no_home' });
+    assert.deepEqual(expandPathOperand('~/.ssh', { home: '/home/u', cwd: '/x', shellHome: '/work/repo' }), { kind: 'dynamic', reason: 'no_home' });
+    assert.equal(expandPathOperand('~/.ssh', { home: '/home/u', cwd: '/x', shellHome: '/home/u' }).path, '/home/u/.ssh');
     assert.equal(expandPathOperand('~/.aws', { home: '/home/u', cwd: '/x' }).path, '/home/u/.aws');
     assert.deepEqual(expandPathOperand('~/x', { home: null, cwd: '/x' }), { kind: 'dynamic', reason: 'no_home' });
   } finally {
@@ -239,7 +256,7 @@ test('adversarial fix: a non-ASCII home or cwd does not make in-workspace target
   const ws = resolveWorkspace(fs, { eventCwd: ctx.cwd, home: ctx.home });
   assert.equal(classifyDeleteTarget(fs, ws, resolveOperand(fs, ctx, 'node_modules', 'delete')), 'in_workspace');
   assert.equal(classifyDeleteTarget(fs, ws, resolveOperand(fs, ctx, 'n\u00f6de', 'delete')), 'unknown');
-  assert.equal(classifyDeleteTarget(fs, ws, resolveOperand(fs, { ...ctx, assignments: { D: '\u0455sh' } }, '$D', 'delete')), 'unknown');
+  assert.equal(classifyDeleteTarget(fs, ws, resolveOperand(fs, { ...ctx, variables: { D: '\u0455sh' } }, '$D', 'delete')), 'unknown');
 });
 
 test("adversarial fix: a leftover $ ($'..', $\"..\", lone $) is dynamic", () => {

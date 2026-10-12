@@ -25,8 +25,27 @@ export interface PathContext {
     home: string | null;
     /** The event's cwd (absolute), or null when the harness gave none. */
     cwd: string | null;
-    /** Assignments made earlier in the same command (`DIR=x rm -rf "$DIR"`). */
-    assignments?: Record<string, string>;
+    /**
+     * Shell variables whose value is known when this command's words are
+     * expanded: set by an earlier, unconditional statement (`DIR=x; rm -rf
+     * "$DIR"`, `DIR=x && rm -rf "$DIR"`). Bash semantics: a prefix assignment
+     * (`DIR=x rm -rf "$DIR"`) only goes to the command's environment and is NOT
+     * seen by its own argument expansion, which uses the shell's prior value.
+     * Never put prefix assignments here; a name not listed is unknown.
+     */
+    variables?: Record<string, string>;
+    /**
+     * The command's own prefix assignments. Accepted only so a caller can pass
+     * them without them leaking into expansion: they are never substituted, and
+     * a name assigned here and not in `variables` stays unknown.
+     */
+    prefixAssignments?: Record<string, string>;
+    /**
+     * The $HOME the agent's shell expands for `~` and `$HOME`. When given and
+     * not exactly `home`, both expansions are unknown. (U4 gives
+     * `claimed_no_key` whenever env HOME is not the trusted home.)
+     */
+    shellHome?: string | null;
     /** passwd lookup for ~user. */
     userHome?: (user: string) => string | null;
 }
@@ -39,10 +58,11 @@ export type ExpandedOperand = {
     kind: 'glob';
     path: string;
     staticPrefix: string;
+    trailingFollow: boolean;
     nonAscii: boolean;
 } | {
     kind: 'dynamic';
-    reason: 'empty' | 'substitution' | 'brace' | 'variable' | 'tilde' | 'user_home' | 'no_home' | 'no_cwd' | 'glob_parent';
+    reason: 'empty' | 'substitution' | 'brace' | 'variable' | 'tilde' | 'user_home' | 'no_home' | 'no_cwd' | 'glob_parent' | 'backslash' | 'pattern';
 };
 /**
  * Expands one path operand the way the shell would, using only trusted values.
@@ -55,14 +75,24 @@ export type ResolvedOperand = {
     real: string;
     exists: boolean;
     nonAscii: boolean;
-} | {
+}
+/**
+ * matches: the real path of every name the glob can reach (followed through
+ * links where the shell follows them). parents: the real dirs whose
+ * children a final wildcard deletes, judged like a static prefix.
+ */
+ | {
     kind: 'glob';
     staticReal: string;
+    matches: string[];
+    parents: string[];
     nonAscii: boolean;
 } | {
     kind: 'unknown';
     reason: string;
 };
+/** Bound on directory entries a glob may enumerate; over it the operand is unknown. */
+export declare const MAX_GLOB_ENTRIES = 1024;
 /**
  * Expands and realpaths one operand. use='read' follows a final symlink (cat
  * reads the target); use='delete' follows it only after a trailing '/' or '/.'.
@@ -85,6 +115,6 @@ export declare function resolveWorkspace(fs: SeatbeltFs, input: {
     tmpdir?: string | null;
 }): Workspace;
 export type DeleteTargetClass = 'in_workspace' | 'outside_workspace' | 'workspace_root' | 'home' | 'root' | 'unknown';
-/** Where a recursive-delete target falls (S5). Only 'in_workspace' is safe. */
+/** Where a recursive-delete target falls (S5). Only 'in_workspace' is safe. A glob is the worst of its static prefix and every reachable match. */
 export declare function classifyDeleteTarget(fs: SeatbeltFs, workspace: Workspace, target: ResolvedOperand): DeleteTargetClass;
 //# sourceMappingURL=seatbelt-path.d.ts.map

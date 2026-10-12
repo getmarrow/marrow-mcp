@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_SYMLINK_HOPS = void 0;
+exports.MAX_GLOB_ENTRIES = exports.MAX_SYMLINK_HOPS = void 0;
 exports.realPath = realPath;
 exports.pathKey = pathKey;
 exports.isWithinOrEqual = isWithinOrEqual;
@@ -123,24 +123,37 @@ const VARIABLE = /\$(?:\{([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*)|([0-9@*#?$!-]))/g;
  * expansion, so a literal `$` can only make the answer stricter.
  */
 function expandPathOperand(raw, context) {
-    let value = String(raw ?? '').replace(/\\/g, '/');
+    let value = String(raw ?? '');
     if (value === '')
         return { kind: 'dynamic', reason: 'empty' };
+    // A `\` left after quote removal is a literal name character on POSIX and a
+    // separator on Windows: either reading can move the target, so it is unknown.
+    if (value.includes('\\'))
+        return { kind: 'dynamic', reason: 'backslash' };
+    // The shell's $HOME, when known to differ from the trusted home, makes ~ and $HOME unknown.
+    // So does an earlier statement that set HOME (or PWD) in the shell.
+    const setEarlier = (name) => context.variables !== undefined && Object.prototype.hasOwnProperty.call(context.variables, name);
+    const homeForShell = (context.shellHome !== undefined && context.shellHome !== context.home) || (setEarlier('HOME') && context.variables?.HOME !== context.home) ? null : context.home;
+    const cwdForShell = setEarlier('PWD') && context.variables?.PWD !== context.cwd ? null : context.cwd;
     // Judged on the operand and substituted values only: a non-ASCII home or cwd is not the agent's choice.
     let nonAscii = /[^\x20-\x7e]/.test(value);
     if (/\$\(|`|<\(|>\(/.test(value))
         return { kind: 'dynamic', reason: 'substitution' };
     if (value.includes('}') && /\{[^{}]*(?:,|\.\.)/.test(value))
         return { kind: 'dynamic', reason: 'brace' };
+    // Patterns this resolver does not enumerate: bash globstar/extglob and zsh's
+    // default `**`, `(a|b)`, `<1-9>` and qualifiers, plus extendedglob `^`/`#`.
+    if (/\*\*|[()|<>^#]/.test(value))
+        return { kind: 'dynamic', reason: 'pattern' };
     if (value.startsWith('~')) {
         const slash = value.indexOf('/');
         const prefix = slash < 0 ? value.slice(1) : value.slice(1, slash);
         const rest = slash < 0 ? '' : value.slice(slash);
         let base;
         if (prefix === '') {
-            if (!context.home)
+            if (!homeForShell)
                 return { kind: 'dynamic', reason: 'no_home' };
-            base = context.home;
+            base = homeForShell;
         }
         else if (prefix === '+') {
             if (!context.cwd)
@@ -165,17 +178,18 @@ function expandPathOperand(raw, context) {
             return '';
         }
         if (name === 'HOME') {
-            if (!context.home)
+            if (!homeForShell)
                 unresolved = { kind: 'dynamic', reason: 'no_home' };
-            return context.home || '';
+            return homeForShell || '';
         }
         if (name === 'PWD') {
-            if (!context.cwd)
+            if (!cwdForShell)
                 unresolved = { kind: 'dynamic', reason: 'no_cwd' };
-            return context.cwd || '';
+            return cwdForShell || '';
         }
-        const assigned = context.assignments && Object.prototype.hasOwnProperty.call(context.assignments, name)
-            ? context.assignments[name]
+        // Only values set before this command count; prefixAssignments never do.
+        const assigned = context.variables && Object.prototype.hasOwnProperty.call(context.variables, name)
+            ? context.variables[name]
             : undefined;
         if (assigned === undefined)
             unresolved = { kind: 'dynamic', reason: 'variable' };
@@ -203,9 +217,128 @@ function expandPathOperand(raw, context) {
         // `..` after a wildcard climbs out of whatever the wildcard matched.
         if (segments.slice(firstGlob).includes('..'))
             return { kind: 'dynamic', reason: 'glob_parent' };
-        return { kind: 'glob', path: normalized, staticPrefix: `/${segments.slice(0, firstGlob).join('/')}`, nonAscii };
+        return { kind: 'glob', path: normalized, staticPrefix: `/${segments.slice(0, firstGlob).join('/')}`, trailingFollow, nonAscii };
     }
     return { kind: 'path', path: normalized, trailingFollow, nonAscii };
+}
+/**
+ * Whether a name can match one glob segment. `*` and `?` as in the shell; a
+ * bracket expression counts as any one character, and a leading dot is not
+ * special, so the answer is a superset of the shell's. Dynamic programming,
+ * linear in pattern × name: no backtracking blow-up.
+ */
+function segmentMayMatch(pattern, name) {
+    const tokens = [];
+    for (let i = 0; i < pattern.length; i += 1) {
+        const ch = pattern[i];
+        if (ch === '[') {
+            const close = pattern.indexOf(']', i + 2);
+            if (close < 0)
+                tokens.push('[');
+            else {
+                tokens.push('?');
+                i = close;
+            }
+        }
+        else if (ch === '*') {
+            if (tokens[tokens.length - 1] !== '*')
+                tokens.push('*');
+        }
+        else
+            tokens.push(ch === '?' ? '?' : `=${ch}`);
+    }
+    let row = new Array(name.length + 1).fill(false);
+    row[0] = true;
+    for (const token of tokens) {
+        const next = new Array(name.length + 1).fill(false);
+        if (token === '*') {
+            let any = false;
+            for (let j = 0; j <= name.length; j += 1) {
+                any = any || row[j];
+                next[j] = any;
+            }
+        }
+        else {
+            for (let j = 1; j <= name.length; j += 1) {
+                const ch = name[j - 1];
+                next[j] = row[j - 1] && (token === '?' || (token === '[' ? ch === '[' : ch === token.slice(1)));
+            }
+        }
+        row = next;
+    }
+    return row[name.length];
+}
+/** Bound on directory entries a glob may enumerate; over it the operand is unknown. */
+exports.MAX_GLOB_ENTRIES = 1024;
+/**
+ * The real target of every path a glob can name, as far as the filesystem
+ * shows it. Each wildcard segment is matched against every entry of the
+ * directory (a superset of what the shell matches, dotfiles included, so it
+ * can only add targets). A name the shell resolves through a link (a further
+ * segment, a trailing `/` or `/.`, or use='read') is realpath-ed; a final name
+ * without one is the link itself. Null when it cannot be enumerated for certain.
+ */
+function globTargets(fs, path, trailingFollow, use) {
+    const segments = parts(path);
+    let current = ['/'];
+    let budget = exports.MAX_GLOB_ENTRIES;
+    const out = [];
+    const parents = [];
+    for (let i = 0; i < segments.length; i += 1) {
+        const segment = segments[i];
+        const final = i === segments.length - 1;
+        const next = [];
+        for (const dir of current) {
+            let names;
+            if (/[*?[]/.test(segment)) {
+                const real = realPath(fs, dir, { followFinal: true });
+                if (real.status !== 'resolved')
+                    return null;
+                if (!real.exists)
+                    continue;
+                let entry;
+                try {
+                    entry = fs.lstat(real.path);
+                }
+                catch {
+                    return null;
+                }
+                if (!entry || entry.type !== 'dir')
+                    continue;
+                if (final)
+                    parents.push(real.path);
+                try {
+                    names = fs.readdir(real.path);
+                }
+                catch {
+                    return null;
+                }
+                budget -= names.length;
+                if (budget < 0)
+                    return null;
+                names = names.filter((name) => segmentMayMatch(segment, name));
+                // bash before 5.2 lets a pattern with a leading `.` match `.` and `..`.
+                if (segment.startsWith('.'))
+                    for (const dot of ['.', '..'])
+                        if (segmentMayMatch(segment, dot))
+                            names.push(dot);
+            }
+            else
+                names = [segment];
+            for (const name of names)
+                next.push(dir === '/' ? `/${name}` : `${dir}/${name}`);
+        }
+        current = next;
+        if (final) {
+            for (const candidate of current) {
+                const real = realPath(fs, candidate, { followFinal: use === 'read' || trailingFollow });
+                if (real.status !== 'resolved')
+                    return null;
+                out.push(real.path);
+            }
+        }
+    }
+    return { matches: out, parents };
 }
 /**
  * Expands and realpaths one operand. use='read' follows a final symlink (cat
@@ -219,7 +352,10 @@ function resolveOperand(fs, context, raw, use) {
         const real = realPath(fs, expanded.staticPrefix, { followFinal: true });
         if (real.status !== 'resolved')
             return { kind: 'unknown', reason: real.reason };
-        return { kind: 'glob', staticReal: real.path, nonAscii: expanded.nonAscii };
+        const targets = globTargets(fs, expanded.path, expanded.trailingFollow, use);
+        if (targets === null)
+            return { kind: 'unknown', reason: 'glob_unresolved' };
+        return { kind: 'glob', staticReal: real.path, matches: targets.matches, parents: targets.parents, nonAscii: expanded.nonAscii };
     }
     const real = realPath(fs, expanded.path, { followFinal: use === 'read' || expanded.trailingFollow });
     if (real.status !== 'resolved')
@@ -279,11 +415,22 @@ function resolveWorkspace(fs, input) {
         return { known: true, roots: [], ...base, reason: 'home_or_ancestor' };
     return { known: true, roots: [root], ...base };
 }
-/** Where a recursive-delete target falls (S5). Only 'in_workspace' is safe. */
+const DELETE_CLASS_ORDER = ['unknown', 'root', 'home', 'workspace_root', 'outside_workspace', 'in_workspace'];
+/** Where a recursive-delete target falls (S5). Only 'in_workspace' is safe. A glob is the worst of its static prefix and every reachable match. */
 function classifyDeleteTarget(fs, workspace, target) {
     if (!workspace.known || target.kind === 'unknown' || target.nonAscii)
         return 'unknown';
-    const real = target.kind === 'glob' ? target.staticReal : target.real;
+    if (target.kind === 'glob') {
+        const classes = [classifyReal(fs, workspace, target.staticReal, true)];
+        for (const parent of target.parents)
+            classes.push(classifyReal(fs, workspace, parent, true));
+        for (const match of target.matches)
+            classes.push(classifyReal(fs, workspace, match, false));
+        return DELETE_CLASS_ORDER.find((c) => classes.includes(c));
+    }
+    return classifyReal(fs, workspace, target.real, false);
+}
+function classifyReal(fs, workspace, real, children) {
     if (real === '/')
         return 'root';
     const home = workspace.home;
@@ -294,7 +441,7 @@ function classifyDeleteTarget(fs, workspace, target) {
             return 'workspace_root';
     }
     // A glob deletes children of its static prefix; a path deletes itself.
-    const inside = (root) => (target.kind === 'glob' ? isWithinOrEqual(fs, root, real) : isStrictlyWithin(fs, root, real));
+    const inside = (root) => (children ? isWithinOrEqual(fs, root, real) : isStrictlyWithin(fs, root, real));
     if (workspace.roots.some(inside))
         return 'in_workspace';
     // Temp roots never cover anything inside home (a home under /tmp stays protected).
