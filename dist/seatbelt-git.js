@@ -569,6 +569,28 @@ function expandGitAliases(argv, context) {
         if (!results.some((r) => r.kind === 'unknown' && r.reason === reason))
             results.push({ kind: 'unknown', reason });
     };
+    /** The pairs these `pairs` bring in through include.path / includeIf.*.path (command-line config has no including file). */
+    const expandIncludes = (pairs) => {
+        const included = [];
+        let incomplete = false;
+        for (const [key, value] of pairs) {
+            const canonical = canonicalGitKey(key);
+            if (!INCLUDE_KEY.test(canonical))
+                continue;
+            if (!context.fs) {
+                incomplete = true;
+                continue;
+            }
+            loader = loader || createConfigLoader(context.fs, context.home ?? null);
+            const before = loader.entries.length;
+            loader.addEntries([{ key: canonical, value, source: 'command' }], null, 0);
+            for (const entry of loader.entries.slice(before + 1))
+                included.push([entry.key, entry.value]);
+        }
+        if (loader && loader.state.incomplete)
+            incomplete = true;
+        return { pairs: included, incomplete };
+    };
     const walk = (invocation, inherited, seen, depth) => {
         steps += 1;
         if (steps > exports.MAX_ALIAS_STEPS) {
@@ -585,26 +607,10 @@ function expandGitAliases(argv, context) {
             own.push([key, value]);
         }
         // include.path / includeIf.*.path given on this invocation: expand like git, or the config is incomplete.
-        const included = [];
-        let includeIncomplete = false;
-        for (const [key, value] of own) {
-            const canonical = canonicalGitKey(key);
-            if (!INCLUDE_KEY.test(canonical))
-                continue;
-            if (!context.fs) {
-                includeIncomplete = true;
-                continue;
-            }
-            loader = loader || createConfigLoader(context.fs, context.home ?? null);
-            const before = loader.entries.length;
-            loader.addEntries([{ key: canonical, value, source: 'command' }], null, 0);
-            for (const entry of loader.entries.slice(before + 1))
-                included.push([entry.key, entry.value]);
-        }
-        if (loader && loader.state.incomplete)
-            includeIncomplete = true;
-        if (includeIncomplete)
+        const expanded = expandIncludes(own);
+        if (expanded.incomplete)
             addUnknown('config_incomplete');
+        const included = expanded.pairs;
         const extra = [...inherited, ...own, ...included];
         const merged = { ...invocation, config: extra };
         const name = invocation.subcommand;
@@ -654,7 +660,15 @@ function expandGitAliases(argv, context) {
             walk(parseGitInvocation([...words, ...invocation.args]), extra, [...seen, lowered], depth + 1);
         }
     };
-    walk(parseGitInvocation(argv), [], [], 0);
+    // GIT_CONFIG_COUNT/KEY/VALUE and GIT_CONFIG_PARAMETERS in `env` are command-line level config too: seen here
+    // even when `config` was loaded from another env (their includes are followed the same way).
+    const fromEnv = configPairsFromEnv(context.env || {});
+    if (fromEnv.incomplete)
+        addUnknown('config_incomplete');
+    const envExpanded = expandIncludes(fromEnv.pairs);
+    if (envExpanded.incomplete)
+        addUnknown('config_incomplete');
+    walk(parseGitInvocation(argv), [...fromEnv.pairs, ...envExpanded.pairs], [], 0);
     return results;
 }
 /**
