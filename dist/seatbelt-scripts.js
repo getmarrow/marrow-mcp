@@ -161,6 +161,19 @@ const MAKE_SIMPLE_FLAGS = new Set(['-s', '-k', '-w', '--silent', '--quiet', '--k
  * command's prefix assignments). A caller MUST pass it: with it omitted every
  * answer is dynamic, because MAKEFLAGS/MAKEFILES, `?=` and the names make
  * exports to recipes all depend on it.
+ *
+ * Allowlist: an answer is definite only when none of these holds, each of which
+ * makes make run something the file does not say, or run it differently:
+ * `options.env` omitted, holding a non-string, MAKEFLAGS-like names, shell
+ * start-up / loader / git-relocating names, or a PATH entry that is relative,
+ * non-canonical or inside the makefile's directory; an assignment (file or
+ * command line) to a dot-name, an execution variable, a name make hands to
+ * recipes (MAKE_RECIPE_ENV_DENY) or a name in the environment; `export`,
+ * `unexport`, `.EXPORT_ALL_VARIABLES`; `?=`/`+=` on a variable make defines
+ * itself; a command-line value with `$` or a control character, or a
+ * command-line name no expansion reaches; a recipe-less target that is not
+ * .PHONY and could have a source file (built-in rules); a rule for the makefile
+ * itself; two recipes for one target. The mapper must re-classify `commands`.
  */
 function resolveMakeTargets(fs, dir, targets, options = {}) {
     let read = { status: 'absent' };
