@@ -149,14 +149,14 @@ const MUTANTS = [
   },
   {
     name: 'M-N2 branch assignments: the last assignment in the text wins across branches',
-    edits: [M(MAPPER, 'const certain = Boolean(ev && ev.uncond) && !info.round2;', 'const certain = true;')],
+    edits: [M(MAPPER, 'const certain = Boolean(ev && ev.uncond) && !info.round2 && !ctx.condAssign;', 'const certain = true;')],
   },
   {
     name: 'M-N2b loops run once and conditional declarations are plain overrides',
     edits: [
       M(MAPPER, 'const rounds = (guards && (guards.unknown ? LOOP_WORD.test(src)', 'const rounds = (false && (guards.unknown ? LOOP_WORD.test(src)'),
       M(MAPPER, '|| DEFERRED_CODE.test(src) ? 2 : 1;', '|| false ? 2 : 1;'),
-      M(MAPPER, 'const conditional = Boolean(dg) &&', 'const conditional = false &&'),
+      M(MAPPER, 'const conditional = !dg || dg.unknown || ctx.condAssign === true || evs.length === 0 || x.info.round2 === true || evs.some((e) => !e.uncond);', 'const conditional = false;'),
     ],
   },
   {
@@ -165,7 +165,7 @@ const MUTANTS = [
   },
   {
     name: 'M-N4 MCP stdin, input and keys fields are not read as the command',
-    edits: [M(MAPPER, 'if (tables_1.STDIN_KEYS.has(key)) {', 'if (false) {')],
+    edits: [M(MAPPER, 'if (tables_1.STDIN_KEYS.has(key) ||', 'if (false ||')],
   },
   {
     name: 'M-N4b tool_input given as a string is not parsed or read',
@@ -221,7 +221,7 @@ const MUTANTS = [
   },
   {
     name: 'M-T2 $(which NAME) is not resolved',
-    edits: [M(MAPPER, 'const name = inner === null ? null : whichLiteral(inner, ctx.depth + 1);', 'const name = null;')],
+    edits: [M(MAPPER, 'let name = inner === null ? null : whichLiteral(inner, ctx.depth + 1);', 'let name = null;')],
   },
   {
     name: 'M-T2b $(which NAME) is read as NAME only, not also as the word vanishing',
