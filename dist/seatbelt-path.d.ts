@@ -31,7 +31,10 @@ export interface PathContext {
      * "$DIR"`, `DIR=x && rm -rf "$DIR"`). Bash semantics: a prefix assignment
      * (`DIR=x rm -rf "$DIR"`) only goes to the command's environment and is NOT
      * seen by its own argument expansion, which uses the shell's prior value.
-     * Never put prefix assignments here; a name not listed is unknown.
+     * Never put prefix assignments here; a name not listed is unknown. Values
+     * are what the shell holds: tilde-expanded at assignment (a value that still
+     * starts with `~` is unknown). A `PWD` set here that is not `cwd` makes
+     * `$PWD` and `~+` unknown; `~-`, `~N` and `$OLDPWD` are unknown unless set.
      */
     variables?: Record<string, string>;
     /**
