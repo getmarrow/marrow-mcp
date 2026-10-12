@@ -11,14 +11,15 @@
 
 import * as path from 'node:path';
 import {
-  ARGV_KEYS, CODE_KEYS, COMMAND_KEYS, ENV_TEMPLATE_SUFFIX, EVAL_PRODUCERS, FILE_TOOL_NAMES, GIT_BUILTINS, GIT_CONFIG_ENV_FILES,
+  ARGV_KEYS, CODE_KEYS, COMMAND_KEYS, STDIN_KEYS, TERMINAL_SEGMENTS, codeLikeKey, commandLikeKey, ENV_TEMPLATE_SUFFIX, EVAL_PRODUCERS, FILE_TOOL_NAMES, GIT_BUILTINS, GIT_CONFIG_ENV_FILES,
   GIT_CONFIG_INCLUDE, GIT_EXEC_CONFIG, GIT_PUSH_LONG, GIT_PUSH_RISKY_LONG, GIT_S4_EXEMPT_SUBS, INERT_PROGRAMS, INTERPRETERS,
-  INTERPRETER_DECODE, INTERPRETER_EXEC, INTERPRETER_TREE_DELETE, KEY_EXTENSIONS, KEY_FIXTURE_SEGMENTS, KNOWN_COMMANDS, LIMITS,
+  INTERPRETER_EXEC, KEY_EXTENSIONS, KEY_FIXTURE_SEGMENTS, KNOWN_COMMANDS, LIMITS,
   MARROW_OWNER_SUBS, NAME_TRIPWIRE, NON_SCRIPT_NAMES, NPM_ALIASES, NPM_BOOL_FLAGS, NPM_COMMANDS, NPM_VALUE_FLAGS, PACKAGE_BINS,
   PROD_ENV, S4_EXEMPT_PROGRAMS, SCRIPT_SUFFIX, SECRET_PATTERNS, SECRET_VAR, SEATBELT_RULES_VERSION, SHELL_TOOL_NAMES, SHELLS,
-  SSH_PUBLIC, TRIPWIRE, secretSamples,
+  SSH_PUBLIC, TRIPWIRE, interpreterDecodeToken, interpreterTreeDelete, secretSamples,
 } from './tables';
 import { CLASSIFIER_PIN } from './classifier-pin';
+import { AssignEvent, scanAssignments } from './guards';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const shellParse: { parseShell: (src: string, opts?: { depth?: number }) => ParsedShell } = require('../../vendor/classifier/shell-parse.js');
@@ -141,6 +142,9 @@ interface Ctx {
   tfWorkspace: string | null | undefined;
   pulumiStack: string | null | undefined;
   decodedVars: Set<string>;
+  // Variables that are unknown (null in `vars`) but have these known readings as well (audit N2): a
+  // conditional assignment of a variable that was never set. Every reading is classified.
+  candidates: Map<string, string[]>;
   // Field-splitting characters: undefined = default IFS, a string = a literal IFS, null = unknown.
   ifs: string | null | undefined;
   // Inside a scan of an unknown program's argv: unknown programs are not scanned again.
@@ -197,24 +201,43 @@ export function evaluateSeatbelt(event: SeatbeltEvent, env: SeatbeltEnv): Seatbe
 
 function evaluateEvent(event: SeatbeltEvent, env: SeatbeltEnv): SeatbeltDecision {
   const tool = String((event && event.tool_name) || '');
-  const rawInput = event && event.tool_input;
-  const input = (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput) ? rawInput : {}) as Record<string, unknown>;
+  let rawInput = event && event.tool_input;
   const name = tool.toLowerCase();
+  // `tool_input` given as a string (audit N4): JSON is parsed and read as an object; any other text is
+  // the command line itself. A string over the size cap is not read: it stops.
+  let rawText: string | null = null;
+  let inputTooBig = false;
+  if (typeof rawInput === 'string') {
+    if (rawInput.length > LIMITS.maxToolJsonChars) { inputTooBig = true; rawInput = {}; }
+    else {
+      const parsed = /^\s*[{[]/.test(rawInput) ? tryJson(rawInput) : null;
+      if (parsed && typeof parsed === 'object') rawInput = parsed;
+      else { rawText = rawInput; rawInput = {}; }
+    }
+  }
+  if (Array.isArray(rawInput)) rawInput = { commands: rawInput.filter((v) => typeof v === 'string'), items: rawInput.filter((v) => v && typeof v === 'object') };
+  const input = (rawInput && typeof rawInput === 'object' ? rawInput : {}) as Record<string, unknown>;
+  // One wall-clock ceiling for the whole event, counted from here (audit N6): the input walks below
+  // run before any classification and share it.
+  const deadline = deadlineFor(env);
 
   // A tool that runs a shell command (audit F11): a known shell tool, or any tool whose input names a
   // command, script or argv field, at any depth.
-  const invocation = shellInvocations(name, input);
+  const invocation = shellInvocations(name, input, deadline, rawText);
   if (invocation) {
-    const run = newRun(env, invocation.shell.join('\n'));
-    for (const text of invocation.shell) evalShell(text, newCtx(run), run);
-    for (const code of invocation.code) scanInterpreterCode(code, run);
+    const run = newRun(env, invocation.shell.join('\n'), deadline);
+    if (inputTooBig) exhaust(run, 'budget_tool_input');
+    if (invocation.timedOut) exhaust(run, 'budget_time');
+    for (const text of invocation.shell) { if (clock(run)) break; evalShell(text, newCtx(run), run); }
+    for (const code of invocation.code) { if (clock(run)) break; scanInterpreterCode(code, run); }
     if (invocation.malformed) { hit(run, 'Sx', 'tool_command_malformed'); worseParse(run, 'unparsed'); }
     if (invocation.truncated) exhaust(run, 'budget_tool_input');
     // The tool may also take file paths (an MCP tool with `command` and `path`).
     if (name.startsWith('mcp__') && name.split('__')[1] !== 'marrow') mcpPathChecks(name, input, newCtx(run), run);
     return finish(run);
   }
-  const run = newRun(env, '');
+  const run = newRun(env, '', deadline);
+  if (inputTooBig) exhaust(run, 'budget_tool_input');
   const ctx = newCtx(run);
   if (['read', 'notebookread', 'read_file', 'view', 'view_file'].includes(name)) {
     for (const p of pathInputs(input)) checkSecretOperand(litArg(p), ctx, run, 'tool_read');
@@ -245,9 +268,11 @@ function evaluateEvent(event: SeatbeltEvent, env: SeatbeltEnv): SeatbeltDecision
 function mcpPathChecks(name: string, input: Record<string, unknown>, ctx: Ctx, run: Run): void {
   const parts = name.split('__');
   const verbs = /write|edit|create|move|delete|remove|rename|put|update|append|save|mkdir|copy|patch|upload/;
-  const walked = walkPathInputs(input);
-  if (walked.truncated) exhaust(run, 'budget_tool_input');
+  const walked = walkPathInputs(input, run.deadline);
+  if (walked.timedOut) exhaust(run, 'budget_time');
+  else if (walked.truncated) exhaust(run, 'budget_tool_input');
   for (const p of walked.paths) {
+    if (clock(run)) break;
     if (checkSecretOperand(litArg(p), ctx, run, 'mcp_path')) continue;
     if (verbs.test(parts.slice(2).join('_'))) checkProtectedWrite(litArg(p), ctx, run, 'mcp_write', false);
   }
@@ -258,36 +283,76 @@ function mcpPathChecks(name: string, input: Record<string, unknown>, ctx: Ctx, r
 const NON_SHELL_TOOLS = new Set(['slashcommand', 'skill', 'task', 'agent', 'todowrite', 'todoread', 'exitplanmode', 'enterplanmode',
   'websearch', 'webfetch', 'killshell', 'bashoutput', 'askuserquestion', 'sendmessage', 'taskcreate', 'taskupdate', 'tasklist']);
 
-interface ShellInvocation { shell: string[]; code: string[]; malformed: boolean; truncated: boolean }
+interface ShellInvocation { shell: string[]; code: string[]; malformed: boolean; truncated: boolean; timedOut: boolean }
 
-function shellInvocations(name: string, input: Record<string, unknown>): ShellInvocation | null {
+// Splits a field or tool name into lower-case segments (`cmdString` -> cmd, string; `terminal_send` ->
+// terminal, send), so a name is matched by word and not by substring (`description` is not `script`).
+function nameSegments(raw: string): string[] {
+  return raw.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+// Text for a program that reads its commands or data from stdin: the command line runs as a group
+// that receives the text (the shape of audit N1), so every shell or interpreter inside reads it.
+function withStdin(command: string, text: string): string {
+  let delim = 'MARROW_STDIN_EOF';
+  for (let n = 0; text.includes(delim) && n < 1000; n += 1) delim = `MARROW_STDIN_EOF_${n}`;
+  return `{ ${command}\n} <<'${delim}'\n${text}\n${delim}`;
+}
+
+// MCP shell tools (audit F11, N4): `command`-like fields and argv companions, interpreter code fields,
+// and stdin-like fields. A stdin-like field (`stdin`, `input`, `keys`, ...) next to a command is that
+// program's stdin; on a terminal or process tool without a command (desktop-commander
+// `interact_with_process {pid, input}`) it is typed into a shell or REPL, so it is both.
+function shellInvocations(name: string, input: Record<string, unknown>, deadline: number, rawText: string | null): ShellInvocation | null {
   const known = SHELL_TOOL_NAMES.has(name);
   if (!known) {
     if (FILE_TOOL_NAMES.has(name) || NON_SHELL_TOOLS.has(name) || name.startsWith('mcp__marrow__') || name.startsWith('marrow_')) return null;
   }
-  const out: ShellInvocation = { shell: [], code: [], malformed: false, truncated: false };
+  const out: ShellInvocation = { shell: [], code: [], malformed: false, truncated: false, timedOut: false };
+  const terminalTool = nameSegments(name).some((s) => TERMINAL_SEGMENTS.has(s));
   let visited = 0;
+  if (rawText !== null && rawText.trim() !== '') out.shell.push(rawText);
   const walk = (obj: Record<string, unknown>, depth: number) => {
+    if (out.timedOut) return;
+    const here: string[] = [];
+    const stdins: string[] = [];
     for (const [rawKey, value] of Object.entries(obj)) {
       visited += 1;
       if (visited > LIMITS.maxToolNodes) { out.truncated = true; return; }
+      if ((visited & 255) === 0 && Date.now() >= deadline) { out.timedOut = true; return; }
       const key = rawKey.toLowerCase().replace(/[-\s]/g, '_');
-      if (COMMAND_KEYS.has(key)) {
+      if (STDIN_KEYS.has(key)) {
+        if (typeof value === 'string') { if (value.trim() !== '') stdins.push(value); }
+        else if (Array.isArray(value) && value.length && value.every((v) => typeof v === 'string')) stdins.push((value as string[]).join('\n'));
+        else if (value && typeof value === 'object' && depth < LIMITS.maxToolDepth) {
+          // An object or a mixed list in a stdin field: read what is inside, and stop.
+          out.malformed = true;
+          if (Array.isArray(value)) { for (const item of value) if (item && typeof item === 'object' && !Array.isArray(item)) walk(item as Record<string, unknown>, depth + 1); }
+          else walk(value as Record<string, unknown>, depth + 1);
+        }
+        continue;
+      }
+      if (COMMAND_KEYS.has(key) || commandLikeKey(rawKey)) {
         if (typeof value === 'string') {
           const extra = [...ARGV_KEYS].map((k) => Object.entries(obj).find(([kk]) => kk.toLowerCase() === k)).find((e) => e && Array.isArray(e[1]));
           const argv = extra && Array.isArray(extra[1]) && (extra[1] as unknown[]).every((v) => typeof v === 'string') ? (extra[1] as string[]).map(shellQuote).join(' ') : '';
-          if (value.trim() !== '') out.shell.push(argv ? `${value} ${argv}` : value);
+          if (value.trim() !== '') here.push(argv ? `${value} ${argv}` : value);
+          // A command field that holds JSON (`{"command": "…"}` as text) is read as an object as well.
+          if (/^\s*[{[]/.test(value) && depth < LIMITS.maxToolDepth && value.length <= LIMITS.maxToolJsonChars) {
+            const parsed = tryJson(value);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) walk(parsed as Record<string, unknown>, depth + 1);
+          }
         } else if (Array.isArray(value)) {
           if (value.every((v) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')) {
             // `commands` / `cmds` is a list of command lines; any other array is one argv vector.
-            if (key === 'commands' || key === 'cmds') { for (const v of value) if (String(v).trim()) out.shell.push(String(v)); }
-            else if (value.length) out.shell.push((value as unknown[]).map((v) => shellQuote(String(v))).join(' '));
+            if (key === 'commands' || key === 'cmds') { for (const v of value) if (String(v).trim()) here.push(String(v)); }
+            else if (value.length) here.push((value as unknown[]).map((v) => shellQuote(String(v))).join(' '));
           } else if (value.every((v) => v && typeof v === 'object' && !Array.isArray(v))) {
             // commands: [{command: …}, …]
             if (depth < LIMITS.maxToolDepth) for (const o of value) walk(o as Record<string, unknown>, depth + 1);
           } else out.malformed = true;
         } else if (typeof value === 'number' || typeof value === 'boolean') {
-          out.shell.push(String(value));
+          here.push(String(value));
         } else if (value && typeof value === 'object') {
           // A command that is an object: unknown shape. Read what is inside it, and stop.
           out.malformed = true;
@@ -295,17 +360,28 @@ function shellInvocations(name: string, input: Record<string, unknown>): ShellIn
         }
         continue;
       }
-      if (CODE_KEYS.has(key) && typeof value === 'string') { if (value.trim()) out.code.push(value); continue; }
+      if ((CODE_KEYS.has(key) || codeLikeKey(rawKey)) && typeof value === 'string') { if (value.trim()) out.code.push(value); continue; }
       if (value && typeof value === 'object' && depth < LIMITS.maxToolDepth) {
         if (Array.isArray(value)) {
           for (const item of value) if (item && typeof item === 'object' && !Array.isArray(item)) walk(item as Record<string, unknown>, depth + 1);
         } else walk(value as Record<string, unknown>, depth + 1);
       }
     }
+    for (const c of here) {
+      if (stdins.length) for (const s of stdins) out.shell.push(withStdin(c, s));
+      else out.shell.push(c);
+    }
+    if (!here.length && stdins.length && terminalTool) {
+      for (const s of stdins) { out.shell.push(s); out.code.push(s); }
+    }
   };
   walk(input, 0);
-  if (!known && out.shell.length === 0 && out.code.length === 0 && !out.malformed && !out.truncated) return null;
+  if (!known && out.shell.length === 0 && out.code.length === 0 && !out.malformed && !out.truncated && !out.timedOut) return null;
   return out;
+}
+
+function tryJson(text: string): unknown {
+  try { return JSON.parse(text); } catch { return null; }
 }
 
 function shellQuote(s: string): string {
@@ -327,30 +403,37 @@ function pathInputs(input: Record<string, unknown>): string[] {
 
 // Path-like fields at any depth up to LIMITS.maxToolDepth (audit F14). Over the node budget the
 // result is truncated and the caller stops.
-function walkPathInputs(input: Record<string, unknown>): { paths: string[]; truncated: boolean } {
+function walkPathInputs(input: Record<string, unknown>, deadline: number): { paths: string[]; truncated: boolean; timedOut: boolean } {
   const out = new Set<string>();
   let visited = 0;
   let truncated = false;
+  let timedOut = false;
   const add = (v: unknown) => {
     if (typeof v === 'string' && v) out.add(v.replace(/^file:\/\//, ''));
     else if (Array.isArray(v)) v.forEach(add);
   };
   const walk = (value: unknown, depth: number) => {
-    if (truncated || !value || typeof value !== 'object') return;
+    if (truncated || timedOut || !value || typeof value !== 'object') return;
     if (depth > LIMITS.maxToolDepth) { truncated = true; return; }
     if (Array.isArray(value)) {
-      for (const item of value) { visited += 1; if (visited > LIMITS.maxToolNodes) { truncated = true; return; } walk(item, depth + 1); }
+      for (const item of value) {
+        visited += 1;
+        if (visited > LIMITS.maxToolNodes) { truncated = true; return; }
+        if ((visited & 255) === 0 && Date.now() >= deadline) { timedOut = true; return; }
+        walk(item, depth + 1);
+      }
       return;
     }
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       visited += 1;
       if (visited > LIMITS.maxToolNodes) { truncated = true; return; }
+      if ((visited & 255) === 0 && Date.now() >= deadline) { timedOut = true; return; }
       if (PATH_KEYS.includes(k.toLowerCase())) add(v);
       if (v && typeof v === 'object') walk(v, depth + 1);
     }
   };
   walk(input, 0);
-  return { paths: [...out], truncated };
+  return { paths: [...out], truncated, timedOut };
 }
 
 function patchPaths(patch: string): string[] {
@@ -381,7 +464,12 @@ function guardFs(env: SeatbeltEnv, state: { errored: boolean }): SeatbeltEnv {
   return { ...env, fs: guarded };
 }
 
-function newRun(rawEnv: SeatbeltEnv, source: string): Run {
+// The wall-clock ceiling for one classification, counted from the moment the evaluation starts.
+function deadlineFor(env: SeatbeltEnv): number {
+  return Date.now() + (typeof env.budgetMs === 'number' && env.budgetMs >= 0 ? env.budgetMs : LIMITS.timeBudgetMs);
+}
+
+function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
   const fsState = { errored: false };
   const env = guardFs(rawEnv, fsState);
   const platform = env.platform || 'linux';
@@ -430,7 +518,7 @@ function newRun(rawEnv: SeatbeltEnv, source: string): Run {
     topSource: source,
     work: 0,
     scriptExpansions: 0,
-    deadline: Date.now() + (typeof env.budgetMs === 'number' && env.budgetMs >= 0 ? env.budgetMs : LIMITS.timeBudgetMs),
+    deadline: deadline !== undefined ? deadline : deadlineFor(env),
     exhausted: false,
     links: new Map(),
     linksUnknown: false,
@@ -446,7 +534,7 @@ function newCtx(run: Run): Ctx {
   return {
     cwds: [cwd], vars: new Map([['HOME', [run.home]]]), exported: new Set(['HOME']), aliases: new Map(), gitAliases: new Map(),
     gitConfig: new Map(), written: new Set(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
-    decodedVars: new Set(), ifs: undefined, backstop: false,
+    decodedVars: new Set(), candidates: new Map(), ifs: undefined, backstop: false,
   };
 }
 
@@ -457,9 +545,14 @@ function childCtx(ctx: Ctx, overrides: Partial<Ctx> = {}): Ctx {
 function scriptCtx(ctx: Ctx, cwds: Array<string | null>, extraEnv: Map<string, string[] | null>): Ctx {
   // A child process sees exported variables and same-command assignments only.
   const vars = new Map<string, string[] | null>();
-  for (const name of ctx.exported) if (ctx.vars.has(name)) vars.set(name, ctx.vars.get(name) ?? null);
-  for (const [k, v] of extraEnv) vars.set(k, v);
-  return { ...ctx, cwds, vars, exported: new Set([...ctx.exported, ...extraEnv.keys()]), aliases: new Map(), depth: ctx.depth + 1, backstop: false };
+  const candidates = new Map<string, string[]>();
+  for (const name of ctx.exported) {
+    if (ctx.vars.has(name)) vars.set(name, ctx.vars.get(name) ?? null);
+    const c = ctx.candidates.get(name);
+    if (c) candidates.set(name, c);
+  }
+  for (const [k, v] of extraEnv) { vars.set(k, v); candidates.delete(k); }
+  return { ...ctx, cwds, vars, candidates, exported: new Set([...ctx.exported, ...extraEnv.keys()]), aliases: new Map(), depth: ctx.depth + 1, backstop: false };
 }
 
 function hit(run: Run, category: Exclude<SeatbeltCategory, 'none'>, reason: string): true {
@@ -489,6 +582,14 @@ function tick(run: Run): boolean {
   return true;
 }
 
+// True when the run is out of budget (a stop is then recorded). Called inside loops whose body does
+// file system work, so one step cannot run past the wall-clock ceiling (audit N6).
+function clock(run: Run): boolean {
+  if (run.exhausted) return true;
+  if (Date.now() >= run.deadline) { exhaust(run, 'budget_time'); return true; }
+  return false;
+}
+
 function expandScript(run: Run): boolean {
   if (run.exhausted) return false;
   run.scriptExpansions += 1;
@@ -503,7 +604,7 @@ function alreadySeen(run: Run, ctx: Ctx, kind: string, id: string, env: Map<stri
   const e = [...env.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join('\u0001');
   const cwd = ctx.cwds.map((c) => c || '?').join(',');
   // Everything a verdict can depend on: the deploy contexts, git aliases and config, IFS, decoded vars.
-  const state = JSON.stringify([ctx.kubeContext, ctx.tfWorkspace, ctx.pulumiStack, [...ctx.gitAliases], [...ctx.gitConfig], ctx.ifs, [...ctx.decodedVars], [...ctx.aliases], ctx.depth, ctx.backstop]);
+  const state = JSON.stringify([ctx.kubeContext, ctx.tfWorkspace, ctx.pulumiStack, [...ctx.gitAliases], [...ctx.gitConfig], ctx.ifs, [...ctx.decodedVars], [...ctx.aliases], ctx.depth, ctx.backstop, [...ctx.candidates]]);
   const key = `${kind}\u0002${id}\u0002${cwd}\u0002${exported}\u0002${e}\u0002${ctx.remote ? 'r' : 'l'}\u0002${state}`;
   if (run.seen.has(key)) return true;
   run.seen.add(key);
@@ -511,6 +612,8 @@ function alreadySeen(run: Run, ctx: Ctx, kind: string, id: string, env: Map<stri
 }
 
 function finish(run: Run): SeatbeltDecision {
+  // The wall clock is the ceiling even when no step ticked after the budget ran out (audit N6).
+  if (!run.exhausted && Date.now() >= run.deadline) exhaust(run, 'budget_time');
   if (run.fsState.errored) hit(run, 'Sx', 'fs_error');
   const hits = [...run.hits].sort((a, b) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category));
   const category: SeatbeltCategory = hits.length ? hits[0].category : 'none';
@@ -570,19 +673,109 @@ function isAncestorOrSelf(a: string, b: string): boolean {
 // ---------------------------------------------------------------------------------------------
 // shell evaluation
 
+// Estimated work of the vendored parser on `src`. Its `${` handling matches `\{[^}]*\}` from every
+// `${`, which is quadratic on a run of unterminated ones (64 KB of `${a` takes 2 s, audit N6). The
+// estimate is the sum over every `${` of the distance to the next `}` (or the end). Computed in one
+// backward pass, it is an upper bound of that scan.
+function parseCost(src: string): number {
+  let cost = 0;
+  let nextClose = src.length;
+  for (let i = src.length - 1; i > 0; i -= 1) {
+    const c = src.charCodeAt(i);
+    if (c === 125) nextClose = i;
+    else if (c === 123 && src.charCodeAt(i - 1) === 36) cost += nextClose - i;
+  }
+  return cost;
+}
+
+// Every parse goes through here: text whose estimated parse cost is over the budget is reported as
+// too large, so the caller stops before the parser runs.
+function safeParse(src: string, opts?: { depth?: number }): ParsedShell {
+  if (src.length > 256 && parseCost(src) > LIMITS.maxParseCost) {
+    return { ok: false, commands: [], substitutions: [], reasons: ['too_large'], dynamic: true, error: 'parse_cost' };
+  }
+  return shellParse.parseShell(src, opts);
+}
+
 const STRUCTURAL_REASONS = new Set(['case_statement', 'coproc_statement', 'unterminated_heredoc', 'dangling_redirect']);
+
+// A pipe whose consumer is a group or compound: `| ( … )`, `| { …; }`, `| while …`. The text test is
+// deliberately loose (a quoted `| (` also matches): it only widens which commands are read as
+// consumers, never narrows.
+const PIPE_INTO_GROUP = /\|&?(?:[ \t\r\n]|\\\n|#[^\n]*\n)*(?:[({]|(?:if|while|until|for|select|case)\b)/;
+
+// A command with no words that carries only an input redirect or a heredoc: the redirect that was
+// written after a group, subshell or compound (`{ bash; } <<< 'x'`, `while …; done < f`).
+function isOrphanFeed(c: ShellCommand): boolean {
+  if (c.words.length || c.assignments.length || c.forLoop) return false;
+  return c.heredoc !== null || c.redirects.some((r) => r.op === '<' || r.op === '<<<' || r.op === '<>' || r.op === '<&');
+}
+
+const LOOP_WORD = /(?:^|[\s;&|(){}])(?:while|until|for|select)(?:[\s;]|$)/;
+const DECLARE_PROGS = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
+const ASSIGN_WORD = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
+function assignName(text: string): string {
+  return text.slice(0, text.indexOf('=')).replace(/\+$/, '').replace(/\[.*$/, '');
+}
+
+// Matches the scanner's assignment events (text order) to the parser's commands. Any difference in
+// the sequence of names makes the structure unknown, which makes every assignment conditional.
+function buildGuards(src: string, commands: ShellCommand[]): Guards | undefined {
+  const slots: Array<{ cmd: ShellCommand; kind: 'assign' | 'declare'; name: string }> = [];
+  for (const c of commands) {
+    for (const a of c.assignments) slots.push({ cmd: c, kind: 'assign', name: assignName(a.text) });
+    const w0 = c.words[0];
+    if (w0 && !w0.dynamic && !w0.quoted && DECLARE_PROGS.has(w0.text)) {
+      for (const w of c.words.slice(1)) if (ASSIGN_WORD.test(w.text)) slots.push({ cmd: c, kind: 'declare', name: assignName(w.text) });
+    }
+  }
+  if (slots.length === 0) return undefined;
+  const byCmd = new Map<ShellCommand, { assign: AssignEvent[]; declare: AssignEvent[] }>();
+  const events = scanAssignments(src);
+  const aligned = events !== null && events.length === slots.length && events.every((e, k) => e.name === slots[k].name && e.declare === (slots[k].kind === 'declare'));
+  if (!aligned || !events) return { byCmd, unknown: true };
+  slots.forEach((s, k) => {
+    let g = byCmd.get(s.cmd);
+    if (!g) { g = { assign: [], declare: [] }; byCmd.set(s.cmd, g); }
+    g[s.kind].push(events[k]);
+  });
+  return { byCmd, unknown: false };
+}
+
+// The values a variable can hold after an assignment that may or may not have run: its old values
+// and the new ones (audit N2). A variable that was never set stays unknown (it may come from the
+// environment) but keeps the new values as readings, unless the assignment sits on every branch of an
+// if/else chain. Returns what to store in `vars`; `ctx.candidates` is updated.
+function applyConditional(ctx: Ctx, name: string, next: string[] | null, exhaustive: boolean): string[] | null {
+  const known = ctx.vars.has(name) ? ctx.vars.get(name) : undefined;
+  const cand = ctx.candidates.get(name) || [];
+  const cap = (xs: string[]) => [...new Set(xs)].slice(0, LIMITS.maxVariants);
+  if (next === null) {
+    ctx.candidates.set(name, cap([...(known || []), ...cand]));
+    return null;
+  }
+  if (known === null) { ctx.candidates.set(name, cap([...cand, ...next])); return null; }
+  if (known === undefined) {
+    if (exhaustive) { ctx.candidates.delete(name); return next; }
+    ctx.candidates.set(name, cap([...cand, ...next]));
+    return null;
+  }
+  const union = [...new Set([...known, ...next])];
+  if (union.length > LIMITS.maxVariants) { ctx.candidates.set(name, cap(union)); return null; }
+  return union;
+}
 
 function evalShell(src: string, ctx: Ctx, run: Run): void {
   if (!tick(run)) return;
   if (ctx.depth > LIMITS.maxDepth) { worseParse(run, 'too_large'); run.flags.add('depth_limit'); hit(run, 'Sx', 'budget_depth'); tripwire(src, run); return; }
   if (Buffer.byteLength(src) > LIMITS.maxCommandBytes) { worseParse(run, 'too_large'); hit(run, 'Sx', 'budget_size'); tripwire(src.slice(0, LIMITS.maxCommandBytes), run); return; }
-  const parsed = shellParse.parseShell(src, { depth: ctx.depth });
+  const parsed = safeParse(src, { depth: ctx.depth });
   if (!parsed.ok) {
-    const big = parsed.error === 'too_large' || parsed.error === 'too_many_commands';
+    const big = parsed.error === 'too_large' || parsed.error === 'too_many_commands' || parsed.error === 'parse_cost';
     worseParse(run, big ? 'too_large' : 'unparsed');
     tripwire(src.slice(0, LIMITS.maxCommandBytes), run);
     // Over the parser's budget, or text it cannot parse that also builds words from variables: stop.
-    if (big) hit(run, 'Sx', parsed.error === 'too_many_commands' ? 'budget_segments' : 'budget_size');
+    if (big) hit(run, 'Sx', parsed.error === 'too_many_commands' ? 'budget_segments' : parsed.error === 'parse_cost' ? 'budget_parse_cost' : 'budget_size');
     else if (/[$`]|(?:^|[\s;&|(])[A-Za-z_][A-Za-z0-9_]*\+?=/.test(src)) hit(run, 'Sx', 'unparsed_dynamic');
     return;
   }
@@ -606,19 +799,48 @@ function evalShell(src: string, ctx: Ctx, run: Run): void {
       prev.push(command);
     } else pipelines.push([command]);
   }
-  for (const pipeline of pipelines) {
-    for (let i = 0; i < pipeline.length; i += 1) {
-      const upstream = pipeline.slice(0, i);
-      evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions, groupSource: groupSource.has(pipeline[i]) });
+  // Attachments the parser lost (audit N1): see LostFeeds.
+  const orphans = parsed.commands.filter(isOrphanFeed);
+  const pipeIntoGroup = PIPE_INTO_GROUP.test(src);
+  const lostPipes: ShellCommand[][] = [];
+  for (const p of pipelines) {
+    let last = -1;
+    p.forEach((c, k) => { if (c.pipesOutput) last = k; });
+    if (last < 0) continue;
+    // A pipeline whose last stage still pipes its output has no consumer attached: it feeds a group.
+    if (pipeIntoGroup || last === p.length - 1) lostPipes.push(p.slice(0, last + 1));
+  }
+  const lost: LostFeeds | undefined = orphans.length || lostPipes.length ? { orphans, pipes: lostPipes } : undefined;
+  // Assignments on branches that exclude each other (audit N2): see Guards. A loop body runs more
+  // than once, so a later assignment in it is visible to an earlier use: the list runs twice.
+  const guards = buildGuards(src, parsed.commands);
+  const rounds = guards && (guards.unknown ? LOOP_WORD.test(src) : [...guards.byCmd.values()].some((g) => g.assign.concat(g.declare).some((e) => e.inLoop))) ? 2 : 1;
+  for (let round = 0; round < rounds && !run.exhausted; round += 1) {
+    for (const pipeline of pipelines) {
+      for (let i = 0; i < pipeline.length; i += 1) {
+        const upstream = pipeline.slice(0, i);
+        evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions, groupSource: groupSource.has(pipeline[i]), lost, guards, round2: round > 0 });
+      }
     }
   }
 }
 
-interface CmdInfo { upstream: ShellCommand[]; ansiC: boolean; subs: string[]; groupSource?: boolean }
+// `lost` holds the stdin attachments the vendored parser flattens away (audit N1): a redirect or
+// heredoc written after `}`, `)`, `fi`, `done` or `esac` becomes a command of its own with no words
+// (`orphans`), and a pipe into `( … )`, `{ …; }` or a compound only attaches to the first command in
+// it (`pipes`, whole pipelines up to their last piping stage). The group's members are not visible,
+// so every command of the same parse that reads stdin and has no stdin of its own reads them.
+interface LostFeeds { orphans: ShellCommand[]; pipes: ShellCommand[][] }
+// `guards`: which assignments of this parse run unconditionally (audit N2). `unknown` = the text could
+// not be matched to the parse: every assignment is then conditional.
+interface Guards { byCmd: Map<ShellCommand, { assign: AssignEvent[]; declare: AssignEvent[] }>; unknown: boolean }
+interface CmdInfo { upstream: ShellCommand[]; ansiC: boolean; subs: string[]; groupSource?: boolean; lost?: LostFeeds; guards?: Guards; round2?: boolean }
 
 // Bash brace expansion ({a,b}, {1..3}); quoting is not tracked per part, so it always expands
 // (stricter). Sequences are left unresolved.
 function expandBraces(text: string): string[] | null {
+  // A long brace word is not expanded (unresolved = stop): the expansion is recursive and quadratic.
+  if (text.length > LIMITS.maxBraceChars) return null;
   const m = text.match(/^(.*?)\{([^{}]*)\}(.*)$/s);
   if (!m) return [text];
   if (/\.\./.test(m[2]) && !m[2].includes(',')) return null;
@@ -684,6 +906,16 @@ function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void
       values.push(a.text);
     }
     ctx.vars.set(cmd.forLoop.name, values.length ? values : null);
+    ctx.candidates.delete(cmd.forLoop.name);
+    return;
+  }
+
+  // One command with more words than this is not read word by word (each word costs file system
+  // work); it stops (audit N6). The literal text still goes through the lexical tripwire.
+  if (cmd.words.length + cmd.assignments.length > LIMITS.maxWords) {
+    worseParse(run, 'too_large');
+    tripwire(run.topSource.slice(0, LIMITS.maxCommandBytes), run);
+    exhaust(run, 'budget_words');
     return;
   }
 
@@ -706,7 +938,9 @@ function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void
   }
 
   const assignEnv = new Map<string, string[] | null>();
-  for (const w of cmd.assignments) {
+  const guard = info.guards ? info.guards.byCmd.get(cmd) : undefined;
+  for (let ai = 0; ai < cmd.assignments.length; ai += 1) {
+    const w = cmd.assignments[ai];
     const eq = w.text.indexOf('=');
     const rawName = w.text.slice(0, eq);
     const name = rawName.replace(/\+$/, '').replace(/\[.*$/, '');
@@ -717,6 +951,16 @@ function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void
     if (/\+$/.test(rawName) && !/\[/.test(rawName)) {
       const before = assignEnv.has(name) ? assignEnv.get(name) : ctx.vars.get(name);
       value = value && before && before.length === 1 ? value.map((x) => `${before[0]}${x}`) : value && before === undefined ? value : null;
+    }
+    // An assignment that may not have run (a branch, `&&`/`||`, a loop body, a pipeline stage): the
+    // variable holds any of its values (audit N2). Only a plain assignment line persists.
+    if (cmd.words.length === 0) {
+      const ev = guard && info.guards && !info.guards.unknown ? guard.assign[ai] : undefined;
+      // A second round over a loop body: nothing is certain to have run again.
+      const certain = Boolean(ev && ev.uncond) && !info.round2;
+      if (certain) ctx.candidates.delete(name);
+      else if (info.guards) value = applyConditional(ctx, name, value, Boolean(ev && ev.exhaustive));
+      else ctx.candidates.delete(name);
     }
     assignEnv.set(name, value);
   }
@@ -734,7 +978,7 @@ function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void
   // decoder upstream (the parser does not say whether `<(…)` or `>(…)` was written).
   if (info.upstream.length && cmd.words.some((w) => w.substitution) && info.upstream.some((c) => decoderCommand(c, run, info))) {
     for (const sub of info.subs) {
-      const parsedSub = shellParse.parseShell(sub, { depth: ctx.depth + 1 });
+      const parsedSub = safeParse(sub, { depth: ctx.depth + 1 });
       if (parsedSub.ok && parsedSub.commands.some((c) => { const p0 = (c.words[0]?.text || '').split('/').pop() || ''; return SHELLS.has(p0) || INTERPRETERS.has(p0); })) hit(run, 'Sx', 'decoded_process_substitution_exec');
     }
   }
@@ -789,14 +1033,55 @@ function fieldArg(value: string, word: Word, base: Arg, unquotedExpansion: boole
   };
 }
 
+// The literal values a word can take when every variable in it is known or has candidate readings,
+// or null when it has none to add.
+function candidateReadings(word: Word, ctx: Ctx, run: Run): string[] | null {
+  if (ctx.candidates.size === 0) return null;
+  const parts = word.text.split('\u0000');
+  let values: string[] = [parts[0]];
+  let used = false;
+  for (let k = 0; k < word.slots.length; k += 1) {
+    const slot = word.slots[k];
+    if (!slot || slot.type !== 'var' || !slot.name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(slot.name)) return null;
+    let bound: string[] | null | undefined;
+    if (slot.name === 'HOME') bound = [run.home];
+    else {
+      const known = ctx.vars.has(slot.name) ? ctx.vars.get(slot.name) : undefined;
+      const cand = ctx.candidates.get(slot.name);
+      if (known) bound = known;
+      else if (cand) { bound = cand; used = true; }
+      else return null;
+    }
+    if (!bound) return null;
+    const next: string[] = [];
+    for (const prefix of values) for (const option of bound) next.push(`${prefix}${option}${parts[k + 1] || ''}`);
+    if (next.length > LIMITS.maxVariants) return null;
+    values = next;
+  }
+  return used ? values : null;
+}
+
 // Every reading of one word as a list of fields. A resolved variable value is split when the word is
 // unquoted (or when `force` asks for the split reading of a partly quoted word).
 function wordAlternatives(word: Word, ctx: Ctx, run: Run, force: boolean): Arg[][] {
   const base = resolveWord(word, ctx, run);
   if (!word.dynamic || !hasVarSlot(word)) return [[base]];
   if (base.alts === null || base.alts.length === 0) {
-    // Unresolved. An unquoted expansion under an unknown IFS is just as unresolved.
-    return [[base]];
+    // Unresolved. An unquoted expansion under an unknown IFS is just as unresolved. A variable with
+    // known candidate readings (a conditional assignment, audit N2) is read as each of them too.
+    const readings = candidateReadings(word, ctx, run);
+    if (readings === null) return [[base]];
+    const out: Arg[][] = [[base]];
+    const seen = new Set<string>();
+    for (const value of readings) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      if (word.quoted && !force) { out.push([fieldArg(value, word, base, false)]); continue; }
+      const fields = ifsSplit(value, ctx.ifs);
+      if (fields === null) continue;
+      out.push(fields.map((f) => fieldArg(f, word, base, !word.quoted)));
+    }
+    return out;
   }
   const splits = !word.quoted || force;
   const out: Arg[][] = [];
@@ -863,6 +1148,13 @@ function isOpt(a: Arg): boolean { return a.text !== null && a.text.length > 1 &&
 function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   if (args.length === 0) return;
   if (!tick(run)) return;
+  // The expanded argv (field splitting of a long value) is bounded like the command's own words.
+  if (args.length > LIMITS.maxWords) {
+    worseParse(run, 'too_large');
+    tripwire(args.map(argText).join(' ').slice(0, LIMITS.maxCommandBytes), run);
+    exhaust(run, 'budget_words');
+    return;
+  }
   const prog = progName(args[0], run);
   if (prog === null) return dynamicProgram(args, ctx, run, x);
   const rest = args.slice(1);
@@ -1003,7 +1295,7 @@ function scanArgvForCommands(rest: Arg[], ctx: Ctx, run: Run, x: Exec, remote = 
   const env = new Map(x.env);
   let trials = 0;
   for (let k = 0; k < rest.length; k += 1) {
-    if (run.exhausted) return;
+    if (clock(run)) return;
     const w = rest[k];
     if (w.text === null) continue;
     const m = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(w.text);
@@ -1057,8 +1349,9 @@ function printfOutput(format: string, args: string[]): string {
 
 // Text fed to a program's stdin that is known statically: a heredoc body, a here-string, or the
 // literal output of an upstream echo/printf/cat. `unknown` = a source the mapper cannot read.
-function stdinSource(x: Exec, ctx: Ctx, run: Run): { texts: string[]; files: Arg[]; unknown: boolean } {
-  const out = { texts: [] as string[], files: [] as Arg[], unknown: false };
+interface StdinSource { texts: string[]; files: Arg[]; unknown: boolean; subs: boolean; decoded: boolean; fetched: boolean; lostPipe: boolean }
+function stdinSource(x: Exec, ctx: Ctx, run: Run): StdinSource {
+  const out: StdinSource = { texts: [], files: [], unknown: false, subs: false, decoded: false, fetched: false, lostPipe: false };
   const addWord = (a: Arg) => {
     if (a.text !== null) out.texts.push(a.text);
     else if (a.alts && a.alts.length) out.texts.push(...a.alts);
@@ -1068,7 +1361,7 @@ function stdinSource(x: Exec, ctx: Ctx, run: Run): { texts: string[]; files: Arg
   for (const r of x.cmd.redirects) if (r.op === '<<<' && r.target) addWord(resolveWord(r.target, ctx, run));
   if (out.texts.length) return out;
   const up = x.info.upstream;
-  if (!up.length) return out;
+  if (!up.length) { lostSources(x, ctx, run, out, addWord); return out; }
   const last = up[up.length - 1];
   const words = last.words.map((w) => resolveWord(w, ctx, run));
   const p = words[0] ? progName(words[0], run) : null;
@@ -1092,6 +1385,57 @@ function stdinSource(x: Exec, ctx: Ctx, run: Run): { texts: string[]; files: Arg
   }
   out.unknown = true;
   return out;
+}
+
+// What the lost attachments of this parse (audit N1) would put on the stdin of a command that has no
+// stdin of its own: literal text from an orphan heredoc or here-string, files and process
+// substitutions from `<`, and the output of a pipeline that feeds a group. Anything unreadable is
+// `unknown`, which the readers (shells, interpreters) turn into a stop.
+function lostSources(x: Exec, ctx: Ctx, run: Run, out: StdinSource, addWord: (a: Arg) => void): void {
+  const lost = x.info.lost;
+  if (!lost) return;
+  for (const o of lost.orphans) {
+    if (o.heredoc !== null) out.texts.push(o.heredoc);
+    for (const r of o.redirects) {
+      if (!r.target) continue;
+      if (r.op === '<<<') addWord(resolveWord(r.target, ctx, run));
+      else if (r.op === '<' || r.op === '<>') {
+        if (r.target.substitution) out.subs = true;
+        else {
+          const a = resolveWord(r.target, ctx, run);
+          if (a.text === null) out.unknown = true; else out.files.push(a);
+        }
+      } else if (r.op === '<&') {
+        const a = resolveWord(r.target, ctx, run);
+        if (a.text === null || !/^(?:-|0)$/.test(a.text)) out.unknown = true;
+      }
+    }
+  }
+  for (const chain of lost.pipes) {
+    out.lostPipe = true;
+    if (chain.some((c) => decoderCommand(c, run, x.info))) out.decoded = true;
+    const direct = chain[chain.length - 1];
+    if (chain.length === 1 && fetcherCommand(direct)) { out.fetched = true; continue; }
+    const words = direct.words.map((w) => resolveWord(w, ctx, run));
+    const p = words[0] ? progName(words[0], run) : null;
+    if (p === 'echo' || p === 'printf') {
+      const flags = words.slice(1).filter((w) => p === 'echo' && /^-[neE]+$/.test(w.text || '')).map((w) => w.text as string);
+      const operands = words.slice(1).filter((w) => !(p === 'echo' && /^-[neE]+$/.test(w.text || '')));
+      if (operands.every((w) => w.text !== null)) {
+        const texts = operands.map((w) => w.text as string);
+        if (p === 'printf') out.texts.push(texts.length ? printfOutput(texts[0], texts.slice(1)) : '');
+        else out.texts.push(flags.some((f) => f.includes('e') && !f.includes('E')) ? unescapeBackslashes(texts.join(' ')) : texts.join(' '));
+      } else { out.unknown = true; out.texts.push(operands.map(argText).join(' ')); }
+    } else if (p === 'cat') {
+      if (direct.heredoc !== null) out.texts.push(direct.heredoc);
+      for (const r of direct.redirects) if (r.op === '<<<' && r.target) addWord(resolveWord(r.target, ctx, run));
+      const ops = words.slice(1).filter((w) => !(w.text !== null && w.text.startsWith('-') && w.text.length > 1));
+      if (ops.length === 0 && !direct.heredoc && !direct.redirects.some((r) => r.op === '<<<')) out.unknown = true;
+      for (const o of ops) { if (o.text === null) out.unknown = true; else out.files.push(o); }
+    } else {
+      out.unknown = true;
+    }
+  }
 }
 
 // An unknown program may run its argv or its stdin as a command (audit F1, F7).
@@ -1138,7 +1482,7 @@ function recursiveDeleteInText(norm: string): boolean {
 
 // Two or more hex escapes, or any decoder call, in interpreter code.
 function interpreterDecodes(code: string): boolean {
-  if (INTERPRETER_DECODE.test(code)) return true;
+  if (interpreterDecodeToken(code)) return true;
   let n = 0;
   for (const _m of code.matchAll(/\\x[0-9a-fA-F]{2}/g)) { n += 1; if (n >= 2) return true; }
   return false;
@@ -1178,7 +1522,7 @@ function decoderCommand(cmd: ShellCommand, _run: Run, info: CmdInfo): boolean {
 
 function substitutionsDecode(subs: string[], run: Run): boolean {
   for (const s of subs) {
-    const parsed = shellParse.parseShell(s);
+    const parsed = safeParse(s);
     const info: CmdInfo = { upstream: [], ansiC: /\$'[^']*\\(?:x[0-9a-fA-F]|[0-7]{2,3})/.test(s), subs: parsed.substitutions || [] };
     if (!parsed.ok) { if (/base64|xxd|rev\b|openssl|gunzip|\\x/.test(s)) return true; continue; }
     if (parsed.commands.some((c) => decoderCommand(c, run, info))) return true;
@@ -1199,6 +1543,14 @@ function fetcherCommand(cmd: ShellCommand): boolean {
 function stdinExec(prog: string, rest: Arg[], x: Exec, ctx: Ctx, run: Run): void {
   const asShell = SHELLS.has(prog) || prog === 'sh';
   const code = (text: string) => { if (asShell) evalShell(text, childCtx(ctx), run); else scanInterpreterCode(text, run); };
+  // A file the program reads as its program text (`bash -s < f`, `python3 < f`, or a file that a pipe
+  // into a group carries): a shell script is evaluated, interpreter code is scanned.
+  const fileCode = (f: Arg) => {
+    if (asShell) { scriptFile(f, rest, ctx, run, x); return; }
+    const found = (absCandidates(f.text as string, ctx, run) || []).map((p) => safeRead(run.env, p, LIMITS.maxScriptBytes));
+    if (found.length === 0 || found.some((c) => c === null)) nameTripwire(path.posix.basename(f.text as string), run, 'script_unreadable');
+    for (const c of found) if (c !== null) scanInterpreterCode(c, run);
+  };
   const source = stdinSource(x, ctx, run);
   const onCommand = x.cmd.heredoc !== null || x.cmd.redirects.some((r) => r.op === '<<<');
   if (onCommand) {
@@ -1206,8 +1558,32 @@ function stdinExec(prog: string, rest: Arg[], x: Exec, ctx: Ctx, run: Run): void
     if (source.unknown) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_stdin_code'); }
     return;
   }
+  // `bash -s < file`, `python3 < file`, `node < <(…)`.
+  const own = x.cmd.redirects.find((r) => r.op === '<' && r.target);
+  if (own && own.target) {
+    if (own.target.substitution) checkSubstitutionExec(x.info.subs, ctx, run);
+    else {
+      const a = resolveWord(own.target, ctx, run);
+      if (a.text === null) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_stdin_code'); } else fileCode(a);
+    }
+    return;
+  }
   const upstream = x.info.upstream;
-  if (upstream.length === 0) return;
+  if (upstream.length === 0) {
+    // No stdin of its own: whatever a redirect or pipe on an enclosing group carries (audit N1).
+    if (!x.info.lost) return;
+    if (source.decoded) hit(run, 'Sx', 'decoded_pipe_exec');
+    if (source.fetched) run.flags.add('remote_exec');
+    for (const t of source.texts) code(t);
+    for (const f of source.files) fileCode(f);
+    if (source.subs) checkSubstitutionExec(x.info.subs, ctx, run);
+    if (source.unknown) {
+      worseParse(run, 'dynamic');
+      if (source.lostPipe) { tripwire(run.topSource, run); hit(run, 'Sx', 'stdin_exec_group_source'); }
+      else hit(run, 'Sx', 'dynamic_stdin_code');
+    }
+    return;
+  }
   if (upstream.some((c) => decoderCommand(c, run, x.info))) { hit(run, 'Sx', 'decoded_pipe_exec'); return; }
   const direct = upstream[upstream.length - 1];
   if (upstream.length === 1 && fetcherCommand(direct) && !x.info.groupSource) { run.flags.add('remote_exec'); return; }
@@ -1224,12 +1600,7 @@ function stdinExec(prog: string, rest: Arg[], x: Exec, ctx: Ctx, run: Run): void
     return;
   }
   if (source.files.length) {
-    for (const f of source.files) {
-      if (asShell) { scriptFile(f, rest, ctx, run, x); continue; }
-      const found = (absCandidates(f.text as string, ctx, run) || []).map((p) => safeRead(run.env, p, LIMITS.maxScriptBytes));
-      if (found.length === 0 || found.some((c) => c === null)) nameTripwire(path.posix.basename(f.text as string), run, 'script_unreadable');
-      for (const c of found) if (c !== null) scanInterpreterCode(c, run);
-    }
+    for (const f of source.files) fileCode(f);
     if (source.unknown) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_stdin_code'); }
     return;
   }
@@ -1244,7 +1615,7 @@ function stdinExec(prog: string, rest: Arg[], x: Exec, ctx: Ctx, run: Run): void
 function checkSubstitutionExec(subs: string[], ctx: Ctx, run: Run): boolean {
   let classified = true;
   for (const s of subs) {
-    const parsed = shellParse.parseShell(s, { depth: ctx.depth + 1 });
+    const parsed = safeParse(s, { depth: ctx.depth + 1 });
     if (!parsed.ok) { tripwire(s, run); classified = false; continue; }
     const info: CmdInfo = { upstream: [], ansiC: /\$'[^']*\\(?:x[0-9a-fA-F]|[0-7]{2,3})/.test(s), subs: parsed.substitutions };
     if (parsed.commands.some((c) => decoderCommand(c, run, info))) { hit(run, 'Sx', 'decoded_substitution_exec'); continue; }
@@ -1292,7 +1663,7 @@ function interpreterEnvDump(code: string): boolean {
 }
 
 function scanInterpreterCode(code: string, run: Run): void {
-  if (INTERPRETER_TREE_DELETE.test(code)) hit(run, 'S5', 'interpreter_tree_delete');
+  if (interpreterTreeDelete(code)) hit(run, 'S5', 'interpreter_tree_delete');
   if (interpreterEnvDump(code)) hit(run, 'S4', 'interpreter_env_dump');
   if (interpreterDecodes(code) && INTERPRETER_EXEC.test(code)) hit(run, 'Sx', 'interpreter_decoded_exec');
   tripwire(code, run);
@@ -1710,6 +2081,7 @@ function expandGlob(text: string, ctx: Ctx, run: Run): string[] | null {
         if (re.test(n)) next.push(`${p}/${n}`);
         if (next.length > LIMITS.maxGlobMatches) return null;
       }
+      if (clock(run)) return null;
     }
     paths = next;
   }
@@ -1741,7 +2113,7 @@ function isSecretDirOrAncestor(text: string, ctx: Ctx, run: Run): boolean {
 function substitutionOperandCheck(prog: string, rest: Arg[], ctx: Ctx, run: Run, subs: string[]): void {
   if (S4_EXEMPT_PROGRAMS.has(prog) || prog === 'git' || !rest.some((a) => a.word && a.word.substitution)) return;
   for (const sub of subs) {
-    const parsedSub = shellParse.parseShell(sub, { depth: ctx.depth + 1 });
+    const parsedSub = safeParse(sub, { depth: ctx.depth + 1 });
     if (!parsedSub.ok) continue;
     for (const c of parsedSub.commands) {
       const w0 = (c.words[0]?.text || '').split('/').pop() || '';
@@ -1779,6 +2151,7 @@ function genericOperandChecks(prog: string, args: Arg[], ctx: Ctx, run: Run, sub
       if (skipNext) { skipNext = false; continue; }
       // ssh-style identity flags use the key without printing it.
       if (['scp', 'rsync', 'ssh-copy-id', 'sshfs'].includes(prog) && a.text === '-i') { skipNext = true; continue; }
+      if (clock(run)) return;
       checkSecretOperand(a, ctx, run, 'operand');
     }
   }
@@ -1923,16 +2296,26 @@ function declareLike(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): vo
   if ((prog === 'declare' || prog === 'typeset') && opts.some((o) => o.includes('p'))) {
     for (const n of names) if (n.text === null || SECRET_VAR.test(n.text)) { hit(run, 'S4', 'env_dump_declare_secret'); return; }
   }
+  const dg = x.info.guards;
+  const declEvents = dg && !dg.unknown ? (dg.byCmd.get(x.cmd) || { assign: [], declare: [] }).declare : [];
   for (const n of names) {
     if (n.text === null) { worseParse(run, 'dynamic'); continue; }
     const eq = n.text.indexOf('=');
     const name = eq >= 0 ? n.text.slice(0, eq) : n.text;
-    if (name === 'IFS' && eq >= 0) ctx.ifs = n.text.slice(eq + 1);
-    if (eq >= 0) ctx.vars.set(name, [n.text.slice(eq + 1)]);
-    else if (n.word && n.word.dynamic) ctx.vars.set(name, null);
+    // A declaration that may not have run keeps the variable's earlier values too (audit N2).
+    const evs = declEvents.filter((e) => e.name === name.replace(/\+$/, ''));
+    const conditional = Boolean(dg) && (dg?.unknown || evs.length === 0 || x.info.round2 || evs.some((e) => !e.uncond));
+    const exhaustive = evs.length > 0 && evs.every((e) => e.exhaustive);
+    if (eq >= 0) {
+      const next = [n.text.slice(eq + 1)];
+      let value: string[] | null = next;
+      if (conditional) value = applyConditional(ctx, name, next, exhaustive);
+      else ctx.candidates.delete(name);
+      ctx.vars.set(name, value);
+      if (name === 'IFS') ctx.ifs = value && value.length === 1 ? value[0] : null;
+    } else if (n.word && n.word.dynamic) ctx.vars.set(name, null);
     if (prog === 'export' || opts.some((o) => o.includes('x'))) ctx.exported.add(name);
   }
-  void x;
 }
 
 function setBuiltin(rest: Arg[], run: Run): void {
@@ -2244,6 +2627,7 @@ function handleInterpreter(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exe
   const codeFlags: Record<string, RegExp> = {
     node: /^(?:-e|--eval|-p|--print|-pe)$/, nodejs: /^(?:-e|--eval|-p|--print)$/, bun: /^(?:-e|--eval|-p|--print)$/,
     deno: /^(?:eval)$/, php: /^-r$/, ruby: /^-[a-zA-Z]*e$/, perl: /^-[a-zA-Z]*[eE]$/, lua: /^-e$/, irb: /^-e$/,
+    pwsh: /^-(?:c|command|e|ec|enc|encodedcommand)$/i, powershell: /^-(?:c|command|e|ec|enc|encodedcommand)$/i,
   };
   const isPython = /^(?:python[23]?(?:\.\d+)?|ipython)$/.test(prog);
   const codeRe = isPython ? /^-[a-zA-Z]*c$/ : (codeFlags[prog] || /^-e$/);
@@ -2440,7 +2824,7 @@ function scriptFile(target: Arg, extra: Arg[], ctx: Ctx, run: Run, x: Exec | nul
     const shebang = content.startsWith('#!') ? content.slice(0, content.indexOf('\n') >>> 0).toLowerCase() : '';
     if (shebang && !/\b(?:sh|bash|zsh|dash|ksh|ash)\b/.test(shebang)) {
       // Non-shell scripts: decoded exec and tree deletes only (interpreted programs are a residual).
-      if (INTERPRETER_TREE_DELETE.test(content)) hit(run, 'S5', 'script_tree_delete');
+      if (interpreterTreeDelete(content)) hit(run, 'S5', 'script_tree_delete');
       if (interpreterDecodes(content) && INTERPRETER_EXEC.test(content)) hit(run, 'Sx', 'script_decoded_exec');
       continue;
     }
@@ -2864,7 +3248,7 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
       if (aliasDepth >= LIMITS.maxAliasExpansions) { worseParse(run, 'too_large'); hit(run, 'Sx', 'budget_alias_depth'); tripwire(`${value} ${args.map(argText).join(' ')}`, run); return; }
       const restText = args.map((a) => (a.text !== null ? shellQuote(a.text) : '"$__marrow_dynamic"')).join(' ');
       if (value.startsWith('!')) { evalShell(`${value.slice(1)} ${restText}`, childCtx(gctx), run); return; }
-      const parsed = shellParse.parseShell(value);
+      const parsed = safeParse(value);
       if (!parsed.ok || parsed.commands.length !== 1) { worseParse(run, 'unparsed'); tripwire(`push ${value} ${restText}`, run); return; }
       const expanded = parsed.commands[0].words.map((w) => resolveWord(w, ctx, run));
       handleGit([...expanded, ...args], gctx, run, x, overrides, aliasDepth + 1);

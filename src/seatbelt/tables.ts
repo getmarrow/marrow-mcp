@@ -25,6 +25,14 @@ export const LIMITS = Object.freeze({
   maxToolDepth: 12,
   maxTailTrials: 64,
   maxPathChars: 4096,
+  // N6: a command, or an expanded argv, with more words than this stops (the per-word checks do file
+  // system calls, so the count is the deterministic bound on one command's cost). A brace word longer
+  // than maxBraceChars is not expanded (unresolved = stop). maxParseCost bounds the estimated work of
+  // the vendored parser's `${` handling, which is quadratic on a run of unterminated `${`.
+  maxToolJsonChars: 1024 * 1024,
+  maxWords: 1024,
+  maxBraceChars: 1024,
+  maxParseCost: 24_000_000,
 });
 
 // S4 secret paths. Home-anchored entries in the spec are matched home-agnostic ("**/"), which is
@@ -82,10 +90,46 @@ export const GIT_S4_EXEMPT_SUBS = new Set(['rm', 'check-ignore', 'check-attr', '
 export const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh', 'yash', 'rbash', 'csh', 'tcsh']);
 export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'bun', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh', 'irb', 'ipython']);
 
-// Interpreter one-liners that delete trees (S5).
-export const INTERPRETER_TREE_DELETE = /rmSync|rmdirSync|rimraf|shutil\.rmtree|rm_rf|FileUtils\.rm_r|FileUtils\.remove_dir|remove_dir_all|removedirs|\.rm\s*\([^)]{0,1000}recursive|Remove-Item[^\n]{0,1000}-Recurse|deleteRecursively/;
-// Decoded data that is then executed inside interpreter code (S-x).
-export const INTERPRETER_DECODE = /b64decode|base64|atob\s*\(|fromCharCode|unhexlify|bytes\.fromhex|codecs\.decode|\.decode\(\s*['"](?:hex|base64|rot)|Buffer\.from\([^)]{0,1000}['"](?:base64|hex)['"]|\bpack\s*\(?\s*['"][HhBbuU]|\bchr\s*\(|\bhex\s*\(|\bgunzip|\binflate|\bzlib\b|\bunpack\b|\bpack\b\s*\(?\s*['"]|\.reverse\(\)|\[::-1\]|\bscalar\s+reverse/i;
+// Interpreter one-liners that delete trees (S5). The two forms that need "a call, then an option
+// before its closing parenthesis" are not regexes with a gap: a bounded gap lets padding turn a stop
+// into a pass (audit N5) and an unbounded one is quadratic on a run of the opener. They are one
+// linear scan each (interpreterTreeDelete), with the same meaning the unbounded regexes had.
+const INTERPRETER_TREE_DELETE_WORDS = /rmSync|rmdirSync|rimraf|shutil\.rmtree|rm_rf|FileUtils\.rm_r|FileUtils\.remove_dir|remove_dir_all|removedirs|deleteRecursively/;
+// Decoded data that is then executed inside interpreter code (S-x). `Buffer.from( … 'hex'|'base64')`
+// is the gapped form; see interpreterDecodeToken.
+const INTERPRETER_DECODE_WORDS = /b64decode|base64|atob\s*\(|fromCharCode|unhexlify|bytes\.fromhex|codecs\.decode|\.decode\(\s*['"](?:hex|base64|rot)|\bpack\s*\(?\s*['"][HhBbuU]|\bchr\s*\(|\bhex\s*\(|\bgunzip|\binflate|\bzlib\b|\bunpack\b|\bpack\b\s*\(?\s*['"]|\.reverse\(\)|\[::-1\]|\bscalar\s+reverse/i;
+
+// One pass over the code: a window opens at the opener and closes at the first `)`; the needle inside
+// an open window is a hit. No backtracking, so padding or a long run of the opener costs one scan.
+const RM_WINDOW = /(\.rm\s*\()|(\))|(recursive)/g;
+const BUFFER_WINDOW = /(Buffer\.from\()|(\))|(['"](?:base64|hex)['"])/gi;
+function openWindowHit(code: string, re: RegExp): boolean {
+  let open = false;
+  re.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code))) {
+    if (m[1] !== undefined) open = true;
+    else if (m[2] !== undefined) open = false;
+    else if (open) return true;
+  }
+  return false;
+}
+
+export function interpreterTreeDelete(code: string): boolean {
+  if (INTERPRETER_TREE_DELETE_WORDS.test(code)) return true;
+  // `fs.rm(path, {…, recursive: true})`: `recursive` before the call's first `)`.
+  if (openWindowHit(code, RM_WINDOW)) return true;
+  // `Remove-Item … -Recurse` on one line.
+  for (const line of code.split('\n')) {
+    const at = line.indexOf('Remove-Item');
+    if (at >= 0 && line.indexOf('-Recurse', at + 11) >= 0) return true;
+  }
+  return false;
+}
+
+export function interpreterDecodeToken(code: string): boolean {
+  return INTERPRETER_DECODE_WORDS.test(code) || openWindowHit(code, BUFFER_WINDOW);
+}
 export const INTERPRETER_EXEC = /\bexec\b|\beval\b|\bFunction\s*\(|\bsystem\b|popen|spawn|execSync|execFile|child_process|subprocess|\bcompile\s*\(|`/;
 
 // Owner-only commands an agent must never run (S0).
@@ -256,8 +300,36 @@ export const FILE_TOOL_NAMES = new Set(['read', 'notebookread', 'read_file', 'vi
   'apply_patch', 'edit_file', 'glob', 'ls', 'list_dir', 'list_directory']);
 // Input field names (lower-cased) that hold a shell command, script or argv.
 export const COMMAND_KEYS = new Set(['command', 'cmd', 'commandline', 'command_line', 'cmdline', 'cmd_line', 'shell_command', 'shellcommand',
-  'bash_command', 'script', 'shell', 'bash', 'sh', 'exec', 'run', 'execute', 'argv', 'commands', 'cmds']);
+  'bash_command', 'script', 'shell', 'bash', 'sh', 'exec', 'run', 'execute', 'argv', 'commands', 'cmds',
+  // audit N4: argv-style tools and string-named variants
+  'program', 'executable', 'exe', 'shell_cmd', 'shellcmd', 'cmdstring', 'cmd_string', 'command_string', 'commandstring', 'cmdstr',
+  'cmd_str', 'command_text', 'commandtext', 'cmd_text', 'shell_script', 'bash_script', 'script_text']);
+// A field name that is not listed above but names a command by word: `cmdString`, `my_shell_cmd`,
+// `run_command`. Matched on name segments, so `description` is not `script`.
+const COMMAND_SEGMENTS = new Set(['cmd', 'cmds', 'command', 'commands', 'shell', 'bash', 'zsh', 'script', 'exec', 'execute', 'argv', 'commandline',
+  'cmdline', 'program', 'executable']);
+export function commandLikeKey(raw: string): boolean {
+  return raw.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).some((s) => COMMAND_SEGMENTS.has(s));
+}
 // Companion argument-vector fields next to a `command` string (MCP exec servers: {command:'git', args:[…]}).
 export const ARGV_KEYS = new Set(['args', 'argv', 'arguments', 'params', 'argument']);
 // Fields that hold interpreter code (scanned like `node -e`).
-export const CODE_KEYS = new Set(['code', 'python', 'javascript', 'js', 'node', 'ruby', 'perl', 'php', 'python_code', 'source_code']);
+export const CODE_KEYS = new Set(['code', 'python', 'javascript', 'js', 'node', 'ruby', 'perl', 'php', 'python_code', 'source_code',
+  // audit N4
+  'source', 'snippet', 'code_snippet', 'script_source', 'python_script', 'js_code', 'javascript_code', 'node_code', 'ruby_code',
+  'perl_code', 'php_code']);
+const CODE_SEGMENTS = new Set(['code', 'python', 'javascript', 'js', 'ruby', 'perl', 'php', 'snippet', 'source']);
+export function codeLikeKey(raw: string): boolean {
+  const segs = raw.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/);
+  // `source_path` / `source_file` name a file, not code.
+  if (segs.some((s) => s === 'path' || s === 'file' || s === 'dir' || s === 'url' || s === 'uri' || s === 'id' || s === 'name' || s === 'type' || s === 'lang' || s === 'language')) return false;
+  return segs.some((s) => CODE_SEGMENTS.has(s));
+}
+// Fields that carry a program's standard input or typed keys (audit N4). Next to a command they are
+// that command's stdin; on a terminal or process tool they are typed into a shell or REPL.
+export const STDIN_KEYS = new Set(['stdin', 'input', 'std_in', 'standard_input', 'stdin_text', 'stdin_data', 'input_text', 'inputtext',
+  'keys', 'send_keys', 'keystrokes', 'stdin_content']);
+// Name segments of a tool that drives a terminal, shell, process or REPL.
+export const TERMINAL_SEGMENTS = new Set(['terminal', 'shell', 'process', 'interact', 'pty', 'console', 'repl', 'bash', 'exec', 'execute',
+  'stdin', 'keys', 'keystroke', 'keystrokes', 'command', 'commands', 'cmd', 'tty', 'ssh', 'tmux', 'iterm', 'iterm2', 'session', 'sh',
+  'zsh', 'powershell', 'pwsh', 'run', 'input']);
