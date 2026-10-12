@@ -3228,22 +3228,7 @@ function changeDir(rest: Arg[], ctx: Ctx, run: Run, subshell: boolean): void {
   const ops = nonOptions(rest);
   const target = ops[0];
   if (!target) { ctx.cwds = subshell ? [...new Set([...ctx.cwds, run.home])] : [run.home]; return; }
-  if (target.text === null || target.text === '-' || target.glob) {
-    // An unresolved target that has known readings (the literal elements of an array, audit r4 B1):
-    // each reading is a directory the commands after it may run in, next to the unknown one.
-    const extra: Array<string | null> = [null];
-    const readings = target.text === null && target.word ? candidateReadings(target.word, ctx, run) : null;
-    if (readings) {
-      for (const v of readings) {
-        const t = expandTilde(v, run);
-        if (t === null) continue;
-        if (path.posix.isAbsolute(t)) extra.push(path.posix.normalize(t));
-        else for (const c of ctx.cwds) extra.push(c ? path.posix.resolve(c, t) : null);
-      }
-    }
-    ctx.cwds = [...new Set([...ctx.cwds, ...extra])];
-    return;
-  }
+  if (target.text === null || target.text === '-' || target.glob) { ctx.cwds = [...new Set([...ctx.cwds, null])]; return; }
   const next: Array<string | null> = [];
   for (const c of ctx.cwds) {
     const t = expandTilde(target.text, run);

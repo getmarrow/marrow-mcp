@@ -275,10 +275,6 @@ const MUTANTS = [
     edits: [M(MAPPER, "        if (a.text === null && (OUTPUT_REDIRECTS.has(r.op) || r.op === '<')) {\n            const readings = candidateReadings(r.target, ctx, run);", "        if (false) {\n            const readings = candidateReadings(r.target, ctx, run);")],
   },
   {
-    name: 'M-B1g the readings of an unresolved cd target are not directories',
-    edits: [M(MAPPER, 'const readings = target.text === null && target.word ? candidateReadings(target.word, ctx, run) : null;', 'const readings = null;')],
-  },
-  {
     name: 'M-B1b array names are not collected from the text (declare -a, mapfile, read -a, a[i]=, a=( )',
     edits: [M(MAPPER, '    collectArrayNames(src, found);\n', '')],
   },
