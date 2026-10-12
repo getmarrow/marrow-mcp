@@ -2,7 +2,11 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { createFakeFs } = require('./support/seatbelt-fake-fs.cjs');
-const { resolvePackageScript, packageCommands, PUBLISH_LIFECYCLE, resolveMakeTargets, readScriptFile, MAX_SCRIPT_BYTES } = require('../dist/seatbelt-scripts.js');
+const { resolvePackageScript, packageCommands, PUBLISH_LIFECYCLE, resolveMakeTargets: resolveMakeTargetsRaw, readScriptFile, MAX_SCRIPT_BYTES } = require('../dist/seatbelt-scripts.js');
+
+// Round 4 (audit L4): without `env` every Makefile answer is dynamic, so these tests state a clean environment
+// unless one says `{ env: undefined }` (the caller does not know it).
+const resolveMakeTargets = (fs, dir, targets, options = {}) => resolveMakeTargetsRaw(fs, dir, targets, { env: {}, ...options });
 const {
   readWranglerConfig, readVercelLink, readFlyConfig, readFirebaseProjects, readKubeContexts,
   readSamConfig, readSstStage, readTerraformWorkspace, readGcloudProject, parseJsonc,
@@ -53,7 +57,7 @@ test('A12 Makefile: recipes, prerequisites, variables and command-line overrides
   assert.deepEqual(resolveMakeTargets(fs, '/m', ['release']), { status: 'ok', makefile: '/m/Makefile', commands: ['npm run build', 'vercel --prod'], dynamic: false });
   assert.deepEqual(resolveMakeTargets(fs, '/m', []).commands, ['npm run build', 'vercel --prod']);
   // `STAGE ?= dev` takes the environment's STAGE when it has one: with the environment unknown the answer is dynamic (round 3, N4).
-  const shipUnknownEnv = resolveMakeTargets(fs, '/m', ['ship']);
+  const shipUnknownEnv = resolveMakeTargets(fs, '/m', ['ship'], { env: undefined });
   assert.equal(shipUnknownEnv.dynamic, true);
   assert.deepEqual(resolveMakeTargets(fs, '/m', ['ship'], { env: {} }).commands, ['wrangler deploy --env dev']);
   assert.equal(resolveMakeTargets(fs, '/m', ['ship'], { env: {} }).dynamic, false);

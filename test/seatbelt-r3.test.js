@@ -214,7 +214,9 @@ test('N3 globs: bracket expressions with `!`, a leading `]` or a [:class:] are m
 
 // ------------------------------------------------------------------ make (N4)
 
-const make = (text, targets = ['all'], options = {}) => S.resolveMakeTargets(createFakeFs().file('/m/Makefile', text), '/m', targets, options);
+// Round 4 (audit L4): without `env` every Makefile answer is dynamic, so these tests state a clean environment
+// unless one says `{ env: undefined }` (the caller does not know it).
+const make = (text, targets = ['all'], options = {}) => S.resolveMakeTargets(createFakeFs().file('/m/Makefile', text), '/m', targets, { env: {}, ...options });
 const shows = (r) => r.status === 'ok' && r.commands.some((c) => /vercel/.test(c));
 const definiteNoDeploy = (r) => r.status === 'ok' && !r.dynamic && !shows(r);
 const hidden = (r) => r.status === 'ok' && !r.dynamic && !shows(r);
@@ -254,8 +256,8 @@ test('N4: prerequisites and target names are expanded when the line is read; := 
 
 test('N4: ?= and += need the environment: unknown unless env is given; env and the file are combined as make does', () => {
   const text = (op) => `STAGE ${op} dev\nall:\n\twrangler deploy --env $(STAGE)\n`;
-  assert.equal(make(text('?=')).dynamic, true, '?= with the environment unknown');
-  assert.equal(make(text('+=')).dynamic, true, '+= with the environment unknown');
+  assert.equal(make(text('?='), ['all'], { env: undefined }).dynamic, true, '?= with the environment unknown');
+  assert.equal(make(text('+='), ['all'], { env: undefined }).dynamic, true, '+= with the environment unknown');
   assert.deepEqual(make(text('?='), ['all'], { env: {} }).commands, ['wrangler deploy --env dev']);
   assert.deepEqual(make(text('?='), ['all'], { env: { STAGE: 'production' } }).commands, ['wrangler deploy --env production']);
   assert.deepEqual(make(text('+='), ['all'], { env: { STAGE: 'production' } }).commands, ['wrangler deploy --env production dev']);
@@ -265,6 +267,7 @@ test('N4: ?= and += need the environment: unknown unless env is given; env and t
   assert.deepEqual(make('STAGE = a\nSTAGE ?= b\nall:\n\techo $(STAGE)\n').commands, ['echo a']);
   // Variables the file does not assign come from env when it is given, else unknown.
   assert.equal(make('all:\n\techo $(WHO)\n').dynamic, true);
+  assert.equal(make('all:\n\techo $(WHO)\n', ['all'], { env: undefined }).dynamic, true);
   assert.deepEqual(make('all:\n\techo $(WHO)\n', ['all'], { env: { WHO: 'me' } }).commands, ['echo me']);
   // make -e / MAKEFLAGS in the environment changes precedence and files: dynamic.
   for (const name of ['MAKEFLAGS', 'GNUMAKEFLAGS', 'MAKEFILES', 'MFLAGS']) assert.equal(make('all:\n\techo\n', ['all'], { env: { [name]: 'e' } }).dynamic, true, name);

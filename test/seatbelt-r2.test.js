@@ -161,7 +161,7 @@ function makeOf(text) {
   const fs = createFakeFs().file('/w/Makefile', text);
   const t = process.hrtime.bigint();
   const heap = process.memoryUsage().heapUsed;
-  const r = S.resolveMakeTargets(fs, '/w', ['deploy']);
+  const r = S.resolveMakeTargets(fs, '/w', ['deploy'], { env: {} });
   return { r, ms: Number(process.hrtime.bigint() - t) / 1e6, heapMB: (process.memoryUsage().heapUsed - heap) / 1e6 };
 }
 

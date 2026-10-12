@@ -137,6 +137,11 @@ const MAKE_SIMPLE_FLAGS = new Set(['-s', '-k', '-w', '--silent', '--quiet', '--k
  * suffix rules, functions (`$(shell …)`), target-specific variables, variables
  * that change the shell, or an unknown variable make the answer dynamic, which
  * the mapper treats like an unknown script.
+ *
+ * `options.env` is the environment make would run in (the hook's, plus the
+ * command's prefix assignments). A caller MUST pass it: with it omitted every
+ * answer is dynamic, because MAKEFLAGS/MAKEFILES, `?=` and the names make
+ * exports to recipes all depend on it.
  */
 function resolveMakeTargets(fs, dir, targets, options = {}) {
     let read = { status: 'absent' };
@@ -160,14 +165,23 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     let recipeCount = 0;
     const overBudget = { status: 'unknown', reason: 'too_complex' };
     // The environment make would see. Unknown (undefined) means a name the file
-    // does not assign may still have a value, and ?= / += cannot be resolved.
+    // does not assign may still have a value, ?= / += cannot be resolved, and
+    // MAKEFLAGS / MAKEFILES / exported names cannot be ruled out: the answer is
+    // dynamic. A caller that states no environment never gets a definite answer.
     const env = options.env;
-    if (env && MAKE_RELOCATING_ENV.some((name) => env[name] !== undefined))
+    /** An own string value only: `constructor`, `__proto__` and `toString` are not environment variables. */
+    const envValue = (name) => {
+        if (!env || !Object.prototype.hasOwnProperty.call(env, name))
+            return undefined;
+        const value = env[name];
+        return typeof value === 'string' ? value : undefined;
+    };
+    if (!env || MAKE_RELOCATING_ENV.some((name) => envValue(name) !== undefined))
         dynamic = true;
     const envNames = new Set();
     if (env)
         for (const [name, value] of Object.entries(env))
-            if (value !== undefined)
+            if (typeof value === 'string')
                 envNames.add(name.toUpperCase());
     /**
      * make hands this name to every recipe, or it changes what runs or where:
@@ -287,7 +301,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             referenced.add(name);
             const variable = variables.get(name);
             if (variable === undefined) {
-                const fromEnv = env ? env[name] : undefined;
+                const fromEnv = envValue(name);
                 if (fromEnv !== undefined) {
                     const inner = { bad: false, fn: false };
                     out += expand(fromEnv, inner, depth + 1);
@@ -381,7 +395,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             else if (op === '?=') {
                 // Defined already (in the file or on the command line): unchanged. Otherwise the environment decides.
                 if (existing === undefined) {
-                    const fromEnv = env ? env[name] : undefined;
+                    const fromEnv = envValue(name);
                     if (env && fromEnv === undefined)
                         variables.set(name, { flavor: 'recursive', value, unresolved: false });
                     else if (fromEnv !== undefined)
@@ -392,7 +406,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             }
             else if (op === '+=') {
                 if (existing === undefined) {
-                    const fromEnv = env ? env[name] : undefined;
+                    const fromEnv = envValue(name);
                     if (env && fromEnv === undefined)
                         variables.set(name, { flavor: 'recursive', value, unresolved: false });
                     else if (fromEnv !== undefined)

@@ -53,6 +53,11 @@ export type MakeResolution = {
  * suffix rules, functions (`$(shell …)`), target-specific variables, variables
  * that change the shell, or an unknown variable make the answer dynamic, which
  * the mapper treats like an unknown script.
+ *
+ * `options.env` is the environment make would run in (the hook's, plus the
+ * command's prefix assignments). A caller MUST pass it: with it omitted every
+ * answer is dynamic, because MAKEFLAGS/MAKEFILES, `?=` and the names make
+ * exports to recipes all depend on it.
  */
 export declare function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[], options?: {
     makefile?: string;

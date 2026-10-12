@@ -407,3 +407,59 @@ test('F3 oracle: GNU make exports the new value / runs the payload where the res
     { name: 'SHELL := /bin/bash (control)', makefile: 'SHELL := /bin/bash\nall:\n\t@echo hi; true\n' },
   ]);
 });
+
+// ---------------------------------------------------------------- L4: the environment must be stated
+
+test('L4: with `env` omitted every Makefile answer is dynamic (the commands are still listed); with `env: {}` the same file is definite', () => {
+  const text = 'CC = gcc\nOUT = build\nall:\n\t$(CC) -o $(OUT)/app main.c\n';
+  const omitted = make(text, ['all']);
+  assert.equal(omitted.status, 'ok');
+  assert.equal(omitted.dynamic, true);
+  assert.deepEqual(omitted.commands, ['gcc -o build/app main.c']);
+  for (const env of [undefined, null]) assert.equal(make(text, ['all'], { env }).dynamic, true, String(env));
+  const stated = make(text, ['all'], { env: {} });
+  assert.ok(definite(stated));
+  assert.deepEqual(stated.commands, ['gcc -o build/app main.c']);
+  assert.ok(definite(make(text, ['all'], { env: ENV })));
+});
+
+test('L4: omitted env is dynamic for every decision that reads it: MAKEFLAGS/MAKEFILES, ?=, +=, unknown names, $(MAKE), overrides', () => {
+  const rows = {
+    plain: 'all:\n\techo hi\n',
+    optional: 'STAGE ?= dev\nall:\n\techo $(STAGE)\n',
+    append: 'FLAGS += -x\nall:\n\techo $(FLAGS)\n',
+    unknown_name: 'all:\n\techo $(WHO)\n',
+    sub_make: 'all:\n\t$(MAKE) safe\nsafe:\n\techo safe\n',
+    assignment: 'FOO = 1\nall:\n\techo $(FOO)\n',
+  };
+  for (const [name, text] of Object.entries(rows)) assert.equal(make(text, ['all']).dynamic, true, name);
+  assert.equal(make('all:\n\techo $(STAGE)\n', ['all'], { overrides: { STAGE: 'production' } }).dynamic, true, 'overrides without env');
+  // The audit's "MAKE contract" row: env MAKEFLAGS / MAKEFILES cannot be seen, so the answer cannot be definite.
+  for (const name of ['MAKEFLAGS', 'MAKEFILES', 'GNUMAKEFLAGS', 'MAKEOVERRIDES', 'MFLAGS']) {
+    assert.equal(make('all:\n\t$(MAKE) safe\nsafe:\n\techo safe\n', ['all'], { env: { [name]: 'x' } }).dynamic, true, name);
+  }
+});
+
+test('L4: names that are keys of Object.prototype are never environment variables (no throw, no value)', () => {
+  for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    const r = make(`all:\n\techo $(${name})\n`, ['all'], { env: {} });
+    assert.equal(r.status, 'ok', name);
+    assert.equal(r.dynamic, true, name);
+    const optional = make(`${name} ?= x\nall:\n\techo $(${name})\n`, ['all'], { env: {} });
+    assert.equal(optional.status, 'ok', name);
+    assert.deepEqual(optional.commands, ['echo x'], name);
+  }
+  // An environment value that is not a string is not a value.
+  assert.ok(definite(make('all:\n\techo hi\n', ['all'], { env: { MAKEFLAGS: undefined, FOO: 1 } })));
+});
+
+test('L4 oracle: environment MAKEFILES / MAKEFLAGS change what make reads; the resolver is dynamic with env given and with env omitted', { skip: oracleSkip }, () => {
+  const files = { 'evil.mk': 'all: deploy\ndeploy:\n\techo RISKY\n' };
+  checkAgainstMake([
+    { name: 'env MAKEFILES', makefile: 'all:\n\techo hello\n', env: { MAKEFILES: 'evil.mk' }, files },
+    { name: 'env MAKEFILES, env omitted', makefile: 'all:\n\techo hello\n', env: { MAKEFILES: 'evil.mk' }, files, omitEnv: true },
+    { name: 'env MAKEFLAGS -f', makefile: 'all:\n\techo hello\n', env: { MAKEFLAGS: '-f evil.mk' }, files },
+    { name: 'env MAKEFLAGS -f, env omitted', makefile: 'all:\n\techo hello\n', env: { MAKEFLAGS: '-f evil.mk' }, files, omitEnv: true },
+    { name: 'clean env (control)', makefile: 'all:\n\techo hello\n' },
+  ]);
+});
