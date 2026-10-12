@@ -153,3 +153,116 @@ test('B2: the allowlisted Pages deploy flags keep T1', () => {
   stops(W, { current: null });
 });
 
+// ---------------------------------------------------------------------------------------------
+// B3: T1 and T3 only for the last command of a plain top-level list, with nothing concurrent.
+
+test('B3: the review repros stop', () => {
+  for (const cmd of [
+    `${W} & git checkout main`,
+    `${W} | git checkout main`,
+    `(${W}) & git checkout main`,
+    `${T3f} & git checkout main`,
+    `${T3f} | git checkout main`,
+    `${T3f} & echo "ref: refs/heads/main" > .git/HEAD`,
+    `for i in 1; do ${W} | git branch -m main; done`,
+    `(sleep 2; ${W}) & git checkout main`,
+    `{ sleep 2; ${W}; } | git checkout main`,
+    `(sleep 2; ${T3f}) & git checkout main`,
+    `{ sleep 2; ${T3f}; } & git switch main; wait`,
+  ]) stops(cmd, F);
+});
+
+test('B3: nohup, coproc, disown, setsid, ( … ) &, { …; } | cat and other shapes around the trimmed command stop', () => {
+  for (const cmd of [
+    `nohup ${W} & git checkout main`,
+    `nohup ${W} >/dev/null 2>&1 &`,
+    `${W} &`,
+    `${W} & disown; git checkout main`,
+    `${W} & disown`,
+    `coproc ${W}; git checkout main`,
+    `coproc { ${W}; }`,
+    `setsid ${W}; git checkout main`,
+    `setsid -f ${W} & git checkout main`,
+    `git checkout main & setsid -f ${W}`,
+    `(${W}) &`,
+    `( ${W} ) & git checkout main`,
+    `{ ${W}; } | cat`,
+    `{ ${W}; } &`,
+    `${W} | cat`,
+    `${W} |& cat`,
+    `${W} 2>&1 | tee deploy.log`,
+    `${W}; git checkout main`,
+    `${W} && git checkout main`,
+    `${W} || git checkout main`,
+    `${W}\ngit checkout main`,
+    `${W}; echo done`,
+    `if true; then ${W}; fi`,
+    `for i in 1; do ${W}; done`,
+    `while true; do ${W}; break; done`,
+    `( ${W} )`,
+    `{ ${W}; }`,
+    `f() { ${W}; }; f`,
+    `bash -c '${W}'`,
+    `sh -c "${W}"`,
+    `eval '${W}'`,
+    `time ${W}`,
+    `trap 'git checkout main' EXIT; ${W}`,
+    `alias wrangler='git checkout main; command wrangler'; ${W}`,
+    `PROMPT_COMMAND='git checkout main'; ${W}`,
+    `BASH_ENV=/tmp/x.sh ${W}`,
+    `export ENV=/tmp/x.sh; ${W}`,
+    `echo dist | xargs wrangler pages deploy`,
+    `${T3} &`,
+    `${T3} | cat`,
+    `${T3}; git checkout main`,
+    `${T3} && git checkout main`,
+    `nohup ${T3} & git checkout main`,
+    `coproc ${T3}; git checkout main`,
+    `{ ${T3}; } | cat`,
+    `( ${T3} ) & git checkout main`,
+    `bash -c '${T3}'`,
+    `trap 'git checkout main' EXIT; ${T3}`,
+    `if true; then ${T3}; fi`,
+    `f() { ${T3}; }; f`,
+  ]) stops(cmd, F);
+});
+
+test('B3: everyday shapes still pass on an unprotected branch', () => {
+  for (const cmd of [
+    W,
+    `npm run build && ${W}`,
+    `npm run build && ${W} --project-name site`,
+    `npm test; ${W}`,
+    'git status && wrangler pages deploy dist',
+    T3,
+    T3f,
+    `git add -A && git commit -m x && ${T3}`,
+    `git add -A && git commit -m "feat: x" && ${T3}`,
+    `git fetch origin && git merge origin/feat/x && ${T3f}`,
+    `npm test 2>&1 | tail -3 && ${T3}`,
+    `${T3} 2>&1`,
+    `${W} > deploy.log 2>&1`,
+    `git commit -m "a & b" && ${T3}`,
+    `x=1\n${W}`,
+    `setsid -f ${W}`,
+    `nohup ${W}`,
+  ]) {
+    // `a & b` inside a quoted message is the one shape the guard cannot tell from a background
+    // operator: it stops (fail closed). Everything else passes.
+    if (cmd.includes('"a & b"')) { stops(cmd, F); continue; }
+    passes(cmd, F);
+  }
+});
+
+test('B3: a branch change earlier in the same line still stops (existing head check)', () => {
+  for (const cmd of [`git checkout main && ${W}`, `git switch main; ${T3}`, `cd ../other-repo && ${W}`, `git -C ../other-repo checkout main && ${T3}`]) stops(cmd, F);
+});
+
+test('B3: MCP shell tool events apply the same shape rule (the last text only)', () => {
+  const ev = (tool_input) => evaluateSeatbelt({ tool_name: 'Bash', tool_input }, makeEnv(F));
+  assert.equal(ev({ command: W }).decision, 'pass');
+  assert.equal(ev({ command: `${W} & git checkout main` }).decision, 'stop');
+  assert.equal(ev({ command: `npm run build && ${T3}` }).decision, 'pass');
+  assert.equal(ev({ command: `${T3} | cat` }).decision, 'stop');
+});
+

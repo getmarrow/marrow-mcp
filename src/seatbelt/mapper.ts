@@ -126,6 +126,13 @@ interface Run {
   // code the mapper could not read). Until proven otherwise `git.currentBranch` is the branch the
   // command will see; after this it is not (audit friction trims T1, T3).
   headMayChange: boolean;
+  // The text being evaluated is the last one of the event (audit r4 B3). A tool event can hold several
+  // texts; a trim needs nothing after the trimmed command in any of them.
+  topLast: boolean;
+  // The text the shape check of a trim reads when it is not `topSource` (a tool event: the commands
+  // without the wrappers of their readings), and the memo of `plainLine` on it.
+  lineSource?: string;
+  lineShape?: boolean;
   // An archive that holds a link or a directory with links was made in this command.
   archivedLinks: boolean;
   // File reads and parsed package.json files, once per classification.
@@ -264,7 +271,14 @@ function evaluateEvent(event: SeatbeltEvent, env: SeatbeltEnv): SeatbeltDecision
     const run = newRun(env, invocation.shell.join('\n'), deadline);
     if (inputTooBig) exhaust(run, 'budget_tool_input');
     if (invocation.timedOut) exhaust(run, 'budget_time');
-    for (const text of invocation.shell) { if (clock(run)) break; evalShell(text, newCtx(run), run); }
+    run.lineSource = [...new Set(invocation.plain)].join('\n');
+    const lastGroup = invocation.groups[invocation.groups.length - 1];
+    invocation.shell.forEach((text, k) => {
+      if (clock(run)) return;
+      run.topLast = invocation.groups[k] === lastGroup;
+      evalShell(text, newCtx(run), run);
+    });
+    run.topLast = true;
     for (const code of invocation.code) { if (clock(run)) break; scanInterpreterCode(code, run); }
     if (invocation.malformed) { hit(run, 'Sx', 'tool_command_malformed'); worseParse(run, 'unparsed'); }
     if (invocation.truncated) exhaust(run, 'budget_tool_input');
@@ -320,7 +334,12 @@ function mcpPathChecks(name: string, input: Record<string, unknown>, ctx: Ctx, r
 const NON_SHELL_TOOLS = new Set(['slashcommand', 'skill', 'task', 'agent', 'todowrite', 'todoread', 'exitplanmode', 'enterplanmode',
   'websearch', 'webfetch', 'killshell', 'bashoutput', 'askuserquestion', 'sendmessage', 'taskcreate', 'taskupdate', 'tasklist']);
 
-interface ShellInvocation { shell: string[]; code: string[]; malformed: boolean; truncated: boolean; timedOut: boolean }
+// `groups[k]` names the command that `shell[k]` is a reading of: the plain text, the one with the
+// working directory and the ones with an environment or a stdin feed are readings of one command
+// (audit r4 B3: a trim needs nothing after it, but another reading of the same command is not "after").
+// `plain[k]` is the text of that command without the readings' wrappers (the `cd … && { … }` of a
+// working-directory field): the shape check of a trim looks at it.
+interface ShellInvocation { shell: string[]; groups: number[]; plain: string[]; code: string[]; malformed: boolean; truncated: boolean; timedOut: boolean }
 
 // Splits a field or tool name into lower-case segments (`cmdString` -> cmd, string; `terminal_send` ->
 // terminal, send), so a name is matched by word and not by substring (`description` is not `script`).
@@ -345,11 +364,13 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
   if (!known) {
     if (FILE_TOOL_NAMES.has(name) || NON_SHELL_TOOLS.has(name) || name.startsWith('mcp__marrow__') || name.startsWith('marrow_')) return null;
   }
-  const out: ShellInvocation = { shell: [], code: [], malformed: false, truncated: false, timedOut: false };
+  const out: ShellInvocation = { shell: [], groups: [], plain: [], code: [], malformed: false, truncated: false, timedOut: false };
+  let groupSeq = 0;
+  const addShell = (text: string, group: number = ++groupSeq, plain: string = text) => { out.shell.push(text); out.groups.push(group); out.plain.push(plain); };
   const terminalTool = nameSegments(name).some((s) => TERMINAL_SEGMENTS.has(s));
   let visited = 0;
   let composed = 0;
-  if (rawText !== null && rawText.trim() !== '') out.shell.push(rawText);
+  if (rawText !== null && rawText.trim() !== '') addShell(rawText);
   const walk = (obj: Record<string, unknown>, depth: number) => {
     if (out.timedOut) return;
     const here: string[] = [];
@@ -513,7 +534,7 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
         continue;
       }
       if ((CODE_KEYS.has(key) || codeLikeKey(rawKey)) && typeof value === 'string') {
-        if (value.trim()) { out.code.push(value); if (/^\s*[!%]/.test(value)) out.shell.push(value.replace(/^\s*[!%]+(?:bash|sh)?\s*/, '')); }
+        if (value.trim()) { out.code.push(value); if (/^\s*[!%]/.test(value)) addShell(value.replace(/^\s*[!%]+(?:bash|sh)?\s*/, '')); }
         continue;
       }
       // A list of lines (nbformat `source`, `code: ['import os', …]`): read joined each way.
@@ -523,9 +544,9 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
         for (const joined of [lines.join('\n'), lines.join('')]) {
           if (joined.trim() === '') continue;
           out.code.push(joined);
-          out.shell.push(joined.replace(/^\s*[!%]+(?:bash|sh)?\s*/gm, ''));
+          addShell(joined.replace(/^\s*[!%]+(?:bash|sh)?\s*/gm, ''));
         }
-        for (const ln of lines.slice(0, 256)) if (ln.trim()) out.shell.push(ln.replace(/^\s*[!%]+(?:bash|sh)?\s*/, ''));
+        for (const ln of lines.slice(0, 256)) if (ln.trim()) addShell(ln.replace(/^\s*[!%]+(?:bash|sh)?\s*/, ''));
         if (!COMMAND_KEYS.has(key)) continue;
       }
       // Any other string that holds a JSON object or list (a payload field) is read as one.
@@ -555,13 +576,15 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
       }
     }
     for (const c0 of here) {
+      const group = ++groupSeq;
+      const basePlain = withEnv(c0);
       for (const c of wraps(c0)) {
-        out.shell.push(c);
+        addShell(c, group, basePlain);
         for (const s of stdins) {
           // `commands` x `stdin` is a product: bound the composed text (audit N6).
           composed += c.length + s.length;
           if (composed > LIMITS.maxCommandBytes * 4 || out.shell.length > LIMITS.maxSegments * 4) { out.truncated = true; return; }
-          out.shell.push(withStdin(c, s));
+          addShell(withStdin(c, s), group);
         }
       }
     }
@@ -573,11 +596,13 @@ function shellInvocations(name: string, input: Record<string, unknown>, deadline
         if (typeof v !== 'string' || v.trim() === '' || LANGUAGE_KEYS.has(lk) || CWD_KEYS.has(lk) || ENV_KEYS.has(lk)) continue;
         if (/^(?:id|name|description|title|label|version|timeout|encoding|format|mode)$/.test(lk)) continue;
         out.code.push(v);
-        for (const w of wraps(v)) out.shell.push(w);
+        const group = ++groupSeq;
+        const basePlain = withEnv(v);
+        for (const w of wraps(v)) addShell(w, group, basePlain);
       }
     }
     if (!here.length && stdins.length && terminalTool) {
-      for (const s of stdins) { out.shell.push(s); out.code.push(s); }
+      for (const s of stdins) { addShell(s); out.code.push(s); }
     }
   };
   walk(input, 0);
@@ -728,6 +753,7 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     links: new Map(),
     linksUnknown: false,
     headMayChange: false,
+    topLast: true,
     archivedLinks: false,
     decodeMemo: new Map(),
     fsState,
@@ -1022,11 +1048,55 @@ function branchSubstitutionText(inner: string, depth: number): boolean {
   return BRANCH_SUBSTITUTIONS.has(c.words.map((w) => w.text).join(' '));
 }
 
+// A line that is a plain top-level list (audit r4 B3): commands joined by `;`, `&&`, `||` or newlines,
+// with no background operator, group, subshell, loop, conditional, function, coprocess, `trap`, alias
+// or startup variable. The check reads the text and ignores quoting, so a character inside a quoted
+// string counts as well: that only turns a trim off. T1 and T3 are decided against this text because
+// the parser flattens groups, loops and background jobs into one list of commands.
+function plainLine(src: string): boolean {
+  if (src.length > 65536) return false;
+  // `&` is a background operator unless it is `&&`, `>&`, `<&`, `&>` or `&>>`.
+  for (let i = src.indexOf('&'); i >= 0; i = src.indexOf('&', i + 1)) {
+    const prev = i > 0 ? src[i - 1] : '';
+    const next = src[i + 1];
+    if (next === '&') { i += 1; continue; }
+    if (prev === '&' || prev === '>' || prev === '<' || next === '>') continue;
+    return false;
+  }
+  // `(` only as `$(`; every `)` closes one of those.
+  let opens = 0;
+  for (let i = src.indexOf('('); i >= 0; i = src.indexOf('(', i + 1)) {
+    if (i === 0 || src[i - 1] !== '$') return false;
+    opens += 1;
+  }
+  let closes = 0;
+  for (let i = src.indexOf(')'); i >= 0; i = src.indexOf(')', i + 1)) closes += 1;
+  if (closes > opens) return false;
+  // A group brace as a word of its own.
+  if (/(?:^|[\s;&|(])[{}](?=[\s;&|)]|$)/.test(src)) return false;
+  // A reserved word at command position.
+  if (/(?:^|[;&|(){}\n`])[ \t]*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|time|coproc)(?![A-Za-z0-9_./-])/.test(src)) return false;
+  // Code that runs around other commands without being one of them.
+  if (/(?:^|[^A-Za-z0-9_])(?:trap|alias|unalias|PROMPT_COMMAND|BASH_ENV|ENV)(?![A-Za-z0-9_])/.test(src)) return false;
+  return true;
+}
+
+// T1 and T3 are decided only for the last command of a plain top-level list that is not part of a
+// pipeline (audit r4 B3). A branch change that runs at the same time as the trimmed command (a
+// background job, another stage of its pipeline) or after it (in a loop, a function, a group) is not
+// seen by the earlier-text head tracking, so such a command is never trimmed.
+function trimShapeOk(ctx: Ctx, run: Run, x: Exec | null): boolean {
+  if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true) return false;
+  if (x.cmd.pipedInput || x.cmd.pipesOutput || x.cmd.background || x.cmd.subshell || x.info.upstream.length > 0 || x.info.lost) return false;
+  if (run.lineShape === undefined) run.lineShape = plainLine(run.lineSource !== undefined ? run.lineSource : run.topSource);
+  return run.lineShape;
+}
+
 // The branch `git.currentBranch` reports, when nothing in this command can have changed it: same
 // working directory as the event's, no git command earlier in the text that may switch branches, no
 // code the mapper could not read, no GIT_* variable that moves the repository. Otherwise null.
 function currentBranchProof(ctx: Ctx, run: Run, x: Exec | null): string | null {
-  if (run.headMayChange) return null;
+  if (run.headMayChange || !trimShapeOk(ctx, run, x)) return null;
   const start = typeof run.env.cwd === 'string' && path.posix.isAbsolute(run.env.cwd) ? path.posix.normalize(run.env.cwd) : null;
   if (!start || ctx.cwds.length !== 1 || ctx.cwds[0] !== start) return null;
   for (const name of ctx.exported) if (/^GIT_/i.test(name)) return null;
@@ -1257,11 +1327,13 @@ function evalShell(src: string, ctx: Ctx, run: Run): void {
   // branch of that moment; it runs later, when they may differ: the list runs twice there as well.
   const rounds = (guards && (guards.unknown ? LOOP_WORD.test(src) : [...guards.byCmd.values()].some((g) => g.assign.concat(g.declare).some((e) => e.inLoop))))
     || DEFERRED_CODE.test(src) ? 2 : 1;
+  // The last command of the top-level text (audit r4 B3): the only one T1 and T3 may trim.
+  const finalCommand = ctx.depth === 0 && run.topLast ? parsed.commands[parsed.commands.length - 1] : undefined;
   for (let round = 0; round < rounds && !run.exhausted; round += 1) {
     for (const pipeline of pipelines) {
       for (let i = 0; i < pipeline.length; i += 1) {
         const upstream = pipeline.slice(0, i);
-        evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions, groupSource: groupSource.has(pipeline[i]), lost, guards, round2: round > 0, wordSubs, fnNames });
+        evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions, groupSource: groupSource.has(pipeline[i]), lost, guards, round2: round > 0, wordSubs, fnNames, last: pipeline[i] === finalCommand });
       }
     }
   }
@@ -1276,7 +1348,7 @@ interface LostFeeds { orphans: ShellCommand[]; pipes: ShellCommand[][] }
 // `guards`: which assignments of this parse run unconditionally (audit N2). `unknown` = the text could
 // not be matched to the parse: every assignment is then conditional.
 interface Guards { byCmd: Map<ShellCommand, { assign: AssignEvent[]; declare: AssignEvent[] }>; unknown: boolean }
-interface CmdInfo { upstream: ShellCommand[]; ansiC: boolean; subs: string[]; groupSource?: boolean; lost?: LostFeeds; guards?: Guards; round2?: boolean; wordSubs?: WeakMap<Word, string[]>; fnNames?: Set<string> }
+interface CmdInfo { upstream: ShellCommand[]; ansiC: boolean; subs: string[]; groupSource?: boolean; lost?: LostFeeds; guards?: Guards; round2?: boolean; wordSubs?: WeakMap<Word, string[]>; fnNames?: Set<string>; last?: boolean }
 
 // Bash brace expansion ({a,b}, {1..3}); quoting is not tracked per part, so it always expands
 // (stricter). Sequences are left unresolved.
