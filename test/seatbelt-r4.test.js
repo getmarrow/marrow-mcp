@@ -67,8 +67,31 @@ test('F1: the line is cut at \\n only: CR-split env -S payloads are seen as the 
 });
 
 test('F1: a line that was `unknown` stays `unknown` when it also has a control character (never looser)', () => {
-  for (const line of ['#!./bash\r', '#!/usr/bin/env -S BASH_ENV=./evil.sh bash\r', '#!/home/u/proj/bin/bash\r', '#!/usr/bin/env -C /tmp bash\r', '#!/bin/bash -i\r', '#!/usr/bin/env -S bash -c\r']) {
+  for (const line of ['#!./bash\r', '#!/usr/bin/env -S BASH_ENV=./evil.sh bash\r', '#!/home/u/proj/bin/bash\r', '#!/usr/bin/env -C /tmp bash\r', '#!/bin/bash -i\r', '#!/usr/bin/env -S bash -c\r',
+    // The line used to be cut at its first CR: an empty or unparsed first part was `unknown`, and stays so.
+    '#!\r/bin/bash', '#!\r /bin/sh', '#!\r-S bash', '#!/usr/bin/env\r', '#!/usr/bin/env \r']) {
     assert.deepEqual(script(`${line}\necho body\n`), { status: 'unknown', reason: 'shebang' }, JSON.stringify(line));
+  }
+});
+
+test('F1 property: a line that is not plain is never `shell`; never looser than the answer for the line cut at its first CR', () => {
+  let seed = 7;
+  const next = () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+  const pick = (list) => list[Math.floor(next() * list.length)];
+  const pieces = ['/bin/bash', '/bin/sh', '/usr/bin/env', ' ', '\t', '-S', '-i', '-u', 'X', '-0', '-v', 'bash', 'sh', '-e', '-c', '"echo hi"', 'BASH_ENV=x', '\r', '\v', '\f', '\0', '\x7f', 'é', './planted.sh', '--', '/opt/homebrew/bin/bash', 'python3'];
+  const kind = (r) => (r.status === 'ok' ? r.interpreter : 'unknown');
+  const rank = { unknown: 0, other: 1, shell: 2 };
+  for (let i = 0; i < 3000; i += 1) {
+    let line = '';
+    for (let j = 1 + Math.floor(next() * 6); j > 0; j -= 1) line += pick(pieces) + (next() < 0.5 ? ' ' : '');
+    const plain = /^[\x20-\x7e\t]*$/.test(line) && line.length + 2 <= 127;
+    const whole = script(`#!${line}\necho body\n`);
+    if (!plain) assert.notEqual(kind(whole), 'shell', JSON.stringify(line));
+    const cr = line.indexOf('\r');
+    if (cr >= 0) assert.ok(rank[kind(whole)] <= rank[kind(script(`#!${line.slice(0, cr)}\necho body\n`))], JSON.stringify(line));
   }
 });
 
@@ -468,8 +491,12 @@ test('L4: names that are keys of Object.prototype are never environment variable
     assert.equal(optional.status, 'ok', name);
     assert.deepEqual(optional.commands, ['echo x'], name);
   }
-  // An environment value that is not a string is not a value.
-  assert.ok(definite(make('all:\n\techo hi\n', ['all'], { env: { MAKEFLAGS: undefined, FOO: 1 } })));
+  // An environment value that is not a string is not understood: dynamic (never read as absent). `undefined` is absent.
+  assert.ok(definite(make('all:\n\techo hi\n', ['all'], { env: { MAKEFLAGS: undefined, FOO: 'x' } })));
+  for (const value of [1, true, null, {}, ['x']]) {
+    assert.equal(make('all:\n\techo hi\n', ['all'], { env: { MAKEFLAGS: value } }).dynamic, true, JSON.stringify(value));
+    assert.equal(make('all:\n\techo hi\n', ['all'], { env: { FOO: value } }).dynamic, true, JSON.stringify(value));
+  }
 });
 
 test('L4 oracle: environment MAKEFILES / MAKEFLAGS change what make reads; the resolver is dynamic with env given and with env omitted', { skip: oracleSkip }, () => {

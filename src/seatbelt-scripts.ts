@@ -206,8 +206,14 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
   };
   if (!env || MAKE_RELOCATING_ENV.some((name) => envValue(name) !== undefined)) dynamic = true;
   const envNames = new Set<string>();
-  // for...in: a name an object only inherits is still a name make would see.
-  if (env) for (const name in env) if (typeof env[name] === 'string') envNames.add(name.toUpperCase());
+  if (env) {
+    // for...in: a name an object only inherits is still a name make would see. A value that is not a string is not understood.
+    for (const name in env) {
+      const value = env[name];
+      if (typeof value === 'string') envNames.add(name.toUpperCase());
+      else if (value !== undefined) dynamic = true;
+    }
+  }
   /**
    * make hands this name to every recipe, or it changes what runs or where:
    * assigning it (in the file or on the command line, any operator) is dynamic.
@@ -811,8 +817,13 @@ export function readScriptFile(fs: SeatbeltFs, path: string): ScriptFile {
   const newline = read.text.indexOf('\n');
   const firstLine = newline < 0 ? read.text : read.text.slice(0, newline);
   let result: Shebang;
-  if (read.text.startsWith('#!')) result = classifyShebang(firstLine.slice(2));
-  else result = CONTROL_CHARACTER.test(firstLine) ? { kind: 'other' } : { kind: 'shell' };
+  if (read.text.startsWith('#!')) {
+    const line = firstLine.slice(2);
+    result = classifyShebang(line);
+    // Never looser than the answer this parser gave when it cut the line at its first \r (round 3 and before).
+    const cr = line.indexOf('\r');
+    if (cr >= 0 && result.kind !== 'unknown' && classifyShebang(line.slice(0, cr)).kind === 'unknown') result = { kind: 'unknown' };
+  } else result = CONTROL_CHARACTER.test(firstLine) ? { kind: 'other' } : { kind: 'shell' };
   if (result.kind === 'unknown') return { status: 'unknown', reason: 'shebang' };
   if (result.kind === 'shell') return { status: 'ok', path: read.path, interpreter: 'shell', text: read.text };
   return { status: 'ok', path: read.path, interpreter: 'other', text: read.text, ...(result.command !== undefined ? { shebangCommand: result.command } : {}) };
