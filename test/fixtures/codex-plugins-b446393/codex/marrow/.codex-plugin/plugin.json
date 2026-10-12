@@ -1,0 +1,44 @@
+{
+  "name": "marrow",
+  "version": "0.1.1",
+  "description": "Approvals, policy and receipts for agent actions. Adds Marrow's Codex approval hooks (pinned @getmarrow/mcp 3.9.102), the Marrow MCP server and a short skill. Hooks are cooperative, client-reported control.",
+  "author": {
+    "name": "Marrow",
+    "url": "https://getmarrow.ai"
+  },
+  "homepage": "https://getmarrow.ai/marrow-for-codex",
+  "repository": "https://github.com/getmarrow/plugins",
+  "license": "MIT",
+  "keywords": [
+    "governance",
+    "approvals",
+    "hooks",
+    "mcp",
+    "audit",
+    "agent-control"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Marrow",
+    "shortDescription": "Approval hooks, MCP server and skill for consequential agent actions",
+    "longDescription": "Marrow checks consequential agent actions (deploy, publish, push, credential access and similar) against the owner's policy, routes approvals to the owner and keeps receipts. This plugin adds the same Codex hooks that npx @getmarrow/install writes, the Marrow MCP server and a skill. Hooks run only after you review and trust them in Codex. No account or key is needed to install. Install one of the two Marrow Codex plugins (marrow or marrow-advisory), not both: both name their MCP server marrow.",
+    "developerName": "Marrow",
+    "category": "Security",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://getmarrow.ai",
+    "defaultPrompt": [
+      "Check this deploy with Marrow before running it"
+    ]
+  },
+  "metadata": {
+    "pins": {
+      "@getmarrow/mcp": "3.9.102",
+      "@getmarrow/sdk": "3.7.65"
+    }
+  }
+}

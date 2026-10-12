@@ -35,6 +35,16 @@ export type HostConfigRead = {
 export type HostConfigReader = (path: string) => HostConfigRead;
 /** One config file: missing adds nothing; anything but a readable regular file within the cap is bad. */
 export declare function readHostConfigFile(path: string): HostConfigRead;
+/** The same bounded read, as raw bytes (for content pins). */
+export declare function readHostConfigBytes(path: string): {
+    state: 'missing';
+} | {
+    state: 'bad';
+    reason: string;
+} | {
+    state: 'ok';
+    bytes: Buffer;
+};
 type TomlTable = Record<string, unknown>;
 export declare function parseToml(text: string): TomlTable;
 /**
@@ -69,6 +79,8 @@ export type CodexIdentityOptions = {
     processCwd?: string;
     /** The user's home, whose own `.npmrc` is npm's user config (default os.homedir()). */
     userHome?: string;
+    /** Wall-clock start of the codex process (ms), or null when it cannot be found. */
+    processStartMs?: number | null;
 };
 /** Whether the Codex `marrow` server is provably the official Marrow MCP server. */
 export declare function codexOfficialMarrowServer(options?: CodexIdentityOptions): ServerIdentity;

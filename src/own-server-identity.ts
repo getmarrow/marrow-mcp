@@ -20,7 +20,8 @@ import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, consta
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { brotliDecompressSync } from 'node:zlib';
-import { codexProcessArgs } from './host-session';
+import { codexProcessArgs, codexProcessStartMs } from './host-session';
+import { scanCodexPlugins } from './codex-plugins';
 import {
   MARROW_OWN_TOOL_NAMES,
   isOfficialMarrowMcpEvent,
@@ -44,6 +45,12 @@ export type HostConfigReader = (path: string) => HostConfigRead;
 
 /** One config file: missing adds nothing; anything but a readable regular file within the cap is bad. */
 export function readHostConfigFile(path: string): HostConfigRead {
+  const read = readHostConfigBytes(path);
+  return read.state === 'ok' ? { state: 'ok', text: read.bytes.toString('utf8') } : read;
+}
+
+/** The same bounded read, as raw bytes (for content pins). */
+export function readHostConfigBytes(path: string): { state: 'missing' } | { state: 'bad'; reason: string } | { state: 'ok'; bytes: Buffer } {
   let fd: number;
   try {
     fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
@@ -63,7 +70,7 @@ export function readHostConfigFile(path: string): HostConfigRead {
       total += read;
       if (total > MAX_HOST_CONFIG_BYTES) return { state: 'bad', reason: 'over the size cap' };
     }
-    return { state: 'ok', text: buffer.subarray(0, total).toString('utf8') };
+    return { state: 'ok', bytes: Buffer.from(buffer.subarray(0, total)) };
   } catch {
     return { state: 'bad', reason: 'unreadable' };
   } finally {
@@ -576,6 +583,8 @@ export type CodexIdentityOptions = {
   processCwd?: string;
   /** The user's home, whose own `.npmrc` is npm's user config (default os.homedir()). */
   userHome?: string;
+  /** Wall-clock start of the codex process (ms), or null when it cannot be found. */
+  processStartMs?: number | null;
 };
 
 const PROFILE_NAME = /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$/;
@@ -626,12 +635,16 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
   ];
   const set: ServerSet = { names: new Map(), bad: null };
   const parsedFiles: TomlTable[] = [];
+  let globalParsed: TomlTable | null = null;
+  const enabledPlugins: string[] = [];
   const load = (file: string): boolean => {
     const result = read(file);
     if (result.state === 'missing') return true;
     if (result.state === 'bad') { set.bad = `a Codex config is ${result.reason}`; return false; }
     try {
-      parsedFiles.push(parseToml(withoutBom(result.text)));
+      const parsed = parseToml(withoutBom(result.text));
+      if (file === join(home, 'config.toml')) globalParsed = parsed;
+      parsedFiles.push(parsed);
       return true;
     } catch {
       set.bad = 'a Codex config does not parse';
@@ -664,12 +677,38 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
     const plugins = parsed.plugins;
     if (plugins !== undefined) {
       if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins)) return { official: false, reason: 'plugins is not a table' };
-      for (const plugin of Object.values(plugins as TomlTable)) {
-        if (!plugin || typeof plugin !== 'object' || Array.isArray(plugin) || (plugin as TomlTable).enabled !== false) {
-          return { official: false, reason: 'a Codex plugin is enabled (its MCP servers cannot be proven)' };
+      for (const [id, plugin] of Object.entries(plugins as TomlTable)) {
+        if (!plugin || typeof plugin !== 'object' || Array.isArray(plugin)) return { official: false, reason: 'a Codex plugin entry is not a table' };
+        if ((plugin as TomlTable).enabled === false) continue;
+        // `codex plugin add` enables plugins in $CODEX_HOME/config.toml; anywhere else is not proven.
+        if (parsed !== globalParsed) return { official: false, reason: 'a Codex plugin is enabled outside the user config' };
+        if (!Object.keys(plugin).every((key) => key === 'enabled') || ((plugin as TomlTable).enabled !== undefined && (plugin as TomlTable).enabled !== true)) {
+          return { official: false, reason: 'a Codex plugin entry has unknown settings' };
         }
+        enabledPlugins.push(id);
       }
     }
+  }
+  const scan = scanCodexPlugins({
+    codexHome: home,
+    ids: enabledPlugins,
+    processStartMs: options.processStartMs === undefined ? (enabledPlugins.length ? codexProcessStartMs() : null) : options.processStartMs,
+  });
+  if (scan.bad !== null) return { official: false, reason: scan.bad };
+  let officialPlugin = 0;
+  for (const plugin of scan.plugins) {
+    for (const name of plugin.servers) {
+      if (!codexServerNameCanProduceMarrowLabel(name)) continue;
+      if (!plugin.official) return { official: false, reason: 'a Codex plugin declares a server that can produce the marrow label' };
+      officialPlugin += 1;
+    }
+  }
+  if (officialPlugin > 1) return { official: false, reason: 'more than one Codex plugin declares the marrow server' };
+  if (officialPlugin === 1) {
+    // The official plugin is the only source of the label: no configured server may produce it too.
+    if (set.bad) return { official: false, reason: set.bad };
+    if ([...set.names.keys()].some(codexServerNameCanProduceMarrowLabel)) return { official: false, reason: 'the official plugin and another server can both produce the marrow label' };
+    return { official: true, reason: 'official plugin' };
   }
   return decide(set, CODEX_SERVER_KEYS, false, cwds, { env, home: options.userHome ?? homedir() }, true);
 }

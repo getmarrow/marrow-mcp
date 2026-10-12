@@ -18,6 +18,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_HOST_CONFIG_BYTES = void 0;
 exports.readHostConfigFile = readHostConfigFile;
+exports.readHostConfigBytes = readHostConfigBytes;
 exports.parseToml = parseToml;
 exports.isOfficialMarrowServerLaunch = isOfficialMarrowServerLaunch;
 exports.serverNameCollidesWithMarrow = serverNameCollidesWithMarrow;
@@ -32,6 +33,7 @@ const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const node_zlib_1 = require("node:zlib");
 const host_session_1 = require("./host-session");
+const codex_plugins_1 = require("./codex-plugins");
 const own_tool_1 = require("./own-tool");
 exports.MAX_HOST_CONFIG_BYTES = 256 * 1024;
 const MAX_DIR_DEPTH = 64;
@@ -39,6 +41,11 @@ const MAX_ROOTS = 8;
 const MAX_PATH_LENGTH = 4096;
 /** One config file: missing adds nothing; anything but a readable regular file within the cap is bad. */
 function readHostConfigFile(path) {
+    const read = readHostConfigBytes(path);
+    return read.state === 'ok' ? { state: 'ok', text: read.bytes.toString('utf8') } : read;
+}
+/** The same bounded read, as raw bytes (for content pins). */
+function readHostConfigBytes(path) {
     let fd;
     try {
         fd = (0, node_fs_1.openSync)(path, node_fs_1.constants.O_RDONLY | (node_fs_1.constants.O_NONBLOCK ?? 0));
@@ -63,7 +70,7 @@ function readHostConfigFile(path) {
             if (total > exports.MAX_HOST_CONFIG_BYTES)
                 return { state: 'bad', reason: 'over the size cap' };
         }
-        return { state: 'ok', text: buffer.subarray(0, total).toString('utf8') };
+        return { state: 'ok', bytes: Buffer.from(buffer.subarray(0, total)) };
     }
     catch {
         return { state: 'bad', reason: 'unreadable' };
@@ -741,6 +748,8 @@ function codexOfficialMarrowServer(options = {}) {
     ];
     const set = { names: new Map(), bad: null };
     const parsedFiles = [];
+    let globalParsed = null;
+    const enabledPlugins = [];
     const load = (file) => {
         const result = read(file);
         if (result.state === 'missing')
@@ -750,7 +759,10 @@ function codexOfficialMarrowServer(options = {}) {
             return false;
         }
         try {
-            parsedFiles.push(parseToml(withoutBom(result.text)));
+            const parsed = parseToml(withoutBom(result.text));
+            if (file === (0, node_path_1.join)(home, 'config.toml'))
+                globalParsed = parsed;
+            parsedFiles.push(parsed);
             return true;
         }
         catch {
@@ -796,12 +808,47 @@ function codexOfficialMarrowServer(options = {}) {
         if (plugins !== undefined) {
             if (!plugins || typeof plugins !== 'object' || Array.isArray(plugins))
                 return { official: false, reason: 'plugins is not a table' };
-            for (const plugin of Object.values(plugins)) {
-                if (!plugin || typeof plugin !== 'object' || Array.isArray(plugin) || plugin.enabled !== false) {
-                    return { official: false, reason: 'a Codex plugin is enabled (its MCP servers cannot be proven)' };
+            for (const [id, plugin] of Object.entries(plugins)) {
+                if (!plugin || typeof plugin !== 'object' || Array.isArray(plugin))
+                    return { official: false, reason: 'a Codex plugin entry is not a table' };
+                if (plugin.enabled === false)
+                    continue;
+                // `codex plugin add` enables plugins in $CODEX_HOME/config.toml; anywhere else is not proven.
+                if (parsed !== globalParsed)
+                    return { official: false, reason: 'a Codex plugin is enabled outside the user config' };
+                if (!Object.keys(plugin).every((key) => key === 'enabled') || (plugin.enabled !== undefined && plugin.enabled !== true)) {
+                    return { official: false, reason: 'a Codex plugin entry has unknown settings' };
                 }
+                enabledPlugins.push(id);
             }
         }
+    }
+    const scan = (0, codex_plugins_1.scanCodexPlugins)({
+        codexHome: home,
+        ids: enabledPlugins,
+        processStartMs: options.processStartMs === undefined ? (enabledPlugins.length ? (0, host_session_1.codexProcessStartMs)() : null) : options.processStartMs,
+    });
+    if (scan.bad !== null)
+        return { official: false, reason: scan.bad };
+    let officialPlugin = 0;
+    for (const plugin of scan.plugins) {
+        for (const name of plugin.servers) {
+            if (!codexServerNameCanProduceMarrowLabel(name))
+                continue;
+            if (!plugin.official)
+                return { official: false, reason: 'a Codex plugin declares a server that can produce the marrow label' };
+            officialPlugin += 1;
+        }
+    }
+    if (officialPlugin > 1)
+        return { official: false, reason: 'more than one Codex plugin declares the marrow server' };
+    if (officialPlugin === 1) {
+        // The official plugin is the only source of the label: no configured server may produce it too.
+        if (set.bad)
+            return { official: false, reason: set.bad };
+        if ([...set.names.keys()].some(codexServerNameCanProduceMarrowLabel))
+            return { official: false, reason: 'the official plugin and another server can both produce the marrow label' };
+        return { official: true, reason: 'official plugin' };
     }
     return decide(set, CODEX_SERVER_KEYS, false, cwds, { env, home: options.userHome ?? (0, node_os_1.homedir)() }, true);
 }

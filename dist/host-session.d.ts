@@ -16,10 +16,19 @@ export type ProcessInfo = {
     terminal: boolean;
     /** Linux: the process start time in clock ticks since boot (/proc/PID/stat field 22). */
     startTicks?: number;
+    /** Test seam (synthetic process tables): the start time in ms since the epoch. */
+    startMs?: number;
 };
 export type ProcessReader = (pid: number) => ProcessInfo | null;
 /** The argv of the codex process this hook runs under (parent walk), or null when it cannot be found. */
 export declare function codexProcessArgs(reader?: ProcessReader, startPid?: number): string[] | null;
+/**
+ * Wall-clock start (ms since the epoch) of the codex process this hook runs
+ * under, or null when it cannot be found. Linux: boot time (whole seconds)
+ * plus the start in clock ticks (USER_HZ 100), so it is exact to about a
+ * second; callers keep a margin. macOS: ps lstart (whole seconds).
+ */
+export declare function codexProcessStartMs(reader?: ProcessReader, startPid?: number): number | null;
 /** true only with positive evidence; false or null means no typed approval is offered. */
 export declare function localInteractiveSession(host: string, reader?: ProcessReader, startPid?: number): boolean | null;
 declare const CODEX_KEYS: readonly ["approval_policy", "approvals_reviewer", "sandbox_mode"];

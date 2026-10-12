@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.codexProcessArgs = codexProcessArgs;
+exports.codexProcessStartMs = codexProcessStartMs;
 exports.localInteractiveSession = localInteractiveSession;
 exports.parseCodexSettings = parseCodexSettings;
 exports.codexApprovalPromptOff = codexApprovalPromptOff;
@@ -105,6 +106,49 @@ function findHostProcess(match, reader, startPid) {
 /** The argv of the codex process this hook runs under (parent walk), or null when it cannot be found. */
 function codexProcessArgs(reader = defaultReader(), startPid = process.ppid) {
     return findHostProcess(isCodex, reader, startPid)?.args ?? null;
+}
+function linuxBootMs() {
+    try {
+        const match = /^btime (\d+)$/m.exec((0, node_fs_1.readFileSync)('/proc/stat', 'utf8'));
+        return match ? Number(match[1]) * 1000 : null;
+    }
+    catch {
+        return null;
+    }
+}
+function darwinStartMs(pid) {
+    try {
+        const line = (0, node_child_process_1.execFileSync)('ps', ['-o', 'lstart=', '-p', String(pid)], {
+            encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, LC_ALL: 'C', TZ: process.env.TZ ?? '' },
+        }).trim();
+        const ms = Date.parse(line);
+        return Number.isFinite(ms) ? ms : null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Wall-clock start (ms since the epoch) of the codex process this hook runs
+ * under, or null when it cannot be found. Linux: boot time (whole seconds)
+ * plus the start in clock ticks (USER_HZ 100), so it is exact to about a
+ * second; callers keep a margin. macOS: ps lstart (whole seconds).
+ */
+function codexProcessStartMs(reader = defaultReader(), startPid = process.ppid) {
+    const codex = findHostProcess(isCodex, reader, startPid);
+    if (!codex)
+        return null;
+    if (typeof codex.startMs === 'number')
+        return Number.isFinite(codex.startMs) ? codex.startMs : null;
+    if (reader !== linuxProcess && reader !== psProcess)
+        return null;
+    if (process.platform === 'linux' && codex.startTicks !== undefined) {
+        const boot = linuxBootMs();
+        return boot === null ? null : boot + codex.startTicks * 10;
+    }
+    if (process.platform === 'darwin')
+        return darwinStartMs(codex.pid);
+    return null;
 }
 /** true only with positive evidence; false or null means no typed approval is offered. */
 function localInteractiveSession(host, reader = defaultReader(), startPid = process.ppid) {
