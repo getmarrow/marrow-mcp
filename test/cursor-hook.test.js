@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+require('./support/official-host-config.cjs').writeOfficialHostConfigs();
 
 const {
   normalizeHookEventPayload,

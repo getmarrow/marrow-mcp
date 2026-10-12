@@ -114,6 +114,11 @@ function findHostProcess(match: (args: string[]) => boolean, reader: ProcessRead
   return null;
 }
 
+/** The argv of the codex process this hook runs under (parent walk), or null when it cannot be found. */
+export function codexProcessArgs(reader: ProcessReader = defaultReader(), startPid: number = process.ppid): string[] | null {
+  return findHostProcess(isCodex, reader, startPid)?.args ?? null;
+}
+
 /** true only with positive evidence; false or null means no typed approval is offered. */
 export function localInteractiveSession(
   host: string,

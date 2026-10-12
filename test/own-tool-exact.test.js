@@ -5,6 +5,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
+require('./support/official-host-config.cjs').writeOfficialHostConfigs();
 
 const { MARROW_OWN_TOOL_NAMES, isMarrowOwnTool } = require('../dist/own-tool.js');
 const { CORE_TOOL_NAMES, PRIMARY_TOOL_NAMES, TOOLS } = require('../dist/tool-catalog.js');
@@ -36,6 +37,8 @@ const HOSTS = [
   { host: 'grok', entry: 'grok-pre-action-hook', event: (s, t) => ({ hookEventName: 'PreToolUse', sessionId: 'own-tool-session', toolName: 'use_tool', toolInput: { serverName: s, toolName: t } }) },
   { host: 'windsurf', entry: 'windsurf-pre-action-hook', event: (s, t) => ({ agent_action_name: 'pre_mcp_tool_use', trajectory_id: 'own-tool-trajectory', tool_info: { mcp_server_name: s, mcp_tool_name: t } }) },
 ];
+
+const SERVER_UNPROVEN_FORMS = new Set(['codex', 'cursor-pre']);
 
 const ALLOW = {
   claude: '{}', codex: '{}', 'codex-bare': '{}', gemini: '{"decision":"allow"}',
@@ -136,8 +139,14 @@ test('every registered tool name is own in every host form, end to end through t
       assert.equal(classifyTool(normalized).protected, false, `${form.host} ${tool}`);
       assert.equal(deriveAction(normalized), null, `${form.host} ${tool}`);
       const out = await runPre(form.entry, payload);
-      assert.equal(out.stdout, ALLOW[form.host], `${form.host} ${tool}`);
-      assert.equal(out.exitCode, 0, `${form.host} ${tool}`);
+      if (SERVER_UNPROVEN_FORMS.has(form.host)) {
+        // 3.9.103: on Codex and Cursor the label alone never proves the server (own-server-identity.ts).
+        // Codex cannot emit functions.mcp__…; MCP:marrow:<tool> is a tool named `marrow:<tool>`. Both are checked.
+        assert.notEqual(out.stdout, ALLOW[form.host], `${form.host} ${tool} is checked`);
+      } else {
+        assert.equal(out.stdout, ALLOW[form.host], `${form.host} ${tool}`);
+        assert.equal(out.exitCode, 0, `${form.host} ${tool}`);
+      }
     }
   }
   // Nested aliases that agree, and the other nested wrapper names the hook knows.

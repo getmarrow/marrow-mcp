@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.codexProcessArgs = codexProcessArgs;
 exports.localInteractiveSession = localInteractiveSession;
 exports.parseCodexSettings = parseCodexSettings;
 exports.codexApprovalPromptOff = codexApprovalPromptOff;
@@ -100,6 +101,10 @@ function findHostProcess(match, reader, startPid) {
         pid = info.ppid;
     }
     return null;
+}
+/** The argv of the codex process this hook runs under (parent walk), or null when it cannot be found. */
+function codexProcessArgs(reader = defaultReader(), startPid = process.ppid) {
+    return findHostProcess(isCodex, reader, startPid)?.args ?? null;
 }
 /** true only with positive evidence; false or null means no typed approval is offered. */
 function localInteractiveSession(host, reader = defaultReader(), startPid = process.ppid) {

@@ -18,6 +18,8 @@ export type ProcessInfo = {
     startTicks?: number;
 };
 export type ProcessReader = (pid: number) => ProcessInfo | null;
+/** The argv of the codex process this hook runs under (parent walk), or null when it cannot be found. */
+export declare function codexProcessArgs(reader?: ProcessReader, startPid?: number): string[] | null;
 /** true only with positive evidence; false or null means no typed approval is offered. */
 export declare function localInteractiveSession(host: string, reader?: ProcessReader, startPid?: number): boolean | null;
 declare const CODEX_KEYS: readonly ["approval_policy", "approvals_reviewer", "sandbox_mode"];

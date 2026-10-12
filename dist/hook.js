@@ -17,6 +17,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_pre_action_1 = require("./hook-pre-action");
 const control_state_1 = require("./control-state");
 const hook_tool_policy_1 = require("./hook-tool-policy");
+const own_server_identity_1 = require("./own-server-identity");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
 const hook_contract_1 = require("./hook-contract");
@@ -41,13 +42,13 @@ function normalizeToolName(toolName) {
 function shouldSkipAutoLog(event) {
     return (0, hook_tool_policy_1.isReadOnlyToolEvent)(event);
 }
-function deriveAction(event) {
+function deriveAction(event, harness, raw) {
     const toolName = getString(event.tool_name);
     if (!toolName || shouldSkipAutoLog(event))
         return null;
-    if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event))
+    if (harness === undefined ? (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event) : (0, own_server_identity_1.isOfficialMarrowMcpEventOnHost)(harness, event, raw))
         return null;
-    return (0, hook_pre_action_1.classifyTool)(event).action;
+    return (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event) }).action;
 }
 function deriveToolOutcome(event) {
     const response = event.tool_output ?? event.tool_response ?? event.tool_result;
@@ -165,12 +166,14 @@ async function runHookCommand(input) {
     }
     try {
         let event;
+        let rawEvent = input;
         if (input === undefined) {
             const raw = (await readStdin()).trim();
             if (!raw)
                 return;
             try {
-                event = (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw));
+                rawEvent = JSON.parse(raw);
+                event = (0, hook_contract_1.normalizeHookEventPayload)(rawEvent);
             }
             catch {
                 debug('[marrow-hook] skipped invalid JSON');
@@ -200,11 +203,11 @@ async function runHookCommand(input) {
             }
             return;
         }
-        if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)) {
+        if ((0, own_server_identity_1.isOfficialMarrowMcpEventOnHost)(identity.harness, event, rawEvent)) {
             return;
         }
         const privateLoopPayload = (0, hook_contract_1.privateHookLoopGuardPayload)(event);
-        const classified = (0, hook_pre_action_1.classifyTool)(event);
+        const classified = (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event) });
         const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
             || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
         const agentId = identity.agent_id;
@@ -251,7 +254,7 @@ async function runHookCommand(input) {
             debug('[marrow-hook] recorded read-only result locally; skipped network event');
             return;
         }
-        const action = deriveAction(event);
+        const action = deriveAction(event, identity.harness, rawEvent);
         if (!action)
             return;
         const apiKey = resolvedEnv.apiKey || '';

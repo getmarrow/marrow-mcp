@@ -31,6 +31,7 @@ import {
 } from './host-approval';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
+import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
 import { normalizedHookAction } from './normalized-action';
 import { consultSessionLoopGuard, type LoopGuardOperation } from './session-loop-guard';
 import {
@@ -511,7 +512,13 @@ function localControlDisabled(): boolean {
   }
 }
 
-export function classifyTool(event: PreToolUseEvent): {
+/**
+ * `ownUnproven`: the label is one of Marrow's own, but the host's server
+ * identity check did not prove the official server (Codex, Cursor). Such a
+ * call is classified as a protected MCP tool of another server, never
+ * read-only (it imitates Marrow's names, so a read verb proves nothing).
+ */
+export function classifyTool(event: PreToolUseEvent, options: { ownUnproven?: boolean } = {}): {
   action: string;
   target: string;
   type: string;
@@ -528,7 +535,8 @@ export function classifyTool(event: PreToolUseEvent): {
   const shellGoverned = isShellGovernedTool(event);
   const command = shellGoverned ? hookToolCommand(event) : '';
   const input = toolClassificationText(event).toLowerCase();
-  const readOnly = isReadOnlyToolEvent(event);
+  // A look-alike of Marrow's own tool is never read-only, whatever its verb.
+  const readOnly = options.ownUnproven !== true && isReadOnlyToolEvent(event);
   const secretAccess = isSecretMaterialAccess(event);
   const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
@@ -552,7 +560,7 @@ export function classifyTool(event: PreToolUseEvent): {
     secretAccess
     || (shellGoverned && /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input))
     || protectedShellCommand
-    || (isMcpHookTool(event.tool_name) && !isOfficialMarrowMcpTool(event.tool_name))
+    || (isMcpHookTool(event.tool_name) && (options.ownUnproven === true || !isOfficialMarrowMcpTool(event.tool_name)))
     || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
   );
   const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
@@ -907,6 +915,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
   if (process.env.MARROW_AUTO_HOOK === 'false') return;
   const identity = resolveNativeHookIdentity(process.argv[2]);
   let event = input;
+  let rawEvent: unknown = input;
   let inputFailure: string | null = null;
   if (event === undefined) {
     try {
@@ -915,7 +924,8 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
         inputFailure = `Marrow did not check this action because its hook input is ${stdin.bytes} bytes, over the ${MAX_PRE_ACTION_INPUT_BYTES}-byte pre-action limit, so it was denied. Split it into smaller tool calls and retry.`;
       } else {
         const raw = stdin.raw.trim();
-        event = raw ? normalizeHookEventPayload(JSON.parse(raw)) : {};
+        rawEvent = raw ? JSON.parse(raw) : {};
+        event = normalizeHookEventPayload(rawEvent);
       }
     } catch {
       inputFailure = 'Marrow rejected malformed pre-action input.';
@@ -934,7 +944,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: inputFailure || 'Marrow could not classify this mutation-capable tool request.' }, identity.harness);
     return;
   }
-  if (isOfficialMarrowMcpEvent(source)) {
+  if (isOfficialMarrowMcpEventOnHost(identity.harness, source, rawEvent)) {
     if (identity.harness === 'windsurf') {
       process.exitCode = 0;
       return;
@@ -947,7 +957,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     ));
     return;
   }
-  const classified = classifyTool(source);
+  const classified = classifyTool(source, { ownUnproven: isOfficialMarrowMcpEvent(source) });
   let localControl;
   try {
     localControl = readLocalControlState();

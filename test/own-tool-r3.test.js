@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { writeOfficialHostConfigs } = require('./support/official-host-config.cjs');
+writeOfficialHostConfigs();
 const { spawnSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
@@ -239,6 +241,7 @@ function harness() {
   const home = join(dir, 'home');
   const mockDir = join(dir, 'mock');
   mkdirSync(home, { mode: 0o700 });
+  writeOfficialHostConfigs(home);
   mkdirSync(mockDir);
   const apiKey = `mrw_test_${randomBytes(16).toString('hex')}`;
   let config = {};
@@ -408,11 +411,11 @@ test('F1: a Gemini call without exact mcp_context proof is never own (label only
 
 const HOSTS = [
   { host: 'claude', entry: 'claude-pre-action-hook', allow: '{}', event: (t) => ({ hook_event_name: 'PreToolUse', session_id: 'r3', tool_name: `mcp__marrow__${t}`, tool_input: {} }) },
-  { host: 'codex', entry: 'codex-pre-action-hook', allow: '{}', event: (t) => ({ hook_event_name: 'PreToolUse', session_id: 'r3', tool_name: `functions.mcp__marrow__${t}`, tool_input: {} }) },
+  { host: 'codex', entry: 'codex-pre-action-hook', allow: '{}', event: (t) => ({ hook_event_name: 'PreToolUse', session_id: 'r3', tool_name: `functions.mcp__marrow__${t}`, tool_input: {} }), checked: true },
   { host: 'codex-bare', entry: 'codex-pre-action-hook', allow: '{}', event: (t) => ({ hook_event_name: 'PreToolUse', session_id: 'r3', tool_name: `mcp__marrow__${t}`, tool_input: {} }) },
   { host: 'gemini', entry: 'gemini-pre-action-hook', allow: '{"decision":"allow"}', event: (t) => gemini(`mcp_marrow_${t}`, ctx('marrow', t)) },
   { host: 'cursor-pre', entry: 'cursor-pre-action-hook', allow: '{"permission":"allow"}', event: (t) => ({ hook_event_name: 'preToolUse', conversation_id: 'conv-r3', tool_name: `MCP:${t}`, tool_input: {} }) },
-  { host: 'cursor-pre-server', entry: 'cursor-pre-action-hook', allow: '{"permission":"allow"}', event: (t) => ({ hook_event_name: 'preToolUse', conversation_id: 'conv-r3', tool_name: `MCP:marrow:${t}`, tool_input: {} }) },
+  { host: 'cursor-pre-server', entry: 'cursor-pre-action-hook', allow: '{"permission":"allow"}', event: (t) => ({ hook_event_name: 'preToolUse', conversation_id: 'conv-r3', tool_name: `MCP:marrow:${t}`, tool_input: {} }), checked: true },
   { host: 'cursor-mcp', entry: 'cursor-pre-action-hook', allow: '{"permission":"allow"}', event: (t) => ADAPTERS.cursor('marrow', t, {}) },
   { host: 'cline', entry: 'cline-pre-action-hook', allow: '{"cancel":false}', event: (t) => ({ hookName: 'PreToolUse', taskId: 'r3', preToolUse: { toolName: 'use_mcp_tool', parameters: { server_name: 'marrow', tool_name: t } } }) },
   { host: 'grok', entry: 'grok-pre-action-hook', allow: '{"decision":"allow"}', event: (t) => ADAPTERS.grok('marrow', t, {}) },
@@ -473,6 +476,12 @@ test('NO LOCKOUT: all 58 own names in every host form allow on an enforcing plan
       assert.equal(isOfficialMarrowMcpEvent(twice(payload)), true, `${form.host} ${tool} (stdin path normalizes twice)`);
       for (const withKey of [false, true]) {
         const out = await runPre(form.entry, payload, withKey);
+        if (form.checked) {
+          // 3.9.103: forms Codex/Cursor never emit for a proven `marrow` server are checked (own-server-identity.ts).
+          assert.notEqual(out.stdout + out.exitCode, form.allow + 0, `${form.host} ${tool} key=${withKey} is checked`);
+          checked += 1;
+          continue;
+        }
         assert.equal(out.stdout, form.allow, `${form.host} ${tool} key=${withKey}`);
         assert.equal(out.exitCode, 0, `${form.host} ${tool} key=${withKey}`);
         assert.deepEqual(out.calls, [], `${form.host} ${tool} key=${withKey}: no gate, no prompt`);
@@ -506,20 +515,31 @@ test('NO LOCKOUT: Cursor cloud and background agents and Gemini hook processes a
 
 // ------------------------------------------------- F2 Cursor (OPEN_DECISION)
 
-test('F2 OPEN_DECISION: Cursor preToolUse `MCP:<own>` keeps the c5354487 label rule, with one or several configured servers; look-alikes are held', async () => {
+test('F2 DECIDED (3.9.103): Cursor preToolUse `MCP:<own>` is own only when the official `marrow` server is the only configured MCP server; anything else is checked', async () => {
   const project = mkdtempSync(join(tmpdir(), 'marrow-r3-cursor-'));
   const previousHome = process.env.HOME;
+  const official = { command: 'npx', args: ['-y', '@getmarrow/mcp'] };
   try {
-    for (const servers of [{ marrow: { command: 'npx' } }, { marrow: { command: 'npx' }, evil: { command: 'evil' }, other: { url: 'https://example.test' } }]) {
+    const cases = [
+      [{ marrow: official }, true],
+      [{ marrow: official, evil: { command: 'evil' }, other: { url: 'https://example.test' } }, false],
+      [{ marrow: { command: 'npx' } }, false],
+      [{ marrow: { command: 'npx', args: ['-y', '@evil/mcp'] } }, false],
+      [{ marrow: official, marrow_: official }, false],
+    ];
+    for (const [servers, own] of cases) {
       mkdirSync(join(project, '.cursor'), { recursive: true });
       writeFileSync(join(project, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: servers }));
       process.env.HOME = project;
+      // One hook process reads the config once; this test rewrites it in one process.
+      require('../dist/own-server-identity.js').resetOwnServerIdentityCache();
       for (const withKey of [false, true]) {
-        // Cursor sends no server here (host-label-research.md): any server's `marrow_commit` reads as own. Open: no rule is exact and lockout-free.
-        assert.equal((await runPre('cursor-pre-action-hook', { hook_event_name: 'preToolUse', conversation_id: 'c', tool_name: 'MCP:marrow_commit', tool_input: {} }, withKey)).stdout, '{"permission":"allow"}');
-        for (const name of ['MCP:evil:marrow_commit', 'MCP:marrow_delete_all', 'MCP:Marrow_commit', 'MCP:MARROW:marrow_commit', 'MCP:marrow_commit ', 'MCP:"marrow":"marrow_commit"']) {
-          const out = await runPre('cursor-pre-action-hook', { hook_event_name: 'preToolUse', conversation_id: 'c', tool_name: name, tool_input: {} }, withKey);
-          assert.notEqual(out.stdout, '{"permission":"allow"}', `${JSON.stringify(name)} key=${withKey} (${Object.keys(servers).length} servers)`);
+        const out = (await runPre('cursor-pre-action-hook', { hook_event_name: 'preToolUse', conversation_id: 'c', tool_name: 'MCP:marrow_commit', tool_input: {} }, withKey)).stdout;
+        if (own) assert.equal(out, '{"permission":"allow"}', JSON.stringify(servers));
+        else assert.notEqual(out, '{"permission":"allow"}', JSON.stringify(servers));
+        for (const name of ['MCP:evil:marrow_commit', 'MCP:marrow_delete_all', 'MCP:Marrow_commit', 'MCP:MARROW:marrow_commit', 'MCP:marrow_commit ', 'MCP:"marrow":"marrow_commit"', 'MCP:marrow:marrow_commit']) {
+          const held = await runPre('cursor-pre-action-hook', { hook_event_name: 'preToolUse', conversation_id: 'c', tool_name: name, tool_input: {} }, withKey);
+          assert.notEqual(held.stdout, '{"permission":"allow"}', `${JSON.stringify(name)} key=${withKey} (${Object.keys(servers).length} servers)`);
         }
       }
     }

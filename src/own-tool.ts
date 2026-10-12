@@ -20,9 +20,13 @@
  * (isOfficialMarrowGeminiCall) and normalises an own call to
  * `mcp__marrow__<tool>`.
  *
- * Cursor preToolUse carries no server (`MCP:<tool>`), so `MCP:<own>` from any
- * server still counts as own there. That is an open owner decision: no rule is
- * both exact and free of lockout (cloud agents never run beforeMCPExecution).
+ * These functions decide on the label alone. The Codex and Cursor hooks do not
+ * trust the label: Codex builds it from the user's server name (servers
+ * `mcp__marrow`, `marrow-` and `marrow_` also give `mcp__marrow__<tool>`) and
+ * Cursor's preToolUse `MCP:<tool>` has no server. Those hooks skip only after
+ * own-server-identity.ts proves, from the host's MCP config, that exactly one
+ * server can produce the label and it starts the official package
+ * (isOfficialMarrowMcpEventOnHost); every other host keeps this label rule.
  */
 
 import { TOOLS } from './tool-catalog';

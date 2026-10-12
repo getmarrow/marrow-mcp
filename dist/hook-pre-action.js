@@ -36,6 +36,7 @@ const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
 const host_approval_1 = require("./host-approval");
 const host_session_1 = require("./host-session");
+const own_server_identity_1 = require("./own-server-identity");
 const normalized_action_1 = require("./normalized-action");
 const session_loop_guard_1 = require("./session-loop-guard");
 const hook_tool_policy_1 = require("./hook-tool-policy");
@@ -456,7 +457,13 @@ function localControlDisabled() {
         return false;
     }
 }
-function classifyTool(event) {
+/**
+ * `ownUnproven`: the label is one of Marrow's own, but the host's server
+ * identity check did not prove the official server (Codex, Cursor). Such a
+ * call is classified as a protected MCP tool of another server, never
+ * read-only (it imitates Marrow's names, so a read verb proves nothing).
+ */
+function classifyTool(event, options = {}) {
     const tool = String(event.tool_name || 'tool').slice(0, 64);
     const normalizedTool = (0, hook_tool_policy_1.normalizeHookToolName)(tool);
     // Editing and task tools are judged by their target; shell-like words in the
@@ -464,7 +471,8 @@ function classifyTool(event) {
     const shellGoverned = (0, hook_tool_policy_1.isShellGovernedTool)(event);
     const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
     const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
-    const readOnly = (0, hook_tool_policy_1.isReadOnlyToolEvent)(event);
+    // A look-alike of Marrow's own tool is never read-only, whatever its verb.
+    const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEvent)(event);
     const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccess)(event);
     const protectedShellCommand = shellGoverned && (0, hook_tool_policy_1.isProtectedShellMutation)(command);
     const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
@@ -493,7 +501,7 @@ function classifyTool(event) {
     const protectedAction = !readOnly && (secretAccess
         || (shellGoverned && /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input))
         || protectedShellCommand
-        || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name))
+        || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && (options.ownUnproven === true || !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name)))
         || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
     const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
     const target = surfaces.includes('npm') ? `npm:${type}`
@@ -833,6 +841,7 @@ async function runPreActionHookCommand(input) {
         return;
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     let event = input;
+    let rawEvent = input;
     let inputFailure = null;
     if (event === undefined) {
         try {
@@ -842,7 +851,8 @@ async function runPreActionHookCommand(input) {
             }
             else {
                 const raw = stdin.raw.trim();
-                event = raw ? (0, hook_contract_1.normalizeHookEventPayload)(JSON.parse(raw)) : {};
+                rawEvent = raw ? JSON.parse(raw) : {};
+                event = (0, hook_contract_1.normalizeHookEventPayload)(rawEvent);
             }
         }
         catch {
@@ -865,7 +875,7 @@ async function runPreActionHookCommand(input) {
         emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: inputFailure || 'Marrow could not classify this mutation-capable tool request.' }, identity.harness);
         return;
     }
-    if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(source)) {
+    if ((0, own_server_identity_1.isOfficialMarrowMcpEventOnHost)(identity.harness, source, rawEvent)) {
         if (identity.harness === 'windsurf') {
             process.exitCode = 0;
             return;
@@ -876,7 +886,7 @@ async function runPreActionHookCommand(input) {
                     : {}));
         return;
     }
-    const classified = classifyTool(source);
+    const classified = classifyTool(source, { ownUnproven: (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(source) });
     let localControl;
     try {
         localControl = (0, control_state_1.readLocalControlState)();

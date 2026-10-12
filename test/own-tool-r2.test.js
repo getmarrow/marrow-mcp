@@ -3,6 +3,7 @@ const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require(
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const test = require('node:test');
+require('./support/official-host-config.cjs').writeOfficialHostConfigs();
 
 const { MARROW_OWN_TOOL_NAMES, nativeHookMatcher } = require('../dist/own-tool.js');
 const { isMcpHookTool } = require('../dist/hook-tool-policy.js');
@@ -274,7 +275,10 @@ test('G1: functions.mcp__evil__delete_all gets the same answer as mcp__evil__del
       }
     }
     for (const name of [...MARROW_OWN_TOOL_NAMES]) {
-      assert.equal(await runPre(entry, { hook_event_name: 'PreToolUse', tool_name: `functions.mcp__marrow__${name}`, tool_input: {} }), '{}|0', name);
+      const out = await runPre(entry, { hook_event_name: 'PreToolUse', tool_name: `functions.mcp__marrow__${name}`, tool_input: {} });
+      // 3.9.103: Codex skips only `mcp__marrow__<own>` from a proven server; it cannot emit `functions.mcp__…`, so that form is checked there.
+      if (entry === 'codex-pre-action-hook') assert.notEqual(out, '{}|0', name);
+      else assert.equal(out, '{}|0', name);
     }
   }
 });

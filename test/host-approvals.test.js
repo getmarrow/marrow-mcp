@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { writeOfficialHostConfigs } = require('./support/official-host-config.cjs');
+writeOfficialHostConfigs();
 const { spawn, spawnSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
@@ -75,6 +77,7 @@ function harness() {
   const home = join(dir, 'home');
   const mockDir = join(dir, 'mock');
   mkdirSync(home, { mode: 0o700 });
+  writeOfficialHostConfigs(home);
   mkdirSync(mockDir);
   // A dummy key generated for this run; it never leaves the mock.
   const apiKey = `mrw_test_${randomBytes(16).toString('hex')}`;
@@ -791,6 +794,7 @@ test('MEDIUM-1: the compare-and-set itself: a hold already claimed is never clai
   const dir = mkdtempSync(join(tmpdir(), 'marrow-claim-'));
   const home = join(dir, 'home');
   mkdirSync(home, { mode: 0o700 });
+  writeOfficialHostConfigs(home);
   try {
     const scope = { apiKey: 'dummy-claim-key', baseUrl: 'https://api.example.test', agentId: 'agent-one' };
     const hold = recordHold(scope, {
@@ -1175,9 +1179,12 @@ test('Cursor MCP calls at preToolUse: a local session defers to beforeMCPExecuti
   const own = harness();
   try {
     own.setConfig({ runtime: hostRuntime() });
-    const out = own.run('cursor-pre-action-hook', { ...mcpPre, tool_name: 'MCP:marrow:marrow_commit' });
+    // 3.9.103: Cursor's own form is `MCP:<tool>`, own when the official `marrow` server is the only one configured
+    // (writeOfficialHostConfigs); the look-alike `MCP:marrow:<tool>` is a tool named `marrow:<tool>` and is checked.
+    const out = own.run('cursor-pre-action-hook', { ...mcpPre, tool_name: 'MCP:marrow_commit' });
     assert.deepEqual(out.json, { permission: 'allow' });
     assert.equal(runtimes(own).length, 0);
+    assert.notDeepEqual(own.run('cursor-pre-action-hook', { ...mcpPre, tool_name: 'MCP:marrow:marrow_commit' }).json, { permission: 'allow' });
   } finally { own.cleanup(); }
 });
 

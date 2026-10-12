@@ -98,7 +98,15 @@ export declare function runtimeGateVerdict(runtime: PreActionControlResult['runt
 export declare function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt?: OwnerApprovalPrompt): string;
 export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
 export declare function localLoopGuardDenyOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', reason: string): Record<string, unknown> | null;
-export declare function classifyTool(event: PreToolUseEvent): {
+/**
+ * `ownUnproven`: the label is one of Marrow's own, but the host's server
+ * identity check did not prove the official server (Codex, Cursor). Such a
+ * call is classified as a protected MCP tool of another server, never
+ * read-only (it imitates Marrow's names, so a read verb proves nothing).
+ */
+export declare function classifyTool(event: PreToolUseEvent, options?: {
+    ownUnproven?: boolean;
+}): {
     action: string;
     target: string;
     type: string;

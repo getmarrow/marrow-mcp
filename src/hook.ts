@@ -6,6 +6,7 @@ import { backgroundNudgeEnabled, payloadBoundEvent, recordLifecycleEvent } from 
 import { classifyTool } from './hook-pre-action';
 import { readLocalControlState } from './control-state';
 import { isOfficialMarrowMcpEvent, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
+import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
 import { recordSessionLoopOutcome, type LoopGuardOperation } from './session-loop-guard';
 import {
   approvalHostFor,
@@ -85,11 +86,11 @@ export function shouldSkipAutoLog(event: HookEvent): boolean {
   return isReadOnlyToolEvent(event);
 }
 
-export function deriveAction(event: HookEvent): string | null {
+export function deriveAction(event: HookEvent, harness?: string, raw?: unknown): string | null {
   const toolName = getString(event.tool_name);
   if (!toolName || shouldSkipAutoLog(event)) return null;
-  if (isOfficialMarrowMcpEvent(event)) return null;
-  return classifyTool(event).action;
+  if (harness === undefined ? isOfficialMarrowMcpEvent(event) : isOfficialMarrowMcpEventOnHost(harness, event, raw)) return null;
+  return classifyTool(event, { ownUnproven: isOfficialMarrowMcpEvent(event) }).action;
 }
 
 export function deriveToolOutcome(event: HookEvent): { success: boolean; unknown?: boolean; duration_ms?: number } {
@@ -214,11 +215,13 @@ export async function runHookCommand(input?: unknown): Promise<void> {
 
   try {
     let event: HookEvent;
+    let rawEvent: unknown = input;
     if (input === undefined) {
       const raw = (await readStdin()).trim();
       if (!raw) return;
       try {
-        event = normalizeHookEventPayload(JSON.parse(raw)) as HookEvent;
+        rawEvent = JSON.parse(raw);
+        event = normalizeHookEventPayload(rawEvent) as HookEvent;
       } catch {
         debug('[marrow-hook] skipped invalid JSON');
         return;
@@ -247,11 +250,11 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       }
       return;
     }
-    if (isOfficialMarrowMcpEvent(event)) {
+    if (isOfficialMarrowMcpEventOnHost(identity.harness, event, rawEvent)) {
       return;
     }
     const privateLoopPayload = privateHookLoopGuardPayload(event);
-    const classified = classifyTool(event);
+    const classified = classifyTool(event, { ownUnproven: isOfficialMarrowMcpEvent(event) });
     const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
       || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
     const agentId = identity.agent_id;
@@ -302,7 +305,7 @@ export async function runHookCommand(input?: unknown): Promise<void> {
       return;
     }
 
-    const action = deriveAction(event);
+    const action = deriveAction(event, identity.harness, rawEvent);
     if (!action) return;
 
     const apiKey = resolvedEnv.apiKey || '';
