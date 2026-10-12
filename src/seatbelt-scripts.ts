@@ -118,10 +118,10 @@ const MAKEFILE_NAMES = ['GNUmakefile', 'makefile', 'Makefile'];
 
 /**
  * Special targets that only tune make's behaviour; every other dot-target
- * (suffix rules, .DEFAULT, .SECONDEXPANSION, .ONESHELL ...) can change which
- * recipe runs.
+ * (suffix rules, .DEFAULT, .SECONDEXPANSION, .ONESHELL, .EXPORT_ALL_VARIABLES
+ * ...) can change which recipe runs or what it runs with.
  */
-const MAKE_HARMLESS_SPECIAL_TARGETS = new Set(['.PHONY', '.PRECIOUS', '.INTERMEDIATE', '.SECONDARY', '.SILENT', '.IGNORE', '.DELETE_ON_ERROR', '.LOW_RESOLUTION_TIME', '.NOTPARALLEL', '.EXPORT_ALL_VARIABLES', '.POSIX']);
+const MAKE_HARMLESS_SPECIAL_TARGETS = new Set(['.PHONY', '.PRECIOUS', '.INTERMEDIATE', '.SECONDARY', '.SILENT', '.IGNORE', '.DELETE_ON_ERROR', '.LOW_RESOLUTION_TIME', '.NOTPARALLEL', '.POSIX']);
 
 /** Variables that change which program runs the recipes or which files make reads: assigning one is dynamic. */
 const MAKE_EXECUTION_VARIABLES = new Set(['SHELL', 'MAKE', 'MAKEFLAGS', 'MFLAGS', 'GNUMAKEFLAGS', 'MAKEFILES', 'MAKEOVERRIDES', 'MAKELEVEL', 'MAKE_COMMAND', 'MAKECMDGOALS', 'VPATH', 'CURDIR']);
@@ -131,6 +131,28 @@ const MAKE_RELOCATING_ENV = ['MAKEFLAGS', 'GNUMAKEFLAGS', 'MFLAGS', 'MAKEFILES',
 
 /** A plain system shell path is the one SHELL value that is understood. */
 const MAKE_SAFE_SHELL = /^(?:\/usr)?(?:\/local)?\/bin\/(?:sh|bash|zsh|dash|ksh|ash)$/;
+
+/**
+ * Names that change what a recipe's program is or where it runs: shell start-up
+ * files, search paths, loaders, relocated tool state. make hands every variable
+ * that came from the environment or the command line to each recipe (and all of
+ * them under `.EXPORT_ALL_VARIABLES` or `export`), so an assignment to one of
+ * these, in the file or on the command line, is dynamic whether or not this
+ * resolver can tell that make exports it. Anything else is only a recipe
+ * environment change when the name is in the caller's environment.
+ */
+const MAKE_RECIPE_ENV_DENY = new RegExp(
+  '^(?:' +
+    [
+      'PATH', 'BASH_ENV', 'ENV', 'SHELL', 'SHELLOPTS', 'BASHOPTS', 'IFS', 'CDPATH', 'ZDOTDIR', 'HOME', 'TMPDIR', 'PS4', 'PROMPT_COMMAND',
+      'BASH_.*', 'GIT_.*', 'LD_.*', 'DYLD_.*', 'NODE_.*', 'PYTHON.*', 'PERL.*', 'RUBY.*', 'XDG_.*',
+      'EDITOR', 'VISUAL', 'PAGER', 'BROWSER', 'LESSOPEN', 'LOCPATH', 'NLSPATH', 'GCONV_PATH', 'HOSTALIASES',
+      'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH', 'GOFLAGS', 'RUSTC_WRAPPER', 'RUSTFLAGS',
+    ].join('|') +
+    ')$',
+);
+/** npm reads its configuration from `npm_config_*` in either case. */
+const MAKE_RECIPE_ENV_DENY_ANY_CASE = /^(?:npm_config_.*|path)$/i;
 
 /** Make functions with no side effect (not evaluated here, but a use of their result is unresolved, not an execution at read time). */
 const MAKE_PURE_FUNCTIONS = new Set(['subst', 'patsubst', 'strip', 'findstring', 'filter', 'filter-out', 'sort', 'word', 'wordlist', 'words', 'firstword', 'lastword', 'dir', 'notdir', 'suffix', 'basename', 'addsuffix', 'addprefix', 'join', 'wildcard', 'realpath', 'abspath']);
@@ -171,8 +193,16 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
   // does not assign may still have a value, and ?= / += cannot be resolved.
   const env = options.env;
   if (env && MAKE_RELOCATING_ENV.some((name) => env[name] !== undefined)) dynamic = true;
-  /** make reads this name itself or it changes how recipes run: assigning it on the command line is dynamic. */
-  const changesWhatRuns = (name: string): boolean => name.startsWith('.') || MAKE_EXECUTION_VARIABLES.has(name);
+  const envNames = new Set<string>();
+  if (env) for (const [name, value] of Object.entries(env)) if (value !== undefined) envNames.add(name.toUpperCase());
+  /**
+   * make hands this name to every recipe, or it changes what runs or where:
+   * assigning it (in the file or on the command line, any operator) is dynamic.
+   * Dot-names are make's own settings; a name in the environment is exported
+   * with its new value; the rest is MAKE_RECIPE_ENV_DENY and MAKE_EXECUTION_VARIABLES.
+   */
+  const changesWhatRuns = (name: string): boolean =>
+    name.startsWith('.') || MAKE_EXECUTION_VARIABLES.has(name) || MAKE_RECIPE_ENV_DENY.test(name) || MAKE_RECIPE_ENV_DENY_ANY_CASE.test(name) || envNames.has(name.toUpperCase());
   const commandLine = new Map<string, string>(Object.entries(options.overrides || {}));
   // A command-line variable is exported to every recipe and its value is expanded each time make builds a recipe
   // environment, used or not: only a plain name, a plain value and a name the Makefile itself uses are definite.
@@ -332,7 +362,8 @@ export function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[
       const [, overrideKeyword, name, op, value] = assign;
       current = null;
       referenced.add(name);
-      if (MAKE_EXECUTION_VARIABLES.has(name) && !(name === 'SHELL' && (op === '=' || op === ':=' || op === '::=') && MAKE_SAFE_SHELL.test(value.trim()))) dynamic = true;
+      const safeShell = name === 'SHELL' && (op === '=' || op === ':=' || op === '::=') && MAKE_SAFE_SHELL.test(value.trim());
+      if (!safeShell && changesWhatRuns(name)) dynamic = true;
       // A variable given on the command line wins over the file's assignments (unless `override`).
       if (commandLine.has(name) && !overrideKeyword) continue;
       const existing = variables.get(name);

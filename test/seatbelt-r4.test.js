@@ -302,3 +302,108 @@ test('F2 oracle: GNU make runs the payload / reads the extra file where the reso
     { name: 'STAGE ?= (control)', makefile: 'STAGE ?= dev\nall:\n\t@echo deploy $(STAGE)\n', overrides: { STAGE: 'production' } },
   ]);
 });
+
+// ---------------------------------------------------------------- F3: what make hands to the recipes
+
+test('F3: .EXPORT_ALL_VARIABLES and every export/unexport directive are dynamic', () => {
+  const rows = {
+    export_all: '.EXPORT_ALL_VARIABLES:\nall:\n\techo hi\n',
+    export_all_after: 'all:\n\techo hi\n.EXPORT_ALL_VARIABLES:\n',
+    export_all_prerequisite_form: '.EXPORT_ALL_VARIABLES: all\nall:\n\techo hi\n',
+    export_all_bash_env: 'SHELL := /bin/bash\n.EXPORT_ALL_VARIABLES:\nBASH_ENV = ./evil.sh\nall:\n\techo hi\n',
+    export_all_git_dir: '.EXPORT_ALL_VARIABLES:\nGIT_DIR = ./evil.git\nall:\n\tgit status\n',
+    export_names: 'FOO = 1\nexport FOO\nall:\n\techo hi\n',
+    export_assign: 'export FOO = 1\nall:\n\techo hi\n',
+    export_bare: 'FOO = 1\nexport\nall:\n\techo hi\n',
+    unexport: 'unexport FOO\nall:\n\techo hi\n',
+    unexport_bare: 'unexport\nall:\n\techo hi\n',
+    override_export: 'override export FOO = 1\nall:\n\techo hi\n',
+    export_override: 'export override FOO = 1\nall:\n\techo hi\n',
+    export_define: 'export define X\nendef\nall:\n\techo hi\n',
+    target_specific_export: 'all: export FOO = 1\nall:\n\techo hi\n',
+    tab_led_export: '\texport FOO = 1\nall:\n\techo hi\n',
+  };
+  for (const [name, text] of Object.entries(rows)) {
+    const r = make(text, ['all'], { env: ENV });
+    assert.ok(!definite(r), `${name}: ${JSON.stringify(r)}`);
+  }
+  // `exports = 1` is an ordinary variable, not the directive.
+  assert.ok(definite(make('exports = 1\nall:\n\techo hi\n', ['all'], { env: ENV })));
+});
+
+test('F3: an assignment (any operator, any spelling) to a name make hands to recipes and that changes what runs is dynamic', () => {
+  const names = [
+    'PATH', 'BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'IFS', 'CDPATH', 'ZDOTDIR', 'HOME', 'TMPDIR', 'PS4', 'PROMPT_COMMAND',
+    'GIT_DIR', 'GIT_WORK_TREE', 'GIT_CONFIG_COUNT', 'GIT_EXEC_PATH', 'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+    'NODE_OPTIONS', 'NODE_PATH', 'NPM_CONFIG_PREFIX', 'npm_config_registry', 'NPM_CONFIG_USERCONFIG', 'PYTHONPATH', 'PYTHONSTARTUP', 'PERL5LIB', 'PERL5OPT',
+    'RUBYOPT', 'RUBYLIB', 'XDG_CONFIG_HOME', 'XDG_DATA_DIRS', 'EDITOR', 'PAGER', 'GOFLAGS', 'JAVA_TOOL_OPTIONS', 'LESSOPEN', 'Path',
+  ];
+  for (const name of names) {
+    for (const op of ['=', ':=', '::=', '+=', '?=', '!=']) {
+      const r = make(`${name} ${op} ./tools\nall:\n\tgit status\n`, ['all'], { env: { PATH: '/usr/bin' } });
+      assert.ok(!definite(r), `${name} ${op}: ${JSON.stringify(r)}`);
+    }
+    assert.ok(!definite(make(`override ${name} = ./tools\nall:\n\tgit status\n`, ['all'], { env: ENV })), `override ${name}`);
+  }
+  // The audit's rows.
+  assert.ok(!definite(make('PATH := ./tools:$(PATH)\nall:\n\tgit status\n', ['all'], { env: { PATH: '/usr/bin:/bin' } })));
+  assert.ok(!definite(make('PATH = ./tools\nall:\n\tgit status\n', ['all'], { env: {} })));
+});
+
+test('F3: an assignment to a name that exists in the environment is dynamic (make exports it with the new value)', () => {
+  const env = { PATH: '/usr/bin', FOO: 'orig', Mixed_Case: '1', RUSTUP_TOOLCHAIN: 'stable' };
+  for (const op of ['=', ':=', '+=', '?=', '!=']) {
+    for (const name of ['FOO', 'foo', 'RUSTUP_TOOLCHAIN', 'mixed_case']) {
+      const r = make(`${name} ${op} changed\nall:\n\techo hi\n`, ['all'], { env });
+      assert.ok(!definite(r), `${name} ${op}: ${JSON.stringify(r)}`);
+    }
+  }
+  // The same assignment with the name absent from the environment is an ordinary Makefile variable.
+  assert.ok(definite(make('FOO = changed\nall:\n\techo $(FOO)\n', ['all'], { env: { PATH: '/usr/bin' } })));
+  // A name that is in the environment but only referenced is not an assignment.
+  const referenced = make('all:\n\techo $(FOO)\n', ['all'], { env });
+  assert.ok(definite(referenced));
+  assert.deepEqual(referenced.commands, ['echo orig']);
+  // On the command line too.
+  assert.ok(!definite(make('all:\n\techo $(FOO)\n', ['all'], { env, overrides: { FOO: 'new' } })));
+});
+
+test('F3: SHELL assigned to a plain system shell stays definite; other values, operators and spellings do not', () => {
+  for (const text of ['SHELL := /bin/bash\nall:\n\techo hi\n', 'SHELL = /bin/sh\nall:\n\techo hi\n', 'SHELL ::= /usr/bin/zsh\nall:\n\techo hi\n']) {
+    assert.ok(definite(make(text, ['all'], { env: { ...ENV, SHELL: '/bin/zsh' } })), text);
+  }
+  for (const text of ['SHELL := ./evil.sh\nall:\n\techo hi\n', 'SHELL += -x\nall:\n\techo hi\n', 'SHELL ?= /bin/sh\nall:\n\techo hi\n', 'SHELL != echo /bin/sh\nall:\n\techo hi\n', 'SHELL = $(X)\nall:\n\techo hi\n']) {
+    assert.ok(!definite(make(text, ['all'], { env: ENV })), text);
+  }
+});
+
+test('F3: the routine Makefile (plain variables, simple recipes, .PHONY, SHELL := /bin/bash) stays definite', () => {
+  const text = 'CC = gcc\nOUT = build\nCFLAGS ?= -O2\nSRC := $(wildcard src/*.c)\nSHELL := /bin/bash\n.PHONY: all clean\nall: $(OUT)/app\n$(OUT)/app:\n\t$(CC) $(CFLAGS) -o $@ main.c\nclean:\n\trm -rf $(OUT)\n';
+  const r = make(text, ['all'], { env: ENV });
+  assert.equal(r.status, 'ok');
+  // $(wildcard) is a function: that variable is unresolved but unused, so only the targets decide; the file stays as it was at ecd0d1a6.
+  const plain = make('CC = gcc\nOUT = build\nall:\n\t$(CC) -o $(OUT)/app main.c\n', ['all'], { env: ENV });
+  assert.ok(definite(plain));
+  assert.deepEqual(plain.commands, ['gcc -o build/app main.c']);
+});
+
+test('F3 oracle: GNU make exports the new value / runs the payload where the resolver must not be definite', { skip: oracleSkip }, () => {
+  checkAgainstMake([
+    { name: 'PATH :=', makefile: 'PATH := ./tools:$(PATH)\nall:\n\tgit status\n' },
+    { name: 'PATH =', makefile: 'PATH = ./tools\nall:\n\tgit status\n' },
+    { name: 'PATH = (no PATH in env)', makefile: 'PATH = ./tools\nall:\n\tgit status\n', env: null },
+    { name: 'export_all + BASH_ENV', makefile: 'SHELL := /bin/bash\n.EXPORT_ALL_VARIABLES:\nBASH_ENV = ./evil.sh\nall:\n\t@echo hi; true\n' },
+    { name: 'export_all + GIT_DIR', makefile: '.EXPORT_ALL_VARIABLES:\nGIT_DIR = ./evil.git\nall:\n\t@echo "GIT_DIR=[$$GIT_DIR]"\n', badOutput: 'GIT_DIR=[./evil.git]' },
+    { name: 'export NAME = v', makefile: 'export GIT_DIR = ./evil.git\nall:\n\t@echo "GIT_DIR=[$$GIT_DIR]"\n', badOutput: 'GIT_DIR=[./evil.git]' },
+    { name: 'export NAME', makefile: 'GIT_DIR = ./evil.git\nexport GIT_DIR\nall:\n\t@echo "GIT_DIR=[$$GIT_DIR]"\n', badOutput: 'GIT_DIR=[./evil.git]' },
+    { name: 'export bare', makefile: 'GIT_DIR = ./evil.git\nexport\nall:\n\t@echo "GIT_DIR=[$$GIT_DIR]"\n', badOutput: 'GIT_DIR=[./evil.git]' },
+    { name: 'env name =', makefile: 'FOO = changed\nall:\n\t@echo "FOO=[$$FOO]"\n', env: { FOO: 'orig' }, badOutput: 'FOO=[changed]' },
+    { name: 'env name :=', makefile: 'FOO := changed\nall:\n\t@echo "FOO=[$$FOO]"\n', env: { FOO: 'orig' }, badOutput: 'FOO=[changed]' },
+    { name: 'env name +=', makefile: 'FOO += more\nall:\n\t@echo "FOO=[$$FOO]"\n', env: { FOO: 'orig' }, badOutput: 'FOO=[orig more]' },
+    { name: 'env name with a function value', makefile: 'X = $(shell touch @DIR@/MARKER)\nall:\n\t@echo hello\n', env: { X: '1' } },
+    { name: 'env name overridden on the command line', makefile: 'all:\n\t@echo "FOO=[$$FOO]"\n', env: { FOO: 'orig' }, overrides: { FOO: 'new' }, badOutput: 'FOO=[new]' },
+    { name: 'non-exported name (control)', makefile: 'BAR = x\nall:\n\t@echo "BAR=[$$BAR]"\n' },
+    { name: 'CC / OUT (control)', makefile: 'CC = gcc\nOUT = build\n.PHONY: all\nall:\n\t@echo $(CC) -o $(OUT)/app\n' },
+    { name: 'SHELL := /bin/bash (control)', makefile: 'SHELL := /bin/bash\nall:\n\t@echo hi; true\n' },
+  ]);
+});
