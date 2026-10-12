@@ -121,6 +121,10 @@ interface Run {
   linksUnknown: boolean;
   // A file system call threw (as opposed to returning null for a missing or unreadable path).
   fsState: { errored: boolean };
+  // The checked-out branch may have changed inside this command (a git command that can switch it, or
+  // code the mapper could not read). Until proven otherwise `git.currentBranch` is the branch the
+  // command will see; after this it is not (audit friction trims T1, T3).
+  headMayChange: boolean;
   // File reads and parsed package.json files, once per classification.
   reads: Map<string, string | null>;
   packages: Map<string, { pkg: Record<string, unknown> | null; error?: string } | null>;
@@ -522,6 +526,7 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     exhausted: false,
     links: new Map(),
     linksUnknown: false,
+    headMayChange: false,
     fsState,
     reads: new Map(),
     packages: new Map(),
@@ -711,6 +716,119 @@ function isOrphanFeed(c: ShellCommand): boolean {
   return c.heredoc !== null || c.redirects.some((r) => r.op === '<' || r.op === '<<<' || r.op === '<>' || r.op === '<&');
 }
 
+// Which substitution text each `$(…)` word holds (the parser lists the texts in order and keeps no
+// link to the word). The mapping is used only when it is unambiguous: a command that has a
+// substitution in a redirect target and in its words, or a count that does not add up, maps nothing.
+function indexSubstitutions(parsed: ParsedShell): WeakMap<Word, string[]> {
+  const map = new WeakMap<Word, string[]>();
+  const subs = parsed.substitutions;
+  if (!subs.length) return map;
+  const count = (ws: Word[]) => ws.reduce((n, w) => n + w.slots.filter((s) => s.type === 'sub').length, 0);
+  const staged: Array<[Word, string[]]> = [];
+  let k = 0;
+  for (const c of parsed.commands) {
+    const items = c.forLoop && c.forLoop.items ? c.forLoop.items : [];
+    const redirs = c.redirects.map((r) => r.target).filter((w): w is Word => Boolean(w));
+    const total = count(items) + count(c.assignments) + count(c.words) + count(redirs);
+    if (total === 0) continue;
+    const ambiguous = count(redirs) > 0 && count(items) + count(c.assignments) + count(c.words) > 0;
+    if (!ambiguous) {
+      for (const ws of [items, c.assignments, c.words, redirs]) {
+        for (const w of ws) {
+          const n = w.slots.filter((s) => s.type === 'sub').length;
+          if (n) staged.push([w, subs.slice(k, k + n)]);
+          k += n;
+        }
+      }
+    } else k += total;
+  }
+  if (k !== subs.length) return map;
+  for (const [w, texts] of staged) map.set(w, texts);
+  return map;
+}
+
+// A word that is exactly one substitution (quoted or not) and its text, when the mapping is known.
+function pureSubstitution(a: Arg | Word, info: CmdInfo): string | null {
+  const w = (a as Arg).word !== undefined ? (a as Arg).word : (a as Word);
+  if (!w || !info.wordSubs) return null;
+  if (!(w.slots.length === 1 && w.slots[0].type === 'sub' && w.text === '\u0000')) return null;
+  const texts = info.wordSubs.get(w);
+  return texts && texts.length === 1 ? texts[0] : null;
+}
+
+// The text of `which NAME` / `command -v NAME` for a plain literal NAME, or null (audit T2).
+function whichLiteral(inner: string, depth: number): string | null {
+  if (inner.length > 256) return null;
+  const p = safeParse(inner, { depth });
+  if (!p.ok || p.commands.length !== 1 || p.substitutions.length !== 0) return null;
+  const c = p.commands[0];
+  if (c.assignments.length || c.redirects.length || c.heredoc !== null || c.pipedInput || c.pipesOutput || c.background || c.forLoop) return null;
+  const ws = c.words;
+  if (ws.some((w) => w.dynamic || w.glob)) return null;
+  const texts = ws.map((w) => w.text);
+  let name: string | undefined;
+  if (texts.length === 2 && texts[0] === 'which') name = texts[1];
+  else if (texts.length === 3 && texts[0] === 'command' && texts[1] === '-v') name = texts[2];
+  return name !== undefined && /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/.test(name) ? name : null;
+}
+
+// The only substitution forms that stand for the current branch name (audit T3).
+const BRANCH_SUBSTITUTIONS = new Set(['git branch --show-current', 'git rev-parse --abbrev-ref HEAD', 'git symbolic-ref --short HEAD']);
+function branchSubstitutionText(inner: string, depth: number): boolean {
+  if (inner.length > 128) return false;
+  const p = safeParse(inner, { depth });
+  if (!p.ok || p.commands.length !== 1 || p.substitutions.length !== 0) return false;
+  const c = p.commands[0];
+  if (c.assignments.length || c.redirects.length || c.heredoc !== null || c.pipedInput || c.pipesOutput || c.background || c.forLoop) return false;
+  if (c.words.some((w) => w.dynamic || w.glob || w.quoted)) return false;
+  return BRANCH_SUBSTITUTIONS.has(c.words.map((w) => w.text).join(' '));
+}
+
+// The branch `git.currentBranch` reports, when nothing in this command can have changed it: same
+// working directory as the event's, no git command earlier in the text that may switch branches, no
+// code the mapper could not read, no GIT_* variable that moves the repository. Otherwise null.
+function currentBranchProof(ctx: Ctx, run: Run, x: Exec | null): string | null {
+  if (run.headMayChange) return null;
+  const start = typeof run.env.cwd === 'string' && path.posix.isAbsolute(run.env.cwd) ? path.posix.normalize(run.env.cwd) : null;
+  if (!start || ctx.cwds.length !== 1 || ctx.cwds[0] !== start) return null;
+  for (const name of ctx.exported) if (/^GIT_/i.test(name)) return null;
+  if (x) for (const name of x.env.keys()) if (/^GIT_/i.test(name)) return null;
+  let cur: string | null;
+  try { cur = run.env.git.currentBranch(start); } catch { return null; }
+  return typeof cur === 'string' && cur !== '' ? cur : null;
+}
+
+// A known branch name that is not protected: main, master, production, prod, release*, anything the
+// baseline policy lists, the remote's default branch, a production-looking name, or a name that
+// resolves ambiguously are all "protected" here (audit T1, T3).
+function unprotectedBranch(cur: string | null, ctx: Ctx, run: Run): boolean {
+  if (cur === null) return false;
+  const resolved = resolveRefName(cur, null);
+  if (resolved === null || resolved !== cur) return false;
+  if (isProdName(cur) || /^release/i.test(cur)) return false;
+  return !isProtectedBranch(resolved, 'origin', ctx.cwds[0] || null, run);
+}
+
+// Git subcommands that cannot change which branch is checked out. Anything else (checkout, switch,
+// branch -m, worktree, bisect, rebase, symbolic-ref, update-ref, clone, init, stash branch …) can.
+const HEAD_SAFE_SUBS = new Set(['symbolic-ref', 'status', 'log', 'diff', 'show', 'ls-files', 'ls-remote', 'ls-tree', 'rev-parse', 'rev-list', 'describe',
+  'blame', 'shortlog', 'grep', 'cat-file', 'show-ref', 'for-each-ref', 'fetch', 'add', 'commit', 'push', 'send-pack', 'tag', 'diff-tree',
+  'diff-index', 'diff-files', 'merge-base', 'name-rev', 'var', 'version', 'help', 'remote', 'check-ignore', 'check-attr', 'count-objects',
+  'reflog', 'archive', 'bundle', 'notes', 'clean', 'rm', 'mv', 'restore', 'reset', 'merge', 'pull', 'cherry-pick', 'revert', 'apply', 'am',
+  'stash', 'config', 'branch', 'credential', 'whatchanged', 'range-diff', 'format-patch', 'request-pull', 'rerere', 'sparse-checkout']);
+function gitMayChangeHead(sub: string, args: Arg[]): boolean {
+  if (!HEAD_SAFE_SUBS.has(sub)) return true;
+  const texts = args.map((a) => a.text);
+  // Only these take a word that can name another branch (`branch -m x`, `stash branch x`); a dynamic
+  // word there could be that option.
+  if (sub === 'branch') return texts.some((t) => t === null || /^-[a-zA-Z]*[mMcC]/.test(t) || /^--(?:move|copy)/.test(t));
+  // `symbolic-ref HEAD` and `symbolic-ref --short HEAD` read; a second name or -d/-m writes.
+  if (sub === 'symbolic-ref') return texts.some((t) => t === null || /^-[a-zA-Z]*[dm]/.test(t) || /^--(?:delete|message)/.test(t)) || texts.filter((t) => t !== null && !t.startsWith('-')).length > 1;
+  if (sub === 'stash') return texts.some((t) => t === null || t === 'branch');
+  if (sub === 'config') return !texts.some((t) => t !== null && /^(?:--get|--get-all|--get-regexp|--list|-l)$/.test(t));
+  return false;
+}
+
 const LOOP_WORD = /(?:^|[\s;&|(){}])(?:while|until|for|select)(?:[\s;]|$)/;
 const DECLARE_PROGS = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 const ASSIGN_WORD = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
@@ -771,6 +889,7 @@ function evalShell(src: string, ctx: Ctx, run: Run): void {
   if (Buffer.byteLength(src) > LIMITS.maxCommandBytes) { worseParse(run, 'too_large'); hit(run, 'Sx', 'budget_size'); tripwire(src.slice(0, LIMITS.maxCommandBytes), run); return; }
   const parsed = safeParse(src, { depth: ctx.depth });
   if (!parsed.ok) {
+    run.headMayChange = true;
     const big = parsed.error === 'too_large' || parsed.error === 'too_many_commands' || parsed.error === 'parse_cost';
     worseParse(run, big ? 'too_large' : 'unparsed');
     tripwire(src.slice(0, LIMITS.maxCommandBytes), run);
@@ -814,12 +933,13 @@ function evalShell(src: string, ctx: Ctx, run: Run): void {
   // Assignments on branches that exclude each other (audit N2): see Guards. A loop body runs more
   // than once, so a later assignment in it is visible to an earlier use: the list runs twice.
   const guards = buildGuards(src, parsed.commands);
+  const wordSubs = indexSubstitutions(parsed);
   const rounds = guards && (guards.unknown ? LOOP_WORD.test(src) : [...guards.byCmd.values()].some((g) => g.assign.concat(g.declare).some((e) => e.inLoop))) ? 2 : 1;
   for (let round = 0; round < rounds && !run.exhausted; round += 1) {
     for (const pipeline of pipelines) {
       for (let i = 0; i < pipeline.length; i += 1) {
         const upstream = pipeline.slice(0, i);
-        evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions, groupSource: groupSource.has(pipeline[i]), lost, guards, round2: round > 0 });
+        evalCommand(pipeline[i], ctx, run, { upstream, ansiC, subs: parsed.substitutions, groupSource: groupSource.has(pipeline[i]), lost, guards, round2: round > 0, wordSubs });
       }
     }
   }
@@ -834,7 +954,7 @@ interface LostFeeds { orphans: ShellCommand[]; pipes: ShellCommand[][] }
 // `guards`: which assignments of this parse run unconditionally (audit N2). `unknown` = the text could
 // not be matched to the parse: every assignment is then conditional.
 interface Guards { byCmd: Map<ShellCommand, { assign: AssignEvent[]; declare: AssignEvent[] }>; unknown: boolean }
-interface CmdInfo { upstream: ShellCommand[]; ansiC: boolean; subs: string[]; groupSource?: boolean; lost?: LostFeeds; guards?: Guards; round2?: boolean }
+interface CmdInfo { upstream: ShellCommand[]; ansiC: boolean; subs: string[]; groupSource?: boolean; lost?: LostFeeds; guards?: Guards; round2?: boolean; wordSubs?: WeakMap<Word, string[]> }
 
 // Bash brace expansion ({a,b}, {1..3}); quoting is not tracked per part, so it always expands
 // (stricter). Sequences are left unresolved.
@@ -993,7 +1113,19 @@ function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void
 
   // Words are field-split like the shell does (audit F2): `x='npm publish'; $x` runs npm with publish,
   // `F='-f origin main'; git push $F` pushes with -f.
-  const variants = argvVariants(cmd.words, ctx, run);
+  let variants = argvVariants(cmd.words, ctx, run);
+  // `$(which NAME)` / `$(command -v NAME)` as the command word (audit T2): read as NAME, and also as
+  // the word vanishing (a failed lookup prints nothing, so the next word becomes the command).
+  const w0 = cmd.words[0];
+  if (w0) {
+    const inner = pureSubstitution(w0, info);
+    const name = inner === null ? null : whichLiteral(inner, ctx.depth + 1);
+    if (name !== null) {
+      const lit: Word = { text: name, dynamic: false, quoted: false, substitution: false, variables: [], slots: [] };
+      variants = argvVariants([lit, ...cmd.words.slice(1)], ctx, run);
+      if (cmd.words.length > 1) variants = variants.concat(argvVariants(cmd.words.slice(1), ctx, run));
+    }
+  }
   // Shell aliases defined earlier in this command line.
   const first = cmd.words[0];
   if (!first.quoted && !first.dynamic && ctx.aliases.has(first.text) && ctx.depth < LIMITS.maxDepth + 2) {
@@ -1245,6 +1377,7 @@ const DATA_ARGV_TOOLS = new Set(['terraform', 'tofu', 'terragrunt', 'pulumi', 'c
 // classified as that program, and a substitution whose own text is decoded or fetched code.
 function dynamicProgram(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   worseParse(run, 'dynamic');
+  run.headMayChange = true;
   const a = args[0];
   const slash = a.pattern.lastIndexOf('/');
   const tail = slash >= 0 ? a.pattern.slice(slash + 1) : '';
@@ -1633,6 +1766,7 @@ function checkSubstitutionExec(subs: string[], ctx: Ctx, run: Run): boolean {
       continue;
     }
     // The output of some other command is run as code: unknown code (audit F2).
+    run.headMayChange = true;
     worseParse(run, 'dynamic');
     tripwire(s, run);
     hit(run, 'Sx', 'dynamic_substitution_exec');
@@ -1759,6 +1893,116 @@ function recordLinks(prog: string, rest: Arg[], ctx: Ctx, run: Run): void {
       // The destination may be a directory: the link is then dest/<basename of the source>.
       run.links.set(d, target);
       if (src.text !== null) run.links.set(path.posix.join(d, path.posix.basename(src.text.replace(/\/+$/, ''))), target);
+    }
+  }
+}
+
+// An existing symlink that is moved or copied keeps pointing at its target under the new name, so a
+// later recursive delete or secret read through the new name reaches the target (audit N3). The
+// injected fs only answers realpath, so the new name is recorded as an alias of the old path: every
+// path under it resolves through the old one. A link moved to a different directory may be relative,
+// and the mapper cannot read its text: that name resolves to an unknown target (a later delete or
+// read through it stops). A directory that holds links is treated the same way when it changes parent.
+const CARRY_PROGRAMS = new Set(['mv', 'cp', 'ln', 'rsync']);
+const RENAME_PROGRAMS = new Set(['rename', 'prename', 'perl-rename', 'rename.ul', 'mmv', 'mcp']);
+
+// 'link' (a symlink, known to the fs or made earlier in this command), 'dir', 'other' (a regular file
+// or a path that does not exist), or 'unknown'.
+function pathKind(abs: string, run: Run): 'link' | 'dir' | 'other' | 'unknown' {
+  if (applyLinks(abs, run) !== abs) return 'link';
+  const real = safeRealpath(run.env, abs);
+  if (real === null) return 'other';
+  const parent = longestRealpath(path.posix.dirname(abs), run);
+  if (parent !== null && real !== path.posix.join(parent, path.posix.basename(abs))) return 'link';
+  const readdir = run.env.fs.readdir;
+  if (typeof readdir !== 'function') return 'unknown';
+  return readdir(real) === null ? 'other' : 'dir';
+}
+
+// True when a real directory holds a symlink within a bounded walk, or cannot be walked.
+function dirHoldsLinks(real: string, run: Run, depth = 0, budget = { left: LIMITS.maxGlobMatches }): boolean {
+  const readdir = run.env.fs.readdir;
+  if (typeof readdir !== 'function') return true;
+  const names = readdir(real);
+  if (names === null) return true;
+  for (const n of names) {
+    budget.left -= 1;
+    if (budget.left < 0 || clock(run)) return true;
+    const child = path.posix.join(real, n);
+    const r = safeRealpath(run.env, child);
+    if (r === null || r !== child) return true;
+    if (depth < 2 && readdir(child) !== null && dirHoldsLinks(child, run, depth + 1, budget)) return true;
+  }
+  return false;
+}
+
+function carryLinks(prog: string, rest: Arg[], ctx: Ctx, run: Run): void {
+  if (RENAME_PROGRAMS.has(prog)) {
+    // Result names come from a pattern: any operand that is, or may be, a link or directory makes the
+    // new names unknown.
+    const ops = nonOptions(rest).slice(1);
+    for (const o of ops) {
+      if (o.text === null || o.glob) { run.linksUnknown = true; return; }
+      for (const p of absCandidates(o.text, ctx, run) || []) if (pathKind(p, run) !== 'other') { run.linksUnknown = true; return; }
+    }
+    return;
+  }
+  if (!CARRY_PROGRAMS.has(prog)) return;
+  if (prog === 'ln' && rest.some((a) => a.text !== null && ((/^-[a-zA-Z]*s[a-zA-Z]*$/.test(a.text) && !a.text.startsWith('--')) || a.text === '--symbolic'))) return;
+  // A copy that follows links writes a real tree, not a link.
+  if ((prog === 'cp' || prog === 'rsync') && rest.some((a) => a.text !== null && (/^-[a-zA-Z]*[LH][a-zA-Z]*$/.test(a.text) && !a.text.startsWith('--') || a.text === '--dereference' || a.text === '--copy-links'))) return;
+  const valueFlags = prog === 'rsync'
+    ? new Set(['-e', '--rsh', '--exclude', '--include', '--filter', '-f', '--files-from', '--port', '--password-file', '--log-file', '--backup-dir', '--suffix', '--chmod', '--chown'])
+    : new Set(['-t', '--target-directory', '-S', '--suffix']);
+  const tDir = targetDirFlag(rest);
+  const ops = nonOptions(rest, valueFlags);
+  const sources = tDir ? ops : ops.slice(0, -1);
+  const dest = tDir || (ops.length >= 2 ? ops[ops.length - 1] : null);
+  if (!dest || sources.length === 0) return;
+
+  // Names the sources can take: dest itself (a rename) and dest/<basename> (a move into a directory).
+  const names = (src: string): string[] | null => {
+    if (dest.text === null) return null;
+    const out: string[] = [];
+    for (const d of absCandidates(dest.text, ctx, run) || []) {
+      if (!tDir) out.push(d);
+      out.push(path.posix.join(d, path.posix.basename(src)));
+    }
+    return out;
+  };
+  const unknownNames = () => { run.links.set('/__unknown_link_dest__', null); run.linksUnknown = true; };
+  for (const s of sources) {
+    if (clock(run)) return;
+    let literal: string[] | null = null;
+    if (s.text !== null && !s.glob) literal = absCandidates(s.text, ctx, run);
+    else if (s.text !== null && s.glob) {
+      const matches = expandGlob(s.text, ctx, run);
+      literal = matches === null ? null : matches.flatMap((mm) => absCandidates(mm, ctx, run) || []);
+    }
+    if (literal === null) {
+      // An unknown source may be a link or a directory.
+      const into = dest.text === null ? null : (absCandidates(dest.text, ctx, run) || []);
+      if (into === null) { unknownNames(); continue; }
+      for (const d of into) { run.links.set(d, null); run.links.set(`${d}/__unknown_source__`, null); }
+      continue;
+    }
+    for (const p of literal) {
+      const kind = pathKind(p, run);
+      if (kind === 'other') continue;
+      const targets = names(p);
+      if (targets === null) { unknownNames(); continue; }
+      for (const n of targets) {
+        const sameParent = path.posix.dirname(n) === path.posix.dirname(p);
+        let alias: string | null = p;
+        if (!sameParent) {
+          if (kind === 'link' || kind === 'unknown') alias = null;
+          else {
+            const real = safeRealpath(run.env, p);
+            if (real === null || dirHoldsLinks(real, run)) alias = null;
+          }
+        }
+        run.links.set(n, alias);
+      }
     }
   }
 }
@@ -1918,7 +2162,11 @@ function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string): boolean
     }
     const abs = absCandidates(text, ctx, run);
     if (!abs) continue;
-    for (const p of abs) for (const r of realCandidates(p, run, true)) if (isSecretPath(r, run)) return hit(run, 'S4', `${reason}_secret_path`);
+    for (const p of abs) {
+      // A path through a link whose target the mapper cannot follow (audit N3).
+      if (run.links.size > 0 && applyLinks(p, run) === '/__unknown_link__') return hit(run, 'S4', `${reason}_unknown_link`);
+      for (const r of realCandidates(p, run, true)) if (isSecretPath(r, run)) return hit(run, 'S4', `${reason}_secret_path`);
+    }
   }
   return false;
 }
@@ -1950,6 +2198,7 @@ function checkProtectedWrite(a: Arg, ctx: Ctx, run: Run, reason: string, tree: b
   const abs = absCandidates(a.text, ctx, run);
   if (!abs) return false;
   for (const p of abs) {
+    if (run.links.size > 0 && applyLinks(path.posix.dirname(p), run) === '/__unknown_link__') return hit(run, 'S0', `${reason}_unknown_link`);
     for (const r of realCandidates(p, run, false)) {
       const probe = run.fold ? r.toLowerCase() : r;
       if (run.isProtected(probe)) return hit(run, 'S0', `${reason}_protected_path`);
@@ -1997,6 +2246,9 @@ function checkDeleteTarget(a: Arg, ctx: Ctx, run: Run, reason: string, kind: 'tr
   if (a.glob && globFollowsLinks(a.text)) {
     const matches = expandGlob(a.text, ctx, run);
     if (matches === null) return hit(run, 'S5', `${reason}_glob_unresolved`);
+    // Names this command created or moved (`mv link y && rm -rf y*/`) are not on disk yet.
+    const trailing = /\/+$/.test(a.text) ? '/' : '';
+    for (const k of linkNamesMatching(a.text, ctx, run)) matches.push(`${k}${trailing}`);
     for (const m of matches) {
       if (checkDeleteTarget({ ...litArg(m), glob: false }, ctx, run, reason, kind)) return true;
     }
@@ -2088,6 +2340,17 @@ function expandGlob(text: string, ctx: Ctx, run: Run): string[] | null {
   return [...new Set(paths)].map((p) => (trailing ? `${p}/` : p));
 }
 
+// Link or alias names made earlier in this command that a glob can match.
+function linkNamesMatching(text: string, ctx: Ctx, run: Run): string[] {
+  if (run.links.size === 0) return [];
+  const out: string[] = [];
+  for (const p of absCandidates(text, ctx, run) || []) {
+    const re = compileGlob(p, {});
+    for (const k of run.links.keys()) if (k.startsWith('/') && re.test(k)) out.push(k);
+  }
+  return out;
+}
+
 function checkTreeDeletes(targets: Arg[], ctx: Ctx, run: Run, reason: string): void {
   for (const t of targets) {
     checkProtectedWrite(t, ctx, run, reason, true);
@@ -2171,6 +2434,7 @@ function genericOperandChecks(prog: string, args: Arg[], ctx: Ctx, run: Run, sub
     markWritten(arg, ctx);
   }
   recordLinks(prog, rest, ctx, run);
+  carryLinks(prog, rest, ctx, run);
 }
 
 const COPY_PROGRAMS = new Set(['cp', 'scp', 'rsync', 'tar', 'zip', '7z', '7za', 'rclone', 'gtar', 'bsdtar', 'ditto']);
@@ -2451,6 +2715,7 @@ function shellString(a: Arg, ctx: Ctx, run: Run, subs: string[]): void {
 // With nothing literal left (`sh -c "$CMD"`) the code is unknowable and the answer is stop.
 function dynamicCode(a: Arg, ctx: Ctx, run: Run, reason: string): void {
   worseParse(run, 'dynamic');
+  run.headMayChange = true;
   const literal = a.pattern.replace(new RegExp(DYN, 'g'), '');
   if (literal.trim() === '') {
     tripwire(run.topSource, run);
@@ -2834,6 +3099,8 @@ function scriptFile(target: Arg, extra: Arg[], ctx: Ctx, run: Run, x: Exec | nul
 }
 
 function nameTripwire(name: string, run: Run, reason: string): void {
+  // A script or target the mapper could not read: it may run any git command.
+  run.headMayChange = true;
   if (NAME_TRIPWIRE.test(name)) {
     const n = name.toLowerCase();
     const category = /publish|release/.test(n) ? 'S3' : 'S2';
@@ -3244,6 +3511,7 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
       hit(run, 'S1', 'git_unresolved_alias_config_unknown');
       return;
     }
+    if (value === undefined) run.headMayChange = true;
     if (value !== undefined) {
       if (aliasDepth >= LIMITS.maxAliasExpansions) { worseParse(run, 'too_large'); hit(run, 'Sx', 'budget_alias_depth'); tripwire(`${value} ${args.map(argText).join(' ')}`, run); return; }
       const restText = args.map((a) => (a.text !== null ? shellQuote(a.text) : '"$__marrow_dynamic"')).join(' ');
@@ -3256,8 +3524,22 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
     }
     return;
   }
+  if (gitMayChangeHead(sub, args)) run.headMayChange = true;
   switch (sub) {
-    case 'push': case 'send-pack': return gitPush(args, gctx, run, overrides);
+    case 'push': case 'send-pack': {
+      // `git push origin "$(git branch --show-current)"` (audit T3): the exact substitution forms stand
+      // for `git.currentBranch` when nothing in the command can have changed it; anything else stays
+      // dynamic and stops.
+      const pushArgs = args.map((a) => {
+        if (a.text !== null) return a;
+        const inner = pureSubstitution(a, x.info);
+        if (inner === null || !branchSubstitutionText(inner, ctx.depth + 1)) return a;
+        const cur = currentBranchProof(ctx, run, x);
+        // A protected current branch keeps the substitution dynamic, which stops (T3: no new pass).
+        return cur !== null && unprotectedBranch(cur, ctx, run) ? litArg(cur) : a;
+      });
+      return gitPush(pushArgs, gctx, run, overrides);
+    }
     case 'clean': return gitClean(args, gctx, run);
     case 'config': return gitConfig(args, gctx, run, x, overrides, aliasDepth);
     default: break;
@@ -3267,6 +3549,8 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
   if (['checkout', 'restore', 'rm', 'mv'].includes(sub) && !indexOnly) {
     for (const a of args) if (a.text === null || !a.text.startsWith('-')) checkProtectedWrite(a, gctx, run, `git_${sub}`, sub === 'rm' || sub === 'mv');
   }
+  // `git mv link y` moves the symlink like `mv` does (audit N3).
+  if (sub === 'mv') carryLinks('mv', args, gctx, run);
   // `git credential fill` prints the stored password for a host.
   if (sub === 'credential' && args.some((a) => a.text === null || a.text === 'fill' || a.text === 'get')) { hit(run, 'S4', 'git_credential_fill'); return; }
   if (/^credential-/.test(sub) && args.some((a) => a.text === null || a.text === 'get')) { hit(run, 'S4', 'git_credential_get'); return; }
@@ -3826,7 +4110,15 @@ function handleDeployTool(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec
         // Pages decides production by the project's production branch, which the mapper cannot see:
         // only an explicit branch that is not protected or production-named is a preview.
         const branch = valueFlag(rest, ['--branch']);
-        if (branch === undefined || branch === null || branch === '' || isProtectedBranch(resolveRefName(branch, null), 'origin', ctx.cwds[0] || null, run) || isProdName(branch)) return stop('wrangler_pages_production_branch');
+        if (branch === undefined) {
+          // No `--branch`: Pages uses the checked-out branch (audit T1). It is a preview only when
+          // `git.currentBranch` is a known branch that is not protected, production-named or a
+          // release branch, and nothing in the command can have changed the branch or the directory.
+          if (!unprotectedBranch(currentBranchProof(ctx, run, x), ctx, run)) return stop('wrangler_pages_production_branch');
+          run.flags.add('pages_branch_from_git');
+          return true;
+        }
+        if (branch === null || branch === '' || isProtectedBranch(resolveRefName(branch, null), 'origin', ctx.cwds[0] || null, run) || isProdName(branch)) return stop('wrangler_pages_production_branch');
         return true;
       }
       return true;

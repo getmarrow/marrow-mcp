@@ -104,7 +104,10 @@ function makeEnv(options = {}) {
         for (const [k, v] of Object.entries(config)) if (k.toLowerCase() === lower) return v.slice();
         return [];
       },
-      currentBranch() { return options.current === undefined ? 'feat/work' : options.current; },
+      currentBranch() {
+        if (options.currentThrows) throw new Error('git unavailable');
+        return options.current === undefined ? 'feat/work' : options.current;
+      },
       remoteHead(_cwd, remote) {
         const heads = options.remoteHeads || { origin: 'main' };
         return heads[remote] || null;
