@@ -301,7 +301,7 @@ const MUTANTS = [
   },
   {
     name: 'M-B3b a command may follow the trimmed one in the line',
-    edits: [M(MAPPER, 'if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true)', 'if (!x || ctx.depth !== 0 || !run.topLast)')],
+    edits: [M(MAPPER, 'if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true || run.heredocDynamic)', 'if (!x || ctx.depth !== 0 || !run.topLast || run.heredocDynamic)')],
   },
   {
     name: 'M-B3c a pipeline around the trimmed command is not looked at',
@@ -311,7 +311,7 @@ const MUTANTS = [
     name: 'M-B3d nested shell text (bash -c, eval, package scripts) may be trimmed',
     edits: [
       M(MAPPER, 'const finalCommand = ctx.depth === 0 && run.topLast ?', 'const finalCommand = run.topLast ?'),
-      M(MAPPER, 'if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true)', 'if (!x || !run.topLast || x.info.last !== true)'),
+      M(MAPPER, 'if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true || run.heredocDynamic)', 'if (!x || !run.topLast || x.info.last !== true || run.heredocDynamic)'),
     ],
   },
   {
@@ -325,6 +325,18 @@ const MUTANTS = [
   {
     name: 'M-B3g trap, alias and startup variables in the line do not turn the trims off',
     edits: [M(MAPPER, "    if (/(?:^|[^A-Za-z0-9_])(?:trap|alias|unalias|PROMPT_COMMAND|BASH_ENV|ENV)(?![A-Za-z0-9_])/.test(src))\n        return false;\n", '')],
+  },
+  {
+    name: 'M-B3h an unquoted here-document (a body whose substitutions the parser does not list) does not turn the trims off',
+    edits: [M(MAPPER, 'x.info.last !== true || run.heredocDynamic)', 'x.info.last !== true)')],
+  },
+  {
+    name: 'M-B3i a substitution inside a parameter expansion (${x:-$(…)}) does not turn the trims off',
+    edits: [M(MAPPER, "    if (/\\$\\{[^}]{0,256}(?:\\$\\(|`)/.test(src))\n        return false;\n", '')],
+  },
+  {
+    name: 'M-B3j here-document bodies are not taken out of the text the shape check reads (a commit message stops T3)',
+    edits: [M(MAPPER, 'for (const body of run.heredocs) {', 'for (const body of []) {')],
   },
   {
     name: 'M-B4a a current-branch substitution stands whatever the push mapping says',

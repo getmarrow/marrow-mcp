@@ -295,6 +295,36 @@ test('B3: everyday shapes still pass on an unprotected branch', () => {
   }
 });
 
+test('B3: a substitution the parser does not list (unquoted here-document, parameter default) turns the trims off', () => {
+  const C = 'git checkout main';
+  for (const pre of [
+    `cat <<EOF\n$(${C})\nEOF`,
+    `cat <<EOF\n\`${C}\`\nEOF`,
+    `x=\${y:-$(${C})}`,
+    `x=$(cat <<EOF\n$(${C})\nEOF\n)`,
+    `cat <<< "$(${C})"`,
+    `echo x > "$(${C})"`,
+    `: "\${x:-$(${C})}"`,
+    `for i in $(${C}); do :; done`,
+    `cat <(${C})`,
+  ]) {
+    stops(`${pre}\n${W}`, F);
+    stops(`${pre}\n${T3}`, F);
+  }
+});
+
+test('B3: a quoted here-document commit message is data: T3 stays, and what follows it still counts', () => {
+  const msg = (body) => `git add -A && git commit -m "$(cat <<'EOF'\n${body}\nEOF\n)"`;
+  for (const body of ['Fix the build for node 22\n\nif the cache is cold, do not time out', 'while we are here: handle the case\ndone with it', 'a & b, (c) { d }', 'trap handler cleanup']) {
+    passes(`${msg(body)} && ${T3}`, F);
+  }
+  stops(`${msg('x')} && ${T3} & git checkout main`, F);
+  stops(`${msg('x')} && ${T3}\ncat <<'E'\nhello\nE`, F);
+  stops(`git commit -m "$(cat <<EOF\nrun $(git checkout main)\nEOF\n)" && ${T3}`, F);
+  // An unquoted body that only expands a variable still turns the trims off (the parser lists no substitution for it).
+  stops(`git commit -m "$(cat <<EOF\nby $USER\nEOF\n)" && ${T3}`, F);
+});
+
 test('B3: a branch change earlier in the same line still stops (existing head check)', () => {
   for (const cmd of [`git checkout main && ${W}`, `git switch main; ${T3}`, `cd ../other-repo && ${W}`, `git -C ../other-repo checkout main && ${T3}`]) stops(cmd, F);
 });

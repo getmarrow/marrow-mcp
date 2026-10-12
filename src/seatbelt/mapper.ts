@@ -133,6 +133,12 @@ interface Run {
   // without the wrappers of their readings), and the memo of `plainLine` on it.
   lineSource?: string;
   lineShape?: boolean;
+  // Bodies of here-documents without expansions that the parser found in any text of the run: data,
+  // taken out of the text the shape check reads (a commit message is not shell syntax).
+  heredocs: string[];
+  // A here-document with an expansion (`<<EOF` with `$(…)` or backticks in the body) was seen: the
+  // parser lists no substitution for its body, so a command inside it is not classified (audit r4 B3).
+  heredocDynamic: boolean;
   // Memo of `PUSH_MAP_TEXT` on the text of the line (audit r4 B4).
   pushMapText?: boolean;
   // An archive that holds a link or a directory with links was made in this command.
@@ -755,6 +761,8 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     links: new Map(),
     linksUnknown: false,
     headMayChange: false,
+    heredocs: [],
+    heredocDynamic: false,
     topLast: true,
     archivedLinks: false,
     decodeMemo: new Map(),
@@ -1074,6 +1082,8 @@ function plainLine(src: string): boolean {
   let closes = 0;
   for (let i = src.indexOf(')'); i >= 0; i = src.indexOf(')', i + 1)) closes += 1;
   if (closes > opens) return false;
+  // A substitution inside a parameter expansion (`${x:-$(…)}`): the parser lists none.
+  if (/\$\{[^}]{0,256}(?:\$\(|`)/.test(src)) return false;
   // A group brace as a word of its own.
   if (/(?:^|[\s;&|(])[{}](?=[\s;&|)]|$)/.test(src)) return false;
   // A reserved word at command position.
@@ -1088,9 +1098,17 @@ function plainLine(src: string): boolean {
 // background job, another stage of its pipeline) or after it (in a loop, a function, a group) is not
 // seen by the earlier-text head tracking, so such a command is never trimmed.
 function trimShapeOk(ctx: Ctx, run: Run, x: Exec | null): boolean {
-  if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true) return false;
+  if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true || run.heredocDynamic) return false;
   if (x.cmd.pipedInput || x.cmd.pipesOutput || x.cmd.background || x.cmd.subshell || x.info.upstream.length > 0 || x.info.lost) return false;
-  if (run.lineShape === undefined) run.lineShape = plainLine(run.lineSource !== undefined ? run.lineSource : run.topSource);
+  if (run.lineShape === undefined) {
+    let text = run.lineSource !== undefined ? run.lineSource : run.topSource;
+    // One occurrence of each here-document body goes, replaced by a newline (nothing can join).
+    for (const body of run.heredocs) {
+      const i = text.indexOf(body);
+      if (i >= 0) text = `${text.slice(0, i)}\n${text.slice(i + body.length)}`;
+    }
+    run.lineShape = plainLine(text);
+  }
   return run.lineShape;
 }
 
@@ -1293,6 +1311,10 @@ function evalShell(src: string, ctx: Ctx, run: Run): void {
   if (parsed.commands.length > LIMITS.maxSegments) { worseParse(run, 'too_large'); hit(run, 'Sx', 'budget_segments'); tripwire(src, run); return; }
   if (parsed.dynamic) worseParse(run, 'dynamic');
   if (parsed.reasons.some((r) => STRUCTURAL_REASONS.has(r))) { worseParse(run, 'unparsed'); tripwire(src, run); }
+  for (const c of parsed.commands) {
+    if (c.heredoc && c.heredocDynamic) run.heredocDynamic = true;
+    else if (c.heredoc && c.heredoc.length <= 65536 && run.heredocs.length < 32) run.heredocs.push(c.heredoc);
+  }
   const ansiC = /\$'[^']*\\(?:x[0-9a-fA-F]|[0-7]{2,3}|u[0-9a-fA-F])/.test(src);
 
   // Command and process substitutions run too; classify them first (S-x checks see them below).

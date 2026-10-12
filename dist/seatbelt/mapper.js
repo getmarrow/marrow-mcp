@@ -828,6 +828,8 @@ function newRun(rawEnv, source, deadline) {
         links: new Map(),
         linksUnknown: false,
         headMayChange: false,
+        heredocs: [],
+        heredocDynamic: false,
         topLast: true,
         archivedLinks: false,
         decodeMemo: new Map(),
@@ -1206,6 +1208,9 @@ function plainLine(src) {
         closes += 1;
     if (closes > opens)
         return false;
+    // A substitution inside a parameter expansion (`${x:-$(…)}`): the parser lists none.
+    if (/\$\{[^}]{0,256}(?:\$\(|`)/.test(src))
+        return false;
     // A group brace as a word of its own.
     if (/(?:^|[\s;&|(])[{}](?=[\s;&|)]|$)/.test(src))
         return false;
@@ -1222,12 +1227,20 @@ function plainLine(src) {
 // background job, another stage of its pipeline) or after it (in a loop, a function, a group) is not
 // seen by the earlier-text head tracking, so such a command is never trimmed.
 function trimShapeOk(ctx, run, x) {
-    if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true)
+    if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true || run.heredocDynamic)
         return false;
     if (x.cmd.pipedInput || x.cmd.pipesOutput || x.cmd.background || x.cmd.subshell || x.info.upstream.length > 0 || x.info.lost)
         return false;
-    if (run.lineShape === undefined)
-        run.lineShape = plainLine(run.lineSource !== undefined ? run.lineSource : run.topSource);
+    if (run.lineShape === undefined) {
+        let text = run.lineSource !== undefined ? run.lineSource : run.topSource;
+        // One occurrence of each here-document body goes, replaced by a newline (nothing can join).
+        for (const body of run.heredocs) {
+            const i = text.indexOf(body);
+            if (i >= 0)
+                text = `${text.slice(0, i)}\n${text.slice(i + body.length)}`;
+        }
+        run.lineShape = plainLine(text);
+    }
     return run.lineShape;
 }
 // The branch `git.currentBranch` reports, when nothing in this command can have changed it: same
@@ -1500,6 +1513,12 @@ function evalShell(src, ctx, run) {
     if (parsed.reasons.some((r) => STRUCTURAL_REASONS.has(r))) {
         worseParse(run, 'unparsed');
         tripwire(src, run);
+    }
+    for (const c of parsed.commands) {
+        if (c.heredoc && c.heredocDynamic)
+            run.heredocDynamic = true;
+        else if (c.heredoc && c.heredoc.length <= 65536 && run.heredocs.length < 32)
+            run.heredocs.push(c.heredoc);
     }
     const ansiC = /\$'[^']*\\(?:x[0-9a-fA-F]|[0-7]{2,3}|u[0-9a-fA-F])/.test(src);
     // Command and process substitutions run too; classify them first (S-x checks see them below).
