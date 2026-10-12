@@ -284,19 +284,25 @@ function redactAssignments(text, state) {
     }
     return out + text.slice(copied);
 }
-/** Whether a text carries anything secret-shaped (it is then withheld, never hashed). */
-function secretShaped(text, state) {
-    const probe = { truncated: false, budget: state.budget };
-    return redactText(text, probe) !== text;
-}
 /**
- * Data a command reads: its SHA-256 in the hashed form, or `[secret]` and
- * truncated when it feeds a secrets command or file or looks secret.
+ * Data a command reads: its SHA-256 in the hashed form; `[secret]` and
+ * truncated when it feeds a secrets command or file (all of it is the
+ * secret); the SHA-256 of its redacted form and truncated when it looks secret.
  */
 function dataMarker(text, feedsSecrets, state) {
-    if (feedsSecrets || secretShaped(text, state)) {
+    if (feedsSecrets) {
         state.truncated = true;
         return SECRET;
+    }
+    // Secret-shaped data (`'{"api_key":"S","env":"production"}'`): the secrets are
+    // replaced and the rest is hashed, so data that differs outside a secret gives
+    // a different key, data that differs only in a secret the same one. Withheld:
+    // the action is truncated and never binds an approval.
+    const probe = { truncated: false, budget: state.budget };
+    const redacted = redactText(text, probe);
+    if (redacted !== text) {
+        state.truncated = true;
+        return `[secret-data:${sha256(`${HASH_VERSION}\nsecret-data\n${redacted}`)}]`;
     }
     return `[data:${sha256(`${HASH_VERSION}\ndata\n${text}`)}]`;
 }

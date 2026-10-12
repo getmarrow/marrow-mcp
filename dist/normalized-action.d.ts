@@ -45,9 +45,12 @@
  * - Data a command reads (text echoed or printed into a pipe or a file,
  *   heredoc bodies, here-strings) and the values of other environment
  *   assignments and env-store settings (`env:set`, `config:set`, `variables
- *   set`) are replaced by a SHA-256 of the data when the data carries
- *   nothing secret-shaped and does not feed a secrets command or a secrets
- *   file: different data gives a different hash, the same data the same hash.
+ *   set`) are replaced by a SHA-256 of the data when the data does not feed
+ *   a secrets command or a secrets file: different data gives a different
+ *   hash, the same data the same hash. Data that carries something
+ *   secret-shaped is hashed with each secret replaced by `[secret]`
+ *   (`[secret-data:…]`, truncated), so data that differs outside a secret
+ *   still gives a different hash.
  * - Anything else that may be a secret is replaced by `[secret]` and the
  *   action is marked `truncated: true`, so Marrow never binds an approval to
  *   it and always asks: data that feeds a secrets command (`… secret put`,
