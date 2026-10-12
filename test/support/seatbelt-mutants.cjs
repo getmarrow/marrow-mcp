@@ -154,7 +154,8 @@ const MUTANTS = [
   {
     name: 'M-N2b loops run once and conditional declarations are plain overrides',
     edits: [
-      M(MAPPER, 'const rounds = guards &&', 'const rounds = false &&'),
+      M(MAPPER, 'const rounds = (guards && (guards.unknown ? LOOP_WORD.test(src)', 'const rounds = (false && (guards.unknown ? LOOP_WORD.test(src)'),
+      M(MAPPER, '|| DEFERRED_CODE.test(src) ? 2 : 1;', '|| false ? 2 : 1;'),
       M(MAPPER, 'const conditional = Boolean(dg) &&', 'const conditional = false &&'),
     ],
   },
@@ -173,9 +174,8 @@ const MUTANTS = [
   {
     name: 'M-N5 the 1,000-character gaps are back in the interpreter delete and decode scans',
     edits: [
-      M(TABLES, 'function openWindowHit(code, re) {\n    let open = false;', 'function openWindowHit(code, re) {\n    let open = false;\n    let openedAt = 0;'),
-      M(TABLES, 'if (m[1] !== undefined)\n            open = true;', 'if (m[1] !== undefined) {\n            open = true;\n            openedAt = m.index;\n        }'),
-      M(TABLES, 'else if (open)\n            return true;', 'else if (open && m.index - openedAt < 1000)\n            return true;'),
+      M(TABLES, "if (code.includes('recursive') && DELETE_CALL.test(code))", 'if (/\\.rm\\s*\\([^)]{0,1000}recursive/.test(code))'),
+      M(TABLES, "(BUFFER_CALL.test(code) && (ENCODING_LITERAL.test(code) || /\\.toString\\s*\\(/.test(code)))", "/Buffer\\.from\\([^)]{0,1000}['\"](?:base64|hex)['\"]/i.test(code)"),
     ],
   },
   {
@@ -193,7 +193,7 @@ const MUTANTS = [
   {
     name: 'M-N6d the word-count caps are removed',
     edits: [
-      M(MAPPER, 'cmd.words.length + cmd.assignments.length > tables_1.LIMITS.maxWords', 'false'),
+      M(MAPPER, 'cmd.words.length + cmd.assignments.length + cmd.redirects.length > tables_1.LIMITS.maxWords', 'false'),
       M(MAPPER, 'args.length > tables_1.LIMITS.maxWords', 'false'),
     ],
   },
@@ -245,7 +245,7 @@ const MUTANTS = [
   },
   {
     name: 'M-HEAD git commands that switch branches do not mark the branch as changed',
-    edits: [M(MAPPER, 'if (gitMayChangeHead(sub, args))\n        run.headMayChange = true;', 'void 0;')],
+    edits: [M(MAPPER, 'if (tables_1.GIT_BUILTINS.has(sub) && gitMayChangeHead(sub, args))\n        run.headMayChange = true;', 'void 0;')],
   },
 ];
 

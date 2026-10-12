@@ -4188,7 +4188,6 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
     }
     return;
   }
-  if (gitMayChangeHead(sub, args)) run.headMayChange = true;
   switch (sub) {
     case 'push': case 'send-pack': {
       // `git push origin "$(git branch --show-current)"` (audit T3): the exact substitution forms stand

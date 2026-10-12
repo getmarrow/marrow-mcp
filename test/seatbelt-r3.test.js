@@ -445,10 +445,11 @@ test('N6: finish() re-checks the deadline: over the budget is a stop even when n
   assert.equal(d.category, 'Sx');
   assert.ok(d.reasons.includes('budget_time'));
   assert.equal(evaluateSeatbelt({ tool_name: 'mcp__x__write', tool_input: { path: 'a.txt' } }, makeEnv({ budgetMs: 0 })).decision, 'stop');
-  // A file read does no tick and no loop: only finish() can see that the budget is gone.
-  const read = evaluateSeatbelt({ tool_name: 'Read', tool_input: { file_path: '/home/u/proj/README.md' } }, makeEnv({ budgetMs: 0 }));
+  // A search with no path does no tick and has no loop to clock: only finish() can see that the budget is gone.
+  const read = evaluateSeatbelt({ tool_name: 'Grep', tool_input: { pattern: 'x' } }, makeEnv({ budgetMs: 0 }));
   assert.equal(read.decision, 'stop');
   assert.ok(read.reasons.includes('budget_time'));
+  assert.equal(evaluateSeatbelt({ tool_name: 'Grep', tool_input: { pattern: 'x' } }, makeEnv()).decision, 'pass');
   assert.equal(evaluateSeatbelt({ tool_name: 'Read', tool_input: { file_path: '/home/u/proj/README.md' } }, makeEnv()).decision, 'pass');
 });
 

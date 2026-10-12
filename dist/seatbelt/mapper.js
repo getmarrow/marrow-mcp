@@ -5467,8 +5467,6 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
         }
         return;
     }
-    if (gitMayChangeHead(sub, args))
-        run.headMayChange = true;
     switch (sub) {
         case 'push':
         case 'send-pack': {
