@@ -705,7 +705,11 @@ export function isOfficialMarrowMcpEventOnHost(harness: string, event: OwnToolEv
   const preToolUse = exactOwnLabel(event.tool_name, 'MCP:') && !String(event.tool_name).startsWith('MCP:marrow:');
   if (!beforeMcp && !preToolUse) return false;
   if (beforeMcp && payload.url !== undefined && payload.url !== null && payload.url !== '') return false;
-  const roots = Array.isArray(payload.workspace_roots) ? payload.workspace_roots.slice(0, MAX_ROOTS) : [];
+  // More roots than the bound, a non-array, or any root that is not a usable absolute path proves nothing.
+  const given = payload.workspace_roots;
+  if (given !== undefined && given !== null && !Array.isArray(given)) return false;
+  const roots = Array.isArray(given) ? given : [];
+  if (roots.length > MAX_ROOTS || !roots.every((root) => usableDir(root) !== null)) return false;
   const key = `cursor\0${process.env.HOME ?? ''}\0${beforeMcp ? 'server' : 'only'}\0${roots.map(String).join('\0')}`;
   if (!memo.has(key)) {
     let verdict: ServerIdentity;

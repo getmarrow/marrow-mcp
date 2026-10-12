@@ -486,3 +486,34 @@ test('a project-local @getmarrow/mcp copy (planted node_modules) unproves the np
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('B3 Cursor workspace_roots: more than 8, a non-array, or any root that is not a usable absolute path is checked', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'marrow-roots-'));
+  try {
+    const { writeOfficialHostConfigs } = require('./support/official-host-config.cjs');
+    writeOfficialHostConfigs();
+    const roots = Array.from({ length: 9 }, (_, i) => { const r = join(dir, `r${i}`); mkdirSync(r); return r; });
+    const decide = (workspace_roots, hook = 'before') => {
+      resetOwnServerIdentityCache();
+      const event = hook === 'before'
+        ? { hook_event_name: 'beforeMCPExecution', mcp_server_name: 'marrow', tool_name: 'mcp__marrow__marrow_commit', tool_input: {} }
+        : { hook_event_name: 'preToolUse', tool_name: 'MCP:marrow_commit', tool_input: {} };
+      const raw = workspace_roots === undefined ? { ...event } : { ...event, workspace_roots };
+      return isOfficialMarrowMcpEventOnHost('cursor', event, raw);
+    };
+    for (const hook of ['before', 'pre']) {
+      assert.equal(decide(roots.slice(0, 8), hook), true, `${hook}: 8 absolute roots`);
+      assert.equal(decide([], hook), true, `${hook}: no roots`);
+      assert.equal(decide(undefined, hook), true, `${hook}: field absent`);
+      assert.equal(decide(roots, hook), false, `${hook}: 9 roots (the 9th is never read)`);
+      for (const bad of ['relative/dir', `file://${roots[0]}`, '', 42, null, { path: roots[0] }, `${roots[0]}\0x`, `/${'a'.repeat(5000)}`]) {
+        assert.equal(decide([roots[0], bad], hook), false, `${hook}: root ${JSON.stringify(String(bad)).slice(0, 40)}`);
+      }
+      assert.equal(decide(roots[0], hook), false, `${hook}: a string instead of an array`);
+      assert.equal(decide({ 0: roots[0] }, hook), false, `${hook}: an object instead of an array`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    resetOwnServerIdentityCache();
+  }
+});
