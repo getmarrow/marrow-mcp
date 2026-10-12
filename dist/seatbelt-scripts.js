@@ -92,11 +92,26 @@ function packageCommands(fs, dir, names) {
     return { status: 'absent' };
 }
 const MAKEFILE_NAMES = ['GNUmakefile', 'makefile', 'Makefile'];
+/** Special targets that only tune make's behaviour; every other dot-target (suffix rules, .DEFAULT, .SECONDEXPANSION, .ONESHELL ...) can change which recipe runs. */
+const MAKE_HARMLESS_SPECIAL_TARGETS = new Set(['.PHONY', '.PRECIOUS', '.INTERMEDIATE', '.SECONDARY', '.SILENT', '.IGNORE', '.DELETE_ON_ERROR', '.LOW_RESOLUTION_TIME', '.NOTPARALLEL', '.EXPORT_ALL_VARIABLES', '.POSIX']);
+/** Variables that change which program runs the recipes or which files make reads: assigning one is dynamic. */
+const MAKE_EXECUTION_VARIABLES = new Set(['SHELL', 'MAKE', 'MAKEFLAGS', 'MFLAGS', 'GNUMAKEFLAGS', 'MAKEFILES', 'MAKEOVERRIDES', 'MAKELEVEL', 'MAKE_COMMAND', 'MAKECMDGOALS', 'VPATH', 'CURDIR']);
+/** Environment that changes how make itself reads files or resolves variables: any of them present makes the answer dynamic. */
+const MAKE_RELOCATING_ENV = ['MAKEFLAGS', 'GNUMAKEFLAGS', 'MFLAGS', 'MAKEFILES', 'MAKEOVERRIDES'];
+/** A plain system shell path is the one SHELL value that is understood. */
+const MAKE_SAFE_SHELL = /^(?:\/usr)?(?:\/local)?\/bin\/(?:sh|bash|zsh|dash|ksh|ash)$/;
+const MAKE_SIMPLE_FLAGS = new Set(['-s', '-k', '-w', '--silent', '--quiet', '--keep-going', '--no-print-directory', '--print-directory']);
 /**
  * A simple Makefile recipe parse: explicit rules, recipe lines, prerequisites
- * (depth ≤3) and `$(VAR)`/`${VAR}` from simple assignments or the command
- * line. `include`, conditionals, pattern rules or an unknown variable make
- * the answer dynamic, which the mapper treats like an unknown script.
+ * (depth ≤3) and variable references. Expansion follows GNU make: `=` is
+ * deferred, `:=`/`::=` are expanded when read, `?=` and `+=` need the prior
+ * value (the environment, when `options.env` is not given, is unknown), target
+ * names and prerequisites are expanded when the rule line is read and split
+ * into words, recipes after the whole file is read. `$(MAKE) <targets>` in a
+ * recipe is followed in the same file. `include`, conditionals, pattern or
+ * suffix rules, functions (`$(shell …)`), target-specific variables, variables
+ * that change the shell, or an unknown variable make the answer dynamic, which
+ * the mapper treats like an unknown script.
  */
 function resolveMakeTargets(fs, dir, targets, options = {}) {
     let read = { status: 'absent' };
@@ -111,7 +126,7 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     }
     if (read.status !== 'ok')
         return read.status === 'absent' ? read : { status: 'unknown', reason: read.reason };
-    const variables = {};
+    const variables = new Map();
     const rules = new Map();
     let firstTarget = null;
     let dynamic = false;
@@ -119,46 +134,221 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     let prerequisiteCount = 0;
     let recipeCount = 0;
     const overBudget = { status: 'unknown', reason: 'too_complex' };
+    // The environment make would see. Unknown (undefined) means a name the file
+    // does not assign may still have a value, and ?= / += cannot be resolved.
+    const env = options.env;
+    if (env && MAKE_RELOCATING_ENV.some((name) => env[name] !== undefined))
+        dynamic = true;
+    const commandLine = new Map(Object.entries(options.overrides || {}));
+    for (const [name, value] of commandLine)
+        variables.set(name, { flavor: 'recursive', value, unresolved: false });
+    // Every expansion is charged to one budget, so nested variables cannot blow up.
+    let expandedBytes = 0;
+    let exhausted = false;
+    const MAKE_AUTOMATIC = /^[@<^*?%+|]$/;
+    /** `state.bad` is set when a reference could not be resolved; the reference text is kept as written. */
+    const expand = (text, state, depth = 0) => {
+        if (!text.includes('$'))
+            return text;
+        expandedBytes += text.length;
+        if (expandedBytes > exports.MAX_MAKE_EXPANDED_BYTES) {
+            exhausted = true;
+            return '';
+        }
+        if (depth > 8) {
+            state.bad = true;
+            return text;
+        }
+        let out = '';
+        let i = 0;
+        while (i < text.length) {
+            const ch = text[i];
+            if (ch !== '$') {
+                out += ch;
+                i += 1;
+                continue;
+            }
+            const next = text[i + 1];
+            if (next === undefined) {
+                state.bad = true;
+                out += '$';
+                i += 1;
+                continue;
+            }
+            if (next === '$') {
+                out += '$';
+                i += 2;
+                continue;
+            }
+            let reference;
+            let name;
+            if (next === '(' || next === '{') {
+                const close = next === '(' ? ')' : '}';
+                let level = 1;
+                let j = i + 2;
+                while (j < text.length && level > 0) {
+                    if (text[j] === next)
+                        level += 1;
+                    else if (text[j] === close)
+                        level -= 1;
+                    j += 1;
+                }
+                if (level !== 0) {
+                    // Unbalanced: nothing after this point can be read reliably.
+                    state.bad = true;
+                    out += text.slice(i);
+                    break;
+                }
+                reference = text.slice(i, j);
+                const inner = text.slice(i + 2, j - 1);
+                name = inner.includes('$') ? expand(inner, state, depth + 1) : inner;
+                i = j;
+            }
+            else {
+                reference = text.slice(i, i + 2);
+                name = next;
+                i += 2;
+            }
+            if (exhausted)
+                return '';
+            if (MAKE_AUTOMATIC.test(name)) {
+                out += reference;
+                continue;
+            }
+            // A function call (`$(shell …)`, `$(subst …)`), a substitution reference
+            // or an automatic-variable modifier is not evaluated here.
+            if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
+                state.bad = true;
+                out += reference;
+                continue;
+            }
+            const variable = variables.get(name);
+            if (variable === undefined) {
+                const fromEnv = env ? env[name] : undefined;
+                if (fromEnv !== undefined) {
+                    const inner = { bad: false };
+                    out += expand(fromEnv, inner, depth + 1);
+                    if (inner.bad)
+                        state.bad = true;
+                }
+                else if (name === 'MAKE' && !options.overrides?.MAKE)
+                    out += 'make';
+                else {
+                    state.bad = true;
+                    out += reference;
+                }
+                continue;
+            }
+            if (variable.unresolved) {
+                state.bad = true;
+                out += reference;
+                continue;
+            }
+            if (variable.flavor === 'simple')
+                out += variable.value;
+            else {
+                const inner = { bad: false };
+                out += expand(variable.value, inner, depth + 1);
+                if (inner.bad)
+                    state.bad = true;
+            }
+        }
+        return out;
+    };
+    const words = (value) => value.split(/\s+/).filter(Boolean);
     const lines = read.text.replace(/\\\r?\n/g, ' ').split(/\r?\n/);
-    for (const line of lines) {
+    for (const rawLine of lines) {
+        let line = rawLine;
         if (line.startsWith('\t')) {
             if (current) {
                 recipeCount += 1;
                 if (recipeCount > exports.MAX_MAKE_RECIPE_LINES)
                     return overBudget;
                 current.recipe.push(line.slice(1));
+                continue;
             }
-            continue;
+            // Outside a rule a tab-led line is ordinary makefile syntax (GNU make read.c).
+            line = line.replace(/^\t+/, '');
         }
+        // `\#` is a literal hash; this resolver does not model it.
+        if (line.includes('\\#'))
+            dynamic = true;
         const trimmed = line.replace(/#.*$/, '').trim();
         if (!trimmed)
             continue;
-        if (/^(-?include|sinclude|ifeq|ifneq|ifdef|ifndef|else|endif|define|endef|export|vpath)\b/.test(trimmed)) {
+        if (/^(-?include|sinclude|ifeq|ifneq|ifdef|ifndef|else|endif|define|endef|export|unexport|undefine|vpath|load|-load)\b/.test(trimmed)) {
             dynamic = true;
             current = null;
             continue;
         }
-        const assign = /^(?:override\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*(\?=|:::=|::=|:=|\+=|!=|=)\s*(.*)$/.exec(trimmed);
+        const assign = /^(override\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*(\?=|:::=|::=|:=|\+=|!=|=)\s*(.*)$/.exec(trimmed);
         if (assign) {
-            const [, name, op, value] = assign;
-            if (op === '!=')
-                dynamic = true;
-            else if (op === '+=')
-                variables[name] = `${variables[name] ?? ''} ${value}`.trim();
-            else if (op !== '?=' || variables[name] === undefined)
-                variables[name] = value;
-            if (variables[name] !== undefined && variables[name].length > exports.MAX_MAKE_EXPANDED_BYTES)
-                return overBudget;
+            const [, overrideKeyword, name, op, value] = assign;
             current = null;
+            if (MAKE_EXECUTION_VARIABLES.has(name) && !(name === 'SHELL' && (op === '=' || op === ':=' || op === '::=') && MAKE_SAFE_SHELL.test(value.trim())))
+                dynamic = true;
+            // A variable given on the command line wins over the file's assignments (unless `override`).
+            if (commandLine.has(name) && !overrideKeyword)
+                continue;
+            const existing = variables.get(name);
+            if (op === '!=') {
+                dynamic = true;
+                variables.set(name, { flavor: 'simple', value: '', unresolved: true });
+            }
+            else if (op === '=')
+                variables.set(name, { flavor: 'recursive', value, unresolved: false });
+            else if (op === ':=' || op === '::=') {
+                const state = { bad: false };
+                variables.set(name, { flavor: 'simple', value: expand(value, state), unresolved: state.bad });
+            }
+            else if (op === ':::=') {
+                const state = { bad: false };
+                variables.set(name, { flavor: 'recursive', value: expand(value, state).replace(/\$/g, '$$$$'), unresolved: state.bad });
+            }
+            else if (op === '?=') {
+                // Defined already (in the file or on the command line): unchanged. Otherwise the environment decides.
+                if (existing === undefined) {
+                    const fromEnv = env ? env[name] : undefined;
+                    if (env && fromEnv === undefined)
+                        variables.set(name, { flavor: 'recursive', value, unresolved: false });
+                    else if (fromEnv !== undefined)
+                        variables.set(name, { flavor: 'recursive', value: fromEnv, unresolved: false });
+                    else
+                        variables.set(name, { flavor: 'recursive', value, unresolved: true });
+                }
+            }
+            else if (op === '+=') {
+                if (existing === undefined) {
+                    const fromEnv = env ? env[name] : undefined;
+                    if (env && fromEnv === undefined)
+                        variables.set(name, { flavor: 'recursive', value, unresolved: false });
+                    else if (fromEnv !== undefined)
+                        variables.set(name, { flavor: 'recursive', value: `${fromEnv} ${value}`, unresolved: false });
+                    else
+                        variables.set(name, { flavor: 'recursive', value, unresolved: true });
+                }
+                else if (existing.flavor === 'simple') {
+                    const state = { bad: false };
+                    const added = expand(value, state);
+                    variables.set(name, { flavor: 'simple', value: `${existing.value} ${added}`.trim(), unresolved: existing.unresolved || state.bad });
+                }
+                else
+                    variables.set(name, { flavor: 'recursive', value: `${existing.value} ${value}`.trim(), unresolved: existing.unresolved });
+            }
+            const stored = variables.get(name);
+            if (stored !== undefined && stored.value.length > exports.MAX_MAKE_EXPANDED_BYTES)
+                return overBudget;
+            if (exhausted)
+                return overBudget;
             continue;
         }
         const rule = /^([^:=]+)::?([^=]*)$/.exec(trimmed);
         if (!rule) {
+            // Target-specific variables (`t: V = x`), `.RECIPEPREFIX`, anything else this parse does not model.
             dynamic = true;
             current = null;
             continue;
         }
-        const names = rule[1].trim().split(/\s+/).filter(Boolean);
         let prereqs = rule[2].trim();
         let inlineRecipe = null;
         const semi = prereqs.indexOf(';');
@@ -166,9 +356,23 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             inlineRecipe = prereqs.slice(semi + 1).trim();
             prereqs = prereqs.slice(0, semi);
         }
+        const nameState = { bad: false };
+        const names = words(expand(rule[1].trim(), nameState));
+        if (exhausted)
+            return overBudget;
+        // A name that cannot be expanded may be the wanted target.
+        if (nameState.bad)
+            dynamic = true;
         if (names.length > exports.MAX_MAKE_TARGETS_PER_RULE)
             return overBudget;
-        const ruleLine = { prerequisites: prereqs.split(/\s+/).filter((p) => p && p !== '|'), recipe: inlineRecipe ? [inlineRecipe] : [] };
+        const prerequisiteState = { bad: false };
+        const expandedPrerequisites = expand(prereqs, prerequisiteState);
+        if (exhausted)
+            return overBudget;
+        const prerequisiteWords = words(expandedPrerequisites).filter((word) => word !== '|');
+        // `$` left over (automatic variables, `$$`), a second `:` (static pattern rule) or a wildcard cannot be followed.
+        const unresolved = prerequisiteState.bad || /[$:%*?[]/.test(expandedPrerequisites);
+        const ruleLine = { prerequisites: prerequisiteWords, unresolved, recipe: inlineRecipe ? [inlineRecipe] : [] };
         prerequisiteCount += ruleLine.prerequisites.length;
         if (prerequisiteCount > exports.MAX_MAKE_PREREQUISITES)
             return overBudget;
@@ -176,9 +380,11 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
         for (const name of names) {
             if (name.includes('%'))
                 dynamic = true;
-            if (name.startsWith('.'))
+            if (name.startsWith('.') && !MAKE_HARMLESS_SPECIAL_TARGETS.has(name))
+                dynamic = true;
+            if (name.startsWith('.') && MAKE_HARMLESS_SPECIAL_TARGETS.has(name))
                 continue;
-            if (firstTarget === null && !name.includes('%'))
+            if (firstTarget === null && !name.includes('%') && !name.startsWith('.'))
                 firstTarget = name;
             let entry = rules.get(name);
             if (!entry) {
@@ -191,29 +397,6 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                 entry.lines.push(ruleLine);
         }
     }
-    const values = { ...variables, ...(options.overrides || {}) };
-    // Every expansion is charged to one budget, so nested variables cannot blow up.
-    let expandedBytes = 0;
-    let exhausted = false;
-    const expand = (text, depth = 0) => {
-        expandedBytes += text.length;
-        if (expandedBytes > exports.MAX_MAKE_EXPANDED_BYTES) {
-            exhausted = true;
-            return '';
-        }
-        return expandOnce(text, depth);
-    };
-    const expandOnce = (text, depth) => text.replace(/\$(?:\(([^()]*)\)|\{([^{}]*)\}|([A-Za-z@<^*?%$]))/g, (match, a, b, c) => {
-        const name = (a ?? b ?? c);
-        if (name === '$')
-            return '$';
-        if (/^[@<^*?%]$/.test(name) || /\s/.test(name) || depth > 8 || values[name] === undefined) {
-            if (!/^[@<^*?%]$/.test(name))
-                dynamic = true;
-            return match;
-        }
-        return expand(values[name], depth + 1);
-    });
     const commands = [];
     const visit = (target, depth, seen) => {
         if (exhausted || seen.has(target))
@@ -223,9 +406,11 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
         if (!rule)
             return;
         for (const ruleLine of rule.lines) {
+            if (ruleLine.unresolved)
+                dynamic = true;
             if (depth < exports.MAX_MAKE_DEPTH)
                 for (const prerequisite of ruleLine.prerequisites)
-                    visit(expand(prerequisite), depth + 1, seen);
+                    visit(prerequisite, depth + 1, seen);
             else if (ruleLine.prerequisites.length > 0)
                 dynamic = true;
         }
@@ -235,8 +420,47 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                     exhausted = true;
                     return;
                 }
-                commands.push(expand(line).replace(/^[\s@+-]+/, ''));
+                const state = { bad: false };
+                const command = expand(line, state).replace(/^[\s@+-]+/, '');
+                if (state.bad)
+                    dynamic = true;
+                commands.push(command);
+                if (/\$[({]MAKE[)}]/.test(line))
+                    followSubMake(command, depth, seen);
             }
+        }
+    };
+    // `$(MAKE) a b` runs the same file's targets again: follow plain forms; any
+    // other form (-C, -f, VAR=x, a chained command) cannot be followed.
+    const followSubMake = (command, depth, seen) => {
+        const tokens = /[;&|<>()`$"'\\\n]/.test(command) ? null : words(command);
+        if (!tokens || tokens.length === 0 || tokens[0] !== 'make') {
+            dynamic = true;
+            return;
+        }
+        const subTargets = [];
+        for (const token of tokens.slice(1)) {
+            if (MAKE_SIMPLE_FLAGS.has(token) || /^-j\d*$/.test(token))
+                continue;
+            if (/^[A-Za-z0-9_][A-Za-z0-9_./+-]*$/.test(token))
+                subTargets.push(token);
+            else {
+                dynamic = true;
+                return;
+            }
+        }
+        if (depth + 1 > exports.MAX_MAKE_DEPTH) {
+            dynamic = true;
+            return;
+        }
+        const wantedHere = subTargets.length > 0 ? subTargets : firstTarget ? [firstTarget] : [];
+        if (wantedHere.length === 0)
+            dynamic = true;
+        for (const sub of wantedHere) {
+            if (!rules.has(sub))
+                dynamic = true;
+            // A fresh `seen`: a sub-make is a new run, though depth still bounds the recursion.
+            visit(sub, depth + 1, new Set(seen));
         }
     };
     const wanted = targets.length > 0 ? targets : firstTarget ? [firstTarget] : [];
@@ -246,34 +470,267 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
         return overBudget;
     return { status: 'ok', makefile: read.path, commands, dynamic: dynamic || wanted.some((t) => !rules.has(t)) };
 }
+const SHELL_PROGRAMS = /^(?:sh|bash|zsh|dash|ksh|ash)$/;
+/** Where a shebang's interpreter (or `env`) is trusted to be the program its name says; a copy elsewhere (a repo's `./bin/bash`) is unknown. */
+const SYSTEM_BIN_DIRS = new Set(['/bin', '/usr/bin', '/usr/local/bin', '/sbin', '/usr/sbin', '/opt/homebrew/bin', '/opt/local/bin', '/usr/pkg/bin']);
+const SHELL_FLAG_LETTERS = 'euxvfnCabhEBHPkT';
+const SHELL_OPTION_NAMES = new Set(['pipefail', 'errexit', 'nounset', 'xtrace', 'noglob', 'noclobber', 'verbose', 'noexec', 'posix', 'allexport', 'errtrace', 'functrace']);
+const SHELL_LONG_FLAGS = new Set(['--posix', '--noprofile', '--norc']);
+const MAX_ENV_SPLIT_DEPTH = 4;
+/** coreutils `env -S` split-string: quotes, backslash escapes, `#` comment. Null for anything else (`$` expansion, `\c`, unknown escapes, unclosed quote). */
+function splitEnvString(value) {
+    const escapes = { n: '\n', t: '\t', r: '\r', f: '\f', v: '\v', '\\': '\\', '"': '"', "'": "'", '#': '#', $: '$' };
+    const tokens = [];
+    let word = '';
+    let inWord = false;
+    let quote = null;
+    for (let i = 0; i < value.length; i += 1) {
+        const ch = value[i];
+        if (ch === '$')
+            return null;
+        if (quote === "'") {
+            if (ch === "'")
+                quote = null;
+            else if (ch === '\\') {
+                const next = value[i + 1];
+                if (next !== '\\' && next !== "'")
+                    return null;
+                word += next;
+                i += 1;
+            }
+            else
+                word += ch;
+            continue;
+        }
+        if (quote === '"') {
+            if (ch === '"')
+                quote = null;
+            else if (ch === '\\') {
+                const next = value[i + 1];
+                if (next === '_')
+                    word += ' ';
+                else if (next !== undefined && Object.prototype.hasOwnProperty.call(escapes, next))
+                    word += escapes[next];
+                else
+                    return null;
+                i += 1;
+            }
+            else
+                word += ch;
+            continue;
+        }
+        if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v') {
+            if (inWord)
+                tokens.push(word);
+            word = '';
+            inWord = false;
+            continue;
+        }
+        if (ch === '#' && !inWord)
+            break;
+        if (ch === "'" || ch === '"') {
+            quote = ch;
+            inWord = true;
+            continue;
+        }
+        if (ch === '\\') {
+            const next = value[i + 1];
+            if (next === '_') {
+                if (inWord)
+                    tokens.push(word);
+                word = '';
+                inWord = false;
+            }
+            else if (next !== undefined && Object.prototype.hasOwnProperty.call(escapes, next)) {
+                word += escapes[next];
+                inWord = true;
+            }
+            else
+                return null;
+            i += 1;
+            continue;
+        }
+        word += ch;
+        inWord = true;
+    }
+    if (quote)
+        return null;
+    if (inWord)
+        tokens.push(word);
+    return tokens;
+}
+/** The words after a shell interpreter: only plain option flags are understood; `-c <command>` is returned as a command. */
+function classifyShellArguments(tokens) {
+    let command = false;
+    for (let i = 0; i < tokens.length; i += 1) {
+        const token = tokens[i];
+        if (token === '--')
+            return i + 1 < tokens.length || command ? { kind: 'unknown' } : { kind: 'shell' };
+        if (!/^[-+]./.test(token)) {
+            // An operand: with -c it is the command string (the rest are $0, $1 ...); otherwise a script other than this file.
+            return command ? { kind: 'other', command: token } : { kind: 'unknown' };
+        }
+        if (token.startsWith('--')) {
+            if (!SHELL_LONG_FLAGS.has(token))
+                return { kind: 'unknown' };
+            continue;
+        }
+        const letters = token.slice(1);
+        for (let j = 0; j < letters.length; j += 1) {
+            const letter = letters[j];
+            if (letter === 'c') {
+                command = true;
+            }
+            else if (letter === 'o') {
+                // `-o name` (also `-euo pipefail`): the name is the next word.
+                if (j !== letters.length - 1)
+                    return { kind: 'unknown' };
+                const name = tokens[i + 1];
+                if (name === undefined || !SHELL_OPTION_NAMES.has(name))
+                    return { kind: 'unknown' };
+                i += 1;
+            }
+            else if (!SHELL_FLAG_LETTERS.includes(letter))
+                return { kind: 'unknown' };
+        }
+    }
+    return command ? { kind: 'unknown' } : { kind: 'shell' };
+}
+/**
+ * What runs after `env`: options, then the program. Anything but plain
+ * `-i`/`-u NAME`/`-S` and a program is unknown (NAME=value, -C, --argv0 ...).
+ * `tokens` are argv words; `raw` (with each word's end offset) is the shebang
+ * text itself, which `-S` consumes verbatim and splits with env's own quoting.
+ */
+function walkEnv(tokens, ends, raw, depth) {
+    if (depth > MAX_ENV_SPLIT_DEPTH)
+        return { kind: 'unknown' };
+    const split = (attached, index) => {
+        let value;
+        let consumed = index;
+        if (ends)
+            value = attached + raw.slice(ends[index]);
+        else if (attached !== '')
+            value = attached;
+        else {
+            if (tokens[index + 1] === undefined)
+                return { kind: 'unknown' };
+            value = tokens[index + 1];
+            consumed = index + 1;
+        }
+        const words = splitEnvString(value);
+        if (!words || words.length === 0)
+            return { kind: 'unknown' };
+        return walkEnv(ends ? words : [...words, ...tokens.slice(consumed + 1)], null, '', depth + 1);
+    };
+    for (let i = 0; i < tokens.length; i += 1) {
+        const word = tokens[i];
+        if (word === '--')
+            return classifyProgram(tokens.slice(i + 1), depth);
+        if (word === '-')
+            continue;
+        if (word.startsWith('--')) {
+            if (word === '--ignore-environment' || word === '--null' || word === '--debug')
+                continue;
+            if (word === '--unset') {
+                if (tokens[i + 1] === undefined)
+                    return { kind: 'unknown' };
+                i += 1;
+                continue;
+            }
+            if (word.startsWith('--unset='))
+                continue;
+            if (word === '--split-string')
+                return split('', i);
+            if (word.startsWith('--split-string='))
+                return split(word.slice('--split-string='.length), i);
+            return { kind: 'unknown' };
+        }
+        if (word.startsWith('-')) {
+            for (let j = 1; j < word.length; j += 1) {
+                const letter = word[j];
+                if (letter === 'i' || letter === '0' || letter === 'v')
+                    continue;
+                if (letter === 'u') {
+                    // The name is the rest of this word or the next one.
+                    if (j === word.length - 1) {
+                        if (tokens[i + 1] === undefined)
+                            return { kind: 'unknown' };
+                        i += 1;
+                    }
+                    break;
+                }
+                if (letter === 'S')
+                    return split(word.slice(j + 1), i);
+                return { kind: 'unknown' };
+            }
+            continue;
+        }
+        // NAME=value (BASH_ENV, ENV, PATH, SHELLOPTS, PS4 ...): the interpreter's environment is not modelled.
+        if (word.includes('='))
+            return { kind: 'unknown' };
+        return classifyProgram(tokens.slice(i), depth);
+    }
+    return { kind: 'unknown' };
+}
+function classifyEnvArguments(raw) {
+    const tokens = [];
+    const ends = [];
+    const re = /[^ \t]+/g;
+    for (let match = re.exec(raw); match; match = re.exec(raw)) {
+        tokens.push(match[0]);
+        ends.push(match.index + match[0].length);
+    }
+    return walkEnv(tokens, ends, raw, 0);
+}
+function classifyProgram(tokens, depth) {
+    const program = tokens[0];
+    if (program === undefined || program === '')
+        return { kind: 'unknown' };
+    const slash = program.lastIndexOf('/');
+    const base = slash < 0 ? program : program.slice(slash + 1);
+    if (base !== 'env' && !SHELL_PROGRAMS.test(base))
+        return { kind: 'other' };
+    // A shell or env named by a relative path, or found outside the system bin
+    // dirs, is a file the agent may have planted: its name proves nothing.
+    if (slash >= 0 && !SYSTEM_BIN_DIRS.has(slash === 0 ? '/' : program.slice(0, slash)))
+        return { kind: 'unknown' };
+    if (base === 'env')
+        return walkEnv(tokens.slice(1), null, '', depth + 1);
+    return classifyShellArguments(tokens.slice(1));
+}
+/** `#!` line → what really runs. 'shell' only for a system shell with plain flags; every other form that is not understood is 'unknown'. */
+function classifyShebang(line) {
+    const body = line.trim();
+    const space = body.search(/[ \t]/);
+    const interpreter = space < 0 ? body : body.slice(0, space);
+    const rest = space < 0 ? '' : body.slice(space).trim();
+    if (!interpreter.startsWith('/'))
+        return { kind: 'unknown' };
+    const slash = interpreter.lastIndexOf('/');
+    const dir = interpreter.slice(0, slash) || '/';
+    const base = interpreter.slice(slash + 1);
+    if (base === 'env' || SHELL_PROGRAMS.test(base)) {
+        if (!SYSTEM_BIN_DIRS.has(dir))
+            return { kind: 'unknown' };
+        if (base === 'env')
+            return classifyEnvArguments(rest);
+        return classifyShellArguments(rest.split(/[ \t]+/).filter(Boolean));
+    }
+    return { kind: 'other' };
+}
 /** A script file run as `./x.sh` or `bash x.sh` (≤64 KB), realpath-ed; the interpreter comes from the shebang. */
 function readScriptFile(fs, path) {
     const read = readResolved(fs, path, exports.MAX_SCRIPT_BYTES);
     if (read.status !== 'ok')
         return read;
     const shebang = /^#![ \t]*([^\r\n]*)/.exec(read.text);
-    const words = shebang ? shebang[1].split(/[ \t]+/).filter(Boolean) : ['sh'];
-    let program = (words[0] || '').split('/').pop() || '';
-    if (program === 'env') {
-        // env's own options and NAME=value words come before the program (`env -S bash -e`, `env -i -u X bash`).
-        let i = 1;
-        while (i < words.length) {
-            const word = words[i];
-            if (/^-[^-]*S./.test(word)) {
-                // `-Sbash`: the split string starts inside the option word.
-                words.splice(i + 1, 0, word.slice(word.indexOf('S') + 1));
-                i += 1;
-            }
-            else if (word === '-u' || word === '--unset' || word === '-C' || word === '--chdir')
-                i += 2;
-            else if (word.startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word))
-                i += 1;
-            else
-                break;
-        }
-        program = (words[i] || '').split('/').pop() || '';
-    }
-    const interpreter = /^(sh|bash|zsh|dash|ksh|ash)$/.test(program) ? 'shell' : 'other';
-    return { status: 'ok', path: read.path, interpreter, text: read.text };
+    // No shebang: the invoking shell runs it as a sh script.
+    const result = shebang ? classifyShebang(shebang[1]) : { kind: 'shell' };
+    if (result.kind === 'unknown')
+        return { status: 'unknown', reason: 'shebang' };
+    if (result.kind === 'shell')
+        return { status: 'ok', path: read.path, interpreter: 'shell', text: read.text };
+    return { status: 'ok', path: read.path, interpreter: 'other', text: read.text, ...(result.command !== undefined ? { shebangCommand: result.command } : {}) };
 }
 //# sourceMappingURL=seatbelt-scripts.js.map

@@ -44,24 +44,38 @@ export type MakeResolution = {
 };
 /**
  * A simple Makefile recipe parse: explicit rules, recipe lines, prerequisites
- * (depth ≤3) and `$(VAR)`/`${VAR}` from simple assignments or the command
- * line. `include`, conditionals, pattern rules or an unknown variable make
- * the answer dynamic, which the mapper treats like an unknown script.
+ * (depth ≤3) and variable references. Expansion follows GNU make: `=` is
+ * deferred, `:=`/`::=` are expanded when read, `?=` and `+=` need the prior
+ * value (the environment, when `options.env` is not given, is unknown), target
+ * names and prerequisites are expanded when the rule line is read and split
+ * into words, recipes after the whole file is read. `$(MAKE) <targets>` in a
+ * recipe is followed in the same file. `include`, conditionals, pattern or
+ * suffix rules, functions (`$(shell …)`), target-specific variables, variables
+ * that change the shell, or an unknown variable make the answer dynamic, which
+ * the mapper treats like an unknown script.
  */
 export declare function resolveMakeTargets(fs: SeatbeltFs, dir: string, targets: string[], options?: {
     makefile?: string;
     overrides?: Record<string, string>;
+    env?: Record<string, string | undefined>;
 }): MakeResolution;
 export type ScriptFile = {
     status: 'ok';
     path: string;
     interpreter: 'shell' | 'other';
     text: string;
+    /**
+     * Set when the shebang line itself carries a command (`#!/bin/bash -c "…"`,
+     * `#!/usr/bin/env -S sh -c "…"`): that string is what runs, and the file
+     * body is only `$0`. The interpreter is then 'other', so a caller that
+     * scans the raw text still sees the shebang line.
+     */
+    shebangCommand?: string;
 } | {
     status: 'absent';
 } | {
     status: 'unknown';
-    reason: 'unreadable' | 'too_large' | 'not_file';
+    reason: 'unreadable' | 'too_large' | 'not_file' | 'shebang';
 };
 /** A script file run as `./x.sh` or `bash x.sh` (≤64 KB), realpath-ed; the interpreter comes from the shebang. */
 export declare function readScriptFile(fs: SeatbeltFs, path: string): ScriptFile;
