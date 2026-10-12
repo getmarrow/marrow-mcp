@@ -165,15 +165,23 @@ These behaviors shipped in 3.9.100 and still apply.
 - **Deploy text only word for word:** the exact command text is sent only for `sst deploy --stage <stage>` (optionally `--verbose`, optionally after one `npx` or `bunx`), with a stage of lower-case letters, digits and dashes, in a single clause with nothing else in it, so Marrow can judge the stage itself. Every other command, including other deploy tools, sends only the hash; no free-text word leaves the machine.
 - **No lifecycle event id with two payloads:** an event id names its payload, so a later run is a new record and a resend carries the same bytes.
 
-## What's New in v3.9.101
+## Setup and key handling
 
-- **Setup with no key stops:** `marrow-mcp setup` with no key, or with a key only in an untrusted place such as a project `.env`, now stops, writes nothing and tells you how to get a key.
-- **Keys are read from trusted places only:** setup reads a key only from the environment or an owner-only `~/.marrow/env`.
-- **Key-file steps are safer:** they now include `chmod 700 ~/.marrow` before `chmod 600 ~/.marrow/env`.
-- **Hold messages say where to approve:** a held action now says how to approve it where your host really asks.
-- **One enforcement sentence:** the "what is enforced" wording now matches the public site.
+These behaviors shipped in 3.9.101 and still apply.
 
-The 3.9.100 behaviors are kept under [Hook behavior details](#hook-behavior-details). v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
+- **Setup with no key stops:** `marrow-mcp setup` with no key, or with a key only in an untrusted place such as a project `.env`, stops, writes nothing and tells you how to get a key.
+- **Keys are read from trusted places only:** the key comes from the environment or an owner-only `~/.marrow/env`.
+- **Key-file steps include `chmod 700 ~/.marrow`** before `chmod 600 ~/.marrow/env`.
+- **Hold messages say where to approve:** a held action says how to approve it where your host really asks.
+- **One enforcement sentence:** the "what is enforced" wording matches the public site.
+
+## What's New in v3.9.102
+
+- **A cloned project's `.env` cannot redirect the MCP server:** repository-local `.env`, `.env.local` and `.marrow/env*` files are never read for `MARROW_API_KEY` or any other `MARROW_*` setting, so project content cannot point the server at another account, agent or API endpoint.
+- **Safer key-file advice:** an owner file that is a symlink, readable or writable by others, owned by another user, or in a directory others can write supplies nothing, and the missing-key message names the file with the `chmod` fix.
+- **Only Marrow's own tools skip the gate, by exact name:** a tool is Marrow's own only when its server is exactly `marrow` and its tool name is exactly one this package registers. Look-alike servers, other cases, extra spaces or suffixes go through the pre-action gate like any other MCP tool. Re-run `marrow-mcp setup` to refresh hooks written with the old matcher.
+
+Earlier behaviors are kept under [Setup and key handling](#setup-and-key-handling) and [Hook behavior details](#hook-behavior-details). v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
 
 Earlier release notes moved from this README to [CHANGELOG.md](https://github.com/getmarrow/marrow-mcp/blob/master/CHANGELOG.md).
 

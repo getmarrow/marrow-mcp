@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## 3.9.102
 
+- Security: a project's `.env`, `.env.local` or `.marrow/env*` can no longer supply `MARROW_API_KEY` or any `MARROW_*` setting, so a cloned project cannot point the MCP server at another account, agent or endpoint. Owner files that fail the private check supply nothing, and the missing-key message names the file with a `chmod` fix.
 - Security: only Marrow's own tools skip the pre-action gate. A tool counts as Marrow's own only when its server is exactly `marrow` and its tool is exactly one of the names this package registers (any profile). A server named `Marrow` or `MARROW`, a look-alike server, an unregistered `marrow_*` tool, or a name with extra case, spaces, NUL or a suffix now goes through the gate like any other MCP tool. The Cursor, Windsurf and Grok adapters no longer turn such names into the official `mcp__marrow__` form.
 - Security: the Claude Code / Codex hook matcher skips only the exact registered names on server `marrow` (`mcp__marrow__<name>` and `functions.mcp__marrow__<name>`), so an unregistered `mcp__marrow__marrow_*` tool now reaches the pre-action hook. It is generated from the tool registry. Hooks written with the old matcher are reported as needing repair (`localHookRepairStatus`, and in the local fingerprint), and `marrow-mcp setup` rewrites them. marrow-install must write the same string.
 - Security: a Codex `functions.`-prefixed MCP tool (`functions.mcp__evil__delete_all`) is an MCP tool, held like `mcp__evil__delete_all`.
 - Security: the normalized action keeps the host's tool name exactly (no trimming), so `X ` and `X` never share an action key; a tool name over 128 characters is never bound. When the Cursor (beforeMCPExecution), Grok or Gemini adapter has to trim, cut or replace a server or tool name, the action is never bound either.
+- Version 3.9.102 in `package.json`, `server.json` and the hook commands.
 
 ## 3.9.101
 
