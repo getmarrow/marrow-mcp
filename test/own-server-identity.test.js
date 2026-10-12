@@ -584,3 +584,20 @@ test('F5 .cmd launch forms are accepted only on win32; planted .bin shims (.cmd,
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('F6 every definition counts (union, never last-file-wins: mutant A-1) and ancestor project configs are read (mutant A-2)', () => {
+  const evil = toml('marrow', 'node', ['/tmp/evil.js']);
+  const project = '/virtual/project/.codex/config.toml';
+  const cases = {
+    'global look-alike, project official (project is read last)': { ...global(evil), [project]: OFFICIAL_TOML },
+    'global official, project look-alike': { ...global(OFFICIAL_TOML), [project]: evil },
+    'managed look-alike, project official': { ...global(OFFICIAL_TOML), [`${CODEX_HOME}/managed_config.toml`]: evil, [project]: OFFICIAL_TOML },
+    'system look-alike, global official': { ...global(OFFICIAL_TOML), '/etc/codex/config.toml': evil },
+    'global look-alike, profile file official': { ...global(`profile = "ci"\n${evil}`), [`${CODEX_HOME}/ci.config.toml`]: OFFICIAL_TOML },
+    'ancestor look-alike two levels above the payload cwd (A-2)': { ...global(OFFICIAL_TOML), '/virtual/.codex/config.toml': evil },
+  };
+  for (const [name, table] of Object.entries(cases)) {
+    assert.equal(codex(table, { cwds: ['/virtual/project/a/b'], processCwd: '/virtual/project/a/b' }).official, false, name);
+  }
+  assert.equal(codex({ ...global(OFFICIAL_TOML), [project]: OFFICIAL_TOML }, { cwds: ['/virtual/project/a/b'], processCwd: '/virtual/project/a/b' }).official, true, 'official everywhere stays proven');
+});
