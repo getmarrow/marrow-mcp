@@ -52,7 +52,12 @@ test('A12 Makefile: recipes, prerequisites, variables and command-line overrides
   const fs = createFakeFs().file('/m/Makefile', MAKEFILE);
   assert.deepEqual(resolveMakeTargets(fs, '/m', ['release']), { status: 'ok', makefile: '/m/Makefile', commands: ['npm run build', 'vercel --prod'], dynamic: false });
   assert.deepEqual(resolveMakeTargets(fs, '/m', []).commands, ['npm run build', 'vercel --prod']);
-  assert.deepEqual(resolveMakeTargets(fs, '/m', ['ship']).commands, ['wrangler deploy --env dev']);
+  // `STAGE ?= dev` takes the environment's STAGE when it has one: with the environment unknown the answer is dynamic (round 3, N4).
+  const shipUnknownEnv = resolveMakeTargets(fs, '/m', ['ship']);
+  assert.equal(shipUnknownEnv.dynamic, true);
+  assert.deepEqual(resolveMakeTargets(fs, '/m', ['ship'], { env: {} }).commands, ['wrangler deploy --env dev']);
+  assert.equal(resolveMakeTargets(fs, '/m', ['ship'], { env: {} }).dynamic, false);
+  assert.deepEqual(resolveMakeTargets(fs, '/m', ['ship'], { env: { STAGE: 'production' } }).commands, ['wrangler deploy --env production']);
   assert.deepEqual(resolveMakeTargets(fs, '/m', ['ship'], { overrides: { STAGE: 'production' } }).commands, ['wrangler deploy --env production']);
   assert.deepEqual(resolveMakeTargets(fs, '/m', ['cost']).commands, ['echo $HOME']);
   assert.equal(resolveMakeTargets(fs, '/m', ['nosuch']).dynamic, true);

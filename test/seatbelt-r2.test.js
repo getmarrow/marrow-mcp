@@ -205,10 +205,13 @@ test('B6: the Makefile parse is linear and bounded from 1 KB to the 1 MB cap (mk
 });
 
 test('F11: env shebangs with options and assignments name the real interpreter', () => {
-  for (const line of ['#!/usr/bin/env -S bash -e', '#!/usr/bin/env -Sbash -e', '#!/usr/bin/env -i PATH=/bin bash', '#!/usr/bin/env -u X bash', '#! /bin/bash -e', '#!/usr/bin/env bash']) {
+  // Round 3 (N5): `-i PATH=/bin bash` was listed here as a shell. A NAME=value word changes the
+  // interpreter's environment (BASH_ENV, ENV, PATH ...), so it is no longer understood: unknown.
+  for (const line of ['#!/usr/bin/env -S bash -e', '#!/usr/bin/env -Sbash -e', '#!/usr/bin/env -u X bash', '#!/usr/bin/env -i bash', '#! /bin/bash -e', '#!/usr/bin/env bash']) {
     const fs = createFakeFs().file('/s/x.sh', `${line}\nvercel --prod\n`);
     assert.equal(S.readScriptFile(fs, '/s/x.sh').interpreter, 'shell', line);
   }
+  assert.deepEqual(S.readScriptFile(createFakeFs().file('/s/x.sh', '#!/usr/bin/env -i PATH=/bin bash\nvercel --prod\n'), '/s/x.sh'), { status: 'unknown', reason: 'shebang' });
   assert.equal(S.readScriptFile(createFakeFs().file('/s/x', '#!/usr/bin/env -S python3\n'), '/s/x').interpreter, 'other');
 });
 
