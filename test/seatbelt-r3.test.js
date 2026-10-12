@@ -117,6 +117,21 @@ test('N2: -c include.path / includeIf.*.path / --config-env are expanded like gi
   assert.ok(G.expandGitAliases(include, context(broken, { withFs: true })).some((e) => e.kind === 'unknown' && e.reason === 'config_incomplete'));
 });
 
+test('N2 env: GIT_CONFIG_COUNT / GIT_CONFIG_PARAMETERS include.path is seen even when config was loaded from another env', () => {
+  const fs = repoFs();
+  const base = context(fs); // loaded with an empty env
+  const env = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'include.path', GIT_CONFIG_VALUE_0: '/inc/force.cfg' };
+  const blind = G.expandGitAliases(['k'], { config: base.config, env });
+  assert.ok(blind.some((e) => e.kind === 'unknown' && e.reason === 'config_incomplete'), kinds(blind));
+  assert.ok(forcePush(G.expandGitAliases(['k'], { config: base.config, env, fs, home: HOME })));
+  const params = { GIT_CONFIG_PARAMETERS: "'include.path=/inc/force.cfg'" };
+  assert.ok(forcePush(G.expandGitAliases(['k'], { config: base.config, env: params, fs, home: HOME })));
+  const malformed = { GIT_CONFIG_PARAMETERS: "'include.path" };
+  assert.ok(G.expandGitAliases(['k'], { config: base.config, env: malformed, fs, home: HOME }).some((e) => e.kind === 'unknown'));
+  // The same env on both sides is still one include read, and a clean env still gives one definite answer.
+  assert.ok(definiteStatus(G.expandGitAliases(['k'], { config: base.config, env: {}, fs, home: HOME })));
+});
+
 test('N2 consumers: per-invocation -c pairs (and what they include) reach implicitPushTargets through withInvocationConfig', () => {
   const fs = repoFs();
   const withFs = context(fs, { withFs: true });
@@ -173,6 +188,8 @@ test('N3 class: ~-, ~N, ~+N, ~-N, ~user and tilde-leading variable values are un
     if (raw === '~+/../x/~-') continue;
     assert.equal(expanded.kind, 'dynamic', raw);
   }
+  // `~N` is a directory-stack entry even when a passwd lookup would answer for a user named like the number.
+  assert.deepEqual(P.expandPathOperand('~1/x', { home: HOME, cwd: `${HOME}/proj`, userHome: () => `${HOME}/proj` }), { kind: 'dynamic', reason: 'tilde' });
   assert.equal(pathClass('~-/.ssh', { OLDPWD: HOME }), 'unknown');
   assert.equal(pathClass('$OLDPWD/.ssh'), 'unknown', 'OLDPWD unset in variables: the shell may have one');
   assert.equal(pathClass('$OLDPWD/.ssh', { OLDPWD: HOME }), 'outside_workspace', 'set earlier: its value (a child of home)');
@@ -283,6 +300,26 @@ test('N4: functions, substitution references, automatic variables and unbalanced
   assert.deepEqual(make('all:\n\techo $$HOME $@\n').commands, ['echo $HOME $@']);
 });
 
+test('N4: a function with effects in a read-time context runs whether or not the target is wanted', () => {
+  for (const text of [
+    'X := $(shell vercel --prod)\nall:\n\techo hi\n',
+    'X ::= $(shell vercel --prod)\nall:\n\techo hi\n',
+    'X = $(shell vercel --prod)\nY := $(X)\nall:\n\techo hi\n',
+    'other: $(shell vercel --prod)\nall:\n\techo hi\n',
+    '$(shell vercel --prod): x\nall:\n\techo hi\n',
+    'X := a\nX += $(shell vercel --prod)\nall:\n\techo hi\n',
+    'X := a\nX := $(X) $(shell vercel --prod)\nall:\n\techo hi\n',
+    'all:\n\techo hi\n$(eval deploy:)\n',
+    'X := $(file >x,y)\nall:\n\techo hi\n',
+    'X := $(call f,a)\nall:\n\techo hi\n',
+    'X := $(subst a,b,$(shell vercel --prod))\nall:\n\techo hi\n',
+  ]) assert.equal(make(text).dynamic, true, text);
+  // Deferred (=) and pure forms are not executed when the file is read.
+  assert.equal(make('X = $(shell vercel --prod)\nall:\n\techo hi\n').dynamic, false);
+  assert.equal(make('OBJS := $(patsubst %.c,%.o,$(SRCS))\nall:\n\techo hi\n').dynamic, false);
+  assert.equal(make('X = $(shell echo a)\nall:\n\techo $(X)\n').dynamic, true, 'used: executed at expansion');
+});
+
 test('N4: target-specific variables, special targets and variables that change the shell are dynamic', () => {
   const cases = [
     'STAGE = dev\nall: STAGE = production\nall:\n\twrangler deploy --env $(STAGE)\n',
@@ -330,6 +367,10 @@ test('N4: $(MAKE) <targets> is followed in the same file; other forms are dynami
   assert.ok(shows(make(`all:\n\t+${'$'}{MAKE} deploy\n${base}`)));
   assert.ok(shows(make(`all: ; $(MAKE) deploy\n${base}`)));
   assert.ok(shows(make(`all:\n\t$(MAKE) step\nstep:\n\t$(MAKE) deploy\n${base}`)), 'two levels');
+  // The same through a variable, and a literal `make` at the start of a recipe.
+  assert.ok(shows(make(`RUN = $(MAKE) deploy\nall:\n\t$(RUN)\n${base}`)));
+  assert.ok(shows(make(`all:\n\tmake deploy\n${base}`)));
+  assert.equal(make(`all:\n\tgmake deploy\n${base}`).dynamic, true);
   // The command text itself is still reported, so a caller that recurses sees it.
   assert.ok(make(`all:\n\t$(MAKE) deploy\n${base}`).commands.includes('make deploy'));
   for (const recipe of ['$(MAKE) -C sub deploy', '$(MAKE) -f other.mk deploy', '$(MAKE) STAGE=production deploy', 'cd sub && $(MAKE) deploy', '$(MAKE) deploy | tee log', '$(MAKE) $(TARGET)', '$(MAKE) -e deploy', '$(MAKE) --eval=x deploy']) {
@@ -342,6 +383,13 @@ test('N4: $(MAKE) <targets> is followed in the same file; other forms are dynami
   // Depth: four nested sub-makes are over the limit.
   const deep = make('a:\n\t$(MAKE) b\nb:\n\t$(MAKE) c\nc:\n\t$(MAKE) d\nd:\n\t$(MAKE) e\ne:\n\tvercel --prod\n', ['a']);
   assert.ok(shows(deep) || deep.dynamic);
+});
+
+test('N4: $(MAKE) with -f is not followed into the same file (a sub-make reads the default makefile)', () => {
+  const fs = createFakeFs().file('/m/ops.mk', 'all:\n\t$(MAKE) deploy\ndeploy:\n\techo staging\n').file('/m/Makefile', 'deploy:\n\tvercel --prod\n');
+  const r = S.resolveMakeTargets(fs, '/m', ['all'], { makefile: 'ops.mk' });
+  assert.equal(r.dynamic, true);
+  assert.ok(r.commands.includes('make deploy'), 'the sub-make line is reported for the caller to resolve in the default file');
 });
 
 test('N4: variable names that are Object.prototype keys are plain unknown names', () => {
