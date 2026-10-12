@@ -8,6 +8,7 @@
 //
 // Mutants 1-9 are the first round. M-F1..M-F11, M-GH and M-TIME revert one patch-round fix each.
 // M-N1..M-N7 and M-T1..M-T3 revert or loosen one r3 fix each (audit of 452da607, friction trims).
+// M-B1..M-B4 revert or loosen one part of the r4 micro-patch each (final audit of c7947a36).
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -15,7 +16,7 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.join(__dirname, '..', '..');
 const MAPPER = path.join(ROOT, 'dist', 'seatbelt', 'mapper.js');
 const TABLES = path.join(ROOT, 'dist', 'seatbelt', 'tables.js');
-const TESTS = ['test/seatbelt-mapper.test.js', 'test/seatbelt-patch-r2.test.js', 'test/seatbelt-audit-regression.test.js', 'test/seatbelt-r3.test.js'];
+const TESTS = ['test/seatbelt-mapper.test.js', 'test/seatbelt-patch-r2.test.js', 'test/seatbelt-audit-regression.test.js', 'test/seatbelt-r3.test.js', 'test/seatbelt-r4.test.js'];
 
 const M = (file, from, to) => [file, from, to];
 
@@ -215,7 +216,7 @@ const MUTANTS = [
   {
     name: 'M-T1c the branch is trusted although the command may have changed it (no head tracking)',
     edits: [
-      M(MAPPER, 'if (run.headMayChange)\n        return null;', 'void 0;'),
+      M(MAPPER, 'if (run.headMayChange || !trimShapeOk(ctx, run, x))\n        return null;', 'if (!trimShapeOk(ctx, run, x))\n        return null;'),
       M(MAPPER, 'if (!start || ctx.cwds.length !== 1 || ctx.cwds[0] !== start)\n        return null;', 'void 0;'),
     ],
   },
@@ -241,11 +242,93 @@ const MUTANTS = [
   },
   {
     name: 'M-T3c a protected current branch is substituted (pass with a flag instead of a stop)',
-    edits: [M(MAPPER, 'return cur !== null && unprotectedBranch(cur, ctx, run) ? litArg(cur) : a;', 'return cur !== null ? litArg(cur) : a;')],
+    edits: [M(MAPPER, 'if (cur === null || !unprotectedBranch(cur, ctx, run))\n                    return a;', 'if (cur === null)\n                    return a;')],
   },
   {
     name: 'M-HEAD git commands that switch branches do not mark the branch as changed',
     edits: [M(MAPPER, 'if (tables_1.GIT_BUILTINS.has(sub) && gitMayChangeHead(sub, args))\n        run.headMayChange = true;', 'void 0;')],
+  },
+  // r4 (final audit of c7947a36): B1 arrays, B2 wrangler flags, B3 concurrent branch change, B4 push mapping.
+  {
+    name: 'M-B1 array syntax is not tracked: element writes are scalar writes and ${a[@]} reads the scalar',
+    edits: [
+      M(MAPPER, '    noteArrays(src, ctx, run);\n', ''),
+      M(MAPPER, "            if (am) {\n                ctx.arrays.add(am[1]);\n                ctx.vars.set(am[1], null);\n                ctx.candidates.delete(am[1]);\n                bound = null;\n            }\n            else if (ctx.arrays.has(slot.name))\n                bound = null;\n",
+        "            if (am) {\n                bound = ctx.vars.has(am[1]) ? ctx.vars.get(am[1]) : null;\n            }\n"),
+      M(MAPPER, 'if (/\\[/.test(rawName) || ctx.arrays.has(name)) {', 'if (false) {'),
+    ],
+  },
+  {
+    name: 'M-B1b array names are not collected from the text (declare -a, mapfile, read -a, a[i]=, a=( )',
+    edits: [M(MAPPER, '    collectArrayNames(src, found);\n', '')],
+  },
+  {
+    name: 'M-B2a wrangler pages deploy flags are not checked against the allowlist',
+    edits: [M(MAPPER, 'if (!pagesDeployFlagsPlain(rest) || pagesEnvOverride(ctx, run, x))', 'if (pagesEnvOverride(ctx, run, x))')],
+  },
+  {
+    name: 'M-B2b WRANGLER_ and CF_PAGES_ variables do not turn T1 off',
+    edits: [M(MAPPER, 'if (!pagesDeployFlagsPlain(rest) || pagesEnvOverride(ctx, run, x))', 'if (!pagesDeployFlagsPlain(rest))')],
+  },
+  {
+    name: 'M-B2c a global flag with an unknown value hides the pages deploy subcommand',
+    edits: [M(MAPPER, "            const pagesDeploy = (s1 === 'pages' && (s2 === 'deploy' || s2 === 'publish'))\n                || (ip >= 0 && lits.slice(ip + 1).some((t) => t === 'deploy' || t === 'publish'));",
+      "            const pagesDeploy = (s1 === 'pages' && (s2 === 'deploy' || s2 === 'publish'));")],
+  },
+  {
+    name: 'M-B3 T1 and T3 are decided without the shape of the line (whole B3 guard removed)',
+    edits: [M(MAPPER, 'if (run.headMayChange || !trimShapeOk(ctx, run, x))', 'if (run.headMayChange)')],
+  },
+  {
+    name: 'M-B3a a background operator elsewhere in the line does not turn the trims off',
+    edits: [M(MAPPER, "        if (prev === '&' || prev === '>' || prev === '<' || next === '>')\n            continue;\n        return false;\n", "        if (prev === '&' || prev === '>' || prev === '<' || next === '>')\n            continue;\n        continue;\n")],
+  },
+  {
+    name: 'M-B3b a command may follow the trimmed one in the line',
+    edits: [M(MAPPER, 'if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true)', 'if (!x || ctx.depth !== 0 || !run.topLast)')],
+  },
+  {
+    name: 'M-B3c a pipeline around the trimmed command is not looked at',
+    edits: [M(MAPPER, 'if (x.cmd.pipedInput || x.cmd.pipesOutput || x.cmd.background || x.cmd.subshell || x.info.upstream.length > 0 || x.info.lost)', 'if (false)')],
+  },
+  {
+    name: 'M-B3d nested shell text (bash -c, eval, package scripts) may be trimmed',
+    edits: [
+      M(MAPPER, 'const finalCommand = ctx.depth === 0 && run.topLast ?', 'const finalCommand = run.topLast ?'),
+      M(MAPPER, 'if (!x || ctx.depth !== 0 || !run.topLast || x.info.last !== true)', 'if (!x || !run.topLast || x.info.last !== true)'),
+    ],
+  },
+  {
+    name: 'M-B3e a conditional, loop or time keyword before the trimmed command does not turn the trims off',
+    edits: [M(MAPPER, "    if (/(?:^|[;&|(){}\\n`])[ \\t]*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|time|coproc)(?![A-Za-z0-9_./-])/.test(src))\n        return false;\n", '')],
+  },
+  {
+    name: 'M-B3f a group brace around the trimmed command does not turn the trims off',
+    edits: [M(MAPPER, "    if (/(?:^|[\\s;&|(])[{}](?=[\\s;&|)]|$)/.test(src))\n        return false;\n", '')],
+  },
+  {
+    name: 'M-B3g trap, alias and startup variables in the line do not turn the trims off',
+    edits: [M(MAPPER, "    if (/(?:^|[^A-Za-z0-9_])(?:trap|alias|unalias|PROMPT_COMMAND|BASH_ENV|ENV)(?![A-Za-z0-9_])/.test(src))\n        return false;\n", '')],
+  },
+  {
+    name: 'M-B4a a current-branch substitution stands whatever the push mapping says',
+    edits: [M(MAPPER, 'trimmed.has(r) && !trimStands(r))', 'trimmed.has(r) && false)')],
+  },
+  {
+    name: 'M-B4b a mapping in the repository config is not applied to an explicit branch name',
+    edits: [M(MAPPER, '                    targets.push(m.dest);\n', '')],
+  },
+  {
+    name: 'M-B4c a + in the configured mapping does not force the push',
+    edits: [M(MAPPER, '                    if (m.forced)\n                        anyForced = true;\n', '')],
+  },
+  {
+    name: 'M-B4d a push setting given in the line does not make the destination unknown',
+    edits: [M(MAPPER, '            if (inLine.certain) {\n                risky.add(\'unknown_flag\');\n                targets.push(null);\n            }\n            else if (inLine.mentioned)\n                targets.push(null);\n', '')],
+  },
+  {
+    name: 'M-B4e a config that cannot be read keeps the current-branch substitution',
+    edits: [M(MAPPER, '        if (specs === null)\n            return false;\n        return mappedPushDestinations', '        if (specs === null)\n            return true;\n        return mappedPushDestinations')],
   },
 ];
 
