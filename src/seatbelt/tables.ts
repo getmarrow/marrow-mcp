@@ -83,9 +83,9 @@ export const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash'
 export const INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'bun', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh', 'irb', 'ipython']);
 
 // Interpreter one-liners that delete trees (S5).
-export const INTERPRETER_TREE_DELETE = /rmSync|rmdirSync|rimraf|shutil\.rmtree|rm_rf|FileUtils\.rm_r|FileUtils\.remove_dir|remove_dir_all|removedirs|\.rm\s*\([^)]{0,200}recursive|Remove-Item[^\n]{0,200}-Recurse|deleteRecursively/;
+export const INTERPRETER_TREE_DELETE = /rmSync|rmdirSync|rimraf|shutil\.rmtree|rm_rf|FileUtils\.rm_r|FileUtils\.remove_dir|remove_dir_all|removedirs|\.rm\s*\([^)]{0,1000}recursive|Remove-Item[^\n]{0,1000}-Recurse|deleteRecursively/;
 // Decoded data that is then executed inside interpreter code (S-x).
-export const INTERPRETER_DECODE = /b64decode|base64|atob\s*\(|fromCharCode|unhexlify|bytes\.fromhex|codecs\.decode|\.decode\(\s*['"](?:hex|base64|rot)|Buffer\.from\([^)]{0,200}['"](?:base64|hex)['"]|\\x[0-9a-f]{2}.{0,200}\\x[0-9a-f]{2}|\bpack\s*\(?\s*['"][HhBbuU]|\bchr\s*\(|\bhex\s*\(|\bgunzip|\binflate|\bzlib\b|\bunpack\b|\bpack\b\s*\(?\s*['"]|\.reverse\(\)|\[::-1\]|\bscalar\s+reverse/i;
+export const INTERPRETER_DECODE = /b64decode|base64|atob\s*\(|fromCharCode|unhexlify|bytes\.fromhex|codecs\.decode|\.decode\(\s*['"](?:hex|base64|rot)|Buffer\.from\([^)]{0,1000}['"](?:base64|hex)['"]|\bpack\s*\(?\s*['"][HhBbuU]|\bchr\s*\(|\bhex\s*\(|\bgunzip|\binflate|\bzlib\b|\bunpack\b|\bpack\b\s*\(?\s*['"]|\.reverse\(\)|\[::-1\]|\bscalar\s+reverse/i;
 export const INTERPRETER_EXEC = /\bexec\b|\beval\b|\bFunction\s*\(|\bsystem\b|popen|spawn|execSync|execFile|child_process|subprocess|\bcompile\s*\(|`/;
 
 // Owner-only commands an agent must never run (S0).
@@ -130,8 +130,8 @@ export const TRIPWIRE: ReadonlyArray<{ re: RegExp; category: 'S0' | 'S1' | 'S2' 
   { re: /deploy|--prod\b/, category: 'S2', reason: 'tripwire_deploy' },
   { re: /\.ssh\b|id_rsa|id_ed25519|id_ecdsa|\.aws\b|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.docker\/config|\.kube\/config|gh\/hosts\.yml|\.gnupg|\.claude\.json|settings\.local\.json|\/environ\b|\.dev\.vars|\.pem\b|\.p12\b|\.pfx\b|\.marrow\/env/, category: 'S4', reason: 'tripwire_secret_path' },
   { re: /(?:^|[^a-z0-9_$)\].])\.env(?![a-z0-9_])(?!\.(?:example|sample|template)\b)/, category: 'S4', reason: 'tripwire_env_file' },
-  { re: /printenv|export\s+-p|declare\s+-[a-z]*[xp]|(?:^|[;&|({\s])(?:env|set|export)\s*(?:$|[;&|)}])|auth\s+token|print-(?:access|identity)-token|get-session-token|get-access-token|auth:token|find-(?:generic|internet)-password|secret-tool|op\s+read|vault\s+(?:kv|read)|pass\s+show|token\s+list|(?:process\.env|os\.environ|\$env|env\.to_h|system\.getenv\(\))\s*(?:\)|;|$|\||,|\.items|\.keys|\.copy)|(?:environ|\benv)\W{0,3}[a-z_]{0,64}(?:key|token|secret|pass|cred)|\$\{?!?[a-z_]{0,64}(?:key|token|secret|pass|cred)/, category: 'S4', reason: 'tripwire_secret_dumper' },
-  { re: /\brm\b[^;&|\n]{0,200}?[\s,(\[](?:-[a-z]*r[a-z]*|--recursive)\b|rmtree|rmsync|rmdirsync|rimraf|rm_rf|\brm_r\b|mkfs|\bdd\b[^;&|\n]{0,200}of=\/dev\//, category: 'S5', reason: 'tripwire_recursive_delete' },
+  { re: /printenv|export\s+-p|declare\s+-[a-z]*[xp]|(?:^|[;&|({\s])(?:env|set|export)\s*(?:$|[;&|)}])|auth\s+token|print-(?:access|identity)-token|get-session-token|get-access-token|auth:token|find-(?:generic|internet)-password|secret-tool|op\s+read|vault\s+(?:kv|read)|pass\s+show|token\s+list|(?:process\.env|os\.environ|\$env|env\.to_h|system\.getenv\(\))\s*(?:\)|;|$|\||,|\.items|\.keys|\.copy)|(?:environ|\benv)\W{0,3}[a-z_]{0,256}(?:key|token|secret|pass|cred)|\$\{?!?[a-z_]{0,256}(?:key|token|secret|pass|cred)/, category: 'S4', reason: 'tripwire_secret_dumper' },
+  { re: /rmtree|rmsync|rmdirsync|rimraf|rm_rf|\brm_r\b|mkfs/, category: 'S5', reason: 'tripwire_recursive_delete' },
   { re: /\.marrow|@getmarrow|settings\.json|hooks\.json|\.mcp\.json|\.bashrc|\.zshrc|\.bash_profile|\.zprofile|\.zshenv|\.profile\b/, category: 'S0', reason: 'tripwire_self_protection' },
   { re: /base64\s+(?:-[a-z]*d|--decode)|xxd\s+-[a-z]*r|b64decode|atob\s*\(/, category: 'Sx', reason: 'tripwire_decoded_exec' },
 ];

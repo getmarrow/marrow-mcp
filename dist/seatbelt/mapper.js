@@ -903,8 +903,11 @@ function expandWords(words, ctx, run, force) {
     let variants = [[]];
     for (const w of words) {
         const alts = wordAlternatives(w, ctx, run, force);
-        if (alts.length === 1 && variants.length === 1) {
-            variants[0] = [...variants[0], ...alts[0]];
+        if (alts.length === 1) {
+            // The common case: append in place (copying per word is quadratic on a long command).
+            for (const v of variants)
+                for (const a of alts[0])
+                    v.push(a);
             continue;
         }
         const next = [];
@@ -1320,6 +1323,33 @@ function unknownProgram(prog, args, ctx, run, x) {
 }
 // ---------------------------------------------------------------------------------------------
 // tripwire and S-x
+// `rm … -r` and `dd … of=/dev/` anywhere in the same command segment, in one linear pass (a regex
+// with an unbounded gap is quadratic on a long run of `rm`).
+function recursiveDeleteInText(norm) {
+    for (const seg of norm.split(/[;&|\n]/)) {
+        if (seg.length < 4)
+            continue;
+        const rm = seg.search(/\brm\b/);
+        if (rm >= 0 && /(?:^|[\s,(\[])(?:-[a-z]*r[a-z]*|--recursive)\b/.test(seg.slice(rm + 2)))
+            return true;
+        const dd = seg.search(/\bdd\b/);
+        if (dd >= 0 && /of=\/dev\//.test(seg.slice(dd + 2)))
+            return true;
+    }
+    return false;
+}
+// Two or more hex escapes, or any decoder call, in interpreter code.
+function interpreterDecodes(code) {
+    if (tables_1.INTERPRETER_DECODE.test(code))
+        return true;
+    let n = 0;
+    for (const _m of code.matchAll(/\\x[0-9a-fA-F]{2}/g)) {
+        n += 1;
+        if (n >= 2)
+            return true;
+    }
+    return false;
+}
 function tripwire(text, run) {
     const norm = String(text).toLowerCase().replace(/["'\\]/g, '');
     let any = false;
@@ -1328,6 +1358,10 @@ function tripwire(text, run) {
             hit(run, t.category, t.reason);
             any = true;
         }
+    }
+    if (recursiveDeleteInText(norm)) {
+        hit(run, 'S5', 'tripwire_recursive_delete');
+        any = true;
     }
     if (!any && run.parse !== 'ok')
         run.flags.add('tripwire_clear');
@@ -1359,7 +1393,7 @@ function decoderCommand(cmd, _run, info) {
         return /\\x[0-9a-fA-F]|\\[0-7]{3}|\\u[0-9a-fA-F]/.test(joined) && (rest.includes('-e') || /^-[a-zA-Z]*e/.test(rest[0] || '') || prog === 'print');
     }
     if (tables_1.INTERPRETERS.has(prog))
-        return tables_1.INTERPRETER_DECODE.test(rest.join(' '));
+        return interpreterDecodes(rest.join(' '));
     return false;
 }
 function substitutionsDecode(subs, run) {
@@ -1522,7 +1556,7 @@ function scanInterpreterCode(code, run) {
         hit(run, 'S5', 'interpreter_tree_delete');
     if (interpreterEnvDump(code))
         hit(run, 'S4', 'interpreter_env_dump');
-    if (tables_1.INTERPRETER_DECODE.test(code) && tables_1.INTERPRETER_EXEC.test(code))
+    if (interpreterDecodes(code) && tables_1.INTERPRETER_EXEC.test(code))
         hit(run, 'Sx', 'interpreter_decoded_exec');
     tripwire(code, run);
 }
@@ -3049,7 +3083,7 @@ function scriptFile(target, extra, ctx, run, x) {
             // Non-shell scripts: decoded exec and tree deletes only (interpreted programs are a residual).
             if (tables_1.INTERPRETER_TREE_DELETE.test(content))
                 hit(run, 'S5', 'script_tree_delete');
-            if (tables_1.INTERPRETER_DECODE.test(content) && tables_1.INTERPRETER_EXEC.test(content))
+            if (interpreterDecodes(content) && tables_1.INTERPRETER_EXEC.test(content))
                 hit(run, 'Sx', 'script_decoded_exec');
             continue;
         }
