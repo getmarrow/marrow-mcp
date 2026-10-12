@@ -2122,7 +2122,8 @@ async function marrowAsk(apiKey, baseUrl, params, sessionId, agentId, signal) {
         method: 'POST',
         headers: buildHeaders(apiKey, sessionId, 'application/json', agentId),
         body: JSON.stringify({
-            action: params.query,
+            // The question leaves the process redacted, like every other tool's text.
+            action: (0, redact_1.redactSensitiveText)(params.query),
             type: 'general',
             role: 'general',
             agent_id: agentId,
