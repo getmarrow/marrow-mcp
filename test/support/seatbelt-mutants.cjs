@@ -99,6 +99,14 @@ const MUTANTS = [
     edits: [M(MAPPER, 'if (a.glob && globFollowsLinks(a.text)) {', 'if (false) {'), M(MAPPER, '    recordLinks(prog, rest, ctx, run);\n', '')],
   },
   {
+    name: 'M-F10a budgets removed (work, script fan-out, wall clock), memo kept',
+    edits: [
+      M(MAPPER, 'if (run.work > tables_1.LIMITS.maxWork)', 'if (false)'),
+      M(MAPPER, 'if (run.scriptExpansions > tables_1.LIMITS.maxScriptExpansions)', 'if (false)'),
+      M(MAPPER, 'if (Date.now() >= run.deadline)', 'if (false)'),
+    ],
+  },
+  {
     name: 'M-F10 budgets removed: no work, script fan-out, wall-clock budget or memo',
     edits: [
       M(MAPPER, 'if (run.work > tables_1.LIMITS.maxWork)', 'if (false)'),
