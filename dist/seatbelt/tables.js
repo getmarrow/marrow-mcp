@@ -2,7 +2,7 @@
 // Seatbelt rule tables (spec SEATBELT-SPEC.md §1.2 as amended by the owner decisions of 2026-10-12).
 // Compiled into the package on purpose: no local file can extend or relax them (spec §2.1.7).
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TERMINAL_SEGMENTS = exports.STDIN_KEYS = exports.CODE_KEYS = exports.ARGV_SEGMENTS = exports.ARGV_KEYS = exports.COMMAND_KEYS = exports.FILE_TOOL_NAMES = exports.SHELL_TOOL_NAMES = exports.GIT_CONFIG_ENV_FILES = exports.GIT_CONFIG_INCLUDE = exports.GIT_EXEC_CONFIG = exports.NPM_BOOL_FLAGS = exports.NPM_VALUE_FLAGS = exports.NPM_ALIASES = exports.NPM_COMMANDS = exports.EVAL_PRODUCERS = exports.NON_SCRIPT_NAMES = exports.SCRIPT_SUFFIX = exports.INERT_PROGRAMS = exports.KNOWN_COMMANDS = exports.NAME_TRIPWIRE = exports.TRIPWIRE = exports.GIT_PUSH_RISKY_LONG = exports.GIT_PUSH_LONG = exports.GIT_BUILTINS = exports.PACKAGE_BINS = exports.MARROW_OWNER_SUBS = exports.INTERPRETER_EXEC = exports.INTERPRETERS = exports.SHELLS = exports.GIT_S4_EXEMPT_SUBS = exports.S4_EXEMPT_PROGRAMS = exports.PROD_ENV = exports.SECRET_VAR = exports.SSH_PUBLIC = exports.ENV_TEMPLATE_SUFFIX = exports.KEY_FIXTURE_SEGMENTS = exports.KEY_EXTENSIONS = exports.SECRET_PATTERNS = exports.LIMITS = exports.SEATBELT_RULES_VERSION = void 0;
+exports.LANGUAGE_KEYS = exports.CWD_KEYS = exports.ENV_KEYS = exports.TERMINAL_TEXT_KEYS = exports.GH_HEAD_SAFE = exports.HEAD_CHANGERS = exports.BUILD_TOOLS = exports.TERMINAL_SEGMENTS = exports.STDIN_KEYS = exports.CODE_KEYS = exports.ARGV_STRICT = exports.ARGV_SEGMENTS = exports.ARGV_KEYS = exports.COMMAND_KEYS = exports.FILE_TOOL_NAMES = exports.SHELL_TOOL_NAMES = exports.GIT_CONFIG_ENV_FILES = exports.GIT_CONFIG_INCLUDE = exports.GIT_EXEC_CONFIG = exports.NPM_BOOL_FLAGS = exports.NPM_VALUE_FLAGS = exports.NPM_ALIASES = exports.NPM_COMMANDS = exports.EVAL_PRODUCERS = exports.NON_SCRIPT_NAMES = exports.SCRIPT_SUFFIX = exports.INERT_PROGRAMS = exports.KNOWN_COMMANDS = exports.NAME_TRIPWIRE = exports.TRIPWIRE = exports.GIT_PUSH_RISKY_LONG = exports.GIT_PUSH_LONG = exports.GIT_BUILTINS = exports.PACKAGE_BINS = exports.MARROW_OWNER_SUBS = exports.INTERPRETER_EXEC = exports.INTERPRETERS = exports.SHELLS = exports.GIT_S4_EXEMPT_SUBS = exports.S4_EXEMPT_PROGRAMS = exports.PROD_ENV = exports.SECRET_VAR = exports.SSH_PUBLIC = exports.ENV_TEMPLATE_SUFFIX = exports.KEY_FIXTURE_SEGMENTS = exports.KEY_EXTENSIONS = exports.SECRET_PATTERNS = exports.LIMITS = exports.SEATBELT_RULES_VERSION = void 0;
 exports.secretSamples = secretSamples;
 exports.interpreterTreeDelete = interpreterTreeDelete;
 exports.interpreterDecodeToken = interpreterDecodeToken;
@@ -92,44 +92,36 @@ exports.INTERPRETERS = new Set(['python', 'python2', 'python3', 'node', 'nodejs'
 // before its closing parenthesis" are not regexes with a gap: a bounded gap lets padding turn a stop
 // into a pass (audit N5) and an unbounded one is quadratic on a run of the opener. They are one
 // linear scan each (interpreterTreeDelete), with the same meaning the unbounded regexes had.
-const INTERPRETER_TREE_DELETE_WORDS = /rmSync|rmdirSync|rimraf|shutil\.rmtree|rm_rf|FileUtils\.rm_r|FileUtils\.remove_dir|remove_dir_all|removedirs|deleteRecursively/;
-// Decoded data that is then executed inside interpreter code (S-x). `Buffer.from( … 'hex'|'base64')`
-// is the gapped form; see interpreterDecodeToken.
-const INTERPRETER_DECODE_WORDS = /b64decode|base64|atob\s*\(|fromCharCode|unhexlify|bytes\.fromhex|codecs\.decode|\.decode\(\s*['"](?:hex|base64|rot)|\bpack\s*\(?\s*['"][HhBbuU]|\bchr\s*\(|\bhex\s*\(|\bgunzip|\binflate|\bzlib\b|\bunpack\b|\bpack\b\s*\(?\s*['"]|\.reverse\(\)|\[::-1\]|\bscalar\s+reverse/i;
-// One pass over the code: a window opens at the opener and closes at the first `)`; the needle inside
-// an open window is a hit. No backtracking, so padding or a long run of the opener costs one scan.
-const RM_WINDOW = /(\.rm\s*\()|(\))|(recursive)/g;
-const BUFFER_WINDOW = /(Buffer\.from\()|(\))|(['"](?:base64|hex)['"])/gi;
-function openWindowHit(code, re) {
-    let open = false;
-    re.lastIndex = 0;
-    let m;
-    while ((m = re.exec(code))) {
-        if (m[1] !== undefined)
-            open = true;
-        else if (m[2] !== undefined)
-            open = false;
-        else if (open)
-            return true;
-    }
-    return false;
-}
+const INTERPRETER_TREE_DELETE_WORDS = /rmSync|rmdirSync|rimraf|rmtree|rm_rf|FileUtils\.rm_r|FileUtils\.remove_dir|FileUtils\.remove_entry|remove_entry|remove_tree|File::Path|remove_dir_all|removedirs|deleteRecursively/;
+// A delete call and a recursive option anywhere in the same code: padding, a nested call in the path
+// argument, options kept in a variable and `fs['rm']` all end in the same two facts (audit N5).
+const DELETE_CALL = /\.rm\s*\(|\brm\s*\(|\[\s*['"`]rm(?:dir)?['"`]\s*\]|\brmdir\s*\(|\.rmdir\s*\(|\bremoveSync?\s*\(|\.remove(?:All)?\s*\(/;
+// Deleting file by file under a walk of a tree.
+const WALK_WORD = /os\.walk|\.rglob\s*\(|\bwalk\s*\(|Dir\.glob|Dir\[|\.glob\s*\(|scandir|readdirSync|readdir\s*\(|FileList|glob\.glob|find_files/;
+const FILE_DELETE_CALL = /os\.remove|os\.unlink|\.unlink\s*\(|File\.delete|File\.unlink|unlinkSync|fs\.unlink|\bunlink\s*\(/;
+// Decoded data that is then executed inside interpreter code (S-x).
+const INTERPRETER_DECODE_WORDS = /b64decode|base64|atob\s*\(|fromCharCode|fromCodePoint|unhexlify|bytes\.fromhex|codecs\.decode|\.decode\(\s*['"](?:hex|base64|rot)|\bpack\s*\(?\s*['"][HhBbuU]|\bchr\s*\(|\bhex\s*\(|\bgunzip|\binflate|\bzlib\b|\bunpack\b|\bpack\b\s*\(?\s*['"]|\.reverse\(\)|\[::-1\]|\bscalar\s+reverse|\bunescape\s*\(|\bdecodeURI(?:Component)?\s*\(|\bnew\s+Buffer\b|\bBuffer\s*\[|\bglobalThis\s*\[|\bglobal\s*\[|\bprocess\s*\[/i;
+// `Buffer.from(x, 'hex')`: the call and an encoding literal in the same code.
+const BUFFER_CALL = /\bBuffer\b/;
+const ENCODING_LITERAL = /['"`](?:base64|hex)['"`]/i;
 function interpreterTreeDelete(code) {
     if (INTERPRETER_TREE_DELETE_WORDS.test(code))
         return true;
-    // `fs.rm(path, {…, recursive: true})`: `recursive` before the call's first `)`.
-    if (openWindowHit(code, RM_WINDOW))
+    if (code.includes('recursive') && DELETE_CALL.test(code))
+        return true;
+    if (WALK_WORD.test(code) && FILE_DELETE_CALL.test(code))
         return true;
     // `Remove-Item … -Recurse` on one line.
     for (const line of code.split('\n')) {
-        const at = line.indexOf('Remove-Item');
-        if (at >= 0 && line.indexOf('-Recurse', at + 11) >= 0)
+        const at = line.toLowerCase().indexOf('remove-item');
+        if (at >= 0 && line.toLowerCase().indexOf('-recurse', at + 11) >= 0)
             return true;
     }
     return false;
 }
 function interpreterDecodeToken(code) {
-    return INTERPRETER_DECODE_WORDS.test(code) || openWindowHit(code, BUFFER_WINDOW);
+    // `Buffer.from(x, enc).toString()` turns bytes into text whatever the encoding is called.
+    return INTERPRETER_DECODE_WORDS.test(code) || (BUFFER_CALL.test(code) && (ENCODING_LITERAL.test(code) || /\.toString\s*\(/.test(code)));
 }
 exports.INTERPRETER_EXEC = /\bexec\b|\beval\b|\bFunction\s*\(|\bsystem\b|popen|spawn|execSync|execFile|child_process|subprocess|\bcompile\s*\(|`/;
 // Owner-only commands an agent must never run (S0).
@@ -189,7 +181,7 @@ exports.KNOWN_COMMANDS = new Set([
     'builtin', 'exec', 'stdbuf', 'ionice', 'chrt', 'taskset', 'setsid', 'unbuffer', 'caffeinate', 'retry', 'flock', 'xargs', 'parallel',
     'watch', 'ssh', 'git', 'gh', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'bunx', 'corepack', 'make', 'gmake', 'rm', 'rimraf', 'rmdir', 'find',
     'rsync', 'shred', 'dd', 'docker', 'podman', 'kubectl', 'helm', 'marrow', 'marrow-install', 'claude', 'apply_patch', 'applypatch',
-    'trap', 'read', 'mapfile', 'readarray', 'getopts', 'busybox', 'toybox', 'concurrently', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'railway',
+    'trap', 'script', 'read', 'mapfile', 'readarray', 'getopts', 'busybox', 'toybox', 'concurrently', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'railway',
     // deploy tools
     'wrangler', 'vercel', 'netlify', 'ntl', 'fly', 'flyctl', 'firebase', 'heroku', 'gcloud', 'sst', 'serverless', 'sls', 'cdk', 'terraform',
     'tofu', 'terragrunt', 'pulumi', 'eb', 'aws', 'az',
@@ -294,20 +286,23 @@ exports.COMMAND_KEYS = new Set(['command', 'cmd', 'commandline', 'command_line',
     'cmd_str', 'command_text', 'commandtext', 'cmd_text', 'shell_script', 'bash_script', 'script_text']);
 // A field name that is not listed above but names a command by word: `cmdString`, `my_shell_cmd`,
 // `run_command`. Matched on name segments, so `description` is not `script`.
-const COMMAND_SEGMENTS = new Set(['cmd', 'cmds', 'command', 'commands', 'shell', 'bash', 'zsh', 'script', 'exec', 'execute', 'argv', 'commandline',
+const COMMAND_SEGMENTS = new Set(['cmd', 'cmds', 'command', 'commands', 'shell', 'bash', 'zsh', 'script', 'scripts', 'exec', 'execute', 'argv', 'commandline',
     'cmdline', 'program', 'executable', 'binary', 'bin']);
 function commandLikeKey(raw) {
     return raw.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).some((s) => COMMAND_SEGMENTS.has(s));
 }
 // Companion argument-vector fields next to a `command` string (MCP exec servers: {command:'git', args:[…]}).
 exports.ARGV_KEYS = new Set(['args', 'argv', 'arguments', 'params', 'argument']);
-exports.ARGV_SEGMENTS = new Set(['args', 'argv', 'arguments', 'params', 'parameters', 'argument']);
+exports.ARGV_SEGMENTS = new Set(['args', 'argv', 'arguments', 'params', 'parameters', 'argument', 'arg', 'options', 'option', 'flags', 'flag', 'subcommand',
+    'subcommands', 'positional', 'positionals', 'opts', 'rest', 'remaining', 'tail', 'more']);
+// The argument-list names whose value must be a list or text; any other shape is unknown.
+exports.ARGV_STRICT = new Set(['args', 'argv', 'arguments', 'params', 'parameters', 'argument']);
 // Fields that hold interpreter code (scanned like `node -e`).
 exports.CODE_KEYS = new Set(['code', 'python', 'javascript', 'js', 'node', 'ruby', 'perl', 'php', 'python_code', 'source_code',
     // audit N4
     'source', 'snippet', 'code_snippet', 'script_source', 'python_script', 'js_code', 'javascript_code', 'node_code', 'ruby_code',
     'perl_code', 'php_code']);
-const CODE_SEGMENTS = new Set(['code', 'python', 'javascript', 'js', 'ruby', 'perl', 'php', 'snippet', 'source']);
+const CODE_SEGMENTS = new Set(['code', 'python', 'javascript', 'js', 'ruby', 'perl', 'php', 'snippet', 'source', 'py', 'rb', 'lua', 'ts', 'typescript']);
 function codeLikeKey(raw) {
     const segs = raw.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/);
     // `source_path` / `source_file` name a file, not code.
@@ -322,5 +317,30 @@ exports.STDIN_KEYS = new Set(['stdin', 'input', 'std_in', 'standard_input', 'std
 // Name segments of a tool that drives a terminal, shell, process or REPL.
 exports.TERMINAL_SEGMENTS = new Set(['terminal', 'shell', 'process', 'interact', 'pty', 'console', 'repl', 'bash', 'exec', 'execute',
     'stdin', 'keys', 'keystroke', 'keystrokes', 'command', 'commands', 'cmd', 'tty', 'ssh', 'tmux', 'iterm', 'iterm2', 'session', 'sh',
-    'zsh', 'powershell', 'pwsh', 'run', 'input']);
+    'zsh', 'powershell', 'pwsh', 'run', 'input', 'term', 'screen', 'stuff', 'type', 'typing', 'keyboard', 'send']);
+// ---------------------------------------------------------------------------------------------
+// Friction trims T1/T3: what can change the checked-out branch.
+// Build tools and generators that are not assumed to switch branches. Any other program with no
+// handler is "may change the branch" for the trims (audit T1).
+exports.BUILD_TOOLS = new Set(['vite', 'astro', 'next', 'nuxt', 'nuxi', 'webpack', 'rollup', 'esbuild', 'tsup', 'parcel', 'gatsby', 'hugo',
+    'jekyll', 'zola', 'mkdocs', 'sphinx-build', 'eleventy', '11ty', 'hexo', 'docusaurus', 'vuepress', 'vitepress', 'svelte-kit', 'sass', 'postcss',
+    'tailwindcss', 'ng', 'vue-cli-service', 'react-scripts', 'expo', 'remix', 'solid-start', 'qwik', 'biome', 'swc', 'babel', 'cargo', 'go', 'rustc',
+    'gcc', 'g++', 'clang', 'cc', 'pytest', 'tox', 'nodemon', 'ts-node', 'tsx', 'zip', 'jq', 'yq', 'sort', 'uniq', 'cmake', 'ninja', 'pip', 'pip3',
+    'bundle', 'rake', 'dotnet', 'swift', 'xcodebuild', 'flutter', 'dart', 'deno', 'gradle', 'gradlew', 'mvn', 'mvnw', 'sbt']);
+// Programs whose purpose is to switch branches, worktrees or revisions.
+exports.HEAD_CHANGERS = new Set(['hub', 'jj', 'sl', 'hg', 'git-town', 'gt', 'gitui', 'lazygit', 'tig', 'git-branchless', 'stg', 'git-flow',
+    'gitflow', 'svn', 'bzr', 'pijul', 'fossil', 'repo', 'west']);
+// `gh` subcommands that cannot change the local checkout.
+exports.GH_HEAD_SAFE = new Set(['api', 'auth', 'issue', 'run', 'workflow', 'release', 'label', 'gist', 'status', 'search', 'browse',
+    'config', 'extension', 'ruleset', 'secret', 'variable', 'cache', 'codespace', 'ssh-key', 'gpg-key', 'org', 'project', 'alias', 'completion', 'help', 'version']);
+// Fields of a terminal or process tool that hold typed text (next to, or instead of, stdin/input).
+exports.TERMINAL_TEXT_KEYS = new Set(['text', 'data', 'content', 'message', 'payload', 'body', 'value', 'line', 'lines', 'statement', 'task',
+    'job', 'action', 'string', 'chars', 'characters', 'typed', 'write', 'send', 'prompt']);
+// Fields that give a command's environment.
+exports.ENV_KEYS = new Set(['env', 'environment', 'envs', 'env_vars', 'envvars', 'environment_variables', 'extra_env', 'env_vars_override']);
+// Fields that give a command's working directory.
+exports.CWD_KEYS = new Set(['cwd', 'workdir', 'working_dir', 'working_directory', 'work_dir', 'workingdir', 'workingdirectory', 'current_directory',
+    'currentdir', 'directory', 'dir', 'folder', 'cwd_path', 'run_in']);
+// A sibling that names the language of a code field.
+exports.LANGUAGE_KEYS = new Set(['runtime', 'language', 'lang', 'interpreter', 'engine', 'kind', 'type', 'shell', 'mode']);
 //# sourceMappingURL=tables.js.map

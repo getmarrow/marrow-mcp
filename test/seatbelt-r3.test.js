@@ -396,10 +396,17 @@ test('N5: padded fs.rm options and padded Buffer.from(hex) stop again, at any pa
   }
   // The two scans themselves.
   assert.equal(interpreterTreeDelete(`x.rm(a, {${' '.repeat(100000)}recursive: true})`), true);
-  assert.equal(interpreterTreeDelete(`x.rm(a); ${' '.repeat(100000)}recursive`), false);
+  // A delete call and the word `recursive` anywhere in the same code is a stop; neither alone is.
+  assert.equal(interpreterTreeDelete(`x.rm(a); ${' '.repeat(100000)}recursive`), true);
+  assert.equal(interpreterTreeDelete(`x.rm(a); ${' '.repeat(100000)}`), false);
+  assert.equal(interpreterTreeDelete(`const o = {recursive: true}; fs.rm('/home/u', o)`), true);
+  assert.equal(interpreterTreeDelete(`fs.rm(path.join('/home', 'u'), {recursive: true})`), true);
   assert.equal(interpreterTreeDelete(`Remove-Item x ${' '.repeat(100000)} -Recurse`), true);
   assert.equal(interpreterDecodeToken(`Buffer.from('aa'${' '.repeat(100000)}, 'hex')`), true);
-  assert.equal(interpreterDecodeToken(`Buffer.from('aa'); 'hex'`), false);
+  assert.equal(interpreterDecodeToken(`Buffer.from('aa'); 'hex'`), true);
+  assert.equal(interpreterDecodeToken(`Buffer.from('aa')`), false);
+  assert.equal(interpreterDecodeToken(`Buffer.from(f('x'), 'hex')`), true);
+  assert.equal(interpreterDecodeToken(`eval(new Buffer(x, enc).toString())`), true);
 });
 
 test('N5: the scans are linear on a long run of their opener', () => {
@@ -611,6 +618,120 @@ test('T3: the exact current-branch substitutions resolve to git.currentBranch', 
   stops('GIT_DIR=/x git push origin "$(git branch --show-current)"', { current: 'feat/x' });
   stops('echo $(git checkout main); git push origin "$(git branch --show-current)"', { current: 'feat/x' });
   passes('git status && git push origin "$(git branch --show-current)"', { current: 'feat/x' });
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// Adversarial pass (the builder's own variants and an independent probe of the r3 fixes).
+
+const ADV = require('./fixtures/seatbelt/r3-adversarial.cjs');
+const ADV_FILES = {
+  '/home/u/proj/sw.py': "import subprocess\nsubprocess.run(['git','checkout','main'])\n",
+  '/home/u/proj/sw.js': "require('child_process').execSync('git checkout main')\n",
+  '/home/u/proj/ok.js': "console.log('hi')\n",
+  '/home/u/proj/ok.py': "print('hi')\n",
+  '/home/u/proj/set.sh': 'w=publish\n',
+  '/home/u/proj/exp.sh': 'export w=publish\n',
+};
+
+test('adversarial: N1 and N2 shell shapes (groups, exec, descriptors, redirect order, functions, wrappers, sinks, globs, conditional assignments)', () => {
+  const wrong = ADV.n1n2Shell.filter((c) => sh(c).decision !== 'stop');
+  assert.deepEqual(wrong, []);
+  const more = [
+    ...ADV.n3Links.filter((c) => !/git rm/.test(c)).map((c) => [c, { links: { '/home/u/proj/srvlink': '/srv/app' } }]),
+  ];
+  for (const [c, o] of more) assert.equal(sh(c, o).decision, 'stop', c);
+  // Rows of the independent probe, written out.
+  for (const c of [
+    'exec <<<"npm publish"; bash', 'exec < <(echo npm publish); bash', "exec 3<<<'npm publish'; sh /dev/fd/3", "exec 3<<<'npm publish'; bash <&3",
+    "bash < /dev/null <<< 'npm publish'", "f() { bash; }; f < <(echo 'npm publish')", "f() { bash; }; cat scripts/inner.sh | f",
+    "shopt -s expand_aliases\nalias f=bash\ncat scripts/inner.sh | f", "echo 'npm publish' | cat - | sh", "{ eval \"$(cat -)\"; } <<< 'npm publish'",
+    "bash -eo pipefail -c 'npm publish'", "bash -euo pipefail scripts/inner.sh", "echo 'npm publish' | tee >(bash)", "echo 'npm publish' > >(bash)",
+    "echo 'npm publish' | ssh host bash", "cat scripts/inner.sh | /usr/bin/env -S bash -s", "cat scripts/inner.sh | python3 -c 'import sys,os; os.system(sys.stdin.read())'",
+    "cat scripts/inner.sh | awk '{system($0)}'", 'bash < scripts/inn*', 'bash scripts/inn*', "/bin/s[h] -c 'npm publish'", 'git pus[h] --force origin main',
+    "w=publish; false &&\nw=test\nnpm $w", 'f() { w=publish; }; w=test; f; npm $w', "w=test; trap 'npm $w' EXIT; w=publish", "w=test; w=publish bash -c 'npm $w'",
+    'w=test; printf -v w %s publish; npm $w', 'w=test; read w <<< publish; npm $w', 'w=test; declare -n ref=w; ref=publish; npm $w', 'w=; : ${w:=publish}; npm $w',
+    'w=(publish); npm $w', 'd=(~); rm -rf $d', "w=test; sudo w=publish bash -c 'npm $w'", 'echo npm publish | sh -c "$(cat -)"',
+  ]) stops(c);
+  stops('w=test; source ./set.sh; npm $w', { files: ADV_FILES });
+  stops('w=test; . ./set.sh; npm $w', { files: ADV_FILES });
+  stops('w=test; source ./exp.sh; bash -c "npm \\$w"', { files: ADV_FILES });
+});
+
+test('adversarial: N3 link and directory carriers, globs through links and aliases', () => {
+  const opts = { dirs: ['/home/u/proj/d', '/home/u/proj/d/inner', '/home/u/proj/t', '/home/u/proj/sub'], links: { '/home/u/proj/d/inner/lk': '/home/u' } };
+  const wrong = ADV.n3Dirs.filter((c) => sh(c, opts).decision !== 'stop');
+  assert.deepEqual(wrong, []);
+  for (const c of ADV.n3Neighbours) assert.equal(sh(c, opts).decision, 'pass', c);
+  // The residual by design, pinned: links made by another tool or taken from an archive made earlier.
+  for (const c of ["python3 -c \"import os; os.symlink('/home/u','x')\"; rm -rf x/*", 'unzip a.zip; rm -rf x/*', 'tar xf a.tar; rm -rf x/*']) {
+    assert.equal(sh(c, opts).decision, 'pass', `${c} is a documented residual`);
+  }
+});
+
+test('adversarial: N4 tool shapes (cwd, env, args, keys, terminal text, language tags, base64) stop; the neighbours pass', () => {
+  const wrong = [...ADV.n4Events, ...ADV.n4More].filter((e) => ev(e).decision !== 'stop').map((e) => JSON.stringify(e));
+  assert.deepEqual(wrong, []);
+  for (const e of ADV.n4Pass) assert.equal(ev(e).decision, 'pass', JSON.stringify(e));
+  evStops({ tool_name: 'mcp__x__run', tool_input: { command: 'sh', stdin_b64: Buffer.from('npm publish').toString('base64') } });
+  evStops({ tool_name: 'mcp__x__run', tool_input: { command_b64: Buffer.from('npm publish').toString('base64') } });
+  evStops({ tool_name: 'mcp__x__run', tool_input: { command: 'sh', stdin: Buffer.from('npm publish').toString('base64'), encoding: 'base64' } });
+  evStops({ tool_name: 'mcp__x__exec', tool_input: '﻿{"command":"npm publish"}' });
+  evStops({ tool_name: 'mcp__x__exec', tool_input: 'command=npm publish' });
+  evStops({ tool_name: 'mcp__tmux__send_keys', tool_input: { keys: 'n p m  p u b l i s h' } });
+  evStops({ tool_name: 'mcp__x__run', tool_input: { command: 'LD_PRELOAD=/tmp/x.so ls' } });
+  evStops({ tool_name: 'mcp__x__run', tool_input: { command: 'ls', env: { LD_PRELOAD: '/tmp/x.so' } } });
+  evStops({ tool_name: 'mcp__x__run', tool_input: { command: 'node x.js', env: { NODE_OPTIONS: '--require /tmp/x.js' } } });
+  evPasses({ tool_name: 'mcp__x__run', tool_input: { command: 'node x.js', env: { NODE_OPTIONS: '--max-old-space-size=4096' } } });
+});
+
+test('adversarial: N5 interpreter code (nested paths, options in a variable, bracket access, bun, perl, ruby, python walks)', () => {
+  const wrong = ADV.n5.filter((c) => sh(c).decision !== 'stop');
+  assert.deepEqual(wrong, []);
+  passes("node -e \"console.log(require('fs').readFileSync('README.md','utf8').length)\"");
+  passes('python3 -c "print(1+1)"');
+  passes("node -e \"fs.rmSync\" ".replace('rmSync', 'readFileSync'));
+});
+
+test('adversarial: T1/T2/T3 (branch changers the mapper knows by name, code that runs git, directory changes, deferred code)', () => {
+  const opts = { current: 'feat/x', files: ADV_FILES };
+  const wrong = ADV.tStops.filter((c) => sh(c, opts).decision !== 'stop');
+  assert.deepEqual(wrong, []);
+  for (const c of ADV.tPass) assert.equal(sh(c, opts).decision, 'pass', c);
+  // The function that is defined first and called after a checkout, and the reverse order: both stop.
+  stops('f() { wrangler pages deploy dist; }; f; git checkout main', opts);
+  stops('f() { git checkout main; }; wrangler pages deploy dist; f', opts);
+  // A hook directory outside .git, and an MCP tool that gives its own working directory.
+  stops('git -c core.hooksPath=/x commit -m y && wrangler pages deploy dist', opts);
+  evStops({ tool_name: 'mcp__x__run', tool_input: { command: 'wrangler pages deploy dist', cwd: '/home/u/other-repo' } }, opts);
+  evStops({ tool_name: 'mcp__x__run', tool_input: { command: 'git push origin "$(git branch --show-current)"', cwd: '/home/u/other-repo' } }, opts);
+  evPasses({ tool_name: 'mcp__x__run', tool_input: { command: 'wrangler pages deploy dist', cwd: '/home/u/proj' } }, opts);
+});
+
+test('adversarial: nested substitutions, redirect floods and tool-input products end quickly', () => {
+  const env = () => prodBudget();
+  const cases = [
+    'x=' + '$('.repeat(20000) + ')'.repeat(20000),
+    'x=' + '$(echo '.repeat(6000) + ')'.repeat(6000),
+    Array.from({ length: 250 }, () => `x=${'$('.repeat(60)}${')'.repeat(60)};`).join(' '),
+    'echo ' + '>a '.repeat(20000),
+  ];
+  for (const c of cases) {
+    const t = Date.now();
+    const d = evaluateSeatbeltShell(c, env());
+    const ms = Date.now() - t;
+    assert.equal(d.decision, 'stop');
+    assert.ok(ms < 1500, `${c.slice(0, 12)} took ${ms} ms`);
+  }
+  for (const e of [
+    { tool_name: 'mcp__x__run', tool_input: { commands: Array.from({ length: 5000 }, () => 'a'), stdin: 'x'.repeat(100000) } },
+    { tool_name: 'mcp__x__run', tool_input: { commands: Array.from({ length: 100000 }, () => 'a'), stdin: 'x'.repeat(500000) } },
+  ]) {
+    const t = Date.now();
+    const d = evaluateSeatbelt(e, env());
+    assert.equal(d.decision, 'stop');
+    assert.ok(Date.now() - t < 1500);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------

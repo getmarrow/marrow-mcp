@@ -157,7 +157,8 @@ S('F2', 'npm-dynamic-sub', 'npm $SUB', 'S3');
 S('F2', 'npm-run-dynamic', 'npm run $SCRIPT', 'Sx');
 S('F2', 'eval-substitution-unknown', 'eval "$(some-tool env)"', 'Sx');
 S('F2', 'eval-two-step', 'a=npm; eval "$a publish"', 'S3');
-S('F2', 'array-expansion', 'cmd=(npm publish); "${cmd[@]}"', 'Sx');
+// r3 (audit N2): an array literal's elements are read, so the expansion is `npm publish` (S3, a stop as before).
+S('F2', 'array-expansion', 'cmd=(npm publish); "${cmd[@]}"', 'S3');
 S('F2', 'dynamic-script-path', 'bash $UNSET_SCRIPT', 'Sx');
 S('F2', 'python-dynamic-code', 'python3 -c "$UNSET_CODE"', 'Sx');
 S('F2', 'here-string-var', 'x="npm publish"; bash <<< "$x"', 'S3');
