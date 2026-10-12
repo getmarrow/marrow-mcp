@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_DEPLOY_CONFIG_BYTES = void 0;
+exports.DEPLOY_RELOCATING_ENV = exports.MAX_DEPLOY_CONFIG_BYTES = void 0;
 exports.parseJsonc = parseJsonc;
 exports.parseSimpleToml = parseSimpleToml;
 exports.readWranglerConfig = readWranglerConfig;
@@ -110,8 +110,35 @@ function parseSimpleToml(text) {
 function dir(path, name) {
     return `${path.replace(/\/+$/, '')}/${name}`;
 }
-/** wrangler.toml / wrangler.json / wrangler.jsonc: the named environments ([env.<name>]); top level is production. */
-function readWranglerConfig(fs, projectDir, configPath) {
+/**
+ * Env each tool reads that selects or relocates its deploy target. These are
+ * not modelled: any of them present (even empty) makes the reader 'unknown',
+ * which the mapper treats as production.
+ */
+exports.DEPLOY_RELOCATING_ENV = {
+    wrangler: ['CLOUDFLARE_ENV', 'WRANGLER_ENV', 'CLOUDFLARE_ACCOUNT_ID', 'CF_ACCOUNT_ID', 'WRANGLER_CONFIG'],
+    vercel: ['VERCEL_PROJECT_ID', 'VERCEL_ORG_ID', 'VERCEL_ENV', 'VERCEL_SCOPE'],
+    fly: ['FLY_APP', 'FLY_APP_NAME', 'FLY_CONFIG'],
+    firebase: ['FIREBASE_PROJECT', 'GCLOUD_PROJECT', 'FIREBASE_CONFIG'],
+    kube: ['KUBECONTEXT', 'KUBECTL_CONTEXT'],
+    sam: ['SAM_CONFIG_ENV', 'AWS_PROFILE', 'AWS_DEFAULT_PROFILE', 'AWS_CONFIG_FILE'],
+    sst: ['SST_STAGE', 'SST_CONFIG'],
+    terraform: ['TF_DATA_DIR', 'TF_WORKSPACE', 'TF_CLI_ARGS', 'TF_CLI_ARGS_apply', 'TF_CLI_ARGS_destroy', 'TF_CLI_CONFIG_FILE'],
+    gcloud: ['CLOUDSDK_CONFIG', 'CLOUDSDK_ACTIVE_CONFIG_NAME', 'CLOUDSDK_CORE_PROJECT', 'GOOGLE_CLOUD_PROJECT'],
+};
+function relocated(env, tool) {
+    return Boolean(env) && exports.DEPLOY_RELOCATING_ENV[tool].some((name) => env[name] !== undefined);
+}
+/**
+ * wrangler.toml / wrangler.json / wrangler.jsonc: the named environments
+ * ([env.<name>]) and, per environment, the worker name and routes it deploys
+ * to (the top level is production). An environment whose name or a route
+ * equals the top level's deploys to the production worker; the mapper must
+ * compare `targets`, not only environment names.
+ */
+function readWranglerConfig(fs, projectDir, configPath, env) {
+    if (relocated(env, 'wrangler'))
+        return { status: 'unknown' };
     const candidates = configPath ? [configPath.startsWith('/') ? configPath : dir(projectDir, configPath)] : ['wrangler.json', 'wrangler.jsonc', 'wrangler.toml'].map((n) => dir(projectDir, n));
     for (const file of candidates) {
         const read = readText(fs, file);
@@ -124,18 +151,93 @@ function readWranglerConfig(fs, projectDir, configPath) {
             if (!doc)
                 return { status: 'unknown' };
             const environments = [...new Set([...doc.sections.keys()].filter((s) => s.startsWith('env.')).map((s) => s.split('.')[1]))];
-            return { status: 'ok', source: read.path, environments };
+            // Routes in arrays/inline tables are not parsed by the minimal TOML reader: any `route`/`routes`/`custom_domain`
+            // value that is not a plain string makes the routes unknown.
+            const tomlRoutes = (section) => {
+                const values = doc.sections.get(section);
+                const out = [];
+                for (const [key, value] of values || []) {
+                    if (key !== 'route' && key !== 'routes' && key !== 'pattern')
+                        continue;
+                    if (/^[[{]/.test(value))
+                        return null;
+                    out.push(value);
+                }
+                for (const [name, values2] of doc.sections) {
+                    if (name === section || !name.startsWith(section ? `${section}.` : ''))
+                        continue;
+                    const rest = section ? name.slice(section.length + 1) : name;
+                    if (!/^(routes?|custom_domains?)$/.test(rest))
+                        continue;
+                    for (const [key, value] of values2)
+                        if (key === 'pattern' || key === 'route')
+                            out.push(value);
+                }
+                return out;
+            };
+            const top = doc.sections.get('')?.get('name') ?? null;
+            const targets = [];
+            const topRoutes = tomlRoutes('');
+            if (topRoutes === null)
+                return { status: 'unknown' };
+            targets.push({ environment: null, name: top, routes: topRoutes });
+            for (const environment of environments) {
+                const routes = tomlRoutes(`env.${environment}`);
+                if (routes === null)
+                    return { status: 'unknown' };
+                const own = doc.sections.get(`env.${environment}`)?.get('name');
+                targets.push({ environment, name: own ?? (top ? `${top}-${environment}` : null), routes });
+            }
+            return { status: 'ok', source: read.path, environments, targets };
         }
         const json = parseJsonc(read.text);
-        if (!json || typeof json !== 'object')
+        if (!json || typeof json !== 'object' || Array.isArray(json))
             return { status: 'unknown' };
-        const env = json.env;
-        return { status: 'ok', source: read.path, environments: env && typeof env === 'object' ? Object.keys(env) : [] };
+        const root = json;
+        const jsonRoutes = (node) => {
+            const out = [];
+            for (const key of ['route', 'routes']) {
+                const value = node[key];
+                if (value === undefined)
+                    continue;
+                for (const item of Array.isArray(value) ? value : [value]) {
+                    if (typeof item === 'string')
+                        out.push(item);
+                    else if (item && typeof item === 'object' && typeof item.pattern === 'string')
+                        out.push(item.pattern);
+                    else
+                        return null;
+                }
+            }
+            return out;
+        };
+        const envs = root.env;
+        if (envs !== undefined && (!envs || typeof envs !== 'object' || Array.isArray(envs)))
+            return { status: 'unknown' };
+        const top = typeof root.name === 'string' ? root.name : null;
+        const topRoutes = jsonRoutes(root);
+        if (topRoutes === null)
+            return { status: 'unknown' };
+        const targets = [{ environment: null, name: top, routes: topRoutes }];
+        const environments = envs ? Object.keys(envs) : [];
+        for (const environment of environments) {
+            const node = envs[environment];
+            if (!node || typeof node !== 'object' || Array.isArray(node))
+                return { status: 'unknown' };
+            const routes = jsonRoutes(node);
+            if (routes === null)
+                return { status: 'unknown' };
+            const own = node.name;
+            targets.push({ environment, name: typeof own === 'string' ? own : top ? `${top}-${environment}` : null, routes });
+        }
+        return { status: 'ok', source: read.path, environments, targets };
     }
     return { status: 'absent' };
 }
 /** .vercel/project.json links the dir to a project; `vercel --prod` needs no other config. */
-function readVercelLink(fs, projectDir) {
+function readVercelLink(fs, projectDir, env) {
+    if (relocated(env, 'vercel'))
+        return { status: 'unknown' };
     const read = readText(fs, dir(projectDir, '.vercel/project.json'));
     if (read.status !== 'ok')
         return read;
@@ -143,7 +245,9 @@ function readVercelLink(fs, projectDir) {
     return json && typeof json === 'object' ? { status: 'ok', source: read.path, linked: true } : { status: 'unknown' };
 }
 /** fly.toml: the app name(s). `fly deploy` always deploys that app's production machines. */
-function readFlyConfig(fs, projectDir, configPath) {
+function readFlyConfig(fs, projectDir, configPath, env) {
+    if (relocated(env, 'fly'))
+        return { status: 'unknown' };
     const read = readText(fs, configPath ? (configPath.startsWith('/') ? configPath : dir(projectDir, configPath)) : dir(projectDir, 'fly.toml'));
     if (read.status !== 'ok')
         return read;
@@ -154,7 +258,9 @@ function readFlyConfig(fs, projectDir, configPath) {
     return { status: 'ok', source: read.path, apps: app ? [app] : [] };
 }
 /** .firebaserc: the default project and every alias -> project id. */
-function readFirebaseProjects(fs, projectDir) {
+function readFirebaseProjects(fs, projectDir, env) {
+    if (relocated(env, 'firebase'))
+        return { status: 'unknown' };
     const read = readText(fs, dir(projectDir, '.firebaserc'));
     if (read.status !== 'ok')
         return read;
@@ -171,10 +277,17 @@ function readFirebaseProjects(fs, projectDir) {
 /**
  * kubectl current context(s) and their namespaces. KUBECONFIG (from the hook
  * env or the same command) is added to ~/.kube/config, never substituted for
- * it, so the env can only add candidates.
+ * it, so the env can only add candidates. A relative KUBECONFIG entry (it
+ * depends on the command's cwd), a JSON kubeconfig, or a found config with
+ * no current-context is 'unknown'.
  */
-function readKubeContexts(fs, home, kubeconfigEnv) {
-    const files = [...(home ? [dir(home, '.kube/config')] : []), ...String(kubeconfigEnv || '').split(':').filter((p) => p.startsWith('/'))];
+function readKubeContexts(fs, home, kubeconfigEnv, env) {
+    if (relocated(env, 'kube'))
+        return { status: 'unknown' };
+    const entries = String(kubeconfigEnv || '').split(':').filter(Boolean);
+    if (entries.some((p) => !p.startsWith('/')))
+        return { status: 'unknown' };
+    const files = [...(home ? [dir(home, '.kube/config')] : []), ...entries];
     const contexts = [];
     let found = false;
     for (const file of [...new Set(files)]) {
@@ -184,12 +297,19 @@ function readKubeContexts(fs, home, kubeconfigEnv) {
         if (read.status === 'unknown')
             return read;
         found = true;
+        // kubeconfig may be JSON (YAML's superset); this reader parses block YAML only.
+        if (/^\s*[{[]/.test(read.text))
+            return { status: 'unknown' };
         const current = /^current-context:\s*["']?([^"'\s#]*)["']?\s*(?:#.*)?$/m.exec(read.text);
-        if (!current)
+        if (!current) {
+            // kubectl merges files; a context set only in a flow/quoted form this reader misses is unknown.
+            if (/current-context/.test(read.text))
+                return { status: 'unknown' };
             continue;
+        }
         const name = current[1];
         if (!name)
-            continue;
+            return { status: 'unknown' };
         // Find this context's namespace in the contexts: list (block YAML only).
         let namespace = null;
         const blocks = read.text.split(/\n(?=[ \t]*-[ \t\n])/);
@@ -205,10 +325,14 @@ function readKubeContexts(fs, home, kubeconfigEnv) {
     }
     if (!found)
         return { status: 'absent' };
+    if (contexts.length === 0)
+        return { status: 'unknown' };
     return { status: 'ok', source: files.join(':'), contexts };
 }
 /** samconfig.toml: config environments and stack names. */
-function readSamConfig(fs, projectDir) {
+function readSamConfig(fs, projectDir, env) {
+    if (relocated(env, 'sam'))
+        return { status: 'unknown' };
     const read = readText(fs, dir(projectDir, 'samconfig.toml'));
     if (read.status !== 'ok')
         return read;
@@ -228,15 +352,19 @@ function readSamConfig(fs, projectDir) {
     return { status: 'ok', source: read.path, configEnvs: [...configEnvs], stacks: [...stacks] };
 }
 /** SST's selected stage (.sst/stage). */
-function readSstStage(fs, projectDir) {
+function readSstStage(fs, projectDir, env) {
+    if (relocated(env, 'sst'))
+        return { status: 'unknown' };
     const read = readText(fs, dir(projectDir, '.sst/stage'));
     if (read.status !== 'ok')
         return read;
     const stage = read.text.trim();
     return /^[A-Za-z0-9_-]{1,64}$/.test(stage) ? { status: 'ok', source: read.path, stage } : { status: 'unknown' };
 }
-/** Terraform's selected workspace (.terraform/environment); absent means `default`. */
-function readTerraformWorkspace(fs, projectDir) {
+/** Terraform's selected workspace (.terraform/environment); absent means `default`. TF_DATA_DIR / TF_WORKSPACE in env are 'unknown'. */
+function readTerraformWorkspace(fs, projectDir, env) {
+    if (relocated(env, 'terraform'))
+        return { status: 'unknown' };
     const read = readText(fs, dir(projectDir, '.terraform/environment'));
     if (read.status !== 'ok')
         return read;
@@ -244,7 +372,9 @@ function readTerraformWorkspace(fs, projectDir) {
     return /^[A-Za-z0-9_.-]{1,90}$/.test(workspace) ? { status: 'ok', source: read.path, workspace } : { status: 'unknown' };
 }
 /** gcloud's active configuration's [core] project. */
-function readGcloudProject(fs, home) {
+function readGcloudProject(fs, home, env) {
+    if (relocated(env, 'gcloud'))
+        return { status: 'unknown' };
     if (!home)
         return { status: 'unknown' };
     const active = readText(fs, dir(home, '.config/gcloud/active_config'));
