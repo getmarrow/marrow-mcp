@@ -48,7 +48,10 @@ function deriveAction(event, harness, raw) {
         return null;
     if (harness === undefined ? (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event) : (0, own_server_identity_1.isOfficialMarrowMcpEventOnHost)(harness, event, raw))
         return null;
-    return (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event) }).action;
+    // An own label whose server the host check did not prove is another server's protected tool.
+    if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event))
+        return (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: true }).action;
+    return (0, hook_pre_action_1.classifyTool)(event).action;
 }
 function deriveToolOutcome(event) {
     const response = event.tool_output ?? event.tool_response ?? event.tool_result;
