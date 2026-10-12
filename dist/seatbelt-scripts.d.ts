@@ -70,7 +70,8 @@ export type MakeResolution = {
  * `unexport`, `.EXPORT_ALL_VARIABLES`; `?=`/`+=` on a variable make defines
  * itself; a command-line value with `$` or a control character, or a
  * command-line name no expansion reaches; an assignment the command line overrides
- * (make still reads it) that is `!=` or has a right side not proven inert; a recipe-less target that is not
+ * (make still reads it) that is `!=` or has a right side not proven inert; an assignment to a name the file assigned with
+ * `override` earlier (make keeps the override and still reads the right side); a recipe-less target that is not
  * .PHONY and could have a source file (built-in rules); a rule for the makefile
  * itself; two recipes for one target. A Makefile with a NUL byte, or a CR that
  * does not end a CRLF, is `unknown` (control_character). The mapper must re-classify `commands`.

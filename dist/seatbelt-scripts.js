@@ -181,7 +181,8 @@ function inheritedBuiltin(env, name, value) {
  * `unexport`, `.EXPORT_ALL_VARIABLES`; `?=`/`+=` on a variable make defines
  * itself; a command-line value with `$` or a control character, or a
  * command-line name no expansion reaches; an assignment the command line overrides
- * (make still reads it) that is `!=` or has a right side not proven inert; a recipe-less target that is not
+ * (make still reads it) that is `!=` or has a right side not proven inert; an assignment to a name the file assigned with
+ * `override` earlier (make keeps the override and still reads the right side); a recipe-less target that is not
  * .PHONY and could have a source file (built-in rules); a rule for the makefile
  * itself; two recipes for one target. A Makefile with a NUL byte, or a CR that
  * does not end a CRLF, is `unknown` (control_character). The mapper must re-classify `commands`.
@@ -277,6 +278,8 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
     const changesWhatRuns = (name) => name.startsWith('.') || MAKE_EXECUTION_VARIABLES.has(name) || MAKE_RECIPE_ENV_DENY.test(name) || MAKE_RECIPE_ENV_DENY_ANY_CASE.test(name) || envNames.has(name.toUpperCase());
     const isBuiltin = (name) => MAKE_BUILTIN_VARIABLES.has(name) || MAKE_BUILTIN_VARIABLE_FAMILIES.test(name);
     const commandLine = new Map(Object.entries(options.overrides || {}));
+    // Names the file assigned with `override`: make keeps that value, and ignores every later assignment without `override`.
+    const overridden = new Set();
     // A command-line variable is exported to every recipe and its value is expanded each time make builds a recipe
     // environment, used or not: only a plain value and a name the Makefile itself uses (and that is not one of the lists) are definite.
     const referenced = new Set();
@@ -469,7 +472,10 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
             // dropped assignment: `!=` runs its command, and `:=` / `::=` / `:::=` expand their right side, at read time and
             // under `make -n`. The right side is looked at as if it were assigned (`=`, `?=` and `+=` too: make does not
             // expand those, a call in them is still not proven inert): a call with effects, or a value not understood, is dynamic.
-            if (commandLine.has(name) && !overrideKeyword) {
+            // A name the file assigned with `override` is kept the same way (the value stays, the right side is read as above), and
+            // the answer is not definite: what make keeps is decided by where a name came from, which the later line does not show.
+            const keptByCommandLine = commandLine.has(name);
+            if (!overrideKeyword && (keptByCommandLine || overridden.has(name))) {
                 if (op === '!=')
                     dynamic = true;
                 else {
@@ -486,6 +492,8 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                     if (state.fn)
                         dynamic = true;
                 }
+                if (!keptByCommandLine)
+                    dynamic = true;
                 continue;
             }
             const existing = variables.get(name);
@@ -539,6 +547,9 @@ function resolveMakeTargets(fs, dir, targets, options = {}) {
                 else
                     variables.set(name, { flavor: 'recursive', value: `${existing.value} ${value}`.trim(), unresolved: existing.unresolved });
             }
+            // `?=` on a name that is already defined assigns nothing: it does not make the name an overridden one.
+            if (overrideKeyword && !(op === '?=' && existing !== undefined))
+                overridden.add(name);
             const stored = variables.get(name);
             if (stored !== undefined && stored.value.length > exports.MAX_MAKE_EXPANDED_BYTES)
                 return overBudget;
