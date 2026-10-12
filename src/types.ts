@@ -724,7 +724,8 @@ export interface MarrowTokenValueSignal {
 export interface MarrowModelUsageResult {
   recorded: boolean;
   usage_id: string;
-  token_value_signal: MarrowTokenValueSignal;
+  /** null when the service has no value signal for this account yet; never filled in locally. */
+  token_value_signal: MarrowTokenValueSignal | null;
   value_proof_endpoint: string;
   batch_ingest_equivalent?: Record<string, unknown>;
   exact_next_action: string;
