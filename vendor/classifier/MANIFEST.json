@@ -1,0 +1,25 @@
+{
+  "contract": "marrow.classifier.v1",
+  "source_repo": "getmarrow/marrow-install",
+  "source_commit": "8954813607eca211476ba612f4599a21e1a49946",
+  "source_dir": "src/agentd",
+  "files": {
+    "classifier.js": {
+      "sha256": "cf05fc6601e6361d6088aa77782337fa46bcee52fc58de53cf12fe4bbf1ccc4a",
+      "git_blob": "4e7153d11c9426b45312ce8381a2277498f11f76"
+    },
+    "policy-baseline.js": {
+      "sha256": "f45178172e67169bbc1a6df6eb9732fcf3f621ed2692957560a64f9cdcdb9a44",
+      "git_blob": "01902a31c50f1a9ac9a7d313fb7f78fe20d1401b"
+    },
+    "redact.js": {
+      "sha256": "268b1fbd8023882c4a83cbf0ae3dd7c30d39e015b6e8240cfeb4dc47226546ac",
+      "git_blob": "88a070af2f37e550459f9513dc95e6719f5c6588"
+    },
+    "shell-parse.js": {
+      "sha256": "59bb5f850eb797ea0c3cb6250725b7b2e9b3022e70297ef6c6d5c7e6d38e7c7c",
+      "git_blob": "451344cc34a5df4c4695beae33e56487f854ea58"
+    }
+  },
+  "bundle_sha256": "6708f8e3c6a08f3f0f44e0fb94c3056f15cfbac7b8f378a09bafcb3273c50612"
+}
