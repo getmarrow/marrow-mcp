@@ -177,3 +177,20 @@ test('keyless hook CLI: an action 3.9.103 already passed keeps the 3.9.103 answe
     assert.equal(network(sb), '');
   } finally { sb.cleanup(); }
 });
+
+test('keyless hook CLI: Windsurf and Cline events carry no top-level cwd, so a recursive delete stops there (kept, fail-closed)', () => {
+  const sb = sandbox();
+  try {
+    for (const command of ['rm -rf build', 'rm -r dist', 'find . -name x -delete']) {
+      const cline = cli(sb, 'cline', shell(sb, 'cline', command));
+      assert.equal(cline.json.cancel, true, `cline ${command}: ${cline.stdout}`);
+      assert.match(cline.json.errorMessage, /^MARROW SEATBELT stopped this action: /);
+      const ws = cli(sb, 'windsurf', shell(sb, 'windsurf', command));
+      assert.equal(ws.status, 2, `windsurf ${command}`);
+      assert.match(ws.stderr, /^MARROW SEATBELT stopped this action: /);
+    }
+    // The same delete with a known workspace (Claude Code's top-level cwd) is ordinary work.
+    assert.deepEqual(cli(sb, 'claude-code', shell(sb, 'claude-code', 'rm -rf build')).json, {});
+    assert.equal(network(sb), '');
+  } finally { sb.cleanup(); }
+});
