@@ -58,13 +58,14 @@ function interpret(result) {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, text, permission, decision: result.status === 2 || permission === 'deny' ? 'stop' : 'pass' };
 }
 
-function sh(sb, harness, command, options = {}) {
+function run(sb, harness, hookEvent, options = {}) {
   const result = spawnSync(process.execPath, ['--require', PRELOAD, CLI, ENTRY[harness], ...(options.args || [])], {
-    cwd: sb.proj, input: JSON.stringify(event(harness, command, sb.proj)), encoding: 'utf8', timeout: 30_000, env: childEnv(sb, options.env),
+    cwd: sb.proj, input: JSON.stringify(hookEvent), encoding: 'utf8', timeout: 30_000, env: childEnv(sb, options.env),
   });
   assert.equal(result.error, undefined);
   return interpret(result);
 }
+const sh = (sb, harness, command, options) => run(sb, harness, event(harness, command, sb.proj), options);
 
 const network = (sb) => (fs.existsSync(sb.netspy) ? fs.readFileSync(sb.netspy, 'utf8') : '');
 const receiptsOf = (sb) => readReceipts(sb.home);
@@ -222,15 +223,18 @@ test('U6 hook: account mode (a key) in watch records the floor as a pass with th
       const file = path.join(mockDir, 'requests.jsonl');
       const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
       fs.rmSync(file, { force: true });
-      return text.replace(/"(?:ts|at|timestamp|occurred_at|created_at|sent_at|started_at|deadline_at|expires_at)":"[^"]*"/g, '"t":"-"');
+      // Times and the per-call random ids (event_id suffix, idempotency_key) differ between any two runs of the same hook.
+      return text.replace(/"(?:ts|at|timestamp|occurred_at|created_at|sent_at|started_at|deadline_at|expires_at)":"[^"]*"/g, '"t":"-"')
+        .replace(/"(event_id|idempotency_key)":"[^"]*"/g, '"$1":"-"');
     };
     let withRequests = 0;
     for (const harness of HARNESSES) {
       for (const [command, wouldStop] of [['git push -f origin main', true], ['npm publish', true], ['cat ~/.ssh/id_ed25519', true], ['ls -la', false], ['git push origin main', false]]) {
         const before = receiptsOf(sb).length;
-        const withFloor = sh(sb, harness, command, { env: account });
+        const sameEvent = event(harness, command, sb.proj);
+        const withFloor = run(sb, harness, sameEvent, { env: account });
         const sentWith = requests();
-        const without = sh(sb, harness, command, { env: { ...account, SBT_THROW: 'load' } });
+        const without = run(sb, harness, sameEvent, { env: { ...account, SBT_THROW: 'load' } });
         const sentWithout = requests();
         assert.equal(withFloor.stdout, without.stdout, `${harness} ${command}: the same answer`);
         assert.equal(withFloor.status, without.status);
