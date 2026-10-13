@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_OFFLINE_TEXT = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
 exports.isMarrowControlTimeout = isMarrowControlTimeout;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.heldActionHookOutput = heldActionHookOutput;
@@ -115,6 +115,8 @@ function isMarrowControlOutage(error) {
 exports.HOLD_OWNER_DENIAL = 'Marrow is holding this action for approval. Retry it after approval.';
 /** Marrow did not answer within the hook's time limit: an action that can be held stays held. */
 exports.HELD_SLOW_TEXT = 'Marrow did not answer in time, so this action is held. Retry it in a moment.';
+/** Marrow cannot be reached (a real outage): a high-risk action fails closed; routine actions keep the outage allow. */
+exports.HELD_OFFLINE_TEXT = 'Marrow cannot be reached right now, so this high-risk action is held; routine actions keep running. Retry it when Marrow is back.';
 /** The only denial @getmarrow/install's Grok guard passes through (any other output blocks with a launch failure). */
 exports.GROK_FIXED_DENIAL = 'Marrow blocked this protected action.';
 /**
@@ -239,7 +241,7 @@ function plainControlFix(error) {
 }
 // Names a reached control failure by HTTP status and stable failure code, with a plain
 // fix (see plainControlFix); private service text is never echoed into the agent transcript.
-function controlRejectionMessage(error, agentId) {
+function controlRejectionMessage(error, agentId, kind = controlFailureKind(error)) {
     const detail = [];
     if (error instanceof request_reliability_1.MarrowRequestError) {
         if (typeof error.status === 'number' && Number.isInteger(error.status))
@@ -249,7 +251,6 @@ function controlRejectionMessage(error, agentId) {
             detail.push(code);
     }
     const suffix = detail.length ? ` (${detail.join(' ')})` : '';
-    const kind = controlFailureKind(error);
     if (kind === 'credential_scope') {
         const agent = agentId && SAFE_AGENT_ID.test(agentId)
             ? `agent "${agentId}"`
@@ -1183,6 +1184,11 @@ async function runPreActionHook(input, watch) {
     });
     // The decision and gate receipt this control path holds, so a denial can close them.
     const held = { decisionId: null, gateReceiptId: null };
+    // Set once the runtime gate has answered. A later network or 5xx failure (decision, permit issue
+    // or verify) on a high-risk action is a reached answer that no permit can be had: a denial, never
+    // "offline, allowed". Routine actions keep the outage policy (failure_mode low_risk_behavior).
+    const reach = { gateAnswered: false };
+    const highRisk = classified.protected || classified.risk === 'high';
     const control = async (signal) => {
         const runtime = await (0, index_1.marrowAgentRuntime)(resolved.apiKey, baseUrl, {
             action: classified.action,
@@ -1197,6 +1203,7 @@ async function runPreActionHook(input, watch) {
             // non-durable fast_gate receipt can never back an action permit.
             ...(enforcementRequired ? { risk_level: classified.risk } : {}),
         }, sessionId, agentId, signal);
+        reach.gateAnswered = true;
         const heldIds = [...new Set([runtime.decision_id, runtime.completion_contract?.decision_id, runtime.runtime_authorization?.decision_id]
                 .filter((value) => typeof value === 'string' && SAFE_DECISION_ID.test(value)))];
         held.decisionId = heldIds.length === 1 ? heldIds[0] : null;
@@ -1298,7 +1305,7 @@ async function runPreActionHook(input, watch) {
                 timedOut: true,
                 enforcementError: hook_contract_1.MARROW_OUTAGE_WARNING,
             }
-            : isMarrowControlOutage(error)
+            : isMarrowControlOutage(error) && !(reach.gateAnswered && highRisk)
                 ? {
                     runtime: null,
                     permit: null,
@@ -1306,13 +1313,21 @@ async function runPreActionHook(input, watch) {
                     outage: true,
                     enforcementError: hook_contract_1.MARROW_OUTAGE_WARNING,
                 }
-                : {
-                    runtime: null,
-                    permit: null,
-                    protectedRisk: enforcementRequired,
-                    enforcementError: controlRejectionMessage(error, agentId),
-                    ...(controlFailureKind(error) ? { failure: controlFailureKind(error) } : {}),
-                })),
+                : isMarrowControlOutage(error)
+                    ? {
+                        runtime: null,
+                        permit: null,
+                        protectedRisk: enforcementRequired,
+                        enforcementError: controlRejectionMessage(error, agentId, 'unavailable'),
+                        failure: 'unavailable',
+                    }
+                    : {
+                        runtime: null,
+                        permit: null,
+                        protectedRisk: enforcementRequired,
+                        enforcementError: controlRejectionMessage(error, agentId),
+                        ...(controlFailureKind(error) ? { failure: controlFailureKind(error) } : {}),
+                    })),
         lifecycle,
     ]);
     const claudePrompt = ownerApprovalPrompt(identity.harness, source);
@@ -1330,10 +1345,15 @@ async function runPreActionHook(input, watch) {
     }
     if (result.outage) {
         // Marrow cannot be reached. An action in a category the account owner
-        // protects stays held on every host; everything else keeps the outage policy.
+        // protects stays held on every host; a high-risk action fails closed (high-risk
+        // work needs a fresh gate); routine actions keep the outage policy.
         const protectedNow = (0, host_approval_1.protectedAmong)(holdContext, localApprovalCategories(classified));
         if (protectedNow.length) {
             emitHeldPlan(identity.harness, { kind: 'deny', agentText: host_approval_1.HELD_UNREACHABLE_TEXT, userText: host_approval_1.HELD_UNREACHABLE_TEXT, code: false });
+            return;
+        }
+        if (highRisk) {
+            emitHeldPlan(identity.harness, { kind: 'deny', agentText: exports.HELD_OFFLINE_TEXT, userText: exports.HELD_OFFLINE_TEXT, code: false });
             return;
         }
     }

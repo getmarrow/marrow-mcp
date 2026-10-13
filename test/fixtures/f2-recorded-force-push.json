@@ -1,0 +1,326 @@
+{
+ "recorded_from": "local wrangler dev of backend d4f07a02 (same Worker code as production), keyed fresh account, claude hook, git push --force origin main",
+ "runtime": {
+  "data": {
+   "ok": true,
+   "action": "classified Bash action: review on github",
+   "requested_action": "classified Bash action: review on github",
+   "agent_id": "free-seat-olmkiglhhjdpdbjopemhaembnaiognkf",
+   "session_id": "k-claude",
+   "decision_id": "rtdec_0b4ce85673574c5d09c0307d2f021d97e0b7a5ca",
+   "runtime_authorization": {
+    "id": "cdfc8ee4-c6c7-47ef-a8e0-a8b129281d23",
+    "kind": "durable_gate_receipt",
+    "durable": true,
+    "decision_state": "created",
+    "decision_creation_required": false,
+    "decision_creation_endpoint": null,
+    "commit_endpoint": "/v1/agent/commit",
+    "commit_with": "decision_id",
+    "decision_id": "rtdec_0b4ce85673574c5d09c0307d2f021d97e0b7a5ca"
+   },
+   "decision": "warn",
+   "enforcement_decision": "warn",
+   "risk_gate_enforced": true,
+   "risk_gate_entitled": true,
+   "risk_level": "medium",
+   "before_you_act": "Verify default branch and remote HEAD after merge or branch-setting changes.",
+   "exact_next_action": "Continue this exact governed action, then commit the existing decision. Do not call /v1/agent/think again.",
+   "gate_receipt_id": "cdfc8ee4-c6c7-47ef-a8e0-a8b129281d23",
+   "gate_required": true,
+   "proof_required": true,
+   "proof_complete": false,
+   "completion_contract": {
+    "must_commit_outcome": true,
+    "commit_endpoint": "/v1/agent/commit",
+    "required_commit_fields": [
+     "decision_id",
+     "success",
+     "outcome",
+     "gate_receipt_id"
+    ],
+    "gate_receipt_required": true,
+    "arbitration_receipt_required": false,
+    "arbitration_receipt_id": null,
+    "owner_approval": null,
+    "proof_required_before_complete": true,
+    "required_proof_fields": [
+     "summary",
+     "checks",
+     "outcome",
+     "blockers",
+     "commits_prs_shas"
+    ],
+    "missing_proof_fields": [
+     "summary",
+     "checks",
+     "outcome",
+     "blockers",
+     "commits_prs_shas"
+    ],
+    "decision_creation_required": false,
+    "decision_creation_endpoint": null,
+    "decision_state": "created",
+    "commit_with": "decision_id",
+    "decision_id": "rtdec_0b4ce85673574c5d09c0307d2f021d97e0b7a5ca"
+   },
+   "arbitration": null,
+   "oh_shit_brief": {
+    "headline": "Marrow detected source control risk before action.",
+    "risk_level": "medium",
+    "gate_decision": "warn",
+    "why_it_matters": [
+     "Source-control workflow can affect shared code or release state.",
+     "Missing proof fields: summary, checks, outcome, blockers, commits_prs_shas"
+    ],
+    "before_you_act": "Verify default branch and remote HEAD after merge or branch-setting changes.",
+    "value_signal": "0 decisions logged",
+    "exact_next_action": "Continue this exact governed action, then commit the existing decision. Do not call /v1/agent/think again."
+   },
+   "policy_mode": {
+    "mode": "pilot",
+    "source": "risk_category",
+    "risk_categories": [
+     {
+      "category": "source_control",
+      "required_mode": "pilot",
+      "reason": "Source-control workflow can affect shared code or release state."
+     }
+    ],
+    "user_override_required_for_enforce": false,
+    "exact_next_action": "Review the gate guidance before acting; commit the outcome after completion."
+   },
+   "latency_budget": {
+    "contract_version": "agent_hot_path_v4",
+    "runtime_target_p95_ms": 900,
+    "commit_target_p95_ms": 700,
+    "ingest_accept_target_p95_ms": 200,
+    "status_fast_target_p95_ms": 100,
+    "current_strategy": "bounded_full_runtime",
+    "low_risk_runtime_reuse_ttl_seconds": 0,
+    "max_inline_work_ms": 120,
+    "query_budget": {
+     "status_summary_max_queries": 15,
+     "deep_intelligence_sync_allowed": true,
+     "template_learning_sync_allowed": false,
+     "value_proof_sync_allowed": true
+    },
+    "async_work": [
+     "telemetry_ingest",
+     "template_learning",
+     "summary_refresh",
+     "deep_value_proof"
+    ],
+    "exact_next_action": "Keep low-risk calls on runtime fast path; use full runtime only before risky actions."
+   },
+   "failure_mode": {
+    "if_marrow_unreachable": "fail_closed_for_high_risk",
+    "low_risk_behavior": "continue_with_cached_policy_and_commit_outcome_when_service_recovers",
+    "high_risk_behavior": "stop_or_request_owner_approval_until_runtime_gate_and_proof_pack_are_available",
+    "cached_policy_allowed": false,
+    "owner_approval_required_when_uncertain": true,
+    "agent_instruction": "Do not continue high-risk work if Marrow runtime, gate receipt, or required proof cannot be obtained."
+   },
+   "workflow_recommendation": null,
+   "identified_workflow": {
+    "contract": "marrow.identified-workflow.v1",
+    "matched": false,
+    "skip_rediscovery": false,
+    "confidence": 0,
+    "source": "none",
+    "id": null,
+    "name": null,
+    "steps": [],
+    "avoid": [],
+    "reuse_instruction": "No identified workflow yet. Complete the checks, then commit the outcome so Marrow can reuse this path.",
+    "repeated_mistake": null,
+    "token_savings": {
+     "expected_tokens_saved": 0,
+     "method": "warming_up",
+     "basis": "no_identified_workflow",
+     "confidence": "none"
+    },
+    "edge": {
+     "checks": "Complete the minimum checks, then commit so Marrow can identify this workflow.",
+     "calls": "Call runtime before risky work. Marrow will identify this workflow after outcomes close.",
+     "outcomes": "Commit the outcome so the next agent inherits this path and any token savings."
+    },
+    "exact_next_action": "No identified workflow yet. Complete the checks, then commit the outcome so Marrow can reuse this path."
+   },
+   "relevant_lessons": [],
+   "tenant_prior_failure": null,
+   "health": "healthy",
+   "missed_hooks": [],
+   "performance": {
+    "mode": "bounded_full_runtime",
+    "target_p95_ms": 900,
+    "max_inline_work_ms": 120,
+    "trusted_summary_source": "miss",
+    "trusted_summary_freshness": "missing",
+    "deferred_side_effects": [
+     "workflow_lifecycle_events",
+     "gate_audit_log",
+     "lesson_reuse_counter",
+     "drift_signal"
+    ],
+    "timings": {
+     "decision_reconciliation_ms": 52,
+     "decision_authority_fast_target_ms": 750,
+     "decision_authority_hard_cap_ms": 2000,
+     "brief_summary_read_ms": 85,
+     "initial_guidance_ms": 170,
+     "trusted_summary_used": 0,
+     "lifecycle_ms": 95,
+     "decision_authority_total_ms": 210,
+     "decision_authority_tail_recovered": 0,
+     "optional_intelligence_ms": 42,
+     "gate_persist_ms": 38,
+     "workspace_twin_ms": 0,
+     "total_build_ms": 405,
+     "auth_singleflight_leader": 1,
+     "auth_resolution_total_ms": 8,
+     "auth_primary_attempts": 0,
+     "auth_secondary_started": 0,
+     "auth_coordinator_ms": 8,
+     "auth_last_known_good_available": 1,
+     "auth_singleflight_wait_ms": 5,
+     "auth_key_lookup_ms": 50,
+     "auth_account_lookup_ms": 0,
+     "auth_distributed_coordinator": 1,
+     "auth_total_ms": 19,
+     "auth_ms": 19,
+     "parse_ms": 2,
+     "agent_resolve_ms": 0,
+     "rate_limit_ms": 63,
+     "idempotency_ms": 19,
+     "plan_access_ms": 21,
+     "runtime_build_ms": 474,
+     "total_before_response_ms": 607
+    },
+    "observed_request_budget": {
+     "target_p95_ms": 900,
+     "observed_total_before_response_ms": 607,
+     "observed_runtime_build_ms": 474,
+     "within_request_budget": true,
+     "status": "pass",
+     "measurement_scope": "current_request"
+    }
+   },
+   "capacity_guidance": {
+    "state": "watch",
+    "admission_source": "tenant_coordinator",
+    "cache_ttl_seconds": 45,
+    "recommended_batch_size": 100,
+    "retry_after_seconds": 0,
+    "safe_parallelism_hint": 25,
+    "status_poll_interval_seconds": 10,
+    "runtime_reuse_ttl_seconds": 45,
+    "low_risk_continue_after_accept": true,
+    "high_risk_requires_fresh_gate": true,
+    "tenant_isolation": {
+     "per_agent_fairness": true,
+     "per_tenant_fairness": true,
+     "critical_runtime_commit_capacity_reserved": true,
+     "analytics_shed_before_control_plane": true
+    },
+    "signals": [
+     "backpressure:unknown",
+     "observed_latency_above_target"
+    ],
+    "exact_next_action": "Keep working, batch telemetry, reuse cached low-risk guidance, and reduce parallel calls to the safe hint."
+   },
+   "plan_access": {
+    "plan": "evaluation",
+    "evaluation_access": true,
+    "features": {
+     "pre_action_risk_gates": true,
+     "production_action_enforcement": true,
+     "fleet_learning": true
+    },
+    "limits": {
+     "agents": 3,
+     "included_decisions_per_month": 3000,
+     "decision_overage_behavior": "continue_logging"
+    }
+   },
+   "idempotency_key": "mcp-runtime-6da0a952-d563-4aa4-a938-4e1a19e36306",
+   "idempotency_persistence": "durable",
+   "response_mode": "slim",
+   "event": {
+    "event_id": "59cd1e21-0f50-4c6a-83c7-65762add9cc6",
+    "latency_ms": 586,
+    "latency_bucket": "500-999ms"
+   },
+   "client_update": {
+    "package": "@getmarrow/mcp",
+    "installed_version": "3.9.102",
+    "latest_version": "3.9.102",
+    "version_status": "current",
+    "update_available": false,
+    "notification_state": "none",
+    "metadata_status": "accepted",
+    "automatic_detection": true,
+    "automatic_local_mutation": false,
+    "operator_approval_expected": true,
+    "update_command": "npx @getmarrow/mcp@latest setup",
+    "auto_update_command": "npx @getmarrow/install@latest update",
+    "verification_command": "npx @getmarrow/install@latest doctor",
+    "owner_notice": null,
+    "agent_instruction": null,
+    "packages": [
+     {
+      "package": "@getmarrow/install",
+      "installed_version": null,
+      "latest_version": "0.1.70",
+      "version_status": "unknown",
+      "update_available": null,
+      "notification_state": "unknown",
+      "update_command": "npx @getmarrow/install@latest update"
+     },
+     {
+      "package": "@getmarrow/sdk",
+      "installed_version": null,
+      "latest_version": "3.7.65",
+      "version_status": "unknown",
+      "update_available": null,
+      "notification_state": "unknown",
+      "update_command": "npx @getmarrow/install@latest update"
+     },
+     {
+      "package": "@getmarrow/mcp",
+      "installed_version": "3.9.102",
+      "latest_version": "3.9.102",
+      "version_status": "current",
+      "update_available": false,
+      "notification_state": "none",
+      "update_command": "npx @getmarrow/mcp@latest setup"
+     }
+    ],
+    "security_policy": {
+     "source": "none",
+     "minimum_secure_version": null
+    }
+   }
+  }
+ },
+ "enforcement_issue": {
+  "status": 503,
+  "body": {
+   "error": "Action permit control plane is unavailable.",
+   "code": "SERVICE_UNAVAILABLE",
+   "details": {
+    "code": "MARROW_ACTION_PERMIT_UNAVAILABLE",
+    "message": "Action permit control plane is unavailable.",
+    "retryable": true,
+    "safe_to_continue": false,
+    "severity": "high",
+    "recommended_action": "Retry after the dependency or storage layer is healthy.",
+    "exact_next_action": "Retry after the dependency or storage layer is healthy.",
+    "exact_fix": "Configure ACTION_PERMIT_SIGNING_KEY before enabling protected action enforcement.",
+    "docs_url": "https://getmarrow.ai/docs/errors#marrow-action-permit-unavailable",
+    "correlation_id": "839df7e7-8633-4290-acb9-fd5ef314b4c4",
+    "request_id": "839df7e7-8633-4290-acb9-fd5ef314b4c4"
+   }
+  }
+ }
+}

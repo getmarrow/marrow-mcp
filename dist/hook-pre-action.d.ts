@@ -37,6 +37,8 @@ type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'gr
 export declare const HOLD_OWNER_DENIAL = "Marrow is holding this action for approval. Retry it after approval.";
 /** Marrow did not answer within the hook's time limit: an action that can be held stays held. */
 export declare const HELD_SLOW_TEXT = "Marrow did not answer in time, so this action is held. Retry it in a moment.";
+/** Marrow cannot be reached (a real outage): a high-risk action fails closed; routine actions keep the outage allow. */
+export declare const HELD_OFFLINE_TEXT = "Marrow cannot be reached right now, so this high-risk action is held; routine actions keep running. Retry it when Marrow is back.";
 /** The only denial @getmarrow/install's Grok guard passes through (any other output blocks with a launch failure). */
 export declare const GROK_FIXED_DENIAL = "Marrow blocked this protected action.";
 /**
@@ -67,7 +69,7 @@ type PreActionControlResult = {
 };
 export declare function isMarrowOutage(result: PreActionControlResult): boolean;
 export declare function controlFailureKind(error: unknown): PreActionControlResult['failure'];
-export declare function controlRejectionMessage(error: unknown, agentId?: string): string;
+export declare function controlRejectionMessage(error: unknown, agentId?: string, kind?: PreActionControlResult['failure']): string;
 export type OwnerApprovalPrompt = {
     available: boolean;
     unavailableReason: string;

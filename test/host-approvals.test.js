@@ -852,7 +852,8 @@ test('MEDIUM-2: an owner-protected category stays held during an outage on every
       assert.ok(denied(out), `${entrypoint}: ${out.stdout || out.stderr}`);
     } finally { h.cleanup(); }
   }
-  // Not protected (the owner removed it): the existing outage policy applies.
+  // Not protected (the owner removed it): a high-risk action still fails closed in an outage (F2,
+  // failure_mode fail_closed_for_high_risk); a routine action keeps the outage policy.
   const u = harness();
   try {
     u.setConfig({ runtime: verifiedRuntime('gate-learn'), status: { 'gate-learn': 'pending' } });
@@ -861,8 +862,12 @@ test('MEDIUM-2: an owner-protected category stays held during an outage on every
     u.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'later-session' });
     u.setConfig({ runtimeUnreachable: true, statusUnreachable: true });
     const out = u.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'outage-session' });
-    assert.equal(out.json.hookSpecificOutput.permissionDecision, undefined);
-    assert.match(out.json.hookSpecificOutput.additionalContext, /offline/i);
+    assert.equal(out.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /cannot be reached right now, so this high-risk action is held/);
+    assert.doesNotMatch(out.json.hookSpecificOutput.permissionDecisionReason, /could not confirm the owner's approval/);
+    const routine = u.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'outage-session', tool_use_id: 'routine-outage', tool_input: { command: 'touch notes.txt' } });
+    assert.equal(routine.json.hookSpecificOutput.permissionDecision, undefined);
+    assert.match(routine.json.hookSpecificOutput.additionalContext, /offline/i);
   } finally { u.cleanup(); }
 });
 
@@ -1121,8 +1126,10 @@ test('HIGH-N1: a timeout is never an outage; a routine action keeps flowing, and
     assert.equal(routine.json?.hookSpecificOutput?.permissionDecision, undefined, 'a routine action keeps flowing');
     h.setConfig({ runtimeDelayMs: 0, runtimeUnreachable: true });
     const down = await h.runAsync('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_down' }, codexExec);
-    assert.equal(down.json.hookSpecificOutput.permissionDecision, undefined, 'a real outage keeps the existing outage policy');
-    assert.match(down.json.hookSpecificOutput.additionalContext, /offline/i);
+    assert.equal(down.json.hookSpecificOutput.permissionDecision, 'deny', 'a real outage holds a high-risk action (F2)');
+    const routineDown = await h.runAsync('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_touch_down', tool_input: { command: 'touch notes.txt' } }, codexExec);
+    assert.equal(routineDown.json.hookSpecificOutput.permissionDecision, undefined, 'a real outage keeps the existing outage policy for routine actions');
+    assert.match(routineDown.json.hookSpecificOutput.additionalContext, /offline/i);
   } finally { h.cleanup(); }
 });
 
