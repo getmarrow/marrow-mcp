@@ -167,6 +167,9 @@ test('keyless hook CLI: an action 3.9.103 already passed keeps the 3.9.103 answe
     // Read-only on Claude Code and Gemini: the 3.9.103 read-only pass.
     assert.deepEqual(cli(sb, 'claude-code', shell(sb, 'claude-code', 'ls -la')).json, {});
     assert.equal(cli(sb, 'gemini', shell(sb, 'gemini', 'git status')).stdout.trim(), '{"decision":"allow"}');
+    // Read-only on Grok (a file read): Grok holds everything else, but a read-only action keeps the 3.9.103 pass.
+    const grokRead = { hookEventName: 'PreToolUse', sessionId: 'g-ro', toolUseId: 't', toolName: 'read_file', toolInput: { path: 'README.md' }, cwd: sb.proj };
+    assert.deepEqual(cli(sb, 'grok', grokRead).json, { decision: 'allow' });
     // A seatbelt stop keeps the deny shape on every host (it is not routed through the pass).
     for (const harness of HARNESSES.filter((h) => h !== 'mcp-client')) {
       const out = cli(sb, harness, shell(sb, harness, 'npm publish'));
