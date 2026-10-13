@@ -4919,9 +4919,11 @@ function protectedOperand(a, ctx, run, opts, depth) {
         for (const p of abs) {
             for (const r of new Set([...realCandidates(p, run, true), ...realCandidates(p, run, false)])) {
                 const probe = run.fold ? r.toLowerCase() : r;
-                if (run.isOperandProtected(probe) && !(opts.secretStopped && isSecretPath(r, run)))
+                // A secret path that already stopped as S4 keeps that answer (the action stops either way).
+                const secretCovered = () => opts.secretStopped && run.hits.some((h) => h.category === 'S4') && isSecretPath(r, run);
+                if (run.isOperandProtected(probe) && !secretCovered())
                     return hit(run, 'S0', 'protected_path_operand');
-                if (tree && insideHomeOrWorkspace(probe, run) && run.protectedAnchors.some((anchor) => isAncestorOrSelf(probe, anchor)))
+                if (tree && insideHomeOrWorkspace(probe, run) && run.protectedAnchors.some((anchor) => isAncestorOrSelf(probe, anchor)) && !secretCovered())
                     return hit(run, 'S0', 'protected_path_operand_folder');
             }
         }
