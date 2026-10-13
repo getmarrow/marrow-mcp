@@ -273,6 +273,27 @@ test('U6 collision: workspace_key and session_key are keyed; the same action in 
   assert.ok(!raw.includes('proj-a') && !raw.includes('proj-b') && !raw.includes(h.home) && !raw.includes('sess1'));
 }));
 
+test('U6 collision: all three keys are keyed per device: the same action, workspace and session on two devices share nothing; none is a plain hash', () => withHome((h) => {
+  const other = scratchHome();
+  try {
+    const shared = path.join(h.root, 'shared-workspace');
+    fs.mkdirSync(path.join(shared, '.git'), { recursive: true });
+    const run = (home) => { put(home, record(), bash('npm test', { cwd: shared, session: 'one-session-id' })); return last(home); };
+    const a = run(h);
+    const b = run(other);
+    for (const key of ['action_key', 'workspace_key', 'session_key']) assert.notEqual(a[key], b[key], `${key} differs between devices`);
+    const plain = (text) => crypto.createHash('sha256').update(text).digest('hex').slice(0, 32);
+    const realShared = fs.realpathSync(shared);
+    for (const key of [plain(realShared), plain(`path\n${realShared}`), plain('one-session-id'), plain(`id\n${'one-session-id'}`), plain('npm test')]) {
+      assert.ok(![a.workspace_key, a.session_key, a.action_key].includes(key), 'a key is a plain sha256 of its input');
+    }
+    // The salt is the key: the same device with another salt gets other keys for the same input.
+    fs.writeFileSync(path.join(h.sb, 'salt'), crypto.randomBytes(32), { mode: 0o600 });
+    const c = run(h);
+    for (const key of ['action_key', 'workspace_key', 'session_key']) assert.notEqual(a[key], c[key], `${key} follows the salt`);
+  } finally { other.cleanup(); }
+}));
+
 // ------------------------------------------------------------------------------ what a receipt says
 
 test('U6 fields: programs and subcommand come only from the vocabulary; target_class names only what the reasons prove', () => withHome((h) => {
