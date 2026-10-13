@@ -786,7 +786,10 @@ function lengthOf(value) {
  * What identifies a tool call in ids sent to Marrow: its normalized action
  * (secrets replaced by markers, data hashed), never the raw input, which may
  * hold a secret. No deadline (only the size caps), so every hook process
- * derives the same identity for the same call.
+ * derives the same identity for the same call. A truncated action is
+ * identified by its exact_hmac (keyed on this machine; only certain
+ * credentials hidden), so a held call's approval is only ever resumed by the
+ * same exact call; a truncated action without one matches nothing.
  */
 function actionIdentity(toolName, toolInput) {
     if (lastIdentity && lastIdentity.toolName === toolName && lastIdentity.toolInput === toolInput)
@@ -794,8 +797,10 @@ function actionIdentity(toolName, toolInput) {
     const action = (0, normalized_action_1.normalizedHookAction)({ tool_name: toolName, tool_input: toolInput }, { deadlineAt: Number.POSITIVE_INFINITY });
     // A placeholder (input over the size caps) keeps the input's length, so two such calls rarely share it.
     const placeholder = Object.keys(action.tool_input).length === 0;
+    const exact = action.tool_input.exact_hmac;
     const value = {
-        kind: action.tool_kind, programs: action.programs ?? null, paths: action.paths ?? null, input: action.tool_input,
+        kind: action.tool_kind, programs: action.programs ?? null, paths: action.paths ?? null,
+        input: action.truncated === true && (typeof exact !== 'string' || !/^[0-9a-f]{32}$/.test(exact)) ? { unmatched: (0, node_crypto_1.randomUUID)() } : action.tool_input,
         ...(placeholder ? { size: lengthOf(toolInput) } : {}),
     };
     lastIdentity = { toolName, toolInput, value };
