@@ -24,6 +24,12 @@ test('reading the receipts salt stops as S4, by shell and by file tool', () => {
     assert.equal(d.decision, 'stop', cmd);
     assert.equal(d.category, 'S4', `${cmd}: ${d.category} ${d.reasons}`);
   }
+  // Text the parser cannot read still names the salt as a secret (tripwire), next to the S0 self-protection hit.
+  for (const cmd of ['cat ~/.marrow/seatbelt/salt "', 'x=$(cat ~/.marrow/seatbelt/salt']) {
+    const d = sh(cmd);
+    assert.equal(d.decision, 'stop', cmd);
+    assert.ok(d.reasons.includes('tripwire_secret_path'), `${cmd}: ${d.reasons}`);
+  }
   for (const name of ['Read', 'Grep']) {
     const d = tool(name, name === 'Read' ? { file_path: '/home/u/.marrow/seatbelt/salt' } : { pattern: 'x', path: '/home/u/.marrow/seatbelt/salt' });
     assert.equal(d.decision, 'stop', name);
