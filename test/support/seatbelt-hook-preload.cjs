@@ -9,6 +9,7 @@
 //   SBT_FS_FAULT     ENOSPC | EACCES: a write to (ENOSPC) or an open of (EACCES) a receipt file fails (U6)
 //   SBT_THROW        mapper | mode | git | load | record: that seatbelt part throws
 //   SBT_SLOW_MS      the mapper sleeps this long first (the hook budget is 300 ms)
+//   SBT_ROLLOUT_KEYLESS  off: SEATBELT_ROLLOUT.keyless is forced to 'off' (the kill switch, audit I1)
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -99,6 +100,11 @@ if (fault === 'mapper') wrapAfterLoad('seatbelt/mapper.js', (m) => { m.evaluateS
 if (fault === 'mode') wrapAfterLoad('seatbelt-mode.js', (m) => { m.resolveSeatbeltModeOnHost = () => { throw new Error('injected mode crash'); }; });
 if (fault === 'git') wrapAfterLoad('seatbelt-git.js', (m) => { m.discoverGitDirs = () => { throw new Error('injected resolver crash'); }; });
 if (fault === 'record') wrapAfterLoad('seatbelt/record.js', (m) => { m.recordSeatbeltDecision = () => { throw new Error('injected record crash'); }; });
+
+if (env.SBT_ROLLOUT_KEYLESS) {
+  const keyless = env.SBT_ROLLOUT_KEYLESS;
+  wrapAfterLoad('seatbelt/hook.js', (m) => { m.SEATBELT_ROLLOUT = Object.freeze({ ...m.SEATBELT_ROLLOUT, keyless }); });
+}
 
 if (env.SBT_SLOW_MS) {
   const ms = Number(env.SBT_SLOW_MS);
