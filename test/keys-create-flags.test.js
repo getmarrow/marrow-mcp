@@ -113,4 +113,7 @@ test('keys create: values are sent as typed (the server validates them)', () => 
   assert.equal(sent('--name', 'n', '--expires', ' 2030-01-01 ').expires_at, ' 2030-01-01 ');
   assert.equal(sent('--name', 'n', '--type=Test').key_type, 'Test');
   assert.equal(sent('--name', 'n', '--type', 'prod').key_type, 'prod');
+  // Only ASCII blanks make a value blank (the --scopes rule): a non-breaking space is sent for the server to judge.
+  assert.equal(sent('--name', ' ').name, ' ');
+  assert.equal(sent('--name', 'n', '--expires= ').expires_at, ' ');
 });
