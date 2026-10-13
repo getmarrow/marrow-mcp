@@ -40,6 +40,18 @@ const SEATBELT_PROTECTED_EXTRA = [
 // Folders whose removal or move takes a Marrow plugin with it (rm -rf ~/.claude/plugins/cache, mv ~/.npm/_npx x).
 const SEATBELT_ANCHORS_EXTRA = ['.claude/plugins/cache/getmarrow', '.claude/plugins/marketplaces/getmarrow', '.codex/plugins/cache/getmarrow', '.npm/_npx/*/node_modules/@getmarrow'];
 
+// NEW-2: the operand rule leaves out the system trees and the secret stores. System files are read as
+// operands all the time (`gcc -I/usr/include`, `kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml`,
+// `nginx -c /etc/nginx/nginx.conf`); the secret stores already stop as an S4 operand for these programs.
+// The modelled writers (tee, cp, mv, sed -i, dd of= …) still stop on the whole protected set. The /etc
+// files that start shells, load libraries, grant sudo, steer npm and git, name hosts or hold Claude Code's
+// managed settings stay in.
+const OPERAND_RULE_OMITS = new Set(['/etc/**', '/usr/**', '/bin/**', '/sbin/**', '/boot/**', '/lib/**', '/var/lib/**', '/System/**',
+  '**/.ssh/**', '**/.aws/**', '**/.kube/**', '**/.docker/config.json', '**/.git-credentials']);
+const OPERAND_RULE_EXTRA = ['/etc/profile', '/etc/profile.d/**', '/etc/bash.bashrc', '/etc/bashrc', '/etc/zshrc', '/etc/zsh/**', '/etc/zprofile',
+  '/etc/zshenv', '/etc/zlogin', '/etc/environment', '/etc/sudoers', '/etc/sudoers.d/**', '/etc/ld.so.preload', '/etc/ld.so.conf', '/etc/ld.so.conf.d/**',
+  '/etc/npmrc', '/etc/gitconfig', '/etc/hosts', '/etc/claude-code/**', '/usr/local/etc/npmrc', '/usr/local/etc/gitconfig'];
+
 interface Slot { type: string; name?: string }
 interface Word { text: string; dynamic: boolean; quoted: boolean; substitution: boolean; variables: string[]; slots: Slot[]; glob?: boolean }
 interface Redirect { op: string; fd: string | null; target: Word | null }
@@ -136,6 +148,8 @@ interface Run {
   wsRoots: string[];
   tmpRoots: string[];
   isProtected: (abs: string) => boolean;
+  // NEW-2: the protected set for operands of programs that are not known readers (see protectedOperandCheck).
+  isOperandProtected: (abs: string) => boolean;
   protectedAnchors: string[];
   secretRegexes: RegExp[];
   branchRegexes: RegExp[];
@@ -874,6 +888,8 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     else if (p.startsWith('/') && !p.includes('*', 1)) anchors.push(p);
   }
   for (const rel of SEATBELT_ANCHORS_EXTRA) anchors.push(path.posix.join(home, rel));
+  const operandRegexes = [...protectedPatterns.filter((p) => !OPERAND_RULE_OMITS.has(p)), ...OPERAND_RULE_EXTRA]
+    .map((p) => classifierModule.globToRegex(fold ? p.toLowerCase() : p, fold ? home.toLowerCase() : home));
   for (const root of wsRoots) {
     for (const rel of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json', '.cursor/mcp.json', '.cursor/hooks.json', '.codex', '.gemini/settings.json', '.windsurf', '.clinerules/hooks', '.grok', '.marrow', '.git/hooks', '.git/config']) {
       anchors.push(path.posix.join(root, rel));
@@ -882,6 +898,7 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
   return {
     env, home, fold, hits: [], flags: new Set(), parse: 'ok', wsRoots: [...wsRoots], tmpRoots: [...tmpRoots],
     isProtected: (abs: string) => protectedRegexes.some((re) => re.test(fold ? abs.toLowerCase() : abs)),
+    isOperandProtected: (abs: string) => operandRegexes.some((re) => re.test(fold ? abs.toLowerCase() : abs)),
     protectedAnchors: anchors.map((a) => (fold ? a.toLowerCase() : a)),
     secretRegexes: SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
     branchRegexes: baseline.BASELINE_POLICY.protected_branches.map((p) => classifierModule.globToRegex(p, '/nonexistent-home')),
@@ -2342,6 +2359,8 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
 
   // Generic operand checks apply to every program (S4 reads, S0 writes by write-programs).
   genericOperandChecks(prog, args, ctx, run, x.info.subs);
+  // NEW-2: a protected path as an operand of a program that is not a known reader.
+  protectedOperandCheck(prog, rest, ctx, run);
   // I3: programs that change something outside this machine (held only while Marrow is unreachable).
   outageRiskTags(prog, rest, run);
 
@@ -3717,6 +3736,179 @@ function genericOperandChecks(prog: string, args: Arg[], ctx: Ctx, run: Run, sub
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// NEW-2 (delta audit of 0368537c): a protected path given as an operand of a program that is not a
+// known reader is S0. The S0 writers were an enumeration, so `sponge`, `ed`, `ex`, `xxd -r`,
+// `awk -i inplace`, `yq -i`, `curl -so`, `wget -qO` and `node -e '…' <path>` passed. Now the readers are
+// the explicit list; builtins that never open a file and wrappers whose command goes through dispatch
+// again (its own operands are checked there) are left out; an interpreter or shell keeps its script (it
+// runs, it is not written) unless code is given inline; git read subcommands are readers. An operand
+// that is a folder holding a protected file (`~/.claude/`, `.claude`, `.git`) counts too, when it is
+// inside home or a workspace (home and the workspace root themselves do not count).
+const OPERAND_READERS = new Set(['cat', 'less', 'more', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'wc', 'stat', 'ls', 'file', 'diff', 'cmp',
+  'sha1sum', 'sha224sum', 'sha256sum', 'sha384sum', 'sha512sum', 'shasum', 'md5sum', 'md5', 'b2sum', 'cksum', 'jq', 'yq', 'bat', 'batcat', 'du']);
+const OPERAND_NOT_FILES = new Set(['echo', 'printf', 'print', 'test', '[', '[[', 'true', 'false', ':', 'basename', 'dirname', 'realpath', 'readlink',
+  'which', 'type', 'hash', 'cd', 'pushd', 'popd', 'source', '.', 'alias', 'unalias', 'export', 'declare', 'typeset', 'readonly', 'local', 'set',
+  'unset', 'shift', 'read', 'mapfile', 'readarray', 'getopts', 'eval', 'trap', 'wait', 'exit', 'return',
+  'env', 'sudo', 'doas', 'pkexec', 'runas', 'su', 'timeout', 'nice', 'nohup', 'time', 'command', 'builtin', 'exec', 'stdbuf', 'ionice', 'chrt',
+  'taskset', 'setsid', 'unbuffer', 'caffeinate', 'retry', 'xargs', 'watch', 'corepack', 'busybox', 'toybox']);
+const GIT_READ_SUBS = new Set(['status', 'diff', 'log', 'show', 'blame', 'annotate', 'ls-files', 'ls-tree', 'grep', 'add', 'rev-parse', 'cat-file',
+  'check-ignore', 'check-attr', 'shortlog', 'whatchanged', 'describe', 'name-rev', 'rev-list', 'diff-tree', 'diff-files', 'diff-index',
+  'count-objects', 'help', 'version', 'var', 'commit']);
+// Programs that only create: `mkdir -p ~/.claude` or `touch .git` cannot replace a file inside the folder.
+const OPERAND_CREATE_ONLY = new Set(['mkdir', 'touch']);
+// Inline code for an interpreter or a shell: then every operand is an argument of that code.
+const INLINE_CODE_FLAG = /^-(?:-(?:eval|print|command|encodedcommand)|[A-Za-z]*[ceEmprs][A-Za-z]*|Command|EncodedCommand|ec|enc)$/i;
+// A partly dynamic operand whose literal part can only name a protected file or folder.
+const PROTECTED_DYNAMIC = /(?:^|\/)\.(?:marrow|codex|gemini|grok|windsurf|cursor)(?:\/|$)|\.claude\/(?:settings(?:\.local)?\.json|plugins)|\.claude\.json$|\.mcp\.json$|hooks\.json$|(?:^|\/)\.(?:bashrc|zshrc|profile|bash_profile|bash_login|zprofile|zshenv)$|\.git\/(?:hooks|config)/;
+
+function operandRuleApplies(prog: string, rest: Arg[]): boolean {
+  if (OPERAND_NOT_FILES.has(prog)) return (prog === 'sudo' || prog === 'doas') && rest.some((a) => a.text === '-e' || a.text === '--edit');
+  if (OPERAND_READERS.has(prog)) {
+    if ((prog === 'jq' || prog === 'yq') && rest.some((a) => a.text !== null && (/^--?in-?place(?:=|$)/.test(a.text) || /^-[A-Za-z]*i[A-Za-z]*(?:=.*)?$/.test(a.text)))) return true;
+    if ((prog === 'less' || prog === 'more') && rest.some((a) => a.text !== null && (/^-[A-Za-z]*[oO]/.test(a.text) || /^--(?:log-file|LOG-FILE)/.test(a.text)))) return true;
+    return false;
+  }
+  if (prog === 'find') return rest.some((a) => a.text !== null && /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(a.text));
+  return true;
+}
+
+// git: the subcommand after the global options.
+function gitSub(rest: Arg[]): { sub: string | null; at: number } {
+  for (let i = 0; i < rest.length; i += 1) {
+    const t = rest[i].text;
+    if (t === null) return { sub: null, at: i };
+    if (['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env'].includes(t)) { i += 1; continue; }
+    if (t.startsWith('-')) continue;
+    return { sub: t, at: i };
+  }
+  return { sub: null, at: rest.length };
+}
+
+// An interpreter's or a shell's script is run, not written: it is left out unless code is given inline.
+function withoutScript(prog: string, rest: Arg[]): Arg[] {
+  for (let i = 0; i < rest.length; i += 1) {
+    const t = rest[i].text;
+    if (t === null) return rest;
+    if (t === '--') return i + 1 < rest.length ? [...rest.slice(0, i + 1), ...rest.slice(i + 2)] : rest;
+    if (t.length > 1 && t.startsWith('-')) { if (INLINE_CODE_FLAG.test(t)) return rest; continue; }
+    if (t === '-' || (prog === 'deno' && t === 'eval')) return rest;
+    return [...rest.slice(0, i), ...rest.slice(i + 1)];
+  }
+  return rest;
+}
+
+function protectedOperandCheck(prog: string, rest: Arg[], ctx: Ctx, run: Run): void {
+  // Paths on another machine (ssh host '…') and argv words tried as commands (their program judged them).
+  if (ctx.remote || ctx.backstop) return;
+  let operands = rest;
+  if (prog === 'git') {
+    const { sub, at } = gitSub(rest);
+    // Index-only forms: `git reset [<rev>] -- <path>`, `git rm --cached`, `git restore --staged` (worktree untouched).
+    const after = rest.slice(at + 1).map((a) => a.text);
+    const indexOnly = (sub === 'reset' && !after.some((t) => t === null || /^--(?:hard|merge|keep)$/.test(t)))
+      || (sub === 'rm' && after.includes('--cached'))
+      || (sub === 'restore' && after.some((t) => t === '--staged' || t === '-S') && !after.some((t) => t === null || t === '--worktree' || t === '-W' || (t.startsWith('-') && !t.startsWith('--') && /W/.test(t))));
+    if (sub !== null && (GIT_READ_SUBS.has(sub) || indexOnly)) {
+      // A reader that still writes a file: `git diff --output=<file>`.
+      operands = [];
+      for (let i = at + 1; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === '--output' && rest[i + 1]) operands.push(rest[i + 1]);
+        else if (t !== null && t.startsWith('--output=')) operands.push(litArg(t.slice('--output='.length)));
+      }
+    }
+  } else if (prog === 'ssh') {
+    // ssh's own files: the log (-E), the control socket (-S, ControlPath) and the known-hosts file it
+    // appends to (UserKnownHostsFile). The rest is the remote command.
+    operands = [];
+    for (let i = 0; i < rest.length; i += 1) {
+      const t = rest[i].text;
+      if ((t === '-E' || t === '-S') && rest[i + 1]) operands.push(rest[i + 1]);
+      else if (t !== null && /^-[ES]./.test(t)) operands.push(litArg(t.slice(2)));
+      const o = t === '-o' && rest[i + 1] ? rest[i + 1].text : t !== null && t.startsWith('-o') ? t.slice(2) : null;
+      const m = o !== null && o !== undefined ? /^\s*(?:ControlPath|UserKnownHostsFile)\s*[= ]\s*(.+)$/i.exec(o) : null;
+      if (m) for (const f of m[1].trim().split(/\s+/)) operands.push(litArg(f));
+    }
+  } else if (!operandRuleApplies(prog, rest)) return;
+  else if (SHELLS.has(prog) || INTERPRETERS.has(prog) || /^python3\.\d+$/.test(prog)) operands = withoutScript(prog, rest);
+  const opts: OperandOpts = {
+    tree: !OPERAND_CREATE_ONLY.has(prog), remoteSpecs: prog === 'scp' || prog === 'rsync' || prog === 'sftp',
+    // A secret path among the operands already stopped as S4 (genericOperandChecks): it keeps that answer.
+    secretStopped: !S4_EXEMPT_PROGRAMS.has(prog) && prog !== 'git',
+  };
+  for (const a of operands) {
+    if (clock(run)) return;
+    if (protectedOperand(a, ctx, run, opts, 0)) return;
+  }
+}
+
+interface OperandOpts { tree: boolean; remoteSpecs: boolean; secretStopped: boolean }
+
+function protectedOperand(a: Arg, ctx: Ctx, run: Run, opts: OperandOpts, depth: number): boolean {
+  const { tree, remoteSpecs } = opts;
+  if (a.text === null) {
+    if (a.alts && a.alts.length) {
+      for (const v of a.alts.slice(0, LIMITS.maxVariants)) if (protectedOperand({ ...litArg(v), glob: a.glob, word: a.word }, ctx, run, opts, depth)) return true;
+      return false;
+    }
+    return PROTECTED_DYNAMIC.test(a.pattern.replace(new RegExp(DYN, 'g'), '')) ? hit(run, 'S0', 'protected_path_operand_dynamic') : false;
+  }
+  for (const text of operandTexts(a.text, remoteSpecs)) {
+    // A glob names what it matches; one the mapper cannot list is judged by its folder.
+    if (a.glob && /[*?[]/.test(text) && depth === 0) {
+      const matches = run.env.fs.readdir ? expandGlob(text, ctx, run) : null;
+      if (matches !== null) {
+        for (const mm of matches.slice(0, LIMITS.maxGlobMatches)) if (protectedOperand(litArg(mm), ctx, run, { ...opts, remoteSpecs: false }, depth + 1)) return true;
+        continue;
+      }
+      const dir = text.slice(0, text.search(/[*?[]/)).replace(/[^/]*$/, '');
+      if (dir && protectedOperand(litArg(dir), ctx, run, { ...opts, tree: true, remoteSpecs: false }, depth + 1)) return true;
+      continue;
+    }
+    const abs = absCandidates(text, ctx, run);
+    if (!abs) continue;
+    for (const p of abs) {
+      for (const r of new Set([...realCandidates(p, run, true), ...realCandidates(p, run, false)])) {
+        const probe = run.fold ? r.toLowerCase() : r;
+        if (run.isOperandProtected(probe) && !(opts.secretStopped && isSecretPath(r, run))) return hit(run, 'S0', 'protected_path_operand');
+        if (tree && insideHomeOrWorkspace(probe, run) && run.protectedAnchors.some((anchor) => isAncestorOrSelf(probe, anchor))) return hit(run, 'S0', 'protected_path_operand_folder');
+      }
+    }
+  }
+  return false;
+}
+
+// The path texts in one operand: itself, the value after `--opt=` / `name=` / `@`, a short option's
+// attached value (`-o~/x`) and each `:` piece (`-v ~/.claude:/root/.claude`); `host:path` of scp, rsync
+// and sftp is on another machine.
+function operandTexts(text: string, remoteSpecs: boolean): string[] {
+  const t = text.slice(0, LIMITS.maxPathChars);
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return [];
+  if (remoteSpecs && /^[^/~.:=-][^/:=]*:/.test(t)) return [];
+  const out = new Set<string>([t]);
+  const eq = t.match(/^--?[A-Za-z0-9-]+=(.+)$/) || t.match(/^[A-Za-z_][A-Za-z0-9_.-]*=(.+)$/);
+  const value = eq ? eq[1] : t;
+  if (eq) out.add(eq[1]);
+  const at = t.match(/(?:^|=)@(.+)$/);
+  if (at) out.add(at[1]);
+  const short = t.match(/^-[A-Za-z]([~./].*)$/);
+  if (short) out.add(short[1]);
+  if (value.includes(':') && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    const pieces = value.split(':');
+    const remote = remoteSpecs && /^[^/~.][^/]*$/.test(pieces[0]);
+    if (!remote) for (const piece of pieces) if (piece) out.add(piece);
+  }
+  return [...out].filter((x) => x !== '-' && x !== '--');
+}
+
+function insideHomeOrWorkspace(probe: string, run: Run): boolean {
+  const fold = (x: string) => (run.fold ? x.toLowerCase() : x);
+  const roots = [run.home, ...run.wsRoots].map(fold);
+  if (run.wsRoots.some((w) => isAncestorOrSelf(probe, fold(w)))) return false;
+  return roots.some((r) => probe !== r && probe.startsWith(`${r}/`));
+}
+
 const COPY_PROGRAMS = new Set(['cp', 'scp', 'rsync', 'tar', 'zip', '7z', '7za', 'rclone', 'gtar', 'bsdtar', 'ditto']);
 
 function nonOptions(rest: Arg[], valueFlags: Set<string> = new Set()): Arg[] {
@@ -3773,9 +3965,13 @@ function writeTargetsWith(prog: string, rest: Arg[], valueFlags: Set<string>, ta
       const dest = t || (ops.length >= 2 ? ops[ops.length - 1] : null);
       if (!dest) return [];
       const sources = t ? ops : ops.slice(0, -1);
-      // Into a directory: the file lands at dest/<basename of each source>.
-      const into = dest.text === null ? [] : sources.filter((s) => s.text !== null).map((s) => ({ arg: litArg(`${(dest.text as string).replace(/\/+$/, '')}/${path.posix.basename(s.text as string)}`), tree: false }));
-      return [{ arg: dest, tree: false }, ...into];
+      // NEW-2: a recursive copy writes a whole tree. Into a directory it lands at dest/<basename of each
+      // source>; a contents copy (`src/.`, rsync `src/`) writes into dest itself (`cp -r d/. ~`).
+      const recursive = (prog === 'cp' || prog === 'scp' || prog === 'rsync') && rest.some((a) => a.text !== null
+        && (/^--(?:recursive|archive)$/.test(a.text) || (/^-[A-Za-z]+$/.test(a.text) && /[rRa]/.test(a.text))));
+      const contents = recursive && sources.some((s) => s.text !== null && (/\/\.\/?$/.test(s.text) || s.text === '.' || (prog === 'rsync' && /\/$/.test(s.text))));
+      const into = dest.text === null ? [] : sources.filter((s) => s.text !== null).map((s) => ({ arg: litArg(`${(dest.text as string).replace(/\/+$/, '')}/${path.posix.basename(s.text as string)}`), tree: recursive }));
+      return [{ arg: dest, tree: contents }, ...into];
     }
     case 'sed': case 'gsed': {
       if (!rest.some((a) => a.text !== null && (/^-[a-zA-Z]*i/.test(a.text) || a.text.startsWith('--in-place')))) return [];
