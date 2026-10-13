@@ -27,6 +27,19 @@ const shellParse: { parseShell: (src: string, opts?: { depth?: number }) => Pars
 const baseline: { BASELINE_POLICY: { protected_paths: string[]; protected_branches: string[] } } = require('../../vendor/classifier/policy-baseline.js');
 const classifierModule: { globToRegex: (pattern: string, home: string) => RegExp } = require('../../vendor/classifier/classifier.js');
 
+// NEW-1 (delta audit of 0368537c): the Marrow agent plugins are where keyless hooks come from, so their
+// files are Marrow's own (S0), like ~/.codex/** and ~/.cursor/**. Seatbelt-local (the vendored baseline is
+// pinned): the Claude Code plugin registry files, any plugin folder named for Marrow (the `getmarrow`
+// marketplace cache and clone, a fork named *marrow*), the Codex cache under any CODEX_HOME, a project's
+// Cursor plugins, and the npx cache copy of @getmarrow that the plugins and the installer hooks run.
+// Other plugins' folders stay writable.
+const SEATBELT_PROTECTED_EXTRA = [
+  '~/.claude/plugins/*.json', '~/.claude/plugins/**/*marrow*/**', '**/plugins/cache/getmarrow/**', '**/plugins/marketplaces/getmarrow/**',
+  '**/.cursor/plugins/**', '~/.npm/_npx/*/node_modules/@getmarrow/**',
+];
+// Folders whose removal or move takes a Marrow plugin with it (rm -rf ~/.claude/plugins/cache, mv ~/.npm/_npx x).
+const SEATBELT_ANCHORS_EXTRA = ['.claude/plugins/cache/getmarrow', '.claude/plugins/marketplaces/getmarrow', '.codex/plugins/cache/getmarrow', '.npm/_npx/*/node_modules/@getmarrow'];
+
 interface Slot { type: string; name?: string }
 interface Word { text: string; dynamic: boolean; quoted: boolean; substitution: boolean; variables: string[]; slots: Slot[]; glob?: boolean }
 interface Redirect { op: string; fd: string | null; target: Word | null }
@@ -853,13 +866,14 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
       wsRoots.add(n);
     }
   }
-  const protectedPatterns = baseline.BASELINE_POLICY.protected_paths;
+  const protectedPatterns = [...baseline.BASELINE_POLICY.protected_paths, ...SEATBELT_PROTECTED_EXTRA];
   const protectedRegexes = protectedPatterns.map((p) => classifierModule.globToRegex(fold ? p.toLowerCase() : p, fold ? home.toLowerCase() : home));
   const anchors: string[] = [];
   for (const p of protectedPatterns) {
     if (p.startsWith('~/')) anchors.push(path.posix.join(home, p.slice(2).replace(/\/\*\*$/, '')));
     else if (p.startsWith('/') && !p.includes('*', 1)) anchors.push(p);
   }
+  for (const rel of SEATBELT_ANCHORS_EXTRA) anchors.push(path.posix.join(home, rel));
   for (const root of wsRoots) {
     for (const rel of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json', '.cursor/mcp.json', '.cursor/hooks.json', '.codex', '.gemini/settings.json', '.windsurf', '.clinerules/hooks', '.grok', '.marrow', '.git/hooks', '.git/config']) {
       anchors.push(path.posix.join(root, rel));
@@ -6413,6 +6427,8 @@ function handleMarrowCli(rest: Arg[], run: Run): void {
 function handleClaudeCli(rest: Arg[], run: Run): void {
   const s = positionals(rest, []).map((a) => a.text);
   if (s[0] === 'plugin' && ['uninstall', 'remove', 'disable', 'rm'].includes(s[1] || '') && (s[2] === null || /marrow/i.test(s[2] || ''))) hit(run, 'S0', 'claude_plugin_uninstall_marrow');
+  // NEW-1: removing the marketplace that serves the Marrow plugin removes the plugin with it.
+  if (s[0] === 'plugin' && s[1] === 'marketplace' && ['remove', 'rm'].includes(s[2] || '') && (s[3] === null || s[3] === undefined || /marrow/i.test(s[3] || ''))) hit(run, 'S0', 'claude_plugin_marketplace_remove_marrow');
   if (s[0] === 'mcp' && ['remove', 'rm'].includes(s[1] || '') && (s[2] === null || /marrow/i.test(s[2] || ''))) hit(run, 'S0', 'claude_mcp_remove_marrow');
 }
 
@@ -6599,7 +6615,8 @@ function checkToolWrite(p: string, tool: string, input: Record<string, unknown>,
 }
 
 // The parts of a hook/MCP config that keep Marrow running: hook entries that mention Marrow, any
-// other hook switch (disableAllHooks …), Marrow MCP servers and env that the hook runtime reads.
+// other hook switch (disableAllHooks …), Marrow MCP servers, env that the hook runtime reads, and the
+// Marrow plugin switches (NEW-1).
 function marrowExtract(text: string): string | null {
   let json: unknown;
   try { json = JSON.parse(text); } catch { return null; }
@@ -6629,5 +6646,17 @@ function marrowExtract(text: string): string | null {
     for (const [k, v] of Object.entries(env as Record<string, unknown>)) if (/^MARROW_|^NODE_OPTIONS$|^NODE_PATH$|^PATH$|^HOME$/.test(k)) e[k] = v;
     out.env = e;
   }
+  // NEW-1: the Marrow plugin switch (enabledPlugins["marrow@getmarrow"] in user or project settings), the
+  // marketplace that serves it, and any other plugin or marketplace switch key. Other plugins' entries are
+  // not compared, so turning another plugin on or off stays a pass.
+  for (const key of ['enabledPlugins', 'extraKnownMarketplaces']) {
+    const v = obj[key];
+    if (v === undefined) continue;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) { out[key] = v; continue; }
+    const kept: Record<string, unknown> = {};
+    for (const [k, entry] of Object.entries(v as Record<string, unknown>)) if (/marrow/i.test(k) || /marrow/i.test(JSON.stringify(entry))) kept[k] = entry;
+    if (Object.keys(kept).length) out[key] = kept;
+  }
+  for (const [k, v] of Object.entries(obj)) if (k !== 'enabledPlugins' && k !== 'extraKnownMarketplaces' && /plugin|marketplace/i.test(k)) out[k] = v;
   return JSON.stringify(Object.keys(out).sort().map((k) => [k, out[k]]));
 }
