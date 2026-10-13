@@ -125,7 +125,7 @@ test('U6 hook: every keyless decision leaves exactly one readable receipt; stops
 });
 
 // The owner's daily read-only check from the dogfood watch list (DOGFOOD-WATCH.md), verbatim: it must work on real receipts.
-const DAILY_CHECK = 'const fs=require("fs"),f=process.argv[1];const r=fs.readFileSync(f,"utf8").trim().split("\\n").filter(Boolean).map(JSON.parse);const c={};for(const x of r){const k=[x.mode,x.enforcement,x.decision,x.rule].join(" ");c[k]=(c[k]||0)+1}const l=r.map(x=>x.latency_ms).sort((a,b)=>a-b);console.log(r.length,"events",JSON.stringify(c),"p95",l[Math.floor(l.length*.95)],"p99",l[Math.floor(l.length*.99)])';
+const DAILY_CHECK = 'const fs=require("fs"),f=process.argv[1];const r=fs.readFileSync(f,"utf8").trim().split("\\n").filter(Boolean).map(JSON.parse);const c={};let fw=0,fs2=0;for(const x of r){const k=[x.mode,x.enforcement,x.decision,x.rule].join(" ");c[k]=(c[k]||0)+1;const g=x.flags||[];if(g.includes("floor_watch"))fw++;if(g.includes("floor_skipped"))fs2++}const l=r.map(x=>x.latency_ms).sort((a,b)=>a-b);console.log(r.length,"events",JSON.stringify(c),"floor_watch",fw,"floor_skipped",fs2,"p95",l[Math.floor(l.length*.95)],"p99",l[Math.floor(l.length*.99)])';
 
 test('U6 consumer: the dogfood daily check reads the receipts and prints counts by mode, enforcement, decision and rule', () => {
   const sb = sandbox();
@@ -139,6 +139,15 @@ test('U6 consumer: the dogfood daily check reads the receipts and prints counts 
     assert.match(out.stdout, /^3 events /);
     const counts = JSON.parse(out.stdout.slice(out.stdout.indexOf('{'), out.stdout.lastIndexOf('}') + 1));
     assert.deepEqual(counts, { 'seatbelt enforce stop S1.protected_branch_force': 1, 'seatbelt enforce pass none': 1, 'seatbelt enforce stop S3.package_publish': 1 });
+    assert.match(out.stdout, / floor_watch 0 floor_skipped 0 /);
+    // Metric 8: an account would-stop is decision=pass with the floor_watch flag (the check counts the flag).
+    const withAccount = path.join(sb.root, 'with-account.jsonl');
+    const extra = [{ mode: 'account', enforcement: 'watch', decision: 'pass', rule: 'S3.package_publish', flags: ['floor_watch'], latency_ms: 5 },
+      { mode: 'account', enforcement: 'watch', decision: 'pass', rule: 'none', flags: ['floor_skipped'], latency_ms: 5 }];
+    fs.writeFileSync(withAccount, fs.readFileSync(file, 'utf8') + extra.map((x) => JSON.stringify(x)).join('\n') + '\n');
+    const out2 = spawnSync(process.execPath, ['-e', DAILY_CHECK, withAccount], { encoding: 'utf8' });
+    assert.equal(out2.status, 0, out2.stderr);
+    assert.match(out2.stdout, /^5 events .* floor_watch 1 floor_skipped 1 /);
   } finally { sb.cleanup(); }
 });
 
