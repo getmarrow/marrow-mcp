@@ -68,7 +68,7 @@ test('a hidden span that may also hide command text gets the never-binding ambig
   const cases = [
     [`{"password":"${s} ; rm -rf /tmp/x","env":"production"}`, 'production'],
     [`{"api_key":"${s}`, ''],
-    [`https://u:${s}@a.example?x=1&next=evil@b.example/y`, '/y'],
+    [`https://u:${s}@a.example&next=evil@b.example/y`, '/y'],
     [`Authorization: Basic ${s}&&deploy-production`, ''],
     [`TOKEN="${s} && deploy production"`, ''],
     [`--token=${s}|deploy-production`, ''],
@@ -80,6 +80,11 @@ test('a hidden span that may also hide command text gets the never-binding ambig
     assert.equal(leaks(out, s), false);
     assert.equal(out.includes('[REDACTED_AMBIGUOUS]'), true);
     if (tail) assert.equal(out.endsWith(tail) || out.includes(`"env":"${tail}"`), true);
+  }
+  // M2-R1: a `?` or `#` ends the URL authority (RFC 3986), so the password is exactly the text before the first
+  // `@`; the host, query and fragment stay visible and nothing after the hidden span is hidden.
+  for (const d of ['?', '#']) {
+    assert.equal(redactSensitiveText(`https://u:${s}@a.example${d}x=1&next=evil@b.example/y`), `https://u:[REDACTED]@a.example${d}x=1&next=evil@b.example/y`);
   }
   // A value that ends at a separator keeps the text after it; a plain value keeps the plain marker.
   assert.equal(redactSensitiveText(`TOKEN=${s};deploy-production`), 'TOKEN=[REDACTED];deploy-production');

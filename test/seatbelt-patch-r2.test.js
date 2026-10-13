@@ -62,7 +62,7 @@ test('corpus size and shape: every group has stop rows and pass neighbours', () 
 test('KNOWN_COMMANDS lists every program name the dispatcher and the tool handlers have a case for', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'seatbelt', 'mapper.ts'), 'utf8');
   const names = new Set();
-  for (const fn of ['dispatch', 'handleDeployTool', 'handlePublishTool', 'handleSecretDumper']) {
+  for (const fn of ['dispatch', 'dispatchProgram', 'handleDeployTool', 'handlePublishTool', 'handleSecretDumper']) {
     const start = src.indexOf(`function ${fn}(`);
     assert.ok(start >= 0, fn);
     const end = src.indexOf('\nfunction ', start + 10);
@@ -246,7 +246,8 @@ test('reasons and flags are fixed identifiers: no path, branch, host or value re
     assert.equal(typeof d.recognized, 'boolean');
     assert.equal(typeof d.shell, 'boolean');
     assert.ok(['none', 'S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'Sx'].includes(d.category));
-    assert.deepEqual(Object.keys(d).sort(), ['category', 'decision', 'engine', 'flags', 'hits', 'parse', 'reasons', 'recognized', 'risk', 'rule', 'shell']);
+    assert.equal(typeof d.outageHelpOnly, 'boolean');
+    assert.deepEqual(Object.keys(d).sort(), ['category', 'decision', 'engine', 'flags', 'hits', 'outageHelpOnly', 'parse', 'reasons', 'recognized', 'risk', 'rule', 'shell']);
   }
   assert.ok(seen.size > 80, `${seen.size} distinct reasons and flags`);
 });
