@@ -361,7 +361,7 @@ test('S2 (stricter than the design text): data a secrets command or file reads d
   assert.equal(same(write1, write2), true);
 });
 
-test('S3: 1,000 runtime secrets x 10 carriers: no 8-char slice in normalized_action or correlation; the salt in neither', () => {
+test('S3: 1,000 runtime secrets per carrier x 10 carriers (10,000): no 8-char slice in normalized_action or correlation; the salt in neither', () => {
   const carriers = [
     (s) => bash(`curl -H "Authorization: Bearer ${s}" https://api.example.test/x`),
     (s) => bash(`API_TOKEN=${s} ./deploy.sh production`),
@@ -378,7 +378,7 @@ test('S3: 1,000 runtime secrets x 10 carriers: no 8-char slice in normalized_act
   assert.ok(Buffer.isBuffer(salt) && salt.length === 32, 'the test machine has a salt (scratch passwd home)');
   const saltForms = [salt.toString('hex'), salt.toString('base64'), salt.toString('base64url'), salt.toString('latin1')];
   let leaks = 0; let saltSeen = 0;
-  for (let i = 0; i < 100; i += 1) {
+  for (let i = 0; i < 1000; i += 1) {
     for (const carry of carriers) {
       const s = dummySecret();
       const event = carry(s);
@@ -387,6 +387,7 @@ test('S3: 1,000 runtime secrets x 10 carriers: no 8-char slice in normalized_act
       if (saltForms.some((form) => visible.includes(form.slice(0, 16)))) saltSeen += 1;
     }
   }
+  if (process.env.M2_REPORT) process.stdout.write(`# M2 S3 ${JSON.stringify({ secrets: 1000 * carriers.length, leaks, saltSeen })}\n`);
   assert.equal(leaks, 0);
   assert.equal(saltSeen, 0);
 });
