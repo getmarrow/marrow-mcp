@@ -294,7 +294,6 @@ test('U5 fail closed: a mapper crash, a mode crash, a module that fails to load 
       // A resolver that throws makes what depends on it unknown: a force push to the current branch stops.
       assertSeatbeltStop(sh(sb, harness, 'git push -f origin HEAD', { env: { SBT_THROW: 'git' } }), `${harness} resolver throws`);
       assert.equal(sh(sb, harness, 'ls -la', { env: { SBT_THROW: 'git' } }).decision, 'pass');
-      // Input the harness adapter cut is not known in full.
     }
     // Windsurf answers through its exit code: a crash there is exit 2.
     const windsurf = spawnSync(process.execPath, ['--require', PRELOAD, CLI, 'windsurf-pre-action-hook'], {
@@ -304,6 +303,19 @@ test('U5 fail closed: a mapper crash, a mode crash, a module that fails to load 
     });
     assert.equal(windsurf.status, 2);
     assert.match(windsurf.stderr, /^MARROW SEATBELT stopped this action: .*U5\.fail_closed, hook_error/);
+    // Input the harness adapter cut is not known in full: a stop. Windsurf cuts a command over 8 KiB and
+    // never sends the content of a code write.
+    for (const event of [
+      { agent_action_name: 'pre_run_command', trajectory_id: 'tr', execution_id: 'ex', tool_info: { command_line: `ls ${'a'.repeat(9000)}`, cwd: sb.proj } },
+      { agent_action_name: 'pre_write_code', trajectory_id: 'tr', execution_id: 'ex', tool_info: { file_path: path.join(sb.proj, 'a.txt') } },
+    ]) {
+      const cut = spawnSync(process.execPath, ['--require', PRELOAD, CLI, 'windsurf-pre-action-hook'], {
+        cwd: sb.proj, encoding: 'utf8', timeout: 30_000, input: JSON.stringify(event),
+        env: { PATH: process.env.PATH, HOME: sb.home, SBT_PASSWD_HOME: sb.home },
+      });
+      assert.equal(cut.status, 2, event.agent_action_name);
+      assert.match(cut.stderr, /^MARROW SEATBELT stopped this action: .*U5\.fail_closed, input_truncated/, event.agent_action_name);
+    }
   } finally { sb.cleanup(); }
 });
 
