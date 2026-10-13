@@ -217,13 +217,24 @@ test('U6 hook: account mode (a key) in watch records the floor as a pass with th
     fs.writeFileSync(path.join(mockDir, 'config.json'), JSON.stringify({ runtime: { ok: true, action: 'classified action', risk_gate: { allow: true, decision: 'allow', enforced: false, enforcement_decision: 'advisory', reasons: [] } } }));
     const key = `mrw_test_${crypto.randomBytes(16).toString('hex')}`;
     const account = { MARROW_API_KEY: key, MARROW_BASE_URL: 'https://api.example.test', MARROW_AGENT_ID: 'agent-one', MARROW_PASSIVE_TOKEN_USAGE: 'false', MARROW_TEST_MOCK_DIR: mockDir, NODE_OPTIONS: `--require=${MOCK}` };
+    const requests = () => {
+      const file = path.join(mockDir, 'requests.jsonl');
+      const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+      fs.rmSync(file, { force: true });
+      return text.replace(/"(?:ts|at|timestamp|occurred_at|created_at|sent_at|started_at|deadline_at|expires_at)":"[^"]*"/g, '"t":"-"');
+    };
+    let withRequests = 0;
     for (const harness of HARNESSES) {
       for (const [command, wouldStop] of [['git push -f origin main', true], ['npm publish', true], ['cat ~/.ssh/id_ed25519', true], ['ls -la', false], ['git push origin main', false]]) {
         const before = receiptsOf(sb).length;
         const withFloor = sh(sb, harness, command, { env: account });
+        const sentWith = requests();
         const without = sh(sb, harness, command, { env: { ...account, SBT_THROW: 'load' } });
+        const sentWithout = requests();
         assert.equal(withFloor.stdout, without.stdout, `${harness} ${command}: the same answer`);
         assert.equal(withFloor.status, without.status);
+        assert.equal(sentWith, sentWithout, `${harness} ${command}: the same request bodies`);
+        if (sentWith.length > 0) withRequests += 1;
         assert.ok(!(withFloor.stdout + withFloor.stderr).includes(key));
         const added = receiptsOf(sb).slice(before);
         assert.equal(added.length, 1, `${harness} ${command}: one receipt (the run with the seatbelt module removed writes none)`);
@@ -233,6 +244,7 @@ test('U6 hook: account mode (a key) in watch records the floor as a pass with th
         if (wouldStop) assert.match(r.category, /^S[0-5x]$/);
       }
     }
+    assert.ok(withRequests > 0, 'some of the account-flow runs made server requests, and they were compared');
     const raw = rawReceipts(sb);
     assert.ok(!raw.includes(key) && !raw.includes('mrw_') && !raw.includes('api.example.test') && !raw.includes('agent-one'));
     assert.deepEqual(validateReceipt(receiptsOf(sb)[0].receipt), []);
