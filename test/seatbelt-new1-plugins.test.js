@@ -132,6 +132,26 @@ test('NEW-1 mapper: shell writes, moves, deletes and mode changes of the Marrow 
   }
 });
 
+test('NEW-1 mapper: interpreter code that names a Marrow plugin file stops (S0); code that does not stays a pass', () => {
+  const stops = [
+    "python3 -c \"open('/home/u/.claude/plugins/installed_plugins.json','w').write('{}')\"",
+    "python3 -c \"import shutil; shutil.move('/home/u/.claude/plugins/known_marketplaces.json','/tmp/k')\"",
+    "node -e \"require('fs').rmSync(require('os').homedir()+'/.claude/plugins/cache/getmarrow',{recursive:true})\"",
+    "node -e \"require('fs').writeFileSync(process.env.HOME+'/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts/marrow-launch.cjs','')\"",
+    "perl -e 'unlink q(/home/u/.claude/plugins/marketplaces/getmarrow/.claude-plugin/marketplace.json)'",
+    "ruby -e 'File.write(Dir.home + %q(/.cursor/plugins/marrow/hooks.json), %q({}))'",
+  ];
+  for (const c of stops) {
+    const d = sh(c);
+    assert.equal(d.decision, 'stop', `${c}: ${d.reasons}`);
+    assert.ok(d.hits.some((h) => h.category === 'S0'), `${c}: ${d.reasons}`);
+  }
+  for (const c of ["python3 -c 'print(1)'", "node -e \"require('fs').readFileSync('/tmp/a')\"", 'cat ~/.claude/plugins/installed_plugins.json',
+    'ls ~/.claude/plugins/cache', 'grep -r marrow ~/.claude/plugins', 'curl -s https://getmarrow.ai/llms.txt']) {
+    assert.equal(sh(c).decision, 'pass', c);
+  }
+});
+
 // ------------------------------------------------------------------------------------------------
 // Hook rows: the real hook CLI, keyless, in a temporary home.
 

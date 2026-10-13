@@ -173,6 +173,8 @@ export const TRIPWIRE: ReadonlyArray<{ re: RegExp; category: 'S0' | 'S1' | 'S2' 
   { re: /printenv|export\s+-p|declare\s+-[a-z]*[xp]|(?:^|[;&|({\s])(?:env|set|export)\s*(?:$|[;&|)}])|auth\s+token|print-(?:access|identity)-token|get-session-token|get-access-token|auth:token|find-(?:generic|internet)-password|secret-tool|op\s+read|vault\s+(?:kv|read)|pass\s+show|token\s+list|(?:process\.env|os\.environ|\$env|env\.to_h|system\.getenv\(\))\s*(?:\)|;|$|\||,|\.items|\.keys|\.copy)|(?:environ|\benv)\W{0,3}[a-z_]{0,256}(?:key|token|secret|pass|cred)|\$\{?!?[a-z_]{0,256}(?:key|token|secret|pass|cred)/, category: 'S4', reason: 'tripwire_secret_dumper' },
   { re: /rmtree|rmsync|rmdirsync|rimraf|rm_rf|\brm_r\b|mkfs/, category: 'S5', reason: 'tripwire_recursive_delete' },
   { re: /\.marrow|@getmarrow|settings\.json|hooks\.json|\.mcp\.json|\.bashrc|\.zshrc|\.bash_profile|\.zprofile|\.zshenv|\.profile\b/, category: 'S0', reason: 'tripwire_self_protection' },
+  // NEW-1: the Marrow plugins named in code or text the mapper cannot follow (`python3 -c "open('…/installed_plugins.json','w')"`).
+  { re: /installed_plugins\.json|known_marketplaces\.json|plugins\/(?:cache|marketplaces)\/getmarrow|\.claude\/plugins\/\S{0,200}marrow|\.cursor\/plugins|marrow-launch\.cjs/, category: 'S0', reason: 'tripwire_plugin_protection' },
   { re: /base64\s+(?:-[a-z]*d|--decode)|xxd\s+-[a-z]*r|b64decode|atob\s*\(/, category: 'Sx', reason: 'tripwire_decoded_exec' },
 ];
 // Script, Makefile-target and package-script names that trip when their content cannot be read.
