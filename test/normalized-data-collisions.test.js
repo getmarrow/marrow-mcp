@@ -22,6 +22,10 @@ function slices(text, secret) {
 }
 
 const keyOf = (event) => JSON.stringify(normalizedHookAction(event));
+// M2: the sent part (everything but tool_input.exact_hmac) keeps the 3.9.102 properties; exact_hmac (keyed on this
+// machine, never the value) replaces only certain credentials, so it separates anything else.
+const sentOf = (event) => { const action = normalizedHookAction(event); const { exact_hmac: _exact, ...rest } = action.tool_input; return JSON.stringify({ ...action, tool_input: rest }); };
+const exactOf = (event) => normalizedHookAction(event).tool_input.exact_hmac;
 const hashedForm = (event) => (event.tool_name === 'Bash' ? normalizeShellCommand(event.tool_input.command).text : '');
 
 test('data collision cases cover at least 30 action pairs', () => {
@@ -38,11 +42,16 @@ for (const testCase of DATA_CASES) {
       const otherSecret = testCase.build(s2, 'staging');
       const [a, b, c] = [staging, production, otherSecret].map(keyOf);
       if (testCase.feedsSecrets) {
-        assert.equal(a, b, 'data fed to a secrets command is all secret');
-      } else {
-        assert.notEqual(a, b, 'actions that differ outside the secret get different keys');
+        assert.equal(sentOf(staging), sentOf(production), 'data fed to a secrets command is all secret in the sent hash');
+        assert.notEqual(exactOf(staging), exactOf(production), 'M2: the exact key still separates data that differs outside a certain credential');
       }
-      assert.equal(a, c, 'actions that differ only in the secret get the same key');
+      assert.notEqual(a, b, 'actions that differ outside the secret get different keys');
+      assert.equal(sentOf(staging), sentOf(otherSecret), 'actions that differ only in the secret get the same sent key');
+      if (testCase.keyShapedOnly) {
+        assert.notEqual(exactOf(staging), exactOf(otherSecret), 'M2: a value found only by its key shape may be an id: kept in the exact key');
+      } else {
+        assert.equal(a, c, 'actions that differ only in a certain credential get the same key, exact key included');
+      }
       assert.equal(normalizedHookAction(staging).truncated, true, 'an action that carried a secret never binds');
       assert.equal(slices(a + b, s1), 0, 'no slice of the secret is in the key');
       assert.equal(slices(c, s2), 0, 'no slice of the secret is in the key');

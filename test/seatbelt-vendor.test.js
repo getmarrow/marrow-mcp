@@ -70,6 +70,11 @@ test('the mapper loads the vendored modules, and the package ships them', () => 
     if (!f.endsWith('.ts')) continue;
     const text = fs.readFileSync(path.join(ROOT, 'src', f), 'utf8');
     assert.ok(!/^import [^;]*['"]\.\/seatbelt\//m.test(text), `${f} must not import the seatbelt statically`);
-    if (f !== 'hook-pre-action.ts') assert.ok(!/seatbelt\//.test(text), `${f} must not use the seatbelt`);
+    if (f === 'normalized-action.ts') {
+      // M2: the exact-action key reads the device salt through one lazy require inside a try (a module that fails to
+      // load is a nonce, so the held action is asked again; never a crash, never an unsalted key).
+      assert.equal((text.match(/seatbelt\//g) || []).length, 2, `${f} uses the seatbelt only for the device salt`);
+      assert.match(text, /try \{\n\s*salt = \(require\('\.\/seatbelt\/record'\) as typeof import\('\.\/seatbelt\/record'\)\)\.deviceSalt\(\);\n\s*\} catch \{/, `${f}: lazy, inside a try`);
+    } else if (f !== 'hook-pre-action.ts') assert.ok(!/seatbelt\//.test(text), `${f} must not use the seatbelt`);
   }
 });

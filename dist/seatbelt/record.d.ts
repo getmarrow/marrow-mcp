@@ -80,6 +80,14 @@ export interface SeatbeltReceipt {
 export declare function validateReceipt(value: unknown): string[];
 /** Write one receipt. Never throws; says what happened. The hook calls recordSeatbeltDecision; tests call this with options. */
 export declare function writeSeatbeltReceipt(record: SeatbeltRecord, context?: SeatbeltRecordContext, options?: ReceiptOptions): 'written' | 'dropped';
+/**
+ * This machine's private salt: the receipts store's (~/.marrow/seatbelt/salt under the passwd home, 32 random
+ * bytes, 0600, owned by this uid, read with O_NOFOLLOW, created once), with every check openStore makes. It keys
+ * hashes that leave the machine only as a MAC (normalized-action exact_hmac); the salt itself is never sent,
+ * printed or logged. null when the store is missing, unsafe, not ours or unreadable: the caller then fails closed.
+ * Cached per process. The options are test seams (home, uid, fs) and bypass the cache.
+ */
+export declare function deviceSalt(options?: Pick<ReceiptOptions, 'home' | 'uid' | 'fs'>): Buffer | null;
 /** The record hook U5 calls once per decision. It never throws, writes no output and never changes a decision. */
 export declare function recordSeatbeltDecision(record: SeatbeltRecord, context?: SeatbeltRecordContext): void;
 export {};

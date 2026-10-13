@@ -92,7 +92,9 @@ test('MCP and other tool inputs are hashed: no field value leaves, secret-named 
   const M = mark();
   const mcp = normalizedHookAction({ tool_name: 'mcp__stripe__create_refund', tool_input: { amount: 10, api_key: M, note: `token ${M}`, nested: { password: M }, free: M } });
   assert.equal(leaks(mcp, M), false);
-  assert.deepEqual(Object.keys(mcp.tool_input), ['input_sha256']);
+  // Truncated (a secret was replaced): the input hash and the exact key (M2: keyed on this machine, never the value).
+  assert.deepEqual(Object.keys(mcp.tool_input), ['input_sha256', 'exact_hmac']);
+  assert.match(mcp.tool_input.exact_hmac, /^[0-9a-f]{32}$/);
   const same = normalizedHookAction({ tool_name: 'mcp__stripe__create_refund', tool_input: { free: M, nested: { password: M }, note: `token ${M}`, api_key: M, amount: 10 } });
   assert.deepEqual(mcp, same, 'key order does not matter');
 });
@@ -110,7 +112,7 @@ test('the five commands one coarse class used to merge give five different hashe
 
 test('the hash is the same on every machine: it depends only on the secret-free command (pinned)', () => {
   assert.equal(bash('wrangler deploy --env production').tool_input.command_sha256,
-    require('node:crypto').createHash('sha256').update('marrow-normalized-action-v2\nshell\nwrangler deploy --env production').digest('hex'));
+    require('node:crypto').createHash('sha256').update('marrow-normalized-action-v3\nshell\nwrangler deploy --env production').digest('hex'));
   // Two commands that differ only in a secret value are the same action.
   assert.equal(bash(`npm publish --otp ${randomInt(100000, 999999)}`).tool_input.command_sha256, bash(`npm publish --otp ${randomInt(100000, 999999)}`).tool_input.command_sha256);
   // Codex's argument vector and the string form are the same action.
@@ -177,8 +179,11 @@ test('MEDIUM-R1-1: commands that differ only in the data they read get different
   assert.equal(hashOf("psql prod <<'SQL'\nDROP TABLE x;\nSQL"), hashOf('psql prod <<SQL\r\nDROP TABLE x;\r\nSQL'));
   assert.equal(hashOf('kubectl apply -f d.yaml <<< "replicas: 0"'), hashOf("kubectl apply -f d.yaml <<< 'replicas: 0'"));
   // And on every machine: the hash depends only on the command and its data (pinned).
-  const data = digest('marrow-normalized-action-v2\ndata\nDROP TABLE users');
-  assert.equal(hashOf('echo "DROP TABLE users" | psql prod'), digest(`marrow-normalized-action-v2\nshell\necho [data:${data}] | psql prod`));
+  // Printed text is hashed as its list of words (M2 R3: word boundaries and flags count).
+  const data = digest('marrow-normalized-action-v3\nwords\n["DROP TABLE users"]');
+  assert.equal(hashOf('echo "DROP TABLE users" | psql prod'), digest(`marrow-normalized-action-v3\nshell\necho [data:${data}] | psql prod`));
+  const here = digest('marrow-normalized-action-v3\ndata\nDROP TABLE users');
+  assert.equal(hashOf('psql prod <<< "DROP TABLE users"'), digest(`marrow-normalized-action-v3\nshell\npsql prod '<<<' [data:${here}]`));
 });
 
 test('MEDIUM-R1-1: data that feeds a secrets command or file, or looks secret, is withheld and the action is marked truncated (Marrow always asks)', () => {
@@ -347,9 +352,12 @@ test('LOW-R5-1: credential literals are scanned without recursion; thousands of 
 });
 
 test('MEDIUM-R5-1: past its deadline or size limits, normalization gives a truncated placeholder (kind and tool name only)', () => {
+  // M2: the placeholder carries only the exact key (the raw input keyed on this machine), never a value.
   const past = normalizedHookAction({ tool_name: 'Bash', tool_input: { command: 'wrangler deploy --env production' } }, { deadlineAt: Date.now() - 1 });
-  assert.deepEqual(past, { tool_kind: 'shell', tool_name: 'Bash', tool_input: {}, truncated: true });
-  assert.deepEqual(normalizedHookAction({ tool_name: 'mcp__db__query', tool_input: { sql: 'select 1' } }, { deadlineAt: Date.now() - 1 }), { tool_kind: 'mcp', tool_name: 'mcp__db__query', tool_input: {}, truncated: true });
+  assert.match(past.tool_input.exact_hmac, /^[0-9a-f]{32}$/);
+  assert.deepEqual(past, { tool_kind: 'shell', tool_name: 'Bash', tool_input: { exact_hmac: past.tool_input.exact_hmac }, truncated: true });
+  const mcpPast = normalizedHookAction({ tool_name: 'mcp__db__query', tool_input: { sql: 'select 1' } }, { deadlineAt: Date.now() - 1 });
+  assert.deepEqual(mcpPast, { tool_kind: 'mcp', tool_name: 'mcp__db__query', tool_input: { exact_hmac: mcpPast.tool_input.exact_hmac }, truncated: true });
   assert.equal(normalizeShellCommand('wrangler deploy', Date.now() - 1).truncated, true);
   assert.equal(shell(`deploy ${'x '.repeat(140_000)}`).truncated, true, 'over 256 KB');
   assert.equal(shell(`deploy ${'x '.repeat(5_000)}`).truncated, true, 'over 4096 words');

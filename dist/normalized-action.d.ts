@@ -83,8 +83,12 @@ export type NormalizedHookAction = {
     paths?: string[];
     tool_input: {
         command_sha256: string;
+        exact_hmac?: string;
     } | {
         input_sha256: string;
+        exact_hmac?: string;
+    } | {
+        exact_hmac: string;
     } | Record<string, never>;
     /** The hash could not cover everything that decides the action: Marrow never binds an approval to it. */
     truncated?: true;
@@ -109,7 +113,7 @@ export declare function classifySecretName(name: string): NameClass;
  * never sent. `truncated` is true when something that may change what the
  * command does had to be withheld. Exported for tests.
  */
-export declare function normalizeShellCommand(command: string, deadline?: number): {
+export declare function normalizeShellCommand(command: string, deadline?: number, exact?: boolean): {
     text: string;
     programs: string[];
     truncated: boolean;
@@ -132,9 +136,19 @@ export declare function deployCommandText(command: string): string | null;
  * service never binds, so the hook still answers within its host's budget.
  * An event whose input a host adapter cut or dropped (`input_truncated`) is
  * marked truncated as well.
+ *
+ * A truncated action also carries `tool_input.exact_hmac`: a keyed hash (the
+ * device salt never leaves the machine) of the action with only certain
+ * credentials replaced, so two actions that differ anywhere else never share a
+ * correlation, hold or key, and a retry that differs only in a certain
+ * credential (an OTP) still does. A placeholder keys the raw input (up to
+ * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a missing or
+ * unsafe salt give a random nonce: the action matches nothing (it is asked
+ * again). `salt` is a test seam (undefined: the device salt).
  */
 export declare function normalizedHookAction(event: ToolEvent, options?: {
     deadlineAt?: number;
+    salt?: Buffer | null;
 }): NormalizedHookAction;
 export {};
 //# sourceMappingURL=normalized-action.d.ts.map

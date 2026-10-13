@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.FLAG_CODES = exports.RETENTION_DAYS = exports.MAX_TOTAL_BYTES = exports.MAX_RECEIPT_BYTES = void 0;
 exports.validateReceipt = validateReceipt;
 exports.writeSeatbeltReceipt = writeSeatbeltReceipt;
+exports.deviceSalt = deviceSalt;
 exports.recordSeatbeltDecision = recordSeatbeltDecision;
 // Local receipts for seatbelt decisions (SEATBELT-SPEC.md §1.5, U6): a private, readable record that
 // "Marrow stopped X", written on this machine only. U5 calls recordSeatbeltDecision() once per decision.
@@ -735,6 +736,35 @@ function writeSeatbeltReceipt(record, context = {}, options = {}) {
             countDrop(fs, found.dir, dropReason(error), wait);
         return 'dropped';
     }
+}
+let deviceSaltCache = null;
+/**
+ * This machine's private salt: the receipts store's (~/.marrow/seatbelt/salt under the passwd home, 32 random
+ * bytes, 0600, owned by this uid, read with O_NOFOLLOW, created once), with every check openStore makes. It keys
+ * hashes that leave the machine only as a MAC (normalized-action exact_hmac); the salt itself is never sent,
+ * printed or logged. null when the store is missing, unsafe, not ours or unreadable: the caller then fails closed.
+ * Cached per process. The options are test seams (home, uid, fs) and bypass the cache.
+ */
+function deviceSalt(options = {}) {
+    const seams = options.home !== undefined || options.uid !== undefined || options.fs !== undefined;
+    if (!seams && deviceSaltCache)
+        return deviceSaltCache.salt;
+    let salt = null;
+    try {
+        const fs = options.fs || nodeFs;
+        const uid = options.uid === undefined ? (typeof process.getuid === 'function' ? process.getuid() : null) : options.uid;
+        const home = options.home || passwdHome();
+        if (typeof uid === 'number' && home) {
+            const found = openStore(fs, home, uid, {}).salt;
+            salt = found.length === 32 ? Buffer.from(found) : null;
+        }
+    }
+    catch {
+        salt = null;
+    }
+    if (!seams)
+        deviceSaltCache = { salt };
+    return salt;
 }
 /** The record hook U5 calls once per decision. It never throws, writes no output and never changes a decision. */
 function recordSeatbeltDecision(record, context) {

@@ -63,7 +63,7 @@ function hostRuntime(receipt = 'gate-held', approval = {}, extra = {}) {
 // The normalized action of the fixture's deploy: program names and a hash, never the command text.
 const DEPLOY_NORMALIZED = {
   tool_kind: 'shell', tool_name: 'Bash', programs: ['wrangler'],
-  tool_input: { command_sha256: require('node:crypto').createHash('sha256').update('marrow-normalized-action-v2\nshell\nwrangler deploy --env production').digest('hex') },
+  tool_input: { command_sha256: require('node:crypto').createHash('sha256').update('marrow-normalized-action-v3\nshell\nwrangler deploy --env production').digest('hex') },
 };
 
 function noProofRuntime(receipt = 'gate-held') {

@@ -191,10 +191,16 @@ const keyOfInput = (h, input) => {
   put(h, record(), ctx);
   return last(h).action_key;
 };
+// M2: the action_key covers the normalized action including exact_hmac, so two variants share a key exactly when
+// their exact forms are equal: a certain credential is replaced there; a value that only MAY be a secret (key shape,
+// ambiguous name) is kept, so it keeps the two actions apart (stricter, never looser).
+const N = require('../dist/normalized-action.js');
+const exactShell = (input) => (input.kind === 'mcp' ? null : N.normalizeShellCommand(input.command, undefined, true).text);
 
 test('U6 collision: the shared case table: differ outside the secret = different action_key; differ only in the secret = same; no dummy secret in a receipt', () => withHome((h) => {
   const shapes = [() => `pw-${hex(12)}`, () => `Zq9${hex(24)}X`];
   let pairs = 0;
+  let kept = 0;
   for (const secret of shapes) for (const c of COLLISION_CASES) {
     const first = secret();
     const second = secret();
@@ -204,10 +210,20 @@ test('U6 collision: the shared case table: differ outside the secret = different
     const label = `${c.path}: ${c.pair}`;
     if (c.secretOnly) assert.equal(a, b, `${label}: the same action`);
     else if (!c.afterEqual) assert.notEqual(a, b, `${label}: differ after the secret, the keys must differ`);
-    assert.equal(a, same, `${label}: differ only in the secret, the keys stay equal`);
+    const input = c.build(first, c.values[0]);
+    const exactEqual = input.kind === 'mcp'
+      ? JSON.stringify(N.normalizedHookAction({ tool_name: input.tool, tool_input: input.input })) === JSON.stringify(N.normalizedHookAction({ tool_name: input.tool, tool_input: c.build(second, c.values[0]).input }))
+      : exactShell(input) === exactShell(c.build(second, c.values[0]));
+    if (exactEqual) assert.equal(a, same, `${label}: differ only in a certain credential, the keys stay equal`);
+    else {
+      assert.notEqual(a, same, `${label}: a value that only may be a secret keeps the actions apart`);
+      if (input.kind !== 'mcp') assert.equal(exactShell(input).includes(first), true, `${label}: only a kept (not certain) position separates them`);
+      kept += 1;
+    }
     pairs += 1;
   }
   assert.ok(pairs >= 150, `${pairs} pairs`);
+  assert.ok(kept < pairs / 2, `${kept} kept of ${pairs}`);
   const raw = readReceipts(h.home).map((x) => x.line).join('\n');
   assert.ok(!/pw-[0-9a-f]{12}|Zq9[0-9a-f]{24}X/.test(raw), 'no dummy secret in the receipts');
 }));
@@ -224,9 +240,9 @@ test('U6 collision: the brief table (query, header, env assignment, JSON, flag, 
   assert.notEqual(k('rm -rf /home/u/alpha'), k('rm -rf /home/u/beta'), 'a plain word that differs');
   assert.equal(k('git push -f origin main'), k('git  push  -f origin main'), 'spacing is normalized: the same command');
   assert.notEqual(k("echo 'a b'"), k('echo a b'), 'quoting that changes the words is a different command');
-  // Known limit, documented: the shared normalizer treats a random-looking token of 20+ mixed-case characters as a secret
-  // (it may be an id or a commit), so two stops that differ only in such a token share an action_key. Display grouping only.
-  assert.equal(k('rm -rf /home/u/AbCdEfGhIjKlMnOpQrStUv1'), k('rm -rf /home/u/ZyXwVuTsRqPoNmLkJiHgFe2'));
+  // M2: a random-looking token of 20+ mixed-case characters is withheld from the sent text (it may be a secret), but the
+  // exact key keeps it, so two stops that differ only in such a token no longer share an action_key (was a known limit).
+  assert.notEqual(k('rm -rf /home/u/AbCdEfGhIjKlMnOpQrStUv1'), k('rm -rf /home/u/ZyXwVuTsRqPoNmLkJiHgFe2'));
   // The same action again: the same key, a new id each time ("stopped 3x").
   const three = [1, 2, 3].map(() => { put(h, record(STOP), bash('git push -f origin main')); return last(h); });
   assert.equal(new Set(three.map((r) => r.action_key)).size, 1);

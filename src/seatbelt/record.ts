@@ -671,6 +671,34 @@ export function writeSeatbeltReceipt(record: SeatbeltRecord, context: SeatbeltRe
   }
 }
 
+let deviceSaltCache: { salt: Buffer | null } | null = null;
+
+/**
+ * This machine's private salt: the receipts store's (~/.marrow/seatbelt/salt under the passwd home, 32 random
+ * bytes, 0600, owned by this uid, read with O_NOFOLLOW, created once), with every check openStore makes. It keys
+ * hashes that leave the machine only as a MAC (normalized-action exact_hmac); the salt itself is never sent,
+ * printed or logged. null when the store is missing, unsafe, not ours or unreadable: the caller then fails closed.
+ * Cached per process. The options are test seams (home, uid, fs) and bypass the cache.
+ */
+export function deviceSalt(options: Pick<ReceiptOptions, 'home' | 'uid' | 'fs'> = {}): Buffer | null {
+  const seams = options.home !== undefined || options.uid !== undefined || options.fs !== undefined;
+  if (!seams && deviceSaltCache) return deviceSaltCache.salt;
+  let salt: Buffer | null = null;
+  try {
+    const fs = options.fs || nodeFs;
+    const uid = options.uid === undefined ? (typeof process.getuid === 'function' ? process.getuid() : null) : options.uid;
+    const home = options.home || passwdHome();
+    if (typeof uid === 'number' && home) {
+      const found = openStore(fs, home, uid, {}).salt;
+      salt = found.length === 32 ? Buffer.from(found) : null;
+    }
+  } catch {
+    salt = null;
+  }
+  if (!seams) deviceSaltCache = { salt };
+  return salt;
+}
+
 /** The record hook U5 calls once per decision. It never throws, writes no output and never changes a decision. */
 export function recordSeatbeltDecision(record: SeatbeltRecord, context?: SeatbeltRecordContext): void {
   try {

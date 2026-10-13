@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import {
   hookToolCommand,
@@ -91,13 +91,13 @@ export type NormalizedHookAction = {
   tool_name: string;
   programs?: string[];
   paths?: string[];
-  tool_input: { command_sha256: string } | { input_sha256: string } | Record<string, never>;
+  tool_input: { command_sha256: string; exact_hmac?: string } | { input_sha256: string; exact_hmac?: string } | { exact_hmac: string } | Record<string, never>;
   /** The hash could not cover everything that decides the action: Marrow never binds an approval to it. */
   truncated?: true;
 };
 
 const SECRET = '[secret]';
-const HASH_VERSION = 'marrow-normalized-action-v2';
+const HASH_VERSION = 'marrow-normalized-action-v3';
 const EDIT_TOOLS = /^(?:edit|write|multiedit|apply_patch|notebookedit|replace|write_file|edit_file|delete_file|search_replace|delete|create_file)$/i;
 const MAX_DEPTH = 3;
 /** A word, data text or input string longer than this is not scanned: it is withheld and the action marked truncated. */
@@ -116,14 +116,27 @@ type ToolEvent = { tool_name?: unknown; tool_input?: unknown };
 
 /** The scan budget one normalization shares: total characters scanned and a wall-clock deadline. */
 type ScanBudget = { scanned: number; deadline: number };
-/** Set when a value that may change what the action does had to be withheld. */
-type Exactness = { truncated: boolean; budget: ScanBudget };
+/**
+ * `truncated`: set when a value that may change what the action does had to be withheld.
+ * `exact`: the exact pass (exact_hmac, never sent): only a certain credential is replaced; every value
+ * withheld only because it MAY be a secret is kept as it is.
+ */
+type Exactness = { truncated: boolean; budget: ScanBudget; exact: boolean; sigs: string[] };
 
 /** Thrown when normalization runs out of its budget: the caller sends a truncated placeholder instead. */
 class NormalizationLimit extends Error {}
 
-function newExactness(deadline: number = Date.now() + DEFAULT_NORMALIZE_MS): Exactness {
-  return { truncated: false, budget: { scanned: 0, deadline } };
+function newExactness(deadline: number = Date.now() + DEFAULT_NORMALIZE_MS, exact = false): Exactness {
+  return { truncated: false, budget: { scanned: 0, deadline }, exact, sigs: [] };
+}
+
+/**
+ * A value withheld only because it MAY be a secret (it may also be an id, a commit or a name that decides the
+ * action): replaced and the action marked truncated; the exact pass keeps it as it is.
+ */
+function withheld(state: Exactness, original: string, replacement: string = SECRET): string {
+  state.truncated = true; // exact: kept
+  return state.exact ? original : replacement;
 }
 
 /** Counts text about to be scanned against the shared budget; past it, normalization stops. */
@@ -142,6 +155,8 @@ function sha256(text: string): string {
 
 const KNOWN_KEY_PREFIX = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}$|^github_pat_[A-Za-z0-9_]{20,}$|^(?:sk|pk|rk)[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{12,}$|^xox[abprs]-[A-Za-z0-9-]{10,}$|^AIza[0-9A-Za-z_-]{30,}$|^glpat-[A-Za-z0-9_-]{16,}$|^npm_[A-Za-z0-9]{20,}$|^mrw_[A-Za-z0-9_-]{8,}$|^cfut_[A-Za-z0-9_-]{12,}$|^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/;
 const PEM = /-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)-----/;
+/** Known formats that only name a key or are public (AWS key, user, group and role ids; publishable keys): the exact pass keeps them. */
+const PUBLIC_KNOWN_KEY = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^pk[-_]/;
 
 /** A value shaped like a key, token or password hash (mixed-case random text, long hex, known prefixes). */
 export function looksLikeKey(value: string): boolean {
@@ -166,16 +181,17 @@ const KEY_SPLIT = /([\s=:,;@/?&'"`()[\]{}<>|!*$])/;
 function redactKeyShapes(text: string, state: Exactness): string {
   const whole = text.trim();
   if (whole && !/\s/.test(whole) && looksLikeKey(whole)) {
-    if (!KNOWN_KEY_PREFIX.test(whole) && !PEM.test(whole)) state.truncated = true;
-    return SECRET;
+    if (!KNOWN_KEY_PREFIX.test(whole) && !PEM.test(whole)) return withheld(state, text);
+    return state.exact && PUBLIC_KNOWN_KEY.test(whole) ? text : SECRET;
   }
   if (PEM.test(text)) {
-    return text.replace(/-----BEGIN [A-Z ]*-----[\s\S]*?(?:-----END [A-Z ]*-----|$)/g, SECRET);
+    // The exact pass replaces only a private key block; a certificate or a public key block is kept.
+    return text.replace(/-----BEGIN ([A-Z ]*)-----[\s\S]*?(?:-----END [A-Z ]*-----|$)/g, (block: string, label: string) => (state.exact && !/PRIVATE/.test(label) ? block : SECRET));
   }
   return text.split(KEY_SPLIT).map((part) => {
     if (!looksLikeKey(part)) return part;
-    if (!KNOWN_KEY_PREFIX.test(part)) state.truncated = true;
-    return SECRET;
+    if (!KNOWN_KEY_PREFIX.test(part)) return withheld(state, part);
+    return state.exact && PUBLIC_KNOWN_KEY.test(part) ? part : SECRET;
   }).join('');
 }
 
@@ -224,6 +240,25 @@ export function classifySecretName(name: string): NameClass {
 function holdsSecret(name: string): boolean {
   const kind = classifySecretName(name);
   return kind === 'credential' || kind === 'ambiguous';
+}
+
+/** A name part that ends in a credential word (DB_PASSWORD, PGPASSWORD, GITHUB_TOKEN, ADMINPASS), not one that only starts with it. */
+const CERTAIN_END = /(?:password|passwd|passphrase|passcode|secret|token|apikey|accesskey|privatekey|signingkey|masterkey|encryptionkey|accountkey|credential|creds|bearer|cookie|authorization|requirepass|masterauth|storepass|keypass|newpass|oldpass|pwd)$/;
+
+/**
+ * classifySecretName, except that the exact pass (exact_hmac, never sent) reads a credential name as certain only
+ * when a part ends in a credential word, is one (otp, pat, jwt), or the name holds a pair (api_key): a value under
+ * `passwordless`, `SECRETNAME`, `TOKENID`, `max_tokens` or `credentials` may name or count something that decides
+ * the action, so the exact pass keeps it (as an ambiguous value). Pass 1 is unchanged.
+ */
+function nameClass(name: string, state: Exactness): NameClass {
+  const kind = classifySecretName(name);
+  if (!state.exact || kind !== 'credential') return kind;
+  const parts = nameParts(name);
+  const joined = parts.join('_');
+  const pair = CREDENTIAL_PAIRS.some((item) => joined === item || joined.startsWith(`${item}_`) || joined.endsWith(`_${item}`) || joined.includes(`_${item}_`));
+  const certain = pair || parts.some((part) => CREDENTIAL_WORDS.has(part) || CERTAIN_END.test(part) || (holdsPass(part) && part.endsWith('pass')));
+  return certain ? 'credential' : 'ambiguous';
 }
 
 // ---------------------------------------------------------------------------
@@ -291,10 +326,10 @@ function holdsMoreThanCredential(value: string): boolean {
 function cutCredential(value: string, state: Exactness): string {
   const at = credentialValueEnd(value, 0, true);
   if (at >= value.length) {
-    if (holdsMoreThanCredential(value)) state.truncated = true;
+    if (holdsMoreThanCredential(value)) return withheld(state, value);
     return SECRET;
   }
-  state.truncated = true;
+  state.truncated = true; // exact: certain (the credential before the field; the rest is scanned in the same pass)
   return SECRET + redactText(value.slice(at), state);
 }
 
@@ -307,21 +342,24 @@ const SINGLE_VALUE_HEADER = /^[^:\s]{1,128}:[ \t]*(?:(?:Bearer|Basic|Token|Bot)[
  * names mark the action truncated) and key-shaped values.
  */
 function redactText(text: string, state: Exactness): string {
-  if (text.length > MAX_SCAN_CHARS) {
-    state.truncated = true;
-    return SECRET;
-  }
+  // Not scanned (the exact pass keeps it as it is).
+  if (text.length > MAX_SCAN_CHARS) return withheld(state, text);
   spend(state, text.length);
   // A short word without a separator cannot hold any of these (keys need 12 or more characters).
   if (text.length < 12 && !/[:=?&@\s]/.test(text)) return text;
   let out = text.replace(URL_CREDENTIALS, (_match, scheme: string, user: string) => `${scheme}${user}:${SECRET}@`);
-  out = replaceValuesAfter(out, AUTH_SCHEME);
-  out = replaceValuesAfter(out, URL_CODE);
+  // The exact pass keeps a `Token`/`Bot` value that is not key-shaped (`git commit -m "Token rotation"`).
+  out = replaceValuesAfter(out, AUTH_SCHEME, state.exact ? (scheme, value) => /^(?:Token|Bot)$/.test(scheme) && !looksLikeKey(value) : null);
+  // The exact pass keeps a URL `code` value: it may be an OAuth code, but it may as well be a country or product code.
+  out = replaceValuesAfter(out, URL_CODE, state.exact ? () => true : null);
   return redactKeyShapes(redactAssignments(out, state), state);
 }
 
-/** Replaces the value after each match of `pattern` (an auth scheme, an OAuth code), ended by the shared rule. */
-function replaceValuesAfter(text: string, pattern: RegExp): string {
+/**
+ * Replaces the value after each match of `pattern` (an auth scheme, an OAuth code), ended by the shared rule.
+ * `keep` (exact pass only): a value it returns true for stays as it is.
+ */
+function replaceValuesAfter(text: string, pattern: RegExp, keep: ((scheme: string, value: string) => boolean) | null): string {
   pattern.lastIndex = 0;
   let out = '';
   let copied = 0;
@@ -330,6 +368,10 @@ function replaceValuesAfter(text: string, pattern: RegExp): string {
     const end = credentialValueEnd(text, start);
     if (end <= start) {
       pattern.lastIndex = start + 1;
+      continue;
+    }
+    if (keep && keep(match[1], text.slice(start, end))) {
+      pattern.lastIndex = end;
       continue;
     }
     out += text.slice(copied, start) + SECRET;
@@ -353,11 +395,9 @@ function redactAssignments(text: string, state: Exactness): string {
   let matches = 0;
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     matches += 1;
-    if (matches > MAX_ASSIGNMENTS) {
-      state.truncated = true;
-      return SECRET;
-    }
-    const kind = classifySecretName(match[2]);
+    // Too many names to scan: withheld (the exact pass keeps the text as it is).
+    if (matches > MAX_ASSIGNMENTS) return withheld(state, text);
+    const kind = nameClass(match[2], state);
     if (kind !== 'credential' && kind !== 'ambiguous') continue;
     let start = match.index + match[0].length;
     let end = start;
@@ -371,8 +411,8 @@ function redactAssignments(text: string, state: Exactness): string {
     if (end <= start) continue;
     const value = text.slice(start, end);
     if (!value.startsWith('[secret') && !value.startsWith('[data:')) {
-      if (kind === 'ambiguous' || holdsMoreThanCredential(value)) state.truncated = true;
-      out += text.slice(copied, start) + SECRET;
+      const replacement = kind === 'ambiguous' || holdsMoreThanCredential(value) ? withheld(state, value) : SECRET;
+      out += text.slice(copied, start) + replacement;
       copied = end;
     }
     pattern.lastIndex = end;
@@ -385,22 +425,44 @@ function redactAssignments(text: string, state: Exactness): string {
  * truncated when it feeds a secrets command or file (all of it is the
  * secret); the SHA-256 of its redacted form and truncated when it looks secret.
  */
-function dataMarker(text: string, feedsSecrets: boolean, state: Exactness): string {
+function dataMarker(text: string, feedsSecrets: boolean, state: Exactness, words: string[] | null = null): string {
+  if (state.exact) {
+    // The exact pass: only the certain credentials inside the data are replaced and the rest is hashed, also for
+    // data a secrets command or file reads (a vault policy, an authorized_keys line, a kubeconfig differ outside
+    // any secret), so data that differs outside a certain credential never shares exact material.
+    const probe: Exactness = { truncated: false, budget: state.budget, exact: true, sigs: [] };
+    return `[data:${sha256(`${HASH_VERSION}\nexact-data\n${redactText(text, probe)}`)}]`;
+  }
   if (feedsSecrets) {
-    state.truncated = true;
+    state.truncated = true; // exact: kept (hashed above, certain credentials replaced)
     return SECRET;
   }
   // Secret-shaped data (`'{"api_key":"S","env":"production"}'`): the secrets are
   // replaced and the rest is hashed, so data that differs outside a secret gives
   // a different key, data that differs only in a secret the same one. Withheld:
   // the action is truncated and never binds an approval.
-  const probe: Exactness = { truncated: false, budget: state.budget };
+  const probe: Exactness = { truncated: false, budget: state.budget, exact: false, sigs: [] };
   const redacted = redactText(text, probe);
   if (redacted !== text) {
-    state.truncated = true;
+    state.truncated = true; // exact: kept (hashed above, certain credentials replaced)
     return `[secret-data:${sha256(`${HASH_VERSION}\nsecret-data\n${redacted}`)}]`;
   }
-  return `[data:${sha256(`${HASH_VERSION}\ndata\n${text}`)}]`;
+  // Printed words (`words`): hashed as their list, so word boundaries count.
+  return words === null ? `[data:${sha256(`${HASH_VERSION}\ndata\n${text}`)}]` : `[data:${sha256(`${HASH_VERSION}\nwords\n${JSON.stringify(words)}`)}]`;
+}
+
+/**
+ * Text echoed or printed into a pipe or a file: probed for secrets as the shell joins it (one space), as
+ * before; hashed as the list of printed words, so word boundaries and flags count (`echo -n X` is not
+ * `echo "-n X"`, `printf '%s\n' a b` is not `printf '%s\n' 'a b'`). The exact pass replaces the certain
+ * credentials word by word and keeps the boundaries too.
+ */
+function printedData(words: string[], feedsSecrets: boolean, state: Exactness): string {
+  if (state.exact) {
+    const probe: Exactness = { truncated: false, budget: state.budget, exact: true, sigs: [] };
+    return `[data:${sha256(`${HASH_VERSION}\nexact-words\n${JSON.stringify(words.map((word) => redactText(word, probe)))}`)}]`;
+  }
+  return dataMarker(words.join(' '), feedsSecrets, state, words);
 }
 
 // ---------------------------------------------------------------------------
@@ -411,8 +473,11 @@ type Token = { value: string; op: boolean };
 
 const OPERATORS = ['<<<', '&&', '||', '|&', '>>', '<<', ';;', '|', '&', ';', '<', '>', '(', ')', '\n'];
 
-/** Splits a command into words and operators, honoring quotes and escapes (an approximation of the shell). */
-function tokenize(command: string): Token[] {
+/**
+ * Splits a command into words and operators, honoring quotes and escapes (an approximation of the shell).
+ * `crIsWord` (the exact pass): a CR is a word character, as it is to the shell.
+ */
+function tokenize(command: string, crIsWord = false): Token[] {
   const tokens: Token[] = [];
   let current = '';
   let started = false;
@@ -437,7 +502,7 @@ function tokenize(command: string): Token[] {
       i = end < 0 ? command.length : end;
       continue;
     }
-    if (ch === ' ' || ch === '\t' || ch === '\r') {
+    if (ch === ' ' || ch === '\t' || (ch === '\r' && !crIsWord)) {
       push();
       continue;
     }
@@ -602,9 +667,9 @@ function takesSecrets(words: string[], parsed: Parsed): boolean {
 }
 
 function assignedValue(name: string, value: string, state: Exactness): string {
-  const kind = classifySecretName(name);
+  const kind = nameClass(name, state);
   if (kind === 'credential' || kind === 'ambiguous') {
-    if (kind === 'ambiguous' || holdsMoreThanCredential(value)) state.truncated = true;
+    if (kind === 'ambiguous' || holdsMoreThanCredential(value)) return `${name}=${withheld(state, state.exact ? dataMarker(value, false, state) : value)}`;
     return `${name}=${SECRET}`;
   }
   return value ? `${name}=${dataMarker(value, false, state)}` : `${name}=`;
@@ -662,7 +727,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
   if ((program === 'echo' || program === 'printf') && (ctx.pipedOut || targets.length)) {
     const printed = parsed.plain;
     if (printed.length) {
-      out[printed[0]] = dataMarker(printed.map((i) => out[i]).join(' '), downstreamTakes || secretTarget, state);
+      out[printed[0]] = printedData(printed.map((i) => out[i]), downstreamTakes || secretTarget, state);
       handled.add(printed[0]);
       for (const i of printed.slice(1)) removed.add(i);
     }
@@ -684,8 +749,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
   // Commands inside the command: `bash -c CMD`, `ssh HOST CMD …`, `eval …`, `su -c CMD`.
   const embed = (at: number, text: string, also: number[] = []) => {
     if (ctx.depth >= MAX_DEPTH) {
-      out[at] = SECRET;
-      state.truncated = true;
+      out[at] = withheld(state, text);
     } else {
       out[at] = normalizeInner(text, state, ctx.depth + 1).text;
     }
@@ -731,20 +795,28 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
   const envStore = storeContext(lowered.slice(0, 4));
   const stem = programStem(program);
   const redactAt = (i: number, ambiguous = false) => {
-    if (ambiguous || holdsMoreThanCredential(out[i])) state.truncated = true;
-    out[i] = SECRET;
+    out[i] = ambiguous || holdsMoreThanCredential(out[i]) ? withheld(state, out[i]) : SECRET;
     handled.add(i);
   };
   // An auth header: a one-value header is the credential; any other (`Cookie: a=1; env=prod`)
   // keeps its other fields, with the credentials inside replaced.
   const redactHeaderValue = (header: string): string => {
     if (SINGLE_VALUE_HEADER.test(header)) {
-      if (holdsMoreThanCredential(header.replace(/^[^:]*:/, ''))) state.truncated = true;
-      return SECRET;
+      const colon = header.indexOf(':');
+      const value = header.slice(colon + 1);
+      if (holdsMoreThanCredential(value)) return withheld(state, header);
+      if (!state.exact) return SECRET;
+      // The exact pass: the value of a credential header (or a Bearer/Basic value) is certain; any other
+      // one-value header (`X-Idempotency-Key: k`) and the header name are kept.
+      const name = header.slice(0, colon);
+      if (nameClass(name, state) !== 'credential' && !/^[ \t]*(?:Bearer|Basic)[ \t]/i.test(value)) return header;
+      // Basic USER:PASSWORD names who acts, as `curl -u` does: only the password is certain.
+      const basic = /^[ \t]*Basic[ \t]+([A-Za-z0-9+/]+={0,2})[ \t]*$/i.exec(value);
+      const decoded = basic ? Buffer.from(basic[1], 'base64').toString('latin1') : '';
+      return /^[\x20-\x7e]*:/.test(decoded) ? `${name}:Basic ${JSON.stringify(decoded.slice(0, decoded.indexOf(':')))}:${SECRET}` : `${name}:${SECRET}`;
     }
     const redacted = redactText(header, state);
-    if (redacted === header) state.truncated = true;
-    return redacted === header ? SECRET : redacted;
+    return redacted === header ? withheld(state, header) : redacted;
   };
   // curl -b/--cookie NAME=VALUE[; …] is a Cookie header (without `=` it names a cookie file).
   const redactCookieValue = (value: string): string => {
@@ -757,8 +829,12 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
     if (/[&#]/.test(value)) return redactText(`${name}=${value}`, state);
     return `${name}=${cutCredential(value, state)}`;
   };
+  // The exact pass: `curl -u USER:PASSWORD` names who acts; only the password is certain.
+  const exactUser = (value: string): string => (value.includes(':') ? `${value.slice(0, value.indexOf(':'))}:${SECRET}` : value);
+  // The exact pass: openssl `pass:X` and a bare value are the password; `env:`, `file:`, `fd:` name where it is.
+  const exactOpensslPass = (value: string): string => (/^(?:env|file|fd):/.test(value) ? value : /^pass:/.test(value) ? `pass:${SECRET}` : SECRET);
 
-  // A program named for a secret (set-password.sh): its arguments cannot be told apart.
+  // A program named for a secret (set-password.sh): its arguments cannot be told apart (the exact pass keeps them).
   if (!SECRET_PROGRAMS.has(stem) && classifySecretName(stem) === 'credential') {
     for (const i of positionals) redactAt(i, true);
   }
@@ -772,11 +848,12 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
       const j = args[k + 1];
       return j !== undefined && !handled.has(j) && !out[j].startsWith('-') ? j : null;
     };
-    const next = (ambiguous = false) => {
+    // `exactForm` (exact pass only): the certain part of a value that also names something (a user, a file).
+    const next = (ambiguous = false, exactForm: ((value: string) => string) | null = null) => {
       const j = valueAt();
       if (j !== null) {
-        if (ambiguous) state.truncated = true;
-        out[j] = cutCredential(out[j], state);
+        if (ambiguous) out[j] = state.exact ? withheld(state, out[j]) : withheld(state, out[j], cutCredential(out[j], state));
+        else out[j] = state.exact && exactForm ? exactForm(out[j]) : cutCredential(out[j], state);
         handled.add(j);
         k += 1;
       }
@@ -790,7 +867,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
       }
     };
     const byName = (name: string) => {
-      const kind = classifySecretName(name);
+      const kind = nameClass(name, state);
       if (kind === 'credential') next();
       else if (kind === 'ambiguous') next(true);
     };
@@ -799,11 +876,11 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
     if (long) {
       const name = long[1].replace(/^-+/, '');
       if (name === 'from-literal' || name === 'from-env-literal') {
-        if (holdsMoreThanCredential(long[2].replace(/^[^=]*=/, ''))) state.truncated = true;
-        out[i] = `${long[1]}=${long[2].replace(/^([^=]*)=.*$/s, `$1=${SECRET}`)}`;
+        const replaced = `${long[1]}=${long[2].replace(/^([^=]*)=.*$/s, `$1=${SECRET}`)}`;
+        out[i] = holdsMoreThanCredential(long[2].replace(/^[^=]*=/, '')) ? withheld(state, arg, replaced) : replaced;
         handled.add(i);
       } else if (CURL_FAMILY.has(program) && /^(?:u|user|proxy-user)$/.test(name)) {
-        out[i] = `${long[1]}=${SECRET}`;
+        out[i] = `${long[1]}=${state.exact ? exactUser(long[2]) : SECRET}`;
         handled.add(i);
       } else if (CURL_FAMILY.has(program) && name === 'header' && AUTH_HEADER.test(long[2])) {
         out[i] = `${long[1]}=${redactHeaderValue(long[2])}`;
@@ -812,8 +889,9 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
         out[i] = `${long[1]}=${redactCookieValue(long[2])}`;
         handled.add(i);
       } else if (holdsSecret(name)) {
-        if (classifySecretName(name) === 'ambiguous') state.truncated = true;
-        out[i] = `${long[1]}=${cutCredential(long[2], state)}`;
+        const kind = nameClass(name, state);
+        if (kind === 'ambiguous') out[i] = withheld(state, arg, `${long[1]}=${cutCredential(long[2], state)}`);
+        else if (kind === 'credential') out[i] = `${long[1]}=${cutCredential(long[2], state)}`;
         handled.add(i);
       }
       continue;
@@ -821,7 +899,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
     // --flag value
     if (/^--[A-Za-z0-9]/.test(arg)) {
       const name = arg.slice(2);
-      if (CURL_FAMILY.has(program) && /^(?:user|proxy-user)$/.test(name)) next();
+      if (CURL_FAMILY.has(program) && /^(?:user|proxy-user)$/.test(name)) next(false, exactUser);
       else if (CURL_FAMILY.has(program) && name === 'header') {
         const j = valueAt();
         if (j !== null && AUTH_HEADER.test(out[j])) { out[j] = redactHeaderValue(out[j]); handled.add(j); k += 1; }
@@ -839,14 +917,14 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
       else if (LOGIN_P.has(program) && loginContext && /^-p/.test(arg)) attachedOrNext('-p');
       else if (UPPER_P.has(program) && /^-P/.test(arg)) attachedOrNext('-P');
       else if (REDIS_FAMILY.has(program) && /^-a/.test(arg)) attachedOrNext('-a');
-      else if (CURL_FAMILY.has(program) && (arg === '-u' || arg === '-U')) next();
+      else if (CURL_FAMILY.has(program) && (arg === '-u' || arg === '-U')) next(false, exactUser);
       else if (CURL_FAMILY.has(program) && arg === '-H') {
         const j = valueAt();
         if (j !== null && AUTH_HEADER.test(out[j])) { out[j] = redactHeaderValue(out[j]); handled.add(j); k += 1; }
       } else if (CURL_FAMILY.has(program) && arg === '-b') {
         const j = valueAt();
         if (j !== null) { out[j] = redactCookieValue(out[j]); handled.add(j); k += 1; }
-      } else if (program === 'openssl' && OPENSSL_PASS_FLAGS.has(arg)) next();
+      } else if (program === 'openssl' && OPENSSL_PASS_FLAGS.has(arg)) next(false, arg === '-kfile' ? (value) => value : exactOpensslPass);
       else if (program === 'gh' && secretContext && arg === '-b') next();
       else if (/^-[A-Za-z][A-Za-z0-9_-]{2,}$/.test(arg)) byName(arg.slice(1));
       continue;
@@ -857,12 +935,13 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
       const [, name, value] = assignment;
       if (secretContext) {
         // In a secrets command every value is a secret: withheld whole, and truncated if it held more fields.
-        if (/[&#]/.test(value) || holdsMoreThanCredential(value)) state.truncated = true;
-        out[i] = `${name}=${SECRET}`;
+        out[i] = /[&#]/.test(value) || holdsMoreThanCredential(value) ? withheld(state, arg, `${name}=${SECRET}`) : `${name}=${SECRET}`;
         handled.add(i);
       } else if (holdsSecret(name)) {
-        if (classifySecretName(name) === 'ambiguous') state.truncated = true;
-        out[i] = credentialArgument(name, value);
+        const kind = nameClass(name, state);
+        if (kind === 'ambiguous') out[i] = withheld(state, arg, credentialArgument(name, value));
+        else if (kind === 'credential') out[i] = credentialArgument(name, value);
+        else out[i] = redactText(arg, state);
         handled.add(i);
       } else if (envStore) {
         out[i] = assignedValue(name, value, state);
@@ -871,7 +950,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
       continue;
     }
     if (program === 'openssl' && /^(?:pass|env|file|fd):/.test(arg)) {
-      out[i] = arg.replace(/:.*/s, `:${SECRET}`);
+      out[i] = state.exact ? exactOpensslPass(arg) : arg.replace(/:.*/s, `:${SECRET}`);
       handled.add(i);
       continue;
     }
@@ -888,7 +967,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
     if (envStore && position > 0 && /^(?:env|config|variables?|vars?):(?:set|add|push|import|create|update|put)$|^(?:set|add|put|push|import|create|update)$/.test(previous)) {
       const j = valueAt();
       if (j !== null) {
-        const kind = classifySecretName(arg);
+        const kind = nameClass(arg, state);
         if (kind === 'credential') redactAt(j);
         else if (kind === 'ambiguous') redactAt(j, true);
         else { out[j] = dataMarker(out[j], false, state); handled.add(j); }
@@ -931,11 +1010,81 @@ function quoteWord(word: string): string {
   return /[\s'"\\|&;<>()$`*?]/.test(word) ? `'${word.replace(/'/g, `'\\''`)}'` : word;
 }
 
+const SIG_SPECIAL = '$`*?[{~';
+const HEREDOC_OPEN = /(?<!<)<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g;
+
+/**
+ * What quoting does to the characters the shell expands (`$`, backquote, `*`, `?`, `[`, `{`, `~`), in order: `A`
+ * when the shell acts on it, `L` when it is literal (single quotes, a backslash, double quotes for all but `$` and
+ * backquote, a quoted heredoc). The words the normalizer reads are unquoted, so `rm -rf '*'` and `rm -rf *`,
+ * `'$HOME'` and `$HOME`, `<<'EOF'` and `<<EOF` read alike; this signature keeps them apart. `'*'`, `"*"` and `\*`
+ * mean the same and sign the same.
+ */
+function quoteSignature(command: string): string {
+  const parts: string[] = [];
+  const lines = command.split('\n');
+  const pending: { tag: string; quoted: boolean }[] = [];
+  let quote = '';
+  for (let n = 0; n < lines.length; n += 1) {
+    if (pending.length && !quote) {
+      const doc = pending.shift()!;
+      for (; n < lines.length; n += 1) {
+        const line = lines[n];
+        if (line.replace(/^[ \t]+|[ \t]+$/g, '') === doc.tag) break;
+        for (let i = 0; i < line.length; i += 1) {
+          const c = line[i];
+          if (!doc.quoted && c === '\\' && i + 1 < line.length && '$`\\'.includes(line[i + 1])) {
+            if (SIG_SPECIAL.includes(line[i + 1])) parts.push(`L${line[i + 1]}`);
+            i += 1;
+          } else if (SIG_SPECIAL.includes(c)) parts.push(`${!doc.quoted && (c === '$' || c === '`') ? 'A' : 'L'}${c}`);
+        }
+      }
+      parts.push('|');
+      continue;
+    }
+    const line = lines[n];
+    if (!quote) for (const match of line.matchAll(HEREDOC_OPEN)) pending.push({ tag: match[3], quoted: match[2] !== '' });
+    for (let i = 0; i < line.length; i += 1) {
+      const c = line[i];
+      if (quote === "'") {
+        if (c === "'") quote = '';
+        else if (SIG_SPECIAL.includes(c)) parts.push(`L${c}`);
+        continue;
+      }
+      if (c === '\\' && i + 1 < line.length) {
+        const next = line[i + 1];
+        if (SIG_SPECIAL.includes(next)) parts.push(`L${next}`);
+        i += 1;
+        continue;
+      }
+      if (quote === '"') {
+        if (c === '"') quote = '';
+        else if (SIG_SPECIAL.includes(c)) parts.push(`${c === '$' || c === '`' ? 'A' : 'L'}${c}`);
+        continue;
+      }
+      if (c === "'" || c === '"') {
+        quote = c;
+        continue;
+      }
+      if (SIG_SPECIAL.includes(c)) parts.push(`A${c}`);
+    }
+    if (quote) parts.push('/');
+  }
+  return parts.join('');
+}
+
 function normalizeInner(command: string, state: Exactness, depth: number): { text: string; programs: string[] } {
   if (command.length > MAX_COMMAND_CHARS) throw new NormalizationLimit();
   spend(state, 0);
+  // Quoting of the characters the shell expands (kept apart from the unquoted words, see quoteSignature).
+  const signature = quoteSignature(command);
+  if (signature) state.sigs.push(`${depth}:${signature}`);
+  // A lone CR (not before LF) is a word character to the shell; read as a line end here, so the action is
+  // truncated and the exact pass keeps it (`main<CR>` is not `main`, `build<CR>dist` is not `build ; dist`).
+  if (/\r(?!\n)/.test(command)) state.truncated = true; // exact: kept (crIsWord)
   const data: string[] = [];
-  const tokens = tokenize(extractHeredocs(command.replace(/\r\n?/g, '\n'), data));
+  const lines = state.exact ? command.replace(/\r\n/g, '\n') : command.replace(/\r\n?/g, '\n');
+  const tokens = tokenize(extractHeredocs(lines, data), state.exact);
   if (tokens.length > MAX_TOKENS) throw new NormalizationLimit();
   const segments: { words: string[]; op: string | null }[] = [];
   let current: string[] = [];
@@ -1001,10 +1150,12 @@ function normalizeInner(command: string, state: Exactness, depth: number): { tex
  * never sent. `truncated` is true when something that may change what the
  * command does had to be withheld. Exported for tests.
  */
-export function normalizeShellCommand(command: string, deadline?: number): { text: string; programs: string[]; truncated: boolean } {
-  const state = newExactness(deadline);
+export function normalizeShellCommand(command: string, deadline?: number, exact = false): { text: string; programs: string[]; truncated: boolean } {
+  const state = newExactness(deadline, exact);
   try {
     const result = normalizeInner(command, state, 0);
+    // The exact pass: the form exact_hmac keys (the words, the shell references and the quoting).
+    if (exact) return { ...result, text: exactShellForm(result.text, command, state), truncated: state.truncated };
     return { ...result, truncated: state.truncated };
   } catch (error) {
     if (error instanceof NormalizationLimit) return { text: '', programs: [], truncated: true };
@@ -1021,24 +1172,30 @@ function sortedValue(value: unknown, depth = 0): unknown {
 
 /** A tool input with credentials and key-shaped values replaced; hashed, never sent. */
 function redactedInput(value: unknown, state: Exactness, depth = 0): unknown {
+  // Past the depth or entry bounds the exact pass stops; exact_hmac then keys the raw canonical input.
   if (depth > 6) {
-    state.truncated = true;
+    if (state.exact) throw new NormalizationLimit();
+    state.truncated = true; // exact: raw (canonical input)
     return SECRET;
   }
   if (typeof value === 'string') return redactText(value, state);
   if (Array.isArray(value)) {
-    if (value.length > 64) state.truncated = true;
+    if (value.length > 64 && state.exact) throw new NormalizationLimit();
+    if (value.length > 64) state.truncated = true; // exact: raw (canonical input)
     return value.slice(0, 64).map((item) => redactedInput(item, state, depth + 1));
   }
   if (value && typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length > 64) state.truncated = true;
+    if (entries.length > 64 && state.exact) throw new NormalizationLimit();
+    if (entries.length > 64) state.truncated = true; // exact: raw (canonical input)
     const out: Record<string, unknown> = {};
     for (const [key, item] of entries.slice(0, 64)) {
-      const kind = classifySecretName(key);
+      const kind = nameClass(key, state);
       if (kind === 'credential' || kind === 'ambiguous') {
-        if (kind === 'ambiguous') state.truncated = true;
-        out[key] = SECRET;
+        // The exact pass keeps an ambiguous value, and looks inside an object or array under a credential
+        // name (`credentials: {user, role, password}`): only a value itself is certain.
+        if (kind === 'ambiguous') state.truncated = true; // exact: kept (below)
+        out[key] = state.exact && (kind === 'ambiguous' || (item !== null && typeof item === 'object')) ? redactedInput(item, state, depth + 1) : SECRET;
       } else {
         out[key] = redactedInput(item, state, depth + 1);
       }
@@ -1046,6 +1203,23 @@ function redactedInput(value: unknown, state: Exactness, depth = 0): unknown {
     return out;
   }
   return value;
+}
+
+/**
+ * The host's own shell text when trimming changed what bash runs, else null. The command is read trimmed, but a
+ * lone CR, a vertical tab, a form feed or a non-ASCII space at either end is part of a word in bash (`main<CR>` is
+ * another ref than `main`). ASCII spaces, tabs, newlines and CRLF line ends at the ends change nothing.
+ */
+function untrimmedShellText(event: ToolEvent, trimmed: string): string | null {
+  const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input)
+    ? event.tool_input as Record<string, unknown> : null;
+  const host = typeof event.tool_input === 'string' ? event.tool_input
+    : typeof input?.command === 'string' ? input.command : typeof input?.cmd === 'string' ? input.cmd : null;
+  if (host === null || host === trimmed) return null;
+  const at = host.indexOf(trimmed);
+  if (at < 0) return null;
+  const edges = `${host.slice(0, at)}${host.slice(at + trimmed.length)}`.replace(/\r\n/g, '\n');
+  return /[^ \t\n]/.test(edges) ? host : null;
 }
 
 /**
@@ -1060,7 +1234,8 @@ function shellCommand(event: ToolEvent): string {
   if (argv && argv.every((item) => typeof item === 'string')) {
     const words = argv as string[];
     if (words.length === 3 && /^(?:.*\/)?(?:ba|z|da|k)?sh$/.test(words[0]) && /^-[a-z]*c$/.test(words[1])) return words[2];
-    return words.map((word) => (/[\s'"]/.test(word) ? `'${word.replace(/'/g, `'\\''`)}'` : word)).join(' ');
+    // An argument vector runs without a shell: every word is literal, so any character the shell reads is quoted.
+    return words.map((word) => (/[\s'"\\$`*?[\]{}~|&;<>()!#]/.test(word) ? `'${word.replace(/'/g, `'\\''`)}'` : word)).join(' ');
   }
   return hookToolCommand(event as Parameters<typeof hookToolCommand>[0]);
 }
@@ -1075,7 +1250,7 @@ function withoutUserName(path: string, state: Exactness): string {
   if (home && home !== '/' && (path === home || path.startsWith(`${home}/`))) return `~${path.slice(home.length)}`;
   const other = /^(\/(?:home|Users))\/[^/]+(?=\/|$)/.exec(path);
   if (!other) return path;
-  state.truncated = true;
+  state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
   return `${other[1]}/[user]${path.slice(other[0].length)}`;
 }
 
@@ -1167,12 +1342,164 @@ function normalizedWords(_toolWords: string[], trimmed: string): string {
 function inputHash(input: unknown, state: Exactness): { input_sha256: string } | Record<string, never> {
   if (input === undefined || input === null) return {};
   const text = JSON.stringify(sortedValue(redactedInput(input, state)));
-  if (text.includes(SECRET)) state.truncated = true;
+  if (text.includes(SECRET)) state.truncated = true; // exact: n/a (pass 1 only; exactMaterial is the exact form)
   return { input_sha256: sha256(`${HASH_VERSION}\ninput\n${text}`) };
 }
 
 function withExactness(action: NormalizedHookAction, state: Exactness): NormalizedHookAction {
   return state.truncated ? { ...action, truncated: true } : action;
+}
+
+// ---------------------------------------------------------------------------
+// Exact material for a truncated action (exact_hmac; M2)
+// ---------------------------------------------------------------------------
+
+const EXACT_DOMAIN = 'marrow-exact-action-v1';
+/** Raw canonical input past this is never keyed: a nonce instead (it matches nothing). */
+const MAX_RAW_EXACT_CHARS = 1_048_576;
+const EXACT_SALT_NOTE = 'Marrow: the private device key for exact action matching is unavailable or unsafe on this machine, so a held action that hides a value is asked again instead of resumed on retry. Owner: run `marrow doctor`.';
+
+/** Canonical JSON (keys sorted at every depth), or null past 1 MB, past 64 levels, or when it cannot be serialized. */
+function canonicalJson(value: unknown): string | null {
+  const parts: string[] = [];
+  let size = 0;
+  const push = (text: string): void => {
+    size += text.length;
+    if (size > MAX_RAW_EXACT_CHARS) throw new NormalizationLimit();
+    parts.push(text);
+  };
+  const walk = (item: unknown, depth: number): void => {
+    if (depth > 64) throw new NormalizationLimit();
+    if (Array.isArray(item)) {
+      if (item.length > MAX_RAW_EXACT_CHARS / 2) throw new NormalizationLimit();
+      push('[');
+      item.forEach((entry, index) => { if (index) push(','); walk(entry, depth + 1); });
+      push(']');
+    } else if (item !== null && typeof item === 'object') {
+      const keys = Object.keys(item as Record<string, unknown>);
+      if (keys.length > MAX_RAW_EXACT_CHARS / 4) throw new NormalizationLimit();
+      push('{');
+      keys.sort().forEach((key, index) => {
+        if (index) push(',');
+        push(`${JSON.stringify(key)}:`);
+        walk((item as Record<string, unknown>)[key], depth + 1);
+      });
+      push('}');
+    } else {
+      push(JSON.stringify(item) ?? 'null');
+    }
+  };
+  try {
+    walk(value, 0);
+    return parts.join('');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every shell reference in a command, in order: `$NAME`, `${...}`, `$(...)` (balanced) and backquoted text,
+ * quotes ignored (so a quoted literal `$` counts as well: stricter). A reference is never a credential value
+ * itself: `API_KEY=$READONLY_KEY` and `API_KEY=$ADMIN_KEY`, or `mysql -p"$(cat ro.pw)"` and `"$(cat admin.pw)"`,
+ * name different credentials. The exact pass replaces a credential position whole, so the references are
+ * added to the exact material; two commands that differ only in a literal credential still match.
+ */
+function shellReferences(command: string): string[] {
+  const refs: string[] = [];
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    if (ch === '`') {
+      const end = command.indexOf('`', i + 1);
+      const stop = end < 0 ? command.length : end + 1;
+      refs.push(command.slice(i, stop));
+      i = stop - 1;
+    } else if (ch === '$' && (command[i + 1] === '(' || command[i + 1] === '{')) {
+      const open = command[i + 1];
+      const close = open === '(' ? ')' : '}';
+      let depth = 0;
+      let j = i + 1;
+      for (; j < command.length; j += 1) {
+        if (command[j] === open) depth += 1;
+        else if (command[j] === close) { depth -= 1; if (depth === 0) break; }
+      }
+      refs.push(command.slice(i, Math.min(j + 1, command.length)));
+      i = Math.min(j, command.length);
+    } else if (ch === '$') {
+      const name = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/.exec(command.slice(i, i + 256));
+      if (name) { refs.push(name[0]); i += name[0].length - 1; }
+    }
+  }
+  return refs;
+}
+
+/** The exact form of a command: its words (only certain credentials replaced), its shell references and its quoting. */
+function exactShellForm(text: string, command: string, state: Exactness): string {
+  return `${text}\n${JSON.stringify(shellReferences(command))}\n${JSON.stringify(state.sigs)}`;
+}
+
+/** The raw input as material (a placeholder, or an exact pass that hit a limit): the command, or the canonical input. */
+function rawExactMaterial(event: ToolEvent, kind: NormalizedHookAction['tool_kind']): string | null {
+  if (kind === 'shell') {
+    try {
+      const trimmed = shellCommand(event);
+      const command = untrimmedShellText(event, trimmed) ?? trimmed;
+      return typeof command === 'string' && command.length <= MAX_RAW_EXACT_CHARS ? `raw-shell\n${command}` : null;
+    } catch {
+      return null;
+    }
+  }
+  const json = canonicalJson(event.tool_input ?? null);
+  return json === null ? null : `raw-input\n${json}`;
+}
+
+/**
+ * The exact material of an action: the same normalization with `exact` set (only a certain credential replaced,
+ * every other value kept), or the raw input when that pass hits a limit. null: no material (a nonce instead).
+ */
+function exactMaterial(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], deadline: number): string | null {
+  const state = newExactness(deadline, true);
+  // Over 1 MB of material: a nonce (asked again), as for raw material.
+  const bounded = (material: string): string | null => (material.length <= MAX_RAW_EXACT_CHARS + 16 ? material : null);
+  try {
+    if (kind === 'shell') {
+      const trimmed = shellCommand(event);
+      const host = untrimmedShellText(event, trimmed);
+      if (host !== null) return bounded(`raw-shell\n${host}`);
+      const { text } = normalizeInner(trimmed, state, 0);
+      return bounded(`exact-shell\n${exactShellForm(text, trimmed, state)}`);
+    }
+    const input = event.tool_input;
+    const text = input === undefined || input === null ? 'null' : JSON.stringify(sortedValue(redactedInput(input, state)));
+    return bounded(`exact-input\n${text}`);
+  } catch (error) {
+    return error instanceof NormalizationLimit ? rawExactMaterial(event, kind) : null;
+  }
+}
+
+let saltNoted = false;
+
+/** The device salt (seatbelt store, same checks), or null with one stderr line per process (no path, no value). */
+function exactSalt(): Buffer | null {
+  let salt: Buffer | null = null;
+  try {
+    salt = (require('./seatbelt/record') as typeof import('./seatbelt/record')).deviceSalt();
+  } catch {
+    salt = null;
+  }
+  if (!salt && !saltNoted) {
+    saltNoted = true;
+    try { process.stderr.write(`${EXACT_SALT_NOTE}\n`); } catch { /* best effort */ }
+  }
+  return salt;
+}
+
+/**
+ * exact_hmac: HMAC-SHA256(device salt, domain, kind, the host's full tool name, material), 128 bits. Without a
+ * salt or material it is a fresh random nonce, which matches nothing: never unsalted, never the merged form.
+ */
+function exactHmac(salt: Buffer | null, kind: NormalizedHookAction['tool_kind'], toolName: string, material: string | null): string {
+  if (!salt || salt.length < 16 || material === null) return randomBytes(16).toString('hex');
+  return createHmac('sha256', salt).update(`${EXACT_DOMAIN}\n${kind}\n${JSON.stringify(toolName)}\n`).update(material).digest('hex').slice(0, 32);
 }
 
 /**
@@ -1182,26 +1509,44 @@ function withExactness(action: NormalizedHookAction, state: Exactness): Normaliz
  * service never binds, so the hook still answers within its host's budget.
  * An event whose input a host adapter cut or dropped (`input_truncated`) is
  * marked truncated as well.
+ *
+ * A truncated action also carries `tool_input.exact_hmac`: a keyed hash (the
+ * device salt never leaves the machine) of the action with only certain
+ * credentials replaced, so two actions that differ anywhere else never share a
+ * correlation, hold or key, and a retry that differs only in a certain
+ * credential (an OTP) still does. A placeholder keys the raw input (up to
+ * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a missing or
+ * unsafe salt give a random nonce: the action matches nothing (it is asked
+ * again). `salt` is a test seam (undefined: the device salt).
  */
-export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: number } = {}): NormalizedHookAction {
-  const state = newExactness(options.deadlineAt);
+export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: number; salt?: Buffer | null } = {}): NormalizedHookAction {
+  const deadline = options.deadlineAt ?? Date.now() + DEFAULT_NORMALIZE_MS;
+  const state = newExactness(deadline);
   const toolName = normalizeHookToolName(event.tool_name) || 'tool';
   // The host's own tool name, exactly as sent (stable across retries); the policy name decides the kind.
   // Not trimmed, so `X ` and `X` get different actions; a name past 128 characters is never bound.
   const rawToolName = typeof event.tool_name === 'string' && event.tool_name ? event.tool_name : toolName;
   const hostToolName = rawToolName.slice(0, 128);
-  if (rawToolName.length > 128) state.truncated = true;
+  if (rawToolName.length > 128) state.truncated = true; // exact: kept (the full name is in exact_hmac)
   const kind: NormalizedHookAction['tool_kind'] = isMcpHookTool(event.tool_name) || /^MCP:/i.test(hostToolName) ? 'mcp'
     : isShellGovernedTool(event as Parameters<typeof isShellGovernedTool>[0]) ? 'shell'
     : EDIT_TOOLS.test(toolName) ? 'edit'
     : 'other';
-  if ((event as { input_truncated?: unknown }).input_truncated === true) state.truncated = true;
+  const inputCut = (event as { input_truncated?: unknown }).input_truncated === true;
+  if (inputCut) state.truncated = true; // exact: nonce (the cut or dropped input is all that is left)
+  let action: NormalizedHookAction;
+  let placeholder = false;
   try {
-    return normalizedOfKind(event, kind, hostToolName, state);
+    action = normalizedOfKind(event, kind, hostToolName, state);
   } catch (error) {
-    if (error instanceof NormalizationLimit) return { tool_kind: kind, tool_name: hostToolName, tool_input: {}, truncated: true };
-    throw error;
+    if (!(error instanceof NormalizationLimit)) throw error;
+    action = { tool_kind: kind, tool_name: hostToolName, tool_input: {}, truncated: true };
+    placeholder = true;
   }
+  if (action.truncated !== true) return action;
+  const material = inputCut ? null : placeholder ? rawExactMaterial(event, kind) : exactMaterial(event, kind, deadline);
+  const salt = options.salt !== undefined ? options.salt : material === null ? null : exactSalt();
+  return { ...action, tool_input: { ...action.tool_input, exact_hmac: exactHmac(salt, kind, rawToolName, material) } } as NormalizedHookAction;
 }
 
 function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], hostToolName: string, state: Exactness): NormalizedHookAction {
@@ -1210,9 +1555,10 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
   }
   if (kind === 'shell') {
     const raw = shellCommand(event);
+    if (untrimmedShellText(event, raw) !== null) state.truncated = true; // exact: raw (the host's untrimmed text)
     const { text, programs } = normalizeInner(raw, state, 0);
     // A secret was replaced: the action is never bound or reused (it asks each time).
-    if (text.includes(SECRET)) state.truncated = true;
+    if (text.includes(SECRET)) state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
     // The command text itself only for a deploy the service can judge word for word (see deployCommandText).
     // Judged on the host's exact text (a trimmed non-ASCII space must not slip through).
     const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input as Record<string, unknown> : null;
@@ -1223,17 +1569,18 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
       tool_name: hostToolName,
       programs,
       tool_input: {
-        command_sha256: sha256(`${HASH_VERSION}\nshell\n${text}`),
+        // An exact action also hashes its quoting (never for a truncated one: a secret's characters stay out of it).
+        command_sha256: sha256(`${HASH_VERSION}\nshell\n${state.truncated || !state.sigs.length ? text : `${text}\n${JSON.stringify(state.sigs)}`}`),
         ...(deployText !== null && deployText === text ? { command: deployText } : {}),
       },
     }, state);
   }
   if (kind === 'edit') {
     const targets = toolTargetPaths(event as Parameters<typeof toolTargetPaths>[0]);
-    if (targets.length > 64) state.truncated = true;
+    if (targets.length > 64) state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
     const paths = targets.slice(0, 64).map((path) => {
       const redacted = redactText(withoutUserName(path, state), state);
-      if (redacted.length > 512 || redacted.includes(SECRET)) state.truncated = true;
+      if (redacted.length > 512 || redacted.includes(SECRET)) state.truncated = true; // exact: n/a (as above)
       return redacted.slice(0, 512);
     });
     return withExactness({ tool_kind: 'edit', tool_name: hostToolName, paths, tool_input: inputHash(event.tool_input, state) }, state);
