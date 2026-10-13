@@ -62,6 +62,10 @@ import {
 } from './hook-contract';
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
 export const NO_KEY_TEXT = 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.';
+/** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
+export const CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `marrow doctor`.';
+/** The seatbelt path itself could not run (its modules did not load): a stop (spec §2.1.4). */
+const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish (U5.fail_closed, hook_error). This needs the machine owner. Do not retry it another way or edit Marrow settings.';
 
 export { MARROW_OUTAGE_WARNING };
 
@@ -617,11 +621,11 @@ export function clinePreActionHookOutput(result: PreActionControlResult): Record
     };
   }
   if (result.protectedRisk && (!result.runtime || !result.permit?.verified)) {
-    const credentialsUnavailable = result.enforcementError === NO_KEY_TEXT;
+    const credentialsUnavailable = result.enforcementError === NO_KEY_TEXT || result.enforcementError === CLAIMED_NO_KEY_TEXT;
     return {
       cancel: true,
       errorMessage: credentialsUnavailable
-        ? NO_KEY_TEXT
+        ? result.enforcementError as string
         : result.failure === 'credential_scope'
         ? 'This Marrow API key is not authorized to obtain action permits for this agent. Use the API key issued to this agent and retry.'
         : result.failure === 'unavailable'
@@ -911,7 +915,30 @@ export function installPreActionHook(startDir = process.cwd()): { settingsPath: 
   return { settingsPath: path, installed: reconciled.changed };
 }
 
+type SeatbeltModule = typeof import('./seatbelt/hook');
+type SeatbeltEventInput = import('./seatbelt/hook').SeatbeltHookEvent;
+
+function seatbeltEvent(source: PreToolUseEvent, rawEvent: unknown): SeatbeltEventInput {
+  const raw = asRecord(rawEvent) || {};
+  const event = source as unknown as Record<string, unknown>;
+  return { tool_name: source.tool_name, tool_input: source.tool_input, cwd: event.cwd ?? raw.cwd, truncated: event.input_truncated === true };
+}
+
 export async function runPreActionHookCommand(input?: unknown): Promise<void> {
+  // Account mode: the S0-S5 floor in watch runs after the answer is written, for the record only.
+  const watch: { harness?: string; event?: SeatbeltEventInput } = {};
+  try {
+    await runPreActionHook(input, watch);
+  } finally {
+    if (watch.harness && watch.event) {
+      try {
+        (require('./seatbelt/hook') as SeatbeltModule).accountFloor(watch.harness, watch.event, preToolDeadline(approvalHostFor(watch.harness as HookHarness)));
+      } catch { /* watch never changes the answer */ }
+    }
+  }
+}
+
+async function runPreActionHook(input: unknown, watch: { harness?: string; event?: SeatbeltEventInput }): Promise<void> {
   if (process.env.MARROW_AUTO_HOOK === 'false') return;
   const identity = resolveNativeHookIdentity(process.argv[2]);
   let event = input;
@@ -1037,6 +1064,41 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
     emitLoopGuardDenial(identity.harness, loopDecision.reason || `Marrow local loop guard blocked this unchanged repeat. Receipt: ${loopDecision.receipt}.`);
     return;
   }
+  // No usable key: the seatbelt decides first (spec §1.1), before the read-only pass so S4 reads stop.
+  // `seatbelt` answers here with no network call; `claimed_no_key` stops S0-S5 here and keeps the holds below.
+  if (!resolved.apiKey) {
+    let keyless: { mode: 'seatbelt' | 'claimed_no_key'; stopText: string | null };
+    try {
+      keyless = (require('./seatbelt/hook') as SeatbeltModule).keylessSeatbelt(identity.harness, seatbeltEvent(source, rawEvent));
+    } catch {
+      keyless = { mode: 'claimed_no_key', stopText: SEATBELT_FAILED_TEXT };
+    }
+    if (keyless.stopText) {
+      emitLoopGuardDenial(identity.harness, keyless.stopText);
+      return;
+    }
+    if (keyless.mode === 'seatbelt') {
+      const allow = localControlAllowOutput(identity.harness);
+      if (allow === null) process.exitCode = 0;
+      else process.stdout.write(JSON.stringify(allow));
+      return;
+    }
+  } else {
+    watch.harness = identity.harness;
+    watch.event = seatbeltEvent(source, rawEvent);
+    let floor: SeatbeltModule | null = null;
+    try {
+      floor = require('./seatbelt/hook') as SeatbeltModule;
+    } catch { /* watch only: a missing module never changes the account flow */ }
+    if (floor && floor.SEATBELT_ROLLOUT.account_floor === 'on') {
+      watch.harness = undefined;
+      const stopText = floor.accountFloor(identity.harness, watch.event, preToolDeadline(approvalHostFor(identity.harness)));
+      if (stopText) {
+        emitLoopGuardDenial(identity.harness, stopText);
+        return;
+      }
+    }
+  }
   if (classified.readOnly) {
     const allow = localControlAllowOutput(identity.harness);
     if (allow === null) process.exitCode = 0;
@@ -1061,7 +1123,7 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
       runtime: null,
       permit: null,
       protectedRisk: enforcementRequired,
-      enforcementError: NO_KEY_TEXT,
+      enforcementError: CLAIMED_NO_KEY_TEXT,
     }, identity.harness);
     return;
   }

@@ -168,6 +168,13 @@ const TOOL_VARIANTS = [
   'commit', 'think', 'delete_all',
 ];
 
+function heldShape(out) {
+  let json = null;
+  try { json = JSON.parse(out.stdout); } catch { json = null; }
+  const decision = json ? (json.permission ?? json.decision ?? json.hookSpecificOutput?.permissionDecision ?? json.cancel ?? null) : out.stdout === '' ? 'none' : 'text';
+  return { exitCode: out.exitCode, decision };
+}
+
 test('look-alike servers and unregistered or padded tools are never own and are held like any foreign MCP tool', async () => {
   const foreign = {};
   for (const form of HOSTS) {
@@ -189,7 +196,8 @@ test('look-alike servers and unregistered or padded tools are never own and are 
       if (normalized.tool_name) assert.notEqual(deriveAction(normalized), null, `${form.host} ${JSON.stringify([server, tool])} is recorded`);
       const out = await runPre(form.entry, payload);
       if (form.foreignHeld !== false) assert.notEqual(out.stdout + out.exitCode, ALLOW[form.host] + 0, `${form.host} ${JSON.stringify([server, tool])} must be held`);
-      assert.deepEqual(out, foreign[form.host], `${form.host} ${JSON.stringify([server, tool])} takes the foreign-tool gate path`);
+      // U5: a name the adapter cut is `input_truncated`, which the keyless seatbelt floor stops with its own text: same decision.
+      assert.deepEqual(heldShape(out), heldShape(foreign[form.host]), `${form.host} ${JSON.stringify([server, tool])} takes the foreign-tool gate path`);
       checked += 1;
     }
   }

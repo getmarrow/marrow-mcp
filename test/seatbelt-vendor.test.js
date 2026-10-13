@@ -64,9 +64,12 @@ test('the mapper loads the vendored modules, and the package ships them', () => 
   assert.ok(pkg.files.includes('vendor/classifier'), 'package.json files must include vendor/classifier');
   const mapper = fs.readFileSync(path.join(ROOT, 'dist', 'seatbelt', 'mapper.js'), 'utf8');
   for (const m of ['shell-parse.js', 'policy-baseline.js', 'classifier.js']) assert.ok(mapper.includes(`../../vendor/classifier/${m}`), m);
-  // The seatbelt is not wired into any hook yet (U5): nothing outside src/seatbelt imports it.
+  // U5: only the pre-action hook uses the seatbelt, and only through a lazy require inside a try (a
+  // module that fails to load is a stop, never a crash of the hook); no static import anywhere.
   for (const f of fs.readdirSync(path.join(ROOT, 'src'))) {
     if (!f.endsWith('.ts')) continue;
-    assert.ok(!/seatbelt\//.test(fs.readFileSync(path.join(ROOT, 'src', f), 'utf8')), `${f} must not import the seatbelt yet`);
+    const text = fs.readFileSync(path.join(ROOT, 'src', f), 'utf8');
+    assert.ok(!/^import [^;]*['"]\.\/seatbelt\//m.test(text), `${f} must not import the seatbelt statically`);
+    if (f !== 'hook-pre-action.ts') assert.ok(!/seatbelt\//.test(text), `${f} must not use the seatbelt`);
   }
 });

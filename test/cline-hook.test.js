@@ -144,7 +144,7 @@ test('Cline missing-key protected action denies privately while Marrow MCP does 
     }));
     const denied = JSON.parse(deniedText);
     assert.equal(denied.cancel, true);
-    assert.match(denied.errorMessage, /Marrow has no API key on this machine\. Owner: create one at getmarrow\.ai\/signup, then run the installer activate command in a terminal\. Do not retry this action\./);
+    assert.match(denied.errorMessage, /Marrow is linked to an account but has no working key; owner: run `marrow doctor`\./);
     assert.deepEqual(Object.keys(denied).sort(), ['cancel', 'errorMessage']);
     assert.doesNotMatch(deniedText, /synthetic-private-credential|npm publish/);
 

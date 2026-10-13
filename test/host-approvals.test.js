@@ -2281,7 +2281,8 @@ test('HIGH-R7-1: with the host\'s own prompt off (Codex yolo/full-auto/never/con
 
 test('No key: a protected action names the one fix; a key in an owner-only ~/.marrow/env is used, a readable-by-others one is not', () => {
   const { chmodSync } = require('node:fs');
-  const { NO_KEY_TEXT } = require('../dist/hook-pre-action.js');
+  // U5: the test HOME is not the passwd home, so the seatbelt mode is claimed_no_key and its text is shown.
+  const { NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT } = require('../dist/hook-pre-action.js');
   assert.equal(NO_KEY_TEXT, 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.');
   const deploy = { ...fixture('claude-pre-tool-use.json'), tool_input: { command: 'wrangler deploy --env production', description: 'x' } };
   const run = (mode) => {
@@ -2302,13 +2303,13 @@ test('No key: a protected action names the one fix; a key in an owner-only ~/.ma
   const none = run(null);
   assert.equal(none.runtimeCalls, 0);
   assert.equal(none.out.json.hookSpecificOutput.permissionDecision, 'deny');
-  assert.equal(none.out.json.hookSpecificOutput.permissionDecisionReason.includes(NO_KEY_TEXT), true);
+  assert.equal(none.out.json.hookSpecificOutput.permissionDecisionReason.includes(CLAIMED_NO_KEY_TEXT), true);
   const owner = run(0o600);
   assert.ok(owner.runtimeCalls > 0, 'the owner-only key file is read');
-  assert.notEqual(owner.out.json?.hookSpecificOutput?.permissionDecisionReason || '', NO_KEY_TEXT);
+  assert.notEqual(owner.out.json?.hookSpecificOutput?.permissionDecisionReason || '', CLAIMED_NO_KEY_TEXT);
   const shared = run(0o644);
   assert.equal(shared.runtimeCalls, 0, 'a key file others can read is ignored');
-  assert.equal(shared.out.json.hookSpecificOutput.permissionDecisionReason.includes(NO_KEY_TEXT), true);
+  assert.equal(shared.out.json.hookSpecificOutput.permissionDecisionReason.includes(CLAIMED_NO_KEY_TEXT), true);
 });
 
 test('First-prompt brief: the prompt hook flags it (context.prompt_brief: true); a hook action never carries the flag', () => {
