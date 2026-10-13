@@ -3198,17 +3198,19 @@ const WRITE_VALUE_FLAGS: Record<string, Set<string>> = {
 
 function writeTargets(prog: string, rest: Arg[]): Array<{ arg: Arg; tree: boolean }> {
   // rsync and scp have no target-directory flag (rsync -t is --times): their own reading takes the last operand.
-  const own = writeTargetsWith(prog, rest, WRITE_VALUE_FLAGS[prog] || new Set(), prog !== 'rsync' && prog !== 'scp');
-  return [...own, ...writeTargetsWith(prog, rest, SHARED_WRITE_VALUE_FLAGS, true)];
+  // F2: a symbolic mode may start with `-` (`chmod -r FILE`, `chattr -i FILE`); the option scan drops it, so the
+  // old reading took the file for the mode. The own reading checks every operand of chmod/chown/chgrp/chattr.
+  const own = writeTargetsWith(prog, rest, WRITE_VALUE_FLAGS[prog] || new Set(), prog !== 'rsync' && prog !== 'scp', true);
+  return [...own, ...writeTargetsWith(prog, rest, SHARED_WRITE_VALUE_FLAGS, true, false)];
 }
 
-function writeTargetsWith(prog: string, rest: Arg[], valueFlags: Set<string>, targetDir: boolean): Array<{ arg: Arg; tree: boolean }> {
+function writeTargetsWith(prog: string, rest: Arg[], valueFlags: Set<string>, targetDir: boolean, everyOperand: boolean): Array<{ arg: Arg; tree: boolean }> {
   const ops = nonOptions(rest, valueFlags);
   const all = (tree: boolean) => ops.map((arg) => ({ arg, tree }));
   switch (prog) {
     case 'tee': case 'touch': case 'truncate': case 'unlink': case 'shred': return all(false);
     case 'rm': case 'rmdir': return all(true);
-    case 'chmod': case 'chown': case 'chgrp': case 'chattr': return ops.slice(1).map((arg) => ({ arg, tree: false }));
+    case 'chmod': case 'chown': case 'chgrp': case 'chattr': return (everyOperand ? ops : ops.slice(1)).map((arg) => ({ arg, tree: false }));
     case 'mv': {
       const dest = ops.length >= 2 ? ops[ops.length - 1] : null;
       const into = dest && dest.text !== null ? ops.slice(0, -1).filter((s) => s.text !== null).map((s) => ({ arg: litArg(`${(dest.text as string).replace(/\/+$/, '')}/${path.posix.basename(s.text as string)}`), tree: false })) : [];

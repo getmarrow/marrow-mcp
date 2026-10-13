@@ -30,14 +30,19 @@ const STOP_S0 = [
   'install -s /tmp/evil ~/.local/bin/npx',
   'touch -m ~/.local/bin/npx',
   'scp -r host:evil ~/.local/bin/npx',
+  // F2: a symbolic mode that starts with '-' is not an option.
+  'chmod -r ~/.claude/settings.json',
+  'chmod -w ~/.marrow/env',
+  'chattr -i ~/.claude/settings.json',
 ];
 // Ordinary uses of the same flags in the workspace or temp still pass.
 const PASS = [
   'ln -s ../src/index.ts link.ts', 'cp -r src dist', 'rm -r build', 'rsync -av src/ /tmp/out/', 'rsync -t a.txt b.txt',
   'touch -m README.md', 'install -m 755 bin/tool /tmp/tool', 'cp -s a.txt b.txt', 'scp -r host:logs ./logs', 'truncate -s 0 app.log',
+  'chmod -x scripts/build.sh', 'chmod 755 scripts/build.sh', 'chown -R me:me dist', 'chmod --reference README.md dist/app.js',
 ];
 
-test('F1: boolean -s/-r/-t/-m no longer hide the write target of ln, cp, rm, rsync, install, touch, scp (S0)', () => {
+test('F1/F2: boolean -s/-r/-t/-m and a mode like -r no longer hide the write target of ln, cp, rm, rsync, install, touch, scp, chmod, chattr (S0)', () => {
   for (const cmd of STOP_S0) {
     const d = sh(cmd);
     assert.equal(d.decision, 'stop', cmd);
