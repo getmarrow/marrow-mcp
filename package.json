@@ -64,6 +64,7 @@
   "license": "MIT",
   "files": [
     "dist",
+    "vendor/classifier",
     "README.md",
     "server.json",
     "scripts/mcp-registry-check.cjs",
