@@ -125,6 +125,12 @@ export interface SeatbeltDecision {
    * hold an action while Marrow cannot be reached; never a stop. Not recorded in receipts.
    */
   risk: string[];
+  /**
+   * T-3: every hit and outage-list program came from a command that only prints its help or version
+   * (`git push --help`, `npm publish --help`, `wrangler deploy --version`): the outage hold lets it run.
+   * Never changes a stop. Not recorded in receipts.
+   */
+  outageHelpOnly?: boolean;
 }
 export interface SeatbeltEvent { tool_name: string; tool_input?: unknown }
 
@@ -196,6 +202,11 @@ interface Run {
   recognized: boolean;
   shell: boolean;
   risk: Set<string>;
+  // T-3: inside a help-only command (helpDepth > 0); hits and risk tags seen outside one (beyondHelp).
+  helpDepth: number;
+  helpBlocked: number;
+  helpSeen: boolean;
+  beyondHelp: Set<string>;
 }
 
 interface Ctx {
@@ -918,6 +929,10 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     recognized: true,
     shell: false,
     risk: new Set(),
+    helpDepth: 0,
+    helpBlocked: 0,
+    helpSeen: false,
+    beyondHelp: new Set(),
     fsState,
     reads: new Map(),
     packages: new Map(),
@@ -964,8 +979,14 @@ function scriptCtx(ctx: Ctx, cwds: Array<string | null>, extraEnv: Map<string, s
 }
 
 function hit(run: Run, category: Exclude<SeatbeltCategory, 'none'>, reason: string): true {
+  if (run.helpDepth === 0) run.beyondHelp.add(`${category}:${reason}`);
   if (!run.hits.some((h) => h.category === category && h.reason === reason)) run.hits.push({ category, reason });
   return true;
+}
+
+function addRisk(run: Run, tag: string): void {
+  if (run.helpDepth === 0) run.beyondHelp.add(`risk:${tag}`);
+  run.risk.add(tag);
 }
 
 function worseParse(run: Run, p: SeatbeltParse): void {
@@ -1038,8 +1059,13 @@ function finish(run: Run): SeatbeltDecision {
     recognized: run.recognized,
     shell: run.shell,
     risk: [...run.risk].sort(),
+    outageHelpOnly: run.helpSeen && run.parse === 'ok' && !run.exhausted
+      && hits.every((h) => !UNFINISHED_HITS.test(h.reason) && !run.beyondHelp.has(`${h.category}:${h.reason}`))
+      && [...run.risk].every((t) => !run.beyondHelp.has(`risk:${t}`)),
   };
 }
+
+const UNFINISHED_HITS = /^(?:budget_[a-z_]+|mapper_error|fs_error)$/;
 
 function safeRealpath(env: SeatbeltEnv, p: string): string | null {
   try { const r = env.fs.realpath(p); return typeof r === 'string' && path.posix.isAbsolute(r) ? path.posix.normalize(r) : null; } catch { return null; }
@@ -2350,7 +2376,16 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   }
   const rest = args.slice(1);
   const pathLike = args[0].text !== null && args[0].text.includes('/');
+  // T-3: a command that only prints its help or version; its hits and outage tags are marked so (outage only).
+  if (!pathLike && run.helpBlocked === 0 && outageHelpForm(prog, rest, ctx, x)) {
+    run.helpDepth += 1;
+    run.helpSeen = true;
+    try { return dispatchProgram(prog, args, rest, pathLike, ctx, run, x); } finally { run.helpDepth -= 1; }
+  }
+  return dispatchProgram(prog, args, rest, pathLike, ctx, run, x);
+}
 
+function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boolean, ctx: Ctx, run: Run, x: Exec): void {
   // Task runners and builders run project code the mapper does not read (audit T1/T3).
   if (HEAD_RUNNERS.has(prog) || HEAD_CHANGERS.has(prog)) run.headMayChange = true;
   // A write to a file that names the checked-out branch (`.git/HEAD`, refs): the branch changed.
@@ -2391,7 +2426,10 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
       // `bun -e '…'` is bun's interpreter, not a package command (audit N5).
       if (prog === 'bun' && rest.some((a) => a.text !== null && (/^(?:-e|--eval|-p|--print)$/.test(a.text) || a.text === '-' || STDIN_PATHS.has(a.text)))) return handleInterpreter(prog, rest, ctx, run, x);
       return handlePackageManager(prog, rest, ctx, run, x);
-    case 'npx': case 'bunx': return handleNpx(rest, ctx, run, x);
+    case 'npx': case 'bunx':
+      // T-3: a package runner may run a local copy of the CLI, so its help form is not trusted.
+      run.helpBlocked += 1;
+      try { return handleNpx(rest, ctx, run, x); } finally { run.helpBlocked -= 1; }
     case 'corepack': case 'busybox': case 'toybox': return dispatch(rest, ctx, run, x);
     case 'cpio': case 'pax': archiveNamesFromStdin(ctx, run, x); return;
     case 'trap': return trapBuiltin(rest, ctx, run, x);
@@ -2443,6 +2481,38 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   unknownProgram(prog, args, ctx, run, x);
 }
 
+// T-3 (delta audit of 0368537c): `--help` and `--version` are never held in an outage. Only for a CLI on the
+// outage list that prints its help on that word (a script, a plugin or a package runner may not), with its
+// listed subcommand (`git push`, `npm publish`, `wrangler deploy`), called by a bare name (not a path, not
+// through npx/bunx: those may run a local copy), every word literal, no assignment prefix and no function
+// or alias of that name; `--help` before any `--`. `--version` only as the sole word (`vercel --version`):
+// after a subcommand it can be a value flag (`helm upgrade … --version 1.2.3`). Chained, piped or nested
+// commands keep their own answer: only the hits and outage tags raised inside the help command are marked.
+const HELP_SUBS: Record<string, RegExp | null> = {
+  git: /^push$/, npm: /^(?:publish|unpublish|deprecate)$/, pnpm: /^(?:publish|unpublish|deprecate)$/, yarn: /^(?:publish|unpublish|deprecate)$/,
+  gh: /^(?:pr|repo|release|api)$/, kubectl: /^(?:delete|apply|scale|rollout|patch|replace|create|drain|cordon|taint|label|annotate|set|edit)$/,
+  helm: /^(?:install|upgrade|uninstall|delete|rollback)$/, vercel: null, make: null, gmake: null,
+};
+function outageHelpForm(prog: string, rest: Arg[], ctx: Ctx, x: Exec): boolean {
+  if (x.cmd.assignments.length || (x.info.fnNames && x.info.fnNames.has(prog)) || ctx.aliases.has(prog)) return false;
+  if (rest.some((a) => a.text === null || a.glob)) return false;
+  const words = rest.map((a) => a.text as string);
+  const end = words.indexOf('--');
+  const head = end < 0 ? words : words.slice(0, end);
+  const known = Object.prototype.hasOwnProperty.call(HELP_SUBS, prog) || (Object.prototype.hasOwnProperty.call(OUTAGE_ANY_SUB, prog) && !['bun', 'docker', 'podman'].includes(prog));
+  if (!known) return false;
+  if (words.length === 1 && words[0] === '--version') return true;
+  if (!head.includes('--help')) return false;
+  const sub = prog === 'git' ? gitSub(rest).sub : (head.find((w) => !w.startsWith('-')) ?? null);
+  if (Object.prototype.hasOwnProperty.call(HELP_SUBS, prog)) {
+    const re = HELP_SUBS[prog];
+    return re === null || (sub !== null && re.test(sub.toLowerCase()));
+  }
+  const listed = OUTAGE_ANY_SUB[prog];
+  if (!listed || ['bun', 'docker', 'podman'].includes(prog)) return false;
+  return sub !== null && listed.test(sub.toLowerCase());
+}
+
 // I3 outage list: a program that changes something outside this machine. Recorded in `run.risk`; the
 // hook holds such an action only while Marrow cannot be reached, and it is never a stop here. A dynamic
 // subcommand word of a listed program is `unknown`, which the hook holds too (it may be the listed one).
@@ -2488,7 +2558,7 @@ function outageRiskTags(prog: string, rest: Arg[], run: Run): void {
   const any = (re: RegExp): boolean => pos.some((t) => t !== null && re.test(t));
   // The subcommand words: the first one (gh and gcloud: the first three). An argument after them may be dynamic.
   const dynamic = pos.slice(0, p === 'gh' || p === 'gcloud' ? 3 : 1).some((t) => t === null);
-  const tag = (t: string): void => { run.risk.add(t); };
+  const tag = (t: string): void => { addRisk(run, t); };
   const flagValue = (names: string[]): string | null | undefined => {
     let out: string | null | undefined;
     for (let i = 0; i < rest.length; i += 1) {
@@ -5633,7 +5703,7 @@ function mappedPushDestinations(specs: string[], src: string, current: string | 
 
 function gitPush(args: Arg[], ctx: Ctx, run: Run, overrides: Map<string, string[]>, trimmed?: WeakSet<Arg>): void {
   // I3 outage list: every push changes a remote (held only while Marrow cannot be reached).
-  run.risk.add('git_push');
+  addRisk(run, 'git_push');
   const risky = new Set<string>();
   let repo: Arg | null = null;
   const refspecs: Arg[] = [];

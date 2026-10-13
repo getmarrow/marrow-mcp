@@ -342,6 +342,9 @@ function outageRisk(event, deadlineAt) {
         const shell = decision.shell === true;
         if (Date.now() - started > budget)
             return { shell, risk: 'unknown' };
+        // T-3: a command that only prints its help or version is never held in an outage.
+        if (decision.outageHelpOnly === true && decision.parse === 'ok' && decision.recognized === true)
+            return { shell, risk: 'not_high' };
         // A real hit or a listed program is high even where the rest of the text could not be read; a listed
         // program whose subcommand word is dynamic (`unknown`) may be the listed one, so it is high too.
         if (decision.hits.some((h) => !UNFINISHED_HIT.test(h.reason)))

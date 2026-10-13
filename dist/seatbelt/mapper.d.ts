@@ -67,6 +67,12 @@ export interface SeatbeltDecision {
      * hold an action while Marrow cannot be reached; never a stop. Not recorded in receipts.
      */
     risk: string[];
+    /**
+     * T-3: every hit and outage-list program came from a command that only prints its help or version
+     * (`git push --help`, `npm publish --help`, `wrangler deploy --version`): the outage hold lets it run.
+     * Never changes a stop. Not recorded in receipts.
+     */
+    outageHelpOnly?: boolean;
 }
 export interface SeatbeltEvent {
     tool_name: string;
