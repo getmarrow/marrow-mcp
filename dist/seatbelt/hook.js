@@ -7,6 +7,7 @@ exports.hostMapperFs = hostMapperFs;
 exports.hostSeatbeltGit = hostSeatbeltGit;
 exports.keylessSeatbelt = keylessSeatbelt;
 exports.accountFloor = accountFloor;
+exports.outageRisk = outageRisk;
 /**
  * Compiled-in rollout table. Not env, not a file: changing a value is a one-line, reviewed code
  * change. `keyless: 'off'` makes every keyless machine `claimed_no_key` (3.9.103 holds plus the
@@ -319,6 +320,40 @@ function accountFloor(harness, event, deadlineAt) {
     }
     catch {
         return exports.SEATBELT_ROLLOUT.account_floor === 'on' ? seatbeltStopText('hook', 'U5.fail_closed', 'hook_error', 'account') : null;
+    }
+}
+// Hits that only mean the mapper could not finish (load, an internal error): not a reading of the action.
+const UNFINISHED_HIT = /^(?:budget_[a-z_]+|mapper_error|fs_error)$/;
+/**
+ * I3: how the mapper reads an action for the outage hold (Marrow unreachable). `high`: an S0-S5/S-x hit
+ * or a program on the outage list (git push, publish, deploy, remote delete), a dynamic subcommand of a
+ * listed program included. `not_high`: the mapper read all of it and found neither. `unknown`: it could
+ * not (budget, error, unparsed or dynamic text, truncated input, a tool it does not recognise); the hook
+ * then keeps the client classifier's answer. `shell`: the event ran a shell command. Never throws;
+ * writes no receipt or output.
+ */
+function outageRisk(event, deadlineAt) {
+    const started = Date.now();
+    try {
+        const budget = Math.min(exports.HOOK_BUDGET_MS, (Number.isFinite(deadlineAt) ? deadlineAt : Number.POSITIVE_INFINITY) - started - 200);
+        if (!(budget >= 20) || event.truncated)
+            return { shell: false, risk: 'unknown' };
+        const decision = evaluate(event, passwdHome() || '/nonexistent-home', budget);
+        const shell = decision.shell === true;
+        if (Date.now() - started > budget)
+            return { shell, risk: 'unknown' };
+        // A real hit or a listed program is high even where the rest of the text could not be read; a listed
+        // program whose subcommand word is dynamic (`unknown`) may be the listed one, so it is high too.
+        if (decision.hits.some((h) => !UNFINISHED_HIT.test(h.reason)))
+            return { shell, risk: 'high' };
+        if (decision.risk.length)
+            return { shell, risk: 'high' };
+        if (decision.decision === 'stop' || decision.parse !== 'ok' || decision.recognized !== true)
+            return { shell, risk: 'unknown' };
+        return { shell, risk: 'not_high' };
+    }
+    catch {
+        return { shell: false, risk: 'unknown' };
     }
 }
 //# sourceMappingURL=hook.js.map

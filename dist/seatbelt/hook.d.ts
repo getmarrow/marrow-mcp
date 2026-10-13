@@ -57,4 +57,16 @@ export declare function keylessSeatbelt(harness: string, event: SeatbeltHookEven
  * never writes output. `on` (not active): run before the server flow; a returned text is a stop.
  */
 export declare function accountFloor(harness: string, event: SeatbeltHookEvent, deadlineAt: number): string | null;
+/**
+ * I3: how the mapper reads an action for the outage hold (Marrow unreachable). `high`: an S0-S5/S-x hit
+ * or a program on the outage list (git push, publish, deploy, remote delete), a dynamic subcommand of a
+ * listed program included. `not_high`: the mapper read all of it and found neither. `unknown`: it could
+ * not (budget, error, unparsed or dynamic text, truncated input, a tool it does not recognise); the hook
+ * then keeps the client classifier's answer. `shell`: the event ran a shell command. Never throws;
+ * writes no receipt or output.
+ */
+export declare function outageRisk(event: SeatbeltHookEvent, deadlineAt: number): {
+    shell: boolean;
+    risk: 'high' | 'not_high' | 'unknown';
+};
 //# sourceMappingURL=hook.d.ts.map

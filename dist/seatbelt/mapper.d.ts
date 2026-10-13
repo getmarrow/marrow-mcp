@@ -59,6 +59,14 @@ export interface SeatbeltDecision {
      * hook gives master's answer for it. Not recorded in receipts.
      */
     recognized: boolean;
+    /** The event ran a shell command (a shell tool, or a command field the mapper read). */
+    shell: boolean;
+    /**
+     * Programs that change something outside this machine (I3 outage list: `git_push`, `deploy`,
+     * `publish`, `remote_delete`, ...), or `unknown` when a subcommand word is dynamic. Used only to
+     * hold an action while Marrow cannot be reached; never a stop. Not recorded in receipts.
+     */
+    risk: string[];
 }
 export interface SeatbeltEvent {
     tool_name: string;

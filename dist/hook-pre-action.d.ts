@@ -180,5 +180,16 @@ export declare function installPreActionHook(startDir?: string): {
     settingsPath: string;
     installed: boolean;
 };
+/**
+ * I3: whether a real outage (the gate never answered) holds this action. Never looser than master,
+ * which allowed every action in an outage. A shell command is read by the seatbelt mapper: held for an
+ * S0-S5/S-x hit or a program on the outage list (git push, publish, deploy, remote delete), allowed
+ * when the mapper read all of it and found neither (words in a message, a path or a comment never hold
+ * it). Anything else, or a mapper that could not finish, keeps `classifiedHighRisk` (F2).
+ */
+export declare function outageHolds(classifiedHighRisk: boolean, read: () => {
+    shell: boolean;
+    risk: 'high' | 'not_high' | 'unknown';
+}): boolean;
 export declare function runPreActionHookCommand(input?: unknown): Promise<void>;
 //# sourceMappingURL=hook-pre-action.d.ts.map

@@ -241,10 +241,12 @@ test('reasons and flags are fixed identifiers: no path, branch, host or value re
       assert.match(x, /^[a-z0-9_]+$/, `${r.id}: ${x}`);
       assert.ok(x.length <= 64, x);
     }
-    // recognized is a boolean (audit H1).
+    // The I3 outage tags are fixed codes too; recognized and shell are booleans (audit H1, I3).
+    for (const x of d.risk) assert.ok(['git_push', 'deploy', 'publish', 'remote_delete', 'remote_change', 'unknown'].includes(x), `${r.id}: ${x}`);
     assert.equal(typeof d.recognized, 'boolean');
+    assert.equal(typeof d.shell, 'boolean');
     assert.ok(['none', 'S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'Sx'].includes(d.category));
-    assert.deepEqual(Object.keys(d).sort(), ['category', 'decision', 'engine', 'flags', 'hits', 'parse', 'reasons', 'recognized', 'rule']);
+    assert.deepEqual(Object.keys(d).sort(), ['category', 'decision', 'engine', 'flags', 'hits', 'parse', 'reasons', 'recognized', 'risk', 'rule', 'shell']);
   }
   assert.ok(seen.size > 80, `${seen.size} distinct reasons and flags`);
 });

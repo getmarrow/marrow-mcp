@@ -28,6 +28,7 @@ exports.preActionHookOutput = preActionHookOutput;
 exports.closeDeniedDecision = closeDeniedDecision;
 exports.localApprovalCategories = localApprovalCategories;
 exports.installPreActionHook = installPreActionHook;
+exports.outageHolds = outageHolds;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const node_crypto_1 = require("node:crypto");
 const index_1 = require("./index");
@@ -888,6 +889,25 @@ function installPreActionHook(startDir = process.cwd()) {
     fs.writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
     return { settingsPath: path, installed: reconciled.changed };
 }
+/**
+ * I3: whether a real outage (the gate never answered) holds this action. Never looser than master,
+ * which allowed every action in an outage. A shell command is read by the seatbelt mapper: held for an
+ * S0-S5/S-x hit or a program on the outage list (git push, publish, deploy, remote delete), allowed
+ * when the mapper read all of it and found neither (words in a message, a path or a comment never hold
+ * it). Anything else, or a mapper that could not finish, keeps `classifiedHighRisk` (F2).
+ */
+function outageHolds(classifiedHighRisk, read) {
+    let reading = { shell: false, risk: 'unknown' };
+    try {
+        reading = read();
+    }
+    catch { /* unknown: the classifier's answer */ }
+    if (reading.risk === 'high')
+        return true;
+    if (reading.shell && reading.risk === 'not_high')
+        return false;
+    return classifiedHighRisk;
+}
 function seatbeltEvent(source, rawEvent) {
     const raw = asRecord(rawEvent) || {};
     const event = source;
@@ -1360,7 +1380,7 @@ async function runPreActionHook(input, watch) {
             emitHeldPlan(identity.harness, { kind: 'deny', agentText: host_approval_1.HELD_UNREACHABLE_TEXT, userText: host_approval_1.HELD_UNREACHABLE_TEXT, code: false });
             return;
         }
-        if (highRisk) {
+        if (outageHolds(highRisk, () => require('./seatbelt/hook').outageRisk(seatbeltEvent(source, rawEvent), holdContext.deadlineAt ?? Number.POSITIVE_INFINITY))) {
             emitHeldPlan(identity.harness, { kind: 'deny', agentText: exports.HELD_OFFLINE_TEXT, userText: exports.HELD_OFFLINE_TEXT, code: false });
             return;
         }

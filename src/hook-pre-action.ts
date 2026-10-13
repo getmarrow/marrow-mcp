@@ -965,6 +965,24 @@ export function installPreActionHook(startDir = process.cwd()): { settingsPath: 
 type SeatbeltModule = typeof import('./seatbelt/hook');
 type SeatbeltEventInput = import('./seatbelt/hook').SeatbeltHookEvent;
 
+/**
+ * I3: whether a real outage (the gate never answered) holds this action. Never looser than master,
+ * which allowed every action in an outage. A shell command is read by the seatbelt mapper: held for an
+ * S0-S5/S-x hit or a program on the outage list (git push, publish, deploy, remote delete), allowed
+ * when the mapper read all of it and found neither (words in a message, a path or a comment never hold
+ * it). Anything else, or a mapper that could not finish, keeps `classifiedHighRisk` (F2).
+ */
+export function outageHolds(
+  classifiedHighRisk: boolean,
+  read: () => { shell: boolean; risk: 'high' | 'not_high' | 'unknown' },
+): boolean {
+  let reading: { shell: boolean; risk: 'high' | 'not_high' | 'unknown' } = { shell: false, risk: 'unknown' };
+  try { reading = read(); } catch { /* unknown: the classifier's answer */ }
+  if (reading.risk === 'high') return true;
+  if (reading.shell && reading.risk === 'not_high') return false;
+  return classifiedHighRisk;
+}
+
 function seatbeltEvent(source: PreToolUseEvent, rawEvent: unknown): SeatbeltEventInput {
   const raw = asRecord(rawEvent) || {};
   const event = source as unknown as Record<string, unknown>;
@@ -1419,7 +1437,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       emitHeldPlan(identity.harness, { kind: 'deny', agentText: HELD_UNREACHABLE_TEXT, userText: HELD_UNREACHABLE_TEXT, code: false });
       return;
     }
-    if (highRisk) {
+    if (outageHolds(highRisk, () => (require('./seatbelt/hook') as SeatbeltModule).outageRisk(seatbeltEvent(source, rawEvent), holdContext.deadlineAt ?? Number.POSITIVE_INFINITY))) {
       emitHeldPlan(identity.harness, { kind: 'deny', agentText: HELD_OFFLINE_TEXT, userText: HELD_OFFLINE_TEXT, code: false });
       return;
     }

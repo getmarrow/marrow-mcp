@@ -92,6 +92,14 @@ export interface SeatbeltDecision {
    * hook gives master's answer for it. Not recorded in receipts.
    */
   recognized: boolean;
+  /** The event ran a shell command (a shell tool, or a command field the mapper read). */
+  shell: boolean;
+  /**
+   * Programs that change something outside this machine (I3 outage list: `git_push`, `deploy`,
+   * `publish`, `remote_delete`, ...), or `unknown` when a subcommand word is dynamic. Used only to
+   * hold an action while Marrow cannot be reached; never a stop. Not recorded in receipts.
+   */
+  risk: string[];
 }
 export interface SeatbeltEvent { tool_name: string; tool_input?: unknown }
 
@@ -157,8 +165,10 @@ interface Run {
   seen: Set<string>;
   // substitutionsDecode result per substitution text.
   decodeMemo: Map<string, boolean>;
-  // See SeatbeltDecision.recognized.
+  // See SeatbeltDecision.recognized / shell / risk.
   recognized: boolean;
+  shell: boolean;
+  risk: Set<string>;
 }
 
 interface Ctx {
@@ -228,6 +238,7 @@ function failClosed(env: SeatbeltEnv, source: string): SeatbeltDecision {
 export function evaluateSeatbeltShell(command: string, env: SeatbeltEnv): SeatbeltDecision {
   try {
     const run = newRun(env, command);
+    run.shell = true;
     evalShell(String(command == null ? '' : command), newCtx(run), run);
     return finish(run);
   } catch {
@@ -241,7 +252,7 @@ function failClosedBare(): SeatbeltDecision {
     decision: 'stop', category: 'Sx', rule: RULE_IDS.Sx, reasons: ['mapper_error'], hits: [{ category: 'Sx', reason: 'mapper_error' }],
     flags: ['parse_unparsed'], parse: 'unparsed',
     engine: { rules: SEATBELT_RULES_VERSION, classifier_contract: CLASSIFIER_PIN.contract, classifier_source_commit: CLASSIFIER_PIN.source_commit },
-    recognized: true,
+    recognized: true, shell: false, risk: [],
   };
 }
 
@@ -300,6 +311,7 @@ function evaluateEvent(event: SeatbeltEvent, env: SeatbeltEnv): SeatbeltDecision
   const invocation = shellInvocations(evName, evInput, deadline, rawText);
   if (invocation) {
     const run = newRun(env, invocation.shell.join('\n'), deadline);
+    run.shell = true;
     if (inputTooBig) exhaust(run, 'budget_tool_input');
     if (invocation.timedOut) exhaust(run, 'budget_time');
     run.lineSource = [...new Set(invocation.plain)].join('\n');
@@ -873,6 +885,8 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     archivedLinks: false,
     decodeMemo: new Map(),
     recognized: true,
+    shell: false,
+    risk: new Set(),
     fsState,
     reads: new Map(),
     packages: new Map(),
@@ -991,6 +1005,8 @@ function finish(run: Run): SeatbeltDecision {
     parse: run.parse,
     engine: { rules: SEATBELT_RULES_VERSION, classifier_contract: CLASSIFIER_PIN.contract, classifier_source_commit: CLASSIFIER_PIN.source_commit },
     recognized: run.recognized,
+    shell: run.shell,
+    risk: [...run.risk].sort(),
   };
 }
 
@@ -2312,6 +2328,8 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
 
   // Generic operand checks apply to every program (S4 reads, S0 writes by write-programs).
   genericOperandChecks(prog, args, ctx, run, x.info.subs);
+  // I3: programs that change something outside this machine (held only while Marrow is unreachable).
+  outageRiskTags(prog, rest, run);
 
   switch (prog) {
     case 'cd': case 'pushd': return changeDir(rest, ctx, run, x.cmd.subshell);
@@ -2390,6 +2408,99 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   // A function or alias defined in this text: its stdin goes to whatever it runs.
   if (x.info.fnNames && x.info.fnNames.has(prog)) stdinExec('sh', [], x, ctx, run);
   unknownProgram(prog, args, ctx, run, x);
+}
+
+// I3 outage list: a program that changes something outside this machine. Recorded in `run.risk`; the
+// hook holds such an action only while Marrow cannot be reached, and it is never a stop here. A dynamic
+// subcommand word of a listed program is `unknown`, which the hook holds too (it may be the listed one).
+// `git push` is tagged in gitPush (aliases included); kubectl and helm count only in production
+// contexts and `rm -rf` only outside the workspace and temporary folders: that is S2 and S5.
+const OUTAGE_ANY_SUB: Record<string, RegExp> = {
+  wrangler: /^(?:deploy|publish|delete|rollback)$/,
+  netlify: /^deploy$/,
+  firebase: /^deploy$|:delete$/,
+  heroku: /^(?:releases:rollback|rollback|apps:destroy|destroy|config:set|config:unset|config:add|config:remove|pg:reset|ps:scale|scale|container:release|maintenance:on)$/,
+  serverless: /^(?:deploy|remove|rollback)$/,
+  sls: /^(?:deploy|remove|rollback)$/,
+  sst: /^(?:deploy|remove)$/,
+  cdk: /^(?:deploy|destroy)$/,
+  railway: /^(?:up|down|redeploy|delete)$/,
+  gcloud: /^(?:deploy|delete)$/,
+  amplify: /^(?:publish|push|delete)$/,
+  terraform: /^(?:apply|destroy)$/,
+  tofu: /^(?:apply|destroy)$/,
+  terragrunt: /^(?:apply|destroy|run-all)$/,
+  pulumi: /^(?:up|update|destroy)$/,
+  fly: /^(?:deploy|destroy|scale)$/,
+  flyctl: /^(?:deploy|destroy|scale)$/,
+  npm: /^(?:unpublish|deprecate)$/,
+  pnpm: /^(?:unpublish|deprecate)$/,
+  yarn: /^(?:unpublish|deprecate)$/,
+  bun: /^(?:unpublish|deprecate)$/,
+  docker: /^push$/,
+  podman: /^push$/,
+};
+// `vercel` deploys unless its first word names another command.
+const VERCEL_OTHER = new Set(['dev', 'build', 'env', 'link', 'login', 'logout', 'ls', 'list', 'inspect', 'logs', 'pull', 'whoami', 'project', 'projects',
+  'domains', 'dns', 'certs', 'teams', 'switch', 'help', 'init', 'git', 'integration', 'bisect', 'telemetry', 'open', 'target', 'targets']);
+function outageRiskTags(prog: string, rest: Arg[], run: Run): void {
+  const p = prog.toLowerCase();
+  const pos: Array<string | null> = [];
+  for (const a of rest) {
+    if (a.text === '--') break;
+    if (a.text !== null && a.text.startsWith('-')) continue;
+    pos.push(a.text === null ? null : a.text.toLowerCase());
+    if (pos.length >= 12) break;
+  }
+  const any = (re: RegExp): boolean => pos.some((t) => t !== null && re.test(t));
+  // The subcommand words: the first one (gh and gcloud: the first three). An argument after them may be dynamic.
+  const dynamic = pos.slice(0, p === 'gh' || p === 'gcloud' ? 3 : 1).some((t) => t === null);
+  const tag = (t: string): void => { run.risk.add(t); };
+  const flagValue = (names: string[]): string | null | undefined => {
+    let out: string | null | undefined;
+    for (let i = 0; i < rest.length; i += 1) {
+      const t = rest[i].text;
+      if (t === null) continue;
+      for (const n of names) {
+        if (t === n) out = i + 1 < rest.length ? rest[i + 1].text : null;
+        else if (t.startsWith(`${n}=`)) out = t.slice(n.length + 1);
+        else if (n === '-X' && t.startsWith('-X') && t.length > 2) out = t.slice(2);
+      }
+    }
+    return out;
+  };
+  if (p === 'vercel') {
+    if (pos.length && pos[0] === null) tag('unknown');
+    else if (!pos.length || !VERCEL_OTHER.has(pos[0] as string)) tag('deploy');
+    return;
+  }
+  if (p === 'gh') {
+    for (let i = 0; i + 1 < pos.length; i += 1) {
+      const pair = `${pos[i]} ${pos[i + 1]}`;
+      if (/^(?:pr merge|repo delete|release (?:create|delete|upload|edit))$/.test(pair)) { tag('remote_change'); return; }
+    }
+    if (pos[0] === 'api') {
+      const m = flagValue(['-X', '--method']);
+      if (m === null) tag('unknown');
+      else if (typeof m === 'string' && /^delete$/i.test(m)) tag('remote_delete');
+    }
+    if (dynamic) tag('unknown');
+    return;
+  }
+  if (p === 'curl' || p === 'wget' || p === 'http' || p === 'https' || p === 'xh' || p === 'xhs') {
+    const m = p === 'curl' ? flagValue(['-X', '--request']) : p === 'wget' ? flagValue(['--method']) : pos[0];
+    if (m === null) tag('unknown');
+    else if (typeof m === 'string' && /^delete$/i.test(m)) tag('remote_delete');
+    return;
+  }
+  if ((p === 'docker' || p === 'podman') && pos.includes('buildx') && rest.some((a) => a.text === '--push')) { tag('publish'); return; }
+  if ((p === 'wrangler') && ((pos.includes('secret') && any(/^(?:put|delete|bulk)$/)) || (pos.includes('pages') && pos.includes('deploy'))
+    || (pos.includes('versions') && pos.includes('deploy')) || (any(/^(?:execute|apply)$/) && rest.some((a) => a.text === '--remote')))) { tag('deploy'); return; }
+  if ((p === 'fly' || p === 'flyctl') && any(/^(?:apps|machine|machines|volume|volumes|secrets|postgres|pg|redis)$/) && any(/^(?:destroy|delete|remove|rm|set|unset|import)$/)) { tag('deploy'); return; }
+  const re = OUTAGE_ANY_SUB[p];
+  if (!re) return;
+  if (any(re)) tag(/^(?:npm|pnpm|yarn|bun|docker|podman)$/.test(p) ? 'publish' : 'deploy');
+  else if (dynamic) tag('unknown');
 }
 
 // Tools whose arguments are mostly data (variables, payloads); their argv is not scanned for commands.
@@ -5311,6 +5422,8 @@ function mappedPushDestinations(specs: string[], src: string, current: string | 
 }
 
 function gitPush(args: Arg[], ctx: Ctx, run: Run, overrides: Map<string, string[]>, trimmed?: WeakSet<Arg>): void {
+  // I3 outage list: every push changes a remote (held only while Marrow cannot be reached).
+  run.risk.add('git_push');
   const risky = new Set<string>();
   let repo: Arg | null = null;
   const refspecs: Arg[] = [];

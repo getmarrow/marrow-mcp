@@ -18,7 +18,7 @@ const ROOT = path.resolve(__dirname, '..');
 const CLI = path.join(ROOT, 'dist', 'cli.js');
 const PASSWD = path.join(__dirname, 'support', 'passwd-home-fake.cjs');
 const SCENARIOS = path.join(__dirname, 'support', 'f2-fetch-scenarios.cjs');
-const { MARROW_OUTAGE_WARNING, HELD_OFFLINE_TEXT, classifyTool } = require('../dist/hook-pre-action.js');
+const { MARROW_OUTAGE_WARNING, HELD_OFFLINE_TEXT, classifyTool, outageHolds } = require('../dist/hook-pre-action.js');
 const recorded = require('./fixtures/f2-recorded-force-push.json');
 
 const SHAPES = {
@@ -38,12 +38,13 @@ const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-f2-')
 test.after(() => fs.rmSync(base, { recursive: true, force: true }));
 let n = 0;
 
-function hook(host, command, scenario) {
+function hook(host, command, scenario, prep = null) {
   const home = path.join(base, `h${n += 1}`);
   const proj = path.join(home, 'proj');
   fs.mkdirSync(proj, { recursive: true, mode: 0o700 });
   fs.chmodSync(home, 0o700);
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: proj, stdio: 'ignore' });
+  if (prep) prep(proj);
   const logFile = path.join(home, 'calls.log');
   const key = `mrw_test_${crypto.randomBytes(16).toString('hex')}`;
   const r = spawnSync(process.execPath, ['--require', PASSWD, '--require', SCENARIOS, CLI, `${host}-pre-action-hook`], {
@@ -132,4 +133,75 @@ test('F2: a server allow with a verified permit is honored on all 7 hosts (the f
     assert.equal(r.stop, false, `${host}: ${r.out.slice(0, 300)}`);
     assert.ok(r.calls.includes('/v1/agent/enforcement#verify'), host);
   }
+});
+
+// I3 (owner decision on the audit of abf9926b): during a real outage only an action the seatbelt
+// mapper reads as high-risk is held: an S0-S5/S-x hit, or a program on the outage list (git push,
+// publish, deploy, remote delete). Words in a message, a path or a comment never hold a shell command.
+// Never looser than master, which allowed every action in an outage; F2 part 1 is unchanged above.
+test('I3 outageHolds: the mapper reading decides a shell command; anything it cannot read keeps the classifier answer', () => {
+  assert.equal(outageHolds(false, () => ({ shell: true, risk: 'high' })), true);
+  assert.equal(outageHolds(false, () => ({ shell: false, risk: 'high' })), true);
+  assert.equal(outageHolds(true, () => ({ shell: true, risk: 'not_high' })), false);
+  assert.equal(outageHolds(true, () => ({ shell: false, risk: 'not_high' })), true, 'a non-shell tool keeps F2');
+  assert.equal(outageHolds(true, () => ({ shell: true, risk: 'unknown' })), true);
+  assert.equal(outageHolds(false, () => ({ shell: true, risk: 'unknown' })), false);
+  assert.equal(outageHolds(true, () => { throw new Error('mapper crash'); }), true);
+  assert.equal(outageHolds(false, () => { throw new Error('mapper crash'); }), false);
+});
+
+const I3_ALLOWED = [
+  // Words in messages, echo text, paths and comments (the audit's word false positives).
+  'git commit -m "npm publish to prod"', 'mkdir -p /tmp/production/x', 'echo "git push -f origin main"', 'cat docs/production-deploy.md',
+  'git commit -am "rm -rf / deploy"', 'echo publish', 'ls -la # deploy to production', 'grep -rn "wrangler deploy" docs',
+  // Routine local work.
+  'rm -rf node_modules dist', 'npm test', 'git reset --hard HEAD~1', 'git clean -fdx', 'terraform plan', 'kubectl get pods',
+  'npm publish --dry-run', 'git branch -D old', 'curl -X POST https://api.example.test/v1/x', 'rm -rf /tmp/build-123',
+  // A dynamic argument after a listed program's subcommand is not a dynamic subcommand.
+  'npm install "$PKG"', 'docker run --rm "$IMG"', 'terraform plan -var "env=$ENV"',
+];
+const I3_HELD = [
+  // The program list, with chains, wrappers, variables, aliases, repeated and unknown flags.
+  'git push origin main', 'git push -f origin feat/x', 'git push --frob origin feat/x', 'ls && git push origin main', 'false || git push origin main',
+  'echo ok; git push origin main', 'bash -c "git push origin main"', 'sh -c \'npm publish\'', 'X=push; git $X origin main', 'git -c alias.p=push p origin main',
+  '(cd . && git push origin main)', 'env GIT_TRACE=1 git push origin main', 'timeout 60 npx wrangler deploy', 'npm publish', 'npm publish --dry-run --dry-run=false',
+  'pnpm publish', 'yarn npm publish', 'npm unpublish pkg@1.0.0', 'docker push acme/app:1', 'wrangler deploy --env staging', 'wrangler deploy --env production',
+  'vercel', 'vercel --prod', 'fly deploy', 'terraform apply -auto-approve', 'terraform destroy', 'pulumi up --yes', 'gh pr merge 5 --squash',
+  'curl -X DELETE https://api.example.test/v1/users/1', 'curl -X GET -X DELETE https://api.example.test/v1/users/1', 'heroku releases:rollback v12 -a app',
+  'kubectl --context prod delete deployment api', 'rm -rf /var/lib/app', 'python3 -c "import shutil;shutil.rmtree(\'/etc\')"',
+  // A listed program whose subcommand word is dynamic may be the listed one.
+  'wrangler "$CMD"', 'terraform $(cat action.txt) -auto-approve', 'vercel "$1"', 'docker "$CMD" acme/app:1', 'fly "$CMD"', 'heroku "$CMD" -a app',
+];
+// Cline and Windsurf send no cwd, so the mapper cannot place a relative `rm -rf` or `git clean` in the
+// workspace: an S5 hit (unknown directory), held in an outage there as F2 and the keyless seatbelt do.
+const I3_NO_CWD_HOSTS = new Set(['cline', 'windsurf']);
+const I3_CWD_RELATIVE = new Set(['rm -rf node_modules dist', 'git clean -fdx']);
+
+test('I3: a real outage allows routine shell commands whose only high-risk signal is a word, on all 7 hosts', () => {
+  const wrong = [];
+  for (const command of I3_ALLOWED) {
+    for (const host of HOSTS) {
+      const r = hook(host, command, 'runtime-refused');
+      if (I3_NO_CWD_HOSTS.has(host) && I3_CWD_RELATIVE.has(command)) {
+        if (!r.stop) wrong.push(`${host}: ${command}: expected the no-cwd hold`);
+        continue;
+      }
+      if (r.stop || r.out.includes(HELD_OFFLINE_TEXT)) wrong.push(`${host}: ${command}: ${r.out.replace(/\s+/g, ' ').slice(0, 160)}`);
+    }
+  }
+  assert.deepEqual(wrong, []);
+});
+
+test('I3: a real outage holds the outage-list programs and S-class commands on all 7 hosts (chains, wrappers, variables, aliases, flags)', () => {
+  const wrong = [];
+  for (const command of I3_HELD) {
+    for (const host of HOSTS) {
+      const r = hook(host, command, 'runtime-refused');
+      if (!r.stop || /This action is allowed/.test(r.out)) wrong.push(`${host}: ${command}: ${r.out.replace(/\s+/g, ' ').slice(0, 160)}`);
+    }
+  }
+  assert.deepEqual(wrong, []);
+  // A package script that publishes is read through package.json.
+  const prep = (proj) => fs.writeFileSync(path.join(proj, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0', scripts: { release: 'npm publish' } }));
+  for (const host of HOSTS) assert.equal(hook(host, 'npm run release', 'runtime-refused', prep).stop, true, `npm run release ${host}`);
 });
