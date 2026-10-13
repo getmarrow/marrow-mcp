@@ -104,6 +104,7 @@ function failClosedBare() {
         decision: 'stop', category: 'Sx', rule: RULE_IDS.Sx, reasons: ['mapper_error'], hits: [{ category: 'Sx', reason: 'mapper_error' }],
         flags: ['parse_unparsed'], parse: 'unparsed',
         engine: { rules: tables_1.SEATBELT_RULES_VERSION, classifier_contract: classifier_pin_1.CLASSIFIER_PIN.contract, classifier_source_commit: classifier_pin_1.CLASSIFIER_PIN.source_commit },
+        recognized: true,
     };
 }
 function evaluateSeatbelt(event, env) {
@@ -122,7 +123,8 @@ function evaluateSeatbelt(event, env) {
 function evaluateEvent(event, env) {
     const tool = String((event && event.tool_name) || '');
     let rawInput = event && event.tool_input;
-    const name = tool.toLowerCase();
+    // Codex can name a tool in its `functions.` namespace (`functions.exec`, `functions.apply_patch`).
+    const name = tool.toLowerCase().replace(/^(?:functions\.\s*)+/, '');
     // `tool_input` given as a string (audit N4): JSON is parsed and read as an object; any other text is
     // the command line itself. A string over the size cap is not read: it stops.
     let rawText = null;
@@ -153,9 +155,21 @@ function evaluateEvent(event, env) {
     // One wall-clock ceiling for the whole event, counted from here (audit N6): the input walks below
     // run before any classification and share it.
     const deadline = deadlineFor(env);
+    // An MCP call in any host form (audit H1) is read as `mcp__<server>__<tool>` with its arguments as
+    // the input. A call whose arguments cannot be read is not recognised: master's answer, never a pass.
+    const mcp = tables_1.SHELL_TOOL_NAMES.has(name) ? null : mcpCall(name, input);
+    if (mcp && mcp.malformed) {
+        const run = newRun(env, '', deadline);
+        if (inputTooBig)
+            exhaust(run, 'budget_tool_input');
+        run.recognized = false;
+        return finish(run);
+    }
+    const evName = mcp ? mcp.name : name;
+    const evInput = mcp ? mcp.args : input;
     // A tool that runs a shell command (audit F11): a known shell tool, or any tool whose input names a
     // command, script or argv field, at any depth.
-    const invocation = shellInvocations(name, input, deadline, rawText);
+    const invocation = shellInvocations(evName, evInput, deadline, rawText);
     if (invocation) {
         const run = newRun(env, invocation.shell.join('\n'), deadline);
         if (inputTooBig)
@@ -183,22 +197,25 @@ function evaluateEvent(event, env) {
         if (invocation.truncated)
             exhaust(run, 'budget_tool_input');
         // The tool may also take file paths (an MCP tool with `command` and `path`).
-        if (name.startsWith('mcp__') && name.split('__')[1] !== 'marrow')
-            mcpPathChecks(name, input, newCtx(run), run);
+        if (mcp)
+            mcpPathChecks(mcp.label, evInput, newCtx(run), run);
         return finish(run);
     }
     const run = newRun(env, '', deadline);
     if (inputTooBig)
         exhaust(run, 'budget_tool_input');
     const ctx = newCtx(run);
-    if (['read', 'notebookread', 'read_file', 'view', 'view_file'].includes(name)) {
+    if (mcp) {
+        mcpPathChecks(mcp.label, evInput, ctx, run);
+    }
+    else if (READ_TOOLS.has(name)) {
         for (const p of pathInputs(input)) {
             if (clock(run))
                 break;
             checkSecretOperand(litArg(p), ctx, run, 'tool_read');
         }
     }
-    else if (['grep', 'grep_files', 'search', 'rg'].includes(name)) {
+    else if (GREP_TOOLS.has(name)) {
         for (const p of pathInputs(input)) {
             if (clock(run))
                 break;
@@ -210,7 +227,7 @@ function evaluateEvent(event, env) {
                 checkGrepGlob(g, ctx, run);
         }
     }
-    else if (['write', 'edit', 'multiedit', 'notebookedit', 'write_file', 'create_file', 'str_replace_editor', 'str_replace_based_edit_tool', 'apply_patch', 'edit_file'].includes(name)) {
+    else if (WRITE_TOOLS.has(name)) {
         const targets = name === 'apply_patch' ? patchPaths(String(input.patch || input.input || input.content || '')) : pathInputs(input);
         if (name === 'str_replace_editor' || name === 'str_replace_based_edit_tool') {
             if (String(input.command || '') === 'view') {
@@ -222,6 +239,9 @@ function evaluateEvent(event, env) {
                 return finish(run);
             }
         }
+        // A write tool that names no target it can read (audit H1): not recognised.
+        if (targets.length === 0)
+            run.recognized = false;
         for (const p of targets) {
             if (clock(run))
                 break;
@@ -230,26 +250,99 @@ function evaluateEvent(event, env) {
             checkToolWrite(p, name, input, ctx, run);
         }
     }
-    else if (name.startsWith('mcp__')) {
-        if (name.split('__')[1] !== 'marrow')
-            mcpPathChecks(name, input, ctx, run);
+    else if (DELETE_TOOLS.has(name)) {
+        const targets = pathInputs(input);
+        if (targets.length === 0)
+            run.recognized = false;
+        for (const p of targets) {
+            if (clock(run))
+                break;
+            if (checkSecretOperand(litArg(p), ctx, run, 'tool_delete'))
+                continue;
+            checkProtectedWrite(litArg(p), ctx, run, 'tool_delete', true);
+        }
+    }
+    else if (!LIST_TOOLS.has(name) && !INERT_TOOLS.has(name) && !NON_SHELL_TOOLS.has(name)) {
+        // Not recognised (audit H1): its path fields still get the S4 and S0 checks, and a pass is not
+        // the seatbelt's to give (the keyless hook gives master's answer).
+        run.recognized = false;
+        mcpPathChecks(name, input, ctx, run, false);
     }
     return finish(run);
 }
-function mcpPathChecks(name, input, ctx, run) {
-    const parts = name.split('__');
-    const verbs = /write|edit|create|move|delete|remove|rename|put|update|append|save|mkdir|copy|patch|upload/;
-    const walked = walkPathInputs(input, run.deadline);
+// Host-native tool vocabulary (audit H1). A tool outside every list here, and not a shell or MCP call,
+// is not recognised.
+const READ_TOOLS = new Set(['read', 'notebookread', 'read_file', 'view', 'view_file', 'read_many_files', 'read_multiple_files', 'view_image']);
+const GREP_TOOLS = new Set(['grep', 'grep_files', 'search', 'rg', 'search_files', 'grep_search', 'search_file_content']);
+const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit', 'notebookedit', 'write_file', 'create_file', 'str_replace_editor', 'str_replace_based_edit_tool',
+    'apply_patch', 'edit_file', 'write_to_file', 'replace_in_file', 'apply_diff', 'insert_content', 'search_and_replace', 'replace', 'search_replace']);
+const DELETE_TOOLS = new Set(['delete', 'delete_file']);
+// Tools that list names only, and tools that act on nothing on disk (questions, plans, todos, web).
+const LIST_TOOLS = new Set(['glob', 'ls', 'list_dir', 'list_directory', 'list_files', 'list_code_definition_names']);
+// Host file tools (audit H1) take paths, never a shell command: not scanned for command fields.
+const NATIVE_FILE_TOOLS = new Set();
+const INERT_TOOLS = new Set(['ask_followup_question', 'attempt_completion', 'plan_mode_respond', 'act_mode_respond', 'new_task', 'web_fetch',
+    'google_web_search', 'web_search', 'write_todos', 'update_plan', 'load_mcp_documentation', 'create_todo_list', 'update_todo_list']);
+for (const set of [READ_TOOLS, GREP_TOOLS, WRITE_TOOLS, DELETE_TOOLS, LIST_TOOLS])
+    for (const t of set)
+        NATIVE_FILE_TOOLS.add(t);
+// An MCP call in any host form (audit H1): Claude Code and Codex `mcp__<server>__<tool>`; Cursor,
+// Windsurf and Grok `MCP:<server>:<tool>` (or its quoted form); Gemini `mcp_<server>_<tool>` and
+// `<server>__<tool>`; Cline `use_mcp_tool` (`arguments` is a JSON string or an object) and
+// `access_mcp_resource` (a `file://` uri). Marrow's own tools leave the hook before the seatbelt, so
+// any call that reaches here, a `marrow` look-alike included, gets every check.
+function mcpCall(name, input) {
+    const call = (label, args) => ({ name: `mcp__host__${label}`, label, args, malformed: false });
+    if (name.startsWith('mcp__'))
+        return { name, label: name.split('__').slice(2).join('_'), args: input, malformed: false };
+    if (name.startsWith('mcp:'))
+        return call(name.slice(4), input);
+    if (name === 'use_mcp_tool' || name === 'use_tool') {
+        const label = String(input.tool_name ?? input.toolName ?? '').toLowerCase();
+        const raw = input.arguments !== undefined ? input.arguments : input.args;
+        let args;
+        if (raw === undefined || raw === null || raw === '')
+            args = {};
+        else if (typeof raw === 'string') {
+            // Text over the size cap is not read; text that is not a JSON object or array is malformed.
+            if (raw.length > tables_1.LIMITS.maxToolJsonChars)
+                return { ...call(label, {}), malformed: true };
+            args = tryJson(raw.replace(/^\uFEFF/, ''));
+            if (!args || typeof args !== 'object')
+                return { ...call(label, {}), malformed: true };
+        }
+        else if (typeof raw === 'object')
+            args = raw;
+        else
+            return { ...call(label, {}), malformed: true };
+        return call(label, { ...input, arguments: Array.isArray(args) ? { items: args } : args });
+    }
+    if (name === 'access_mcp_resource')
+        return call('read_resource', { server_name: input.server_name, uri: input.uri });
+    if (name.startsWith('mcp_'))
+        return call(name.slice(4), input);
+    if (/^[a-z0-9_.-]+__[a-z0-9_.-]+$/.test(name))
+        return call(name.slice(name.indexOf('__') + 2), input);
+    return null;
+}
+const MCP_WRITE_VERBS = /write|edit|create|move|delete|remove|rename|put|update|append|save|mkdir|copy|patch|upload/;
+// Path checks for an MCP call (every string value of its input, audit H1) or for a tool the mapper
+// does not recognise (its path fields): S4 for a secret, and S0 for a protected path when the tool's
+// name says it writes. Free text (a line break, or longer than any path) is data, not a path.
+function mcpPathChecks(label, input, ctx, run, allStrings = true) {
+    const writes = MCP_WRITE_VERBS.test(label);
+    const walked = walkPathInputs(input, run.deadline, allStrings);
     if (walked.timedOut)
         exhaust(run, 'budget_time');
     else if (walked.truncated)
         exhaust(run, 'budget_tool_input');
-    for (const p of walked.paths) {
+    const values = [...walked.paths, ...walked.strings.filter((t) => t.length <= tables_1.LIMITS.maxPathChars && !/[\r\n]/.test(t))];
+    for (const p of values) {
         if (clock(run))
             break;
         if (checkSecretOperand(litArg(p), ctx, run, 'mcp_path'))
             continue;
-        if (verbs.test(parts.slice(2).join('_')))
+        if (writes)
             checkProtectedWrite(litArg(p), ctx, run, 'mcp_write', false);
     }
 }
@@ -277,7 +370,7 @@ function withStdin(command, text) {
 function shellInvocations(name, input, deadline, rawText) {
     const known = tables_1.SHELL_TOOL_NAMES.has(name);
     if (!known) {
-        if (tables_1.FILE_TOOL_NAMES.has(name) || NON_SHELL_TOOLS.has(name) || name.startsWith('mcp__marrow__') || name.startsWith('marrow_'))
+        if (tables_1.FILE_TOOL_NAMES.has(name) || NON_SHELL_TOOLS.has(name) || NATIVE_FILE_TOOLS.has(name) || name.startsWith('mcp__marrow__') || name.startsWith('marrow_'))
             return null;
     }
     const out = { shell: [], groups: [], plain: [], code: [], malformed: false, truncated: false, timedOut: false };
@@ -645,7 +738,9 @@ function tryJson(text) {
 function shellQuote(s) {
     return /^[A-Za-z0-9_\-./=:@%+,]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
-const PATH_KEYS = ['file_path', 'path', 'notebook_path', 'filepath', 'filename', 'file', 'target_file', 'paths', 'source', 'destination', 'target', 'dir', 'directory', 'uri', 'files', 'src', 'dest', 'from', 'to', 'old_path', 'new_path'];
+const PATH_KEYS = ['file_path', 'path', 'notebook_path', 'filepath', 'filename', 'file', 'target_file', 'paths', 'source', 'destination', 'target', 'dir', 'directory', 'uri', 'files', 'src', 'dest', 'from', 'to', 'old_path', 'new_path',
+    // audit H1: Gemini read_file / grep / read_many_files
+    'absolute_path', 'dir_path', 'include'];
 function pathInputs(input) {
     const out = [];
     const add = (v) => {
@@ -663,9 +758,10 @@ function pathInputs(input) {
     return [...new Set(out)];
 }
 // Path-like fields at any depth up to LIMITS.maxToolDepth (audit F14). Over the node budget the
-// result is truncated and the caller stops.
-function walkPathInputs(input, deadline) {
+// result is truncated and the caller stops. `allStrings`: every other string value too (`strings`).
+function walkPathInputs(input, deadline, allStrings = false) {
     const out = new Set();
+    const other = new Set();
     let visited = 0;
     let truncated = false;
     let timedOut = false;
@@ -709,12 +805,31 @@ function walkPathInputs(input, deadline) {
             }
             if (PATH_KEYS.includes(k.toLowerCase()))
                 add(v);
+            else if (allStrings && typeof v === 'string' && v)
+                other.add(v.replace(/^file:\/\//, ''));
             if (v && typeof v === 'object')
                 walk(v, depth + 1);
         }
     };
     walk(input, 0);
-    return { paths: [...out], truncated, timedOut };
+    // Strings in arrays (`{"args": ["~/.ssh/id_rsa"]}`) are values too.
+    if (allStrings) {
+        const items = (value, depth) => {
+            if (depth > tables_1.LIMITS.maxToolDepth || !value || typeof value !== 'object')
+                return;
+            for (const v of Array.isArray(value) ? value : Object.values(value)) {
+                if (Array.isArray(value) && typeof v === 'string' && v)
+                    other.add(v.replace(/^file:\/\//, ''));
+                else if (v && typeof v === 'object')
+                    items(v, depth + 1);
+            }
+        };
+        if (!truncated && !timedOut)
+            items(input, 0);
+    }
+    for (const p of out)
+        other.delete(p);
+    return { paths: [...out], strings: [...other], truncated, timedOut };
 }
 function patchPaths(patch) {
     const out = [];
@@ -833,6 +948,7 @@ function newRun(rawEnv, source, deadline) {
         topLast: true,
         archivedLinks: false,
         decodeMemo: new Map(),
+        recognized: true,
         fsState,
         reads: new Map(),
         packages: new Map(),
@@ -958,6 +1074,7 @@ function finish(run) {
         flags: [...run.flags].sort(),
         parse: run.parse,
         engine: { rules: tables_1.SEATBELT_RULES_VERSION, classifier_contract: classifier_pin_1.CLASSIFIER_PIN.contract, classifier_source_commit: classifier_pin_1.CLASSIFIER_PIN.source_commit },
+        recognized: run.recognized,
     };
 }
 function safeRealpath(env, p) {
@@ -8599,7 +8716,7 @@ function checkToolWrite(p, tool, input, ctx, run) {
     }
     const before = safeRead(run.env, target, tables_1.LIMITS.maxConfigBytes);
     let after = null;
-    if (tool === 'write' || tool === 'write_file' || tool === 'create_file' || (tool.startsWith('str_replace') && input.command === 'create')) {
+    if (tool === 'write' || tool === 'write_file' || tool === 'create_file' || tool === 'write_to_file' || (tool.startsWith('str_replace') && input.command === 'create')) {
         after = typeof input.content === 'string' ? input.content : typeof input.file_text === 'string' ? input.file_text : null;
     }
     else {

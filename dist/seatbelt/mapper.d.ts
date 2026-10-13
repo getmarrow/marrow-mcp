@@ -52,6 +52,13 @@ export interface SeatbeltDecision {
         classifier_contract: string;
         classifier_source_commit: string;
     };
+    /**
+     * The mapper positively recognised the tool (audit H1): a shell invocation, a known file, search,
+     * list, edit or delete tool, a known tool that acts on nothing on disk, or an MCP call whose
+     * arguments it read. A pass of an unrecognised tool is not the seatbelt's to give: the keyless
+     * hook gives master's answer for it. Not recorded in receipts.
+     */
+    recognized: boolean;
 }
 export interface SeatbeltEvent {
     tool_name: string;

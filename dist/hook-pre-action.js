@@ -1048,6 +1048,9 @@ async function runPreActionHook(input, watch) {
     // `seatbelt` answers here with no network call; `claimed_no_key` stops S0-S5 here and keeps the holds below.
     // Whether a keyless hold may say "linked to an account" (only with account evidence, never for a mode fallback).
     let keylessAccountLinked = false;
+    // The keyless hold text when the seatbelt does not answer: master's no-key text in seatbelt mode (a
+    // tool the mapper does not recognise, audit H1), the claimed_no_key texts otherwise.
+    let keylessSeatbeltMode = false;
     if (!resolved.apiKey) {
         let keyless;
         try {
@@ -1057,11 +1060,13 @@ async function runPreActionHook(input, watch) {
             keyless = { mode: 'claimed_no_key', stopText: SEATBELT_FAILED_TEXT };
         }
         keylessAccountLinked = keyless.accountLinked === true;
+        keylessSeatbeltMode = keyless.mode === 'seatbelt';
         if (keyless.stopText) {
             emitLoopGuardDenial(identity.harness, keyless.stopText);
             return;
         }
-        if (keyless.mode === 'seatbelt') {
+        // A tool the mapper does not recognise never gets the seatbelt pass: master's answer below.
+        if (keyless.mode === 'seatbelt' && keyless.recognized === true) {
             // Never an explicit allow for an action 3.9.103 held: the host's own approval step decides.
             const answer = seatbeltPassOutput(identity.harness, source.hook_event_name, !classified.readOnly && enforcementRequired);
             if (answer === null)
@@ -1114,7 +1119,7 @@ async function runPreActionHook(input, watch) {
             runtime: null,
             permit: null,
             protectedRisk: enforcementRequired,
-            enforcementError: keylessAccountLinked ? exports.CLAIMED_NO_KEY_TEXT : exports.SETUP_UNCONFIRMED_TEXT,
+            enforcementError: keylessSeatbeltMode ? exports.NO_KEY_TEXT : keylessAccountLinked ? exports.CLAIMED_NO_KEY_TEXT : exports.SETUP_UNCONFIRMED_TEXT,
         }, identity.harness);
         return;
     }

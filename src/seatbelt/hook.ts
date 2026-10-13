@@ -260,6 +260,11 @@ export interface KeylessOutcome {
   stopText: string | null;
   /** True only with account evidence or a rejected key: then the text may say the machine is linked to an account. */
   accountLinked: boolean;
+  /**
+   * The mapper recognised the tool (audit H1). False: the seatbelt passed nothing it can vouch for, so
+   * the hook gives master's answer for that host instead of the seatbelt pass.
+   */
+  recognized: boolean;
 }
 
 /** The keyless branch of the hook: mode (U4), then the mapper (U2) with the U3 resolvers. Never throws. */
@@ -270,7 +275,7 @@ export function keylessSeatbelt(harness: string, event: SeatbeltHookEvent): Keyl
   let trustedHome: string | undefined;
   const stop = (reason: string): KeylessOutcome => {
     record({ v: 1, mode, enforcement: 'enforce', harness, decision: 'stop', category: 'hook', rule: 'U5.fail_closed', reasons: [reason], flags: [], parse: 'unparsed', latency_ms: Date.now() - started }, event, trustedHome);
-    return { mode, accountLinked, stopText: seatbeltStopText('hook', 'U5.fail_closed', reason, mode, accountLinked) };
+    return { mode, accountLinked, recognized: true, stopText: seatbeltStopText('hook', 'U5.fail_closed', reason, mode, accountLinked) };
   };
   try {
     const { resolveSeatbeltModeOnHost } = require('../seatbelt-mode') as typeof import('../seatbelt-mode');
@@ -288,8 +293,8 @@ export function keylessSeatbelt(harness: string, event: SeatbeltHookEvent): Keyl
       category: CODE.test(decision.category) ? decision.category : 'unknown', rule: CODE.test(decision.rule) ? decision.rule : 'unknown',
       reasons, flags: codes(decision.flags), parse: CODE.test(decision.parse) ? decision.parse : 'unknown', latency_ms: Date.now() - started,
     }, event, home);
-    if (decision.decision === 'pass') return { mode, accountLinked, stopText: null };
-    return { mode, accountLinked, stopText: seatbeltStopText(decision.category, decision.rule, reasons[0] || 'unspecified', mode, accountLinked) };
+    if (decision.decision === 'pass') return { mode, accountLinked, recognized: decision.recognized === true, stopText: null };
+    return { mode, accountLinked, recognized: true, stopText: seatbeltStopText(decision.category, decision.rule, reasons[0] || 'unspecified', mode, accountLinked) };
   } catch {
     return stop('hook_error');
   }

@@ -44,6 +44,11 @@ export interface KeylessOutcome {
     stopText: string | null;
     /** True only with account evidence or a rejected key: then the text may say the machine is linked to an account. */
     accountLinked: boolean;
+    /**
+     * The mapper recognised the tool (audit H1). False: the seatbelt passed nothing it can vouch for, so
+     * the hook gives master's answer for that host instead of the seatbelt pass.
+     */
+    recognized: boolean;
 }
 /** The keyless branch of the hook: mode (U4), then the mapper (U2) with the U3 resolvers. Never throws. */
 export declare function keylessSeatbelt(harness: string, event: SeatbeltHookEvent): KeylessOutcome;

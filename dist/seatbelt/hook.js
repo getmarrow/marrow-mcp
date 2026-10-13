@@ -262,7 +262,7 @@ function keylessSeatbelt(harness, event) {
     let trustedHome;
     const stop = (reason) => {
         record({ v: 1, mode, enforcement: 'enforce', harness, decision: 'stop', category: 'hook', rule: 'U5.fail_closed', reasons: [reason], flags: [], parse: 'unparsed', latency_ms: Date.now() - started }, event, trustedHome);
-        return { mode, accountLinked, stopText: seatbeltStopText('hook', 'U5.fail_closed', reason, mode, accountLinked) };
+        return { mode, accountLinked, recognized: true, stopText: seatbeltStopText('hook', 'U5.fail_closed', reason, mode, accountLinked) };
     };
     try {
         const { resolveSeatbeltModeOnHost } = require('../seatbelt-mode');
@@ -283,8 +283,8 @@ function keylessSeatbelt(harness, event) {
             reasons, flags: codes(decision.flags), parse: CODE.test(decision.parse) ? decision.parse : 'unknown', latency_ms: Date.now() - started,
         }, event, home);
         if (decision.decision === 'pass')
-            return { mode, accountLinked, stopText: null };
-        return { mode, accountLinked, stopText: seatbeltStopText(decision.category, decision.rule, reasons[0] || 'unspecified', mode, accountLinked) };
+            return { mode, accountLinked, recognized: decision.recognized === true, stopText: null };
+        return { mode, accountLinked, recognized: true, stopText: seatbeltStopText(decision.category, decision.rule, reasons[0] || 'unspecified', mode, accountLinked) };
     }
     catch {
         return stop('hook_error');

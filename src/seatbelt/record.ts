@@ -228,6 +228,8 @@ function toolOf(name: unknown): { tool: string; kind: string } {
   const lower = text.toLowerCase();
   if (/^(?:functions\.\s*)*(?:mcp__|mcp_|mcp:)/i.test(text)) return { tool: 'mcp', kind: 'mcp' };
   if (SHELL_TOOL_NAMES.has(lower)) return { tool: lower, kind: 'shell' };
+  // Cline and Grok MCP calls and Gemini `<server>__<tool>` names are MCP tools too (audit H1, L2).
+  if (/^(?:use_mcp_tool|use_tool|access_mcp_resource)$/.test(lower) || /^[a-z0-9_.-]+__[a-z0-9_.-]+$/.test(lower)) return { tool: 'mcp', kind: 'mcp' };
   if (READ_TOOLS.has(lower)) return { tool: lower, kind: 'file_read' };
   if (FILE_TOOL_NAMES.has(lower)) return { tool: lower, kind: 'file_write' };
   if (OTHER_TOOLS.includes(lower)) return { tool: lower, kind: 'other' };

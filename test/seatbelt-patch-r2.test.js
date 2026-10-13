@@ -241,8 +241,10 @@ test('reasons and flags are fixed identifiers: no path, branch, host or value re
       assert.match(x, /^[a-z0-9_]+$/, `${r.id}: ${x}`);
       assert.ok(x.length <= 64, x);
     }
+    // recognized is a boolean (audit H1).
+    assert.equal(typeof d.recognized, 'boolean');
     assert.ok(['none', 'S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'Sx'].includes(d.category));
-    assert.deepEqual(Object.keys(d).sort(), ['category', 'decision', 'engine', 'flags', 'hits', 'parse', 'reasons', 'rule']);
+    assert.deepEqual(Object.keys(d).sort(), ['category', 'decision', 'engine', 'flags', 'hits', 'parse', 'reasons', 'recognized', 'rule']);
   }
   assert.ok(seen.size > 80, `${seen.size} distinct reasons and flags`);
 });

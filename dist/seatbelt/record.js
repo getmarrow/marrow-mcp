@@ -204,6 +204,9 @@ function toolOf(name) {
         return { tool: 'mcp', kind: 'mcp' };
     if (tables_1.SHELL_TOOL_NAMES.has(lower))
         return { tool: lower, kind: 'shell' };
+    // Cline and Grok MCP calls and Gemini `<server>__<tool>` names are MCP tools too (audit H1, L2).
+    if (/^(?:use_mcp_tool|use_tool|access_mcp_resource)$/.test(lower) || /^[a-z0-9_.-]+__[a-z0-9_.-]+$/.test(lower))
+        return { tool: 'mcp', kind: 'mcp' };
     if (READ_TOOLS.has(lower))
         return { tool: lower, kind: 'file_read' };
     if (tables_1.FILE_TOOL_NAMES.has(lower))
