@@ -517,7 +517,9 @@ export function localLoopGuardDenyOutput(
   if (harness === 'windsurf') return null;
   if (harness === 'cursor') return { permission: 'deny', user_message: bounded, agent_message: bounded };
   if (harness === 'cline') return { cancel: true, errorMessage: bounded };
-  if (harness === 'gemini' || harness === 'grok') return { decision: 'deny', reason: bounded };
+  // The installed Grok guard passes only an allow or this fixed denial; any other text is its launch failure (audit M1).
+  if (harness === 'grok') return { decision: 'deny', reason: GROK_FIXED_DENIAL };
+  if (harness === 'gemini') return { decision: 'deny', reason: bounded };
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: bounded } };
 }
 

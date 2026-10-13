@@ -517,7 +517,9 @@ test('U5 keyless seatbelt on Gemini, Grok, Cline and Windsurf: the deny shape ea
       const text = harness === 'cline' ? denied.errorMessage : denied.reason;
       if (harness === 'cline') assert.equal(denied.cancel, true);
       else assert.equal(denied.decision, 'deny');
-      assert.match(text, /^MARROW SEATBELT stopped this action: package publish \(S3\.[a-z_]+, [a-z_]+\)\. .*marrow claim/);
+      // Grok: the installed guard passes only an allow or the fixed denial (audit M1), so a stop is that denial.
+      if (harness === 'grok') assert.equal(text, 'Marrow blocked this protected action.');
+      else assert.match(text, /^MARROW SEATBELT stopped this action: package publish \(S3\.[a-z_]+, [a-z_]+\)\. .*marrow claim/);
       assert.equal(pass.status, 0, harness);
       // `git push origin main` was held by 3.9.103 on every host: Cline's neutral answer, Gemini's allow (its guard's
       // only non-blocking answer; Gemini still applies its own confirmation), Grok held as before (no neutral answer).
