@@ -62,7 +62,9 @@ export interface ReceiptOptions {
 export const MAX_RECEIPT_BYTES = 16 * 1024;
 export const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 export const RETENTION_DAYS = 90;
-const LOCK_WAIT_MS = 120;
+const LOCK_WAIT_MS = 150;
+/** A stop's receipt is the first-hour record, so it waits longer for the writer lock than a pass does. */
+const STOP_LOCK_WAIT_MS = 600;
 const LOCK_STALE_MS = 500;
 const ZERO_PREV = '0'.repeat(64);
 const FILE_NAME = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
@@ -392,7 +394,8 @@ function readSalt(fs: Fs, path: string, uid: number): Buffer {
   const fd = fs.openSync(path, C.O_RDONLY | NOFOLLOW | (C.O_NONBLOCK || 0));
   try {
     const st = fs.fstatSync(fd);
-    if (!st.isFile() || st.nlink !== 1 || st.uid !== uid || (st.mode & 0o077) !== 0 || st.size !== 32) throw new Refusal('unsafe_store');
+    // No link-count check on the salt: it is only read, and while another hook is creating it (temp file linked into place) it briefly has two names.
+    if (!st.isFile() || st.uid !== uid || (st.mode & 0o077) !== 0 || st.size !== 32) throw new Refusal('unsafe_store');
     const buffer = Buffer.alloc(32);
     if (fs.readSync(fd, buffer, 0, 32, 0) !== 32) throw new Refusal('unsafe_store');
     return buffer;
@@ -641,6 +644,7 @@ function passwdHome(): string | null {
 export function writeSeatbeltReceipt(record: SeatbeltRecord, context: SeatbeltRecordContext = {}, options: ReceiptOptions = {}): 'written' | 'dropped' {
   const fs = options.fs || nodeFs;
   const found: { dir?: string } = {};
+  let wait = options.lockWaitMs ?? LOCK_WAIT_MS;
   try {
     const uid = options.uid === undefined ? (typeof process.getuid === 'function' ? process.getuid() : null) : options.uid;
     if (typeof uid !== 'number') throw new Refusal('platform');
@@ -649,10 +653,11 @@ export function writeSeatbeltReceipt(record: SeatbeltRecord, context: SeatbeltRe
     const now = options.now ?? Date.now();
     const store = openStore(fs, home, uid, found);
     const body = buildReceipt(record, context, store.salt, fs, now);
-    withLock(fs, store.dir, options.lockWaitMs ?? LOCK_WAIT_MS, () => append(store, body, now, options));
+    wait = options.lockWaitMs ?? (body.decision === 'stop' ? STOP_LOCK_WAIT_MS : LOCK_WAIT_MS);
+    withLock(fs, store.dir, wait, () => append(store, body, now, options));
     return 'written';
   } catch (error) {
-    if (found.dir) countDrop(fs, found.dir, dropReason(error), options.lockWaitMs ?? LOCK_WAIT_MS);
+    if (found.dir) countDrop(fs, found.dir, dropReason(error), wait);
     return 'dropped';
   }
 }

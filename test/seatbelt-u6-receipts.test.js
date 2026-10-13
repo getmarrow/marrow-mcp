@@ -457,7 +457,7 @@ test('U6 abuse: group/other access (0644 files, 0755 or 0750 directories, a grou
   assert.equal(dropsOf(h).drop_reasons.unsafe_store, dropsOf(h).receipt_drop);
 }));
 
-test('U6 abuse: a hard-linked day file or salt is refused (an append must not reach another file)', () => withHome((h) => {
+test('U6 abuse: a hard-linked day file is refused (an append must not reach another file); a salt with a second name is only read, so it is accepted', () => withHome((h) => {
   ready(h);
   const other = path.join(h.root, 'other-file');
   fs.writeFileSync(other, 'untouched\n', { mode: 0o600 });
@@ -468,11 +468,8 @@ test('U6 abuse: a hard-linked day file or salt is refused (an append must not re
   assert.equal(fs.readFileSync(other, 'utf8'), 'untouched\n');
   fs.rmSync(day);
   assert.equal(put(h, record(), bash('ls')), 'written');
-  const salt = path.join(h.sb, 'salt');
-  fs.linkSync(salt, path.join(h.root, 'salt-twin'));
-  assert.equal(put(h, record(), bash('ls')), 'dropped', 'a salt with a second name');
-  fs.rmSync(path.join(h.root, 'salt-twin'));
-  assert.equal(put(h, record(), bash('ls')), 'written');
+  fs.linkSync(path.join(h.sb, 'salt'), path.join(h.root, 'salt-twin'));
+  assert.equal(put(h, record(), bash('ls')), 'written', 'the salt is only read');
 }));
 
 test('U6 abuse: a FIFO planted as a day file never hangs the writer (a 10 s guard in a child process); a directory or device node is refused', () => withHome((h) => {
