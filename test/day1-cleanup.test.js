@@ -9,7 +9,7 @@ const { randomBytes } = require('node:crypto');
 const CLI = join(__dirname, '..', 'dist', 'cli.js');
 const { NO_KEY_TEXT, ownerApprovalPrompt, gateDecisionMessage, preActionHookOutput } = require('../dist/hook-pre-action.js');
 
-const ENFORCEMENT = 'On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, hooks let actions run with a warning, and the governed runner stops protected actions it cannot verify. Over MCP, the agent gets the decision and is expected to follow it.';
+const ENFORCEMENT = 'On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, hooks hold high-risk actions and let routine actions run with a warning, and the governed runner stops protected actions it cannot verify. Over MCP, the agent gets the decision and is expected to follow it.';
 
 function sandbox() {
   const root = mkdtempSync(join(tmpdir(), 'marrow-day1-'));

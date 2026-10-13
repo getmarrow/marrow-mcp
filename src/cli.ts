@@ -290,7 +290,7 @@ async function runSpoolCommand(drain: boolean): Promise<void> {
 
 const GET_A_KEY_URL = 'https://getmarrow.ai/signup';
 const ACTIVATE_COMMAND = 'npx -y @getmarrow/install@latest activate';
-const ENFORCEMENT_SENTENCE = 'On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, hooks let actions run with a warning, and the governed runner stops protected actions it cannot verify. Over MCP, the agent gets the decision and is expected to follow it.';
+const ENFORCEMENT_SENTENCE = 'On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, hooks hold high-risk actions and let routine actions run with a warning, and the governed runner stops protected actions it cannot verify. Over MCP, the agent gets the decision and is expected to follow it.';
 
 const HELP_TEXT = `Marrow MCP server and hook commands (@getmarrow/mcp)
 
