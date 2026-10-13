@@ -884,7 +884,10 @@ function installPreActionHook(startDir = process.cwd()) {
 function seatbeltEvent(source, rawEvent) {
     const raw = asRecord(rawEvent) || {};
     const event = source;
-    return { tool_name: source.tool_name, tool_input: source.tool_input, cwd: event.cwd ?? raw.cwd, truncated: event.input_truncated === true };
+    return {
+        tool_name: source.tool_name, tool_input: source.tool_input, cwd: event.cwd ?? raw.cwd, truncated: event.input_truncated === true,
+        session: source.session_id || source.conversation_id || source.task_id || undefined,
+    };
 }
 async function runPreActionHookCommand(input) {
     // Account mode: the S0-S5 floor in watch runs after the answer is written, for the record only.
