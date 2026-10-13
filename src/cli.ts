@@ -495,18 +495,35 @@ if (process.argv[2] === 'keys') {
     }
     return parts;
   };
+  // `keys create` single values, the same rule as getFlagList: absent is undefined (the default:
+  // live key, no expiry); `--name value`, `--name=value`, `-n value` and `-n=value` are present
+  // (the first occurrence wins); present but blank is a usage error (exit 2, nothing sent), never
+  // "absent" (an ignored `--expires=` would make a key that never expires). A value is sent as typed.
+  const getFlagValue = (name: string, short?: string): string | undefined => {
+    const forms = [`--${name}`, ...(short ? [`-${short}`] : [])];
+    const idx = process.argv.findIndex(a => forms.some(f => a === f || a.startsWith(`${f}=`)));
+    if (idx < 0) return undefined;
+    const arg = process.argv[idx];
+    const form = forms.find(f => arg === f || arg.startsWith(`${f}=`)) as string;
+    const raw = arg === form ? process.argv[idx + 1] : arg.slice(form.length + 1);
+    if (!(raw ?? '').replace(/^[ \t\n\f\r]+|[ \t\n\f\r]+$/g, '')) {
+      process.stderr.write(`Error: --${name} needs a value, or omit --${name} for the default\n`);
+      process.exit(2);
+    }
+    return raw;
+  };
 
   const runCli = async () => {
     try {
       if (cmd === 'create') {
-        const name = getFlag('name', 'n');
+        const name = getFlagValue('name', 'n');
         if (!name) { process.stderr.write('Error: --name required\n'); process.exit(1); }
         const result = await marrowCreateKey(API_KEY, 'https://api.getmarrow.ai', {
           name,
-          key_type: (getFlag('type', 't') || 'live') as 'live' | 'test',
+          key_type: (getFlagValue('type', 't') || 'live') as 'live' | 'test',
           scopes: getFlagList('scopes', 'scope') as any,
           agent_ids: getFlagList('agents', 'agent'),
-          expires_at: getFlag('expires'),
+          expires_at: getFlagValue('expires'),
         }, undefined, undefined);
         process.stdout.write(JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) + '\n');
       } else if (cmd === 'list') {
