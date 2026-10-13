@@ -349,13 +349,18 @@ test('U5 account mode: the floor runs in watch only; answers and server requests
     const mockDir = fs.mkdtempSync(path.join(sb.root, 'mock-'));
     fs.writeFileSync(path.join(mockDir, 'config.json'), JSON.stringify({ runtime: { ok: true, action: 'classified action', risk_gate: { allow: true, decision: 'allow', enforced: false, enforcement_decision: 'advisory', reasons: [] } } }));
     const key = `mrw_test_${crypto.randomBytes(16).toString('hex')}`;
-    const account = { MARROW_API_KEY: key, MARROW_BASE_URL: 'https://api.example.test', MARROW_AGENT_ID: 'agent-one', MARROW_PASSIVE_TOKEN_USAGE: 'false', MARROW_TEST_MOCK_DIR: mockDir, NODE_OPTIONS: `--require=${MOCK}` };
+    // SBT_NETSPY is off here: the spy loads after the fetch mock and would replace it, so no request would be made
+    // and "same request bodies" would compare two empty strings (U6 finding 8).
+    const account = { SBT_NETSPY: '', MARROW_API_KEY: key, MARROW_BASE_URL: 'https://api.example.test', MARROW_AGENT_ID: 'agent-one', MARROW_PASSIVE_TOKEN_USAGE: 'false', MARROW_TEST_MOCK_DIR: mockDir, NODE_OPTIONS: `--require=${MOCK}` };
     const requests = () => {
       const file = path.join(mockDir, 'requests.jsonl');
       const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
       fs.rmSync(file, { force: true });
-      return text.replace(/"(?:ts|at|timestamp|occurred_at|created_at|sent_at|started_at|deadline_at|expires_at)":"[^"]*"/g, '"t":"-"');
+      // Times and the per-call random ids (event_id suffix, idempotency_key) differ between any two runs.
+      return text.replace(/"(?:ts|at|timestamp|occurred_at|created_at|sent_at|started_at|deadline_at|expires_at)":"[^"]*"/g, '"t":"-"')
+        .replace(/"(event_id|idempotency_key)":"[^"]*"/g, '"$1":"-"');
     };
+    let compared = 0;
     for (const harness of HARNESSES) {
       for (const command of ['git push -f origin main', 'npm publish', 'cat ~/.ssh/id_ed25519', 'ls -la', 'git push origin main']) {
         const event = shellEvent(harness, command, sb.proj);
@@ -363,11 +368,12 @@ test('U5 account mode: the floor runs in watch only; answers and server requests
         const withFloor = run(sb, harness, event, { env: account });
         const sentWith = requests();
         const records1 = records(sb);
-        const without = run(sb, harness, { ...event, session_id: event.session_id, conversation_id: event.conversation_id }, { env: { ...account, SBT_THROW: 'load' } });
+        const without = run(sb, harness, event, { env: { ...account, SBT_THROW: 'load' } });
         const sentWithout = requests();
         assert.equal(withFloor.stdout, without.stdout, `${harness} ${command}: same answer`);
         assert.equal(withFloor.status, without.status);
         assert.equal(sentWith, sentWithout, `${harness} ${command}: same request bodies`);
+        if (sentWith.length > 0) compared += 1;
         assert.ok(!(withFloor.stdout + withFloor.stderr).includes(key), 'the key never appears in output');
         // The watch result reaches the record hook only, with field classes only.
         assert.equal(records1.length, 1, `${harness} ${command}: one watch record`);
@@ -378,6 +384,7 @@ test('U5 account mode: the floor runs in watch only; answers and server requests
         assert.ok(!JSON.stringify(records1[0]).includes('main') && !JSON.stringify(records1[0]).includes(sb.home));
       }
     }
+    assert.ok(compared > 0, 'some account-flow runs made server requests, and their bodies were compared');
   } finally { sb.cleanup(); }
 });
 
