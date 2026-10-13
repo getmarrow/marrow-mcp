@@ -205,3 +205,21 @@ test('I3: a real outage holds the outage-list programs and S-class commands on a
   const prep = (proj) => fs.writeFileSync(path.join(proj, 'package.json'), JSON.stringify({ name: 'p', version: '1.0.0', scripts: { release: 'npm publish' } }));
   for (const host of HOSTS) assert.equal(hook(host, 'npm run release', 'runtime-refused', prep).stop, true, `npm run release ${host}`);
 });
+
+// T-1 (delta audit of 0368537c): a command the mapper cannot fully read (a dynamic argument), with no hit
+// and no outage-list program, keeps the client classifier's answer in an outage: high is held.
+const T1_UNKNOWN_HIGH = ['psql "$DB" -c "DROP TABLE users"', 'mysql -h "$HOST" -e "drop database prod"', 'redis-cli -h "$H" FLUSHALL',
+  'aws ec2 terminate-instances --instance-ids "$ID"'];
+
+test('T-1: an outage holds a high-risk command the mapper reads as unknown (dynamic argument), on all 7 hosts', () => {
+  const wrong = [];
+  for (const command of T1_UNKNOWN_HIGH) {
+    assert.equal(classifyTool({ tool_name: 'Bash', tool_input: { command } }).risk, 'high', command);
+    for (const host of HOSTS) {
+      const r = hook(host, command, 'runtime-refused');
+      if (!r.stop || /This action is allowed/.test(r.out)) wrong.push(`${host}: ${command}: ${r.out.replace(/\s+/g, ' ').slice(0, 160)}`);
+    }
+  }
+  assert.deepEqual(wrong, []);
+});
+
