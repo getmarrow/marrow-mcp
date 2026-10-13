@@ -216,7 +216,8 @@ test('U6 hook: account mode (a key) in watch records the floor as a pass with th
     const mockDir = fs.mkdtempSync(path.join(sb.root, 'mock-'));
     fs.writeFileSync(path.join(mockDir, 'config.json'), JSON.stringify({ runtime: { ok: true, action: 'classified action', risk_gate: { allow: true, decision: 'allow', enforced: false, enforcement_decision: 'advisory', reasons: [] } } }));
     const key = `mrw_test_${crypto.randomBytes(16).toString('hex')}`;
-    const account = { MARROW_API_KEY: key, MARROW_BASE_URL: 'https://api.example.test', MARROW_AGENT_ID: 'agent-one', MARROW_PASSIVE_TOKEN_USAGE: 'false', MARROW_TEST_MOCK_DIR: mockDir, NODE_OPTIONS: `--require=${MOCK}` };
+    // SBT_NETSPY is off here: the spy would also replace the mock's fetch (it loads after it) and no request would ever be made or compared.
+    const account = { SBT_NETSPY: '', MARROW_API_KEY: key, MARROW_BASE_URL: 'https://api.example.test', MARROW_AGENT_ID: 'agent-one', MARROW_PASSIVE_TOKEN_USAGE: 'false', MARROW_TEST_MOCK_DIR: mockDir, NODE_OPTIONS: `--require=${MOCK}` };
     const requests = () => {
       const file = path.join(mockDir, 'requests.jsonl');
       const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
