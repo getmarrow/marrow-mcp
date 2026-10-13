@@ -480,9 +480,20 @@ if (process.argv[2] === 'keys') {
     const idx = process.argv.findIndex(a => a === `--${name}` || (short ? a === `-${short}` : false));
     return idx >= 0 ? process.argv[idx + 1] : undefined;
   };
-  const getFlagList = (name: string): string[] => {
-    const val = getFlag(name);
-    return val ? val.split(',').map(s => s.trim()) : [];
+  // Absent flag: undefined, so the key is left out of the request (the server's default).
+  // Present flag: its non-empty parts. Present but empty is a usage error, never "omitted":
+  // omitted means full scopes / unrestricted agents. Repeated flags: the first one wins.
+  const getFlagList = (name: string, noun: string): string[] | undefined => {
+    const idx = process.argv.findIndex(a => a === `--${name}` || a.startsWith(`--${name}=`));
+    if (idx < 0) return undefined;
+    const arg = process.argv[idx];
+    const raw = arg.startsWith(`--${name}=`) ? arg.slice(name.length + 3) : process.argv[idx + 1];
+    const parts = (raw ?? '').split(',').map(s => s.replace(/^[ \t\n\f\r]+|[ \t\n\f\r]+$/g, '')).filter(Boolean);
+    if (!parts.length) {
+      process.stderr.write(`Error: list at least one ${noun}, or omit --${name} for the default\n`);
+      process.exit(2);
+    }
+    return parts;
   };
 
   const runCli = async () => {
@@ -493,8 +504,8 @@ if (process.argv[2] === 'keys') {
         const result = await marrowCreateKey(API_KEY, 'https://api.getmarrow.ai', {
           name,
           key_type: (getFlag('type', 't') || 'live') as 'live' | 'test',
-          scopes: getFlagList('scopes') as any,
-          agent_ids: getFlagList('agents'),
+          scopes: getFlagList('scopes', 'scope') as any,
+          agent_ids: getFlagList('agents', 'agent'),
           expires_at: getFlag('expires'),
         }, undefined, undefined);
         process.stdout.write(JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) + '\n');
