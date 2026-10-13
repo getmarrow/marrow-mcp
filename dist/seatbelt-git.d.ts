@@ -1,0 +1,212 @@
+import type { SeatbeltFs } from './seatbelt-fs';
+export declare const MAX_GIT_CONFIG_BYTES: number;
+export declare const MAX_INCLUDE_DEPTH = 10;
+export declare const MAX_ALIAS_DEPTH = 10;
+/** Total alias nodes and config files visited: a planted config cannot fan out without bound. */
+export declare const MAX_ALIAS_STEPS = 256;
+export declare const MAX_CONFIG_FILES = 64;
+export interface GitConfigEntry {
+    /** section[.subsection].name; section and name lower-cased, subsection as written. */
+    key: string;
+    value: string;
+    source: string;
+}
+export interface GitConfig {
+    entries: GitConfigEntry[];
+    /** True when some config could not be read (unreadable file, include too deep): answers that depend on it are unknown. */
+    incomplete: boolean;
+}
+/** Canonical config key: git compares section and variable names case-insensitively, subsections exactly. */
+export declare function canonicalGitKey(key: string): string;
+/** Parses git config text into entries (git-config(1) syntax). */
+export declare function parseGitConfigText(text: string, source: string): GitConfigEntry[];
+export interface GitDirs {
+    /** The worktree's git dir (HEAD lives here). */
+    gitDir: string;
+    /** The common dir (config, refs, packed-refs). */
+    commonDir: string;
+}
+/**
+ * Env that makes git use a different repository, config or work tree than
+ * discovery from the cwd finds. The resolvers do not model these: any of
+ * them set (in the hook env or as a prefix assignment of the git command)
+ * makes discovery and config 'unknown'/incomplete, never a definite answer.
+ */
+export declare const GIT_RELOCATING_ENV: string[];
+/**
+ * Env and config that make git run another program (ssh, pager, editor,
+ * diff/merge drivers, credential helpers, hooks, fsmonitor). The mapper (U2)
+ * treats any of them present as a shell command it cannot see: stop.
+ */
+export declare const GIT_EXEC_ENV: string[];
+/**
+ * Names of exec-capable env vars and config keys present (alias.* with a
+ * leading `!` only). Names only, never values. `env` is what the agent set:
+ * the git command's prefix assignments and earlier `export`s in the same
+ * command line, not the hook's own environment (the user's EDITOR/PAGER).
+ */
+export declare function gitExecVectors(config: GitConfig, env?: Record<string, string | undefined>): string[];
+/** The relocating names present in env (any value, even empty, counts). */
+export declare function gitRelocatingEnv(env: Record<string, string | undefined> | undefined): string[];
+/**
+ * Finds the git dirs for a working directory the way git's discovery does: at
+ * each level a `.git` directory, a `.git` file (`gitdir:`) plus `commondir`,
+ * or the level itself as a git directory (bare repo). With relocating env
+ * (`env`: hook env merged with the command's prefix assignments) the answer
+ * is 'unknown'.
+ */
+export declare function discoverGitDirs(fs: SeatbeltFs, cwd: string, env?: Record<string, string | undefined>): GitDirs | null | 'unknown';
+export interface GitConfigSources {
+    /** Trusted home (passwd or --home), for ~/.gitconfig, ~/.config/git/config and `~/` in include paths. */
+    home: string | null;
+    dirs?: GitDirs | null;
+    /** `git -c key=value` pairs, in order. */
+    commandConfig?: Array<[string, string]>;
+    /**
+     * The hook's own environment merged with the git command's prefix
+     * assignments (they reach git's environment). GIT_CONFIG_* are modelled;
+     * GIT_RELOCATING_ENV, a HOME other than `home`, or a relative config path
+     * make the config incomplete.
+     */
+    env?: Record<string, string | undefined>;
+    /** System config files; default /etc/gitconfig plus common package-manager prefixes. */
+    systemFiles?: string[];
+}
+/**
+ * Loads config from every scope git reads, plus every include and includeIf
+ * (conditions are not evaluated: including more can only add candidates).
+ */
+export declare function loadGitConfig(fs: SeatbeltFs, sources: GitConfigSources): GitConfig;
+/**
+ * The config an invocation's own `-c` / `--config-env` pairs (and what they
+ * include) add to the loaded config, for resolvers that take a GitConfig
+ * (implicitPushTargets): `git -c remote.origin.push=+refs/heads/*:refs/heads/main push`
+ * must be judged with that pair, not without it.
+ */
+export declare function withInvocationConfig(config: GitConfig, invocation: GitInvocation): GitConfig;
+/** Every value of a key across all scopes, in load order (git uses the last). */
+export declare function gitConfigValues(config: GitConfig, key: string): string[];
+/**
+ * Built-ins of every supported git (≥2.20): git runs these before it looks at
+ * aliases, so an alias with one of these names never applies.
+ */
+export declare const GIT_CORE_BUILTINS: Set<string>;
+/**
+ * Commands that shadow an alias only when present: exec-path programs that may
+ * not be installed (git-lfs, git-svn ...) and built-ins newer than 2.20. For
+ * these the alias is kept as a candidate next to the command itself.
+ */
+export declare const GIT_MAYBE_COMMANDS: Set<string>;
+/** git's split_cmdline: whitespace-separated words with single/double quotes and backslash escapes. Null on an unclosed quote. */
+export declare function splitGitCmdline(value: string): string[] | null;
+export interface GitInvocation {
+    /** `-c` pairs from the global options. */
+    config: Array<[string, string]>;
+    /** `-C` directories and `--git-dir`/`--work-tree` values, in order. */
+    directories: string[];
+    /** Global options seen whose effect is not modelled (or whose value is dynamic). */
+    unknownGlobals: string[];
+    /**
+     * Global options that point git at another repository, config, namespace or
+     * exec path than discovery from the cwd finds (`--bare` is `GIT_DIR=$PWD`):
+     * the config this resolver loaded is not the one git reads. Also in
+     * `unknownGlobals`, so a caller that checks only that list stops too.
+     */
+    relocated: string[];
+    /** `--config-env` pairs: key and the env var name supplying its value. */
+    configEnv: Array<[string, string]>;
+    subcommand: string | null;
+    args: string[];
+}
+/** Splits `git <global options> <subcommand> <args>` (git.c handle_options: exact option names only). */
+export declare function parseGitInvocation(argv: string[]): GitInvocation;
+export type GitExpansion = {
+    kind: 'git';
+    invocation: GitInvocation;
+} | {
+    kind: 'shell';
+    command: string;
+    args: string[];
+} | {
+    kind: 'unknown';
+    reason: 'not_found' | 'loop' | 'too_deep' | 'unparsed' | 'config_incomplete' | 'dynamic_config' | 'relocated';
+};
+/**
+ * Expands git aliases the way git would, keeping every candidate: each
+ * definition of alias.<name> from any scope or include, and `-c alias.*` from
+ * the command. Core built-in names are never expanded (git ignores aliases
+ * for them); maybe-installed commands keep both answers. `!` aliases become shell commands with the remaining args appended.
+ *
+ * `config` must be loaded with the same `env`. A per-invocation `-c` or
+ * `--config-env` pair that names `include.path` / `includeIf.*.path` is
+ * followed like git does when `fs` is given (`home` for `~/`); without `fs`, or
+ * when the file cannot be read in full, the answer is `unknown/config_incomplete`.
+ * `--bare`, `--exec-path`, `--namespace`, `--attr-source`, `--super-prefix`,
+ * `-C`, `--git-dir` and `--work-tree` make it `unknown/relocated`.
+ */
+export declare function expandGitAliases(argv: string[], context: {
+    config: GitConfig;
+    env?: Record<string, string | undefined>;
+    fs?: SeatbeltFs;
+    home?: string | null;
+}): GitExpansion[];
+/**
+ * `git push` long options that can rewrite or delete remote refs (S1): the
+ * mapper treats a candidate in this set as risky. `prune` deletes remote
+ * branches that have no local counterpart under `--all`/a pattern refspec.
+ */
+export declare const GIT_PUSH_RISKY_OPTIONS: string[];
+/** Long options of `git push` (builtin/push.c), for prefix abbreviation. */
+export declare const GIT_PUSH_LONG_OPTIONS: string[];
+/**
+ * Every long option a `--name[=value]` argument can mean under git's unique
+ * prefix abbreviation. Exact names win; an ambiguous prefix keeps all matches
+ * (git would refuse, but the mapper must stop if any match is risky). Negated
+ * forms are returned as `no-<name>`.
+ */
+export declare function gitLongOptionCandidates(arg: string, options?: string[], negatable?: Set<string>): string[];
+export type GitHead = {
+    kind: 'branch';
+    branch: string;
+} | {
+    kind: 'detached';
+} | {
+    kind: 'unknown';
+};
+export declare function readGitHead(fs: SeatbeltFs, dirs: GitDirs): GitHead;
+/** The remote's default branch from refs/remotes/<remote>/HEAD; null when absent; 'unknown' when unreadable. */
+export declare function readRemoteDefaultBranch(fs: SeatbeltFs, dirs: GitDirs, remote: string): string | null | 'unknown';
+export declare const BASELINE_PROTECTED_BRANCHES: string[];
+/** PB membership (§1.2). Compared case-insensitively; an unresolved target is protected. */
+export declare function isProtectedBranch(branch: string | null, extra?: string[]): boolean;
+export interface PushRefspec {
+    force: boolean;
+    delete: boolean;
+    /** Destination branch name, or null when it cannot be resolved locally. */
+    destination: string | null;
+    /** Refspec names more than one branch (a pattern or a matching `:`). */
+    all: boolean;
+}
+/** Resolves one push refspec's destination against HEAD and the upstream config. */
+export declare function resolvePushRefspec(refspec: string, head: GitHead): PushRefspec;
+export interface ImplicitPushTargets {
+    /** Branch names a remote-only `git push [remote]` may update. */
+    branches: string[];
+    /** push.default=matching or a pattern refspec: may update any branch. */
+    all: boolean;
+    /** Some target could not be resolved (detached HEAD, unreadable config). */
+    unknown: boolean;
+    /** remote.<r>.push has a `+` refspec. */
+    forceFromConfig: boolean;
+    /** remote.<r>.mirror is set. */
+    mirror: boolean;
+    /** Every remote this push may go to. */
+    remotes: string[];
+}
+/**
+ * Targets of `git push` with no refspec (and optionally no remote), as the
+ * union of every config candidate: remote.<r>.push, push.default and the
+ * branch's upstream.
+ */
+export declare function implicitPushTargets(config: GitConfig, head: GitHead, remote: string | null): ImplicitPushTargets;
+//# sourceMappingURL=seatbelt-git.d.ts.map

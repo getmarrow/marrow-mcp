@@ -16,7 +16,7 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.join(__dirname, '..', '..');
 const MAPPER = path.join(ROOT, 'dist', 'seatbelt', 'mapper.js');
 const TABLES = path.join(ROOT, 'dist', 'seatbelt', 'tables.js');
-const TESTS = ['test/seatbelt-mapper.test.js', 'test/seatbelt-patch-r2.test.js', 'test/seatbelt-audit-regression.test.js', 'test/seatbelt-r3.test.js', 'test/seatbelt-r4.test.js'];
+const TESTS = ['test/seatbelt-mapper.test.js', 'test/seatbelt-patch-r2.test.js', 'test/seatbelt-audit-regression.test.js', 'test/seatbelt-u2-r3.test.js', 'test/seatbelt-u2-r4.test.js'];
 
 const M = (file, from, to) => [file, from, to];
 

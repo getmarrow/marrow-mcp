@@ -1,6 +1,6 @@
 'use strict';
 // The delta audit's budget.cjs case list (Barvis, 2026-10-12, 126 crafted inputs), as a module: the
-// runner part of the script is replaced by test/seatbelt-r3.test.js.
+// runner part of the script is replaced by test/seatbelt-u2-r3.test.js.
 const K = 63 * 1024;
 const fill = (unit, n = K) => unit.repeat(Math.max(1, Math.floor(n / unit.length)));
 const tokens = ['push ', '-f ', '$a', '${a', '\\x41', 'rm -r ', '.rm(', 'Remove-Item ', 'env ', '$KEY', '"', "'", '*', '{a,b}', '$((1+', 'a=b ', '| ', '; ', '&& ', 'Buffer.from(', 'base64 ', 'eval ', 'x', ' ', 'a*', '?[', 'heads/', ':', '+', '--force ', 'npm ', 'git ', 'gh api ', '-X ', 'refs/', '$(', '`', '<<<', '\\\n', '#', 'export IFS=, ', 'printf %s ', 'curl x | ', 'cat <<E\n', 'os.environ', 'process.env.', 'secret', 'echo -e \\\\x', '~/', '../', '/home/u/', 'ln -s ~ x; ', 'cd .. ; '];

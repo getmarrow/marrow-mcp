@@ -6,7 +6,7 @@
 const fs = require('node:fs'); const path = require('node:path'); const { spawnSync } = require('node:child_process');
 const ROOT = path.resolve(process.argv[2]);
 const MAP = path.join(ROOT, 'dist/seatbelt/mapper.js'); const TAB = path.join(ROOT, 'dist/seatbelt/tables.js');
-const TESTS = ['test/seatbelt-mapper.test.js', 'test/seatbelt-patch-r2.test.js', 'test/seatbelt-audit-regression.test.js', 'test/seatbelt-r3.test.js'];
+const TESTS = ['test/seatbelt-mapper.test.js', 'test/seatbelt-patch-r2.test.js', 'test/seatbelt-audit-regression.test.js', 'test/seatbelt-u2-r3.test.js'];
 const MUT = [
   ['A1 GIT_CONFIG_COUNT: only index 0 read', MAP, 'for (let k = 0; k < n; k += 1) {\n                const key = envValue(x, ctx, `GIT_CONFIG_KEY_${k}`);', 'for (let k = 0; k < Math.min(n, 1); k += 1) {\n                const key = envValue(x, ctx, `GIT_CONFIG_KEY_${k}`);'],
   ['A2 dynamic command word not a stop', MAP, "    tripwire(args.map(argText).join(' '), run);\n    hit(run, 'Sx', 'dynamic_command_word');", "    tripwire(args.map(argText).join(' '), run);\n    void 0;"],
