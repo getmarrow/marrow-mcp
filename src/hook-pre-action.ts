@@ -921,7 +921,10 @@ type SeatbeltEventInput = import('./seatbelt/hook').SeatbeltHookEvent;
 function seatbeltEvent(source: PreToolUseEvent, rawEvent: unknown): SeatbeltEventInput {
   const raw = asRecord(rawEvent) || {};
   const event = source as unknown as Record<string, unknown>;
-  return { tool_name: source.tool_name, tool_input: source.tool_input, cwd: event.cwd ?? raw.cwd, truncated: event.input_truncated === true };
+  return {
+    tool_name: source.tool_name, tool_input: source.tool_input, cwd: event.cwd ?? raw.cwd, truncated: event.input_truncated === true,
+    session: source.session_id || source.conversation_id || source.task_id || undefined,
+  };
 }
 
 export async function runPreActionHookCommand(input?: unknown): Promise<void> {

@@ -48,9 +48,13 @@ function accountFloorStops(rollout, floor, server) {
         return false;
     return server !== 'enforced_allow';
 }
-function record(entry) {
+/** The event as the receipt writer may use it: to derive enums and keyed hashes only, never stored. */
+function recordContext(event, home) {
+    return { tool_name: event.tool_name, tool_input: event.tool_input, cwd: event.cwd, session: event.session, truncated: event.truncated, home };
+}
+function record(entry, event, home) {
     try {
-        require('./record').recordSeatbeltDecision(entry);
+        require('./record').recordSeatbeltDecision(entry, recordContext(event, home));
     }
     catch { /* the record hook never changes a decision */ }
 }
@@ -248,8 +252,9 @@ function passwdHome() {
 function keylessSeatbelt(harness, event) {
     const started = Date.now();
     let mode = 'claimed_no_key';
+    let trustedHome;
     const stop = (reason) => {
-        record({ v: 1, mode, enforcement: 'enforce', harness, decision: 'stop', category: 'hook', rule: 'U5.fail_closed', reasons: [reason], flags: [], parse: 'unparsed', latency_ms: Date.now() - started });
+        record({ v: 1, mode, enforcement: 'enforce', harness, decision: 'stop', category: 'hook', rule: 'U5.fail_closed', reasons: [reason], flags: [], parse: 'unparsed', latency_ms: Date.now() - started }, event, trustedHome);
         return { mode, stopText: seatbeltStopText('hook', 'U5.fail_closed', reason, mode) };
     };
     try {
@@ -259,6 +264,7 @@ function keylessSeatbelt(harness, event) {
         if (event.truncated)
             return stop('input_truncated');
         const home = resolution.homes[0] || passwdHome() || '/nonexistent-home';
+        trustedHome = home;
         const decision = evaluate(event, home, exports.HOOK_BUDGET_MS - (Date.now() - started));
         if (Date.now() - started > exports.HOOK_BUDGET_MS)
             return stop('hook_budget');
@@ -267,7 +273,7 @@ function keylessSeatbelt(harness, event) {
             v: 1, mode, enforcement: 'enforce', harness, decision: decision.decision === 'pass' ? 'pass' : 'stop',
             category: CODE.test(decision.category) ? decision.category : 'unknown', rule: CODE.test(decision.rule) ? decision.rule : 'unknown',
             reasons, flags: codes(decision.flags), parse: CODE.test(decision.parse) ? decision.parse : 'unknown', latency_ms: Date.now() - started,
-        });
+        }, event, home);
         if (decision.decision === 'pass')
             return { mode, stopText: null };
         return { mode, stopText: seatbeltStopText(decision.category, decision.rule, reasons[0] || 'unspecified', mode) };
@@ -286,7 +292,7 @@ function accountFloor(harness, event, deadlineAt) {
         const budget = Math.min(exports.HOOK_BUDGET_MS, (Number.isFinite(deadlineAt) ? deadlineAt : Number.POSITIVE_INFINITY) - started - 200);
         const enforcement = exports.SEATBELT_ROLLOUT.account_floor === 'on' ? 'enforce' : 'watch';
         if (!(budget >= 20)) {
-            record({ v: 1, mode: 'account', enforcement, harness, decision: 'skipped', category: 'none', rule: 'none', reasons: ['floor_no_budget'], flags: [], parse: 'ok', latency_ms: 0 });
+            record({ v: 1, mode: 'account', enforcement, harness, decision: 'skipped', category: 'none', rule: 'none', reasons: ['floor_no_budget'], flags: [], parse: 'ok', latency_ms: 0 }, event);
             return enforcement === 'enforce' ? seatbeltStopText('hook', 'U5.fail_closed', 'hook_budget', 'account') : null;
         }
         const decision = event.truncated ? null : evaluate(event, passwdHome() || '/nonexistent-home', budget);
@@ -296,7 +302,7 @@ function accountFloor(harness, event, deadlineAt) {
             category: decision && CODE.test(decision.category) ? decision.category : 'hook', rule: decision && CODE.test(decision.rule) ? decision.rule : 'U5.fail_closed',
             reasons: decision ? codes(decision.reasons) : ['input_truncated'], flags: decision ? codes(decision.flags) : [],
             parse: decision && CODE.test(decision.parse) ? decision.parse : 'unparsed', latency_ms: Date.now() - started,
-        });
+        }, event);
         if (!accountFloorStops(exports.SEATBELT_ROLLOUT.account_floor, { decision: stopped ? 'stop' : 'pass' }, 'none'))
             return null;
         return decision && decision.decision === 'stop'

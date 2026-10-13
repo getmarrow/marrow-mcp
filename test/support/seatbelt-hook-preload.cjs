@@ -6,6 +6,7 @@
 //   SBT_PASSWD_HOME  the home getpwuid() reports (the build server's real home is never probed)
 //   SBT_NETSPY       file: every socket, DNS, http(s) or fetch attempt appends a line, then throws
 //   SBT_RECORD       file: every recordSeatbeltDecision() call appends its JSON record
+//   SBT_FS_FAULT     ENOSPC | EACCES: a write to (ENOSPC) or an open of (EACCES) a receipt file fails (U6)
 //   SBT_THROW        mapper | mode | git | load | record: that seatbelt part throws
 //   SBT_SLOW_MS      the mapper sleeps this long first (the hook budget is 300 ms)
 const fs = require('node:fs');
@@ -63,6 +64,24 @@ if (env.SBT_RECORD) {
   wrapAfterLoad('seatbelt/record.js', (m) => {
     m.recordSeatbeltDecision = (record) => fs.appendFileSync(env.SBT_RECORD, `${JSON.stringify(record)}\n`);
   });
+}
+
+if (env.SBT_FS_FAULT) {
+  const code = env.SBT_FS_FAULT;
+  const fds = new Map();
+  const realOpen = fs.openSync;
+  const realWrite = fs.writeSync;
+  const receipt = (p) => String(p).includes('/.marrow/seatbelt/receipts/');
+  fs.openSync = function openSync(p, ...rest) {
+    if (code === 'EACCES' && receipt(p)) throw Object.assign(new Error(code), { code });
+    const fd = realOpen.call(this, p, ...rest);
+    fds.set(fd, String(p));
+    return fd;
+  };
+  fs.writeSync = function writeSync(fd, ...rest) {
+    if (code === 'ENOSPC' && receipt(fds.get(fd))) throw Object.assign(new Error(code), { code });
+    return realWrite.call(this, fd, ...rest);
+  };
 }
 
 const fault = env.SBT_THROW || '';

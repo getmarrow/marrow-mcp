@@ -29,6 +29,8 @@ export interface SeatbeltHookEvent {
     cwd: unknown;
     /** The harness adapter cut the input: the action is not known in full. */
     truncated: boolean;
+    /** The harness session id; used only for the receipt's keyed session_key. */
+    session?: unknown;
 }
 export interface KeylessOutcome {
     mode: 'seatbelt' | 'claimed_no_key';
