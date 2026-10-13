@@ -1472,6 +1472,509 @@ function noteArrays(src, ctx, run) {
         }
     }
 }
+const HIDDEN_MAX_TEXTS = 64;
+const HIDDEN_MAX_DEPTH = 3;
+const HIDDEN_MAX_BODY = 8 * 1024;
+const HIDDEN_QUICK = /<<|\$\{|\$\(\(/;
+const HIDDEN_HEREDOC = /<<-?\s*(['"]?)([A-Za-z0-9_.-]+)\1/y;
+const HIDDEN_NOT_PLAIN = /['"`#\\\n]/;
+// A here-document inside a substitution with a line that ends in a backslash: bash and the parser
+// disagree about where the body and the substitution end, so the text cannot be bounded.
+const hiddenJoin = (t) => t.includes('<<') && /(?:^|[^\\])(?:\\\\)*\\\n/.test(t);
+// The index past the `)` that closes the group opened just before `start` (quotes, backticks and
+// nested here-documents as in the parser's `scanBalanced`), or -1 when it is not closed.
+function groupEnd(s, start) {
+    const n = s.length;
+    let depth = 1;
+    let i = start;
+    while (i < n) {
+        const ch = s[i];
+        if (ch === '\\') {
+            i += 2;
+            continue;
+        }
+        if (ch === '<' && s[i + 1] === '<' && s[i + 2] !== '<') {
+            HIDDEN_HEREDOC.lastIndex = i;
+            const m = HIDDEN_HEREDOC.exec(s);
+            if (m) {
+                const bodyStart = s.indexOf('\n', i + m[0].length);
+                if (bodyStart < 0)
+                    return -1;
+                const strip = s[i + 2] === '-';
+                let j = bodyStart + 1;
+                let found = false;
+                while (j <= n) {
+                    let end = s.indexOf('\n', j);
+                    if (end < 0)
+                        end = n;
+                    const line = strip ? s.slice(j, end).replace(/^\t+/, '') : s.slice(j, end);
+                    j = end + 1;
+                    if (line === m[2]) {
+                        found = true;
+                        break;
+                    }
+                    if (end >= n)
+                        break;
+                }
+                if (!found)
+                    return -1;
+                i = j - 1;
+                continue;
+            }
+        }
+        if (ch === "'") {
+            const e = s.indexOf("'", i + 1);
+            if (e < 0)
+                return -1;
+            i = e + 1;
+            continue;
+        }
+        if (ch === '"') {
+            i += 1;
+            while (i < n && s[i] !== '"')
+                i += s[i] === '\\' ? 2 : 1;
+            if (i >= n)
+                return -1;
+            i += 1;
+            continue;
+        }
+        if (ch === '`') {
+            const e = s.indexOf('`', i + 1);
+            if (e < 0)
+                return -1;
+            i = e + 1;
+            continue;
+        }
+        if (ch === '(')
+            depth += 1;
+        else if (ch === ')') {
+            depth -= 1;
+            if (depth === 0)
+                return i + 1;
+        }
+        i += 1;
+    }
+    return -1;
+}
+function hiddenScanner(s, st) {
+    const n = s.length;
+    const fail = () => { st.unbounded = true; return -1; };
+    const push = (t) => { if (st.texts.length >= HIDDEN_MAX_TEXTS)
+        st.unbounded = true;
+    else
+        st.texts.push(t); };
+    // The parser lexes what follows a construct from where it believes the construct ends. When that is
+    // not where bash ends it, the rest of the text is classified as a text of its own (and the tripwire
+    // runs on the whole), and this scan ends.
+    const desync = (rest) => { st.unbounded = true; push(s.slice(rest)); return -1; };
+    // `hidden`: the parser did not list what is found here (a body, an operand, arithmetic).
+    const backtick = (i, hidden) => {
+        // Bash ends it at the first backtick that is not escaped; the parser at the first one.
+        let e = i + 1;
+        while (e < n && s[e] !== '`')
+            e += s[e] === '\\' ? 2 : 1;
+        if (e >= n)
+            return fail();
+        const inner = s.slice(i + 1, e);
+        if (hiddenJoin(inner))
+            st.unbounded = true;
+        const cut = s.indexOf('`', i + 1) !== e;
+        if (hidden || cut)
+            push(cut ? inner.replace(/\\([`$\\])/g, '$1') : inner);
+        if (cut && !hidden)
+            return desync(e + 1);
+        return e + 1;
+    };
+    const arith = (from, to, depth) => {
+        let i = from;
+        while (i < to) {
+            const c = s[i];
+            if (c === '\\') {
+                i += 2;
+                continue;
+            }
+            if (c === '$' && (s[i + 1] === '(' || s[i + 1] === '{')) {
+                i = dollar(i, true, depth, true);
+                if (i < 0)
+                    return false;
+                continue;
+            }
+            if (c === '`') {
+                i = backtick(i, true);
+                if (i < 0)
+                    return false;
+                continue;
+            }
+            i += 1;
+        }
+        return true;
+    };
+    // `"` at i: the index past the closing quote.
+    const dquote = (i, depth, hidden) => {
+        let j = i + 1;
+        while (j < n && s[j] !== '"') {
+            const c = s[j];
+            if (c === '\\') {
+                j += j + 1 < n && '$`"\\\n'.includes(s[j + 1]) ? 2 : 1;
+                continue;
+            }
+            if (c === '$') {
+                j = dollar(j, true, depth, hidden);
+                if (j < 0)
+                    return -1;
+                continue;
+            }
+            if (c === '`') {
+                j = backtick(j, hidden);
+                if (j < 0)
+                    return -1;
+                continue;
+            }
+            j += 1;
+        }
+        if (j >= n)
+            return fail();
+        return j + 1;
+    };
+    // The operand of `${` up to its `}`, bash rules: a single quote is text inside double quotes.
+    const braceEnd = (from, dq, depth) => {
+        let i = from;
+        while (i < n) {
+            const c = s[i];
+            if (c === '\\') {
+                i += 2;
+                continue;
+            }
+            if (c === '}')
+                return i + 1;
+            if (c === '$' && s[i + 1] === "'" && !dq) {
+                let j = i + 2;
+                while (j < n && s[j] !== "'")
+                    j += s[j] === '\\' ? 2 : 1;
+                if (j >= n)
+                    return fail();
+                i = j + 1;
+                continue;
+            }
+            if (c === '$') {
+                i = dollar(i, dq, depth, true);
+                if (i < 0)
+                    return -1;
+                continue;
+            }
+            if (c === '`') {
+                i = backtick(i, true);
+                if (i < 0)
+                    return -1;
+                continue;
+            }
+            if (c === "'" && !dq) {
+                const e = s.indexOf("'", i + 1);
+                if (e < 0)
+                    return fail();
+                i = e + 1;
+                continue;
+            }
+            if (c === '"') {
+                i = dquote(i, depth, true);
+                if (i < 0)
+                    return -1;
+                continue;
+            }
+            i += 1;
+        }
+        return fail();
+    };
+    // `$` at i where expansions are live: the index past the construct, -1 when it cannot be bounded.
+    const dollar = (i, dq, depth, hidden) => {
+        const c = s[i + 1];
+        if (c === '(') {
+            const end = groupEnd(s, i + 2);
+            if (end < 0)
+                return fail();
+            if (hiddenJoin(s.slice(i + 2, end - 1)))
+                st.unbounded = true;
+            if (s[i + 2] !== '(') {
+                if (hidden)
+                    push(s.slice(i + 2, end - 1));
+                return end;
+            }
+            // `$((`: arithmetic when the first `(` of the text closes at its end. Otherwise bash runs a
+            // command substitution that holds a subshell, which the parser reads as arithmetic.
+            const inner = s.slice(i + 2, end - 1);
+            if (groupEnd(inner, 1) === inner.length) {
+                if (depth + 1 > HIDDEN_MAX_DEPTH)
+                    return fail();
+                if (!arith(i + 3, end - 2, depth + 1))
+                    return -1;
+                // The parser resumes one past the first `)` that balances the `$((`.
+                if (!hidden) {
+                    const p = groupEnd(s, i + 3);
+                    if (p < 0 || p + 1 !== end)
+                        return desync(end);
+                }
+                return end;
+            }
+            push(inner);
+            return hidden ? end : desync(end);
+        }
+        if (c === '{') {
+            if (depth + 1 > HIDDEN_MAX_DEPTH)
+                return fail();
+            const end = braceEnd(i + 2, dq, depth + 1);
+            if (end < 0)
+                return -1;
+            // The parser ends the expansion at the first `}` and lexes the rest as ordinary text: that text
+            // must not change quoting, start a comment or end the line.
+            if (!hidden) {
+                const k = s.indexOf('}', i + 2);
+                if (k < 0 || (k + 1 < end && HIDDEN_NOT_PLAIN.test(s.slice(k + 1, end))))
+                    return desync(end);
+            }
+            return end;
+        }
+        return i + 1;
+    };
+    // The body of an unquoted here-document: like the inside of double quotes, but `"` and `'` are text.
+    const body = () => {
+        let i = 0;
+        while (i < n) {
+            const c = s[i];
+            if (c === '\\') {
+                i += i + 1 < n && '$`\\\n'.includes(s[i + 1]) ? 2 : 1;
+                continue;
+            }
+            if (c === '$') {
+                i = dollar(i, true, 0, true);
+                if (i < 0)
+                    return;
+                continue;
+            }
+            if (c === '`') {
+                i = backtick(i, true);
+                if (i < 0)
+                    return;
+                continue;
+            }
+            i += 1;
+        }
+    };
+    const hereBody = (text) => {
+        if (text.indexOf('$') < 0 && text.indexOf('`') < 0)
+            return;
+        if (Buffer.byteLength(text) > HIDDEN_MAX_BODY) {
+            st.unbounded = true;
+            return;
+        }
+        hiddenScanner(text, st).body();
+    };
+    // Top level of a shell text: the tokenizer's control flow without the tokens.
+    const top = () => {
+        const pending = [];
+        let i = 0;
+        let started = false;
+        const readBodies = (from) => {
+            let at = from;
+            for (const h of pending.splice(0)) {
+                const raw = [];
+                let found = false;
+                while (at < n) {
+                    let end = s.indexOf('\n', at);
+                    if (end < 0)
+                        end = n;
+                    const physical = s.slice(at, end);
+                    at = end + 1;
+                    raw.push(physical);
+                    if ((h.strip ? physical.replace(/^\t+/, '') : physical) === h.delim) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    st.unbounded = true;
+                const lines = raw.map((l) => (h.strip ? l.replace(/^\t+/, '') : l));
+                // An unterminated body is scanned whatever its delimiter said (it is flagged unbounded as well).
+                if (!h.quoted || !found)
+                    hereBody((found ? lines.slice(0, -1) : lines).join('\n'));
+                // Bash ends a body earlier than the parser does in two ways: it joins a line that ends in a
+                // backslash with the next one before it compares it with an unquoted delimiter, and inside
+                // `$( … )` a line that starts with the delimiter and a `)` ends it, the `)` closing the
+                // substitution. What follows is code in bash and text to the parser: it is classified as a text
+                // of its own (the second form is read wherever it appears: a line like that is rare in data).
+                let ended = false;
+                for (let j = 0; j < raw.length; j += 1) {
+                    let logical = raw[j];
+                    let k = j;
+                    if (!h.quoted) {
+                        while (k + 1 < raw.length && /(?:^|[^\\])(?:\\\\)*\\$/.test(logical)) {
+                            logical = logical.slice(0, -1) + raw[k + 1];
+                            k += 1;
+                        }
+                    }
+                    const cmp = h.strip ? logical.replace(/^\t+/, '') : logical;
+                    if (cmp === h.delim || cmp.startsWith(`${h.delim})`)) {
+                        const rest = [cmp.slice(h.delim.length + (cmp === h.delim ? 0 : 1)), ...raw.slice(k + 1)].join('\n');
+                        if (rest.trim() !== '')
+                            push(rest);
+                        ended = true;
+                        break;
+                    }
+                    j = k;
+                }
+                // The opposite: the parser saw the delimiter on a physical line that bash joins to the one
+                // before it, so bash reads on, and the text the parser calls code is body (or the reverse).
+                if (found && !ended)
+                    st.unbounded = true;
+            }
+            return at;
+        };
+        while (i < n) {
+            const ch = s[i];
+            if (ch === '\n') {
+                i += 1;
+                started = false;
+                if (pending.length)
+                    i = readBodies(i);
+                continue;
+            }
+            if (ch === ' ' || ch === '\t' || ch === '\r') {
+                started = false;
+                i += 1;
+                continue;
+            }
+            if (ch === '#' && !started) {
+                const e = s.indexOf('\n', i);
+                i = e < 0 ? n : e;
+                continue;
+            }
+            if (ch === '\\') {
+                if (s[i + 1] === '\n') {
+                    i += 2;
+                    continue;
+                }
+                started = true;
+                i += 2;
+                continue;
+            }
+            if (ch === "'") {
+                const e = s.indexOf("'", i + 1);
+                if (e < 0) {
+                    fail();
+                    return;
+                }
+                started = true;
+                i = e + 1;
+                continue;
+            }
+            if (ch === '$' && s[i + 1] === "'") {
+                let j = i + 2;
+                while (j < n && s[j] !== "'")
+                    j += s[j] === '\\' ? 2 : 1;
+                if (j >= n) {
+                    fail();
+                    return;
+                }
+                started = true;
+                i = j + 1;
+                continue;
+            }
+            if (ch === '"') {
+                started = true;
+                i = dquote(i, 0, false);
+                if (i < 0)
+                    return;
+                continue;
+            }
+            if (ch === '`') {
+                started = true;
+                i = backtick(i, false);
+                if (i < 0)
+                    return;
+                continue;
+            }
+            if (ch === '$') {
+                started = true;
+                i = dollar(i, false, 0, false);
+                if (i < 0)
+                    return;
+                continue;
+            }
+            if ((ch === '<' || ch === '>') && s[i + 1] === '(' && !started) {
+                const e = groupEnd(s, i + 2);
+                if (e < 0) {
+                    fail();
+                    return;
+                }
+                started = true;
+                i = e;
+                continue;
+            }
+            if (ch === '<' || ch === '>' || (ch === '&' && s[i + 1] === '>')) {
+                const op = (/^(?:&>>|&>|<<<|<<-|<<|<>|>>|>\||>&|<&|<|>)/.exec(s.slice(i, i + 3)) || [ch])[0];
+                i += op.length;
+                started = false;
+                if (op === '<<' || op === '<<-') {
+                    while (s[i] === ' ' || s[i] === '\t')
+                        i += 1;
+                    let delim = '';
+                    let quoted = false;
+                    while (i < n && !/[\s;&|<>()]/.test(s[i])) {
+                        const q = s[i];
+                        if (q === "'" || q === '"') {
+                            const e = s.indexOf(q, i + 1);
+                            if (e < 0) {
+                                fail();
+                                return;
+                            }
+                            delim += s.slice(i + 1, e);
+                            quoted = true;
+                            i = e + 1;
+                            continue;
+                        }
+                        if (q === '\\') {
+                            delim += s[i + 1] || '';
+                            quoted = true;
+                            i += 2;
+                            continue;
+                        }
+                        // A delimiter built from an expansion is not a word the scan can bound.
+                        if (q === '$' || q === '`')
+                            st.unbounded = true;
+                        delim += q;
+                        i += 1;
+                    }
+                    if (delim === '' && !quoted)
+                        st.unbounded = true;
+                    pending.push({ delim, quoted, strip: op === '<<-' });
+                }
+                continue;
+            }
+            if (ch === '|' || ch === '&' || ch === ';' || ch === '(' || ch === ')') {
+                const op = (/^(?:\|\||\|&|&&|;;&|;;|;&|\||&|;|\(|\))/.exec(s.slice(i, i + 3)) || [ch])[0];
+                i += op.length;
+                started = false;
+                continue;
+            }
+            started = true;
+            i += 1;
+        }
+        if (pending.length)
+            st.unbounded = true;
+    };
+    return { top, body };
+}
+function hiddenCommands(src) {
+    const st = { texts: [], unbounded: false };
+    if (!HIDDEN_QUICK.test(src))
+        return st;
+    try {
+        hiddenScanner(src, st).top();
+    }
+    catch {
+        st.unbounded = true;
+    }
+    return st;
+}
 function evalShell(src, ctx, run) {
     if (!tick(run))
         return;
@@ -1524,6 +2027,18 @@ function evalShell(src, ctx, run) {
     // Command and process substitutions run too; classify them first (S-x checks see them below).
     for (const sub of parsed.substitutions)
         evalShell(sub, childCtx(ctx), run);
+    // The substitutions the parser does not list (here-document bodies, parameter operands, arithmetic).
+    const hidden = hiddenCommands(src);
+    if (hidden.texts.length)
+        worseParse(run, 'dynamic');
+    if (hidden.unbounded) {
+        worseParse(run, 'unparsed');
+        tripwire(src, run);
+        if (src !== run.topSource)
+            tripwire(run.topSource, run);
+    }
+    for (const text of hidden.texts)
+        evalShell(text, childCtx(ctx), run);
     // Pipelines, for decoded-exec (S-x) and stdin-fed shells.
     const pipelines = [];
     const groupSource = new Set();
