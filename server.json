@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "ai.getmarrow/marrow",
   "title": "Marrow AI: Control Layer for AI Agents",
-  "description": "A named yes before your AI agent acts, plus proof the next agent can reuse. Works in any MCP client.",
+  "description": "Approval gate and audit trail for AI agent actions: policy check first, proof after. Any MCP client.",
   "websiteUrl": "https://getmarrow.ai/marrow-for-mcp",
   "repository": {
     "url": "https://github.com/getmarrow/marrow-mcp",

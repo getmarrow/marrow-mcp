@@ -742,7 +742,7 @@ exports.TOOLS = [
     },
     {
         name: 'marrow_buyer_proof',
-        description: 'Return buyer-grade value proof: failures avoided, risky actions reviewed, proofs completed, token/time saved, failure classes, agent leaderboard, and reliability score.',
+        description: 'Return buyer-grade value proof: failures avoided, risky actions reviewed, proofs completed, measured provider-reported token usage when available, failure classes, agent leaderboard, and reliability score.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -830,7 +830,7 @@ exports.TOOLS = [
     },
     {
         name: 'marrow_agent_performance',
-        description: 'Get agent-facing fleet value metrics: avoided mistakes, reused winning decisions, failed patterns, token/time saved estimate, reliability score, and next improvements.',
+        description: 'Get agent-facing fleet value metrics: avoided mistakes, reused winning decisions, failed patterns, measured provider-reported token usage when available, reliability score, and next improvements.',
         inputSchema: {
             type: 'object',
             properties: {
