@@ -89,6 +89,13 @@ const ENFORCEMENTS = new Set(['enforce', 'watch']);
 const DECISIONS = new Set(['pass', 'stop', 'ask']);
 const CATEGORIES = new Set(['none', 'S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'Sx', 'hook', 'unknown']);
 const PARSES = new Set(['ok', 'dynamic', 'unparsed', 'too_large', 'unknown']);
+/**
+ * The receipt schema accepts every class below, but this release writes only four: `protected_branch`
+ * (S1 on a protected branch, and a plain push to one), `prod_env` (S2 with the `prod` flag),
+ * `outside_workspace` (S5) and `unknown` for everything else. `other_branch`, `in_workspace`,
+ * `home_credential` and `project_env` need a target on each mapper hit (a later unit); read `unknown`
+ * as "not computed", never as "no target".
+ */
 const TARGET_CLASSES = new Set(['protected_branch', 'other_branch', 'in_workspace', 'outside_workspace', 'home_credential', 'project_env', 'prod_env', 'unknown']);
 /** Flags the mapper emits (test/seatbelt-u6-receipts reads the source to prove it) plus the two the receipt adds for the account floor. */
 exports.FLAG_CODES = new Set([
