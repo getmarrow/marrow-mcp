@@ -454,6 +454,31 @@ test('U6 abuse: a hard-linked day file or salt is refused (an append must not re
   assert.equal(put(h, record(), bash('ls')), 'written');
 }));
 
+test('U6 abuse: a FIFO planted as a day file never hangs the writer (a 10 s guard in a child process); a directory or device node is refused', () => withHome((h) => {
+  ready(h);
+  const script = `const R=require(${JSON.stringify(path.join(ROOT, 'dist', 'seatbelt', 'record.js'))});
+    const r=R.writeSeatbeltReceipt(${JSON.stringify(record())},{tool_name:'Bash',tool_input:{command:'ls'}},{home:${JSON.stringify(h.home)},now:${NOW + 2 * DAY}});
+    process.stdout.write(r);`;
+  const tryWrite = () => require('node:child_process').spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 10_000 });
+  const todayName = `${ymd(NOW + 2 * DAY)}.jsonl`;
+  // The FIFO is today's file: refused (not a regular file), and quickly.
+  require('node:child_process').execFileSync('mkfifo', [path.join(h.receipts, todayName)]);
+  let out = tryWrite();
+  assert.equal(out.error, undefined, 'the writer returned within the guard');
+  assert.equal(out.stdout, 'dropped');
+  fs.rmSync(path.join(h.receipts, todayName));
+  // The FIFO is an earlier day: skipped for the chain, the new receipt is written.
+  require('node:child_process').execFileSync('mkfifo', [path.join(h.receipts, `${ymd(NOW + 1 * DAY)}.jsonl`)]);
+  out = tryWrite();
+  assert.equal(out.error, undefined, 'the writer returned within the guard');
+  assert.equal(out.stdout, 'written');
+  fs.rmSync(path.join(h.receipts, `${ymd(NOW + 1 * DAY)}.jsonl`));
+  // A directory named like today's file.
+  fs.rmSync(path.join(h.receipts, todayName), { force: true, recursive: true });
+  fs.mkdirSync(path.join(h.receipts, todayName), { mode: 0o700 });
+  assert.equal(tryWrite().stdout, 'dropped');
+}));
+
 test('U6 abuse: a wrong owner on the home, .marrow, the seatbelt directory, the receipts directory, the salt or the day file is refused', () => withHome((h) => {
   ready(h);
   const day = `${ymd(NOW)}.jsonl`;

@@ -471,6 +471,8 @@ function withLock(fs, dir, waitMs, work) {
         catch (error) {
             if (codeOf(error) !== 'EEXIST')
                 throw error;
+            if (Date.now() - started > waitMs)
+                throw new Refusal('lock_timeout');
             try {
                 const st = fs.lstatSync(path);
                 if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
@@ -478,9 +480,7 @@ function withLock(fs, dir, waitMs, work) {
                     continue;
                 }
             }
-            catch { /* released meanwhile */ }
-            if (Date.now() - started > waitMs)
-                throw new Refusal('lock_timeout');
+            catch { /* released meanwhile, or not ours to remove */ }
             sleep(2);
         }
     }
@@ -623,7 +623,8 @@ function append(store, body, now, options) {
     }
     if (total + exports.MAX_RECEIPT_BYTES > cap)
         throw new Refusal('cap_full');
-    const fd = fs.openSync((0, node_path_1.join)(store.receipts, todayName), C.O_RDWR | C.O_APPEND | C.O_CREAT | NOFOLLOW, 0o600);
+    // O_NONBLOCK: a FIFO planted as a day file must not hang the hook (it is then refused: not a regular file).
+    const fd = fs.openSync((0, node_path_1.join)(store.receipts, todayName), C.O_RDWR | C.O_APPEND | C.O_CREAT | NOFOLLOW | (C.O_NONBLOCK || 0), 0o600);
     try {
         const st = fs.fstatSync(fd);
         if (!st.isFile() || st.nlink !== 1 || st.uid !== store.uid || (st.mode & 0o077) !== 0)
@@ -634,9 +635,11 @@ function append(store, body, now, options) {
             const earlier = files.filter((file) => file.name < todayName && file.size > 0).pop();
             if (earlier) {
                 try {
-                    const old = fs.openSync(earlier.path, C.O_RDONLY | NOFOLLOW);
+                    const old = fs.openSync(earlier.path, C.O_RDONLY | NOFOLLOW | (C.O_NONBLOCK || 0));
                     try {
-                        tail = tailOf(fs, old, fs.fstatSync(old).size);
+                        const earlierStat = fs.fstatSync(old);
+                        if (earlierStat.isFile())
+                            tail = tailOf(fs, old, earlierStat.size);
                     }
                     finally {
                         fs.closeSync(old);
