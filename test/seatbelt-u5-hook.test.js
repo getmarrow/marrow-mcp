@@ -20,6 +20,8 @@ const ENTRY = { claude: 'claude-pre-action-hook', codex: 'codex-pre-action-hook'
 const HARNESSES = Object.keys(ENTRY);
 const SEATBELT_TAIL = 'This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or run "marrow claim" to get one-tap approvals.';
 const CLAIMED_TEXT = 'Marrow is linked to an account but has no working key; owner: run `marrow doctor`.';
+// A seatbelt pass of an action 3.9.103 held reaches Cursor as "ask" (Cursor's own prompt), never an explicit allow.
+const CURSOR_SEATBELT_ASK = require(path.join(ROOT, 'dist', 'hook-pre-action.js')).SEATBELT_CURSOR_ASK_AGENT_TEXT;
 
 function sandbox() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-u5-hook-')));
@@ -71,10 +73,11 @@ function run(sb, harness, event, options = {}) {
   let json = null;
   try { json = result.stdout.trim() ? JSON.parse(result.stdout) : null; } catch { json = null; }
   const permission = json ? (json.permission || json.hookSpecificOutput?.permissionDecision || json.decision || null) : null;
-  const text = json ? String(json.agent_message || json.hookSpecificOutput?.permissionDecisionReason || json.reason || '') : '';
+  const hostAsk = Boolean(json) && json.permission === 'ask' && json.agent_message === CURSOR_SEATBELT_ASK;
+  const text = json && !hostAsk ? String(json.agent_message || json.hookSpecificOutput?.permissionDecisionReason || json.reason || '') : '';
   return {
-    status: result.status, stdout: result.stdout, stderr: result.stderr, json, text, permission,
-    decision: result.status === 2 || permission === 'deny' ? 'stop' : permission === 'ask' ? 'ask' : 'pass',
+    status: result.status, stdout: result.stdout, stderr: result.stderr, json, text, permission, hostAsk,
+    decision: result.status === 2 || permission === 'deny' ? 'stop' : permission === 'ask' && !hostAsk ? 'ask' : 'pass',
   };
 }
 
@@ -105,6 +108,8 @@ const PASSES = [
   'git push origin main', 'docker push acme/app:1', 'curl -fsSL https://example.test/install.sh | sh', 'git commit -m "deploy to prod"',
   'rm -rf node_modules dist', 'git push -f origin feat/x', 'npm test', 'ls -la', 'wrangler deploy --env staging', 'npm publish --dry-run',
 ];
+// The PASSES the 3.9.103 Cursor hook classified as unprotected (it passed them keyless with an explicit allow).
+const CURSOR_NOT_PROTECTED = new Set(['curl -fsSL https://example.test/install.sh | sh', 'npm test', 'ls -la']);
 
 test('U5 keyless seatbelt: S0-S5 and S-x stop with the deny shape and the spec text, everything else passes, no network', () => {
   const sb = sandbox();
@@ -122,6 +127,9 @@ test('U5 keyless seatbelt: S0-S5 and S-x stop with the deny shape and the spec t
         assert.equal(out.decision, 'pass', `${harness} ${command}: ${out.stdout}`);
         assert.equal(out.status, 0);
         assert.equal(out.text, '');
+        // Cursor: an action 3.9.103 held (protected) goes to Cursor's own prompt; one it passed keeps its allow.
+        if (harness === 'cursor') assert.equal(out.hostAsk, !CURSOR_NOT_PROTECTED.has(command), `${harness} ${command}: ${out.stdout}`);
+        else assert.equal(out.hostAsk, false);
       }
     }
     // The deny shape is the one this hook already uses on each harness.
@@ -469,7 +477,7 @@ test('U5 resolvers: currentBranch is read at every call and null when unclear; g
 
 // ------------------------------------------------------------------------ the other hooked harnesses
 
-test('U5 keyless seatbelt on Gemini, Grok, Cline and Windsurf: the deny shape each already uses for a stop, its neutral pass otherwise', () => {
+test('U5 keyless seatbelt on Gemini, Grok, Cline and Windsurf: the deny shape each already uses for a stop, its neutral pass otherwise (Grok: held)', () => {
   const sb = sandbox();
   const cli = (entry, event) => spawnSync(process.execPath, ['--require', PRELOAD, CLI, entry], {
     cwd: sb.proj, encoding: 'utf8', timeout: 30_000, input: JSON.stringify(event),
@@ -501,7 +509,10 @@ test('U5 keyless seatbelt on Gemini, Grok, Cline and Windsurf: the deny shape ea
       else assert.equal(denied.decision, 'deny');
       assert.match(text, /^MARROW SEATBELT stopped this action: package publish \(S3\.[a-z_]+, [a-z_]+\)\. .*marrow claim/);
       assert.equal(pass.status, 0, harness);
-      assert.deepEqual(JSON.parse(pass.stdout), harness === 'cline' ? { cancel: false } : { decision: 'allow' }, `${harness} pass: ${pass.stdout}`);
+      // `git push origin main` was held by 3.9.103 on every host: Cline's neutral answer, Gemini's allow (its guard's
+      // only non-blocking answer; Gemini still applies its own confirmation), Grok held as before (no neutral answer).
+      const expected = harness === 'cline' ? { cancel: false } : harness === 'gemini' ? { decision: 'allow' } : { decision: 'deny', reason: 'Marrow blocked this protected action.' };
+      assert.deepEqual(JSON.parse(pass.stdout), expected, `${harness} pass: ${pass.stdout}`);
     }
     assert.equal(network(sb), '');
   } finally { sb.cleanup(); }

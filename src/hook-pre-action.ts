@@ -465,6 +465,47 @@ export function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'code
   return {};
 }
 
+/** The Cursor events where Cursor enforces "ask" with its own approval prompt (the installer's execution hooks). */
+const CURSOR_ASK_EVENTS: ReadonlySet<string> = new Set(['beforeShellExecution', 'beforeMCPExecution']);
+/** Keyless seatbelt: a host that cannot hand this action to its own approval prompt holds it (no account to approve it). */
+export const SEATBELT_HELD_TEXT = 'MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or run "marrow claim" to get one-tap approvals.';
+export const SEATBELT_CURSOR_ASK_USER_TEXT = 'Marrow seatbelt (no account linked): approve this action here only if you expected it.';
+export const SEATBELT_CURSOR_ASK_AGENT_TEXT = 'Cursor is asking the user to approve this action (Marrow seatbelt, no account linked). Wait for the answer; do not retry it another way.';
+
+/**
+ * The keyless seatbelt's answer for an action it does not stop (spec §1.3 "pass": Marrow adds no
+ * decision and the host's own permission flow runs). `heldBefore`: the 3.9.103 keyless hook held this
+ * action (protected, or not read-only on Windsurf, Gemini or Grok). `null` means exit 0, no output.
+ * - Not held before: exactly the answer 3.9.103 gave (its read-only and unprotected passes).
+ * - Held before: never an explicit allow that could skip the host's own approval step.
+ *   Claude Code and Codex `{}` (no permissionDecision), Cline `{cancel:false}`, Windsurf no output:
+ *   the hosts' neutral answers (see PASS_THROUGH_HOSTS), so their own approval step runs.
+ *   Gemini CLI `{"decision":"allow"}`: the installed guard passes only that or a fixed denial (no
+ *   output is a launch failure that blocks), and Gemini applies its own policy and confirmation
+ *   after the BeforeTool hook whatever an "allow" says, so it is Gemini's neutral answer.
+ *   Cursor beforeShellExecution / beforeMCPExecution: "ask", so Cursor's own approval prompt decides.
+ *   Cursor preToolUse (no neutral answer, "ask" not enforced) and Grok (its guard passes only an
+ *   explicit allow or the fixed denial, and nothing shows an allow keeps Grok's own approval): held,
+ *   as 3.9.103 did. Any other or missing Cursor event name is treated as preToolUse.
+ */
+export function seatbeltPassOutput(
+  harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client',
+  hookEventName: unknown,
+  heldBefore: boolean,
+): Record<string, unknown> | null {
+  if (!heldBefore) return localControlAllowOutput(harness);
+  if (harness === 'windsurf') return null;
+  if (harness === 'cline') return { cancel: false };
+  if (harness === 'gemini') return { decision: 'allow' };
+  if (harness === 'grok') return { decision: 'deny', reason: GROK_FIXED_DENIAL };
+  if (harness === 'cursor') {
+    return typeof hookEventName === 'string' && CURSOR_ASK_EVENTS.has(hookEventName)
+      ? { permission: 'ask', user_message: SEATBELT_CURSOR_ASK_USER_TEXT, agent_message: SEATBELT_CURSOR_ASK_AGENT_TEXT }
+      : { permission: 'deny', user_message: SEATBELT_HELD_TEXT, agent_message: SEATBELT_HELD_TEXT };
+  }
+  return {};
+}
+
 export function localLoopGuardDenyOutput(
   harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client',
   reason: string,
@@ -1078,9 +1119,10 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       return;
     }
     if (keyless.mode === 'seatbelt') {
-      const allow = localControlAllowOutput(identity.harness);
-      if (allow === null) process.exitCode = 0;
-      else process.stdout.write(JSON.stringify(allow));
+      // Never an explicit allow for an action 3.9.103 held: the host's own approval step decides.
+      const answer = seatbeltPassOutput(identity.harness, source.hook_event_name, !classified.readOnly && enforcementRequired);
+      if (answer === null) process.exitCode = 0;
+      else process.stdout.write(JSON.stringify(answer));
       return;
     }
   } else {

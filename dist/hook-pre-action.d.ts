@@ -99,6 +99,27 @@ export declare function advisoryGateNotice(runtime: PreActionControlResult['runt
 export declare function runtimeGateVerdict(runtime: PreActionControlResult['runtime']): GateVerdict | null;
 export declare function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt?: OwnerApprovalPrompt): string;
 export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
+/** Keyless seatbelt: a host that cannot hand this action to its own approval prompt holds it (no account to approve it). */
+export declare const SEATBELT_HELD_TEXT = "MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or run \"marrow claim\" to get one-tap approvals.";
+export declare const SEATBELT_CURSOR_ASK_USER_TEXT = "Marrow seatbelt (no account linked): approve this action here only if you expected it.";
+export declare const SEATBELT_CURSOR_ASK_AGENT_TEXT = "Cursor is asking the user to approve this action (Marrow seatbelt, no account linked). Wait for the answer; do not retry it another way.";
+/**
+ * The keyless seatbelt's answer for an action it does not stop (spec §1.3 "pass": Marrow adds no
+ * decision and the host's own permission flow runs). `heldBefore`: the 3.9.103 keyless hook held this
+ * action (protected, or not read-only on Windsurf, Gemini or Grok). `null` means exit 0, no output.
+ * - Not held before: exactly the answer 3.9.103 gave (its read-only and unprotected passes).
+ * - Held before: never an explicit allow that could skip the host's own approval step.
+ *   Claude Code and Codex `{}` (no permissionDecision), Cline `{cancel:false}`, Windsurf no output:
+ *   the hosts' neutral answers (see PASS_THROUGH_HOSTS), so their own approval step runs.
+ *   Gemini CLI `{"decision":"allow"}`: the installed guard passes only that or a fixed denial (no
+ *   output is a launch failure that blocks), and Gemini applies its own policy and confirmation
+ *   after the BeforeTool hook whatever an "allow" says, so it is Gemini's neutral answer.
+ *   Cursor beforeShellExecution / beforeMCPExecution: "ask", so Cursor's own approval prompt decides.
+ *   Cursor preToolUse (no neutral answer, "ask" not enforced) and Grok (its guard passes only an
+ *   explicit allow or the fixed denial, and nothing shows an allow keeps Grok's own approval): held,
+ *   as 3.9.103 did. Any other or missing Cursor event name is treated as preToolUse.
+ */
+export declare function seatbeltPassOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', hookEventName: unknown, heldBefore: boolean): Record<string, unknown> | null;
 export declare function localLoopGuardDenyOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', reason: string): Record<string, unknown> | null;
 /**
  * `ownUnproven`: the label is one of Marrow's own, but the host's server

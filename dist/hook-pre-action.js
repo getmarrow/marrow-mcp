@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.GROK_FIXED_DENIAL = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
 exports.isMarrowControlTimeout = isMarrowControlTimeout;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.heldActionHookOutput = heldActionHookOutput;
@@ -16,6 +16,7 @@ exports.advisoryGateNotice = advisoryGateNotice;
 exports.runtimeGateVerdict = runtimeGateVerdict;
 exports.gateDecisionMessage = gateDecisionMessage;
 exports.localControlAllowOutput = localControlAllowOutput;
+exports.seatbeltPassOutput = seatbeltPassOutput;
 exports.localLoopGuardDenyOutput = localLoopGuardDenyOutput;
 exports.classifyTool = classifyTool;
 exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
@@ -413,6 +414,46 @@ function localControlAllowOutput(harness) {
         return { cancel: false };
     if (harness === 'gemini' || harness === 'grok')
         return { decision: 'allow' };
+    return {};
+}
+/** The Cursor events where Cursor enforces "ask" with its own approval prompt (the installer's execution hooks). */
+const CURSOR_ASK_EVENTS = new Set(['beforeShellExecution', 'beforeMCPExecution']);
+/** Keyless seatbelt: a host that cannot hand this action to its own approval prompt holds it (no account to approve it). */
+exports.SEATBELT_HELD_TEXT = 'MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or run "marrow claim" to get one-tap approvals.';
+exports.SEATBELT_CURSOR_ASK_USER_TEXT = 'Marrow seatbelt (no account linked): approve this action here only if you expected it.';
+exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = 'Cursor is asking the user to approve this action (Marrow seatbelt, no account linked). Wait for the answer; do not retry it another way.';
+/**
+ * The keyless seatbelt's answer for an action it does not stop (spec §1.3 "pass": Marrow adds no
+ * decision and the host's own permission flow runs). `heldBefore`: the 3.9.103 keyless hook held this
+ * action (protected, or not read-only on Windsurf, Gemini or Grok). `null` means exit 0, no output.
+ * - Not held before: exactly the answer 3.9.103 gave (its read-only and unprotected passes).
+ * - Held before: never an explicit allow that could skip the host's own approval step.
+ *   Claude Code and Codex `{}` (no permissionDecision), Cline `{cancel:false}`, Windsurf no output:
+ *   the hosts' neutral answers (see PASS_THROUGH_HOSTS), so their own approval step runs.
+ *   Gemini CLI `{"decision":"allow"}`: the installed guard passes only that or a fixed denial (no
+ *   output is a launch failure that blocks), and Gemini applies its own policy and confirmation
+ *   after the BeforeTool hook whatever an "allow" says, so it is Gemini's neutral answer.
+ *   Cursor beforeShellExecution / beforeMCPExecution: "ask", so Cursor's own approval prompt decides.
+ *   Cursor preToolUse (no neutral answer, "ask" not enforced) and Grok (its guard passes only an
+ *   explicit allow or the fixed denial, and nothing shows an allow keeps Grok's own approval): held,
+ *   as 3.9.103 did. Any other or missing Cursor event name is treated as preToolUse.
+ */
+function seatbeltPassOutput(harness, hookEventName, heldBefore) {
+    if (!heldBefore)
+        return localControlAllowOutput(harness);
+    if (harness === 'windsurf')
+        return null;
+    if (harness === 'cline')
+        return { cancel: false };
+    if (harness === 'gemini')
+        return { decision: 'allow' };
+    if (harness === 'grok')
+        return { decision: 'deny', reason: exports.GROK_FIXED_DENIAL };
+    if (harness === 'cursor') {
+        return typeof hookEventName === 'string' && CURSOR_ASK_EVENTS.has(hookEventName)
+            ? { permission: 'ask', user_message: exports.SEATBELT_CURSOR_ASK_USER_TEXT, agent_message: exports.SEATBELT_CURSOR_ASK_AGENT_TEXT }
+            : { permission: 'deny', user_message: exports.SEATBELT_HELD_TEXT, agent_message: exports.SEATBELT_HELD_TEXT };
+    }
     return {};
 }
 function localLoopGuardDenyOutput(harness, reason) {
@@ -1011,11 +1052,12 @@ async function runPreActionHook(input, watch) {
             return;
         }
         if (keyless.mode === 'seatbelt') {
-            const allow = localControlAllowOutput(identity.harness);
-            if (allow === null)
+            // Never an explicit allow for an action 3.9.103 held: the host's own approval step decides.
+            const answer = seatbeltPassOutput(identity.harness, source.hook_event_name, !classified.readOnly && enforcementRequired);
+            if (answer === null)
                 process.exitCode = 0;
             else
-                process.stdout.write(JSON.stringify(allow));
+                process.stdout.write(JSON.stringify(answer));
             return;
         }
     }
