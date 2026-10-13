@@ -49,8 +49,12 @@ const SECRET_KEY_NAME = /SECRET|TOKEN|API[_-]?KEY|CREDENTIAL|PASSWORD|PASSWD|PRI
 const SECRET_QUERY_NAME = /code|token|secret|signature|sig|credential|password|session|auth|api[_-]?key|apikey|client[_-]?secret|(?:^|[-_])key|key(?:[-_]|$)/i;
 /** `"name": "value"` / `'name': 'value'` / `"name": value` (JSON, Python, YAML flow), also with the quotes escaped inside a shell string (`\"name\":\"value\"`). */
 const QUOTED_NAME_VALUE = /(\\?["'])([A-Za-z0-9_.-]{1,128})\1([ \t]{0,8}:[ \t]{0,8})(\\"(?:[^"\\\n]|\\[^"\n]){0,8192}(?:\\")?|"(?:[^"\\\n]|\\.){0,8192}"?|'(?:[^'\\\n]|\\.){0,8192}'?|[^\s"',;}\]\\]{1,8192})/g;
-/** `scheme://user:password@host`: the password is replaced, scheme, user and host stay. */
-const URL_USERINFO = /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]{0,31}:\/\/)([^\s/@:'"`]{0,256}):([^\s/'"`]{1,1024})@/g;
+/**
+ * `scheme://user:password@host`: the password is replaced, scheme, user and host stay. A `#` or `?`
+ * ends the authority (RFC 3986), so `https://deploy:443#@api.example.test` is host `deploy`, port 443 and a
+ * fragment: no password, and the text stays visible (M2-R1).
+ */
+const URL_USERINFO = /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]{0,31}:\/\/)([^\s/@:'"`]{0,256}):([^\s/'"`#?]{1,1024})@/g;
 /** `Authorization: <scheme> <value>` / `Proxy-Authorization: <value>`: the value is replaced, the scheme word stays. */
 const AUTH_HEADER = /\b((?:Proxy-)?Authorization)([ \t]{0,8}[:=][ \t]{0,8})(?:(Basic|Bearer|Digest|Token|Negotiate|NTLM|ApiKey|Bot|HOBA|Mutual|AWS4-HMAC-SHA256)[ \t]{1,8})?([^\s"'`,;]{1,8192})/gi;
 /** Digest parameters derived from the password. */

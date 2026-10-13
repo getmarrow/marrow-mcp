@@ -124,6 +124,8 @@ const HOSTS = [
 
 const camel = (tag) => `PaymentsServiceBlueGreen${tag}${crypto.randomInt(10, 99)}`;
 const sha40 = () => crypto.randomBytes(20).toString('hex');
+// A dummy URL password made at run time (never printed).
+const urlPassword = () => `p${crypto.randomBytes(9).toString('base64url')}`;
 const mixed24 = () => { let v; do { v = crypto.randomBytes(18).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, 24); } while (!/[a-z]/.test(v) || !/[A-Z]/.test(v) || !/[0-9]/.test(v) || v.length < 24); return v; };
 // [label, held A, swapped B, expect B released (only the lowercase control is a different action that was never merged)]
 const SWAPS = () => [
@@ -133,6 +135,9 @@ const SWAPS = () => [
   ['H4 trailing CR', 'git push -f origin main\r', 'git push -f origin main'],
   ['H1 printf word join into sh', `printf '%s\\n' 'git push -f' origin main | sh`, `printf '%s\\n' git push -f origin main | sh`],
   ['C0 control: lowercase names', 'kubectl delete deployment payments-blue-green-a', 'kubectl delete deployment payments-blue-green-b'],
+  // M2-R1: `#` / `?` end the URL authority, so `deploy:443#@host` is host deploy, port 443 (no password).
+  ['M2-R1 # in URL userinfo', `git push -f https://deploy:${urlPassword()}@github.com/acme/proj.git main`, 'git push -f https://deploy:443#@github.com/acme/proj.git main'],
+  ['M2-R1 ? in URL userinfo', `git push -f https://deploy:${urlPassword()}@github.com/acme/proj.git main`, 'git push -f https://deploy:443?@github.com/acme/proj.git main'],
 ];
 const MCP_SWAPS = () => [
   ['R7 MCP charge id', ['stripe:create_refund', { charge: `ch_${mixed24()}`, amount: 500 }], ['stripe:create_refund', { charge: `ch_${mixed24()}`, amount: 500 }]],

@@ -267,7 +267,9 @@ function nameClass(name: string, state: Exactness): NameClass {
 
 // Every pattern starts at a boundary (lookbehind) and bounds its repeats, so
 // a scan is linear in the text: no start inside a run, no unbounded backtracking.
-const URL_CREDENTIALS = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/@:'"]{0,256}):([^\s/@'"]{1,1024})@/gi;
+// A `#` or `?` ends the authority (RFC 3986): `https://deploy:443#@host` has no password, so it is not
+// replaced and stays keyed as written (M2-R1: it no longer shares the key of `https://deploy:<pw>@host`).
+const URL_CREDENTIALS = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/@:'"]{0,256}):([^\s/@'"#?]{1,1024})@/gi;
 /** An auth scheme (any case for Bearer and Basic) followed by a token-shaped value; the value is read by hand. */
 const AUTH_SCHEME = /\b([Bb][Ee][Aa][Rr][Ee][Rr]|[Bb][Aa][Ss][Ii][Cc]|BEARER|BASIC|Token|Bot)([ \t]{1,8})(?=[A-Za-z0-9._~+/=-]{8})/g;
 const URL_CODE = /([?&])((?:auth(?:orization)?_)?code)=/gi;
