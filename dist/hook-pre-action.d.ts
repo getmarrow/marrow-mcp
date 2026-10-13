@@ -5,6 +5,8 @@ import { MARROW_OUTAGE_WARNING } from './hook-contract';
 export declare const NO_KEY_TEXT = "Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.";
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
 export declare const CLAIMED_NO_KEY_TEXT = "Marrow is linked to an account but has no working key; owner: run `marrow doctor`.";
+/** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
+export declare const SETUP_UNCONFIRMED_TEXT = "Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `marrow doctor`.";
 export { MARROW_OUTAGE_WARNING };
 export declare const MAX_PRE_ACTION_INPUT_BYTES: number;
 export declare const PRE_ACTION_CONTROL_TIMEOUT_MS = 8000;

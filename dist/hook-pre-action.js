@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
 exports.isMarrowControlTimeout = isMarrowControlTimeout;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.heldActionHookOutput = heldActionHookOutput;
@@ -47,6 +47,8 @@ Object.defineProperty(exports, "MARROW_OUTAGE_WARNING", { enumerable: true, get:
 exports.NO_KEY_TEXT = 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.';
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
 exports.CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `marrow doctor`.';
+/** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
+exports.SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `marrow doctor`.';
 /** The seatbelt path itself could not run (its modules did not load): a stop (spec §2.1.4). */
 const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish (U5.fail_closed, hook_error). This needs the machine owner. Do not retry it another way or edit Marrow settings.';
 // Claude Code sends the whole tool input, and a Write of a long document grows
@@ -601,7 +603,8 @@ function clinePreActionHookOutput(result) {
         };
     }
     if (result.protectedRisk && (!result.runtime || !result.permit?.verified)) {
-        const credentialsUnavailable = result.enforcementError === exports.NO_KEY_TEXT || result.enforcementError === exports.CLAIMED_NO_KEY_TEXT;
+        const credentialsUnavailable = result.enforcementError === exports.NO_KEY_TEXT || result.enforcementError === exports.CLAIMED_NO_KEY_TEXT
+            || result.enforcementError === exports.SETUP_UNCONFIRMED_TEXT;
         return {
             cancel: true,
             errorMessage: credentialsUnavailable
@@ -1042,6 +1045,8 @@ async function runPreActionHook(input, watch) {
     }
     // No usable key: the seatbelt decides first (spec §1.1), before the read-only pass so S4 reads stop.
     // `seatbelt` answers here with no network call; `claimed_no_key` stops S0-S5 here and keeps the holds below.
+    // Whether a keyless hold may say "linked to an account" (only with account evidence, never for a mode fallback).
+    let keylessAccountLinked = false;
     if (!resolved.apiKey) {
         let keyless;
         try {
@@ -1050,6 +1055,7 @@ async function runPreActionHook(input, watch) {
         catch {
             keyless = { mode: 'claimed_no_key', stopText: SEATBELT_FAILED_TEXT };
         }
+        keylessAccountLinked = keyless.accountLinked === true;
         if (keyless.stopText) {
             emitLoopGuardDenial(identity.harness, keyless.stopText);
             return;
@@ -1107,7 +1113,7 @@ async function runPreActionHook(input, watch) {
             runtime: null,
             permit: null,
             protectedRisk: enforcementRequired,
-            enforcementError: exports.CLAIMED_NO_KEY_TEXT,
+            enforcementError: keylessAccountLinked ? exports.CLAIMED_NO_KEY_TEXT : exports.SETUP_UNCONFIRMED_TEXT,
         }, identity.harness);
         return;
     }

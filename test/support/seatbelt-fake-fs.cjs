@@ -66,7 +66,7 @@ function createFakeFs({ caseInsensitive = false, uid = 1000 } = {}) {
       if (!found) return null;
       const node = found.node || nodes.get(fold(path));
       if (!node) return null;
-      return { type: node.type, size: node.size || 0, uid: node.uid, mode: node.mode, dev: 1, ino: node.ino };
+      return { type: node.type, size: node.size || 0, uid: node.uid, ...(node.gid === undefined ? {} : { gid: node.gid }), mode: node.mode, dev: 1, ino: node.ino };
     },
     readlink(path) {
       const found = walk(path, false);

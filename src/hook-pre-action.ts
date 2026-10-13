@@ -64,6 +64,8 @@ import {
 export const NO_KEY_TEXT = 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.';
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
 export const CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `marrow doctor`.';
+/** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
+export const SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `marrow doctor`.';
 /** The seatbelt path itself could not run (its modules did not load): a stop (spec §2.1.4). */
 const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish (U5.fail_closed, hook_error). This needs the machine owner. Do not retry it another way or edit Marrow settings.';
 
@@ -662,7 +664,8 @@ export function clinePreActionHookOutput(result: PreActionControlResult): Record
     };
   }
   if (result.protectedRisk && (!result.runtime || !result.permit?.verified)) {
-    const credentialsUnavailable = result.enforcementError === NO_KEY_TEXT || result.enforcementError === CLAIMED_NO_KEY_TEXT;
+    const credentialsUnavailable = result.enforcementError === NO_KEY_TEXT || result.enforcementError === CLAIMED_NO_KEY_TEXT
+      || result.enforcementError === SETUP_UNCONFIRMED_TEXT;
     return {
       cancel: true,
       errorMessage: credentialsUnavailable
@@ -1110,13 +1113,16 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   }
   // No usable key: the seatbelt decides first (spec §1.1), before the read-only pass so S4 reads stop.
   // `seatbelt` answers here with no network call; `claimed_no_key` stops S0-S5 here and keeps the holds below.
+  // Whether a keyless hold may say "linked to an account" (only with account evidence, never for a mode fallback).
+  let keylessAccountLinked = false;
   if (!resolved.apiKey) {
-    let keyless: { mode: 'seatbelt' | 'claimed_no_key'; stopText: string | null };
+    let keyless: { mode: 'seatbelt' | 'claimed_no_key'; stopText: string | null; accountLinked?: boolean };
     try {
       keyless = (require('./seatbelt/hook') as SeatbeltModule).keylessSeatbelt(identity.harness, seatbeltEvent(source, rawEvent));
     } catch {
       keyless = { mode: 'claimed_no_key', stopText: SEATBELT_FAILED_TEXT };
     }
+    keylessAccountLinked = keyless.accountLinked === true;
     if (keyless.stopText) {
       emitLoopGuardDenial(identity.harness, keyless.stopText);
       return;
@@ -1168,7 +1174,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       runtime: null,
       permit: null,
       protectedRisk: enforcementRequired,
-      enforcementError: CLAIMED_NO_KEY_TEXT,
+      enforcementError: keylessAccountLinked ? CLAIMED_NO_KEY_TEXT : SETUP_UNCONFIRMED_TEXT,
     }, identity.harness);
     return;
   }

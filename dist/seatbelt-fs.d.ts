@@ -3,6 +3,8 @@ export interface SeatbeltFsEntry {
     type: SeatbeltFsEntryType;
     size: number;
     uid: number;
+    /** Owning group. Optional: an entry without it never gets the private-group allowance (seatbelt-mode.ts). */
+    gid?: number;
     mode: number;
     dev: number;
     ino: number;

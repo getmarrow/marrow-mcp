@@ -26,6 +26,11 @@ export interface SeatbeltModeInput {
     extraHookConfigs?: string[];
     /** Extra hook script directories (CLINE_DIR ...). Additive; a relative path is unknown. */
     extraHookDirs?: string[];
+    /**
+     * The owner's private group id (privateGroupId), read only when a group-writable evidence dir is
+     * met. Absent or null: group write is refused (the U4 rule).
+     */
+    privateGid?: (() => number | null) | number | null;
 }
 export interface SeatbeltModeResolution {
     mode: SeatbeltMode;
@@ -44,6 +49,14 @@ export declare const HOOK_CONFIG_FILES: string[];
 export declare const HOOK_CONFIG_DIRS: string[];
 /** Every `--home` value in the hook's argv (repeated flags are all kept: a mismatch is contradictory). */
 export declare function homeFlags(argv: string[]): string[];
+/**
+ * The owner's private group (Debian OpenSSH "user-group-modes"), read from the local files only:
+ * uid has exactly one local passwd entry, no other passwd entry has its primary gid, and that gid
+ * has exactly one local group entry whose member list names nobody but the owner. Anything else,
+ * including an unreadable file, a network name service (users there cannot be listed) or root,
+ * gives null: group write then stays refused, as before.
+ */
+export declare function privateGroupId(fs: SeatbeltFs, uid: number | null): number | null;
 export declare function resolveSeatbeltMode(input: SeatbeltModeInput): SeatbeltModeResolution;
 export declare const MODE_ENV_NAMES: string[];
 /**
@@ -58,5 +71,7 @@ export declare function resolveSeatbeltModeOnHost(options?: {
     passwdHome?: string | null;
     uid?: number | null;
     keyRejected?: boolean;
+    /** Tests: the private group answer; default reads the local account files (Linux only). */
+    privateGid?: (() => number | null) | number | null;
 }): SeatbeltModeResolution;
 //# sourceMappingURL=seatbelt-mode.d.ts.map

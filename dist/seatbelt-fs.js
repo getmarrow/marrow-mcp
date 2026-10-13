@@ -4,7 +4,7 @@ exports.nodeSeatbeltFs = nodeSeatbeltFs;
 const node_fs_1 = require("node:fs");
 function entryOf(stat) {
     const type = stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'dir' : stat.isFile() ? 'file' : 'other';
-    return { type, size: stat.size, uid: stat.uid, mode: stat.mode & 0o7777, dev: stat.dev, ino: stat.ino };
+    return { type, size: stat.size, uid: stat.uid, gid: stat.gid, mode: stat.mode & 0o7777, dev: stat.dev, ino: stat.ino };
 }
 function swapCase(name) {
     return name.replace(/[A-Za-z]/g, (ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()));

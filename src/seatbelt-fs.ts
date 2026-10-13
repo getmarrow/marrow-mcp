@@ -10,6 +10,8 @@ export interface SeatbeltFsEntry {
   type: SeatbeltFsEntryType;
   size: number;
   uid: number;
+  /** Owning group. Optional: an entry without it never gets the private-group allowance (seatbelt-mode.ts). */
+  gid?: number;
   mode: number;
   dev: number;
   ino: number;
@@ -28,7 +30,7 @@ export interface SeatbeltFs {
 
 function entryOf(stat: Stats): SeatbeltFsEntry {
   const type: SeatbeltFsEntryType = stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'dir' : stat.isFile() ? 'file' : 'other';
-  return { type, size: stat.size, uid: stat.uid, mode: stat.mode & 0o7777, dev: stat.dev, ino: stat.ino };
+  return { type, size: stat.size, uid: stat.uid, gid: stat.gid, mode: stat.mode & 0o7777, dev: stat.dev, ino: stat.ino };
 }
 
 function swapCase(name: string): string {

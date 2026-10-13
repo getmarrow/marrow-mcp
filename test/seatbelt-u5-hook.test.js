@@ -22,6 +22,8 @@ const SEATBELT_TAIL = 'This needs the machine owner. Do not retry it another way
 const CLAIMED_TEXT = 'Marrow is linked to an account but has no working key; owner: run `marrow doctor`.';
 // A seatbelt pass of an action 3.9.103 held reaches Cursor as "ask" (Cursor's own prompt), never an explicit allow.
 const CURSOR_SEATBELT_ASK = require(path.join(ROOT, 'dist', 'hook-pre-action.js')).SEATBELT_CURSOR_ASK_AGENT_TEXT;
+// claimed_no_key without account evidence (strict, a HOME that is not the passwd home): F1 text.
+const SETUP_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `marrow doctor`.';
 
 function sandbox() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-u5-hook-')));
@@ -213,15 +215,16 @@ const EVIDENCE = {
   unreadable_marrow_dir: (h) => { fs.mkdirSync(path.join(h, '.marrow'), { recursive: true, mode: 0o700 }); fs.chmodSync(path.join(h, '.marrow'), 0o777); },
 };
 
-function assertClaimed(sb, harness, options, label) {
+function assertClaimed(sb, harness, options, label, text = CLAIMED_TEXT) {
   // A protected action outside S0-S5: seatbelt mode passes it, claimed_no_key holds it (3.9.103 hold).
   const held = sh(sb, harness, 'git push origin main', options);
   assert.equal(held.decision, 'stop', `${label}: ${held.stdout}`);
-  assert.ok(held.text.includes(CLAIMED_TEXT), `${label}: ${held.text}`);
+  assert.ok(held.text.includes(text), `${label}: ${held.text}`);
+  assert.ok(text === CLAIMED_TEXT || !held.text.includes('linked to an account'), label);
   // An S action stops at the floor with the claimed wording.
   const floor = sh(sb, harness, 'npm publish', options);
   assertSeatbeltStop(floor, label);
-  assert.ok(floor.text.endsWith(CLAIMED_TEXT), label);
+  assert.ok(floor.text.endsWith(text), label);
 }
 
 test('U5 mode: each account-evidence item alone gives claimed_no_key, never seatbelt (Claude, Codex, Cursor)', () => {
@@ -266,11 +269,11 @@ test('U5 mode: MARROW_* env cannot select seatbelt, an agent HOME is not the hom
     for (const harness of HARNESSES) assertClaimed(sb, harness, { env: select }, `env select ${harness}`);
     fs.rmSync(path.join(sb.home, '.marrow'), { recursive: true, force: true });
     // The strict switch can only tighten.
-    for (const harness of HARNESSES) assertClaimed(sb, harness, { env: { MARROW_SEATBELT_STRICT: '1' } }, `strict ${harness}`);
+    for (const harness of HARNESSES) assertClaimed(sb, harness, { env: { MARROW_SEATBELT_STRICT: '1' } }, `strict ${harness}`, SETUP_TEXT);
     // The agent's HOME is not the trusted home: not seatbelt, and the floor still uses the passwd home.
     const agentHome = fs.mkdtempSync(path.join(sb.root, 'x-'));
     for (const harness of HARNESSES) {
-      assertClaimed(sb, harness, { home: agentHome }, `HOME=/tmp/x ${harness}`);
+      assertClaimed(sb, harness, { home: agentHome }, `HOME=/tmp/x ${harness}`, SETUP_TEXT);
       assertSeatbeltStop(sh(sb, harness, `cat ${path.join(sb.home, '.ssh', 'id_ed25519')}`, { home: agentHome }), `passwd-home key ${harness}`);
     }
     // A cloned repo plants a key, a server and Marrow env files (A18): ignored; still seatbelt, still no network.

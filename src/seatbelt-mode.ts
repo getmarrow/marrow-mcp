@@ -61,6 +61,11 @@ export interface SeatbeltModeInput {
   extraHookConfigs?: string[];
   /** Extra hook script directories (CLINE_DIR ...). Additive; a relative path is unknown. */
   extraHookDirs?: string[];
+  /**
+   * The owner's private group id (privateGroupId), read only when a group-writable evidence dir is
+   * met. Absent or null: group write is refused (the U4 rule).
+   */
+  privateGid?: (() => number | null) | number | null;
 }
 
 export interface SeatbeltModeResolution {
@@ -176,8 +181,14 @@ function probeHookDir(fs: SeatbeltFs, dir: string): EvidenceState {
   }
 }
 
-/** A directory that holds evidence: absent is fine; otherwise its real target must be a dir owned by uid, not group/world-writable. */
-function probeTrustedDir(fs: SeatbeltFs, dir: string, uid: number | null): EvidenceState {
+/**
+ * A directory that holds evidence: absent is fine; otherwise its real target must be a dir owned by
+ * uid and not world-writable. Group write is refused too, except (Debian OpenSSH "user-group-modes",
+ * the umask 002 default of user-private-group systems) when the directory was reached without any
+ * symlink and its group is the owner's private group (privateGroupId below): then nobody but the
+ * owner can write it, exactly as with 0755. uid, gid and mode come from one lstat of that inode.
+ */
+function probeTrustedDir(fs: SeatbeltFs, dir: string, uid: number | null, privateGid: () => number | null): EvidenceState {
   try {
     const real = realPath(fs, dir, { followFinal: true });
     if (real.status !== 'resolved') return 'unknown';
@@ -186,11 +197,87 @@ function probeTrustedDir(fs: SeatbeltFs, dir: string, uid: number | null): Evide
     if (!entry) return 'absent';
     if (entry.type !== 'dir') return 'unknown';
     if (uid !== null && entry.uid !== uid) return 'unknown';
-    if ((entry.mode & 0o022) !== 0) return 'unknown';
+    if ((entry.mode & 0o002) !== 0) return 'unknown';
+    if ((entry.mode & 0o020) !== 0) {
+      if (uid === null || real.path !== dir || typeof entry.gid !== 'number') return 'unknown';
+      const gid = privateGid();
+      if (gid === null || entry.gid !== gid) return 'unknown';
+    }
     return 'absent';
   } catch {
     return 'unknown';
   }
+}
+
+const ACCOUNT_DB_MAX_BYTES = 4 * 1024 * 1024;
+/** Name-service sources whose users and groups are all in the local files read below. */
+const LOCAL_NSS_SOURCES = new Set(['files', 'compat', 'systemd']);
+
+/** A root-owned, not group/world-writable regular file (no final symlink), or null. */
+function readSystemFile(fs: SeatbeltFs, path: string): string | null {
+  try {
+    const entry = fs.lstat(path);
+    if (!entry || entry.type !== 'file' || entry.uid !== 0 || (entry.mode & 0o022) !== 0) return null;
+    return fs.readFile(path, ACCOUNT_DB_MAX_BYTES);
+  } catch {
+    return null;
+  }
+}
+
+/** Every passwd and group source in nsswitch.conf is local (no ldap, sss, nis, winbind ...); both lines must be present. */
+function localNameServiceOnly(text: string): boolean {
+  const seen = new Set<string>();
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/#.*/, '').trim();
+    const match = /^(passwd|group)\s*:(.*)$/i.exec(line);
+    if (!match) continue;
+    seen.add(match[1].toLowerCase());
+    const sources = match[2].replace(/\[[^\]]*\]/g, ' ').trim().split(/\s+/).filter(Boolean);
+    if (sources.length === 0 || sources.some((source) => !LOCAL_NSS_SOURCES.has(source.toLowerCase()))) return false;
+  }
+  return seen.has('passwd') && seen.has('group');
+}
+
+/** Colon records of a local account file; null when any line is not a plain record of exactly `fields` fields (NIS +/- lines, comments). */
+function records(text: string, fields: number): string[][] | null {
+  const out: string[][] = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (line.trim() === '') continue;
+    const parts = line.split(':');
+    if (parts.length !== fields || /^[+\-#]/.test(line) || !/^\d+$/.test(parts[2]) || (fields === 7 && !/^\d+$/.test(parts[3]))) return null;
+    out.push(parts);
+  }
+  return out;
+}
+
+/**
+ * The owner's private group (Debian OpenSSH "user-group-modes"), read from the local files only:
+ * uid has exactly one local passwd entry, no other passwd entry has its primary gid, and that gid
+ * has exactly one local group entry whose member list names nobody but the owner. Anything else,
+ * including an unreadable file, a network name service (users there cannot be listed) or root,
+ * gives null: group write then stays refused, as before.
+ */
+export function privateGroupId(fs: SeatbeltFs, uid: number | null): number | null {
+  if (uid === null || !Number.isInteger(uid) || uid <= 0) return null;
+  const nss = readSystemFile(fs, '/etc/nsswitch.conf');
+  if (nss === null || !localNameServiceOnly(nss)) return null;
+  const passwdText = readSystemFile(fs, '/etc/passwd');
+  const groupText = readSystemFile(fs, '/etc/group');
+  if (passwdText === null || groupText === null) return null;
+  const passwd = records(passwdText, 7);
+  const group = records(groupText, 4);
+  if (passwd === null || group === null) return null;
+  const own = passwd.filter((entry) => Number(entry[2]) === uid);
+  if (own.length !== 1) return null;
+  const name = own[0][0];
+  const gid = Number(own[0][3]);
+  if (!name || gid <= 0) return null;
+  if (passwd.some((entry) => entry !== own[0] && Number(entry[3]) === gid)) return null;
+  const entries = group.filter((entry) => Number(entry[2]) === gid);
+  if (entries.length !== 1) return null;
+  const members = entries[0][3].split(',').map((member) => member.trim()).filter(Boolean);
+  return members.every((member) => member === name) ? gid : null;
 }
 
 // ~/.marrow itself: absent and a plain directory owned by this user are both
@@ -210,13 +297,13 @@ function probeMarrowDir(fs: SeatbeltFs, dir: string, uid: number | null): Eviden
   }
 }
 
-function probeHome(fs: SeatbeltFs, home: string, uid: number | null): Record<AccountEvidence, EvidenceState> {
+function probeHome(fs: SeatbeltFs, home: string, uid: number | null, privateGid: () => number | null): Record<AccountEvidence, EvidenceState> {
   const marrow = `${home}/.marrow`;
   let hooks: EvidenceState = 'absent';
   for (const file of HOOK_CONFIG_FILES) hooks = worst(hooks, probeHookConfig(fs, `${home}/${file}`));
   for (const dir of HOOK_CONFIG_DIRS) hooks = worst(hooks, probeHookDir(fs, `${home}/${dir}`));
-  let dirs = probeTrustedDir(fs, home, uid);
-  for (const dir of EVIDENCE_DIRS) dirs = worst(dirs, probeTrustedDir(fs, `${home}/${dir}`, uid));
+  let dirs = probeTrustedDir(fs, home, uid, privateGid);
+  for (const dir of EVIDENCE_DIRS) dirs = worst(dirs, probeTrustedDir(fs, `${home}/${dir}`, uid, privateGid));
   return {
     env_file: exists(fs, `${marrow}/env`),
     env_local_file: exists(fs, `${marrow}/env.local`),
@@ -289,9 +376,24 @@ export function resolveSeatbeltMode(input: SeatbeltModeInput): SeatbeltModeResol
     }
     if (!probeHomes.includes(home)) probeHomes.push(home);
   }
+  // Read at most once per resolution, and only when a group-writable evidence dir needs it.
+  let privateGidValue: number | null | undefined;
+  const privateGid = (): number | null => {
+    if (privateGidValue === undefined) {
+      const source = input.privateGid;
+      let value: unknown = null;
+      try {
+        value = typeof source === 'function' ? source() : source;
+      } catch {
+        value = null;
+      }
+      privateGidValue = typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+    }
+    return privateGidValue;
+  };
   // Every home named anywhere is probed: evidence in any of them counts.
   for (const home of probeHomes) {
-    const probed = probeHome(input.fs, home, uid);
+    const probed = probeHome(input.fs, home, uid, privateGid);
     for (const id of ACCOUNT_EVIDENCE) evidence[id] = worst(evidence[id], probed[id]);
   }
   for (const file of input.extraHookConfigs || []) {
@@ -353,6 +455,8 @@ export function resolveSeatbeltModeOnHost(options: {
   passwdHome?: string | null;
   uid?: number | null;
   keyRejected?: boolean;
+  /** Tests: the private group answer; default reads the local account files (Linux only). */
+  privateGid?: (() => number | null) | number | null;
 } = {}): SeatbeltModeResolution {
   const env = options.env || process.env;
   const fs = options.fs || nodeSeatbeltFs();
@@ -394,5 +498,8 @@ export function resolveSeatbeltModeOnHost(options: {
     const value = env[name];
     if (typeof value === 'string' && value.trim() !== '') extraHookDirs.push(`${value.replace(/\/+$/, '')}/${sub}`);
   }
-  return resolveSeatbeltMode({ fs, passwdHome, argv, key, uid, strict, envHomes, extraHookConfigs, extraHookDirs });
+  // Only Linux has the user-private-group convention this allowance is for; elsewhere group write stays refused.
+  const privateGid = options.privateGid !== undefined ? options.privateGid
+    : process.platform === 'linux' ? () => privateGroupId(fs, uid) : null;
+  return resolveSeatbeltMode({ fs, passwdHome, argv, key, uid, strict, envHomes, extraHookConfigs, extraHookDirs, privateGid });
 }
