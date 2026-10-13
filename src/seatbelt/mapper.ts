@@ -2377,7 +2377,7 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   const rest = args.slice(1);
   const pathLike = args[0].text !== null && args[0].text.includes('/');
   // T-3: a command that only prints its help or version; its hits and outage tags are marked so (outage only).
-  if (!pathLike && run.helpBlocked === 0 && outageHelpForm(prog, rest, ctx, x)) {
+  if (!pathLike && run.helpBlocked === 0 && outageHelpForm(args[0].text, prog, rest, ctx, run, x)) {
     run.helpDepth += 1;
     run.helpSeen = true;
     try { return dispatchProgram(prog, args, rest, pathLike, ctx, run, x); } finally { run.helpDepth -= 1; }
@@ -2481,36 +2481,33 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
   unknownProgram(prog, args, ctx, run, x);
 }
 
-// T-3 (delta audit of 0368537c): `--help` and `--version` are never held in an outage. Only for a CLI on the
-// outage list that prints its help on that word (a script, a plugin or a package runner may not), with its
-// listed subcommand (`git push`, `npm publish`, `wrangler deploy`), called by a bare name (not a path, not
-// through npx/bunx: those may run a local copy), every word literal, no assignment prefix and no function
-// or alias of that name; `--help` before any `--`. `--version` only as the sole word (`vercel --version`):
-// after a subcommand it can be a value flag (`helm upgrade … --version 1.2.3`). Chained, piped or nested
-// commands keep their own answer: only the hits and outage tags raised inside the help command are marked.
+// T-3 (delta audit of 0368537c): asking a listed CLI for its help or version is never held in an outage.
+// Only the exact minimal shapes count: the whole action is one plain command `<cli> --help`,
+// `<cli> --version` or `<cli> <listed subcommand> --help`, and nothing else: no other word or option
+// (for git none before the subcommand: `git -c core.pager=… push --help` is not help), no glob, quote,
+// variable or substitution, no assignment prefix or wrapper, no redirection, chain, pipe or second line,
+// not a path and not through npx/bunx. Anything else gets the normal outage answer.
 const HELP_SUBS: Record<string, RegExp | null> = {
   git: /^push$/, npm: /^(?:publish|unpublish|deprecate)$/, pnpm: /^(?:publish|unpublish|deprecate)$/, yarn: /^(?:publish|unpublish|deprecate)$/,
   gh: /^(?:pr|repo|release|api)$/, kubectl: /^(?:delete|apply|scale|rollout|patch|replace|create|drain|cordon|taint|label|annotate|set|edit)$/,
-  helm: /^(?:install|upgrade|uninstall|delete|rollback)$/, vercel: null, make: null, gmake: null,
+  helm: /^(?:install|upgrade|uninstall|delete|rollback)$/, vercel: null,
 };
-function outageHelpForm(prog: string, rest: Arg[], ctx: Ctx, x: Exec): boolean {
-  if (x.cmd.assignments.length || (x.info.fnNames && x.info.fnNames.has(prog)) || ctx.aliases.has(prog)) return false;
-  if (rest.some((a) => a.text === null || a.glob)) return false;
+function outageHelpForm(word0: string | null, prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): boolean {
+  if (word0 === null || ctx.depth !== 0 || x.cmd.assignments.length || x.cmd.redirects.length || x.cmd.heredoc !== null) return false;
+  if (rest.length < 1 || rest.length > 2 || rest.some((a) => a.text === null || a.glob || a.nonAscii)) return false;
   const words = rest.map((a) => a.text as string);
-  const end = words.indexOf('--');
-  const head = end < 0 ? words : words.slice(0, end);
-  const known = Object.prototype.hasOwnProperty.call(HELP_SUBS, prog) || (Object.prototype.hasOwnProperty.call(OUTAGE_ANY_SUB, prog) && !['bun', 'docker', 'podman'].includes(prog));
-  if (!known) return false;
-  if (words.length === 1 && words[0] === '--version') return true;
-  if (!head.includes('--help')) return false;
-  const sub = prog === 'git' ? gitSub(rest).sub : (head.find((w) => !w.startsWith('-')) ?? null);
+  // The whole action is exactly this command, written as plain words.
+  if (run.topSource !== [word0, ...words].join(' ') || !/^[a-z][a-z0-9-]*$/.test(word0)) return false;
+  const anySub = Object.prototype.hasOwnProperty.call(OUTAGE_ANY_SUB, prog) && !['bun', 'docker', 'podman'].includes(prog);
+  if (!Object.prototype.hasOwnProperty.call(HELP_SUBS, prog) && !anySub) return false;
+  if (words.length === 1) return words[0] === '--help' || words[0] === '--version';
+  const [sub, flag] = words;
+  if (flag !== '--help' || !/^[a-z][a-z0-9:-]*$/.test(sub)) return false;
   if (Object.prototype.hasOwnProperty.call(HELP_SUBS, prog)) {
     const re = HELP_SUBS[prog];
-    return re === null || (sub !== null && re.test(sub.toLowerCase()));
+    return re === null || re.test(sub);
   }
-  const listed = OUTAGE_ANY_SUB[prog];
-  if (!listed || ['bun', 'docker', 'podman'].includes(prog)) return false;
-  return sub !== null && listed.test(sub.toLowerCase());
+  return OUTAGE_ANY_SUB[prog].test(sub);
 }
 
 // I3 outage list: a program that changes something outside this machine. Recorded in `run.risk`; the

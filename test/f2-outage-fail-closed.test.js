@@ -223,13 +223,17 @@ test('T-1: an outage holds a high-risk command the mapper reads as unknown (dyna
   assert.deepEqual(wrong, []);
 });
 
-// T-3 (delta audit of 0368537c): `--help` (and a sole `--version`) on a listed CLI only prints text, so an
-// outage does not hold it. Chains, pipes, nested shells, package runners, paths, assignments, `--help=`,
-// `--` before it and `--version` after a subcommand keep their hold.
-const T3_ALLOWED = ['git push --help', 'npm publish --help', 'git push -f origin main --help', 'wrangler deploy --help', 'terraform apply --help', 'vercel --version'];
-const T3_HELD = ['npm publish --help && npm publish', 'npm publish --help; git push origin main', 'git push origin main -- --help', 'npx wrangler deploy --help',
+// T-3 (delta audit of 0368537c): asking a listed CLI for its help only prints text, so an outage does not
+// hold it. Only the exact minimal shapes count (`<cli> --help`, `<cli> --version`, `<cli> <listed sub> --help`);
+// any other word, a git option before the subcommand, chains, wrappers, substitutions and redirections
+// keep their hold.
+const T3_ALLOWED = ['git push --help', 'npm publish --help', 'wrangler deploy --help', 'terraform apply --help', 'vercel --version'];
+const T3_HELD = ['git -c core.pager=sh push --help', 'git -C /tmp push --help', 'git --exec-path=/tmp push --help', 'git --git-dir=/tmp/x push --help',
+  'npm publish --help --otp=123456', 'npm publish --help && git push origin main', '$(echo npm) publish --help', 'git push -f origin main --help',
+  'git push origin main -- --help', 'sudo npm publish --help', 'env npm publish --help', 'npm publish --help > /tmp/x', 'npx wrangler deploy --help',
   'NPM_CONFIG_DRY_RUN=false npm publish --help', 'npm publish --help=false', 'helm upgrade api ./chart --version 1.2.3', 'wrangler deploy --version',
-  'f() { npm publish; }; f --help', 'git push --help | sh', 'bash -c "npm publish" --help', 'docker push acme/app:1 --help', 'kubectl --context prod delete deployment api --help'];
+  'f() { npm publish; }; f --help', 'git push --help | sh', 'bash -c "npm publish --help"', 'docker push acme/app:1 --help',
+  'kubectl --context prod delete deployment api --help'];
 
 test('T-3: in an outage, --help on a listed CLI is never held (all 7 hosts); the abuse forms around it stay held', () => {
   const wrong = [];
