@@ -156,6 +156,12 @@ test('U5 keyless seatbelt: production is never looser through chains, wrappers, 
     for (const harness of HARNESSES) {
       assert.equal(sh(sb, harness, 'ｎｐｍ publish').decision, 'pass', `${harness} fullwidth name`);
       assertSeatbeltStop(sh(sb, harness, "alias ｐ='npm publish'; ｐ"), `${harness} look-alike alias`);
+      // Planting a look-alike (or shadowing npx) in a PATH dir is S0 (finding F1: `ln -s` lost its target).
+      for (const command of [`ln -s /usr/bin/npm ${path.join(sb.home, '.local', 'bin')}/ｎｐｍ`, 'ln -s /bin/true ~/.local/bin/npx', 'cp -r /tmp/x ~/.marrow/control.json']) {
+        const out = sh(sb, harness, command);
+        assertSeatbeltStop(out, `${harness} ${command}`);
+        assert.ok(out.text.includes('(S0.'), `${harness} ${command}: ${out.text}`);
+      }
     }
     assert.equal(network(sb), '');
   } finally { sb.cleanup(); }

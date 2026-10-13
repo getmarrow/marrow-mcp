@@ -3179,8 +3179,31 @@ function nonOptions(rest: Arg[], valueFlags: Set<string> = new Set()): Arg[] {
   return out;
 }
 
+// U5 F1: the shared set below reads `-s`/`-r` as taking a value for every program, so `ln -s SRC DEST`,
+// `cp -r SRC DEST` and `rm -r PATH` lost their write target. Both readings are now checked (union), so
+// the change only adds targets: the program's own value flags (a flag missing here is read as boolean,
+// which keeps its next word as an operand) and, as before, the shared set.
+const SHARED_WRITE_VALUE_FLAGS = new Set(['-t', '--target-directory', '-m', '--mode', '-o', '-g', '-S', '--suffix', '-s', '--size', '-r', '--reference']);
+const WRITE_VALUE_FLAGS: Record<string, Set<string>> = {
+  cp: new Set(['-t', '--target-directory', '-S', '--suffix']),
+  mv: new Set(['-t', '--target-directory', '-S', '--suffix']),
+  ln: new Set(['-t', '--target-directory', '-S', '--suffix']),
+  install: new Set(['-t', '--target-directory', '-S', '--suffix', '-m', '--mode', '-o', '--owner', '-g', '--group']),
+  touch: new Set(['-r', '--reference', '-t', '-d', '--date']),
+  truncate: new Set(['-s', '--size', '-r', '--reference']),
+  shred: new Set(['-s', '--size', '-n', '--iterations']),
+  chmod: new Set(['--reference']), chown: new Set(['--reference', '--from']), chgrp: new Set(['--reference']),
+  chattr: new Set(['-v', '-p']),
+};
+
 function writeTargets(prog: string, rest: Arg[]): Array<{ arg: Arg; tree: boolean }> {
-  const ops = nonOptions(rest, new Set(['-t', '--target-directory', '-m', '--mode', '-o', '-g', '-S', '--suffix', '-s', '--size', '-r', '--reference']));
+  // rsync and scp have no target-directory flag (rsync -t is --times): their own reading takes the last operand.
+  const own = writeTargetsWith(prog, rest, WRITE_VALUE_FLAGS[prog] || new Set(), prog !== 'rsync' && prog !== 'scp');
+  return [...own, ...writeTargetsWith(prog, rest, SHARED_WRITE_VALUE_FLAGS, true)];
+}
+
+function writeTargetsWith(prog: string, rest: Arg[], valueFlags: Set<string>, targetDir: boolean): Array<{ arg: Arg; tree: boolean }> {
+  const ops = nonOptions(rest, valueFlags);
   const all = (tree: boolean) => ops.map((arg) => ({ arg, tree }));
   switch (prog) {
     case 'tee': case 'touch': case 'truncate': case 'unlink': case 'shred': return all(false);
@@ -3192,7 +3215,7 @@ function writeTargets(prog: string, rest: Arg[]): Array<{ arg: Arg; tree: boolea
       return [...all(true), ...into];
     }
     case 'cp': case 'install': case 'ln': case 'rsync': case 'scp': {
-      const t = targetDirFlag(rest);
+      const t = targetDir ? targetDirFlag(rest) : null;
       const dest = t || (ops.length >= 2 ? ops[ops.length - 1] : null);
       if (!dest) return [];
       const sources = t ? ops : ops.slice(0, -1);
