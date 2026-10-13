@@ -50,6 +50,8 @@ exports.SECRET_PATTERNS = [
     '**/.config/gh/hosts.yml', '**/.config/op/**', '**/.gnupg/private-keys*', '**/.gnupg/private-keys*/**',
     '**/.marrow/env*', '**/.claude.json', '**/.claude/settings.local.json', '/proc/*/environ',
     '**/.env', '**/.env.*', '**/.dev.vars',
+    // The receipts' device salt (U6): with it an agent could compute receipt keys. Writes there are S0.
+    '**/.marrow/seatbelt/salt',
 ];
 // Key material by extension, except under node_modules or test fixture folders.
 exports.KEY_EXTENSIONS = /\.(?:pem|key|p12|pfx)$/;
@@ -69,7 +71,7 @@ function secretSamples(home, cwds) {
         `${h}/.kube/config`, `${h}/.docker/config.json`, `${h}/.npmrc`, `${h}/.pypirc`, `${h}/.netrc`, `${h}/.git-credentials`,
         `${h}/.config/gh/hosts.yml`, `${h}/.config/op/config`, `${h}/.gnupg/private-keys-v1.d/k.key`, `${h}/.marrow/env`,
         `${h}/.marrow/env.local`, `${h}/.claude.json`, `${h}/.claude/settings.local.json`, '/proc/self/environ', '/proc/1/environ',
-        `${h}/.env`, '/root/.ssh/id_rsa', '/root/.aws/credentials',
+        `${h}/.env`, '/root/.ssh/id_rsa', '/root/.aws/credentials', `${h}/.marrow/seatbelt/salt`,
     ];
     for (const c of cwds) {
         const d = c.replace(/\/$/, '');
@@ -162,7 +164,7 @@ exports.TRIPWIRE = [
     { re: /\bpush\b[^;&|\n]{0,200}?(?:\s-[a-z0-9]*f|force|\s\+|--mirror|--delete|\s-d\b|\s:)/, category: 'S1', reason: 'tripwire_force_push' },
     { re: /publish/, category: 'S3', reason: 'tripwire_publish' },
     { re: /deploy|--prod\b/, category: 'S2', reason: 'tripwire_deploy' },
-    { re: /\.ssh\b|id_rsa|id_ed25519|id_ecdsa|\.aws\b|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.docker\/config|\.kube\/config|gh\/hosts\.yml|\.gnupg|\.claude\.json|settings\.local\.json|\/environ\b|\.dev\.vars|\.pem\b|\.p12\b|\.pfx\b|\.marrow\/env/, category: 'S4', reason: 'tripwire_secret_path' },
+    { re: /\.ssh\b|id_rsa|id_ed25519|id_ecdsa|\.aws\b|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.docker\/config|\.kube\/config|gh\/hosts\.yml|\.gnupg|\.claude\.json|settings\.local\.json|\/environ\b|\.dev\.vars|\.pem\b|\.p12\b|\.pfx\b|\.marrow\/env|\.marrow\/seatbelt\/salt/, category: 'S4', reason: 'tripwire_secret_path' },
     { re: /(?:^|[^a-z0-9_$)\].])\.env(?![a-z0-9_])(?!\.(?:example|sample|template)\b)/, category: 'S4', reason: 'tripwire_env_file' },
     { re: /printenv|export\s+-p|declare\s+-[a-z]*[xp]|(?:^|[;&|({\s])(?:env|set|export)\s*(?:$|[;&|)}])|auth\s+token|print-(?:access|identity)-token|get-session-token|get-access-token|auth:token|find-(?:generic|internet)-password|secret-tool|op\s+read|vault\s+(?:kv|read)|pass\s+show|token\s+list|(?:process\.env|os\.environ|\$env|env\.to_h|system\.getenv\(\))\s*(?:\)|;|$|\||,|\.items|\.keys|\.copy)|(?:environ|\benv)\W{0,3}[a-z_]{0,256}(?:key|token|secret|pass|cred)|\$\{?!?[a-z_]{0,256}(?:key|token|secret|pass|cred)/, category: 'S4', reason: 'tripwire_secret_dumper' },
     { re: /rmtree|rmsync|rmdirsync|rimraf|rm_rf|\brm_r\b|mkfs/, category: 'S5', reason: 'tripwire_recursive_delete' },
