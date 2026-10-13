@@ -335,7 +335,7 @@ function buildReceipt(record: SeatbeltRecord, context: SeatbeltRecordContext, sa
   const session = typeof context.session === 'string' || typeof context.session === 'number' ? String(context.session).slice(0, 256) : '';
   return {
     v: 1, ts: Math.floor(now / 1000), ts_label: 'client_time', mode: record.mode, enforcement: record.enforcement,
-    harness: HARNESS_ENUM[record.harness] || 'other', event: 'pre_tool', tool_kind: kind, tool, decision, category,
+    harness: Object.hasOwn(HARNESS_ENUM, record.harness) ? HARNESS_ENUM[record.harness] : 'other', event: 'pre_tool', tool_kind: kind, tool, decision, category,
     rule: RULE.test(record.rule) ? record.rule : 'unknown', reasons,
     programs: kind === 'shell' ? programsOf(action.programs) : [], subcommand: kind === 'shell' ? subcommandOf(event) : 'none',
     flags, target_class: targetClass(category, reasons, flags),
@@ -392,7 +392,7 @@ function readSalt(fs: Fs, path: string, uid: number): Buffer {
   const fd = fs.openSync(path, C.O_RDONLY | NOFOLLOW | (C.O_NONBLOCK || 0));
   try {
     const st = fs.fstatSync(fd);
-    if (!st.isFile() || st.uid !== uid || (st.mode & 0o077) !== 0 || st.size !== 32) throw new Refusal('unsafe_store');
+    if (!st.isFile() || st.nlink !== 1 || st.uid !== uid || (st.mode & 0o077) !== 0 || st.size !== 32) throw new Refusal('unsafe_store');
     const buffer = Buffer.alloc(32);
     if (fs.readSync(fd, buffer, 0, 32, 0) !== 32) throw new Refusal('unsafe_store');
     return buffer;
@@ -548,8 +548,12 @@ function append(store: Store, body: ReceiptBody, now: number, options: ReceiptOp
   const { fs } = store;
   const cap = options.maxTotalBytes ?? MAX_TOTAL_BYTES;
   const todayName = `${ymd(now)}.jsonl`;
-  const cutoff = `${ymd(now - (options.retentionDays ?? RETENTION_DAYS) * 86_400_000)}.jsonl`;
   let files = managedFiles(fs, store.receipts);
+  // Retention counts from the newest earlier file when the clock is further ahead than that: a clock that jumped forward
+  // (a resumed VM, a reset RTC) must not wipe the history. Day names are dates, so one day of slack is a plain string step.
+  const newestEarlier = files.filter((file) => file.name < todayName).pop();
+  const basis = newestEarlier ? Math.min(now, Date.parse(`${newestEarlier.name.slice(0, 10)}T00:00:00Z`) + 2 * 86_400_000) : now;
+  const cutoff = `${ymd(basis - (options.retentionDays ?? RETENTION_DAYS) * 86_400_000)}.jsonl`;
   let evictedFiles = 0;
   let evictedBytes = 0;
   const evict = (file: ManagedFile): void => {
@@ -575,7 +579,7 @@ function append(store: Store, body: ReceiptBody, now: number, options: ReceiptOp
   const fd = fs.openSync(join(store.receipts, todayName), C.O_RDWR | C.O_APPEND | C.O_CREAT | NOFOLLOW, 0o600);
   try {
     const st = fs.fstatSync(fd);
-    if (!st.isFile() || st.uid !== store.uid || (st.mode & 0o077) !== 0) throw new Refusal('unsafe_store');
+    if (!st.isFile() || st.nlink !== 1 || st.uid !== store.uid || (st.mode & 0o077) !== 0) throw new Refusal('unsafe_store');
     let tail = tailOf(fs, fd, st.size);
     if (tail === null) {
       // First line of the day: continue the chain from the newest earlier file.
@@ -587,8 +591,9 @@ function append(store: Store, body: ReceiptBody, now: number, options: ReceiptOp
         } catch { tail = null; }
       }
     }
+    const { v, ...rest } = body;
     const receipt: SeatbeltReceipt = {
-      id: `sbr_${randomBytes(16).toString('hex')}`, seq: tail && tail.seq !== null ? tail.seq + 1 : 1, prev: tail ? tail.hash : ZERO_PREV, ...body,
+      v, id: `sbr_${randomBytes(16).toString('hex')}`, seq: tail && tail.seq !== null ? tail.seq + 1 : 1, prev: tail ? tail.hash : ZERO_PREV, ...rest,
     };
     if (validateReceipt(receipt).length > 0) throw new Refusal('error');
     const bytes = Buffer.from(`${st.size > 0 && tail && tail.open ? '\n' : ''}${JSON.stringify(receipt)}\n`);

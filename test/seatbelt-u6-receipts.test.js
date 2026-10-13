@@ -312,6 +312,7 @@ test('U6 fields: programs and subcommand come only from the vocabulary; target_c
     assert.deepEqual(t.programs, []);
   }
   assert.equal(get('ls', { harness: 'my-harness' }).harness, 'other');
+  for (const harness of ['__proto__', 'constructor', 'toString', 5, null]) assert.equal(get('ls', { harness }).harness, 'other', String(harness));
   for (const harness of ['claude-code', 'codex', 'cursor', 'gemini', 'grok', 'cline', 'windsurf', 'mcp-client']) assert.notEqual(get('ls', { harness }).harness, 'other', harness);
   assert.equal(get('ls').engine.pkg, require('../package.json').version);
   assert.equal(get('ls').engine.contract, 'marrow.classifier.v1');
@@ -435,6 +436,24 @@ test('U6 abuse: group/other access (0644 files, 0755 or 0750 directories, a grou
   assert.equal(dropsOf(h).drop_reasons.unsafe_store, dropsOf(h).receipt_drop);
 }));
 
+test('U6 abuse: a hard-linked day file or salt is refused (an append must not reach another file)', () => withHome((h) => {
+  ready(h);
+  const other = path.join(h.root, 'other-file');
+  fs.writeFileSync(other, 'untouched\n', { mode: 0o600 });
+  const day = path.join(h.receipts, `${ymd(NOW)}.jsonl`);
+  fs.rmSync(day);
+  fs.linkSync(other, day);
+  assert.equal(put(h, record(STOP), bash('git push -f origin main')), 'dropped', 'a day file that is a second name for another file');
+  assert.equal(fs.readFileSync(other, 'utf8'), 'untouched\n');
+  fs.rmSync(day);
+  assert.equal(put(h, record(), bash('ls')), 'written');
+  const salt = path.join(h.sb, 'salt');
+  fs.linkSync(salt, path.join(h.root, 'salt-twin'));
+  assert.equal(put(h, record(), bash('ls')), 'dropped', 'a salt with a second name');
+  fs.rmSync(path.join(h.root, 'salt-twin'));
+  assert.equal(put(h, record(), bash('ls')), 'written');
+}));
+
 test('U6 abuse: a wrong owner on the home, .marrow, the seatbelt directory, the receipts directory, the salt or the day file is refused', () => withHome((h) => {
   ready(h);
   const day = `${ymd(NOW)}.jsonl`;
@@ -543,17 +562,26 @@ function prepare(h) {
 
 test('U6 caps: 90-day retention evicts older day files (counted in state.json); a symlink named like a day file is removed, not followed', () => withHome((h) => {
   prepare(h);
-  for (const age of [200, 120, 91, 90, 89, 5]) fs.writeFileSync(path.join(h.receipts, `${ymd(NOW - age * DAY)}.jsonl`), '{"x":1}\n', { mode: 0o600 });
+  for (const age of [200, 120, 91, 90, 89, 1]) fs.writeFileSync(path.join(h.receipts, `${ymd(NOW - age * DAY)}.jsonl`), '{"x":1}\n', { mode: 0o600 });
   const outside = path.join(h.root, 'outside.txt');
   fs.writeFileSync(outside, 'keep me');
   fs.symlinkSync(outside, path.join(h.receipts, `${ymd(NOW - 150 * DAY)}.jsonl`));
   fs.writeFileSync(path.join(h.receipts, 'notes.txt'), 'not a receipt file');
   assert.equal(put(h, record(), bash('ls')), 'written');
   assert.deepEqual(fs.readdirSync(h.receipts).sort(),
-    [`${ymd(NOW - 90 * DAY)}.jsonl`, `${ymd(NOW - 89 * DAY)}.jsonl`, `${ymd(NOW - 5 * DAY)}.jsonl`, `${ymd(NOW)}.jsonl`, 'notes.txt'].sort());
+    [`${ymd(NOW - 90 * DAY)}.jsonl`, `${ymd(NOW - 89 * DAY)}.jsonl`, `${ymd(NOW - 1 * DAY)}.jsonl`, `${ymd(NOW)}.jsonl`, 'notes.txt'].sort());
   assert.equal(fs.readFileSync(outside, 'utf8'), 'keep me');
   assert.equal(stateOf(h).evicted_files, 4);
   assert.equal(stateOf(h).receipt_drop, 0);
+}));
+
+test('U6 caps: a clock that jumped forward does not wipe the history; retention counts from the newest earlier file', () => withHome((h) => {
+  prepare(h);
+  for (const age of [100, 50, 5]) fs.writeFileSync(path.join(h.receipts, `${ymd(NOW - age * DAY)}.jsonl`), '{"x":1}\n', { mode: 0o600 });
+  assert.equal(put(h, record(), bash('ls'), { now: NOW + 400 * DAY }), 'written');
+  assert.deepEqual(fs.readdirSync(h.receipts).sort(), [`${ymd(NOW - 50 * DAY)}.jsonl`, `${ymd(NOW - 5 * DAY)}.jsonl`, `${ymd(NOW + 400 * DAY)}.jsonl`].sort(),
+    'only the file more than 90 days older than the newest earlier one is evicted');
+  assert.equal(stateOf(h).evicted_files, 1);
 }));
 
 test('U6 caps: past the 50 MB cap the oldest day files go first and today\'s file stays; with only today\'s file left the receipt is dropped and counted', () => withHome((h) => {

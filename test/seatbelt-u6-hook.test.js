@@ -123,6 +123,24 @@ test('U6 hook: every keyless decision leaves exactly one readable receipt; stops
   } finally { sb.cleanup(); }
 });
 
+// The owner's daily read-only check from the dogfood watch list (DOGFOOD-WATCH.md), verbatim: it must work on real receipts.
+const DAILY_CHECK = 'const fs=require("fs"),f=process.argv[1];const r=fs.readFileSync(f,"utf8").trim().split("\\n").filter(Boolean).map(JSON.parse);const c={};for(const x of r){const k=[x.mode,x.enforcement,x.decision,x.rule].join(" ");c[k]=(c[k]||0)+1}const l=r.map(x=>x.latency_ms).sort((a,b)=>a-b);console.log(r.length,"events",JSON.stringify(c),"p95",l[Math.floor(l.length*.95)],"p99",l[Math.floor(l.length*.99)])';
+
+test('U6 consumer: the dogfood daily check reads the receipts and prints counts by mode, enforcement, decision and rule', () => {
+  const sb = sandbox();
+  try {
+    sh(sb, 'claude', 'git push -f origin main');
+    sh(sb, 'claude', 'ls -la');
+    sh(sb, 'codex', 'npm publish');
+    const file = path.join(sb.receipts, fs.readdirSync(sb.receipts)[0]);
+    const out = spawnSync(process.execPath, ['-e', DAILY_CHECK, file], { encoding: 'utf8' });
+    assert.equal(out.status, 0, out.stderr);
+    assert.match(out.stdout, /^3 events /);
+    const counts = JSON.parse(out.stdout.slice(out.stdout.indexOf('{'), out.stdout.lastIndexOf('}') + 1));
+    assert.deepEqual(counts, { 'seatbelt enforce stop S1.protected_branch_force': 1, 'seatbelt enforce pass none': 1, 'seatbelt enforce stop S3.package_publish': 1 });
+  } finally { sb.cleanup(); }
+});
+
 test('U6 hook: the agent cannot edit its own receipts (S0), and the stop itself is receipted', () => {
   const sb = sandbox();
   try {
