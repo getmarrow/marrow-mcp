@@ -3888,8 +3888,9 @@ function operandRuleApplies(prog: string, rest: Arg[]): boolean {
     // Patch round 3 (delta audit F-OPT): a long option is read only on an exact match with this reader's list. A
     // shortened, unknown or ambiguous spelling (`rg --pr=cmd`, `bat --pag=cmd`) makes it no reader.
     if (unknownLong(rest, READER_LONG[prog] || NO_LONG) !== -1) return true;
-    // tree -o FILE writes its listing to a file; prettier writes with --write / -w.
-    if (prog === 'tree' && rest.some((a) => a.text !== null && /^-[^-]*o/.test(a.text))) return true;
+    // tree -o FILE writes its listing to a file and -R writes a 00Tree.html into every folder it lists; prettier writes
+    // with --write / -w.
+    if (prog === 'tree' && rest.some((a) => a.text !== null && /^-[^-]*[oR]/.test(a.text))) return true;
     if (prog === 'prettier' && prettierWrites(rest)) return true;
     return false;
   }

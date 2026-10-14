@@ -4846,8 +4846,9 @@ function operandRuleApplies(prog, rest) {
         // shortened, unknown or ambiguous spelling (`rg --pr=cmd`, `bat --pag=cmd`) makes it no reader.
         if ((0, longopts_1.unknownLong)(rest, READER_LONG[prog] || longopts_1.NO_LONG) !== -1)
             return true;
-        // tree -o FILE writes its listing to a file; prettier writes with --write / -w.
-        if (prog === 'tree' && rest.some((a) => a.text !== null && /^-[^-]*o/.test(a.text)))
+        // tree -o FILE writes its listing to a file and -R writes a 00Tree.html into every folder it lists; prettier writes
+        // with --write / -w.
+        if (prog === 'tree' && rest.some((a) => a.text !== null && /^-[^-]*[oR]/.test(a.text)))
             return true;
         if (prog === 'prettier' && prettierWrites(rest))
             return true;

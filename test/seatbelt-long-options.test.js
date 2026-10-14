@@ -125,7 +125,7 @@ test('friction (delta audit): tree, prettier --check and archiving read their in
       assert.equal(d.decision, 'pass', `${c}: ${d.reasons}`);
     }
     for (const c of [
-      `tree -o /tmp/p3-out.txt ${t.D}`, `tree -Lo /tmp/p3-out.txt ${t.D}`, `tree -o ${t.T} /tmp/p3-src`, `tree --zz-unknown ${t.D}`, `tree --noreport -o /tmp/p3-out.txt ${t.D}`,
+      `tree -o /tmp/p3-out.txt ${t.D}`, `tree -Lo /tmp/p3-out.txt ${t.D}`, `tree -R -L 1 ${t.D}`, `tree -aR ${t.D}`, `tree -o ${t.T} /tmp/p3-src`, `tree --zz-unknown ${t.D}`, `tree --noreport -o /tmp/p3-out.txt ${t.D}`,
       `prettier --write ${t.T}`, `prettier -w ${t.T}`, `prettier -cw ${t.T}`, `prettier --check --write ${t.T}`, `prettier --wri ${t.T}`, `prettier --cache --cache-location=${t.T} --check src`,
       `npx prettier --write ${t.T}`, `npx -y prettier -w ${t.T}`, `prettier --check $X ${t.T}`, `tree $O ${t.T}`, `tree $O ${t.D}`,
       // npx options that take a value would make the mapper read that value as the package: every word counts then.
