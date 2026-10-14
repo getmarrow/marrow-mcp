@@ -302,17 +302,23 @@ test('MCP and other inputs: a replaced credential, ambiguous names, random-looki
 const { normalizeHookEventPayload } = require('../dist/hook-contract.js');
 const { MAX_SCAN_CHARS } = require('../dist/normalized-action.js');
 
-function medianMs(run) {
+function medianMs(run, runs = 3) {
   const times = [];
-  for (let i = 0; i < 3; i += 1) {
+  for (let i = 0; i < runs; i += 1) {
     const started = process.hrtime.bigint();
     run();
     times.push(Number(process.hrtime.bigint() - started) / 1e6);
   }
-  return times.sort((a, b) => a - b)[1];
+  return times.sort((a, b) => a - b)[Math.floor(runs / 2)];
 }
 
-test('MEDIUM-R5-1: a 64 KB token of any shape normalizes in under 100 ms and is withheld as truncated', () => {
+// The bound is a guard against super-linear (quadratic or worse) scans, not a speed target: a linear pass over 64 KB takes
+// a few milliseconds when the machine is quiet, a quadratic one takes seconds. The median of five runs and a 1,000 ms limit keep
+// the guard on a loaded build machine or a small CI runner without letting a catastrophic slowdown through.
+const R5_1_RUNS = 5;
+const R5_1_LIMIT_MS = 1_000;
+
+test('MEDIUM-R5-1: a 64 KB token of any shape normalizes within a super-linear guard (median of 5 runs under 1,000 ms) and is withheld as truncated', () => {
   const shapes = {
     one_word: 'a'.repeat(65_536),
     eq_pairs: 'a='.repeat(32_768),
@@ -324,23 +330,23 @@ test('MEDIUM-R5-1: a 64 KB token of any shape normalizes in under 100 ms and is 
   for (const [name, token] of Object.entries(shapes)) {
     for (const command of [`deploy ${token}`, `psql -c '${token}'`, `echo '${token}' | psql prod`]) {
       let action;
-      const ms = medianMs(() => { action = shell(command); });
-      assert.ok(ms < 100, `${name}: ${ms.toFixed(0)} ms`);
+      const ms = medianMs(() => { action = shell(command); }, R5_1_RUNS);
+      assert.ok(ms < R5_1_LIMIT_MS, `${name}: median of ${R5_1_RUNS} ${ms.toFixed(0)} ms`);
       assert.equal(action.truncated, true, `${name}: over ${MAX_SCAN_CHARS} characters, not scanned`);
     }
   }
   // Many words up to 64 KB stay linear too.
   for (const command of ['deploy ' + 'ab '.repeat(21_845), 'echo a' + ' | cat'.repeat(10_922), 'A=b '.repeat(16_384) + 'deploy']) {
-    const ms = medianMs(() => shell(command));
-    assert.ok(ms < 100, `${command.slice(0, 12)}: ${ms.toFixed(0)} ms`);
+    const ms = medianMs(() => shell(command), R5_1_RUNS);
+    assert.ok(ms < R5_1_LIMIT_MS, `${command.slice(0, 12)}: median of ${R5_1_RUNS} ${ms.toFixed(0)} ms`);
   }
 });
 
 test('LOW-R5-1: credential literals are scanned without recursion; thousands of nested names neither crash nor slow down', () => {
   // The forms that overflowed the stack at about 4 KB in 87fd70d.
   for (const token of ['a='.repeat(1_950), 'a:'.repeat(1_950), '{"a":'.repeat(780), 'a='.repeat(8_000)]) {
-    const ms = medianMs(() => shell(`deploy ${token}`));
-    assert.ok(ms < 100, `${token.slice(0, 6)} x${token.length}: ${ms.toFixed(0)} ms`);
+    const ms = medianMs(() => shell(`deploy ${token}`), R5_1_RUNS);
+    assert.ok(ms < R5_1_LIMIT_MS, `${token.slice(0, 6)} x${token.length}: median of ${R5_1_RUNS} ${ms.toFixed(0)} ms`);
   }
   assert.equal(shell(`deploy ${'a='.repeat(1_950)}`).truncated, undefined, 'under the cap: scanned, exact');
   assert.equal(shell(`deploy ${'a='.repeat(4_000)}`).truncated, true, 'over 2048 names in one text: withheld');

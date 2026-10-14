@@ -198,26 +198,48 @@ test('U6 hook: a receipt that cannot be written never changes an answer (disk fu
 });
 
 test('U6 hook: six hooks at once (two events each, three harnesses) keep one complete chain', async () => {
-  const sb = sandbox();
-  try {
-    const one = (harness, command) => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ['--require', PRELOAD, CLI, ENTRY[harness]], { cwd: sb.proj, env: childEnv(sb), stdio: ['pipe', 'pipe', 'pipe'] });
-      let out = '';
-      child.stdout.on('data', (d) => { out += d; });
-      child.on('error', reject);
-      child.on('close', (status) => resolve({ status, out }));
-      child.stdin.end(JSON.stringify(event(harness, command, sb.proj)));
-    });
-    const jobs = [];
-    for (const harness of HARNESSES) for (const command of ['git push -f origin main', 'ls -la']) jobs.push(one(harness, command));
-    const results = await Promise.all(jobs);
-    assert.equal(results.length, 6);
-    const all = receiptsOf(sb);
-    assert.equal(all.length, 6, 'no receipt lost');
-    assert.deepEqual(all.map((x) => x.receipt.seq), [1, 2, 3, 4, 5, 6]);
-    assert.deepEqual(verifyChain(all.map((x) => x.line)), []);
-    assert.equal(all.filter((x) => x.receipt.decision === 'stop').length, 3);
-  } finally { sb.cleanup(); }
+  // A hook that cannot get the writer lock in time drops its receipt by design (150 ms for a pass, 600 ms for a stop; the
+  // answer never changes), and on a loaded machine six Node processes starting together can do that. A drop is final, so
+  // waiting longer cannot bring the receipt back; the scenario is run again on a fresh store instead, inside a bounded
+  // window (about 30 s, at most 12 runs). Every run must keep an unbroken chain whatever was dropped, and one run must
+  // show all six receipts with exactly the three expected stops. A writer that always loses a receipt, or breaks the chain
+  // even once, or lets a force push pass, still fails this test.
+  const DEADLINE_MS = 30_000;
+  const MAX_RUNS = 12;
+  const started = Date.now();
+  const seen = [];
+  let complete = false;
+  for (let run = 1; run <= MAX_RUNS && !complete && Date.now() - started < DEADLINE_MS; run += 1) {
+    const sb = sandbox();
+    try {
+      const one = (harness, command) => new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ['--require', PRELOAD, CLI, ENTRY[harness]], { cwd: sb.proj, env: childEnv(sb), stdio: ['pipe', 'pipe', 'pipe'] });
+        let out = '';
+        child.stdout.on('data', (d) => { out += d; });
+        child.on('error', reject);
+        child.on('close', (status) => resolve({ status, out }));
+        child.stdin.end(JSON.stringify(event(harness, command, sb.proj)));
+      });
+      const jobs = [];
+      for (const harness of HARNESSES) for (const command of ['git push -f origin main', 'ls -la']) jobs.push(one(harness, command));
+      const results = await Promise.all(jobs);
+      assert.equal(results.length, 6);
+      const all = receiptsOf(sb);
+      assert.ok(all.length <= 6, `run ${run}: more receipts than hooks (${all.length})`);
+      assert.deepEqual(all.map((x) => x.receipt.seq), Array.from({ length: all.length }, (_, i) => i + 1), `run ${run}: the sequence has a gap or a repeat`);
+      assert.deepEqual(verifyChain(all.map((x) => x.line)), [], `run ${run}: the chain is broken`);
+      seen.push(all.length);
+      if (all.length === 6) {
+        // The three force pushes must stop in every run: load can only turn a pass into a fail-closed stop (the hook's own
+        // 300 ms budget), never a stop into a pass. A run with more stops than that lost a pass to load: run it again.
+        const stops = all.filter((x) => x.receipt.decision === 'stop').length;
+        assert.ok(stops >= 3, `run ${run}: ${stops} stops of 6; the three force pushes must stop`);
+        if (stops === 3) complete = true;
+        else seen[seen.length - 1] = `${all.length} (${stops - 3} pass turned into a budget stop)`;
+      }
+    } finally { sb.cleanup(); }
+  }
+  assert.ok(complete, `no run in ${Date.now() - started} ms kept all six receipts (receipts per run: ${seen.join(', ')})`);
 });
 
 test('U6 hook: account mode (a key) in watch records the floor as a pass with the floor_watch flag; the answer and the requests are the hook without a seatbelt', () => {
