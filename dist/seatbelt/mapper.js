@@ -4802,7 +4802,7 @@ const INLINE_CODE_FLAG = /^-(?:-(?:eval|print|command|encodedcommand)|[A-Za-z]*[
 const PROTECTED_DYNAMIC = /(?:^|\/)\.(?:marrow|codex|gemini|grok|windsurf|cursor)(?:\/|$)|\.claude\/(?:settings(?:\.local)?\.json|plugins)|\.claude\.json$|\.mcp\.json$|hooks\.json$|(?:^|\/)\.(?:bashrc|zshrc|profile|bash_profile|bash_login|zprofile|zshenv)$|\.git\/(?:hooks|config)/;
 // Readers with an option that writes or runs something: such a form is no reader. A dynamic word could be
 // that option, so it counts too (grep, cat and the like have no such option).
-const READER_RUNNERS = new Set(['yq', 'rg', 'bat', 'batcat', 'less', 'more']);
+const READER_RUNNERS = new Set(['yq', 'rg', 'bat', 'batcat', 'less', 'more', 'tree']);
 // The long options each reader understands (patch round 3). Options that write or run something are not on a list.
 const READER_LONG = {
     cat: longopts_1.CAT_LONG, less: longopts_1.LESS_LONG, more: longopts_1.MORE_LONG, head: longopts_1.HEAD_LONG, tail: longopts_1.TAIL_LONG, grep: longopts_1.GREP_LONG, egrep: longopts_1.GREP_LONG, fgrep: longopts_1.GREP_LONG, rg: longopts_1.RG_LONG,
@@ -5166,29 +5166,26 @@ function readerCommandTexts(prog, rest) {
     }
     return out.filter((x) => x.trim() !== '').slice(0, tables_1.LIMITS.maxVariants);
 }
-// The words of an npx / bunx command line up to and including the package: the runner's own options and the package
-// name (the scan of npxLike). What follows is the argv of the command, which is dispatched and checked on its own.
+// npx / bunx running prettier (the delta audit's friction row): the words that are the runner's own are its plain flags
+// and the package; what follows is prettier's argv, and the prettier rules judge it when the command is dispatched.
+// Only that one package, written by name, with flags the mapper knows to take no value: a package named like a reader
+// (`npx cat`) is some npm package, not coreutils, `-p other-pkg prettier` runs a bin of another package, and an option
+// that takes a value (`--cache DIR`) would make the mapper read that value as the package. In every other case every
+// word counts, as before.
+const NPX_PLAIN_FLAGS = new Set(['-y', '--yes', '--no', '-n', '--no-install', '--quiet', '-q', '--silent', '--no-progress', '--prefer-offline', '--offline',
+    '--ignore-scripts', '--no-update-notifier', '--bun']);
 function npxOwnWords(rest) {
     let i = 0;
     while (i < rest.length) {
         const t = rest[i].text;
-        if (t === null)
+        if (t === null || t === '--')
             return rest;
-        if (t === '--') {
-            i += 1;
+        if (!NPX_PLAIN_FLAGS.has(t))
             break;
-        }
-        if (t === '-p' || t === '--package' || t === '-c' || t === '--call') {
-            i += 2;
-            continue;
-        }
-        if (t.startsWith('-')) {
-            i += 1;
-            continue;
-        }
-        break;
+        i += 1;
     }
-    return i >= rest.length ? rest : rest.slice(0, i + 1);
+    const spec = i < rest.length ? rest[i].text : null;
+    return spec !== null && /^prettier(?:@[A-Za-z0-9.^~<>=*-]+)?$/.test(spec) ? rest.slice(0, i + 1) : rest;
 }
 // ---------------------------------------------------------------------------------------------
 // Patch round 3 (delta audit friction): archiving reads its inputs. `tar czf out.tar ~/.claude` and `zip -r out.zip
