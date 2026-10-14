@@ -82,6 +82,29 @@ test('long options: benign rows on non-protected paths do not stop (friction con
   }
 });
 
+test('long options: everyday options on a read of a protected file keep passing (a reader list that missed one would be friction)', () => {
+  const T = '~/.claude/settings.json';
+  for (const c of [
+    `cat --number --show-ends ${T}`, `cat --squeeze-blank ${T}`, `head --lines=20 --quiet ${T}`, `tail --lines=+5 --follow=name ${T}`, `wc --lines --words --bytes ${T}`, `stat --format=%s ${T}`,
+    `ls --color=auto --human-readable --almost-all ~/.claude`, `ls --sort=time --reverse -l ~/.claude`, `du --human-readable --max-depth=1 --summarize ~/.claude`, `file --mime-type --brief ${T}`,
+    `diff --unified --ignore-all-space ${T} /tmp/p3-x`, `diff --color=never --recursive ~/.claude /tmp/p3-x`, `cmp --silent ${T} /tmp/p3-x`, `sha256sum --binary ${T}`, `md5sum --tag ${T}`,
+    `grep --line-number --ignore-case --color=never hooks ${T}`, `grep --recursive --include=*.json --files-with-matches hooks ~/.claude`, `grep --fixed-strings --count marrow ${T}`,
+    `rg --hidden --glob '*.json' --no-heading --line-number hooks ~/.claude`, `rg --files-with-matches --type json hooks ~/.claude`, `rg --max-count 3 --color never hooks ${T}`, `rg --print0 --files ~/.claude`,
+    `jq --raw-output --sort-keys .hooks ${T}`, `jq --arg k hooks --compact-output '.[$k]' ${T}`, `yq --output-format=json . ${T}`, `bat --style=plain --paging=never --color=always ${T}`,
+    `less --RAW-CONTROL-CHARS --quit-if-one-screen ${T}`, `tree -a -L 2 -I node_modules ~/.claude`, `tree --noreport --dirsfirst ~/.claude`, `prettier --check --tab-width 2 --print-width 100 ${T}`,
+    `find ~/.claude -maxdepth 2 -type f -name '*.json' -mtime -7 -not -path '*/cache/*' -print0`, `find ~/.claude -newer /tmp/p3-x -size +1k -user u -perm -u+r`,
+    `git diff --cached --name-status --diff-filter=M ${T}`, `git diff --staged --stat --no-color ${T}`, `git log --pretty=format:%h --since=2.weeks --author=bob --grep=fix --follow -- ${T}`,
+    `git log --committer=bob --after=2020-01-01 --before=2030-01-01 --oneline -- ${T}`, `git show --format=%H --no-patch HEAD:.claude/settings.json`, `git blame --line-porcelain -w ${T}`,
+    `git status --porcelain=v1 --untracked-files=no`, `git add --intent-to-add --verbose ${T}`, `git ls-files --cached --others --exclude-standard -- ${T}`,
+    `cp --preserve=all --reflink=auto ${T} /tmp/p3-x`, `cp --archive --update --verbose ${T} /tmp/p3-x`,
+    `tar --create --gzip --verbose --file=/tmp/p3.tgz --exclude=cache ~/.claude`, `tar --list --file=/tmp/p3.tgz`, `zip -rq /tmp/p3.zip ~/.claude`,
+    `sed --quiet --regexp-extended '1,5p' ${T}`, `awk --assign n=3 'NR<=n' ${T}`,
+  ]) {
+    const d = sh(c);
+    assert.equal(d.decision, 'pass', `${c}: ${d.reasons}`);
+  }
+});
+
 test('long options: the lists read a long option on an exact match only (unit)', { skip: L === null }, () => {
   const list = L.longList('plain value= maybe[=] [no-]neg any~');
   const w = (...t) => t.map((text) => ({ text }));

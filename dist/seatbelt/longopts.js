@@ -269,7 +269,8 @@ exports.RG_LONG = longList('after-context= auto-hybrid-regex before-context= bin
     'no-invert-match no-line-buffered no-one-file-system no-sort-files no-text no-block-buffered no-byte-offset ' +
     'no-context-separator no-encoding no-include-zero no-ignore-file-case-insensitive no-glob-case-insensitive ' +
     'no-max-columns-preview no-auto-hybrid-regex no-multiline-dotall no-pcre2 messages unicode ignore-vcs ' +
-    'ignore-dot ignore-exclude ignore-files ignore-global ignore-messages ignore-parent require-git pcre2-unicode');
+    'ignore-dot ignore-exclude ignore-files ignore-global ignore-messages ignore-parent require-git pcre2-unicode ' +
+    'print0 maxdepth ignore passthrough');
 exports.TREE_LONG = longList('help version inodes device noreport nolinks dirsfirst filesfirst charset= filelimit= timefmt= sort= fromfile ' +
     'fromtabfile info gitignore gitfile= ignore-case matchdirs metafirst prune du si hintro= houtro= opt-toggle');
 exports.PRETTIER_LONG = longList('check list-different help version ignore-unknown no-color color no-editorconfig no-config ' +
@@ -282,69 +283,73 @@ exports.PRETTIER_LONG = longList('check list-different help version ignore-unkno
     'cache-strategy= with-node-modules experimental-ternaries object-wrap= experimental-operator-position=');
 exports.ZIP_LONG = longList('recurse-paths quiet verbose junk-paths no-dir-entries symlinks exclude= include= freshen update grow ' +
     'filesync display-counts display-dots output-file= temp-path= help version');
-exports.GIT_READ_LONG = longList('abbrev= abbrev-commit abbrev-ref absolute-git-dir after-context= ahead-behind aliases all all-match ' +
-    'allow-unknown-type always amend ancestry-path[=] anchored= and annotate-stdin author= author-date-order base ' +
-    'basic-regexp batch[=] batch-all-objects batch-check[=] batch-command[=] before-context= binary bisect ' +
-    'bisect-all bisect-vars boundary branch branches[=] break break-rewrites[=] broken[=] buffer cached ' +
-    'candidates= cc check cherry cherry-mark cherry-pick children chmod cleanup= clear-decorations color[=] ' +
-    'color-by-age color-lines color-moved[=] color-moved-ws= color-words[=] column[=] combined-all-paths ' +
-    'commit-header committer compact-summary config contains contents= context= count cumulative date= date-order ' +
-    'dd debug decorate[=] decorate-refs= decorate-refs-exclude= deduplicate default= default-prefix deleted dense ' +
-    'developer-interfaces diff-algorithm= diff-filter diff-merges= directory dirstat[=] dirstat-by-file[=] ' +
-    'dirty[=] disk-usage[=] do-walk dry-run dst-prefix= edit email empty-directory encoding= eol error-unmatch ' +
-    'exact-match exclude= exclude-first-parent-only exclude-from= exclude-hidden exclude-per-directory= ' +
-    'exclude-standard exit-code expand-tabs= ext-diff ext-grep extended-regexp external-commands file= ' +
-    'files-with-matches files-without-match filters find-copies[=] find-copies-harder find-object= ' +
-    'find-renames[=] first-parent fixed-strings fixup flags follow follow-symlinks force format= full-diff ' +
-    'full-history full-index full-name full-tree function-context git-common-dir git-dir git-path= glob= ' +
-    'gpg-sign[=] graph grep= grep-reflog= group= guides header heading help histogram human-readable ' +
-    'ignore-all-space ignore-blank-lines ignore-case ignore-cr-at-eol ignore-errors ignore-matching-lines= ' +
-    'ignore-missing ignore-removal ignore-rev= ignore-revs-file= ignore-space-at-eol ignore-space-change ' +
-    'ignore-submodules[=] ignored[=] in-commit-order include incremental indent-heuristic index info ' +
-    'intent-to-add inter-hunk-context= interactive invert-grep invert-match irreversible-delete ' +
-    'is-bare-repository is-inside-git-dir is-inside-work-tree is-shallow-repository ita-invisible-in-index ' +
-    'ita-visible-in-index killed left-only left-right line-number line-porcelain line-prefix= log-size long ' +
-    'mailmap man match= max-age= max-count= max-depth= max-parents= merge merge-base merges message= min-age= ' +
-    'min-parents= minimal modified name-only name-status no-abbrev no-abbrev-commit no-after-context ' +
-    'no-ahead-behind no-aliases no-all no-all-match no-allow-unknown-type no-always no-amend no-annotate-stdin ' +
-    'no-author no-basic-regexp no-before-context no-branch no-break no-broken no-buffer no-cached no-candidates ' +
-    'no-chmod no-cleanup no-color no-color-by-age no-color-lines no-color-moved no-color-moved-ws no-column ' +
-    'no-commit-header no-commit-id no-committer no-compact-summary no-contains no-contents no-context no-count ' +
-    'no-date no-debug no-decorate no-decorate-refs no-decorate-refs-exclude no-deduplicate no-deleted ' +
-    'no-diff-merges no-directory no-dirty no-dry-run no-edit no-email no-empty-directory no-eol no-error-unmatch ' +
-    'no-exact-match no-exclude no-exclude-per-directory no-exclude-standard no-exit-code no-ext-diff no-ext-grep ' +
-    'no-extended-regexp no-external-commands no-file no-files-with-matches no-files-without-match ' +
-    'no-find-copies-harder no-first-parent no-fixed-strings no-fixup no-flags no-follow no-follow-symlinks ' +
-    'no-force no-full-index no-full-name no-full-tree no-function-context no-gpg-sign no-group no-heading ' +
-    'no-human-readable no-ignore-case no-ignore-errors no-ignore-matching-lines no-ignore-missing ' +
-    'no-ignore-removal no-ignore-rev no-ignore-revs-file no-ignore-submodules no-ignored no-include ' +
-    'no-incremental no-indent-heuristic no-index no-info no-intent-to-add no-interactive no-invert-match ' +
-    'no-killed no-line-number no-line-porcelain no-long no-mailmap no-man no-match no-max-count no-max-parents ' +
-    'no-merges no-message no-min-parents no-minimal no-modified no-name-only no-non-matching no-notes no-null ' +
-    'no-numbered no-object-names no-only no-only-matching no-open-files-in-pager no-others no-patch no-path ' +
-    'no-pathspec-file-nul no-pathspec-from-file no-perl-regexp no-porcelain no-post-rewrite no-prefix no-progress ' +
-    'no-quiet no-recurse-submodules no-recursive no-reedit-message no-refresh no-refs no-relative no-rename-empty ' +
-    'no-renames no-renormalize no-reset-author no-resolve-undo no-reuse-message no-revs no-root no-score-debug ' +
-    'no-short no-show-email no-show-function no-show-name no-show-number no-show-stash no-show-stats no-signoff ' +
-    'no-source no-sparse no-squash no-stage no-status no-stdin no-summary no-tags no-template no-text no-textconv ' +
-    'no-threads no-undefined no-unmerged no-unordered no-untracked no-untracked-files no-update no-use-mailmap ' +
-    'no-verbose no-verify no-walk no-web no-with-tree no-word-regexp non-matching not notes[=] null numbered ' +
-    'numstat object-names object-only objects objects-edge objects-edge-aggressive oneline only only-matching ' +
-    'open-files-in-pager[=] or others output= output-indicator-context= output-indicator-new= ' +
-    'output-indicator-old= parents patch patch-with-raw patch-with-stat path= pathspec-file-nul ' +
-    'pathspec-from-file= patience perl-regexp pickaxe-all pickaxe-regex porcelain[=] post-rewrite prefix= ' +
-    'pretty[=] progress= quiet raw recurse-submodules recursive reedit-message= reflog refresh refs= ' +
-    'regexp-ignore-case relative[=] relative-date remerge-diff remotes[=] remove-empty rename-empty renames ' +
-    'renormalize reset-author resolve-git-dir= resolve-undo reuse-message= reverse revs-only root rotate-to= ' +
-    'score-debug shared-index-path short shortstat show-cdup show-email show-function show-linear-break[=] ' +
-    'show-name show-notes[=] show-notes-by-default show-number show-object-format show-prefix show-pulls ' +
-    'show-signature show-stash show-stats show-superproject-working-tree show-toplevel signoff ' +
-    'simplify-by-decoration simplify-merges since= since-as-filter= single-worktree skip= skip-to= source= sparse ' +
-    'sq-quote squash= src-prefix= stage stat[=] stat-count= stat-graph-width= stat-name-width= stat-width= status ' +
-    'stdin submodule[=] summary symbolic symbolic-full-name tags[=] template= text textconv threads= topo-order ' +
-    'trailer= undefined unified[=] unmerged unordered unpacked until= untracked untracked-files[=] update ' +
-    'use-bitmap-index use-mailmap user-interfaces verbose verify walk-reflogs web with-tree= word-diff[=] ' +
-    'word-diff-regex= word-regexp ws-error-highlight=');
+exports.GIT_READ_LONG = longList('abbrev~ abbrev-commit~ abbrev-ref~ absolute-git-dir~ after~ after-context~ ahead-behind~ aliases~ all~ ' +
+    'all-match~ allow-unknown-type~ alternate-refs~ always~ amend~ ancestry-path~ anchored~ and~ annotate-stdin~ ' +
+    'author~ author-date-order~ base~ basic-regexp~ batch~ batch-all-objects~ batch-check~ batch-command~ before~ ' +
+    'before-context~ binary~ bisect~ bisect-all~ bisect-vars~ boundary~ branch~ branches~ break~ break-rewrites~ ' +
+    'broken~ buffer~ cached~ candidates~ cc~ check~ cherry~ cherry-mark~ cherry-pick~ children~ chmod~ cleanup~ ' +
+    'clear-decorations~ color~ color-by-age~ color-lines~ color-moved~ color-moved-ws~ color-words~ column~ ' +
+    'combined~ combined-all-paths~ commit-header~ committer~ compact-summary~ config~ contains~ contents~ ' +
+    'context~ count~ cumulative~ date~ date-order~ dd~ debug~ decorate~ decorate-refs~ decorate-refs-exclude~ ' +
+    'deduplicate~ default~ default-prefix~ deleted~ dense~ developer-interfaces~ diff-algorithm~ diff-filter~ ' +
+    'diff-merges~ directory~ dirstat~ dirstat-by-file~ dirty~ disk-usage~ do-walk~ dry-run~ dst-prefix~ edit~ ' +
+    'email~ empty-directory~ encoding~ end-of-options~ eol~ error-unmatch~ exact-match~ exclude~ ' +
+    'exclude-first-parent-only~ exclude-from~ exclude-hidden~ exclude-per-directory~ exclude-promisor-objects~ ' +
+    'exclude-standard~ exit-code~ expand-tabs~ ext-diff~ ext-grep~ extended-regexp~ external-commands~ file~ ' +
+    'files-with-matches~ files-without-match~ filter~ filters~ find-copies~ find-copies-harder~ find-object~ ' +
+    'find-renames~ first-parent~ fixed-strings~ fixup~ flags~ follow~ follow-symlinks~ force~ format~ full-diff~ ' +
+    'full-history~ full-index~ full-name~ full-tree~ function-context~ git-common-dir~ git-dir~ git-path~ glob~ ' +
+    'gpg-sign~ graph~ grep~ grep-reflog~ group~ guides~ header~ heading~ help~ help-all~ histogram~ ' +
+    'human-readable~ ignore-all-space~ ignore-blank-lines~ ignore-case~ ignore-cr-at-eol~ ignore-errors~ ' +
+    'ignore-matching-lines~ ignore-missing~ ignore-removal~ ignore-rev~ ignore-revs-file~ ignore-space-at-eol~ ' +
+    'ignore-space-change~ ignore-submodules~ ignored~ in-commit-order~ include~ incremental~ indent-heuristic~ ' +
+    'index~ indexed-objects~ info~ intent-to-add~ inter-hunk-context~ interactive~ invert-grep~ invert-match~ ' +
+    'irreversible-delete~ is-bare-repository~ is-inside-git-dir~ is-inside-work-tree~ is-shallow-repository~ ' +
+    'ita-invisible-in-index~ ita-visible-in-index~ killed~ left-only~ left-right~ line-number~ line-porcelain~ ' +
+    'line-prefix~ log-size~ long~ mailmap~ man~ match~ max-age~ max-count~ max-depth~ max-parents~ merge~ ' +
+    'merge-base~ merges~ message~ min-age~ min-parents~ minimal~ missing~ modified~ name-only~ name-status~ ' +
+    'no-abbrev~ no-abbrev-commit~ no-after-context~ no-ahead-behind~ no-aliases~ no-all~ no-all-match~ ' +
+    'no-allow-unknown-type~ no-always~ no-amend~ no-annotate-stdin~ no-author~ no-basic-regexp~ ' +
+    'no-before-context~ no-branch~ no-break~ no-broken~ no-buffer~ no-cached~ no-candidates~ no-chmod~ ' +
+    'no-cleanup~ no-color~ no-color-by-age~ no-color-lines~ no-color-moved~ no-color-moved-ws~ no-column~ ' +
+    'no-commit-header~ no-commit-id~ no-committer~ no-compact-summary~ no-contains~ no-contents~ no-context~ ' +
+    'no-count~ no-date~ no-debug~ no-decorate~ no-decorate-refs~ no-decorate-refs-exclude~ no-deduplicate~ ' +
+    'no-deleted~ no-diff-merges~ no-directory~ no-dirty~ no-dry-run~ no-edit~ no-email~ no-empty-directory~ ' +
+    'no-eol~ no-error-unmatch~ no-exact-match~ no-exclude~ no-exclude-per-directory~ no-exclude-standard~ ' +
+    'no-exit-code~ no-ext-diff~ no-ext-grep~ no-extended-regexp~ no-external-commands~ no-file~ ' +
+    'no-files-with-matches~ no-files-without-match~ no-find-copies-harder~ no-first-parent~ no-fixed-strings~ ' +
+    'no-fixup~ no-flags~ no-follow~ no-follow-symlinks~ no-force~ no-full-index~ no-full-name~ no-full-tree~ ' +
+    'no-function-context~ no-gpg-sign~ no-group~ no-heading~ no-human-readable~ no-ignore-case~ no-ignore-errors~ ' +
+    'no-ignore-matching-lines~ no-ignore-missing~ no-ignore-removal~ no-ignore-rev~ no-ignore-revs-file~ ' +
+    'no-ignore-submodules~ no-ignored~ no-include~ no-incremental~ no-indent-heuristic~ no-index~ no-info~ ' +
+    'no-intent-to-add~ no-interactive~ no-invert-match~ no-killed~ no-line-number~ no-line-porcelain~ no-long~ ' +
+    'no-mailmap~ no-man~ no-match~ no-max-count~ no-max-parents~ no-merges~ no-message~ no-min-parents~ ' +
+    'no-minimal~ no-modified~ no-name-only~ no-non-matching~ no-notes~ no-null~ no-numbered~ no-object-names~ ' +
+    'no-only~ no-only-matching~ no-open-files-in-pager~ no-others~ no-patch~ no-path~ no-pathspec-file-nul~ ' +
+    'no-pathspec-from-file~ no-perl-regexp~ no-porcelain~ no-post-rewrite~ no-prefix~ no-progress~ no-quiet~ ' +
+    'no-recurse-submodules~ no-recursive~ no-reedit-message~ no-refresh~ no-refs~ no-relative~ no-rename-empty~ ' +
+    'no-renames~ no-renormalize~ no-reset-author~ no-resolve-undo~ no-reuse-message~ no-revs~ no-root~ ' +
+    'no-score-debug~ no-short~ no-show-email~ no-show-function~ no-show-name~ no-show-number~ no-show-stash~ ' +
+    'no-show-stats~ no-signoff~ no-source~ no-sparse~ no-squash~ no-stage~ no-status~ no-stdin~ no-summary~ ' +
+    'no-tags~ no-template~ no-text~ no-textconv~ no-threads~ no-undefined~ no-unmerged~ no-unordered~ ' +
+    'no-untracked~ no-untracked-files~ no-update~ no-use-mailmap~ no-verbose~ no-verify~ no-walk~ no-web~ ' +
+    'no-with-tree~ no-word-regexp~ non-matching~ not~ notes~ null~ numbered~ numstat~ object-names~ object-only~ ' +
+    'objects~ objects-edge~ objects-edge-aggressive~ oneline~ only~ only-matching~ open-files-in-pager~ or~ ' +
+    'orderfile~ others~ ours~ output~ output-indicator-context~ output-indicator-new~ output-indicator-old~ ' +
+    'parents~ patch~ patch-with-raw~ patch-with-stat~ path~ pathspec-file-nul~ pathspec-from-file~ patience~ ' +
+    'perl-regexp~ pickaxe-all~ pickaxe-regex~ porcelain~ post-rewrite~ prefix~ pretty~ progress~ quiet~ raw~ ' +
+    'recurse-submodules~ recursive~ reedit-message~ reflog~ refresh~ refs~ regexp-ignore-case~ relative~ ' +
+    'relative-date~ remerge-diff~ remotes~ remove-empty~ rename-empty~ renames~ renormalize~ reset-author~ ' +
+    'resolve-git-dir~ resolve-undo~ reuse-message~ reverse~ revs-only~ right-only~ root~ rotate-to~ score-debug~ ' +
+    'shared-index-path~ short~ shortstat~ show-cdup~ show-email~ show-function~ show-linear-break~ show-name~ ' +
+    'show-notes~ show-notes-by-default~ show-number~ show-object-format~ show-prefix~ show-pulls~ show-signature~ ' +
+    'show-stash~ show-stats~ show-superproject-working-tree~ show-toplevel~ signoff~ simplify-by-decoration~ ' +
+    'simplify-merges~ since~ since-as-filter~ single-worktree~ skip~ skip-to~ source~ sparse~ sq-quote~ squash~ ' +
+    'src-prefix~ stage~ staged~ standard-notes~ stat~ stat-count~ stat-graph-width~ stat-name-width~ stat-width~ ' +
+    'status~ stdin~ submodule~ summary~ symbolic~ symbolic-full-name~ tags~ template~ text~ textconv~ theirs~ ' +
+    'threads~ timestamp~ topo-order~ trailer~ undefined~ unified~ unmerged~ unordered~ unpacked~ until~ ' +
+    'untracked~ untracked-files~ update~ use-bitmap-index~ use-mailmap~ user-interfaces~ verbose~ verify~ ' +
+    'walk-reflogs~ web~ with-tree~ word-diff~ word-diff-regex~ word-regexp~ ws-error-highlight~');
 exports.GIT_GLOBAL_LONG = longList('git-dir= work-tree= namespace= exec-path[=] super-prefix= config-env= attr-source= list-cmds= no-pager ' +
     'paginate bare no-replace-objects literal-pathspecs glob-pathspecs noglob-pathspecs icase-pathspecs ' +
     'no-optional-locks no-lazy-fetch no-advice html-path man-path info-path version help');
