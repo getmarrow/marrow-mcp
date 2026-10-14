@@ -105,6 +105,35 @@ test('long options: everyday options on a read of a protected file keep passing 
   }
 });
 
+test('long options: chains, subshells, wrappers, repeated flags and variables around the new rules (AUDIT RULE abuse cases)', () => {
+  for (const t of TARGETS) {
+    for (const c of [
+      // chains, subshells, shells, pipes, wrappers
+      `true && cp --targ=${t.D} /tmp/p3-x`, `(cp --targ=${t.D} /tmp/p3-x)`, `bash -c 'cp --targ=${t.D} /tmp/p3-x'`, `echo ${t.D} | xargs cp --targ=${t.D}`,
+      `env FOO=1 cp --targ=${t.D} /tmp/p3-x`, `sudo cp --targ=${t.D} /tmp/p3-x`, `nohup cp --targ=${t.D} /tmp/p3-x`, `false || cp --li ${t.T} /tmp/p3-x`,
+      // repeated flags: the last one counts
+      `cp --target-directory=/tmp --target-directory=${t.D} /tmp/p3-x`, `cp --targ=/tmp --targ=${t.D} /tmp/p3-x`,
+      // misleading words before the real command
+      `echo cp --targ=D; cp --refl=auto ${t.T} /tmp/p3-x`,
+      // the friction rules cannot be used to carry a write
+      `prettier --check ${t.T} && prettier --write ${t.T}`, `prettier --check ${t.T}; prettier -w ${t.T}`, `P=--write; prettier --check $P ${t.T}`, `O=-o; tree $O ${t.D}`,
+      `tar czf /tmp/p3-out.tgz ${t.D}; tar xzf /tmp/p3-out.tgz -C ${t.D}`, `tar $A czf /tmp/p3-out.tgz ${t.D}`, `zip -r /tmp/p3-out.zip ${t.D} && zip -m /tmp/p3-out.zip ${t.T}`,
+      `bash -c 'prettier --write ${t.T}'`, `git log --oneline | tee ${t.T}`, `tree ${t.D} | tee ${t.T}`, `tar czf /tmp/p3-out.tgz ${t.D} | tee ${t.T}`,
+      `awk 'BEGIN{print > "${t.A}"}' && echo done`,
+    ]) {
+      const d = sh(c);
+      assert.equal(d.decision, 'stop', `${c}: ${d.reasons}`);
+      assert.ok(d.hits.some((h) => h.category === 'S0'), `${c}: ${d.reasons}`);
+    }
+    // Reads that stay reads inside a chain or a shell.
+    for (const c of [`tree ${t.D} && prettier --check ${t.T}`, `tar czf /tmp/p3-out.tgz ${t.D} && zip -r /tmp/p3-out.zip ${t.D}`]) {
+      assert.equal(sh(c).decision, 'pass', c);
+    }
+  }
+  // A shell given the command as text keeps the generic rule (the text is one operand): the settings folder is no protected text.
+  for (const c of [`sh -c 'tar czf /tmp/p3-out.tgz ~/.claude'`, `echo 'prettier --check' ~/.claude/settings.json | sh`]) assert.equal(sh(c).decision, 'pass', c);
+});
+
 test('long options: the lists read a long option on an exact match only (unit)', { skip: L === null }, () => {
   const list = L.longList('plain value= maybe[=] [no-]neg any~');
   const w = (...t) => t.map((text) => ({ text }));
