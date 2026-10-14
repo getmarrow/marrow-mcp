@@ -19,16 +19,18 @@ const DIRS = ['/home/u/.claude', '/home/u/.claude/plugins', '/home/u/.claude/plu
 // Patch round 4 (relative destinations): {P} is a folder to work in (`cd {P}` or the folder an env / sudo / doas chdir option
 // names, with a literal `~` or an absolute path), {R} a relative name of a protected folder inside it (an attached `-t{R}`
 // value) and {F} a relative name of the protected file inside {PA}, the same folder as an absolute path.
+// Patch round 5: {PN} is a protected folder as an absolute path and {N} a relative name inside it that some protected path ends with
+// (the operand of a program that is no writer, e.g. `vim {N}`).
 const TARGETS = [
-  { name: 'settings', T: '~/.claude/settings.json', D: '~/.claude', A: '/home/u/.claude/settings.json', P: '~/.claude', PA: '/home/u/.claude', R: 'plugins', F: 'settings.json' },
+  { name: 'settings', T: '~/.claude/settings.json', D: '~/.claude', A: '/home/u/.claude/settings.json', P: '~/.claude', PA: '/home/u/.claude', R: 'plugins', F: 'settings.json', PN: '/home/u/.claude', N: 'plugins/installed_plugins.json' },
   { name: 'plugins', T: '~/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts/marrow-launch.cjs', D: '~/.claude/plugins/cache/getmarrow/marrow', A: '/home/u/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts/marrow-launch.cjs',
-    P: '~/.claude/plugins/cache/getmarrow', PA: '/home/u/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts', R: 'marrow', F: 'marrow-launch.cjs' },
+    P: '~/.claude/plugins/cache/getmarrow', PA: '/home/u/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts', R: 'marrow', F: 'marrow-launch.cjs', PN: '/home/u/.claude/plugins/cache/getmarrow', N: 'marrow/1.2.3/scripts/marrow-launch.cjs' },
   { name: 'npx copy', T: '~/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist/cli.js', D: '~/.npm/_npx/abc123/node_modules/@getmarrow', A: '/home/u/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist/cli.js',
-    P: '~/.npm/_npx/abc123/node_modules', PA: '/home/u/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist', R: '@getmarrow', F: 'cli.js' },
+    P: '~/.npm/_npx/abc123/node_modules', PA: '/home/u/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist', R: '@getmarrow', F: 'cli.js', PN: '/home/u/.npm/_npx/abc123/node_modules', N: '@getmarrow/mcp/dist/cli.js' },
 ];
 const fill = (cmd, t, home) => {
   const h = (x) => (home ? x.replace('/home/u', home) : x);
-  return cmd.replace(/\{T\}/g, t.T).replace(/\{D\}/g, t.D).replace(/\{A\}/g, h(t.A)).replace(/\{PA\}/g, h(t.PA)).replace(/\{P\}/g, t.P).replace(/\{R\}/g, t.R).replace(/\{F\}/g, t.F);
+  return cmd.replace(/\{T\}/g, t.T).replace(/\{D\}/g, t.D).replace(/\{A\}/g, h(t.A)).replace(/\{PN\}/g, h(t.PN)).replace(/\{N\}/g, t.N).replace(/\{PA\}/g, h(t.PA)).replace(/\{P\}/g, t.P).replace(/\{R\}/g, t.R).replace(/\{F\}/g, t.F);
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -102,6 +104,15 @@ const PARSERS = [
   { parser: 'doas (relative write)', exact: ['doas --chdir={PA} cp /tmp/p4-x {F}', 'stop'], short: 'doas --chdi={PA} cp /tmp/p4-x {F}', unk: 'doas --zz-unknown cp /tmp/p4-x {F}', reasons: 'cp_write_protected' },
   { parser: 'env -C value unreadable', exact: ['env -C {PA} cp /tmp/p4-x {F}', 'stop'], short: 'env -C "$D" cp /tmp/p4-x {F}', unk: 'env --chdir "$D" cp /tmp/p4-x {F}', reasons: 'cp_write_protected' },
   { parser: 'sudo -D value unreadable', exact: ['sudo -D {PA} cp /tmp/p4-x {F}', 'stop'], short: 'sudo -D "$D" cp /tmp/p4-x {F}', unk: 'sudo --chdir "$D" cp /tmp/p4-x {F}', reasons: 'cp_write_protected' },
+  // Patch round 5 (R4-F2): the same working-folder options with a program that is no writer (an editor, an interpreter). Under an
+  // unknown folder a relative operand that a protected path ends with stops (S0, protected_path_operand); a known folder resolves it.
+  { parser: 'env --chdir (editor operand)', exact: ['env --chdir={PN} vim {N}', 'stop'], short: 'env --chdi={PN} vim {N}', unk: 'env --zz-unknown={PN} vim {N}', reasons: 'protected_path_operand' },
+  { parser: 'sudo --chdir (editor operand)', exact: ['sudo --chdir={PN} vim {N}', 'stop'], short: 'sudo --chdi={PN} vim {N}', unk: 'sudo --zz-unknown vim {N}', reasons: 'protected_path_operand' },
+  { parser: 'doas (editor operand)', exact: ['doas --chdir={PN} vim {N}', 'stop'], short: 'doas --chdi={PN} vim {N}', unk: 'doas --zz-unknown vim {N}', reasons: 'protected_path_operand' },
+  { parser: 'env -C value unreadable (interpreter operand)', exact: ['env -C {PN} node tool.js {N}', 'stop'], short: 'env -C "$D" node tool.js {N}', unk: 'env --chdir "$D" node tool.js {N}', reasons: 'protected_path_operand' },
+  { parser: 'sudo -D value unreadable (interpreter operand)', exact: ['sudo -D {PN} python3 tool.py {N}', 'stop'], short: 'sudo -D "$D" python3 tool.py {N}', unk: 'sudo --chdir "$D" python3 tool.py {N}', reasons: 'protected_path_operand' },
+  // Patch round 5 (R4-L1): a -TT after a letter the zip scan cannot read (-m moves the inputs) still takes a command
+  { parser: 'zip -TT after an unread letter', exact: ['zip /tmp/p5.zip /tmp/p5-in -T -mTT "rm {T}"', 'stop'], short: 'zip /tmp/p5.zip /tmp/p5-in -T -mTT"rm {T}"', unk: 'zip /tmp/p5.zip /tmp/p5-in -T -mTT="rm {T}"', reasons: 'rm_write_protected' },
   // tar option reader (commands the options run)
   { parser: 'tar --to-command', exact: ['tar -xf /tmp/p3.tar --to-command="rm {T}"', 'stop'], short: 'tar -xf /tmp/p3.tar --to-comm="rm {T}"', unk: 'tar -xf /tmp/p3.tar --zz-unknown="rm {T}"' },
   { parser: 'tar --create (inputs are reads)', exact: ['tar --create --file=/tmp/p3-out.tar {T}', 'pass'], short: 'tar --crea --file=/tmp/p3-out.tar {T}', unk: 'tar --create --zz-unknown --file=/tmp/p3-out.tar {T}' },

@@ -79,6 +79,9 @@ const HOOK_ROWS = [
   // patch round 4: attached short values, zip -TT / -lf, the working folder of env / sudo / doas
   'attached -t value (cp)', 'attached -t value (cp, short cluster)', 'attached -t value (mv)', 'attached -t value (install)', 'zip -TT (command)', 'zip --unzip-command',
   'zip -TT in a cluster', 'zip -lf (log file)', 'env --chdir (relative write)', 'sudo --chdir (relative write)', 'doas (relative write)', 'env -C value unreadable', 'sudo -D value unreadable',
+  // patch round 5: the same folder options with an editor or an interpreter operand, zip -TT after an unread letter
+  'env --chdir (editor operand)', 'sudo --chdir (editor operand)', 'doas (editor operand)', 'env -C value unreadable (interpreter operand)', 'sudo -D value unreadable (interpreter operand)',
+  'zip -TT after an unread letter',
 ].map((name) => PARSERS.find((p) => p.parser === name));
 
 test('long options (hook): the fixed table through the real hook CLI on the 7 host paths; Grok gives its fixed denial', () => {

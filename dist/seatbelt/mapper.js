@@ -974,6 +974,7 @@ function newRun(rawEnv, source, deadline) {
         env, home, fold, hits: [], flags: new Set(), parse: 'ok', wsRoots: [...wsRoots], tmpRoots: [...tmpRoots],
         isProtected: (abs) => protectedRegexes.some((re) => re.test(fold ? abs.toLowerCase() : abs)),
         isOperandProtected: (abs) => operandRegexes.some((re) => re.test(fold ? abs.toLowerCase() : abs)),
+        tailPatterns: [...protectedPatterns.filter((p) => !OPERAND_RULE_OMITS.has(p)), ...OPERAND_RULE_EXTRA].map((p) => tailPattern(p, fold ? home.toLowerCase() : home, fold)),
         protectedAnchors: anchors.map((a) => (fold ? a.toLowerCase() : a)),
         operandAnchors: operandAnchors.map((a) => (fold ? a.toLowerCase() : a)),
         secretRegexes: tables_1.SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
@@ -5407,7 +5408,18 @@ function zipScan(rest) {
                     pos += 1;
                 }
                 else {
+                    // Patch round 5 (R4-L1): a letter the scan cannot read ends the reading, but a `TT` after it still takes a command (`-mTT cmd`).
                     ok = false;
+                    const tt = body.indexOf('TT', pos);
+                    if (tt !== -1) {
+                        const attached = body.slice(tt + 2).replace(/^=/, '');
+                        if (attached !== '')
+                            commands.push(litArg(attached));
+                        else if (i + 1 < rest.length) {
+                            commands.push(rest[i + 1]);
+                            i += 1;
+                        }
+                    }
                     break;
                 }
                 if (kind === 'v' || kind === 'w' || kind === 'c') {
@@ -5597,6 +5609,57 @@ function protectedOperandCheck(prog, rest, ctx, run) {
             return;
     }
 }
+function tailPattern(pattern, home, fold) {
+    let p = pattern.startsWith('~/') ? `${home}/${pattern.slice(2)}` : pattern;
+    const tree = /(?:^|\/)\*\*$/.test(p);
+    if (tree)
+        p = p.replace(/\/?\*\*$/, '');
+    let segs = (fold ? p.toLowerCase() : p).split('/').filter(Boolean);
+    const k = segs.lastIndexOf('**');
+    if (k !== -1)
+        segs = segs.slice(k + 1);
+    return { segs, tree, open: k !== -1 };
+}
+function tailSegmentMatches(pattern, name) {
+    if (/[*?[]/.test(name))
+        return true;
+    if (!/[*?]/.test(pattern))
+        return pattern === name;
+    return new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`).test(name);
+}
+function relativeOperandTail(text, run) {
+    const expanded = expandTilde(text, run);
+    if (expanded === null || path.posix.isAbsolute(expanded))
+        return false;
+    const parts = path.posix.normalize(run.fold ? expanded.toLowerCase() : expanded).split('/').filter((x) => x !== '' && x !== '.');
+    while (parts.length > 0 && parts[0] === '..')
+        parts.shift();
+    if (parts.length === 0)
+        return false;
+    return run.tailPatterns.some((t) => {
+        if (t.segs.length === 0)
+            return false;
+        if (!t.tree) {
+            let i = parts.length - 1;
+            let j = t.segs.length - 1;
+            while (i >= 0 && j >= 0) {
+                if (!tailSegmentMatches(t.segs[j], parts[i]))
+                    return false;
+                i -= 1;
+                j -= 1;
+            }
+            return i < 0 || t.open;
+        }
+        for (let n = 1; n <= Math.min(t.segs.length, parts.length); n += 1) {
+            let same = true;
+            for (let m = 0; m < n && same; m += 1)
+                same = tailSegmentMatches(t.segs[t.segs.length - n + m], parts[m]);
+            if (same)
+                return true;
+        }
+        return false;
+    });
+}
 function protectedOperand(a, ctx, run, opts, depth) {
     const { tree, remoteSpecs } = opts;
     if (a.text === null) {
@@ -5623,6 +5686,8 @@ function protectedOperand(a, ctx, run, opts, depth) {
                 return true;
             continue;
         }
+        if (ctx.cwdStrict === true && relativeOperandTail(text, run))
+            return hit(run, 'S0', 'protected_path_operand');
         const abs = absCandidates(text, ctx, run);
         if (!abs)
             continue;
@@ -6118,6 +6183,91 @@ function wrapperLongUnlisted(t, list) {
     const mode = list.get(eq === -1 ? t.slice(2) : t.slice(2, eq));
     return mode === undefined || (eq !== -1 && mode === 'n');
 }
+// Patch round 5 (R4-F1): the words env itself reads out of a `-S` / `--split-string` text (quotes, backslash, a `#` comment).
+function envSplitWords(text) {
+    const out = [];
+    let cur = '';
+    let inWord = false;
+    let quote = '';
+    for (let k = 0; k < text.length; k += 1) {
+        const c = text[k];
+        if (quote) {
+            if (c === quote)
+                quote = '';
+            else if (c === '\\' && quote === '"' && k + 1 < text.length) {
+                k += 1;
+                cur += text[k];
+            }
+            else
+                cur += c;
+            continue;
+        }
+        if (c === "'" || c === '"') {
+            quote = c;
+            inWord = true;
+            continue;
+        }
+        if (c === '\\' && k + 1 < text.length) {
+            if (text[k + 1] === 'c')
+                break;
+            k += 1;
+            cur += text[k];
+            inWord = true;
+            continue;
+        }
+        if (c === '#' && !inWord)
+            break;
+        if (/\s/.test(c)) {
+            if (inWord) {
+                out.push(cur);
+                cur = '';
+                inWord = false;
+            }
+            continue;
+        }
+        cur += c;
+        inWord = true;
+    }
+    if (inWord)
+        out.push(cur);
+    return out;
+}
+// Whether those words (then the words after the text; null = a dynamic word) hold a command, and whether one of them clears the environment.
+function envSplitScan(words) {
+    let clean = false;
+    const queue = [...words];
+    while (queue.length > 0) {
+        const w = queue.shift();
+        if (w === null)
+            return { command: true, clean };
+        if (w === '-i' || w === '--ignore-environment' || w === '-') {
+            clean = true;
+            continue;
+        }
+        if (w === '-u' || w === '--unset' || w === '-C' || w === '--chdir') {
+            queue.shift();
+            continue;
+        }
+        // A further -S text is split the same way and its words come next.
+        if (w === '-S' || w === '--split-string') {
+            const next = queue.shift();
+            if (next === null)
+                return { command: true, clean };
+            if (next !== undefined)
+                queue.unshift(...envSplitWords(next));
+            continue;
+        }
+        const attached = w.startsWith('--split-string=') ? w.slice(15) : /^-S./.test(w) ? w.slice(2) : null;
+        if (attached !== null) {
+            queue.unshift(...envSplitWords(attached));
+            continue;
+        }
+        if (w.startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w))
+            continue;
+        return { command: true, clean };
+    }
+    return { command: false, clean };
+}
 function envWrapper(rest, ctx, run, x) {
     let i = 0;
     let clean = false;
@@ -6163,8 +6313,14 @@ function envWrapper(rest, ctx, run, x) {
             const attached = t.startsWith('--split-string=') ? t.slice(15) : /^-S./.test(t) ? t.slice(2) : null;
             const s = attached !== null ? litArg(attached) : rest[i + 1];
             const after = rest.slice(attached !== null ? i + 1 : i + 2);
-            if (s && s.text !== null)
+            if (s && s.text !== null) {
                 evalShell([s.text, ...after.map((a) => (a.text !== null ? shellQuote(a.text) : '"$__d"'))].join(' '), childCtx(wrapperContext(w, ctx), { stdinFeed: withFeed(ctx, x, run).stdinFeed }), run);
+                // Patch round 5 (R4-F1): the split text and the words after it hold no command (empty, only NAME=value, only env options):
+                // env prints its whole environment, the same S4 stop as plain `env`, unless -i, --ignore-environment or `-` cleared it.
+                const scan = envSplitScan([...envSplitWords(s.text), ...after.map((a) => a.text)]);
+                if (!scan.command && !scan.clean && !clean)
+                    hit(run, 'S4', 'env_dump_env');
+            }
             else
                 tripwire(rest.map(argText).join(' '), run);
             return;
