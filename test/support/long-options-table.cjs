@@ -28,10 +28,10 @@ const fill = (cmd, t, home) => cmd.replace(/\{T\}/g, t.T).replace(/\{D\}/g, t.D)
 // `reasons` names a reason code the strict row must carry (the parser under test stopped it, not another rule).
 const PARSERS = [
   // cpDestination
-  { parser: 'cpDestination (source read)', exact: ['cp --reflink=auto {T} /tmp/p3-dst', 'pass'], short: 'cp --refl=auto {T} /tmp/p3-dst', unk: 'cp --zz-unknown {T} /tmp/p3-dst' },
-  { parser: 'cpDestination (--target-directory)', exact: ['cp --target-directory={D} /tmp/p3-x', 'stop'], short: 'cp --targ={D} /tmp/p3-x', unk: 'cp --zz-unknown {D} /tmp/p3-x' },
-  { parser: 'cpDestination (link copy)', exact: ['cp --link {T} /tmp/p3-l', 'stop'], short: 'cp --li {T} /tmp/p3-l', unk: 'cp --zz-unknown {T} /tmp/p3-l' },
-  { parser: 'cpDestination (value word last)', exact: ['cp {T} /tmp/p3-dst --sparse always', 'pass'], short: 'cp /tmp/p3-x {T} --spar always', unk: 'cp /tmp/p3-x {T} --zz-unknown always' },
+  { parser: 'cpDestination (source read)', exact: ['cp --reflink=auto {T} /tmp/p3-dst', 'pass'], short: 'cp --refl=auto {T} /tmp/p3-dst', unk: 'cp --zz-unknown {T} /tmp/p3-dst', reasons: ['cp_write_protected', 'protected_path_operand'] },
+  { parser: 'cpDestination (--target-directory)', exact: ['cp --target-directory={D} /tmp/p3-x', 'stop'], short: 'cp --targ={D} /tmp/p3-x', unk: 'cp --zz-unknown {D} /tmp/p3-x', reasons: ['cp_write_protected', 'protected_path_operand'] },
+  { parser: 'cpDestination (link copy)', exact: ['cp --link {T} /tmp/p3-l', 'stop'], short: 'cp --li {T} /tmp/p3-l', unk: 'cp --zz-unknown {T} /tmp/p3-l', reasons: ['cp_write_protected', 'protected_path_operand'] },
+  { parser: 'cpDestination (value word last)', exact: ['cp {T} /tmp/p3-dst --sparse always', 'pass'], short: 'cp /tmp/p3-x {T} --spar always', unk: 'cp /tmp/p3-x {T} --zz-unknown always', reasons: ['protected_path_operand'] },
   // modelled writers (writeTargets / targetDirFlag)
   { parser: 'writeTargets mv', exact: ['mv --target-directory={D} /tmp/p3-x', 'stop'], short: 'mv --targ={D} /tmp/p3-x', unk: 'mv --zz-unknown={D} /tmp/p3-x', reasons: 'mv_write_protected' },
   { parser: 'writeTargets install', exact: ['install --target-directory={D} /tmp/p3-x', 'stop'], short: 'install --targ={D} /tmp/p3-x', unk: 'install --zz-unknown={D} /tmp/p3-x', reasons: 'install_write_protected' },
@@ -72,7 +72,7 @@ const PARSERS = [
   { parser: 'git read-only (log)', exact: ['git log --oneline -- {T}', 'pass'], short: 'git log --onel -- {T}', unk: 'git log --zz-unknown -- {T}' },
   { parser: 'git read-only (--output)', exact: ['git diff --output=/tmp/p3-out.patch {T}', 'pass'], short: 'git diff --outp={T}', unk: 'git diff --zz-unknown={T}' },
   { parser: 'git index-only (reset)', exact: ['git reset --mixed -- {T}', 'pass'], short: 'git reset --har -- {T}', unk: 'git reset --zz-unknown -- {T}' },
-  { parser: 'git index-only (restore)', exact: ['git restore --staged {T}', 'pass'], short: 'git restore --staged --work {T}', unk: 'git restore --staged --zz-unknown {T}' },
+  { parser: 'git index-only (restore)', exact: ['git restore --staged {T}', 'pass'], short: 'git restore --staged --work {T}', unk: 'git restore --staged --zz-unknown {T}', reasons: ['git_restore_protected_path', 'protected_path_operand'] },
   { parser: 'git index-only (rm)', exact: ['git rm --cached {T}', 'pass'], short: 'git rm --cach {T}', unk: 'git rm --cached --zz-unknown {T}' },
   { parser: 'git grep pager command', exact: ['git grep --open-files-in-pager="rm {T}" foo', 'stop'], short: 'git grep --open-f="rm {T}" foo', unk: 'git grep --zz-unknown="rm {T}" foo' },
   // tar option reader (commands the options run)

@@ -24,7 +24,7 @@ const sh = (command) => evaluateSeatbelt({ tool_name: 'Bash', tool_input: { comm
 const strictAnswer = (d, row, cmd) => {
   assert.equal(d.decision, 'stop', `${row.parser}: ${cmd}: ${d.reasons}`);
   assert.ok(d.hits.some((h) => h.category === 'S0'), `${row.parser}: ${cmd}: ${d.reasons}`);
-  if (row.reasons) assert.ok(d.reasons.some((r) => r.startsWith(row.reasons)), `${row.parser}: ${cmd}: the parser under test did not stop it: ${d.reasons}`);
+  for (const want of [].concat(row.reasons || [])) assert.ok(d.reasons.some((r) => r.startsWith(want)), `${row.parser}: ${cmd}: the parser under test did not stop it (no ${want}): ${d.reasons}`);
 };
 
 test('long options: the fixed table (exact keeps its answer; shortened and unknown give the strict S0 answer) on the three S0 targets', () => {
