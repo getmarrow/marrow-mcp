@@ -111,6 +111,20 @@ test('NEW-2 mapper: a reader with an option that writes or runs is no reader (ba
   }
 });
 
+test('NEW-2 mapper: cp reads its sources (a backup passes); a link copy, a dynamic word or a protected destination stops', () => {
+  for (const c of ['cp ~/.claude/settings.json ~/.claude/settings.json.bak', 'cp ~/.claude/settings.json /tmp/s.json', 'cp -- ~/.claude/settings.json /tmp/y',
+    'cp -p ~/.claude/plugins/installed_plugins.json /tmp/ip.json']) {
+    assert.equal(sh(c).decision, 'pass', c);
+  }
+  for (const c of ['cp -l ~/.claude/settings.json /tmp/x', 'cp -s ~/.claude/settings.json /tmp/x', 'cp -rl ~/.claude /tmp/x', 'cp --link ~/.claude/settings.json /tmp/x',
+    'cp --symbolic-link ~/.claude/settings.json /tmp/x', 'cp $F ~/.claude/settings.json /tmp/x', 'cp -t ~/.claude /tmp/x', 'cp -t/home/u/.claude /tmp/x',
+    'cp -rt ~/.claude /tmp/x', 'cp -S .bak /tmp/a ~/.claude/settings.json', 'cp /tmp/a ~/.claude/plugins/installed_plugins.json']) {
+    const d = sh(c);
+    assert.equal(d.decision, 'stop', `${c}: ${d.reasons}`);
+    assert.ok(d.hits.some((h) => h.category === 'S0'), `${c}: ${d.reasons}`);
+  }
+});
+
 test('NEW-2 mapper: readers, builtins, scripts, remote paths and ordinary work pass (friction controls)', () => {
   const T = '~/.claude/settings.json';
   for (const c of [

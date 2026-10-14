@@ -3873,6 +3873,42 @@ function withoutScript(prog: string, rest: Arg[]): Arg[] {
   return rest;
 }
 
+// cp only reads its sources (`cp ~/.claude/settings.json ~/.claude/settings.json.bak` is a backup): only the
+// destination is an operand. A hard or symbolic link (-l, -s, --link, --symbolic-link) makes the source
+// writable through the copy, and a word the mapper cannot read could be such an option: then every
+// operand counts (null).
+function cpDestination(rest: Arg[]): Arg[] | null {
+  const positional: Arg[] = [];
+  let target: Arg | null = null;
+  let options = true;
+  for (let i = 0; i < rest.length; i += 1) {
+    const t = rest[i].text;
+    if (t === null) return null;
+    if (options && t === '--') { options = false; continue; }
+    if (options && t.length > 1 && t.startsWith('-')) {
+      if (t.startsWith('--')) {
+        if (/^--(?:link|symbolic-link)$/.test(t)) return null;
+        if (t === '--target-directory' || t === '--suffix') { if (t === '--target-directory') target = rest[i + 1] || null; i += 1; continue; }
+        if (t.startsWith('--target-directory=')) { target = litArg(t.slice('--target-directory='.length)); continue; }
+        continue;
+      }
+      // A short cluster: letters up to a value-taking -S or -t (`-rt DIR`, `-tDIR`, `-S.bak`).
+      const m = /^-([A-Za-z]*?)([St])(.*)$/.exec(t);
+      const flags = m ? m[1] : t.slice(1);
+      if (/[ls]/.test(flags)) return null;
+      if (m) {
+        const value = m[3] !== '' ? litArg(m[3]) : rest[i + 1] || null;
+        if (m[3] === '') i += 1;
+        if (m[2] === 't') target = value;
+      }
+      continue;
+    }
+    positional.push(rest[i]);
+  }
+  if (target) return [target];
+  return positional.length ? [positional[positional.length - 1]] : [];
+}
+
 // The command text a reader's option runs: `bat --pager <cmd>`, `less '+!<cmd>'` / `'+|<mark><cmd>'`,
 // `git grep -O<cmd>` / `--open-files-in-pager=<cmd>`.
 function readerCommandTexts(prog: string, rest: Arg[]): string[] {
@@ -3935,6 +3971,7 @@ function protectedOperandCheck(prog: string, rest: Arg[], ctx: Ctx, run: Run): v
     }
   } else if (!operandRuleApplies(prog, rest)) return;
   else if (SHELLS.has(prog) || INTERPRETERS.has(prog) || /^python3\.\d+$/.test(prog)) operands = withoutScript(prog, rest);
+  else if (prog === 'cp') operands = cpDestination(rest) ?? rest;
   const opts: OperandOpts = {
     tree: !OPERAND_CREATE_ONLY.has(prog), remoteSpecs: prog === 'scp' || prog === 'rsync' || prog === 'sftp',
     // A secret path among the operands already stopped as S4 (genericOperandChecks): it keeps that answer.
