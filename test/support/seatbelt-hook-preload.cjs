@@ -8,7 +8,8 @@
 //   SBT_RECORD       file: every recordSeatbeltDecision() call appends its JSON record
 //   SBT_FS_FAULT     ENOSPC | EACCES: a write to (ENOSPC) or an open of (EACCES) a receipt file fails (U6)
 //   SBT_THROW        mapper | mode | git | load | record: that seatbelt part throws
-//   SBT_SLOW_MS      the mapper sleeps this long first (the hook budget is 300 ms)
+//   SBT_SLOW_MS      the mapper sleeps this long first (the hook budget is 300 ms; with this switch the budget stays 300 ms)
+//   SBT_HOOK_BUDGET  production: keep the hook's 300 ms budget (by default a spawned hook gets 30 s so load cannot flip an answer)
 //   SBT_ROLLOUT_KEYLESS  off: SEATBELT_ROLLOUT.keyless is forced to 'off' (the kill switch, audit I1)
 const fs = require('node:fs');
 const os = require('node:os');
@@ -101,9 +102,16 @@ if (fault === 'mode') wrapAfterLoad('seatbelt-mode.js', (m) => { m.resolveSeatbe
 if (fault === 'git') wrapAfterLoad('seatbelt-git.js', (m) => { m.discoverGitDirs = () => { throw new Error('injected resolver crash'); }; });
 if (fault === 'record') wrapAfterLoad('seatbelt/record.js', (m) => { m.recordSeatbeltDecision = () => { throw new Error('injected record crash'); }; });
 
-if (env.SBT_ROLLOUT_KEYLESS) {
-  const keyless = env.SBT_ROLLOUT_KEYLESS;
-  wrapAfterLoad('seatbelt/hook.js', (m) => { m.SEATBELT_ROLLOUT = Object.freeze({ ...m.SEATBELT_ROLLOUT, keyless }); });
+// The hook's own 300 ms budget turns any check that runs long into a fail-closed stop (U5.fail_closed, hook_budget). On a
+// loaded machine that flips answers these tests are not about, so a spawned hook gets a roomy budget by default.
+// SBT_SLOW_MS (the test of the budget itself) and SBT_HOOK_BUDGET=production keep the production 300 ms.
+const roomyBudget = !env.SBT_SLOW_MS && env.SBT_HOOK_BUDGET !== 'production';
+if (env.SBT_ROLLOUT_KEYLESS || roomyBudget) {
+  // One patch for both switches: wrapAfterLoad patches a module once.
+  wrapAfterLoad('seatbelt/hook.js', (m) => {
+    if (env.SBT_ROLLOUT_KEYLESS) m.SEATBELT_ROLLOUT = Object.freeze({ ...m.SEATBELT_ROLLOUT, keyless: env.SBT_ROLLOUT_KEYLESS });
+    if (roomyBudget) m.HOOK_BUDGET_MS = 30_000;
+  });
 }
 
 if (env.SBT_SLOW_MS) {
