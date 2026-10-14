@@ -2487,10 +2487,12 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
 // (for git none before the subcommand: `git -c core.pager=… push --help` is not help), no glob, quote,
 // variable or substitution, no assignment prefix or wrapper, no redirection, chain, pipe or second line,
 // not a path and not through npx/bunx. Anything else gets the normal outage answer.
-const HELP_SUBS: Record<string, RegExp | null> = {
+const HELP_SUBS: Record<string, RegExp> = {
   git: /^push$/, npm: /^(?:publish|unpublish|deprecate)$/, pnpm: /^(?:publish|unpublish|deprecate)$/, yarn: /^(?:publish|unpublish|deprecate)$/,
   gh: /^(?:pr|repo|release|api)$/, kubectl: /^(?:delete|apply|scale|rollout|patch|replace|create|drain|cordon|taint|label|annotate|set|edit)$/,
-  helm: /^(?:install|upgrade|uninstall|delete|rollback)$/, vercel: null,
+  helm: /^(?:install|upgrade|uninstall|delete|rollback)$/,
+  // vercel takes an unknown first word as a folder to deploy, so only its real subcommands count.
+  vercel: /^(?:deploy|remove|rm|rollback|promote|redeploy)$/,
 };
 function outageHelpForm(word0: string | null, prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): boolean {
   if (word0 === null || ctx.depth !== 0 || x.cmd.assignments.length || x.cmd.redirects.length || x.cmd.heredoc !== null) return false;
@@ -2503,11 +2505,7 @@ function outageHelpForm(word0: string | null, prog: string, rest: Arg[], ctx: Ct
   if (words.length === 1) return words[0] === '--help' || words[0] === '--version';
   const [sub, flag] = words;
   if (flag !== '--help' || !/^[a-z][a-z0-9:-]*$/.test(sub)) return false;
-  if (Object.prototype.hasOwnProperty.call(HELP_SUBS, prog)) {
-    const re = HELP_SUBS[prog];
-    return re === null || re.test(sub);
-  }
-  return OUTAGE_ANY_SUB[prog].test(sub);
+  return (Object.prototype.hasOwnProperty.call(HELP_SUBS, prog) ? HELP_SUBS[prog] : OUTAGE_ANY_SUB[prog]).test(sub);
 }
 
 // I3 outage list: a program that changes something outside this machine. Recorded in `run.risk`; the

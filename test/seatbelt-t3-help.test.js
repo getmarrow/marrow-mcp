@@ -13,7 +13,7 @@ const { makeEnv } = require('./support/seatbelt-fakes.cjs');
 const ev = (c) => evaluateSeatbeltShell(c, makeEnv());
 
 const HELP = ['git push --help', 'npm publish --help', 'pnpm publish --help', 'wrangler deploy --help', 'terraform apply --help', 'vercel --version', 'vercel --help',
-  'git --version', 'gh pr --help', 'kubectl delete --help', 'helm upgrade --help', 'fly deploy --help'];
+  'git --version', 'gh pr --help', 'kubectl delete --help', 'helm upgrade --help', 'fly deploy --help', 'vercel deploy --help'];
 const NOT_HELP = [
   // git options before the subcommand (pager, alias, exec path, repository and config redirection).
   'git -c core.pager=sh push --help', 'git -c alias.push=x push --help', 'git -C /tmp push --help', 'git --exec-path=/tmp push --help',
@@ -32,6 +32,7 @@ const NOT_HELP = [
   'f() { npm publish; }; f --help', 'alias git="npm publish"; git push --help',
   // Programs and subcommands off the list.
   'npm run --help', 'npm run deploy --help', 'docker push --help', 'make deploy --help', 'railway run --help', 'aws s3 rm --help', 'gcloud run deploy --help',
+  'vercel prod --help', 'vercel ./site --help', 'make --help', 'gh secret --help',
 ];
 
 test('T-3 mapper: the exact minimal help shapes are marked help-only; keyless stops do not change', () => {

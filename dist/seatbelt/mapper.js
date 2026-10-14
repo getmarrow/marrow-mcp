@@ -3073,7 +3073,9 @@ function dispatchProgram(prog, args, rest, pathLike, ctx, run, x) {
 const HELP_SUBS = {
     git: /^push$/, npm: /^(?:publish|unpublish|deprecate)$/, pnpm: /^(?:publish|unpublish|deprecate)$/, yarn: /^(?:publish|unpublish|deprecate)$/,
     gh: /^(?:pr|repo|release|api)$/, kubectl: /^(?:delete|apply|scale|rollout|patch|replace|create|drain|cordon|taint|label|annotate|set|edit)$/,
-    helm: /^(?:install|upgrade|uninstall|delete|rollback)$/, vercel: null,
+    helm: /^(?:install|upgrade|uninstall|delete|rollback)$/,
+    // vercel takes an unknown first word as a folder to deploy, so only its real subcommands count.
+    vercel: /^(?:deploy|remove|rm|rollback|promote|redeploy)$/,
 };
 function outageHelpForm(word0, prog, rest, ctx, run, x) {
     if (word0 === null || ctx.depth !== 0 || x.cmd.assignments.length || x.cmd.redirects.length || x.cmd.heredoc !== null)
@@ -3092,11 +3094,7 @@ function outageHelpForm(word0, prog, rest, ctx, run, x) {
     const [sub, flag] = words;
     if (flag !== '--help' || !/^[a-z][a-z0-9:-]*$/.test(sub))
         return false;
-    if (Object.prototype.hasOwnProperty.call(HELP_SUBS, prog)) {
-        const re = HELP_SUBS[prog];
-        return re === null || re.test(sub);
-    }
-    return OUTAGE_ANY_SUB[prog].test(sub);
+    return (Object.prototype.hasOwnProperty.call(HELP_SUBS, prog) ? HELP_SUBS[prog] : OUTAGE_ANY_SUB[prog]).test(sub);
 }
 // I3 outage list: a program that changes something outside this machine. Recorded in `run.risk`; the
 // hook holds such an action only while Marrow cannot be reached, and it is never a stop here. A dynamic
