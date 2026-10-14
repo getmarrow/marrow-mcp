@@ -363,6 +363,19 @@ export const ZIP_LONG: LongList = longList(
   'filesync display-counts display-dots output-file= temp-path= help version',
 );
 
+// The wrappers that can change the working folder of the command they run (patch round 4). Full spellings from each
+// tool's own documentation: GNU env 9.4 (`env --help`), sudo 1.9 (`sudo --help` and the manual), OpenBSD doas (it has
+// no long option at all). A long option that is not on a list could be a chdir option (GNU tools read a unique
+// prefix, `env --chd=DIR`), so the working folder is unknown then.
+export const ENV_LONG: LongList = longList(
+  'ignore-environment null unset= chdir= split-string= block-signal[=] default-signal[=] ignore-signal[=] list-signal-handling debug help version',
+);
+export const SUDO_LONG: LongList = longList(
+  'askpass bell preserve-env[=] set-home remove-timestamp no-update preserve-groups stdin version background edit help login reset-timestamp ' +
+  'list non-interactive shell validate close-from= chdir= chroot= command-timeout= other-user= group= host= prompt= role= type= user=',
+);
+export const DOAS_LONG: LongList = longList('');
+
 export const GIT_READ_LONG: LongList = longList(
   'abbrev~ abbrev-commit~ abbrev-ref~ absolute-git-dir~ after~ after-context~ ahead-behind~ aliases~ all~ ' +
   'all-match~ allow-unknown-type~ alternate-refs~ always~ amend~ ancestry-path~ anchored~ and~ annotate-stdin~ ' +

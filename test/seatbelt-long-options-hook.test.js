@@ -76,6 +76,9 @@ const HOOK_ROWS = [
   'cpDestination (source read)', 'cpDestination (--target-directory)', 'writeTargets tar -C', 'writeTargets sed -i', 'writeTargets curl', 'reader cat', 'reader rg', 'reader jq',
   'reader bat', 'reader tree', 'reader prettier', 'sedReadOnly', 'awkReadOnly', 'find (read)', 'find (-delete)', 'git read-only (diff)', 'git index-only (reset)',
   'git index-only (restore)', 'git grep pager command', 'tar --to-command', 'tar --create (inputs are reads)',
+  // patch round 4: attached short values, zip -TT / -lf, the working folder of env / sudo / doas
+  'attached -t value (cp)', 'attached -t value (cp, short cluster)', 'attached -t value (mv)', 'attached -t value (install)', 'zip -TT (command)', 'zip --unzip-command',
+  'zip -TT in a cluster', 'zip -lf (log file)', 'env --chdir (relative write)', 'sudo --chdir (relative write)', 'doas (relative write)', 'env -C value unreadable', 'sudo -D value unreadable',
 ].map((name) => PARSERS.find((p) => p.parser === name));
 
 test('long options (hook): the fixed table through the real hook CLI on the 7 host paths; Grok gives its fixed denial', () => {

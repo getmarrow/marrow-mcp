@@ -12,15 +12,24 @@ const FILES = {
   '/home/u/.codex/hooks.json': JSON.stringify({ hooks: HOOKS }, null, 2),
   '/home/u/.bashrc': '# rc\n',
 };
-const DIRS = ['/home/u/.claude', '/home/u/.claude/plugins/cache/getmarrow/marrow', '/home/u/.npm/_npx/abc123/node_modules/@getmarrow', '/home/u/.codex'];
+const DIRS = ['/home/u/.claude', '/home/u/.claude/plugins', '/home/u/.claude/plugins/cache/getmarrow', '/home/u/.claude/plugins/cache/getmarrow/marrow', '/home/u/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts',
+  '/home/u/.npm/_npx/abc123/node_modules', '/home/u/.npm/_npx/abc123/node_modules/@getmarrow', '/home/u/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist', '/home/u/.codex'];
 
 // The three S0 targets: a file and a folder that holds it. {A} is the file's absolute path (for awk program text).
+// Patch round 4 (relative destinations): {P} is a folder to work in (`cd {P}` or the folder an env / sudo / doas chdir option
+// names, with a literal `~` or an absolute path), {R} a relative name of a protected folder inside it (an attached `-t{R}`
+// value) and {F} a relative name of the protected file inside {PA}, the same folder as an absolute path.
 const TARGETS = [
-  { name: 'settings', T: '~/.claude/settings.json', D: '~/.claude', A: '/home/u/.claude/settings.json' },
-  { name: 'plugins', T: '~/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts/marrow-launch.cjs', D: '~/.claude/plugins/cache/getmarrow/marrow', A: '/home/u/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts/marrow-launch.cjs' },
-  { name: 'npx copy', T: '~/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist/cli.js', D: '~/.npm/_npx/abc123/node_modules/@getmarrow', A: '/home/u/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist/cli.js' },
+  { name: 'settings', T: '~/.claude/settings.json', D: '~/.claude', A: '/home/u/.claude/settings.json', P: '~/.claude', PA: '/home/u/.claude', R: 'plugins', F: 'settings.json' },
+  { name: 'plugins', T: '~/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts/marrow-launch.cjs', D: '~/.claude/plugins/cache/getmarrow/marrow', A: '/home/u/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts/marrow-launch.cjs',
+    P: '~/.claude/plugins/cache/getmarrow', PA: '/home/u/.claude/plugins/cache/getmarrow/marrow/1.2.3/scripts', R: 'marrow', F: 'marrow-launch.cjs' },
+  { name: 'npx copy', T: '~/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist/cli.js', D: '~/.npm/_npx/abc123/node_modules/@getmarrow', A: '/home/u/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist/cli.js',
+    P: '~/.npm/_npx/abc123/node_modules', PA: '/home/u/.npm/_npx/abc123/node_modules/@getmarrow/mcp/dist', R: '@getmarrow', F: 'cli.js' },
 ];
-const fill = (cmd, t, home) => cmd.replace(/\{T\}/g, t.T).replace(/\{D\}/g, t.D).replace(/\{A\}/g, home ? t.A.replace('/home/u', home) : t.A);
+const fill = (cmd, t, home) => {
+  const h = (x) => (home ? x.replace('/home/u', home) : x);
+  return cmd.replace(/\{T\}/g, t.T).replace(/\{D\}/g, t.D).replace(/\{A\}/g, h(t.A)).replace(/\{PA\}/g, h(t.PA)).replace(/\{P\}/g, t.P).replace(/\{R\}/g, t.R).replace(/\{F\}/g, t.F);
+};
 
 // ------------------------------------------------------------------------------------------------
 // The fixed table. exact: the option spelled in full (the answer it had before this round); short: the option cut to
@@ -75,6 +84,24 @@ const PARSERS = [
   { parser: 'git index-only (restore)', exact: ['git restore --staged {T}', 'pass'], short: 'git restore --staged --work {T}', unk: 'git restore --staged --zz-unknown {T}', reasons: ['git_restore_protected_path', 'protected_path_operand'] },
   { parser: 'git index-only (rm)', exact: ['git rm --cached {T}', 'pass'], short: 'git rm --cach {T}', unk: 'git rm --cached --zz-unknown {T}' },
   { parser: 'git grep pager command', exact: ['git grep --open-files-in-pager="rm {T}" foo', 'stop'], short: 'git grep --open-f="rm {T}" foo', unk: 'git grep --zz-unknown="rm {T}" foo' },
+  // Patch round 4 (P3-F1): the attached value of a single-letter option is a destination whatever its first character
+  { parser: 'attached -t value (cp)', exact: ['cd {P} && cp --reflink=auto -t{R} /tmp/p4-x', 'stop'], short: 'cd {P} && cp --refl=auto -t{R} /tmp/p4-x', unk: 'cd {P} && cp --zz-unknown -t{R} /tmp/p4-x', reasons: ['cp_write_protected', 'protected_path_operand'] },
+  { parser: 'attached -t value (cp, short cluster)', exact: ['cd {P} && cp --reflink=auto -rt{R} /tmp/p4-x', 'stop'], short: 'cd {P} && cp --refl=auto -rt{R} /tmp/p4-x', unk: 'cd {P} && cp --zz-unknown -rt{R} /tmp/p4-x', reasons: ['protected_path_operand'] },
+  { parser: 'attached -t value (mv)', exact: ['cd {P} && mv -t{R} /tmp/p4-x', 'stop'], short: 'cd {P} && mv --verb -t{R} /tmp/p4-x', unk: 'cd {P} && mv --zz-unknown -t{R} /tmp/p4-x', reasons: ['protected_path_operand'] },
+  { parser: 'attached -t value (install)', exact: ['cd {P} && install -t{R} /tmp/p4-x', 'stop'], short: 'cd {P} && install --verb -t{R} /tmp/p4-x', unk: 'cd {P} && install --zz-unknown -t{R} /tmp/p4-x', reasons: ['protected_path_operand'] },
+  // Patch round 4 (P3-F2): zip reads a documented multi-letter option by its meaning (-TT runs a command, -lf writes a log file)
+  { parser: 'zip -TT (command)', exact: ['zip /tmp/p4.zip /tmp/p4-in -T -TT "rm {T}"', 'stop'], short: 'zip /tmp/p4.zip /tmp/p4-in -T --unzi="rm {T}"', unk: 'zip /tmp/p4.zip /tmp/p4-in -T --zz-unknown="rm {T}"', reasons: 'protected_path_operand' },
+  { parser: 'zip --unzip-command', exact: ['zip /tmp/p4.zip /tmp/p4-in -T --unzip-command="rm {T}"', 'stop'], short: 'zip /tmp/p4.zip /tmp/p4-in -T --unzip-comm="rm {T}"', unk: 'zip /tmp/p4.zip /tmp/p4-in -T --zz-unknown "rm {T}"', reasons: 'rm_write_protected' },
+  { parser: 'zip -TT in a cluster', exact: ['zip /tmp/p4.zip /tmp/p4-in -rTT "rm {T}"', 'stop'], short: 'zip /tmp/p4.zip /tmp/p4-in -r --unzi="rm {T}"', unk: 'zip /tmp/p4.zip /tmp/p4-in -r --zz-unknown="rm {T}"', reasons: 'rm_write_protected' },
+  { parser: 'zip -lf (log file)', exact: ['zip /tmp/p4.zip /tmp/p4-in -lf {T}', 'stop'], short: 'zip /tmp/p4.zip /tmp/p4-in --logf {T}', unk: 'zip /tmp/p4.zip /tmp/p4-in --zz-unknown {T}', reasons: 'protected_path_operand' },
+  { parser: 'zip multi-letter flags read', exact: ['zip -rq /tmp/p4.zip {D}', 'pass'], short: 'zip -rq /tmp/p4.zip {D} --recurse-pat', unk: 'zip -rq /tmp/p4.zip {D} --zz-unknown' },
+  // Patch round 4 (Residual 1): env / sudo / doas and the working folder of the command they run. A relative write destination
+  // under an unknown folder is a possible write to the protected file named {F} inside {PA}.
+  { parser: 'env --chdir (relative write)', exact: ['env --chdir={PA} cp /tmp/p4-x {F}', 'stop'], short: 'env --chdi={PA} cp /tmp/p4-x {F}', unk: 'env --zz-unknown={PA} cp /tmp/p4-x {F}', reasons: 'cp_write_protected' },
+  { parser: 'sudo --chdir (relative write)', exact: ['sudo --chdir={PA} cp /tmp/p4-x {F}', 'stop'], short: 'sudo --chdi={PA} cp /tmp/p4-x {F}', unk: 'sudo --zz-unknown cp /tmp/p4-x {F}', reasons: 'cp_write_protected' },
+  { parser: 'doas (relative write)', exact: ['doas --chdir={PA} cp /tmp/p4-x {F}', 'stop'], short: 'doas --chdi={PA} cp /tmp/p4-x {F}', unk: 'doas --zz-unknown cp /tmp/p4-x {F}', reasons: 'cp_write_protected' },
+  { parser: 'env -C value unreadable', exact: ['env -C {PA} cp /tmp/p4-x {F}', 'stop'], short: 'env -C "$D" cp /tmp/p4-x {F}', unk: 'env --chdir "$D" cp /tmp/p4-x {F}', reasons: 'cp_write_protected' },
+  { parser: 'sudo -D value unreadable', exact: ['sudo -D {PA} cp /tmp/p4-x {F}', 'stop'], short: 'sudo -D "$D" cp /tmp/p4-x {F}', unk: 'sudo --chdir "$D" cp /tmp/p4-x {F}', reasons: 'cp_write_protected' },
   // tar option reader (commands the options run)
   { parser: 'tar --to-command', exact: ['tar -xf /tmp/p3.tar --to-command="rm {T}"', 'stop'], short: 'tar -xf /tmp/p3.tar --to-comm="rm {T}"', unk: 'tar -xf /tmp/p3.tar --zz-unknown="rm {T}"' },
   { parser: 'tar --create (inputs are reads)', exact: ['tar --create --file=/tmp/p3-out.tar {T}', 'pass'], short: 'tar --crea --file=/tmp/p3-out.tar {T}', unk: 'tar --create --zz-unknown --file=/tmp/p3-out.tar {T}' },

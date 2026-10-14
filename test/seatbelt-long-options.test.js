@@ -211,3 +211,91 @@ test('F-AWK: an awk program that writes or runs from its own text has its quoted
     assert.equal(sh(c).decision, 'pass', c);
   }
 });
+
+// ------------------------------------------------------------------------------------------------
+// Patch round 4 (exact-final audit): P3-F1 (an attached short value is a destination whatever its first character),
+// P3-F2 (zip reads a documented multi-letter option by its meaning) and Residual 1 (env / sudo / doas and the working folder
+// of the command they run). A fixed table (the rows of test/support/long-options-table.cjs run in the first test of this file
+// and through the hook CLI) plus the rows below; no search for new spellings.
+
+test('patch round 4: the fixed rows stop on the three S0 targets (attached short values, zip -TT / -lf, wrapper working folders)', () => {
+  for (const t of TARGETS) {
+    for (const c of [
+      // P3-F1: the attached value of a short option, relative to a protected working folder
+      `cd ${t.P} && cp -t${t.R} /tmp/p4-x`, `cd ${t.P} && cp -rt${t.R} /tmp/p4-x`, `cd ${t.P} && mv -t${t.R} /tmp/p4-x`, `cd ${t.P} && ln -s -t${t.R} /tmp/p4-x`,
+      `cd ${t.P} && install -t${t.R} /tmp/p4-x`, `cd ${t.P} && cp --refl=auto -t${t.R} /tmp/p4-x`, `cd ${t.P} && cp --zz-unknown -t${t.R} /tmp/p4-x`,
+      // P3-F2: -TT and --unzip-command run a command, -lf writes a log file
+      `zip /tmp/p4.zip /tmp/p4-in -T -TT "rm ${t.T}"`, `zip /tmp/p4.zip /tmp/p4-in -T -TT="rm ${t.T}"`, `zip /tmp/p4.zip /tmp/p4-in -T -TT"rm ${t.T}"`, `zip /tmp/p4.zip /tmp/p4-in -rTT "rm ${t.T}"`,
+      `zip /tmp/p4.zip /tmp/p4-in -T --unzip-command "rm ${t.T}"`, `zip /tmp/p4.zip /tmp/p4-in -T --unzip-command="rm ${t.T}"`, `zip /tmp/p4.zip /tmp/p4-in -T --unzip-comm="rm ${t.T}"`,
+      `zip /tmp/p4.zip /tmp/p4-in -T -TT "bash -c 'rm ${t.T}'"`, `zip /tmp/p4.zip /tmp/p4-in -lf ${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -lf=${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -lf${t.T}`,
+      `zip /tmp/p4.zip /tmp/p4-in -rlf ${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -lf /tmp/p4.log -lf ${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -ds 1m -TT "rm ${t.T}"`,
+      // Residual 1: an unlisted long option or an unreadable chdir value leaves the working folder unknown
+      `env --chdir=${t.PA} cp /tmp/p4-x ${t.F}`, `env --chdi=${t.PA} cp /tmp/p4-x ${t.F}`, `env --zz-unknown cp /tmp/p4-x ${t.F}`, `env -C "$D" cp /tmp/p4-x ${t.F}`,
+      `env --chdir "$D" cp /tmp/p4-x ${t.F}`,
+      `sudo --chdir=${t.PA} cp /tmp/p4-x ${t.F}`, `sudo --chdi=${t.PA} cp /tmp/p4-x ${t.F}`, `sudo --zz-unknown cp /tmp/p4-x ${t.F}`, `sudo -D "$D" cp /tmp/p4-x ${t.F}`,
+      `sudo --chdir "$D" cp /tmp/p4-x ${t.F}`, `sudo -u root --zz-unknown mv /tmp/p4-x ${t.F}`,
+      `doas --chdir=${t.PA} cp /tmp/p4-x ${t.F}`, `doas --zz-unknown cp /tmp/p4-x ${t.F}`, `doas -u root --chdi=${t.PA} install /tmp/p4-x ${t.F}`,
+      // chains and wrappers around the same rows
+      `true && env --zz-unknown cp /tmp/p4-x ${t.F}`, `(sudo --zz-unknown cp /tmp/p4-x ${t.F})`, `bash -c 'env --zz-unknown cp /tmp/p4-x ${t.F}'`, `env --zz-unknown sudo --user=root cp /tmp/p4-x ${t.F}`,
+      `sudo --zz-unknown tee ${t.F} < /tmp/p4-x`, `sudo --zz-unknown rm -f ${t.F}`, `env --zz-unknown sh -c 'cp /tmp/p4-x ${t.F}'`,
+    ]) {
+      const d = sh(c);
+      assert.equal(d.decision, 'stop', `${c}: ${d.reasons}`);
+      assert.ok(d.hits.some((h) => h.category === 'S0'), `${c}: ${d.reasons}`);
+    }
+  }
+});
+
+test('patch round 4: a chdir option written with a dynamic value in one word is a dynamic command word and stops as before', () => {
+  for (const c of ['env -C"$D" cp /tmp/p4-x notes.txt', 'env --chdir="$D" cp /tmp/p4-x notes.txt', 'sudo --chdir="$D" cp /tmp/p4-x notes.txt', 'sudo -D"$D" cp /tmp/p4-x notes.txt']) {
+    assert.equal(sh(c).decision, 'stop', c);
+  }
+});
+
+test('patch round 4: ordinary commands in the same shapes keep passing (friction controls on non-protected paths)', () => {
+  for (const c of [
+    'cp -tbuild a.txt', 'cp -t build a.txt', 'cp -rtbuild src', 'mv -tbuild a.txt', 'install -tbin a.sh', 'cp -Sbak a.txt b.txt', 'cp --reflink=auto -tbuild a.txt', 'cp --zz-unknown -tbuild a.txt',
+    'zip -rq out.zip src', 'zip -r out.zip src', 'zip -rq out.zip src -x "*.git*"', 'zip -r9 out.zip src', 'zip -T out.zip src', 'zip -T -TT "unzip -tqq" out.zip src', 'zip -r -ds 1m out.zip src', 'zip -rdc out.zip src',
+    'zip -q -lf out.log out.zip src', 'zip -rq out.zip src -tt 2030-01-01', 'zip -X- out.zip src', 'zip -sc out.zip src', 'zip -fz- out.zip big', 'zip -rq -UN=UTF8 out.zip src',
+    'env --unset=FOO cp a b', 'env --unset FOO cp a b', 'env --chdir=/tmp/p4-work cp a b', 'env -C /tmp/p4-work cp a b', 'env -i FOO=1 cp /tmp/p4-a /tmp/p4-b', 'env --ignore-environment --null true',
+    'env --block-signal=INT cp /tmp/p4-a /tmp/p4-b', 'env --debug --default-signal cp /tmp/p4-a /tmp/p4-b',
+    'sudo --user=www cp a /var/www/x', 'sudo --user www cp /tmp/p4-a /tmp/p4-b', 'sudo --preserve-env=PATH install -m 644 a /tmp/p4-share/x', 'sudo --non-interactive --set-home cp /tmp/p4-a /tmp/p4-b',
+    'sudo --role r --type t cp /tmp/p4-a /tmp/p4-b', 'sudo --chdir=/tmp/p4-work cp a b', 'sudo -D /tmp/p4-work cp a b', 'sudo --host=h --prompt=p --login ls',
+    'doas -u www cp /tmp/p4-a /tmp/p4-b', 'doas cp /tmp/p4-a /tmp/p4-b',
+    // absolute destinations under an unknown folder are judged as before
+    'env --zz-unknown cp /tmp/p4-a /tmp/p4-b', 'sudo --zz-unknown cp /tmp/p4-a /tmp/p4-b', 'doas --zz-unknown cp /tmp/p4-a /tmp/p4-b', 'sudo -D "$D" cp /tmp/p4-a /tmp/p4-b',
+    // a later readable chdir is the folder the command runs in (last one wins)
+    'env --zz-unknown --chdir=/tmp/p4-work cp a b', 'sudo --zz-unknown -D /tmp/p4-work cp a b',
+    // a wrapper that runs something that is no writer
+    'env --zz-unknown ls', 'sudo --zz-unknown git status', 'sudo -D "$D" make install',
+  ]) {
+    const d = sh(c);
+    assert.equal(d.decision, 'pass', `${c}: ${d.reasons}`);
+  }
+});
+
+test('patch round 4: under an unknown working folder a relative write destination gets the S0 answer with the usual code; absolute ones are judged as before', () => {
+  for (const c of ['env --zz-unknown cp a b', 'sudo --zz-unknown cp a b', 'doas --zz-unknown cp a b', 'env -C "$D" cp a b', 'sudo -D "$D" cp a b', 'env --zz-unknown touch notes.txt', 'sudo --zz-unknown rm -f notes.txt']) {
+    const d = sh(c);
+    assert.equal(d.decision, 'stop', `${c}: ${d.reasons}`);
+    assert.deepEqual([...new Set(d.hits.map((h) => h.category))], ['S0'], `${c}: only S0`);
+    assert.ok(d.reasons.every((r) => /_write_protected_path$/.test(r)), `${c}: the existing write code only: ${d.reasons}`);
+  }
+  // The stop text is the one every S0 stop has.
+  const a = sh('env --zz-unknown cp a b');
+  const b = sh(`cp /tmp/p4-x ${TARGETS[0].T}`);
+  assert.equal(a.category, b.category);
+  assert.equal(a.rule, b.rule);
+  // An absolute protected destination stops as it always did, the folder option does not matter.
+  assert.equal(sh(`env --zz-unknown cp /tmp/p4-x ${TARGETS[0].A}`).decision, 'stop');
+});
+
+test('patch round 4: the env, sudo and doas lists hold the full spellings of their documentation (unit)', { skip: L === null || !L.ENV_LONG }, () => {
+  const w = (...t) => t.map((text) => ({ text }));
+  assert.equal(L.unknownLong(w('--ignore-environment', '--null', '--unset=A', '--unset', 'B', '--chdir=/x', '--chdir', '/y', '--split-string=s', '--block-signal', '--block-signal=INT', '--debug', '--help', '--version'), L.ENV_LONG), -1);
+  for (const bad of ['--chd=/x', '--chdi', '--unse=A', '--ignore', '--zz-unknown', '--null=1', '--argv0=x']) assert.equal(L.unknownLong(w(bad), L.ENV_LONG), 0, bad);
+  assert.equal(L.unknownLong(w('--user=a', '--user', 'b', '--chdir=/x', '--preserve-env', '--preserve-env=PATH', '--login', '--shell', '--non-interactive', '--set-home', '--edit', '--host=h', '--role=r', '--type=t', '--chroot=/c', '--close-from=3', '--command-timeout=5', '--other-user=u', '--group=g', '--prompt=p', '--validate', '--list', '--version', '--help'), L.SUDO_LONG), -1);
+  for (const bad of ['--chd=/x', '--chdi', '--us=a', '--preserve', '--zz-unknown', '--login=1', '--login-class=c', '--auth-type=a']) assert.equal(L.unknownLong(w(bad), L.SUDO_LONG), 0, bad);
+  assert.equal(L.DOAS_LONG.size, 0, 'doas has no long option');
+  assert.equal(L.unknownLong(w('--user=root'), L.DOAS_LONG), 0);
+});

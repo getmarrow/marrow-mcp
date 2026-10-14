@@ -17,7 +17,7 @@
 // run time. Options a list does not hold stay strict, which only matters when a command also names a protected
 // path.
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FIND_LONG = exports.GIT_RESTORE_LONG = exports.GIT_RM_LONG = exports.GIT_RESET_LONG = exports.GIT_GLOBAL_LONG = exports.GIT_READ_LONG = exports.ZIP_LONG = exports.PRETTIER_LONG = exports.TREE_LONG = exports.RG_LONG = exports.MORE_LONG = exports.LESS_LONG = exports.BAT_LONG = exports.YQ_LONG = exports.JQ_LONG = exports.CHECKSUM_LONG = exports.GREP_LONG = exports.FILE_LONG = exports.CMP_LONG = exports.DIFF_LONG = exports.DU_LONG = exports.LS_LONG = exports.STAT_LONG = exports.WC_LONG = exports.TAIL_LONG = exports.HEAD_LONG = exports.CAT_LONG = exports.SCP_LONG = exports.RSYNC_LONG = exports.WGET_LONG = exports.CURL_LONG = exports.SED_LONG = exports.TAR_LONG = exports.INSTALL_LONG = exports.LN_LONG = exports.MV_LONG = exports.CP_LONG = exports.NO_LONG = void 0;
+exports.FIND_LONG = exports.GIT_RESTORE_LONG = exports.GIT_RM_LONG = exports.GIT_RESET_LONG = exports.GIT_GLOBAL_LONG = exports.GIT_READ_LONG = exports.DOAS_LONG = exports.SUDO_LONG = exports.ENV_LONG = exports.ZIP_LONG = exports.PRETTIER_LONG = exports.TREE_LONG = exports.RG_LONG = exports.MORE_LONG = exports.LESS_LONG = exports.BAT_LONG = exports.YQ_LONG = exports.JQ_LONG = exports.CHECKSUM_LONG = exports.GREP_LONG = exports.FILE_LONG = exports.CMP_LONG = exports.DIFF_LONG = exports.DU_LONG = exports.LS_LONG = exports.STAT_LONG = exports.WC_LONG = exports.TAIL_LONG = exports.HEAD_LONG = exports.CAT_LONG = exports.SCP_LONG = exports.RSYNC_LONG = exports.WGET_LONG = exports.CURL_LONG = exports.SED_LONG = exports.TAR_LONG = exports.INSTALL_LONG = exports.LN_LONG = exports.MV_LONG = exports.CP_LONG = exports.NO_LONG = void 0;
 exports.longList = longList;
 exports.unknownLongAll = unknownLongAll;
 exports.unknownLong = unknownLong;
@@ -283,6 +283,14 @@ exports.PRETTIER_LONG = longList('check list-different help version ignore-unkno
     'cache-strategy= with-node-modules experimental-ternaries object-wrap= experimental-operator-position=');
 exports.ZIP_LONG = longList('recurse-paths quiet verbose junk-paths no-dir-entries symlinks exclude= include= freshen update grow ' +
     'filesync display-counts display-dots output-file= temp-path= help version');
+// The wrappers that can change the working folder of the command they run (patch round 4). Full spellings from each
+// tool's own documentation: GNU env 9.4 (`env --help`), sudo 1.9 (`sudo --help` and the manual), OpenBSD doas (it has
+// no long option at all). A long option that is not on a list could be a chdir option (GNU tools read a unique
+// prefix, `env --chd=DIR`), so the working folder is unknown then.
+exports.ENV_LONG = longList('ignore-environment null unset= chdir= split-string= block-signal[=] default-signal[=] ignore-signal[=] list-signal-handling debug help version');
+exports.SUDO_LONG = longList('askpass bell preserve-env[=] set-home remove-timestamp no-update preserve-groups stdin version background edit help login reset-timestamp ' +
+    'list non-interactive shell validate close-from= chdir= chroot= command-timeout= other-user= group= host= prompt= role= type= user=');
+exports.DOAS_LONG = longList('');
 exports.GIT_READ_LONG = longList('abbrev~ abbrev-commit~ abbrev-ref~ absolute-git-dir~ after~ after-context~ ahead-behind~ aliases~ all~ ' +
     'all-match~ allow-unknown-type~ alternate-refs~ always~ amend~ ancestry-path~ anchored~ and~ annotate-stdin~ ' +
     'author~ author-date-order~ base~ basic-regexp~ batch~ batch-all-objects~ batch-check~ batch-command~ before~ ' +

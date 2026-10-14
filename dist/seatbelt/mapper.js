@@ -2917,6 +2917,9 @@ function dispatchProgram(prog, args, rest, pathLike, ctx, run, x) {
     genericOperandChecks(prog, args, ctx, run, x.info.subs);
     // NEW-2: a protected path as an operand of a program that is not a known reader.
     protectedOperandCheck(prog, rest, ctx, run);
+    // Patch round 4: the command zip runs to test its archive (-TT, --unzip-command) is command text.
+    if (prog === 'zip')
+        zipCommandTexts(rest, ctx, run);
     // I3: programs that change something outside this machine (held only while Marrow is unreachable).
     outageRiskTags(prog, rest, run);
     switch (prog) {
@@ -4458,6 +4461,13 @@ function checkProtectedWrite(a, ctx, run, reason, tree) {
             return hit(run, 'S0', `${reason}_protected_dynamic`);
         return false;
     }
+    // Patch round 4: an env / sudo / doas option left the working folder unknown (ctx.cwdStrict). A relative destination
+    // could be any file there, Marrow's protected ones included: the strict answer is the S0 stop with the usual code.
+    if (ctx.cwdStrict === true) {
+        const expanded = expandTilde(a.text, run);
+        if (expanded !== null && !path.posix.isAbsolute(expanded))
+            return hit(run, 'S0', `${reason}_protected_path`);
+    }
     const abs = absCandidates(a.text, ctx, run);
     if (!abs)
         return false;
@@ -5100,6 +5110,29 @@ function cpDestination(rest) {
         return [target];
     return positional.length ? [positional[positional.length - 1]] : [];
 }
+// The destination a short cluster names for cp: `-tDIR`, `-rtDIR` (letters up to the value-taking -t, the rest is its value),
+// `-t DIR` (the next word). Used when the rest of the command cannot be read (cpDestination gives null).
+function cpClusterTargets(rest) {
+    const out = [];
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === null || t === '--') {
+            if (t === '--')
+                break;
+            continue;
+        }
+        if (t.length < 2 || !t.startsWith('-') || t.startsWith('--'))
+            continue;
+        const m = /^-([A-Za-z]*?)([St])(.*)$/.exec(t);
+        if (!m || m[2] !== 't')
+            continue;
+        if (m[3] !== '')
+            out.push(litArg(m[3]));
+        else if (rest[i + 1])
+            out.push(rest[i + 1]);
+    }
+    return out;
+}
 // The command text a reader's option runs: `bat --pager <cmd>`, `less '+!<cmd>'` / `'+|<mark><cmd>'`,
 // `git grep -O<cmd>` / `--open-files-in-pager=<cmd>`.
 function readerCommandTexts(prog, rest) {
@@ -5278,72 +5311,157 @@ function tarCreateTargets(rest) {
         return null;
     return targets;
 }
-// zip: the first name is the archive; -O and -b name more files it writes. zip -m moves the inputs into the archive
+// zip: the first name is the archive; -O, -b and -lf name more files it writes. zip -m moves the inputs into the archive
 // (they are deleted): every operand then counts.
-const ZIP_FLAG_LETTERS = /^[rqvjDyXTugfFSdelkAJhwcz@0-9]+$/;
-function zipCreateTargets(rest) {
-    if (rest.length === 0 || rest.some((a) => a.text === null))
-        return null;
-    if ((0, longopts_1.unknownLong)(rest, longopts_1.ZIP_LONG) !== -1)
-        return null;
-    const words = rest.map((a) => a.text);
+//
+// Patch round 4 (exact-final audit P3-F2): a single-dash word is read the way Info-ZIP zip 3.0 reads it (its option table in
+// zip.c, the manual's option list): at each position a documented two-letter option first (`-db`, `-lf`, `-TT`, `-ds`,
+// `-tt`, `-UN`), else one flag letter. The word counts as flags only when every part is a known option; the two-letter
+// ones are read by their exact meaning. A value-taking one takes the rest of the word (after an optional `=`) or the
+// next word: `-lf` names a file zip writes, `-TT` and `--unzip-command` a command it runs (the text is judged like
+// tar's program options), `-ds`, `-tt` and `-UN` are only consumed. Any other single-dash word gives null (every operand).
+const ZIP_FLAG_LETTERS = /^[rqvjDyXTugfFSdelkAJhwcz@0-9]$/;
+// Two-letter options: n = no value, v = a value that is only consumed, w = a value that is a file zip writes, c = a value that is a command.
+const ZIP_TWO = {
+    db: 'n', dc: 'n', dd: 'n', dg: 'n', du: 'n', dv: 'n', DF: 'n', FF: 'n', FI: 'n', FS: 'n', fd: 'n', fz: 'n', h2: 'n', ic: 'n', la: 'n', li: 'n', ll: 'n',
+    MM: 'n', nw: 'n', RE: 'n', sb: 'n', sc: 'n', sd: 'n', sf: 'n', so: 'n', sp: 'n', su: 'n', sU: 'n', sv: 'n', ws: 'n',
+    ds: 'v', tt: 'v', UN: 'v', lf: 'w', TT: 'c',
+};
+// The options a trailing `-` negates (`-X-`, `-fz-`).
+const ZIP_NEGATABLE = new Set(['db', 'dc', 'dd', 'dg', 'du', 'dv', 'FI', 'fz', 'ic', 'la', 'li', 'sf', 'su', 'sU', 'X']);
+function zipScan(rest) {
     const targets = [];
-    let archive = null;
+    const commands = [];
+    // Unreadable: a dynamic word, a long option that is not on ZIP_LONG, or a short word that is not a known option.
+    let ok = rest.length > 0 && !rest.some((a) => a.text === null) && (0, longopts_1.unknownLong)(rest, longopts_1.ZIP_LONG) === -1;
+    const unlisted = new Set((0, longopts_1.unknownLongAll)(rest, longopts_1.ZIP_LONG, 2, false));
+    let archive = false;
     let patterns = false;
     let ended = false;
-    for (let i = 0; i < words.length; i += 1) {
-        const t = words[i];
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === null) {
+            ok = false;
+            continue;
+        }
         if (!ended && t === '--') {
             ended = true;
             patterns = false;
             continue;
         }
         if (!ended && t.startsWith('--') && t.length > 2) {
+            patterns = false;
             const eq = t.indexOf('=');
             const name = eq === -1 ? t.slice(2) : t.slice(2, eq);
-            patterns = false;
             if (name === 'output-file' || name === 'temp-path') {
                 if (eq !== -1)
                     targets.push(litArg(t.slice(eq + 1)));
-                else if (i + 1 < words.length) {
-                    targets.push(litArg(words[i + 1]));
+                else if (i + 1 < rest.length && rest[i + 1].text !== null) {
+                    targets.push(rest[i + 1]);
                     i += 1;
                 }
+            }
+            else if (name === 'unzip-command' || unlisted.has(i)) {
+                // The command zip -T runs, and any long option that is not on the list (zip reads a unique prefix, `--unzip-comm=CMD`).
+                ok = false;
+                if (eq !== -1) {
+                    if (t.slice(eq + 1) !== '')
+                        commands.push(litArg(t.slice(eq + 1)));
+                }
+                else if (i + 1 < rest.length)
+                    commands.push(rest[i + 1]);
             }
             else if (eq === -1 && (0, longopts_1.takesNextWord)(t, longopts_1.ZIP_LONG))
                 i += 1;
             continue;
         }
         if (!ended && t.startsWith('-') && t.length > 1) {
-            const letters = t.slice(1);
-            if (letters === 'x' || letters === 'i') {
+            if (t === '-x' || t === '-i') {
                 patterns = true;
                 continue;
             }
             patterns = false;
-            if (letters === 'O' || letters === 'b') {
-                if (i + 1 < words.length) {
-                    targets.push(litArg(words[i + 1]));
+            if (t === '-O' || t === '-b') {
+                if (i + 1 < rest.length) {
+                    targets.push(rest[i + 1]);
                     i += 1;
                 }
                 continue;
             }
-            if (letters === 's' || letters === 'n' || letters === 'P' || letters === 't' || letters === 'tt') {
+            if (t === '-s' || t === '-n' || t === '-P' || t === '-t') {
                 i += 1;
                 continue;
             }
-            if (!ZIP_FLAG_LETTERS.test(letters))
-                return null;
+            const body = t.slice(1);
+            let pos = 0;
+            while (pos < body.length) {
+                const two = body.slice(pos, pos + 2);
+                const kind = Object.prototype.hasOwnProperty.call(ZIP_TWO, two) ? ZIP_TWO[two] : undefined;
+                let name;
+                if (kind !== undefined) {
+                    name = two;
+                    pos += 2;
+                }
+                else if (ZIP_FLAG_LETTERS.test(body[pos])) {
+                    name = body[pos];
+                    pos += 1;
+                }
+                else {
+                    ok = false;
+                    break;
+                }
+                if (kind === 'v' || kind === 'w' || kind === 'c') {
+                    const attached = body.slice(pos).replace(/^=/, '');
+                    let value;
+                    if (attached !== '')
+                        value = litArg(attached);
+                    else if (i + 1 < rest.length) {
+                        value = rest[i + 1];
+                        i += 1;
+                    }
+                    else {
+                        ok = false;
+                        break;
+                    }
+                    if (kind === 'w')
+                        targets.push(value);
+                    else if (kind === 'c')
+                        commands.push(value);
+                    pos = body.length;
+                    break;
+                }
+                if (body[pos] === '-') {
+                    if (ZIP_NEGATABLE.has(name))
+                        pos += 1;
+                    else {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
             continue;
         }
         if (patterns)
             continue;
-        if (archive === null) {
-            archive = t;
+        if (!archive) {
+            archive = true;
             targets.push(litArg(t));
         }
     }
-    return targets;
+    return { targets: ok ? targets : null, commands };
+}
+function zipCreateTargets(rest) {
+    return zipScan(rest).targets;
+}
+// The command `zip -T -TT <cmd>` / `--unzip-command=<cmd>` runs: its text is judged like the program options of tar
+// (tarProgram); a value the mapper cannot read is dynamic code.
+function zipCommandTexts(rest, ctx, run) {
+    for (const value of zipScan(rest).commands) {
+        if (value.text !== null)
+            evalShell(value.text, childCtx(ctx), run);
+        else
+            dynamicCode(value, ctx, run, 'dynamic_zip_command');
+    }
 }
 // ---------------------------------------------------------------------------------------------
 // Patch round 3 (delta audit F-AWK): an awk program that is no print-only read and writes or runs from its own text
@@ -5449,8 +5567,10 @@ function protectedOperandCheck(prog, rest, ctx, run) {
         return;
     else if (tables_1.SHELLS.has(prog) || tables_1.INTERPRETERS.has(prog) || /^python3\.\d+$/.test(prog))
         operands = withoutScript(prog, rest);
+    // Patch round 4 (P3-F1): when the destination cannot be read (cpDestination gives null), every operand counts and so does the
+    // target the short cluster names (`-tDIR`, `-rtDIR`) that the exact reading would have found.
     else if (prog === 'cp')
-        operands = cpDestination(rest) ?? rest;
+        operands = cpDestination(rest) ?? [...rest, ...cpClusterTargets(rest)];
     // Patch round 3 (delta audit friction): archiving reads its inputs; only the archive (and the other files tar
     // or zip writes) is a destination. A form the mapper cannot read keeps every operand.
     else if (prog === 'tar' || prog === 'gtar')
@@ -5537,7 +5657,8 @@ function operandTexts(text, remoteSpecs) {
     const at = t.match(/(?:^|=)@(.+)$/);
     if (at)
         out.add(at[1]);
-    const short = t.match(/^-[A-Za-z]([~./].*)$/);
+    // Patch round 4 (P3-F1): the attached value of a single-letter short option (`-tDIR`, `-o~/x`) is a path whatever its first character.
+    const short = t.match(/^-[A-Za-z](.+)$/);
     if (short)
         out.add(short[1]);
     if (value.includes(':') && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
@@ -5619,7 +5740,7 @@ function everyOperandTargets(rest) {
             continue;
         }
         if (!end && t.length > 1 && t.startsWith('-')) {
-            const m = /^-[A-Za-z]([~./].*)$/.exec(t);
+            const m = /^-[A-Za-z](.+)$/.exec(t);
             if (m)
                 out.push({ arg: litArg(m[1]), tree: true });
             continue;
@@ -5722,6 +5843,9 @@ function targetDirFlag(rest) {
             return rest[i + 1];
         if (t && t.startsWith('--target-directory='))
             return litArg(t.slice('--target-directory='.length));
+        // Patch round 4 (P3-F1): `-tDIR`, the attached value of the single-letter option.
+        if (t && t.length > 2 && t.startsWith('-t') && !t.startsWith('--'))
+            return litArg(t.slice(2));
     }
     return null;
 }
@@ -5972,11 +6096,33 @@ function sourceFile(rest, ctx, run, x) {
     }
     scriptFile(target, rest.slice(1), ctx, run, x, true);
 }
+function wrapperChdir(w, value, ctx) {
+    if (value === null || value === '') {
+        w.unknown = true;
+        return;
+    }
+    w.known = [path.posix.isAbsolute(value) ? path.posix.normalize(value) : path.posix.resolve(ctx.cwds[0] || '/__unknown_cwd__', value)];
+    w.unknown = false;
+    w.lastAbsolute = path.posix.isAbsolute(value);
+}
+// Where the wrapped command runs: its folders, and whether a relative write destination is judged strictly.
+function wrapperContext(w, ctx) {
+    if (!w.unknown && w.known === undefined)
+        return ctx;
+    const strict = w.unknown || (ctx.cwdStrict === true && !w.lastAbsolute);
+    return { ...ctx, cwds: w.unknown ? [null] : w.known, cwdStrict: strict };
+}
+// A long option of a wrapper (`--name`, `--name=value`) against its list: unlisted, or a value given to an option that takes none.
+function wrapperLongUnlisted(t, list) {
+    const eq = t.indexOf('=');
+    const mode = list.get(eq === -1 ? t.slice(2) : t.slice(2, eq));
+    return mode === undefined || (eq !== -1 && mode === 'n');
+}
 function envWrapper(rest, ctx, run, x) {
     let i = 0;
     let clean = false;
     const extra = new Map(x.env);
-    let cwds = ctx.cwds;
+    const w = { known: undefined, unknown: false, lastAbsolute: false };
     while (i < rest.length) {
         const t = rest[i].text;
         if (t === null) {
@@ -5995,20 +6141,30 @@ function envWrapper(rest, ctx, run, x) {
             continue;
         }
         if (/^--chdir=/.test(t)) {
-            cwds = [path.posix.resolve(ctx.cwds[0] || '/__unknown_cwd__', t.slice(8))];
+            wrapperChdir(w, t.slice(8), ctx);
             i += 1;
             continue;
         }
-        if (t === '-u' || t === '--unset' || t === '-C' || t === '--chdir') {
-            if ((t === '-C' || t === '--chdir') && rest[i + 1]?.text)
-                cwds = [path.posix.resolve(ctx.cwds[0] || '/__unknown_cwd__', rest[i + 1].text)];
+        if (t === '-C' || t === '--chdir') {
+            wrapperChdir(w, rest[i + 1] ? rest[i + 1].text : null, ctx);
             i += 2;
             continue;
         }
-        if (t === '-S' || t === '--split-string') {
-            const s = rest[i + 1];
+        if (/^-C./.test(t)) {
+            wrapperChdir(w, t.slice(2), ctx);
+            i += 1;
+            continue;
+        }
+        if (t === '-u' || t === '--unset') {
+            i += 2;
+            continue;
+        }
+        if (t === '-S' || t === '--split-string' || /^--split-string=/.test(t) || /^-S./.test(t)) {
+            const attached = t.startsWith('--split-string=') ? t.slice(15) : /^-S./.test(t) ? t.slice(2) : null;
+            const s = attached !== null ? litArg(attached) : rest[i + 1];
+            const after = rest.slice(attached !== null ? i + 1 : i + 2);
             if (s && s.text !== null)
-                evalShell([s.text, ...rest.slice(i + 2).map((a) => (a.text !== null ? shellQuote(a.text) : '"$__d"'))].join(' '), childCtx(ctx, { stdinFeed: withFeed(ctx, x, run).stdinFeed }), run);
+                evalShell([s.text, ...after.map((a) => (a.text !== null ? shellQuote(a.text) : '"$__d"'))].join(' '), childCtx(wrapperContext(w, ctx), { stdinFeed: withFeed(ctx, x, run).stdinFeed }), run);
             else
                 tripwire(rest.map(argText).join(' '), run);
             return;
@@ -6016,6 +6172,12 @@ function envWrapper(rest, ctx, run, x) {
         if (t === '--') {
             i += 1;
             break;
+        }
+        if (t.startsWith('--') && t.length > 2) {
+            if (wrapperLongUnlisted(t, longopts_1.ENV_LONG))
+                w.unknown = true;
+            i += 1;
+            continue;
         }
         if (t.startsWith('-')) {
             i += 1;
@@ -6034,13 +6196,16 @@ function envWrapper(rest, ctx, run, x) {
             hit(run, 'S4', 'env_dump_env');
         return;
     }
-    dispatch(rest.slice(i), { ...ctx, cwds }, run, { ...x, env: extra });
+    dispatch(rest.slice(i), wrapperContext(w, ctx), run, { ...x, env: extra });
 }
 function privilegeWrapper(prog, rest, ctx, run, x) {
+    // Patch round 4: sudo and doas read their long options from the full lists of their documentation; the options of
+    // pkexec and runas are not read this way (unchanged).
+    const list = prog === 'sudo' ? longopts_1.SUDO_LONG : prog === 'doas' ? longopts_1.DOAS_LONG : null;
     const valueFlags = new Set(['-u', '-g', '-C', '-D', '-h', '-p', '-r', '-t', '-U', '-T', '--user', '--group', '--chdir', '--prompt', '--host', '--close-from']);
     let i = 0;
     let shell = false;
-    let chdir = null;
+    const w = { known: undefined, unknown: false, lastAbsolute: false };
     const sudoEnv = new Map(x.env);
     while (i < rest.length) {
         const t = rest[i].text;
@@ -6058,15 +6223,30 @@ function privilegeWrapper(prog, rest, ctx, run, x) {
             break;
         }
         if ((t === '-D' || t === '--chdir') && rest[i + 1]) {
-            const d = rest[i + 1].text;
-            chdir = d === null ? [null] : [path.posix.isAbsolute(d) ? path.posix.normalize(d) : path.posix.resolve(ctx.cwds[0] || '/__unknown_cwd__', d)];
+            wrapperChdir(w, rest[i + 1].text, ctx);
             i += 2;
             continue;
         }
         if (/^--chdir=/.test(t)) {
-            chdir = [path.posix.resolve(ctx.cwds[0] || '/__unknown_cwd__', t.slice(8))];
+            wrapperChdir(w, t.slice(8), ctx);
             i += 1;
             continue;
+        }
+        if (/^-D./.test(t)) {
+            wrapperChdir(w, t.slice(2), ctx);
+            i += 1;
+            continue;
+        }
+        if (list !== null && t.startsWith('--') && t.length > 2) {
+            if (wrapperLongUnlisted(t, list)) {
+                w.unknown = true;
+                i += 1;
+                continue;
+            }
+            if ((0, longopts_1.takesNextWord)(t, list)) {
+                i += 2;
+                continue;
+            }
         }
         if (valueFlags.has(t)) {
             i += 2;
@@ -6091,8 +6271,7 @@ function privilegeWrapper(prog, rest, ctx, run, x) {
             stdinExec('sh', [], x, ctx, run);
         return;
     }
-    void prog;
-    dispatch(rest.slice(i), chdir ? { ...ctx, cwds: chdir } : ctx, run, sudoEnv.size > x.env.size ? { ...x, env: sudoEnv } : x);
+    dispatch(rest.slice(i), wrapperContext(w, ctx), run, sudoEnv.size > x.env.size ? { ...x, env: sudoEnv } : x);
 }
 function suWrapper(rest, ctx, run, x) {
     for (let i = 0; i < rest.length; i += 1) {
