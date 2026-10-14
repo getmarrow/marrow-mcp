@@ -515,8 +515,9 @@ test('every truncation site has an exact-pass decision (grep count against the l
   assert.deepEqual(unmarked, [], 'every `state.truncated = true` names its exact-pass decision');
   // The list: 17 marked sites, and every `withheld(` call keeps the original in the exact pass.
   assert.equal(sites.length, 17, `truncation sites: ${sites.length}`);
+  // 18 with M2-R1: a URL userinfo span holding `#` or `?` (hidden, kept by the exact pass).
   const withheldCalls = (source.match(/\bwithheld\(state,/g) || []).length;
-  assert.equal(withheldCalls, 17, `withheld() sites: ${withheldCalls}`);
+  assert.equal(withheldCalls, 18, `withheld() sites: ${withheldCalls}`);
   assert.match(source, /const HASH_VERSION = 'marrow-normalized-action-v3';/, 'R4: the key version is v3');
 });
 

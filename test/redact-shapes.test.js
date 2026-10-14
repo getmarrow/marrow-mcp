@@ -68,6 +68,7 @@ test('a hidden span that may also hide command text gets the never-binding ambig
   const cases = [
     [`{"password":"${s} ; rm -rf /tmp/x","env":"production"}`, 'production'],
     [`{"api_key":"${s}`, ''],
+    [`https://u:${s}@a.example?x=1&next=evil@b.example/y`, '/y'],
     [`https://u:${s}@a.example&next=evil@b.example/y`, '/y'],
     [`Authorization: Basic ${s}&&deploy-production`, ''],
     [`TOKEN="${s} && deploy production"`, ''],
@@ -81,10 +82,13 @@ test('a hidden span that may also hide command text gets the never-binding ambig
     assert.equal(out.includes('[REDACTED_AMBIGUOUS]'), true);
     if (tail) assert.equal(out.endsWith(tail) || out.includes(`"env":"${tail}"`), true);
   }
-  // M2-R1: a `?` or `#` ends the URL authority (RFC 3986), so the password is exactly the text before the first
-  // `@`; the host, query and fragment stay visible and nothing after the hidden span is hidden.
+  // M2-R1: a hidden URL span that holds `#` or `?` may hold the real host (`https://deploy:443#@host` goes to
+  // host `deploy`) or a whole libpq/mysql password: it is hidden with the ambiguous marker, never shown.
   for (const d of ['?', '#']) {
-    assert.equal(redactSensitiveText(`https://u:${s}@a.example${d}x=1&next=evil@b.example/y`), `https://u:[REDACTED]@a.example${d}x=1&next=evil@b.example/y`);
+    assert.equal(redactSensitiveText(`curl https://deploy:443${d}@api.example.test/v1`), 'curl https://deploy:[REDACTED_AMBIGUOUS]@api.example.test/v1');
+    const out = redactSensitiveText(`psql "postgresql://admin:${s.slice(0, 6)}${d}${s.slice(6)}@db.example/app"`);
+    assert.equal(leaks(out, s.slice(6)), false);
+    assert.ok(out.includes('[REDACTED_AMBIGUOUS]@db.example/app'), out);
   }
   // A value that ends at a separator keeps the text after it; a plain value keeps the plain marker.
   assert.equal(redactSensitiveText(`TOKEN=${s};deploy-production`), 'TOKEN=[REDACTED];deploy-production');
