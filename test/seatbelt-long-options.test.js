@@ -275,6 +275,8 @@ test('patch round 4: ordinary commands in the same shapes keep passing (friction
 });
 
 test('patch round 4: under an unknown working folder a relative write destination gets the S0 answer with the usual code; absolute ones are judged as before', () => {
+  // doas has no long option: --chdir is not one of its options either, so the folder is unknown
+  assert.equal(sh('doas --chdir=/tmp/p4-work cp a b').decision, 'stop');
   for (const c of ['env --zz-unknown cp a b', 'sudo --zz-unknown cp a b', 'doas --zz-unknown cp a b', 'env -C "$D" cp a b', 'sudo -D "$D" cp a b', 'env --zz-unknown touch notes.txt', 'sudo --zz-unknown rm -f notes.txt']) {
     const d = sh(c);
     assert.equal(d.decision, 'stop', `${c}: ${d.reasons}`);
