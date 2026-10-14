@@ -125,6 +125,24 @@ test('NEW-2 mapper: cp reads its sources (a backup passes); a link copy, a dynam
   }
 });
 
+test('NEW-2 mapper: print-only sed and awk read; program folders are run, not written (friction controls)', () => {
+  for (const c of ["sed -n 1,20p ~/.zshrc", "sed -n '/PATH/p' ~/.bashrc", "sed -n '$=' ~/.claude/settings.json", 'sed 5q ~/.bashrc', "sed -n -e 1p -e '$p' ~/.zshrc",
+    "sed -n '/^export/{p;q}' ~/.zshrc", "sed -n '1,+3p' ~/.profile", "sed -n '0~2p' ~/.bashrc", "sed -n '\\#hooks#p' ~/.claude/settings.json", "awk '{print}' ~/.bashrc",
+    "awk -F: '{print $1}' ~/.bashrc", "awk -v n=3 'NR<=n' ~/.zshrc", "awk '/PATH/' ~/.bashrc",
+    'c8 node_modules/.bin/mocha', 'cross-env NODE_ENV=test node_modules/.bin/jest', 'strace -f /usr/local/bin/node -v', 'arch -arm64 /opt/homebrew/bin/brew install jq',
+    'ldd /usr/local/bin/node', 'gdb ~/bin/tool', 'valgrind ~/.local/bin/tool', 'launchctl load ~/Library/LaunchAgents/com.x.plist']) {
+    assert.equal(sh(c).decision, 'pass', c);
+  }
+  for (const c of ['sed -i s/a/b/ ~/.bashrc', "sed -n 'w /tmp/x' ~/.bashrc", "sed 's/a/b/' ~/.bashrc", "sed -n '1e id' ~/.bashrc", 'sed -f /tmp/s.sed ~/.bashrc',
+    "sed -n '/x/w /tmp/y' ~/.bashrc", 'sed -n 1r/tmp/z ~/.bashrc', 'sed $S ~/.bashrc', "sed -n '1p;w /tmp/y' ~/.bashrc", 'sed --in-place=.bak 1d ~/.bashrc',
+    'sed -n 1p -i ~/.bashrc', "sed -n '{s/a/b/}' ~/.bashrc", 'awk -i inplace 1 ~/.bashrc', `awk '{print > "/tmp/x"}' ~/.bashrc`, `awk '{system("id")}' ~/.bashrc`,
+    'awk -f p.awk ~/.bashrc', "awk '$1 > 5' ~/.bashrc", `awk '{print | "sh"}' ~/.bashrc`, 'awk $P ~/.bashrc',
+    'cp /tmp/x ~/.local/bin/marrow-mcp', 'tee ~/.local/bin/x < /tmp/x']) {
+    const d = sh(c);
+    assert.equal(d.decision, 'stop', `${c}: ${d.reasons}`);
+  }
+});
+
 test('NEW-2 mapper: readers, builtins, scripts, remote paths and ordinary work pass (friction controls)', () => {
   const T = '~/.claude/settings.json';
   for (const c of [

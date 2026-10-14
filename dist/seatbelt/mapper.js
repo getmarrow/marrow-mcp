@@ -71,8 +71,13 @@ const SEATBELT_ANCHORS_EXTRA = ['.claude/plugins/cache/getmarrow', '.claude/plug
 // The modelled writers (tee, cp, mv, sed -i, dd of= …) still stop on the whole protected set. The /etc
 // files that start shells, load libraries, grant sudo, steer npm and git, name hosts or hold Claude Code's
 // managed settings stay in.
+// The program folders (~/bin, ~/.local/bin, /usr/local/bin, /opt/homebrew/bin, node_modules/.bin) and
+// ~/Library/LaunchAgents are left out too: their files are run and inspected through other programs all the
+// time (`c8 node_modules/.bin/mocha`, `arch -arm64 /opt/homebrew/bin/brew`, `strace ~/.local/bin/x`,
+// `launchctl load ~/Library/LaunchAgents/x.plist`); writes there still stop through the modelled writers.
 const OPERAND_RULE_OMITS = new Set(['/etc/**', '/usr/**', '/bin/**', '/sbin/**', '/boot/**', '/lib/**', '/var/lib/**', '/System/**',
-    '**/.ssh/**', '**/.aws/**', '**/.kube/**', '**/.docker/config.json', '**/.git-credentials']);
+    '**/.ssh/**', '**/.aws/**', '**/.kube/**', '**/.docker/config.json', '**/.git-credentials',
+    '~/bin/**', '~/.local/bin/**', '/usr/local/bin/**', '/opt/homebrew/bin/**', '**/node_modules/.bin/**', '~/Library/LaunchAgents/**']);
 const OPERAND_RULE_EXTRA = ['/etc/profile', '/etc/profile.d/**', '/etc/bash.bashrc', '/etc/bashrc', '/etc/zshrc', '/etc/zsh/**', '/etc/zprofile',
     '/etc/zshenv', '/etc/zlogin', '/etc/environment', '/etc/sudoers', '/etc/sudoers.d/**', '/etc/ld.so.preload', '/etc/ld.so.conf', '/etc/ld.so.conf.d/**',
     '/etc/npmrc', '/etc/gitconfig', '/etc/hosts', '/etc/claude-code/**', '/usr/local/etc/npmrc', '/usr/local/etc/gitconfig'];
@@ -943,19 +948,25 @@ function newRun(rawEnv, source, deadline) {
     const protectedPatterns = [...baseline.BASELINE_POLICY.protected_paths, ...SEATBELT_PROTECTED_EXTRA];
     const protectedRegexes = protectedPatterns.map((p) => classifierModule.globToRegex(fold ? p.toLowerCase() : p, fold ? home.toLowerCase() : home));
     const anchors = [];
+    const operandAnchors = [];
     for (const p of protectedPatterns) {
-        if (p.startsWith('~/'))
-            anchors.push(path.posix.join(home, p.slice(2).replace(/\/\*\*$/, '')));
-        else if (p.startsWith('/') && !p.includes('*', 1))
-            anchors.push(p);
+        const a = p.startsWith('~/') ? path.posix.join(home, p.slice(2).replace(/\/\*\*$/, '')) : p.startsWith('/') && !p.includes('*', 1) ? p : null;
+        if (a === null)
+            continue;
+        anchors.push(a);
+        if (!OPERAND_RULE_OMITS.has(p))
+            operandAnchors.push(a);
     }
-    for (const rel of SEATBELT_ANCHORS_EXTRA)
+    for (const rel of SEATBELT_ANCHORS_EXTRA) {
         anchors.push(path.posix.join(home, rel));
+        operandAnchors.push(path.posix.join(home, rel));
+    }
     const operandRegexes = [...protectedPatterns.filter((p) => !OPERAND_RULE_OMITS.has(p)), ...OPERAND_RULE_EXTRA]
         .map((p) => classifierModule.globToRegex(fold ? p.toLowerCase() : p, fold ? home.toLowerCase() : home));
     for (const root of wsRoots) {
         for (const rel of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json', '.cursor/mcp.json', '.cursor/hooks.json', '.codex', '.gemini/settings.json', '.windsurf', '.clinerules/hooks', '.grok', '.marrow', '.git/hooks', '.git/config']) {
             anchors.push(path.posix.join(root, rel));
+            operandAnchors.push(path.posix.join(root, rel));
         }
     }
     return {
@@ -963,6 +974,7 @@ function newRun(rawEnv, source, deadline) {
         isProtected: (abs) => protectedRegexes.some((re) => re.test(fold ? abs.toLowerCase() : abs)),
         isOperandProtected: (abs) => operandRegexes.some((re) => re.test(fold ? abs.toLowerCase() : abs)),
         protectedAnchors: anchors.map((a) => (fold ? a.toLowerCase() : a)),
+        operandAnchors: operandAnchors.map((a) => (fold ? a.toLowerCase() : a)),
         secretRegexes: tables_1.SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
         branchRegexes: baseline.BASELINE_POLICY.protected_branches.map((p) => classifierModule.globToRegex(p, '/nonexistent-home')),
         topSource: source,
@@ -4805,7 +4817,150 @@ function operandRuleApplies(prog, rest) {
     }
     if (prog === 'find')
         return rest.some((a) => a.text !== null && /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(a.text));
+    // `sed -n '1,20p' ~/.zshrc` and `awk '{print $1}' ~/.bashrc` only print: read forms of sed and awk.
+    if ((prog === 'sed' || prog === 'gsed') && sedReadOnly(rest))
+        return false;
+    if ((prog === 'awk' || prog === 'gawk' || prog === 'mawk' || prog === 'nawk') && awkReadOnly(rest))
+        return false;
     return true;
+}
+// sed that only prints: flags from a fixed list, scripts from -e or the first word, and every command one of
+// p P l = q Q n N d D g G h H x z { } after optional addresses. Anything else (-i, -f, s, w, r, e, y, a, i, c,
+// a word the mapper cannot read) is no read.
+const SED_READ_FLAGS = /^(?:-[nErsuz]+|--(?:quiet|silent|regexp-extended|separate|unbuffered|null-data|posix|debug|line-length=\d+))$/;
+function sedReadOnly(rest) {
+    const scripts = [];
+    let seen = false;
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === null)
+            return false;
+        if (t === '-e' || t === '--expression') {
+            const v = rest[i + 1] ? rest[i + 1].text : null;
+            if (v === null)
+                return false;
+            scripts.push(v);
+            seen = true;
+            i += 1;
+            continue;
+        }
+        if (t.startsWith('--expression=')) {
+            scripts.push(t.slice('--expression='.length));
+            seen = true;
+            continue;
+        }
+        if (t === '-l') {
+            i += 1;
+            continue;
+        }
+        if (t.length > 1 && t.startsWith('-')) {
+            if (!SED_READ_FLAGS.test(t))
+                return false;
+            continue;
+        }
+        if (!seen) {
+            scripts.push(t);
+            seen = true;
+        }
+    }
+    return scripts.length > 0 && scripts.every(sedPrintOnly);
+}
+function sedPrintOnly(s) {
+    if (s.length > 1024)
+        return false;
+    let i = 0;
+    const address = () => {
+        const c = s[i];
+        if (c === '$') {
+            i += 1;
+            return true;
+        }
+        if (c !== undefined && /[0-9]/.test(c)) {
+            while (i < s.length && /[0-9~]/.test(s[i]))
+                i += 1;
+            return true;
+        }
+        if (c === '/' || c === '\\') {
+            const d = c === '/' ? '/' : s[i + 1];
+            if (d === undefined || d === '\n' || d === '\\')
+                return false;
+            i += c === '/' ? 1 : 2;
+            while (i < s.length && s[i] !== d) {
+                if (s[i] === '\n')
+                    return false;
+                if (s[i] === '\\')
+                    i += 1;
+                i += 1;
+            }
+            if (i >= s.length)
+                return false;
+            i += 1;
+            while (s[i] === 'I' || s[i] === 'M')
+                i += 1;
+            return true;
+        }
+        return false;
+    };
+    while (i < s.length) {
+        while (i < s.length && /[\s;]/.test(s[i]))
+            i += 1;
+        if (i >= s.length)
+            break;
+        if (address()) {
+            while (s[i] === ' ')
+                i += 1;
+            if (s[i] === ',') {
+                i += 1;
+                while (s[i] === ' ')
+                    i += 1;
+                if (s[i] === '+' || s[i] === '~')
+                    i += 1;
+                if (!address())
+                    return false;
+            }
+        }
+        while (s[i] === ' ')
+            i += 1;
+        if (s[i] === '!') {
+            i += 1;
+            while (s[i] === ' ')
+                i += 1;
+        }
+        const cmd = s[i];
+        if (cmd === undefined || !'pPl=qQnNdDgGhHxz{}'.includes(cmd))
+            return false;
+        i += 1;
+        if ('qQl'.includes(cmd))
+            while (i < s.length && /[0-9 ]/.test(s[i]))
+                i += 1;
+        while (s[i] === ' ')
+            i += 1;
+        if (cmd !== '{' && i < s.length && !/[;\n}]/.test(s[i]))
+            return false;
+    }
+    return true;
+}
+// awk that only prints: -F and -v only, one program with no redirection or pipe (`>`, `|`), no system,
+// getline, close, fflush and no gawk @-directive. Anything else (-f, -i inplace, -e, -E, a comparison
+// written with `>`, a word the mapper cannot read) is no read.
+function awkReadOnly(rest) {
+    let program = null;
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === null)
+            return false;
+        if (program === null && (t === '-F' || t === '-v' || t === '--field-separator' || t === '--assign')) {
+            i += 1;
+            continue;
+        }
+        if (program === null && (/^-[Fv]./.test(t) || /^--(?:field-separator|assign)=/.test(t) || t === '--'))
+            continue;
+        if (program === null && t.length > 1 && t.startsWith('-'))
+            return false;
+        if (program === null)
+            program = t;
+    }
+    return program !== null && program.length <= 4096 && !/[>|]/.test(program) && !/\b(?:system|getline|close|fflush)\b|@/.test(program);
 }
 // git: the subcommand after the global options.
 function gitSub(rest) {
@@ -5031,7 +5186,7 @@ function protectedOperand(a, ctx, run, opts, depth) {
                 const secretCovered = () => opts.secretStopped && run.hits.some((h) => h.category === 'S4') && isSecretPath(r, run);
                 if (run.isOperandProtected(probe) && !secretCovered())
                     return hit(run, 'S0', 'protected_path_operand');
-                if (tree && insideHomeOrWorkspace(probe, run) && run.protectedAnchors.some((anchor) => isAncestorOrSelf(probe, anchor)) && !secretCovered())
+                if (tree && insideHomeOrWorkspace(probe, run) && run.operandAnchors.some((anchor) => isAncestorOrSelf(probe, anchor)) && !secretCovered())
                     return hit(run, 'S0', 'protected_path_operand_folder');
             }
         }
