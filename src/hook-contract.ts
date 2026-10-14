@@ -9,7 +9,7 @@ import {
   nativeHookMatcher, normalizedMcpToolName, r2NativeHookMatcher,
 } from './own-tool';
 
-export const MCP_ADAPTER_VERSION = '3.9.102';
+export const MCP_ADAPTER_VERSION = '3.9.103';
 export const NATIVE_HOOK_MATCHER = nativeHookMatcher();
 /**
  * Matchers older versions wrote, so a hook carrying one needs repair: the

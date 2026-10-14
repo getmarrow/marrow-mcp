@@ -188,13 +188,24 @@ These behaviors shipped in 3.9.101 and still apply.
 - **Hold messages say where to approve:** a held action says how to approve it where your host really asks.
 - **One enforcement sentence:** the "what is enforced" wording matches the public site.
 
-## What's New in v3.9.102
+## Project files and Marrow's own tools
+
+These behaviors shipped in 3.9.102 and still apply.
 
 - **A cloned project's `.env` cannot redirect the MCP server:** repository-local `.env`, `.env.local` and `.marrow/env*` files are never read for `MARROW_API_KEY` or any other `MARROW_*` setting, so project content cannot point the server at another account, agent or API endpoint.
 - **Safer key-file advice:** an owner file that is a symlink, readable or writable by others, owned by another user, or in a directory others can write supplies nothing, and the missing-key message names the file with the `chmod` fix.
 - **Only Marrow's own tools skip the gate, by exact name:** a tool is Marrow's own only when its server is exactly `marrow` and its tool name is exactly one this package registers. Look-alike servers, other cases, extra spaces or suffixes go through the pre-action gate like any other MCP tool. Re-run `marrow-mcp setup` to refresh hooks written with the old matcher.
 
-Earlier behaviors are kept under [Setup and key handling](#setup-and-key-handling) and [Hook behavior details](#hook-behavior-details). v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
+## What's New in v3.9.103
+
+- **Keyless seatbelt:** a hook with no key, on a machine with no sign of a Marrow account, stops seven kinds of action (Marrow's own settings, force-push or delete of a protected branch, production deploy, package publish, reading credentials, recursive delete outside the workspace, decoded data run by a shell) in shell commands, each host's own file tools and MCP calls, and leaves everything else to the host's own approval step. A tool it does not recognise keeps the answer a hook without a key gave before. Machines linked to an account keep every hold they had. A Linux home or agent settings folder that only your own private group can also write (umask 002) keeps the seatbelt. See [Keyless seatbelt](#keyless-seatbelt). Marrow's own plugins and the Marrow plugin switch are protected like its settings.
+- **High-risk actions wait while Marrow is down:** with a key, if Marrow cannot be reached, a git push, publish, deploy, API delete, seatbelt-category command or other high-risk tool (for example an MCP tool) is held on every host until Marrow is back; words in a commit message or a path never hold a command, and routine actions keep running with a warning. If Marrow answers but cannot issue a permit, a high-risk action is denied and never allowed as offline.
+- **Local receipts:** each seatbelt decision is written on this machine as codes and keyed hashes, plus the built-in tool name and shell program names from fixed lists (any MCP tool is recorded only as `mcp`); no command text, argument, path or URL. Kept for up to 90 days or 50 MB. Nothing is uploaded.
+- **Approvals bind to the exact action:** an owner approval resumes only the exact action that was held. A held action whose sent form hides a value also carries `exact_hmac`, a keyed hash made with this machine's private device key (never sent); a retry that differs only in a certain credential, such as a new one-time password, still resumes. The action hash version is now v3: learned approvals and known workflows from earlier versions ask once more, then are learned again. See [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
+- **Hidden commands are checked:** commands inside an unquoted here-document body, a `${x:-$(...)}` default or an arithmetic expansion are checked like any other command.
+- **`marrow-mcp keys create` reads every flag form:** `--name=`, `--type=` and `--expires=` (and `-n=`, `-t=`) are read like `--name value`; a flag that is present but blank, or a `--scopes` / `--agents` list with no entry, is a usage error (exit 2) and nothing is sent; leaving `--scopes` and `--agents` out sends neither.
+
+Earlier behaviors are kept under [Project files and Marrow's own tools](#project-files-and-marrows-own-tools), [Setup and key handling](#setup-and-key-handling) and [Hook behavior details](#hook-behavior-details). v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
 
 Earlier release notes moved from this README to [CHANGELOG.md](https://github.com/getmarrow/marrow-mcp/blob/master/CHANGELOG.md).
 
