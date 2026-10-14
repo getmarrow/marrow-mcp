@@ -783,8 +783,11 @@ test('MEDIUM-1: one approval lets exactly one of two identical parallel calls ru
       const decisions = [one, two].map((run) => run.json.hookSpecificOutput.permissionDecision ?? 'allow').sort();
       assert.deepEqual(decisions, ['allow', 'deny'], `round ${round}: exactly one call runs on one approval`);
       const denied = [one, two].find((run) => run.json.hookSpecificOutput.permissionDecision === 'deny');
-      // The loser either lost the compare-and-set on the approved hold, or found it already taken and was held anew.
-      assert.match(denied.json.hookSpecificOutput.permissionDecisionReason, /an identical call is already running on that approval, so this repeat did not run|^Marrow is holding this action for approval/);
+      // The loser either lost the compare-and-set on the approved hold, or found it already taken and was held anew, or (on a
+      // loaded host) could not take the loop-guard state lock in its ~200 ms wait (src/session-loop-guard.ts withStateLock, 40 x 5 ms)
+      // because the winner held it while descheduled: a fail-closed denial too. The two decisions above already prove that exactly
+      // one call ran; only the loser's reason may differ, and only to these three exact texts.
+      assert.match(denied.json.hookSpecificOutput.permissionDecisionReason, /an identical call is already running on that approval, so this repeat did not run|^Marrow is holding this action for approval|^Marrow local loop guard state is unsafe\. Repair the private owner-only state before retrying\.$/);
     } finally { h.cleanup(); }
   }
 });
