@@ -260,6 +260,11 @@ test('patch round 4 (abuse rows): repeated flags, variables and misleading words
       // repeated flags: the last chdir counts, and an unlisted option after a readable one makes the folder unknown again
       `env --chdir=/tmp/p4-work --chdi=/tmp/p4-other cp /tmp/p4-x ${t.F}`, `sudo --chdir=/tmp/p4-work --zz-unknown cp /tmp/p4-x ${t.F}`, `env --chdir=/tmp/p4-work -C "$D" cp /tmp/p4-x ${t.F}`,
       `zip /tmp/p4.zip /tmp/p4-in -lf /tmp/p4.log -lf ${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -TT true -TT "rm ${t.T}"`, `cd ${t.P} && cp -t/tmp -t${t.R} /tmp/p4-x`,
+      // chains, pipes, subshells and shells around the same rows
+      `false || sudo --zz-unknown cp /tmp/p4-x ${t.F}`, `ls; env --zz-unknown cp /tmp/p4-x ${t.F}`, `echo x | sudo --zz-unknown tee ${t.F}`, `cd ${t.P} ; cp -t${t.R} /tmp/p4-x`,
+      `cd ${t.P} && (cp --zz-unknown -t${t.R} /tmp/p4-x)`, `cd ${t.P} && bash -c 'cp -t${t.R} /tmp/p4-x'`, `cd ${t.P} && sudo cp -t${t.R} /tmp/p4-x`, `true && zip /tmp/p4.zip /tmp/p4-in -T -TT "rm ${t.T}"`,
+      `zip /tmp/p4.zip /tmp/p4-in -T -TT true; zip /tmp/p4.zip /tmp/p4-in -lf ${t.T}`, `bash -c 'zip /tmp/p4.zip /tmp/p4-in -lf ${t.T}'`, `(zip /tmp/p4.zip /tmp/p4-in -T -TT "rm ${t.T}")`,
+      `sudo zip /tmp/p4.zip /tmp/p4-in -lf ${t.T}`, `env FOO=1 zip /tmp/p4.zip /tmp/p4-in -T --unzip-command="rm ${t.T}"`,
       // variables: the option or its value is a variable, so the word is dynamic
       `P=--zz-unknown; env $P cp /tmp/p4-x ${t.F}`, `D=${t.PA}; env -C $D cp /tmp/p4-x ${t.F}`, `L=-lf; zip /tmp/p4.zip /tmp/p4-in $L ${t.T}`,
     ]) {
