@@ -229,6 +229,8 @@ test('patch round 4: the fixed rows stop on the three S0 targets (attached short
       `zip /tmp/p4.zip /tmp/p4-in -T --unzip-command "rm ${t.T}"`, `zip /tmp/p4.zip /tmp/p4-in -T --unzip-command="rm ${t.T}"`, `zip /tmp/p4.zip /tmp/p4-in -T --unzip-comm="rm ${t.T}"`,
       `zip /tmp/p4.zip /tmp/p4-in -T -TT "bash -c 'rm ${t.T}'"`, `zip /tmp/p4.zip /tmp/p4-in -lf ${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -lf=${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -lf${t.T}`,
       `zip /tmp/p4.zip /tmp/p4-in -rlf ${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -lf /tmp/p4.log -lf ${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -ds 1m -TT "rm ${t.T}"`,
+      // the documented flags that are read now still carry no write, and the ones that create files or change inputs stay unread (every operand counts)
+      `zip -sc -m /tmp/p4.zip ${t.T}`, `zip -sC /tmp/p4.zip ${t.T}`, `zip -sc ${t.T} /tmp/p4-in`, `zip -dc -O ${t.T} /tmp/p4.zip /tmp/p4-in`, `zip -AC /tmp/p4.zip ${t.T}`, `zip -sf -b ${t.T} /tmp/p4.zip /tmp/p4-in`,
       // Residual 1: an unlisted long option or an unreadable chdir value leaves the working folder unknown
       `env --chdir=${t.PA} cp /tmp/p4-x ${t.F}`, `env --chdi=${t.PA} cp /tmp/p4-x ${t.F}`, `env --zz-unknown cp /tmp/p4-x ${t.F}`, `env -C "$D" cp /tmp/p4-x ${t.F}`,
       `env --chdir "$D" cp /tmp/p4-x ${t.F}`,
