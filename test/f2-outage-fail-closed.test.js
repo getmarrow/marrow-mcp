@@ -19,8 +19,9 @@ const CLI = path.join(ROOT, 'dist', 'cli.js');
 const PASSWD = path.join(__dirname, 'support', 'passwd-home-fake.cjs');
 const SCENARIOS = path.join(__dirname, 'support', 'f2-fetch-scenarios.cjs');
 // Test-only preload (never packed): a spawned hook gets a 30 s seatbelt budget unless a test sets SBT_SLOW_MS or
-// SBT_HOOK_BUDGET=production. Without it these hosts ran on the production 300 ms budget, which a loaded suite
-// run overruns (an overrun is "unknown", and the outage hold then keeps the classifier's answer).
+// SBT_HOOK_BUDGET=production, and SBT_HOOK_DEADLINE=roomy (set below) moves the hook's own pre-tool deadline (Codex 2 s,
+// Cursor/Grok/Gemini 4 s) 30 s out. Without them these hosts ran on the production 300 ms budget and the short host
+// deadlines, which a loaded suite run overruns (an overrun is "unknown", and the outage hold then keeps the classifier's answer).
 const PRELOAD = path.join(__dirname, 'support', 'seatbelt-hook-preload.cjs');
 const { MARROW_OUTAGE_WARNING, HELD_OFFLINE_TEXT, classifyTool, outageHolds } = require('../dist/hook-pre-action.js');
 const recorded = require('./fixtures/f2-recorded-force-push.json');
@@ -65,7 +66,7 @@ function hook(host, command, scenario, prep = null, extraEnv = {}) {
     cwd: proj, input: JSON.stringify(SHAPES[host](command, proj)), encoding: 'utf8', timeout: 30_000,
     env: {
       PATH: process.env.PATH, HOME: home, SBT_PASSWD_HOME: home, MARROW_API_KEY: key, MARROW_BASE_URL: 'https://api.example.test',
-      MARROW_HOOK_BACKGROUND_NUDGE: 'false', F2_SCENARIO: scenario, F2_LOG: logFile, ...extraEnv,
+      MARROW_HOOK_BACKGROUND_NUDGE: 'false', F2_SCENARIO: scenario, F2_LOG: logFile, SBT_HOOK_DEADLINE: 'roomy', ...extraEnv,
     },
   });
   assert.equal(r.error, undefined);
@@ -218,6 +219,8 @@ test('I3: a real outage allows routine shell commands whose only high-risk signa
 // A slow mapper can only hold more, never less, so load cannot make this test flaky.
 test('I3: the production 300 ms hook budget still applies in an outage: an overrun holds a high-classified command (fail closed), a routine one keeps flowing', () => {
   assert.equal(require('../dist/seatbelt/hook.js').HOOK_BUDGET_MS, 300, 'the production budget is 300 ms; only the test preload gives a spawned hook 30 s');
+  const { preToolBudgetMs } = require('../dist/host-approval.js');
+  assert.deepEqual(['codex', 'cursor', 'grok', 'gemini', 'claude-code'].map((host) => preToolBudgetMs(host)), [2_000, 4_000, 4_000, 4_000, 14_000], 'the production hook deadlines; only the test preload moves them');
   assert.equal(classifyTool({ tool_name: 'Bash', tool_input: { command: 'git branch -D old' } }).risk, 'high');
   driven.clear();
   const wrong = [];

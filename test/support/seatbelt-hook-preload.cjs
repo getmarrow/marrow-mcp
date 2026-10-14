@@ -10,6 +10,7 @@
 //   SBT_THROW        mapper | mode | git | load | record: that seatbelt part throws
 //   SBT_SLOW_MS      the mapper sleeps this long first (the hook budget is 300 ms; with this switch the budget stays 300 ms)
 //   SBT_HOOK_BUDGET  production: keep the hook's 300 ms budget (by default a spawned hook gets 30 s so load cannot flip an answer)
+//   SBT_HOOK_DEADLINE  roomy: the hook's pre-tool deadline (Codex 2 s, Cursor/Grok/Gemini 4 s) is moved 30 s out (f2 outage tests only)
 //   SBT_ROLLOUT_KEYLESS  off: SEATBELT_ROLLOUT.keyless is forced to 'off' (the kill switch, audit I1)
 const fs = require('node:fs');
 const os = require('node:os');
@@ -112,6 +113,14 @@ if (env.SBT_ROLLOUT_KEYLESS || roomyBudget) {
     if (env.SBT_ROLLOUT_KEYLESS) m.SEATBELT_ROLLOUT = Object.freeze({ ...m.SEATBELT_ROLLOUT, keyless: env.SBT_ROLLOUT_KEYLESS });
     if (roomyBudget) m.HOOK_BUDGET_MS = 30_000;
   });
+}
+
+// The hook's own deadline (src/host-approval.ts preToolDeadline: Codex about 2 s, Cursor, Grok and Gemini 4 s, counted from process start) also
+// limits the seatbelt reading: budget = deadline - now - 200 ms, and a budget under 20 ms means "unknown". On a loaded machine a hook that
+// started slowly crosses it, and the outage hold then keeps the classifier's answer. SBT_HOOK_DEADLINE=roomy (set by
+// test/f2-outage-fail-closed.test.js only) moves the deadline 30 s out. It never ships; the production values stay pinned by that test.
+if (env.SBT_HOOK_DEADLINE === 'roomy') {
+  wrapAfterLoad('host-approval.js', (m) => { m.preToolDeadline = () => Date.now() + 30_000; });
 }
 
 if (env.SBT_SLOW_MS) {
