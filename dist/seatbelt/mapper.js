@@ -2343,7 +2343,7 @@ function resolveWordRaw(word, ctx, run) {
 function argText(a) { return a.text !== null ? a.text : a.pattern.replace(new RegExp(DYN, 'g'), ''); }
 // Variables whose value some program runs (an editor, a pager, a prompt expanded at trace time): the
 // value is read as shell text when it is more than a bare word (audit N1).
-const PROGRAM_ENV = ['EDITOR', 'VISUAL', 'PAGER', 'MANPAGER', 'BROWSER', 'LESSOPEN', 'LESSCLOSE', 'SSH_ASKPASS', 'SUDO_ASKPASS', 'FCEDIT', 'LESSEDIT', 'PS0', 'PS1', 'PS2', 'PS4', 'PROMPT_COMMAND'];
+const PROGRAM_ENV = ['EDITOR', 'VISUAL', 'PAGER', 'MANPAGER', 'BAT_PAGER', 'BROWSER', 'LESSOPEN', 'LESSCLOSE', 'SSH_ASKPASS', 'SUDO_ASKPASS', 'FCEDIT', 'LESSEDIT', 'PS0', 'PS1', 'PS2', 'PS4', 'PROMPT_COMMAND'];
 function programEnvCheck(values, ctx, run, includeExported) {
     for (const name of PROGRAM_ENV) {
         const v = values.has(name) ? values.get(name) : includeExported && ctx.exported.has(name) ? ctx.vars.get(name) : undefined;
@@ -4779,13 +4779,27 @@ const OPERAND_CREATE_ONLY = new Set(['mkdir', 'touch']);
 const INLINE_CODE_FLAG = /^-(?:-(?:eval|print|command|encodedcommand)|[A-Za-z]*[ceEmprs][A-Za-z]*|Command|EncodedCommand|ec|enc)$/i;
 // A partly dynamic operand whose literal part can only name a protected file or folder.
 const PROTECTED_DYNAMIC = /(?:^|\/)\.(?:marrow|codex|gemini|grok|windsurf|cursor)(?:\/|$)|\.claude\/(?:settings(?:\.local)?\.json|plugins)|\.claude\.json$|\.mcp\.json$|hooks\.json$|(?:^|\/)\.(?:bashrc|zshrc|profile|bash_profile|bash_login|zprofile|zshenv)$|\.git\/(?:hooks|config)/;
+// Readers with an option that writes or runs something: such a form is no reader. A dynamic word could be
+// that option, so it counts too (grep, cat and the like have no such option).
+const READER_RUNNERS = new Set(['yq', 'rg', 'bat', 'batcat', 'less', 'more']);
 function operandRuleApplies(prog, rest) {
     if (OPERAND_NOT_FILES.has(prog))
         return (prog === 'sudo' || prog === 'doas') && rest.some((a) => a.text === '-e' || a.text === '--edit');
     if (OPERAND_READERS.has(prog)) {
+        if (READER_RUNNERS.has(prog) && rest.some((a) => a.text === null))
+            return true;
         if ((prog === 'jq' || prog === 'yq') && rest.some((a) => a.text !== null && (/^--?in-?place(?:=|$)/.test(a.text) || /^-[A-Za-z]*i[A-Za-z]*(?:=.*)?$/.test(a.text))))
             return true;
-        if ((prog === 'less' || prog === 'more') && rest.some((a) => a.text !== null && (/^-[A-Za-z]*[oO]/.test(a.text) || /^--(?:log-file|LOG-FILE)/.test(a.text))))
+        // yq --split-exp / -s writes one file per document.
+        if (prog === 'yq' && rest.some((a) => a.text !== null && (/^--split-exp(?:=|$)/.test(a.text) || /^-[A-Za-z]*s[A-Za-z]*(?:=.*)?$/.test(a.text))))
+            return true;
+        // less/more: a log file (-o, -O, --log-file) or start-up commands (`+v` opens the editor, `+!cmd` runs a shell).
+        if ((prog === 'less' || prog === 'more') && rest.some((a) => a.text !== null && (/^-[A-Za-z]*[oO]/.test(a.text) || /^--(?:log-file|LOG-FILE)/.test(a.text) || a.text.startsWith('+'))))
+            return true;
+        // rg --pre runs a program on every file; bat --pager runs a command.
+        if (prog === 'rg' && rest.some((a) => a.text !== null && /^--pre(?:=|$)/.test(a.text)))
+            return true;
+        if ((prog === 'bat' || prog === 'batcat') && rest.some((a) => a.text !== null && /^--pager(?:=|$)/.test(a.text)))
             return true;
         return false;
     }
@@ -4828,10 +4842,50 @@ function withoutScript(prog, rest) {
     }
     return rest;
 }
+// The command text a reader's option runs: `bat --pager <cmd>`, `less '+!<cmd>'` / `'+|<mark><cmd>'`,
+// `git grep -O<cmd>` / `--open-files-in-pager=<cmd>`.
+function readerCommandTexts(prog, rest) {
+    const out = [];
+    const valueOf = (i, re, short) => {
+        const t = rest[i].text;
+        if (t === null)
+            return null;
+        const m = re.exec(t);
+        if (m)
+            return m[1] !== undefined && m[1] !== '' ? m[1] : rest[i + 1] && rest[i + 1].text !== null ? rest[i + 1].text : null;
+        if (short && t.startsWith(short) && t.length > short.length)
+            return t.slice(short.length);
+        return null;
+    };
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        if (t === null)
+            continue;
+        if (prog === 'bat' || prog === 'batcat') {
+            const v = valueOf(i, /^--pager(?:=(.*))?$/);
+            if (v)
+                out.push(v);
+        }
+        if ((prog === 'less' || prog === 'more') && t.startsWith('+')) {
+            for (let j = t.indexOf('!'); j >= 0; j = t.indexOf('!', j + 1))
+                out.push(t.slice(j + 1));
+            for (let j = t.indexOf('|'); j >= 0; j = t.indexOf('|', j + 1))
+                out.push(t.slice(j + 2));
+        }
+        if (prog === 'git') {
+            const v = valueOf(i, /^--open-files-in-pager(?:=(.*))?$/, '-O');
+            if (v)
+                out.push(v);
+        }
+    }
+    return out.filter((x) => x.trim() !== '').slice(0, tables_1.LIMITS.maxVariants);
+}
 function protectedOperandCheck(prog, rest, ctx, run) {
     // Paths on another machine (ssh host '…') and argv words tried as commands (their program judged them).
     if (ctx.remote || ctx.backstop)
         return;
+    for (const text of readerCommandTexts(prog, rest))
+        evalShell(text, childCtx(ctx), run);
     let operands = rest;
     if (prog === 'git') {
         const { sub, at } = gitSub(rest);
@@ -4840,7 +4894,9 @@ function protectedOperandCheck(prog, rest, ctx, run) {
         const indexOnly = (sub === 'reset' && !after.some((t) => t === null || /^--(?:hard|merge|keep)$/.test(t)))
             || (sub === 'rm' && after.includes('--cached'))
             || (sub === 'restore' && after.some((t) => t === '--staged' || t === '-S') && !after.some((t) => t === null || t === '--worktree' || t === '-W' || (t.startsWith('-') && !t.startsWith('--') && /W/.test(t))));
-        if (sub !== null && (GIT_READ_SUBS.has(sub) || indexOnly)) {
+        // `git grep -O<cmd>` opens the matching files in a command: no read.
+        const pager = sub === 'grep' && after.some((t) => t === null || /^(?:-O|--open-files-in-pager)/.test(t));
+        if (sub !== null && !pager && (GIT_READ_SUBS.has(sub) || indexOnly)) {
             // A reader that still writes a file: `git diff --output=<file>`.
             operands = [];
             for (let i = at + 1; i < rest.length; i += 1) {

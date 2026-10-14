@@ -90,6 +90,27 @@ test('NEW-2 mapper: folders that hold protected files stop as operands of non-re
   }
 });
 
+test('NEW-2 mapper: a reader with an option that writes or runs is no reader (bat --pager, less +cmd, rg --pre, yq -s, git grep -O)', () => {
+  const stops = [
+    'bat --pager "tee /home/u/.claude/settings.json" README.md', 'bat --pager="tee /home/u/.claude/settings.json" README.md',
+    'BAT_PAGER="tee /home/u/.claude/settings.json" bat README.md', 'batcat --pager="rm /home/u/.claude/settings.json" x',
+    'less "+!rm /home/u/.claude/settings.json" x', 'less "+|atee /home/u/.claude/settings.json" x', 'less +v ~/.claude/settings.json', 'more +v ~/.bashrc',
+    'rg --pre ./x.sh foo /home/u/.claude/settings.json', 'rg --pre=./x.sh foo ~/.claude/settings.json', 'rg $OPT foo ~/.claude/settings.json',
+    'yq -s .a ~/.claude/settings.json', 'yq --split-exp .a ~/.claude/settings.json', 'yq $OPT ~/.claude/settings.json',
+    'git grep -O"tee /home/u/.claude/settings.json" foo', 'git grep --open-files-in-pager="rm /home/u/.claude/settings.json" foo',
+  ];
+  for (const c of stops) {
+    const d = sh(c);
+    assert.equal(d.decision, 'stop', `${c}: ${d.reasons}`);
+    assert.ok(d.hits.some((h) => h.category === 'S0'), `${c}: ${d.reasons}`);
+  }
+  for (const c of ['bat --pager less README.md', 'bat --pager="less -RF" README.md', 'less +G app.log', 'rg --pre ./x.sh foo src', 'git grep -O foo',
+    'git grep -n foo', 'rg $P src', 'rg -n foo ~/.claude/settings.json', 'bat ~/.claude/settings.json', 'yq .a ~/.claude/settings.json',
+    'jq -s . a.json b.json', 'less ~/.claude/settings.json', 'grep "$X" ~/.claude/settings.json']) {
+    assert.equal(sh(c).decision, 'pass', c);
+  }
+});
+
 test('NEW-2 mapper: readers, builtins, scripts, remote paths and ordinary work pass (friction controls)', () => {
   const T = '~/.claude/settings.json';
   for (const c of [
