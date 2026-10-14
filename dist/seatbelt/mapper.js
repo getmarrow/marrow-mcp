@@ -48,6 +48,7 @@ exports.evaluateSeatbelt = evaluateSeatbelt;
 const path = __importStar(require("node:path"));
 const tables_1 = require("./tables");
 const classifier_pin_1 = require("./classifier-pin");
+const longopts_1 = require("./longopts");
 const guards_1 = require("./guards");
 /* eslint-disable @typescript-eslint/no-require-imports */
 const shellParse = require('../../vendor/classifier/shell-parse.js');
@@ -4017,7 +4018,10 @@ function applyLinks(abs, run) {
 }
 function recordLinks(prog, rest, ctx, run) {
     const flagged = (long) => rest.some((a) => a.text !== null && ((/^-[a-zA-Z]*s[a-zA-Z]*$/.test(a.text) && !a.text.startsWith('--')) || a.text === long));
-    if (!((prog === 'ln' && flagged('--symbolic')) || (prog === 'cp' && flagged('--symbolic-link'))))
+    // Patch round 3: `ln --sym a b` and `cp --symbolic b c` are read by GNU as the exact options. A long option that is
+    // not on the program's list could be one of them, so the link is recorded (the stricter reading).
+    const linkUnknown = (prog === 'ln' && (0, longopts_1.unknownLong)(rest, longopts_1.LN_LONG) !== -1) || (prog === 'cp' && (0, longopts_1.unknownLong)(rest, longopts_1.CP_LONG) !== -1);
+    if (!((prog === 'ln' && flagged('--symbolic')) || (prog === 'cp' && flagged('--symbolic-link')) || linkUnknown))
         return;
     const ops = nonOptions(rest, new Set(['-t', '--target-directory', '-S', '--suffix']));
     const tDir = targetDirFlag(rest);
@@ -4123,10 +4127,13 @@ function carryLinks(prog, rest, ctx, run) {
     }
     if (!CARRY_PROGRAMS.has(prog))
         return;
-    if (prog === 'ln' && rest.some((a) => a.text !== null && ((/^-[a-zA-Z]*s[a-zA-Z]*$/.test(a.text) && !a.text.startsWith('--')) || a.text === '--symbolic')))
+    // Patch round 3: with a long option that is not on the program's list, neither early return below is certain.
+    const longUnknown = (prog === 'ln' && (0, longopts_1.unknownLong)(rest, longopts_1.LN_LONG) !== -1) || (prog === 'cp' && (0, longopts_1.unknownLong)(rest, longopts_1.CP_LONG) !== -1)
+        || (prog === 'rsync' && (0, longopts_1.unknownLong)(rest, longopts_1.RSYNC_LONG) !== -1) || (prog === 'mv' && (0, longopts_1.unknownLong)(rest, longopts_1.MV_LONG) !== -1);
+    if (!longUnknown && prog === 'ln' && rest.some((a) => a.text !== null && ((/^-[a-zA-Z]*s[a-zA-Z]*$/.test(a.text) && !a.text.startsWith('--')) || a.text === '--symbolic')))
         return;
     // A copy that follows links writes a real tree, not a link.
-    if ((prog === 'cp' || prog === 'rsync') && rest.some((a) => a.text !== null && (/^-[a-zA-Z]*[LH][a-zA-Z]*$/.test(a.text) && !a.text.startsWith('--') || a.text === '--dereference' || a.text === '--copy-links')))
+    if (!longUnknown && (prog === 'cp' || prog === 'rsync') && rest.some((a) => a.text !== null && (/^-[a-zA-Z]*[LH][a-zA-Z]*$/.test(a.text) && !a.text.startsWith('--') || a.text === '--dereference' || a.text === '--copy-links')))
         return;
     const valueFlags = prog === 'rsync'
         ? new Set(['-e', '--rsh', '--exclude', '--include', '--filter', '-f', '--files-from', '--port', '--password-file', '--log-file', '--backup-dir', '--suffix', '--chmod', '--chown'])
@@ -4776,7 +4783,9 @@ function genericOperandChecks(prog, args, ctx, run, subs = []) {
 // that is a folder holding a protected file (`~/.claude/`, `.claude`, `.git`) counts too, when it is
 // inside home or a workspace (home and the workspace root themselves do not count).
 const OPERAND_READERS = new Set(['cat', 'less', 'more', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'wc', 'stat', 'ls', 'file', 'diff', 'cmp',
-    'sha1sum', 'sha224sum', 'sha256sum', 'sha384sum', 'sha512sum', 'shasum', 'md5sum', 'md5', 'b2sum', 'cksum', 'jq', 'yq', 'bat', 'batcat', 'du']);
+    'sha1sum', 'sha224sum', 'sha256sum', 'sha384sum', 'sha512sum', 'shasum', 'md5sum', 'md5', 'b2sum', 'cksum', 'jq', 'yq', 'bat', 'batcat', 'du',
+    // Patch round 3 (delta audit friction): a directory listing and a formatter check only read.
+    'tree', 'prettier']);
 const OPERAND_NOT_FILES = new Set(['echo', 'printf', 'print', 'test', '[', '[[', 'true', 'false', ':', 'basename', 'dirname', 'realpath', 'readlink',
     'which', 'type', 'hash', 'cd', 'pushd', 'popd', 'source', '.', 'alias', 'unalias', 'export', 'declare', 'typeset', 'readonly', 'local', 'set',
     'unset', 'shift', 'read', 'mapfile', 'readarray', 'getopts', 'eval', 'trap', 'wait', 'exit', 'return',
@@ -4794,6 +4803,26 @@ const PROTECTED_DYNAMIC = /(?:^|\/)\.(?:marrow|codex|gemini|grok|windsurf|cursor
 // Readers with an option that writes or runs something: such a form is no reader. A dynamic word could be
 // that option, so it counts too (grep, cat and the like have no such option).
 const READER_RUNNERS = new Set(['yq', 'rg', 'bat', 'batcat', 'less', 'more']);
+// The long options each reader understands (patch round 3). Options that write or run something are not on a list.
+const READER_LONG = {
+    cat: longopts_1.CAT_LONG, less: longopts_1.LESS_LONG, more: longopts_1.MORE_LONG, head: longopts_1.HEAD_LONG, tail: longopts_1.TAIL_LONG, grep: longopts_1.GREP_LONG, egrep: longopts_1.GREP_LONG, fgrep: longopts_1.GREP_LONG, rg: longopts_1.RG_LONG,
+    wc: longopts_1.WC_LONG, stat: longopts_1.STAT_LONG, ls: longopts_1.LS_LONG, file: longopts_1.FILE_LONG, diff: longopts_1.DIFF_LONG, cmp: longopts_1.CMP_LONG, sha1sum: longopts_1.CHECKSUM_LONG, sha224sum: longopts_1.CHECKSUM_LONG,
+    sha256sum: longopts_1.CHECKSUM_LONG, sha384sum: longopts_1.CHECKSUM_LONG, sha512sum: longopts_1.CHECKSUM_LONG, shasum: longopts_1.CHECKSUM_LONG, md5sum: longopts_1.CHECKSUM_LONG, md5: longopts_1.NO_LONG,
+    b2sum: longopts_1.CHECKSUM_LONG, cksum: longopts_1.CHECKSUM_LONG, jq: longopts_1.JQ_LONG, yq: longopts_1.YQ_LONG, bat: longopts_1.BAT_LONG, batcat: longopts_1.BAT_LONG, du: longopts_1.DU_LONG, tree: longopts_1.TREE_LONG, prettier: longopts_1.PRETTIER_LONG,
+};
+// prettier only writes with --write or -w (alone or in a cluster of its short flags -c -l -u -h -v). A single-dash word
+// that holds any other letter is not a flag the mapper knows.
+function prettierWrites(rest) {
+    for (const a of rest) {
+        if (a.text === null)
+            return true;
+        if (a.text === '--write')
+            return true;
+        if (/^-[A-Za-z]/.test(a.text) && !a.text.startsWith('--') && !/^-[cluhv]+$/.test(a.text))
+            return true;
+    }
+    return false;
+}
 function operandRuleApplies(prog, rest) {
     if (OPERAND_NOT_FILES.has(prog))
         return (prog === 'sudo' || prog === 'doas') && rest.some((a) => a.text === '-e' || a.text === '--edit');
@@ -4813,10 +4842,23 @@ function operandRuleApplies(prog, rest) {
             return true;
         if ((prog === 'bat' || prog === 'batcat') && rest.some((a) => a.text !== null && /^--pager(?:=|$)/.test(a.text)))
             return true;
+        // Patch round 3 (delta audit F-OPT): a long option is read only on an exact match with this reader's list. A
+        // shortened, unknown or ambiguous spelling (`rg --pr=cmd`, `bat --pag=cmd`) makes it no reader.
+        if ((0, longopts_1.unknownLong)(rest, READER_LONG[prog] || longopts_1.NO_LONG) !== -1)
+            return true;
+        // tree -o FILE writes its listing to a file; prettier writes with --write / -w.
+        if (prog === 'tree' && rest.some((a) => a.text !== null && /^-[^-]*o/.test(a.text)))
+            return true;
+        if (prog === 'prettier' && prettierWrites(rest))
+            return true;
         return false;
     }
-    if (prog === 'find')
-        return rest.some((a) => a.text !== null && /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(a.text));
+    // Patch round 3: find reads when every option is a listed primary; -delete, -exec* and -fprint* write or run. A
+    // shortened (`-dele`), unknown or `--zz-unknown` option is no read.
+    if (prog === 'find') {
+        return rest.some((a) => a.text !== null && /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(a.text))
+            || (0, longopts_1.unknownLong)(rest, longopts_1.FIND_LONG, 1, false) !== -1;
+    }
     // `sed -n '1,20p' ~/.zshrc` and `awk '{print $1}' ~/.bashrc` only print: read forms of sed and awk.
     if ((prog === 'sed' || prog === 'gsed') && sedReadOnly(rest))
         return false;
@@ -5002,6 +5044,11 @@ function withoutScript(prog, rest) {
 // writable through the copy, and a word the mapper cannot read could be such an option: then every
 // operand counts (null).
 function cpDestination(rest) {
+    // Patch round 3 (delta audit F-OPT): GNU cp reads a long option shortened to a unique prefix (`--target=DIR`,
+    // `--li`, `--sym`), so only the exact spellings on CP_LONG are read. Any other long option (shortened, unknown,
+    // ambiguous) leaves the destination unknowable: every operand counts.
+    if ((0, longopts_1.unknownLong)(rest, longopts_1.CP_LONG) !== -1)
+        return null;
     const positional = [];
     let target = null;
     let options = true;
@@ -5027,6 +5074,9 @@ function cpDestination(rest) {
                     target = litArg(t.slice('--target-directory='.length));
                     continue;
                 }
+                // A listed option whose value is the next word (`--sparse always`, `--no-preserve mode`): that word is not an operand.
+                if ((0, longopts_1.takesNextWord)(t, longopts_1.CP_LONG))
+                    i += 1;
                 continue;
             }
             // A short cluster: letters up to a value-taking -S or -t (`-rt DIR`, `-tDIR`, `-S.bak`).
@@ -5073,6 +5123,12 @@ function readerCommandTexts(prog, rest) {
             if (v)
                 out.push(v);
         }
+        // rg --pre runs a program on every file and --hostname-bin one for the hyperlink host name.
+        if (prog === 'rg') {
+            const v = valueOf(i, /^--(?:pre|hostname-bin)(?:=(.*))?$/);
+            if (v)
+                out.push(v);
+        }
         if ((prog === 'less' || prog === 'more') && t.startsWith('+')) {
             for (let j = t.indexOf('!'); j >= 0; j = t.indexOf('!', j + 1))
                 out.push(t.slice(j + 1));
@@ -5085,7 +5141,259 @@ function readerCommandTexts(prog, rest) {
                 out.push(v);
         }
     }
+    // Patch round 3: a long option of these programs that is not on its list could be the pager or the pre-processor
+    // (`bat --pag=CMD`, `git grep --open-f=CMD`, `rg --pr=CMD`; GNU and git read a unique prefix). Its value is command text then.
+    const list = prog === 'bat' || prog === 'batcat' ? longopts_1.BAT_LONG : prog === 'rg' ? longopts_1.RG_LONG : prog === 'git' ? longopts_1.GIT_READ_LONG : null;
+    if (list) {
+        let from = 0;
+        if (prog === 'git') {
+            const g = gitSub(rest);
+            if (g.sub !== 'grep')
+                return out.filter((x) => x.trim() !== '').slice(0, tables_1.LIMITS.maxVariants);
+            from = g.at + 1;
+        }
+        const words = rest.slice(from);
+        for (const at of (0, longopts_1.unknownLongAll)(words, list, 2, prog !== 'git')) {
+            const t = words[at].text;
+            const v = (0, longopts_1.longValue)(t);
+            if (v !== null) {
+                if (v !== '')
+                    out.push(v);
+            }
+            else if (words[at + 1] && words[at + 1].text !== null)
+                out.push(words[at + 1].text);
+        }
+    }
     return out.filter((x) => x.trim() !== '').slice(0, tables_1.LIMITS.maxVariants);
+}
+// The words of an npx / bunx command line up to and including the package: the runner's own options and the package
+// name (the scan of npxLike). What follows is the argv of the command, which is dispatched and checked on its own.
+function npxOwnWords(rest) {
+    let i = 0;
+    while (i < rest.length) {
+        const t = rest[i].text;
+        if (t === null)
+            return rest;
+        if (t === '--') {
+            i += 1;
+            break;
+        }
+        if (t === '-p' || t === '--package' || t === '-c' || t === '--call') {
+            i += 2;
+            continue;
+        }
+        if (t.startsWith('-')) {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    return i >= rest.length ? rest : rest.slice(0, i + 1);
+}
+// ---------------------------------------------------------------------------------------------
+// Patch round 3 (delta audit friction): archiving reads its inputs. `tar czf out.tar ~/.claude` and `zip -r out.zip
+// .claude` write the archive only; the folders named for packing are sources. Only a form the mapper can read to the
+// end narrows the operands: a dynamic word, an unlisted long option, `--remove-files` (it deletes the inputs), zip -m
+// (it moves them) or any other operation than create keeps today's rule (every operand).
+// GNU tar short options that take a value: -b -C -f -F -g -H -I -K -L -N -T -V -X.
+const TAR_VALUE_LETTERS = 'bCfFgHIKLNTVX';
+const TAR_OTHER_OPERATIONS = new Set(['x', 't', 'd', 'r', 'u', 'A']);
+// Long options whose value is a file tar writes while it archives.
+const TAR_WRITES_FILE = new Set(['file', 'listed-incremental', 'index-file', 'volno-file']);
+function tarCreateTargets(rest) {
+    if (rest.length === 0 || rest.some((a) => a.text === null))
+        return null;
+    if ((0, longopts_1.unknownLong)(rest, longopts_1.TAR_LONG) !== -1)
+        return null;
+    const words = rest.map((a) => a.text);
+    const targets = [];
+    let create = false;
+    let other = false;
+    let i = 0;
+    // The pending value letters of an old-style first word (`tar czf out.tar dir`): their values are the words that follow.
+    const pending = [];
+    const take = (letter, value) => {
+        if (letter === 'f' || letter === 'g')
+            targets.push(litArg(value));
+    };
+    const cluster = (letters, attached) => {
+        for (let k = 0; k < letters.length; k += 1) {
+            const c = letters[k];
+            if (c === 'c')
+                create = true;
+            else if (TAR_OTHER_OPERATIONS.has(c))
+                other = true;
+            if (TAR_VALUE_LETTERS.includes(c)) {
+                const attachedValue = letters.slice(k + 1);
+                if (attached && attachedValue !== '') {
+                    take(c, attachedValue);
+                    return;
+                }
+                pending.push(c);
+            }
+        }
+    };
+    if (!words[0].startsWith('-') && /^[A-Za-z]+$/.test(words[0])) {
+        cluster(words[0], false);
+        i = 1;
+    }
+    let ended = false;
+    for (; i < words.length; i += 1) {
+        const t = words[i];
+        if (!ended && t === '--') {
+            ended = true;
+            continue;
+        }
+        if (!ended && t.startsWith('--') && t.length > 2) {
+            const eq = t.indexOf('=');
+            const name = eq === -1 ? t.slice(2) : t.slice(2, eq);
+            if (name === 'create')
+                create = true;
+            else if (['extract', 'get', 'list', 'diff', 'compare', 'delete', 'append', 'update', 'catenate', 'concatenate'].includes(name))
+                other = true;
+            else if (name === 'remove-files')
+                return null;
+            if (TAR_WRITES_FILE.has(name)) {
+                if (eq !== -1)
+                    targets.push(litArg(t.slice(eq + 1)));
+                else if (i + 1 < words.length) {
+                    targets.push(litArg(words[i + 1]));
+                    i += 1;
+                }
+            }
+            else if (eq === -1 && (0, longopts_1.takesNextWord)(t, longopts_1.TAR_LONG))
+                i += 1;
+            continue;
+        }
+        if (!ended && t.startsWith('-') && t.length > 1) {
+            cluster(t.slice(1), true);
+            continue;
+        }
+        // A word that is no option: the value of a pending letter, or an input.
+        if (pending.length > 0) {
+            take(pending.shift(), t);
+            continue;
+        }
+    }
+    // A value letter without its word (`tar cf`) is a command the mapper cannot read.
+    if (pending.length > 0 || !create || other)
+        return null;
+    return targets;
+}
+// zip: the first name is the archive; -O and -b name more files it writes. zip -m moves the inputs into the archive
+// (they are deleted): every operand then counts.
+const ZIP_FLAG_LETTERS = /^[rqvjDyXTugfFSdelkAJhwcz@0-9]+$/;
+function zipCreateTargets(rest) {
+    if (rest.length === 0 || rest.some((a) => a.text === null))
+        return null;
+    if ((0, longopts_1.unknownLong)(rest, longopts_1.ZIP_LONG) !== -1)
+        return null;
+    const words = rest.map((a) => a.text);
+    const targets = [];
+    let archive = null;
+    let patterns = false;
+    let ended = false;
+    for (let i = 0; i < words.length; i += 1) {
+        const t = words[i];
+        if (!ended && t === '--') {
+            ended = true;
+            patterns = false;
+            continue;
+        }
+        if (!ended && t.startsWith('--') && t.length > 2) {
+            const eq = t.indexOf('=');
+            const name = eq === -1 ? t.slice(2) : t.slice(2, eq);
+            patterns = false;
+            if (name === 'output-file' || name === 'temp-path') {
+                if (eq !== -1)
+                    targets.push(litArg(t.slice(eq + 1)));
+                else if (i + 1 < words.length) {
+                    targets.push(litArg(words[i + 1]));
+                    i += 1;
+                }
+            }
+            else if (eq === -1 && (0, longopts_1.takesNextWord)(t, longopts_1.ZIP_LONG))
+                i += 1;
+            continue;
+        }
+        if (!ended && t.startsWith('-') && t.length > 1) {
+            const letters = t.slice(1);
+            if (letters === 'x' || letters === 'i') {
+                patterns = true;
+                continue;
+            }
+            patterns = false;
+            if (letters === 'O' || letters === 'b') {
+                if (i + 1 < words.length) {
+                    targets.push(litArg(words[i + 1]));
+                    i += 1;
+                }
+                continue;
+            }
+            if (letters === 's' || letters === 'n' || letters === 'P' || letters === 't' || letters === 'tt') {
+                i += 1;
+                continue;
+            }
+            if (!ZIP_FLAG_LETTERS.test(letters))
+                return null;
+            continue;
+        }
+        if (patterns)
+            continue;
+        if (archive === null) {
+            archive = t;
+            targets.push(litArg(t));
+        }
+    }
+    return targets;
+}
+// ---------------------------------------------------------------------------------------------
+// Patch round 3 (delta audit F-AWK): an awk program that is no print-only read and writes or runs from its own text
+// (`print > "/abs/.claude/settings.json"`, `print | "tee …"`, `system("… > file")`) names its target inside the
+// program, where the operand scan does not look. Every quoted string of such a program (and each of its words) is
+// checked as an operand as well.
+const AWK_PROGRAMS = new Set(['awk', 'gawk', 'mawk', 'nawk']);
+const AWK_OUTPUT_OR_RUN = /\bprintf?\b[^;}\n]*>>?|\bprintf?\b[^;}\n]*\||\bsystem\s*\(|\|\s*&?\s*"|\bgetline\b/;
+function awkProgramPaths(rest, ctx, run) {
+    const texts = [];
+    for (let i = 0; i < rest.length; i += 1) {
+        const t = rest[i].text;
+        // A word the mapper expanded or could not read (`{print 1, 2 > "f"}` is a brace word to the shell parser): its
+        // pattern still holds the program's literal text.
+        if (t === null) {
+            texts.push(rest[i].pattern.replace(new RegExp(DYN, 'g'), ''));
+            continue;
+        }
+        if ((t === '-f' || t === '--file') && rest[i + 1] && rest[i + 1].text !== null) {
+            for (const abs of absCandidates(rest[i + 1].text, ctx, run) || []) {
+                const content = safeRead(run.env, abs, tables_1.LIMITS.maxScriptBytes);
+                if (content !== null)
+                    texts.push(content);
+            }
+            i += 1;
+            continue;
+        }
+        if (t.length > 1 && t.startsWith('-'))
+            continue;
+        texts.push(t);
+    }
+    const out = [];
+    for (const program of texts) {
+        if (program.length > 65536 || !AWK_OUTPUT_OR_RUN.test(program))
+            continue;
+        for (const m of program.matchAll(/"((?:[^"\\\n]|\\.)*)"/g)) {
+            const literal = m[1];
+            if (literal === '')
+                continue;
+            out.push(litArg(literal));
+            for (const piece of literal.split(/\s+/))
+                if (piece !== '' && piece !== literal)
+                    out.push(litArg(piece));
+            if (out.length > tables_1.LIMITS.maxVariants * 8)
+                return out;
+        }
+    }
+    return out;
 }
 function protectedOperandCheck(prog, rest, ctx, run) {
     // Paths on another machine (ssh host '…') and argv words tried as commands (their program judged them).
@@ -5096,14 +5404,21 @@ function protectedOperandCheck(prog, rest, ctx, run) {
     let operands = rest;
     if (prog === 'git') {
         const { sub, at } = gitSub(rest);
+        const afterArgs = rest.slice(at + 1);
+        // Patch round 3 (delta audit F-OPT): git reads a long option shortened to a unique prefix (`git reset --har`,
+        // `git restore --staged --work`, `git diff --outp=FILE`), so a read-only or index-only answer needs every
+        // global and subcommand option on the exact lists; any other long option leaves the answer "not read-only".
+        const globalsKnown = (0, longopts_1.unknownLong)(rest.slice(0, at), longopts_1.GIT_GLOBAL_LONG, 2, false) === -1;
+        const after = afterArgs.map((a) => a.text);
         // Index-only forms: `git reset [<rev>] -- <path>`, `git rm --cached`, `git restore --staged` (worktree untouched).
-        const after = rest.slice(at + 1).map((a) => a.text);
-        const indexOnly = (sub === 'reset' && !after.some((t) => t === null || /^--(?:hard|merge|keep)$/.test(t)))
-            || (sub === 'rm' && after.includes('--cached'))
-            || (sub === 'restore' && after.some((t) => t === '--staged' || t === '-S') && !after.some((t) => t === null || t === '--worktree' || t === '-W' || (t.startsWith('-') && !t.startsWith('--') && /W/.test(t))));
+        const indexOnly = globalsKnown && ((sub === 'reset' && !after.some((t) => t === null || /^--(?:hard|merge|keep)$/.test(t)) && (0, longopts_1.unknownLong)(afterArgs, longopts_1.GIT_RESET_LONG, 2, false) === -1)
+            || (sub === 'rm' && after.includes('--cached') && (0, longopts_1.unknownLong)(afterArgs, longopts_1.GIT_RM_LONG, 2, false) === -1)
+            || (sub === 'restore' && after.some((t) => t === '--staged' || t === '-S') && !after.some((t) => t === null || t === '--worktree' || t === '-W' || (t.startsWith('-') && !t.startsWith('--') && /W/.test(t)))
+                && (0, longopts_1.unknownLong)(afterArgs, longopts_1.GIT_RESTORE_LONG, 2, false) === -1));
         // `git grep -O<cmd>` opens the matching files in a command: no read.
         const pager = sub === 'grep' && after.some((t) => t === null || /^(?:-O|--open-files-in-pager)/.test(t));
-        if (sub !== null && !pager && (GIT_READ_SUBS.has(sub) || indexOnly)) {
+        const readOnly = sub !== null && globalsKnown && GIT_READ_SUBS.has(sub) && (0, longopts_1.unknownLong)(afterArgs, longopts_1.GIT_READ_LONG, 2, false) === -1;
+        if (sub !== null && !pager && (readOnly || indexOnly)) {
             // A reader that still writes a file: `git diff --output=<file>`.
             operands = [];
             for (let i = at + 1; i < rest.length; i += 1) {
@@ -5138,6 +5453,20 @@ function protectedOperandCheck(prog, rest, ctx, run) {
         operands = withoutScript(prog, rest);
     else if (prog === 'cp')
         operands = cpDestination(rest) ?? rest;
+    // Patch round 3 (delta audit friction): archiving reads its inputs; only the archive (and the other files tar
+    // or zip writes) is a destination. A form the mapper cannot read keeps every operand.
+    else if (prog === 'tar' || prog === 'gtar')
+        operands = tarCreateTargets(rest) ?? rest;
+    // A package runner's own words are its options and the package; the command it runs gets its own operand check
+    // when it is dispatched (so `npx prettier --check .claude/settings.json` is judged as prettier, not as npx).
+    else if (prog === 'npx' || prog === 'bunx')
+        operands = npxOwnWords(rest);
+    else if (prog === 'zip')
+        operands = zipCreateTargets(rest) ?? rest;
+    // Patch round 3 (delta audit F-AWK): an awk that is no print-only read and writes or runs from its program
+    // text: every quoted path in the program is checked as well.
+    else if (AWK_PROGRAMS.has(prog))
+        operands = [...rest, ...awkProgramPaths(rest, ctx, run)];
     const opts = {
         tree: !OPERAND_CREATE_ONLY.has(prog), remoteSpecs: prog === 'scp' || prog === 'rsync' || prog === 'sftp',
         // A secret path among the operands already stopped as S4 (genericOperandChecks): it keeps that answer.
@@ -5265,7 +5594,46 @@ const WRITE_VALUE_FLAGS = {
     chmod: new Set(['--reference']), chown: new Set(['--reference', '--from']), chgrp: new Set(['--reference']),
     chattr: new Set(['-v', '-p']),
 };
+// The long options each modelled writer understands (patch round 3).
+const WRITER_LONG = {
+    cp: longopts_1.CP_LONG, mv: longopts_1.MV_LONG, ln: longopts_1.LN_LONG, install: longopts_1.INSTALL_LONG, rsync: longopts_1.RSYNC_LONG, scp: longopts_1.SCP_LONG, sed: longopts_1.SED_LONG, gsed: longopts_1.SED_LONG,
+    curl: longopts_1.CURL_LONG, wget: longopts_1.WGET_LONG, tar: longopts_1.TAR_LONG,
+};
+// The strictest reading of a writer whose options the mapper cannot read: every operand, every `--name=value`
+// value and every attached short value (`-t/dir`) is a destination, and a tree.
+function everyOperandTargets(rest) {
+    const out = [];
+    let end = false;
+    for (const a of rest) {
+        const t = a.text;
+        if (t === null) {
+            out.push({ arg: a, tree: true });
+            continue;
+        }
+        if (!end && t === '--') {
+            end = true;
+            continue;
+        }
+        if (!end && t.length > 2 && t.startsWith('--')) {
+            const v = (0, longopts_1.longValue)(t);
+            if (v !== null && v !== '')
+                out.push({ arg: litArg(v), tree: true });
+            continue;
+        }
+        if (!end && t.length > 1 && t.startsWith('-')) {
+            const m = /^-[A-Za-z]([~./].*)$/.exec(t);
+            if (m)
+                out.push({ arg: litArg(m[1]), tree: true });
+            continue;
+        }
+        out.push({ arg: a, tree: true });
+    }
+    return out;
+}
 function writeTargets(prog, rest) {
+    const writerList = WRITER_LONG[prog];
+    if (writerList && (0, longopts_1.unknownLong)(rest, writerList) !== -1)
+        return everyOperandTargets(rest);
     // rsync and scp have no target-directory flag (rsync -t is --times): their own reading takes the last operand.
     // F2: a symbolic mode may start with `-` (`chmod -r FILE`, `chattr -i FILE`); the option scan drops it, so the
     // old reading took the file for the mode. The own reading checks every operand of chmod/chown/chgrp/chattr.
@@ -6535,6 +6903,7 @@ function tarProgram(rest, ctx, run, x) {
                 archiveNamesFromStdin(ctx, run, x);
         }
     }
+    const unknownTar = new Set((0, longopts_1.unknownLongAll)(rest, longopts_1.TAR_LONG, 2, false));
     const named = new Set(['--to-command', '--checkpoint-action', '--use-compress-program', '--rsh-command', '--info-script', '--new-volume-script', '-I', '-F']);
     for (let i = 0; i < rest.length; i += 1) {
         const t = rest[i].text;
@@ -6547,6 +6916,12 @@ function tarProgram(rest, ctx, run, x) {
             const eq = t.match(/^(--[a-z-]+)=([\s\S]*)$/);
             if (eq && named.has(eq[1]))
                 value = litArg(eq[2]);
+            // Patch round 3: GNU tar reads a unique prefix of a long option (`--to-comm=CMD`, `--checkpoint-act=exec=CMD`,
+            // `--use-compress=CMD`). A long option that is not on TAR_LONG could be one of these: its value is command text.
+            else if (unknownTar.has(i)) {
+                const v = (0, longopts_1.longValue)(t);
+                value = v !== null ? litArg(v) : rest[i + 1] && rest[i + 1].text !== null ? rest[i + 1] : null;
+            }
         }
         if (!value)
             continue;
@@ -7561,7 +7936,11 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
         default: break;
     }
     // Working-tree writes on protected files (git rm --cached and restore --staged only touch the index).
-    const indexOnly = args.some((a) => a.text === '--cached' || a.text === '--staged') && !args.some((a) => a.text === '--worktree' || a.text === '-W');
+    // Patch round 3: index-only needs every long option on the exact list of the subcommand (`git restore --staged --work`
+    // restores the working tree: git reads a unique prefix of --worktree). checkout and mv have no index-only form.
+    const indexOnlyList = sub === 'restore' ? longopts_1.GIT_RESTORE_LONG : sub === 'rm' ? longopts_1.GIT_RM_LONG : null;
+    const indexOnly = indexOnlyList !== null && args.some((a) => a.text === '--cached' || a.text === '--staged') && !args.some((a) => a.text === '--worktree' || a.text === '-W')
+        && (0, longopts_1.unknownLong)(args, indexOnlyList, 2, false) === -1;
     if (['checkout', 'restore', 'rm', 'mv'].includes(sub) && !indexOnly) {
         for (const a of args)
             if (a.text === null || !a.text.startsWith('-'))
@@ -9408,7 +9787,9 @@ function checkGrepGlob(glob, ctx, run) {
     if (samples.some((s) => re.test(path.posix.basename(s)) && isSecretPath(s, run)))
         hit(run, 'S4', 'tool_grep_glob_secret');
 }
-const JSON_HOOK_CONFIG = /(?:^|\/)(?:\.claude\/settings(?:\.local)?\.json|\.codex\/hooks\.json|\.cursor\/hooks\.json|\.cursor\/mcp\.json|\.gemini\/settings\.json|\.mcp\.json)$/;
+// Patch round 3 (delta audit F-CODEX): `.codex/hooks.json` is not compared like the others: any write under .codex stops (S0)
+// on every host, including a gemini write_file that leaves the Marrow part as it was.
+const JSON_HOOK_CONFIG = /(?:^|\/)(?:\.claude\/settings(?:\.local)?\.json|\.cursor\/hooks\.json|\.cursor\/mcp\.json|\.gemini\/settings\.json|\.mcp\.json)$/;
 function checkToolWrite(p, tool, input, ctx, run) {
     const abs = absCandidates(p, ctx, run);
     if (!abs) {

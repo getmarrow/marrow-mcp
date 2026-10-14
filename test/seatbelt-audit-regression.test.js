@@ -52,11 +52,6 @@ const DEVIATIONS = {
     reason: 'fixture gap: with no existing settings file a Write of `{}` creates a file and removes no Marrow hook entry; adv5 has the same rows with the file present.',
     variant: { event: { tool_name: 'Write', tool_input: { file_path: '/home/u/.claude/settings.json', content: '{}' } }, expect: 'stop', opts: { files: { '/home/u/.claude/settings.json': JSON.stringify({ hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'marrow-mcp claude-pre-action-hook' }] }] } }) } } },
   },
-  'adv4:write-codex-hooks': {
-    expect: 'pass',
-    reason: 'fixture gap (as write-home-settings).',
-    variant: { event: { tool_name: 'Write', tool_input: { file_path: '/home/u/.codex/hooks.json', content: '{}' } }, expect: 'stop', opts: { files: { '/home/u/.codex/hooks.json': JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'marrow-mcp codex-pre-action-hook' }] }] } }) } } },
-  },
   'adv4:write-via-link': {
     expect: 'pass',
     reason: 'fixture gap (as write-home-settings).',
