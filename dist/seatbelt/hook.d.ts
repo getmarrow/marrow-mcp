@@ -11,13 +11,13 @@ export declare const SEATBELT_ROLLOUT: {
 };
 /** One wall-clock budget for the whole seatbelt path (mode resolution and mapper). Over it: stop. */
 export declare const HOOK_BUDGET_MS = 300;
-export declare const CLAIMED_NO_KEY_TEXT = "Marrow is linked to an account but has no working key; owner: run `marrow doctor`.";
+export declare const CLAIMED_NO_KEY_TEXT = "Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.";
 /**
  * `claimed_no_key` with no account evidence and no rejected key: a fallback because the machine's
  * setup could not be confirmed (an evidence dir others can write, an unreadable probe, a home
  * mismatch, strict mode). Same holds as CLAIMED_NO_KEY_TEXT, but it never claims an account exists.
  */
-export declare const SETUP_UNCONFIRMED_TEXT = "Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `marrow doctor`.";
+export declare const SETUP_UNCONFIRMED_TEXT = "Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.";
 export declare function seatbeltStopText(category: string, rule: string, reason: string, mode: 'seatbelt' | 'claimed_no_key' | 'account', accountLinked?: boolean): string;
 /** §4.2: an S0-S5 floor stop is lifted only by an enforced server allow (a verified permit); an advisory allow never lifts it. */
 export declare function accountFloorStops(rollout: 'watch' | 'on', floor: Pick<SeatbeltDecision, 'decision'> | null, server: 'enforced_allow' | 'advisory_allow' | 'deny' | 'none'): boolean;

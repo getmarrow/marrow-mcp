@@ -139,7 +139,7 @@ test('Cursor missing-key protected action denies privately while Marrow MCP does
     }));
     const denied = JSON.parse(deniedText);
     assert.equal(denied.permission, 'deny');
-    assert.match(denied.user_message, /Marrow has no working key on this machine and its keyless mode is off here \(strict mode, or a home folder it cannot trust\); owner: run `marrow doctor`\./);
+    assert.match(denied.user_message, /Marrow has no working key on this machine and its keyless mode is off here \(strict mode, or a home folder it cannot trust\); owner: run `npx -y @getmarrow\/install@latest doctor`\./);
     assert.equal(denied.agent_message, denied.user_message);
     assert.deepEqual(Object.keys(denied).sort(), ['agent_message', 'permission', 'user_message']);
     assert.doesNotMatch(deniedText, /synthetic-private-credential|npm publish/);

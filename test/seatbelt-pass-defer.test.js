@@ -72,7 +72,7 @@ test('seatbeltPassOutput: an action 3.9.103 held never gets an explicit allow th
     assert.equal(out.hookSpecificOutput?.permissionDecision === 'allow', false, harness);
     if (harness !== 'gemini') assert.equal(out.decision === 'allow', false, harness);
   }
-  assert.ok(HELD.startsWith('MARROW SEATBELT held this action: ') && HELD.endsWith('"marrow claim" to get one-tap approvals.') && HELD.length <= 500);
+  assert.ok(HELD.startsWith('MARROW SEATBELT held this action: ') && HELD.endsWith('so these become approval prompts.') && HELD.length <= 500);
 });
 
 test('seatbeltPassOutput: every answer passes the installed host guard unchanged (none turns into a launch failure)', () => {

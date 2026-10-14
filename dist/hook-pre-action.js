@@ -47,9 +47,9 @@ Object.defineProperty(exports, "MARROW_OUTAGE_WARNING", { enumerable: true, get:
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
 exports.NO_KEY_TEXT = 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.';
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
-exports.CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `marrow doctor`.';
+exports.CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.';
 /** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
-exports.SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `marrow doctor`.';
+exports.SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
 /** The seatbelt path itself could not run (its modules did not load): a stop (spec §2.1.4). */
 const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish (U5.fail_closed, hook_error). This needs the machine owner. Do not retry it another way or edit Marrow settings.';
 // Claude Code sends the whole tool input, and a Write of a long document grows
@@ -423,7 +423,7 @@ function localControlAllowOutput(harness) {
 /** The Cursor events where Cursor enforces "ask" with its own approval prompt (the installer's execution hooks). */
 const CURSOR_ASK_EVENTS = new Set(['beforeShellExecution', 'beforeMCPExecution']);
 /** Keyless seatbelt: a host that cannot hand this action to its own approval prompt holds it (no account to approve it). */
-exports.SEATBELT_HELD_TEXT = 'MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or run "marrow claim" to get one-tap approvals.';
+exports.SEATBELT_HELD_TEXT = 'MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or link a Marrow account with "npx -y @getmarrow/install@latest activate" (it needs MARROW_API_KEY set first) so these become approval prompts.';
 exports.SEATBELT_CURSOR_ASK_USER_TEXT = 'Marrow seatbelt (no account linked): approve this action here only if you expected it.';
 exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = 'Cursor is asking the user to approve this action (Marrow seatbelt, no account linked). Wait for the answer; do not retry it another way.';
 /**

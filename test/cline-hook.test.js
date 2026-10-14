@@ -144,7 +144,7 @@ test('Cline missing-key protected action denies privately while Marrow MCP does 
     }));
     const denied = JSON.parse(deniedText);
     assert.equal(denied.cancel, true);
-    assert.match(denied.errorMessage, /Marrow has no working key on this machine and its keyless mode is off here \(strict mode, or a home folder it cannot trust\); owner: run `marrow doctor`\./);
+    assert.match(denied.errorMessage, /Marrow has no working key on this machine and its keyless mode is off here \(strict mode, or a home folder it cannot trust\); owner: run `npx -y @getmarrow\/install@latest doctor`\./);
     assert.deepEqual(Object.keys(denied).sort(), ['cancel', 'errorMessage']);
     assert.doesNotMatch(deniedText, /synthetic-private-credential|npm publish/);
 

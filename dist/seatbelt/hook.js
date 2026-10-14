@@ -19,13 +19,13 @@ exports.SEATBELT_ROLLOUT = Object.freeze({
 });
 /** One wall-clock budget for the whole seatbelt path (mode resolution and mapper). Over it: stop. */
 exports.HOOK_BUDGET_MS = 300;
-exports.CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `marrow doctor`.';
+exports.CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.';
 /**
  * `claimed_no_key` with no account evidence and no rejected key: a fallback because the machine's
  * setup could not be confirmed (an evidence dir others can write, an unreadable probe, a home
  * mismatch, strict mode). Same holds as CLAIMED_NO_KEY_TEXT, but it never claims an account exists.
  */
-exports.SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `marrow doctor`.';
+exports.SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
 const LABELS = {
     S0: 'a change to Marrow seatbelt settings or an owner-only command',
     S1: 'force-push or delete of a protected branch',
@@ -46,7 +46,7 @@ function seatbeltStopText(category, rule, reason, mode, accountLinked = true) {
     if (mode === 'account')
         return `${head} Tell the owner: run it yourself in your own terminal.`;
     return mode === 'seatbelt'
-        ? `${head} Tell the owner: run it yourself in your own terminal, or run "marrow claim" to get one-tap approvals.`
+        ? `${head} Tell the owner: run it yourself in your own terminal, or link a Marrow account with "npx -y @getmarrow/install@latest activate" (it needs MARROW_API_KEY set first) so these become approval prompts.`
         : `${head} ${accountLinked ? exports.CLAIMED_NO_KEY_TEXT : exports.SETUP_UNCONFIRMED_TEXT}`;
 }
 /** §4.2: an S0-S5 floor stop is lifted only by an enforced server allow (a verified permit); an advisory allow never lifts it. */

@@ -4,9 +4,9 @@ import { MARROW_OUTAGE_WARNING } from './hook-contract';
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
 export declare const NO_KEY_TEXT = "Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.";
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
-export declare const CLAIMED_NO_KEY_TEXT = "Marrow is linked to an account but has no working key; owner: run `marrow doctor`.";
+export declare const CLAIMED_NO_KEY_TEXT = "Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.";
 /** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
-export declare const SETUP_UNCONFIRMED_TEXT = "Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `marrow doctor`.";
+export declare const SETUP_UNCONFIRMED_TEXT = "Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.";
 export { MARROW_OUTAGE_WARNING };
 export declare const MAX_PRE_ACTION_INPUT_BYTES: number;
 export declare const PRE_ACTION_CONTROL_TIMEOUT_MS = 8000;
@@ -104,7 +104,7 @@ export declare function runtimeGateVerdict(runtime: PreActionControlResult['runt
 export declare function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt?: OwnerApprovalPrompt): string;
 export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
 /** Keyless seatbelt: a host that cannot hand this action to its own approval prompt holds it (no account to approve it). */
-export declare const SEATBELT_HELD_TEXT = "MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or run \"marrow claim\" to get one-tap approvals.";
+export declare const SEATBELT_HELD_TEXT = "MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or link a Marrow account with \"npx -y @getmarrow/install@latest activate\" (it needs MARROW_API_KEY set first) so these become approval prompts.";
 export declare const SEATBELT_CURSOR_ASK_USER_TEXT = "Marrow seatbelt (no account linked): approve this action here only if you expected it.";
 export declare const SEATBELT_CURSOR_ASK_AGENT_TEXT = "Cursor is asking the user to approve this action (Marrow seatbelt, no account linked). Wait for the answer; do not retry it another way.";
 /**

@@ -18,12 +18,12 @@ const PRELOAD = path.join(__dirname, 'support', 'seatbelt-hook-preload.cjs');
 const MOCK = path.join(__dirname, 'support', 'host-approval-fetch-mock.cjs');
 const ENTRY = { claude: 'claude-pre-action-hook', codex: 'codex-pre-action-hook', cursor: 'cursor-pre-action-hook' };
 const HARNESSES = Object.keys(ENTRY);
-const SEATBELT_TAIL = 'This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or run "marrow claim" to get one-tap approvals.';
-const CLAIMED_TEXT = 'Marrow is linked to an account but has no working key; owner: run `marrow doctor`.';
+const SEATBELT_TAIL = 'This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or link a Marrow account with "npx -y @getmarrow/install@latest activate" (it needs MARROW_API_KEY set first) so these become approval prompts.';
+const CLAIMED_TEXT = 'Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.';
 // A seatbelt pass of an action 3.9.103 held reaches Cursor as "ask" (Cursor's own prompt), never an explicit allow.
 const CURSOR_SEATBELT_ASK = require(path.join(ROOT, 'dist', 'hook-pre-action.js')).SEATBELT_CURSOR_ASK_AGENT_TEXT;
 // claimed_no_key without account evidence (strict, a HOME that is not the passwd home): F1 text.
-const SETUP_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `marrow doctor`.';
+const SETUP_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
 
 function sandbox() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-u5-hook-')));
@@ -519,7 +519,7 @@ test('U5 keyless seatbelt on Gemini, Grok, Cline and Windsurf: the deny shape ea
       else assert.equal(denied.decision, 'deny');
       // Grok: the installed guard passes only an allow or the fixed denial (audit M1), so a stop is that denial.
       if (harness === 'grok') assert.equal(text, 'Marrow blocked this protected action.');
-      else assert.match(text, /^MARROW SEATBELT stopped this action: package publish \(S3\.[a-z_]+, [a-z_]+\)\. .*marrow claim/);
+      else assert.match(text, /^MARROW SEATBELT stopped this action: package publish \(S3\.[a-z_]+, [a-z_]+\)\. .*install@latest activate/);
       assert.equal(pass.status, 0, harness);
       // `git push origin main` was held by 3.9.103 on every host: Cline's neutral answer, Gemini's allow (its guard's
       // only non-blocking answer; Gemini still applies its own confirmation), Grok held as before (no neutral answer).

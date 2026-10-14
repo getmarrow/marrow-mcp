@@ -1362,7 +1362,7 @@ function withExactness(action: NormalizedHookAction, state: Exactness): Normaliz
 const EXACT_DOMAIN = 'marrow-exact-action-v1';
 /** Raw canonical input past this is never keyed: a nonce instead (it matches nothing). */
 const MAX_RAW_EXACT_CHARS = 1_048_576;
-const EXACT_SALT_NOTE = 'Marrow: the private device key for exact action matching is unavailable or unsafe on this machine, so a held action that hides a value is asked again instead of resumed on retry. Owner: run `marrow doctor`.';
+const EXACT_SALT_NOTE = 'Marrow: the private device key for exact action matching is unavailable or unsafe on this machine, so a held action that hides a value is asked again instead of resumed on retry. Owner: run `npx -y @getmarrow/install@latest doctor`.';
 
 /** Canonical JSON (keys sorted at every depth), or null past 1 MB, past 64 levels, or when it cannot be serialized. */
 function canonicalJson(value: unknown): string | null {
