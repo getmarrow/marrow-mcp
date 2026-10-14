@@ -4862,13 +4862,12 @@ function privilegeWrapper(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec
       break;
     }
     if (t === '--') { i += 1; break; }
+    // A long option that is not on the tool's list (doas has none, so `--chdir=DIR` is no option of its own) leaves the folder unknown.
+    if (list !== null && t.startsWith('--') && t.length > 2 && wrapperLongUnlisted(t, list)) { w.unknown = true; i += 1; continue; }
     if ((t === '-D' || t === '--chdir') && rest[i + 1]) { wrapperChdir(w, rest[i + 1].text, ctx); i += 2; continue; }
     if (/^--chdir=/.test(t)) { wrapperChdir(w, t.slice(8), ctx); i += 1; continue; }
     if (/^-D./.test(t)) { wrapperChdir(w, t.slice(2), ctx); i += 1; continue; }
-    if (list !== null && t.startsWith('--') && t.length > 2) {
-      if (wrapperLongUnlisted(t, list)) { w.unknown = true; i += 1; continue; }
-      if (takesNextWord(t, list)) { i += 2; continue; }
-    }
+    if (list !== null && t.startsWith('--') && t.length > 2 && takesNextWord(t, list)) { i += 2; continue; }
     if (valueFlags.has(t)) { i += 2; continue; }
     if (t.startsWith('-')) { if (/^-[a-zA-Z]*[si]/.test(t) && !t.startsWith('--')) shell = true; i += 1; continue; }
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { const eq = t.indexOf('='); sudoEnv.set(t.slice(0, eq), [t.slice(eq + 1)]); i += 1; continue; }

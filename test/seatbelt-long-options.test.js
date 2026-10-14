@@ -252,6 +252,26 @@ test('patch round 4: a chdir option written with a dynamic value in one word is 
   }
 });
 
+test('patch round 4 (abuse rows): repeated flags, variables and misleading words around the new rules', () => {
+  for (const t of TARGETS) {
+    for (const c of [
+      // repeated flags: the last chdir counts, and an unlisted option after a readable one makes the folder unknown again
+      `env --chdir=/tmp/p4-work --chdi=/tmp/p4-other cp /tmp/p4-x ${t.F}`, `sudo --chdir=/tmp/p4-work --zz-unknown cp /tmp/p4-x ${t.F}`, `env --chdir=/tmp/p4-work -C "$D" cp /tmp/p4-x ${t.F}`,
+      `zip /tmp/p4.zip /tmp/p4-in -lf /tmp/p4.log -lf ${t.T}`, `zip /tmp/p4.zip /tmp/p4-in -TT true -TT "rm ${t.T}"`, `cd ${t.P} && cp -t/tmp -t${t.R} /tmp/p4-x`,
+      // variables: the option or its value is a variable, so the word is dynamic
+      `P=--zz-unknown; env $P cp /tmp/p4-x ${t.F}`, `D=${t.PA}; env -C $D cp /tmp/p4-x ${t.F}`, `L=-lf; zip /tmp/p4.zip /tmp/p4-in $L ${t.T}`,
+    ]) {
+      assert.equal(sh(c).decision, 'stop', c);
+    }
+    // misleading words: the option names are only text here
+    for (const c of [`echo env --zz-unknown cp a ${t.F}`, `git commit -m "zip -lf ${t.T}"`, `echo "zip x.zip y -TT 'rm ${t.T}'"`, `printf '%s' "sudo --chd=${t.PA} cp x ${t.F}"`, `echo cd ${t.P} '&&' cp -t${t.R} x`]) {
+      assert.equal(sh(c).decision, 'pass', c);
+    }
+    // a later readable chdir under a known absolute folder is the folder the command runs in
+    assert.equal(sh('env --chdir=/tmp/p4-work --chdir=/tmp/p4-other cp a b').decision, 'pass');
+  }
+});
+
 test('patch round 4: ordinary commands in the same shapes keep passing (friction controls on non-protected paths)', () => {
   for (const c of [
     'cp -tbuild a.txt', 'cp -t build a.txt', 'cp -rtbuild src', 'mv -tbuild a.txt', 'install -tbin a.sh', 'cp -Sbak a.txt b.txt', 'cp --reflink=auto -tbuild a.txt', 'cp --zz-unknown -tbuild a.txt',

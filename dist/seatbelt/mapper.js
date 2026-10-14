@@ -6222,6 +6222,12 @@ function privilegeWrapper(prog, rest, ctx, run, x) {
             i += 1;
             break;
         }
+        // A long option that is not on the tool's list (doas has none, so `--chdir=DIR` is no option of its own) leaves the folder unknown.
+        if (list !== null && t.startsWith('--') && t.length > 2 && wrapperLongUnlisted(t, list)) {
+            w.unknown = true;
+            i += 1;
+            continue;
+        }
         if ((t === '-D' || t === '--chdir') && rest[i + 1]) {
             wrapperChdir(w, rest[i + 1].text, ctx);
             i += 2;
@@ -6237,16 +6243,9 @@ function privilegeWrapper(prog, rest, ctx, run, x) {
             i += 1;
             continue;
         }
-        if (list !== null && t.startsWith('--') && t.length > 2) {
-            if (wrapperLongUnlisted(t, list)) {
-                w.unknown = true;
-                i += 1;
-                continue;
-            }
-            if ((0, longopts_1.takesNextWord)(t, list)) {
-                i += 2;
-                continue;
-            }
+        if (list !== null && t.startsWith('--') && t.length > 2 && (0, longopts_1.takesNextWord)(t, list)) {
+            i += 2;
+            continue;
         }
         if (valueFlags.has(t)) {
             i += 2;
