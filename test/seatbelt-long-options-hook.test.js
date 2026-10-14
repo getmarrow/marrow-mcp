@@ -110,7 +110,9 @@ test('friction and F-AWK (hook): tree, prettier --check and archive creation pas
   const sb = keylessSandbox();
   try {
     const t = TARGETS[0];
-    const passes = [`tree ${t.D}`, `prettier --check ${t.T}`, `npx prettier --check ${t.T}`, `tar czf /tmp/p3-out.tgz ${t.D}`, `zip -r /tmp/p3-out.zip ${t.D}`];
+    const passes = [`tree ${t.D}`, `prettier --check ${t.T}`, `npx prettier --check ${t.T}`, `tar czf /tmp/p3-out.tgz ${t.D}`, `zip -r /tmp/p3-out.zip ${t.D}`,
+      // patch round 4: the benign rows next to the new rules
+      'zip -rq out.zip src', 'env --unset=FOO cp a b', 'sudo --user=www cp a /var/www/x', 'sudo --preserve-env=PATH cp a /tmp/p4-share-x', 'cp -tbuild a.txt', `zip -rq /tmp/p3-out.zip ${t.D}`];
     const stops = [`tree -o /tmp/p3-out.txt ${t.D}`, `prettier --write ${t.T}`, `tar czf ${t.T} /tmp/p3-src`, `tar xzf /tmp/p3.tgz -C ${t.D}`, `awk 'BEGIN{print "x" > "${sb.home}/.claude/settings.json"}'`,
       `awk 'BEGIN{system("rm ${sb.home}/.claude/settings.json")}'`];
     for (const host of HOSTS7) {
