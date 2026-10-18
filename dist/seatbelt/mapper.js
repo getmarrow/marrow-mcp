@@ -8313,21 +8313,118 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
         hit(run, 'S4', 'git_credential_get');
         return;
     }
-    if (!tables_1.GIT_S4_EXEMPT_SUBS.has(sub)) {
+    // `git log` prints names and messages, but with patch output it prints the content of the files it
+    // names, as `git show` does: then its operands are read like those of `git show`.
+    if (!tables_1.GIT_S4_EXEMPT_SUBS.has(sub) || (sub === 'log' && gitLogPrintsPatch(args))) {
         // Commit messages are prose, never paths. A pathspec after `--` or a `REV:path` object is read from history.
+        // log, whatchanged and format-patch take no message: their -m and -F are flags, and the next word is read.
+        const prose = !GIT_PATCH_LOG_SUBS.has(sub);
         const dashDash = args.findIndex((a) => a.text === '--');
         for (let k = 0; k < args.length; k += 1) {
             const t = args[k].text;
-            if (t === '-m' || t === '--message' || t === '-F' || t === '--file' || (t !== null && /^-[a-zA-Z]*m$/.test(t))) {
+            if (prose && (t === '-m' || t === '--message' || t === '-F' || t === '--file' || (t !== null && /^-[a-zA-Z]*m$/.test(t)))) {
                 k += 1;
                 continue;
             }
-            if (t !== null && /^(?:--message=|-m.)/.test(t))
+            if (prose && t !== null && /^(?:--message=|-m.)/.test(t))
                 continue;
             const history = (dashDash >= 0 && k > dashDash) || t === null || /^[^/:]+:/.test(t);
             checkSecretOperand(args[k], gctx, run, 'git_operand', history);
+            // `-L<range>:<file>` (or `-L <range>:<file>`) prints the history of <file>: every part after a colon is read.
+            if (!prose && t !== null && /^-L/.test(t) && (dashDash < 0 || k < dashDash)) {
+                const value = t === '-L' ? (args[k + 1] ? args[k + 1].text : null) : t.slice(2);
+                if (value !== null) {
+                    for (let c = value.indexOf(':'); c >= 0; c = value.indexOf(':', c + 1)) {
+                        if (c + 1 < value.length)
+                            checkSecretOperand(litArg(value.slice(c + 1)), gctx, run, 'git_operand', true);
+                    }
+                }
+            }
         }
     }
+}
+// Subcommands whose output can be the patches of the files they name; none takes a commit message.
+const GIT_PATCH_LOG_SUBS = new Set(['log', 'whatchanged', 'format-patch']);
+// Long options of `git log` that print patches (each implies --patch, or prints changed lines: --check).
+const GIT_LOG_PATCH_LONG = new Set(['--patch', '--patch-with-stat', '--patch-with-raw', '--unified', '--binary', '--check', '--cc', '--dd',
+    '--remerge-diff', '--combined']);
+// Words that never take the next word as their value (so a `-s` after one of them is an option).
+const GIT_LOG_FLAG_WORDS = new Set([...GIT_LOG_PATCH_LONG, '-p', '-u', '-s', '-c', '-m', '--no-patch', '--oneline', '--stat', '--all', '--follow',
+    '--graph', '--reverse', '--first-parent', '--no-merges', '--merges', '--name-only', '--name-status', '--raw', '--numstat', '--shortstat',
+    '--summary', '--decorate', '--full-diff', '--color', '--no-color', '--abbrev-commit', '--no-abbrev-commit', '--topo-order', '--date-order',
+    '--no-renames', '--no-ext-diff', '--no-textconv', '--no-diff-merges']);
+// Whether `git log <args>` prints patches. On: -p, -u, --patch, -U<n>, --unified, -L, --binary, --check, -c,
+// --cc, --dd, --remerge-diff, --diff-merges=<format> other than off/none, --patch-with-stat/raw, a short cluster
+// with p, u, U or L (`-sp`), a word the mapper cannot read, and any long option not on the read list (git takes
+// no abbreviation here, so it cannot be a known one). Off: -s or --no-patch after the last of them, only where the
+// word cannot be the value of the word before it (`--author -s`) and only before --end-of-options. A word after
+// `--` is a pathspec (`git log -- -p`).
+function gitLogPrintsPatch(args) {
+    let on = false;
+    let offs = true;
+    // A word that is not an option itself or holds its value (`--author=x`, `-n5`, `-Sx`) takes no next word.
+    const mayTakeNext = (k) => {
+        if (k < 0)
+            return false;
+        const p = args[k].text;
+        if (p === null)
+            return true;
+        if (!p.startsWith('-') || p === '-' || p.includes('=') || GIT_LOG_FLAG_WORDS.has(p))
+            return false;
+        if (p.startsWith('--'))
+            return true;
+        const m = p.slice(1).match(/[SGOIlLnU]/);
+        return m !== null && m.index === p.length - 2;
+    };
+    for (let k = 0; k < args.length; k += 1) {
+        const t = args[k].text;
+        if (t === '--')
+            break;
+        if (t === null) {
+            on = true;
+            continue;
+        }
+        if (t === '--end-of-options') {
+            offs = false;
+            continue;
+        }
+        const off = offs && !mayTakeNext(k - 1);
+        if (t === '-c' || t === '--no-patch') {
+            if (t === '-c')
+                on = true;
+            else if (off)
+                on = false;
+            continue;
+        }
+        if (t.startsWith('--')) {
+            const eq = t.indexOf('=');
+            const name = eq === -1 ? t : t.slice(0, eq);
+            if (GIT_LOG_PATCH_LONG.has(name))
+                on = true;
+            else if (name === '--diff-merges') {
+                if (!/^--diff-merges=(?:off|none)$/.test(t))
+                    on = true;
+            }
+            else if (t.length > 2 && (0, longopts_1.unknownLong)([args[k]], longopts_1.GIT_READ_LONG, 2, false) !== -1)
+                on = true;
+            continue;
+        }
+        // A short word or cluster, left to right: p, u, U<n> and L<range> print patches, s stops them; a letter
+        // that takes a value ends the word (`-Sfoo`, `-n5`).
+        if (/^-[A-Za-z]/.test(t)) {
+            for (const ch of t.slice(1)) {
+                if (ch === 'p' || ch === 'u' || ch === 'U' || ch === 'L')
+                    on = true;
+                else if (ch === 's') {
+                    if (off)
+                        on = false;
+                }
+                if (/[^A-Za-z]|[SGOIlLnUMCBX]/.test(ch))
+                    break;
+            }
+        }
+    }
+    return on;
 }
 // Options that hand git a command to run: rebase --exec, filter-branch filters, bisect run, submodule
 // foreach, and the pack programs of fetch and push.
