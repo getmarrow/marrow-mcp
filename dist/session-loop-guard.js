@@ -253,7 +253,10 @@ function operationKind(operation) {
         return 'mutation';
     const tool = (0, hook_tool_policy_1.normalizeHookToolName)(operation.toolName);
     const command = (0, hook_tool_policy_1.hookToolCommand)({ tool_name: operation.toolName, tool_input: operation.toolInput }).toLowerCase();
-    if (/(?:^|[_:.-])(?:status|poll|wait|watch|health)(?:$|[_:.-])/.test(tool)
+    // Claude Code's Monitor is a watch by definition and is re-armed when it expires: a repeat is
+    // refused only after it came back unchanged twice, never on the first re-arm.
+    if (tool === 'monitor'
+        || /(?:^|[_:.-])(?:status|poll|wait|watch|health)(?:$|[_:.-])/.test(tool)
         || /\b(?:status|poll|health|wait|watch)\b/.test(command))
         return 'poll';
     if (/(?:^|[_:.-])(?:test|check|audit|verify|lint|typecheck)(?:$|[_:.-])/.test(tool)

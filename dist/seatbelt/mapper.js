@@ -182,6 +182,11 @@ function evaluateEvent(event, env) {
     if (Array.isArray(rawInput))
         rawInput = { commands: rawInput.filter((v) => typeof v === 'string'), items: rawInput.filter((v) => v && typeof v === 'object') };
     const input = (rawInput && typeof rawInput === 'object' ? rawInput : {});
+    // A Claude Code built-in that runs a fixed local git command (exact label) is read as that command,
+    // as the keyed hook reads it (hook-tool-policy NATIVE_SHELL_EQUIVALENTS).
+    const nativeShell = NATIVE_SHELL_EQUIVALENTS.get(tool);
+    if (nativeShell !== undefined)
+        rawText = rawText === null ? nativeShell : `${rawText}\n${nativeShell}`;
     // One wall-clock ceiling for the whole event, counted from here (audit N6): the input walks below
     // run before any classification and share it.
     const deadline = deadlineFor(env);
@@ -377,6 +382,11 @@ function mcpPathChecks(label, input, ctx, run, allStrings = true) {
             checkProtectedWrite(litArg(p), ctx, run, 'mcp_write', false);
     }
 }
+// Claude Code built-ins that run a fixed local git command (exact host label).
+const NATIVE_SHELL_EQUIVALENTS = new Map([
+    ['EnterWorktree', 'git worktree add'],
+    ['ExitWorktree', 'git worktree remove'],
+]);
 // Tools that never run what their `command`/`script` field says (it names a skill, a slash command,
 // a sub-agent task), plus Marrow's own tools.
 const NON_SHELL_TOOLS = new Set(['slashcommand', 'skill', 'task', 'agent', 'todowrite', 'todoread', 'exitplanmode', 'enterplanmode',

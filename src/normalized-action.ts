@@ -4,7 +4,9 @@ import {
   hookToolCommand,
   isMcpHookTool,
   isShellGovernedTool,
+  isWholeInputNativeTool,
   normalizeHookToolName,
+  shellCommandToolText,
   toolTargetPaths,
 } from './hook-tool-policy';
 
@@ -1218,8 +1220,9 @@ function redactedInput(value: unknown, state: Exactness, depth = 0): unknown {
 function untrimmedShellText(event: ToolEvent, trimmed: string): string | null {
   const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input)
     ? event.tool_input as Record<string, unknown> : null;
-  const host = typeof event.tool_input === 'string' ? event.tool_input
-    : typeof input?.command === 'string' ? input.command : typeof input?.cmd === 'string' ? input.cmd : null;
+  const host = shellCommandToolText(event as Parameters<typeof shellCommandToolText>[0])
+    ?? (typeof event.tool_input === 'string' ? event.tool_input
+    : typeof input?.command === 'string' ? input.command : typeof input?.cmd === 'string' ? input.cmd : null);
   if (host === null || host === trimmed) return null;
   const at = host.indexOf(trimmed);
   if (at < 0) return null;
@@ -1233,6 +1236,9 @@ function untrimmedShellText(event: ToolEvent, trimmed: string): string | null {
  * would carry, so both give the same normalized action.
  */
 function shellCommand(event: ToolEvent): string {
+  // A plain Monitor or PowerShell call: its one command or script text, read as Bash's command.
+  const toolText = shellCommandToolText(event as Parameters<typeof shellCommandToolText>[0]);
+  if (toolText !== null) return toolText.trim();
   const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input)
     ? event.tool_input as Record<string, unknown> : null;
   const argv = Array.isArray(input?.command) ? input!.command : Array.isArray(input?.cmd) ? input!.cmd : null;
@@ -1533,7 +1539,11 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
   const rawToolName = typeof event.tool_name === 'string' && event.tool_name ? event.tool_name : toolName;
   const hostToolName = rawToolName.slice(0, 128);
   if (rawToolName.length > 128) state.truncated = true; // exact: kept (the full name is in exact_hmac)
+  // Claude Code built-ins first hooked by PKG-H2 that are not plain shell calls (a native git
+  // equivalent, Skill, a call whose words are not actions, an irregular Monitor or PowerShell call)
+  // are keyed by their whole input, never by one field of it.
   const kind: NormalizedHookAction['tool_kind'] = isMcpHookTool(event.tool_name) || /^MCP:/i.test(hostToolName) ? 'mcp'
+    : isWholeInputNativeTool(event as Parameters<typeof isWholeInputNativeTool>[0]) ? 'other'
     : isShellGovernedTool(event as Parameters<typeof isShellGovernedTool>[0]) ? 'shell'
     : EDIT_TOOLS.test(toolName) ? 'edit'
     : 'other';
@@ -1569,13 +1579,18 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input as Record<string, unknown> : null;
     const exact = typeof input?.command === 'string' ? input.command : typeof input?.cmd === 'string' ? input.cmd : raw;
     const deployText = state.truncated ? null : deployCommandText(exact);
+    // A Monitor or PowerShell command carries its host tool name, so it never shares a hash with the
+    // same Bash command (or another tool's): the line after the version is `shell` only for every
+    // other shell call, whose hash is unchanged.
+    const domain = shellCommandToolText(event as Parameters<typeof shellCommandToolText>[0]) !== null
+      ? `shell-tool\n${JSON.stringify(hostToolName)}` : 'shell';
     return withExactness({
       tool_kind: 'shell',
       tool_name: hostToolName,
       programs,
       tool_input: {
         // An exact action also hashes its quoting (never for a truncated one: a secret's characters stay out of it).
-        command_sha256: sha256(`${HASH_VERSION}\nshell\n${state.truncated || !state.sigs.length ? text : `${text}\n${JSON.stringify(state.sigs)}`}`),
+        command_sha256: sha256(`${HASH_VERSION}\n${domain}\n${state.truncated || !state.sigs.length ? text : `${text}\n${JSON.stringify(state.sigs)}`}`),
         ...(deployText !== null && deployText === text ? { command: deployText } : {}),
       },
     }, state);

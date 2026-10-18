@@ -6,7 +6,7 @@ import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 import { normalizedHookAction } from './normalized-action';
 import {
   geminiMcpTarget, isGeminiOwnLabel, isMarrowOwnTool, isOfficialMarrowGeminiCall, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput,
-  nativeHookMatcher, normalizedMcpToolName, r2NativeHookMatcher,
+  listNativeHookMatcher, nativeHookMatcher, normalizedMcpToolName, r2NativeHookMatcher,
 } from './own-tool';
 
 export const MCP_ADAPTER_VERSION = '3.9.103';
@@ -15,11 +15,13 @@ export const NATIVE_HOOK_MATCHER = nativeHookMatcher();
  * Matchers older versions wrote, so a hook carrying one needs repair: the
  * released one skips every `mcp__marrow__marrow_*` tool; the r2 one (never
  * released) skips `functions.mcp__marrow__<own>` and, under a full match, any
- * name with a line terminator.
+ * name with a line terminator; the 3.9.102/3.9.103 list skips every built-in
+ * outside its fixed list (Monitor, PowerShell, WebFetch, Agent).
  */
 export const LEGACY_NATIVE_HOOK_MATCHERS: readonly string[] = [
   'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*',
   r2NativeHookMatcher(),
+  listNativeHookMatcher(),
 ];
 export const GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 export const MCP_PACKAGE_SPEC = `@getmarrow/mcp@${MCP_ADAPTER_VERSION}`;

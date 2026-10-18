@@ -195,6 +195,7 @@ These behaviors shipped in 3.9.102 and still apply.
 - **A cloned project's `.env` cannot redirect the MCP server:** repository-local `.env`, `.env.local` and `.marrow/env*` files are never read for `MARROW_API_KEY` or any other `MARROW_*` setting, so project content cannot point the server at another account, agent or API endpoint.
 - **Safer key-file advice:** an owner file that is a symlink, readable or writable by others, owned by another user, or in a directory others can write supplies nothing, and the missing-key message names the file with the `chmod` fix.
 - **Only Marrow's own tools skip the gate, by exact name:** a tool is Marrow's own only when its server is exactly `marrow` and its tool name is exactly one this package registers. Look-alike servers, other cases, extra spaces or suffixes go through the pre-action gate like any other MCP tool. Re-run `marrow-mcp setup` to refresh hooks written with the old matcher.
+- **Every Claude Code tool reaches the hook.** The Claude Code matcher sends every tool call to the hook except Marrow's own exact tool names and the read-only `LS` and `ListMcpResourcesTool`; built-ins outside the old fixed list (`Monitor`, `PowerShell`, `WebFetch`, `Agent`, `Skill`) and future tools are checked by default. A `Monitor` or `PowerShell` command is classified exactly as the same Bash command, keyless and keyed, and never shares an approval with it. Re-run `marrow-mcp setup` to refresh hooks written with the old matcher.
 
 ## What's New in v3.9.103
 

@@ -131,9 +131,7 @@ export declare function localLoopGuardDenyOutput(harness: 'claude-code' | 'cline
  * call is classified as a protected MCP tool of another server, never
  * read-only (it imitates Marrow's names, so a read verb proves nothing).
  */
-export declare function classifyTool(event: PreToolUseEvent, options?: {
-    ownUnproven?: boolean;
-}): {
+export type ToolClassification = {
     action: string;
     target: string;
     type: string;
@@ -143,6 +141,17 @@ export declare function classifyTool(event: PreToolUseEvent, options?: {
     protected: boolean;
     readOnly: boolean;
 };
+/**
+ * The classification of one tool call. A Monitor or PowerShell command (and a
+ * native git equivalent such as EnterWorktree) is classified exactly as Bash
+ * running it; any other call carrying a command or script string gets the
+ * stricter of its own classification and Bash's for that text (its own
+ * classification, unchanged, when that is already at least as strict). See
+ * toolPolicyReading.
+ */
+export declare function classifyTool(event: PreToolUseEvent, options?: {
+    ownUnproven?: boolean;
+}): ToolClassification;
 export declare function cursorPreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function clinePreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function windsurfPreActionDecision(result: PreActionControlResult): {

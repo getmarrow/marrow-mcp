@@ -34,11 +34,13 @@ exports.NATIVE_HOOK_MATCHER = (0, own_tool_1.nativeHookMatcher)();
  * Matchers older versions wrote, so a hook carrying one needs repair: the
  * released one skips every `mcp__marrow__marrow_*` tool; the r2 one (never
  * released) skips `functions.mcp__marrow__<own>` and, under a full match, any
- * name with a line terminator.
+ * name with a line terminator; the 3.9.102/3.9.103 list skips every built-in
+ * outside its fixed list (Monitor, PowerShell, WebFetch, Agent).
  */
 exports.LEGACY_NATIVE_HOOK_MATCHERS = [
     'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__marrow_).*|mcp__(?!marrow__marrow_).*',
     (0, own_tool_1.r2NativeHookMatcher)(),
+    (0, own_tool_1.listNativeHookMatcher)(),
 ];
 exports.GROK_NATIVE_HOOK_MATCHER = 'run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video';
 exports.MCP_PACKAGE_SPEC = `@getmarrow/mcp@${exports.MCP_ADAPTER_VERSION}`;

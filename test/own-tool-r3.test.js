@@ -39,9 +39,9 @@ const PADS = { LF: '\n', CR: '\r', CRLF: '\r\n', U2028: ' ', U2029: ' ', NUL
 test('F4: the matcher is the shared string (marrow-install writes the same bytes): [\\s\\S]* in every consuming part', () => {
   const joined = OWN.join('|');
   assert.equal(NATIVE_HOOK_MATCHER,
-    `Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|^(?!mcp__marrow__(?:${joined})$)[\\s\\S]*(?:functions\\.|mcp__)[\\s\\S]*`);
+    `^(?!(?:mcp__marrow__(?:${joined})|LS|ListMcpResourcesTool)$)[\\s\\S]*`);
   assert.equal(NATIVE_HOOK_MATCHER.includes('.*'), false, 'no consuming .* is left');
-  assert.equal(NATIVE_HOOK_MATCHER.split('[\\s\\S]*').length, 3, 'exactly the two consuming parts');
+  assert.equal(NATIVE_HOOK_MATCHER.split('[\\s\\S]*').length, 2, 'exactly one consuming part');
   assert.equal(require('../dist/hook.js').AUTO_HOOK_MATCHER, NATIVE_HOOK_MATCHER);
 });
 

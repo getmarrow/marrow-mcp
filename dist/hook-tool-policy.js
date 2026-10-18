@@ -13,9 +13,15 @@ exports.isSecretVariableName = isSecretVariableName;
 exports.shellSegmentVerdict = shellSegmentVerdict;
 exports.toolTargetPaths = toolTargetPaths;
 exports.isSecretMaterialAccess = isSecretMaterialAccess;
+exports.isSecretMaterialAccessAsNamed = isSecretMaterialAccessAsNamed;
 exports.toolClassificationText = toolClassificationText;
 exports.isShellGovernedTool = isShellGovernedTool;
 exports.isReadOnlyToolEvent = isReadOnlyToolEvent;
+exports.isReadOnlyToolEventAsNamed = isReadOnlyToolEventAsNamed;
+exports.toolPolicyReading = toolPolicyReading;
+exports.readEquivalent = readEquivalent;
+exports.shellCommandToolText = shellCommandToolText;
+exports.isWholeInputNativeTool = isWholeInputNativeTool;
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const own_tool_1 = require("./own-tool");
@@ -684,8 +690,21 @@ function shellCommandText(event) {
 /**
  * True when a tool reads secret or credential material, or writes a secret file
  * or Marrow's local control state. Unparseable shell falls back to a token scan.
+ * A Monitor or PowerShell command, and any shell text another tool carries, is
+ * read as Bash reads its command (toolPolicyReading).
  */
 function isSecretMaterialAccess(event) {
+    const reading = toolPolicyReading(event);
+    if (reading.shell.some((twin) => isSecretMaterialAccessAsNamed(twin)))
+        return true;
+    if (reading.exact)
+        return false;
+    if (reading.base === 'read')
+        return isSecretMaterialAccessAsNamed(readEquivalent(event));
+    return reading.base === 'named' && isSecretMaterialAccessAsNamed(event);
+}
+/** isSecretMaterialAccess for the call's own tool name only (every tool before PKG-H2). */
+function isSecretMaterialAccessAsNamed(event) {
     const tool = normalizeHookToolName(event.tool_name);
     if (CONTENT_READ_TOOLS.has(tool))
         return toolTargetPaths(event).some((path) => isSecretPath(path));
@@ -742,7 +761,24 @@ function pathOnlyInput(value) {
         && keys.every((key) => ['path', 'file_path', 'filename', 'target_file'].includes(key))
         && Object.values(input).every((item) => typeof item === 'string' && item.trim().length > 0);
 }
+/**
+ * Whether a call only reads. A shell reading (Monitor, PowerShell, a native git
+ * equivalent) is read-only exactly when Bash running its text is; any other
+ * call carrying shell text is read-only only when both its own reading and
+ * Bash running the text are (never more than before).
+ */
 function isReadOnlyToolEvent(event) {
+    const reading = toolPolicyReading(event);
+    const shellReadOnly = reading.shell.every((twin) => isReadOnlyToolEventAsNamed(twin));
+    if (reading.exact)
+        return reading.shell.length > 0 && shellReadOnly;
+    const own = reading.base === 'read' ? isReadOnlyToolEventAsNamed(readEquivalent(event))
+        : reading.base === 'non_acting' ? false
+            : isReadOnlyToolEventAsNamed(event);
+    return own && shellReadOnly;
+}
+/** isReadOnlyToolEvent for the call's own tool name only (every tool before PKG-H2). */
+function isReadOnlyToolEventAsNamed(event) {
     const tool = normalizeHookToolName(event.tool_name);
     if (!tool)
         return false;
@@ -765,5 +801,95 @@ function isReadOnlyToolEvent(event) {
     return !['edit', 'write', 'multiedit', 'search_replace'].includes(tool)
         && pathOnlyInput(event.tool_input)
         && !toolTargetPaths(event).some((path) => isSecretPath(path));
+}
+// ---------------------------------------------------------------------------
+// How a call is read for classification (PKG-H2). Keys always keep the call's
+// own tool name and input (normalized-action, hook-contract).
+// ---------------------------------------------------------------------------
+// Claude Code tools that run their `command` (or `script`) as a shell command: Monitor in the same
+// shell environment as Bash, PowerShell in PowerShell. Any case or padding of the name. Their text
+// goes through Bash's rules exactly; PowerShell text the splitter cannot model takes Bash's path
+// for unmodelled input (no rule of its own).
+const SHELL_COMMAND_TOOLS = new Set(['monitor', 'powershell']);
+// The fields a Monitor or PowerShell call may carry besides its shell text without changing what runs.
+const SHELL_COMMAND_TOOL_FIELDS = new Set(['description', 'timeout', 'timeout_ms', 'run_in_background']);
+// Tools whose `command` names something other than shell text (a slash command, a skill, an editor operation).
+const NON_SHELL_COMMAND_TOOLS = new Set(['slashcommand', 'skill', 'str_replace_editor', 'str_replace_based_edit_tool']);
+// Claude Code built-ins that run a fixed local git command (exact host label): read as Bash running it.
+const NATIVE_SHELL_EQUIVALENTS = new Map([
+    ['EnterWorktree', 'git worktree add'],
+    ['ExitWorktree', 'git worktree remove'],
+]);
+// Claude Code built-ins no released Marrow matcher hooked that never act themselves (exact host
+// label): what they lead to (a sub-agent's tools, a scheduled prompt, the agent's next step after a
+// fetch, a message or a question) reaches the hook on its own. As for task bookkeeping, words in
+// their prompt, message, plan or URL are not performed by the call, so they never make it
+// protected; the call is still reported to Marrow (never read-only). Monitor is here only without
+// shell text (its WebSocket source).
+const NON_ACTING_NATIVE_TOOLS = new Set(['Agent', 'SendMessage', 'WebFetch', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
+    'SlashCommand', 'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'KillShell', 'Monitor']);
+// Claude Code's Skill loads a skill's instructions (exact host label): read as Read.
+const READ_EQUIVALENT_NATIVE_TOOLS = new Set(['Skill']);
+function bashTwin(command) {
+    return { tool_name: 'Bash', tool_input: { command } };
+}
+/** The string `command` and `script` texts of a call that are not blank (both when both are set). */
+function shellTexts(event) {
+    const input = asRecord(event.tool_input);
+    if (!input)
+        return [];
+    const texts = [];
+    for (const key of ['command', 'script']) {
+        const value = input[key];
+        if (typeof value === 'string' && value.trim() && !texts.includes(value))
+            texts.push(value);
+    }
+    return texts;
+}
+function toolPolicyReading(event) {
+    const named = { base: 'named', shell: [], exact: false, bashLabel: false };
+    const tool = normalizeHookToolName(event.tool_name);
+    // Bash and the other shell tools are read as they always were; Marrow's own and MCP calls keep their reading plus any shell text.
+    if (!tool || SHELL_TOOLS.has(tool))
+        return named;
+    const label = typeof event.tool_name === 'string' ? event.tool_name : '';
+    const texts = NON_SHELL_COMMAND_TOOLS.has(tool) ? [] : shellTexts(event);
+    const equivalent = isMcpHookTool(event.tool_name) ? undefined : NATIVE_SHELL_EQUIVALENTS.get(label);
+    if (equivalent !== undefined)
+        return { base: 'named', shell: [equivalent, ...texts].map(bashTwin), exact: true, bashLabel: false };
+    if (SHELL_COMMAND_TOOLS.has(tool) && texts.length && !isMcpHookTool(event.tool_name)) {
+        return { base: 'named', shell: texts.map(bashTwin), exact: true, bashLabel: true };
+    }
+    const base = isMcpHookTool(event.tool_name) ? 'named'
+        : READ_EQUIVALENT_NATIVE_TOOLS.has(label) ? 'read'
+            : NON_ACTING_NATIVE_TOOLS.has(label) ? 'non_acting'
+                : 'named';
+    return { base, shell: texts.map(bashTwin), exact: false, bashLabel: false };
+}
+/** The Read call a Read-equivalent tool is read as (same input). */
+function readEquivalent(event) {
+    return { tool_name: 'Read', tool_input: event.tool_input };
+}
+/**
+ * The shell text of a plain Monitor or PowerShell call (one command or script string, no field
+ * that changes what runs besides it), else null. Only such a call is keyed as shell text.
+ */
+function shellCommandToolText(event) {
+    if (isMcpHookTool(event.tool_name) || !SHELL_COMMAND_TOOLS.has(normalizeHookToolName(event.tool_name)))
+        return null;
+    const input = asRecord(event.tool_input);
+    if (!input)
+        return null;
+    const texts = Object.keys(input).filter((key) => !SHELL_COMMAND_TOOL_FIELDS.has(key));
+    if (texts.length !== 1 || !['command', 'script'].includes(texts[0]))
+        return null;
+    const value = input[texts[0]];
+    return typeof value === 'string' && value.trim() ? value : null;
+}
+/** A Claude Code built-in keyed by its whole input (a native git equivalent, Skill, or a call whose words are not actions). */
+function isWholeInputNativeTool(event) {
+    const reading = toolPolicyReading(event);
+    return (reading.exact && !reading.bashLabel) || reading.base !== 'named'
+        || (reading.exact && reading.bashLabel && shellCommandToolText(event) === null);
 }
 //# sourceMappingURL=hook-tool-policy.js.map

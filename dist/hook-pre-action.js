@@ -509,13 +509,59 @@ function localControlDisabled() {
         return false;
     }
 }
+// The order classifyTool picks a type and lists surfaces in; earlier types are the more specific (stricter) ones.
+const CLASSIFICATION_TYPES = ['publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
+const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 /**
- * `ownUnproven`: the label is one of Marrow's own, but the host's server
- * identity check did not prove the official server (Codex, Cursor). Such a
- * call is classified as a protected MCP tool of another server, never
- * read-only (it imitates Marrow's names, so a read verb proves nothing).
+ * The classification of one tool call. A Monitor or PowerShell command (and a
+ * native git equivalent such as EnterWorktree) is classified exactly as Bash
+ * running it; any other call carrying a command or script string gets the
+ * stricter of its own classification and Bash's for that text (its own
+ * classification, unchanged, when that is already at least as strict). See
+ * toolPolicyReading.
  */
 function classifyTool(event, options = {}) {
+    const reading = (0, hook_tool_policy_1.toolPolicyReading)(event);
+    if (!reading.shell.length && reading.base === 'named')
+        return classificationFrom(classifyAsNamed(event, options));
+    const shell = reading.shell.map((twin) => classifyAsNamed(twin, options));
+    if (reading.exact) {
+        const merged = shell.reduce(stricterParts);
+        return classificationFrom(reading.bashLabel ? merged : { ...merged, tool: ownToolLabel(event) });
+    }
+    const own = reading.base === 'read' ? { ...classifyAsNamed((0, hook_tool_policy_1.readEquivalent)(event), options), tool: ownToolLabel(event) }
+        : reading.base === 'non_acting' ? nonActingParts(event)
+            : classifyAsNamed(event, options);
+    return classificationFrom(shell.reduce(stricterParts, own));
+}
+function ownToolLabel(event) {
+    return String(event.tool_name || 'tool').slice(0, 64);
+}
+// A call whose words are not actions (toolPolicyReading): reported, never read-only, never protected by its text.
+function nonActingParts(event) {
+    return { tool: ownToolLabel(event), type: 'process', surfaces: [], readOnly: false, protected: false };
+}
+/** `a`, unchanged, when it is at least as strict as `b` on every axis; otherwise the stricter of each. */
+function stricterParts(a, b) {
+    const rank = (type) => {
+        const index = CLASSIFICATION_TYPES.indexOf(type);
+        return index < 0 ? CLASSIFICATION_TYPES.length : index;
+    };
+    const covers = (!a.readOnly || b.readOnly) && (a.protected || !b.protected) && rank(a.type) <= rank(b.type)
+        && b.surfaces.every((surface) => a.surfaces.includes(surface));
+    if (covers)
+        return a;
+    const surfaces = new Set([...a.surfaces, ...b.surfaces]);
+    return {
+        tool: a.tool,
+        type: rank(a.type) <= rank(b.type) ? a.type : b.type,
+        surfaces: [...CLASSIFICATION_SURFACES.filter((surface) => surfaces.has(surface)), ...[...surfaces].filter((surface) => !CLASSIFICATION_SURFACES.includes(surface))],
+        readOnly: a.readOnly && b.readOnly,
+        protected: a.protected || b.protected,
+    };
+}
+/** The classification of a call under its own tool name only (every tool before PKG-H2). */
+function classifyAsNamed(event, options) {
     const tool = String(event.tool_name || 'tool').slice(0, 64);
     const normalizedTool = (0, hook_tool_policy_1.normalizeHookToolName)(tool);
     // Editing and task tools are judged by their target; shell-like words in the
@@ -524,8 +570,8 @@ function classifyTool(event, options = {}) {
     const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
     const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
     // A look-alike of Marrow's own tool is never read-only, whatever its verb.
-    const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEvent)(event);
-    const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccess)(event);
+    const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEventAsNamed)(event);
+    const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccessAsNamed)(event);
     const protectedShellCommand = shellGoverned && (0, hook_tool_policy_1.isProtectedShellMutation)(command);
     const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
         && protectedShellCommand;
@@ -555,6 +601,11 @@ function classifyTool(event, options = {}) {
         || protectedShellCommand
         || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && (options.ownUnproven === true || !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name)))
         || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
+    return { tool, type, surfaces, readOnly, protected: protectedAction };
+}
+function classificationFrom(parts) {
+    const { tool, type, surfaces, readOnly } = parts;
+    const protectedAction = parts.protected;
     const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
     const target = surfaces.includes('npm') ? `npm:${type}`
         : surfaces.includes('github') ? `github:${type}`
