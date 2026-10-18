@@ -860,8 +860,9 @@ function isReadOnlyToolEventAsNamed(event) {
 const SHELL_COMMAND_TOOLS = new Set(['monitor', 'powershell']);
 // The fields a Monitor or PowerShell call may carry besides its shell text without changing what runs.
 const SHELL_COMMAND_TOOL_FIELDS = new Set(['description', 'timeout', 'timeout_ms', 'run_in_background']);
-// Tools whose `command` names something other than shell text (a slash command, a skill, an editor operation).
-const NON_SHELL_COMMAND_TOOLS = new Set(['slashcommand', 'skill', 'str_replace_editor', 'str_replace_based_edit_tool']);
+// Tools whose `command` names something other than shell text (a slash command, a skill, an editor
+// operation), and Workflow, whose `script` is JavaScript that only starts sub-agents.
+const NON_SHELL_COMMAND_TOOLS = new Set(['slashcommand', 'skill', 'str_replace_editor', 'str_replace_based_edit_tool', 'workflow']);
 // Claude Code built-ins that run a fixed local git command (exact host label): read as Bash running it.
 const NATIVE_SHELL_EQUIVALENTS = new Map([
     ['EnterWorktree', 'git worktree add'],
@@ -872,9 +873,23 @@ const NATIVE_SHELL_EQUIVALENTS = new Map([
 // fetch, a message or a question) reaches the hook on its own. As for task bookkeeping, words in
 // their prompt, message, plan or URL are not performed by the call, so they never make it
 // protected; the call is still reported to Marrow (never read-only). Monitor is here only without
-// shell text (its WebSocket source).
+// shell text (its WebSocket source). The tools that only report, notify, structure output, render or
+// hand text back, and what each one does:
+//   Artifact, ArtifactCheck, ArtifactComments, ArtifactData: the host's artifact pane (render a page
+//     for the user, check it, comment on it, give it data); no command, no local file.
+//   ListAgents: lists the agents SendMessage can reach.
+//   PushNotification: a desktop or phone notification with a one-line `message`.
+//   ReportFindings: hands a code review's findings to the host UI to render.
+//   StructuredOutput: hands the final structured result back to the caller.
+//   SubagentHandback: hands a sub-agent's text back to the agent that started it.
+//   Workflow: its `script` (JavaScript) only starts sub-agents, whose own tools reach the hook.
+// Tools a released matcher already hooked keep their reading (BashOutput, NotebookRead,
+// ReadMcpResourceTool, Task*, TodoWrite, ToolSearch); RemoteTrigger and DesignSync act on remote
+// services and stay as named.
 const NON_ACTING_NATIVE_TOOLS = new Set(['Agent', 'SendMessage', 'WebFetch', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
-    'SlashCommand', 'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'KillShell', 'Monitor']);
+    'SlashCommand', 'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'KillShell', 'Monitor',
+    'Artifact', 'ArtifactCheck', 'ArtifactComments', 'ArtifactData', 'ListAgents', 'PushNotification', 'ReportFindings',
+    'StructuredOutput', 'SubagentHandback', 'Workflow']);
 // Claude Code's Skill loads a skill's instructions (exact host label): read as Read.
 const READ_EQUIVALENT_NATIVE_TOOLS = new Set(['Skill']);
 function bashTwin(command) {

@@ -202,9 +202,14 @@ function evaluateEvent(event, env) {
     }
     const evName = mcp ? mcp.name : name;
     const evInput = mcp ? mcp.args : input;
+    // Claude Code's Workflow (exact host label) runs its `script` as JavaScript that only starts
+    // sub-agents, whose own tools reach the hook: that one field is not shell text (as the keyed hook
+    // reads it, hook-tool-policy NON_SHELL_COMMAND_TOOLS). Every other field is read as for any tool.
+    const shellInput = !mcp && tool === 'Workflow' && typeof evInput.script === 'string'
+        ? Object.fromEntries(Object.entries(evInput).filter(([key]) => key !== 'script')) : evInput;
     // A tool that runs a shell command (audit F11): a known shell tool, or any tool whose input names a
     // command, script or argv field, at any depth.
-    const invocation = shellInvocations(evName, evInput, deadline, rawText);
+    const invocation = shellInvocations(evName, shellInput, deadline, rawText);
     if (invocation) {
         const run = newRun(env, invocation.shell.join('\n'), deadline);
         run.shell = true;
