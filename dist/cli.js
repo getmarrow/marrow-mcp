@@ -154,6 +154,7 @@ async function runPingCommand() {
         return;
     }
     const resolved = (0, env_1.resolveMarrowEnv)({ trustedOnly: true });
+    (0, env_1.emitBaseUrlNotice)(resolved);
     if (!resolved.apiKey) {
         process.stdout.write(JSON.stringify({ ok: false, error: 'missing_key', exact_fix: resolved.exactFix }) + '\n');
         process.exitCode = 1;
@@ -207,6 +208,7 @@ async function runSpoolCommand(drain) {
         return;
     }
     const resolved = (0, env_1.resolveMarrowEnv)({ trustedOnly: true });
+    (0, env_1.emitBaseUrlNotice)(resolved);
     const apiKey = resolved.apiKey || '';
     if (!apiKey) {
         process.stderr.write(`Error: MARROW_API_KEY required. ${resolved.exactFix}\n`);
@@ -399,6 +401,7 @@ function formatKeyMaterialWarning() {
 if (process.argv[2] === 'keys') {
     const cmd = process.argv[3];
     const resolvedEnv = (0, env_1.resolveMarrowEnv)();
+    (0, env_1.emitBaseUrlNotice)(resolvedEnv);
     const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
     if (!API_KEY) {
         process.stderr.write(`Error: MARROW_API_KEY required. ${resolvedEnv.exactFix}\n`);
@@ -555,6 +558,7 @@ if (process.argv[2] !== 'keys') {
     }
     else {
         const resolvedEnv = (0, env_1.resolveMarrowEnv)();
+        (0, env_1.emitBaseUrlNotice)(resolvedEnv);
         const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
         // [SECURITY #3] Validate BASE_URL — require HTTPS to prevent SSRF / credential leakage
         const rawBaseUrl = resolvedEnv.baseUrl || 'https://api.getmarrow.ai';

@@ -450,7 +450,8 @@ See the [Trust Center](https://getmarrow.ai/trust/) for implemented controls, cu
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `MARROW_API_KEY` | Yes | Account or agent-bound API key |
-| `MARROW_BASE_URL` | No | API base override |
+| `MARROW_BASE_URL` | No | API base override. When the key comes from `~/.marrow/env`, a `MARROW_BASE_URL` set only in the process environment is ignored (with one notice) unless the same file names it or lists its origin in `MARROW_ALLOWED_BASE_URLS`; a key from the process environment keeps the process environment URL |
+| `MARROW_ALLOWED_BASE_URLS` | No | Read from `~/.marrow/env` only. Comma-separated exact origins (`https://host[:port]`, or `http://localhost`, `http://127.0.0.1`, `http://[::1]`) that a key stored in that file may be sent to when the process environment names them. No wildcards, paths, credentials, queries or fragments |
 | `MARROW_AGENT_ID` | No | Bound agent identity for MCP tools |
 | `MARROW_FLEET_AGENT_ID` | No | Fleet agent identity used by passive setup |
 | `MARROW_HOOK_BACKGROUND_NUDGE` | No | Default on: PostToolUse only spools the event and starts one detached background process that delivers it, so the hook adds almost no latency. Set to `false` to keep bounded inline delivery (750 ms) inside the hook. Never runs when `MARROW_AUTO_HOOK=false` or local control is disabled |

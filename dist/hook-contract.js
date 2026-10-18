@@ -133,6 +133,7 @@ function resolveNativeHookIdentity(entrypoint, options = {}) {
     const recognizedHarness = RECOGNIZED_NATIVE_ENTRYPOINTS[String(entrypoint || '').trim()];
     const harness = recognizedHarness || 'mcp-client';
     const environment = (0, env_1.resolveMarrowEnv)({ ...options, trustedOnly: true });
+    (0, env_1.emitBaseUrlNotice)(environment);
     const candidateAgentId = String(environment.agentId || '').trim();
     const agentId = /^[A-Za-z0-9._:-]{1,128}$/.test(candidateAgentId) ? candidateAgentId : undefined;
     return {
