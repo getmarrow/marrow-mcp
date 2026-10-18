@@ -25,6 +25,11 @@ export type ShellSegmentVerdict = 'read' | 'secret' | 'other';
 export declare function parseShellSegments(command: string): ShellSegment[] | null;
 /** Resolves ~, $HOME, ., .. and repeated slashes against the directory the command runs in. */
 export declare function normalizedToolPath(value: string, base?: string): string;
+/**
+ * A SECRET_PATTERNS glob (src/secret-paths.ts) as a regex, the way the vendored classifier's globToRegex reads
+ * it (the table holds only `**`/`*` globs, home-agnostic `**`/ prefixes and absolute paths).
+ */
+export declare function secretPatternRegex(pattern: string): RegExp;
 /** True for a path that holds secret or credential material. */
 export declare function isSecretPath(value: string, base?: string): boolean;
 /** True for a secret file or Marrow's own local control state. */

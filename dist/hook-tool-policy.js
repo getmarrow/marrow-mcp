@@ -7,6 +7,7 @@ exports.isProtectedShellMutation = isProtectedShellMutation;
 exports.hookToolCommand = hookToolCommand;
 exports.parseShellSegments = parseShellSegments;
 exports.normalizedToolPath = normalizedToolPath;
+exports.secretPatternRegex = secretPatternRegex;
 exports.isSecretPath = isSecretPath;
 exports.isProtectedWriteTarget = isProtectedWriteTarget;
 exports.isSecretVariableName = isSecretVariableName;
@@ -27,6 +28,7 @@ const node_path_1 = require("node:path");
 const own_tool_1 = require("./own-tool");
 Object.defineProperty(exports, "isOfficialMarrowMcpEvent", { enumerable: true, get: function () { return own_tool_1.isOfficialMarrowMcpEvent; } });
 Object.defineProperty(exports, "isOfficialMarrowMcpTool", { enumerable: true, get: function () { return own_tool_1.isOfficialMarrowMcpTool; } });
+const secret_paths_1 = require("./secret-paths");
 const READ_ONLY_TOOLS = new Set([
     'read',
     'read_file',
@@ -440,8 +442,53 @@ function secretPath(value, base) {
         return false;
     if (SECRET_FILE.test(name))
         return true;
+    // One table (PKG-M1): every path the keyless seatbelt stops as a secret (S4) is a secret here too.
+    // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
+    // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
+    const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
+    if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)))
+        return true;
     return SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }
+/**
+ * A SECRET_PATTERNS glob (src/secret-paths.ts) as a regex, the way the vendored classifier's globToRegex reads
+ * it (the table holds only `**`/`*` globs, home-agnostic `**`/ prefixes and absolute paths).
+ */
+function secretPatternRegex(pattern) {
+    let p = pattern;
+    let anchored = true;
+    if (p.startsWith('**/')) {
+        anchored = false;
+        p = p.slice(3);
+    }
+    let out = '';
+    for (let i = 0; i < p.length; i += 1) {
+        const ch = p[i];
+        if (ch === '*' && p[i + 1] === '*') {
+            if (p[i + 2] === '/') {
+                out += '(?:.*/)?';
+                i += 2;
+            }
+            else if (out.endsWith('/') && i + 2 === p.length) {
+                out = `${out.slice(0, -1)}(?:/.*)?`;
+                i += 1;
+            }
+            else {
+                out += '.*';
+                i += 1;
+            }
+        }
+        else if (ch === '*')
+            out += '[^/]*';
+        else if (ch === '?')
+            out += '[^/]';
+        else
+            out += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    }
+    return new RegExp(`${anchored ? '^' : '(?:^|/)'}${out}$`);
+}
+const SEATBELT_SECRET_PATHS = secret_paths_1.SECRET_PATTERNS.map(secretPatternRegex);
+const SECRET_PATH_TABLE_CHARS = 4096;
 // A glob such as .env* or *.pem names secret files without spelling one out.
 function globVariants(value) {
     if (!/[*?[]/.test(value))

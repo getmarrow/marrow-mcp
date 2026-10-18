@@ -988,6 +988,7 @@ function newRun(rawEnv, source, deadline) {
         protectedAnchors: anchors.map((a) => (fold ? a.toLowerCase() : a)),
         operandAnchors: operandAnchors.map((a) => (fold ? a.toLowerCase() : a)),
         secretRegexes: tables_1.SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
+        presentSecretRegexes: tables_1.PRESENT_SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
         branchRegexes: baseline.BASELINE_POLICY.protected_branches.map((p) => classifierModule.globToRegex(p, '/nonexistent-home')),
         topSource: source,
         work: 0,
@@ -4253,7 +4254,9 @@ function longestRealpath(abs, run) {
     }
     return null;
 }
-function isSecretPath(abs, run) {
+// `mustExist`: a `<name>.env` path (PRESENT_SECRET_PATTERNS) counts only when it is there to read; samples, git
+// pathspecs and git objects (history) leave it false.
+function isSecretPath(abs, run, mustExist = false) {
     const p = run.fold ? abs.toLowerCase() : abs;
     const base = path.posix.basename(p);
     if (/^\.env(?:\.|$)/.test(base) && tables_1.ENV_TEMPLATE_SUFFIX.test(base))
@@ -4264,8 +4267,11 @@ function isSecretPath(abs, run) {
             return true;
     }
     const hits = run.secretRegexes.some((re) => re.test(p) || (run.fold && re.test(abs)));
-    if (!hits)
-        return false;
+    if (!hits) {
+        if (!run.presentSecretRegexes.some((re) => re.test(p) || (run.fold && re.test(abs))))
+            return false;
+        return !mustExist || safeRealpath(run.env, abs) !== null;
+    }
     if (/\/\.ssh\//.test(p) && tables_1.SSH_PUBLIC.test(base))
         return false;
     return true;
@@ -4401,10 +4407,12 @@ function sampleMatch(a, ctx, run, samples) {
 }
 function cwdsList(ctx) { return ctx.cwds.map((c) => c || '/__unknown_cwd__'); }
 // S4: a secret path as an operand. Returns true on a stop.
-function checkSecretOperand(a, ctx, run, reason) {
+// `history`: git reads the path from its object store (a pathspec after `--`, a `REV:path` object), so it
+// need not exist in the work tree.
+function checkSecretOperand(a, ctx, run, reason, history = false) {
     if (a.text === null && a.alts && a.alts.length) {
         for (const v of a.alts)
-            if (checkSecretOperand({ ...litArg(v), glob: a.glob, word: a.word }, ctx, run, reason))
+            if (checkSecretOperand({ ...litArg(v), glob: a.glob, word: a.word }, ctx, run, reason, history))
                 return true;
         return false;
     }
@@ -4416,10 +4424,10 @@ function checkSecretOperand(a, ctx, run, reason) {
             const matches = expandGlob(text, ctx, run);
             if (matches !== null) {
                 for (const mm of matches.slice(0, tables_1.LIMITS.maxGlobMatches))
-                    if (checkSecretOperand({ ...litArg(mm), glob: false }, ctx, run, reason))
+                    if (checkSecretOperand({ ...litArg(mm), glob: false }, ctx, run, reason, history))
                         return true;
                 for (const k of linkNamesMatching(text, ctx, run))
-                    if (checkSecretOperand({ ...litArg(k), glob: false }, ctx, run, reason))
+                    if (checkSecretOperand({ ...litArg(k), glob: false }, ctx, run, reason, history))
                         return true;
             }
         }
@@ -4439,7 +4447,7 @@ function checkSecretOperand(a, ctx, run, reason) {
             if (run.links.size > 0 && applyLinks(p, run) === '/__unknown_link__')
                 return hit(run, 'S4', `${reason}_unknown_link`);
             for (const r of realCandidates(p, run, true))
-                if (isSecretPath(r, run))
+                if (isSecretPath(r, run, !history))
                     return hit(run, 'S4', `${reason}_secret_path`);
         }
     }
@@ -8301,7 +8309,8 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
         return;
     }
     if (!tables_1.GIT_S4_EXEMPT_SUBS.has(sub)) {
-        // Commit messages are prose, never paths.
+        // Commit messages are prose, never paths. A pathspec after `--` or a `REV:path` object is read from history.
+        const dashDash = args.findIndex((a) => a.text === '--');
         for (let k = 0; k < args.length; k += 1) {
             const t = args[k].text;
             if (t === '-m' || t === '--message' || t === '-F' || t === '--file' || (t !== null && /^-[a-zA-Z]*m$/.test(t))) {
@@ -8310,7 +8319,8 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
             }
             if (t !== null && /^(?:--message=|-m.)/.test(t))
                 continue;
-            checkSecretOperand(args[k], gctx, run, 'git_operand');
+            const history = (dashDash >= 0 && k > dashDash) || t === null || /^[^/:]+:/.test(t);
+            checkSecretOperand(args[k], gctx, run, 'git_operand', history);
         }
     }
 }

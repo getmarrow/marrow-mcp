@@ -21,7 +21,7 @@ export declare const LIMITS: Readonly<{
     maxBraceChars: 1024;
     maxParseCost: 24000000;
 }>;
-export declare const SECRET_PATTERNS: readonly string[];
+export { PRESENT_SECRET_PATTERNS, SECRET_PATTERNS } from '../secret-paths';
 export declare const KEY_EXTENSIONS: RegExp;
 export declare const KEY_FIXTURE_SEGMENTS: Set<string>;
 export declare const ENV_TEMPLATE_SUFFIX: RegExp;

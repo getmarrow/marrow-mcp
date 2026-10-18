@@ -16,7 +16,7 @@ import {
   GIT_CONFIG_INCLUDE, GIT_EXEC_CONFIG, GIT_PUSH_LONG, GIT_PUSH_RISKY_LONG, GIT_S4_EXEMPT_SUBS, INERT_PROGRAMS, INTERPRETERS,
   INTERPRETER_EXEC, KEY_EXTENSIONS, KEY_FIXTURE_SEGMENTS, KNOWN_COMMANDS, LIMITS,
   MARROW_OWNER_SUBS, NAME_TRIPWIRE, NON_SCRIPT_NAMES, NPM_ALIASES, NPM_BOOL_FLAGS, NPM_COMMANDS, NPM_VALUE_FLAGS, PACKAGE_BINS,
-  PROD_ENV, S4_EXEMPT_PROGRAMS, SCRIPT_SUFFIX, SECRET_PATTERNS, SECRET_VAR, SEATBELT_RULES_VERSION, SHELL_TOOL_NAMES, SHELLS,
+  PRESENT_SECRET_PATTERNS, PROD_ENV, S4_EXEMPT_PROGRAMS, SCRIPT_SUFFIX, SECRET_PATTERNS, SECRET_VAR, SEATBELT_RULES_VERSION, SHELL_TOOL_NAMES, SHELLS,
   SSH_PUBLIC, TRIPWIRE, interpreterDecodeToken, interpreterTreeDelete, secretSamples,
 } from './tables';
 import { CLASSIFIER_PIN } from './classifier-pin';
@@ -173,6 +173,8 @@ interface Run {
   // The anchors the operand folder rule reads: those of the operand set (OPERAND_RULE_OMITS left out).
   operandAnchors: string[];
   secretRegexes: RegExp[];
+  /** `<name>.env` (PKG-M1): a secret when the file is there to read, or git names it as history. */
+  presentSecretRegexes: RegExp[];
   branchRegexes: RegExp[];
   topSource: string;
   // Budgets (audit F3, F10): every limit stops, none passes.
@@ -947,6 +949,7 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     protectedAnchors: anchors.map((a) => (fold ? a.toLowerCase() : a)),
     operandAnchors: operandAnchors.map((a) => (fold ? a.toLowerCase() : a)),
     secretRegexes: SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
+    presentSecretRegexes: PRESENT_SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
     branchRegexes: baseline.BASELINE_POLICY.protected_branches.map((p) => classifierModule.globToRegex(p, '/nonexistent-home')),
     topSource: source,
     work: 0,
@@ -3402,7 +3405,9 @@ function longestRealpath(abs: string, run: Run): string | null {
   return null;
 }
 
-function isSecretPath(abs: string, run: Run): boolean {
+// `mustExist`: a `<name>.env` path (PRESENT_SECRET_PATTERNS) counts only when it is there to read; samples, git
+// pathspecs and git objects (history) leave it false.
+function isSecretPath(abs: string, run: Run, mustExist = false): boolean {
   const p = run.fold ? abs.toLowerCase() : abs;
   const base = path.posix.basename(p);
   if (/^\.env(?:\.|$)/.test(base) && ENV_TEMPLATE_SUFFIX.test(base)) return false;
@@ -3411,7 +3416,10 @@ function isSecretPath(abs: string, run: Run): boolean {
     if (!segs.some((s) => KEY_FIXTURE_SEGMENTS.has(s))) return true;
   }
   const hits = run.secretRegexes.some((re) => re.test(p) || (run.fold && re.test(abs)));
-  if (!hits) return false;
+  if (!hits) {
+    if (!run.presentSecretRegexes.some((re) => re.test(p) || (run.fold && re.test(abs)))) return false;
+    return !mustExist || safeRealpath(run.env, abs) !== null;
+  }
   if (/\/\.ssh\//.test(p) && SSH_PUBLIC.test(base)) return false;
   return true;
 }
@@ -3526,9 +3534,11 @@ function sampleMatch(a: Arg, ctx: Ctx, run: Run, samples: string[]): boolean {
 function cwdsList(ctx: Ctx): string[] { return ctx.cwds.map((c) => c || '/__unknown_cwd__'); }
 
 // S4: a secret path as an operand. Returns true on a stop.
-function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string): boolean {
+// `history`: git reads the path from its object store (a pathspec after `--`, a `REV:path` object), so it
+// need not exist in the work tree.
+function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string, history = false): boolean {
   if (a.text === null && a.alts && a.alts.length) {
-    for (const v of a.alts) if (checkSecretOperand({ ...litArg(v), glob: a.glob, word: a.word }, ctx, run, reason)) return true;
+    for (const v of a.alts) if (checkSecretOperand({ ...litArg(v), glob: a.glob, word: a.word }, ctx, run, reason, history)) return true;
     return false;
   }
   for (const text of operandPaths(a)) {
@@ -3537,8 +3547,8 @@ function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string): boolean
     if (a.text !== null && a.glob && /[*?[]/.test(text) && !a.nonAscii && run.env.fs.readdir) {
       const matches = expandGlob(text, ctx, run);
       if (matches !== null) {
-        for (const mm of matches.slice(0, LIMITS.maxGlobMatches)) if (checkSecretOperand({ ...litArg(mm), glob: false }, ctx, run, reason)) return true;
-        for (const k of linkNamesMatching(text, ctx, run)) if (checkSecretOperand({ ...litArg(k), glob: false }, ctx, run, reason)) return true;
+        for (const mm of matches.slice(0, LIMITS.maxGlobMatches)) if (checkSecretOperand({ ...litArg(mm), glob: false }, ctx, run, reason, history)) return true;
+        for (const k of linkNamesMatching(text, ctx, run)) if (checkSecretOperand({ ...litArg(k), glob: false }, ctx, run, reason, history)) return true;
       }
     }
     if (a.text === null || a.glob || a.nonAscii) {
@@ -3553,7 +3563,7 @@ function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string): boolean
     for (const p of abs) {
       // A path through a link whose target the mapper cannot follow (audit N3).
       if (run.links.size > 0 && applyLinks(p, run) === '/__unknown_link__') return hit(run, 'S4', `${reason}_unknown_link`);
-      for (const r of realCandidates(p, run, true)) if (isSecretPath(r, run)) return hit(run, 'S4', `${reason}_secret_path`);
+      for (const r of realCandidates(p, run, true)) if (isSecretPath(r, run, !history)) return hit(run, 'S4', `${reason}_secret_path`);
     }
   }
   return false;
@@ -6260,12 +6270,14 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
   if (sub === 'credential' && args.some((a) => a.text === null || a.text === 'fill' || a.text === 'get')) { hit(run, 'S4', 'git_credential_fill'); return; }
   if (/^credential-/.test(sub) && args.some((a) => a.text === null || a.text === 'get')) { hit(run, 'S4', 'git_credential_get'); return; }
   if (!GIT_S4_EXEMPT_SUBS.has(sub)) {
-    // Commit messages are prose, never paths.
+    // Commit messages are prose, never paths. A pathspec after `--` or a `REV:path` object is read from history.
+    const dashDash = args.findIndex((a) => a.text === '--');
     for (let k = 0; k < args.length; k += 1) {
       const t = args[k].text;
       if (t === '-m' || t === '--message' || t === '-F' || t === '--file' || (t !== null && /^-[a-zA-Z]*m$/.test(t))) { k += 1; continue; }
       if (t !== null && /^(?:--message=|-m.)/.test(t)) continue;
-      checkSecretOperand(args[k], gctx, run, 'git_operand');
+      const history = (dashDash >= 0 && k > dashDash) || t === null || /^[^/:]+:/.test(t);
+      checkSecretOperand(args[k], gctx, run, 'git_operand', history);
     }
   }
 }

@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
+import { SECRET_PATTERNS } from './secret-paths';
 
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
 
@@ -388,8 +389,38 @@ function secretPath(value: string, base: string): boolean {
   if (!pathLike) return SECRET_FILE.test(name) && !ENV_TEMPLATE_FILE.test(name);
   if (ENV_TEMPLATE_FILE.test(name)) return false;
   if (SECRET_FILE.test(name)) return true;
+  // One table (PKG-M1): every path the keyless seatbelt stops as a secret (S4) is a secret here too.
+  // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
+  // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
+  const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
+  if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail))) return true;
   return SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }
+
+/**
+ * A SECRET_PATTERNS glob (src/secret-paths.ts) as a regex, the way the vendored classifier's globToRegex reads
+ * it (the table holds only `**`/`*` globs, home-agnostic `**`/ prefixes and absolute paths).
+ */
+export function secretPatternRegex(pattern: string): RegExp {
+  let p = pattern;
+  let anchored = true;
+  if (p.startsWith('**/')) { anchored = false; p = p.slice(3); }
+  let out = '';
+  for (let i = 0; i < p.length; i += 1) {
+    const ch = p[i];
+    if (ch === '*' && p[i + 1] === '*') {
+      if (p[i + 2] === '/') { out += '(?:.*/)?'; i += 2; }
+      else if (out.endsWith('/') && i + 2 === p.length) { out = `${out.slice(0, -1)}(?:/.*)?`; i += 1; }
+      else { out += '.*'; i += 1; }
+    } else if (ch === '*') out += '[^/]*';
+    else if (ch === '?') out += '[^/]';
+    else out += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`${anchored ? '^' : '(?:^|/)'}${out}$`);
+}
+
+const SEATBELT_SECRET_PATHS: readonly RegExp[] = SECRET_PATTERNS.map(secretPatternRegex);
+const SECRET_PATH_TABLE_CHARS = 4096;
 
 // A glob such as .env* or *.pem names secret files without spelling one out.
 function globVariants(value: string): string[] {
