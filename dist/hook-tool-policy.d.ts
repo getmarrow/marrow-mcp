@@ -47,7 +47,7 @@ export declare function toolTargetPaths(event: ToolPolicyEvent): string[];
  * read as Bash reads its command (toolPolicyReading).
  */
 export declare function isSecretMaterialAccess(event: ToolPolicyEvent): boolean;
-/** isSecretMaterialAccess for the call's own tool name only (every tool before PKG-H2). */
+/** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
 export declare function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent): boolean;
 /**
  * The text whose words decide a tool's action type, surfaces and keyword
@@ -64,10 +64,10 @@ export declare function isShellGovernedTool(event: ToolPolicyEvent): boolean;
  * Bash running the text are (never more than before).
  */
 export declare function isReadOnlyToolEvent(event: ToolPolicyEvent): boolean;
-/** isReadOnlyToolEvent for the call's own tool name only (every tool before PKG-H2). */
+/** isReadOnlyToolEvent for the call's own tool name only (every tool before the built-ins were hooked). */
 export declare function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent): boolean;
 export type ToolPolicyReading = {
-    /** How the call's own name is read: as named (every tool before PKG-H2), as Read, or as a call whose words are not actions. */
+    /** How the call's own name is read: as named (every tool before the built-ins were hooked), as Read, or as a call whose words are not actions. */
     base: 'named' | 'read' | 'non_acting';
     /** Bash calls the call amounts to: its command or script text, or a native tool's fixed git command. */
     shell: Array<{

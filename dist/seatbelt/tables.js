@@ -41,7 +41,7 @@ exports.LIMITS = Object.freeze({
     maxBraceChars: 1024,
     maxParseCost: 24_000_000,
 });
-// S4 secret paths: one table with the keyed policy (src/secret-paths.ts, PKG-M1).
+// S4 secret paths: one table with the keyed policy (src/secret-paths.ts).
 var secret_paths_1 = require("../secret-paths");
 Object.defineProperty(exports, "PRESENT_SECRET_PATTERNS", { enumerable: true, get: function () { return secret_paths_1.PRESENT_SECRET_PATTERNS; } });
 Object.defineProperty(exports, "SECRET_PATTERNS", { enumerable: true, get: function () { return secret_paths_1.SECRET_PATTERNS; } });

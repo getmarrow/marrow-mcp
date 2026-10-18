@@ -173,7 +173,7 @@ interface Run {
   // The anchors the operand folder rule reads: those of the operand set (OPERAND_RULE_OMITS left out).
   operandAnchors: string[];
   secretRegexes: RegExp[];
-  /** `<name>.env` (PKG-M1): a secret when the file is there to read, or git names it as history. */
+  /** `<name>.env`: a secret when the file is there to read, or git names it as history. */
   presentSecretRegexes: RegExp[];
   branchRegexes: RegExp[];
   topSource: string;

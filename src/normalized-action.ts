@@ -1539,7 +1539,7 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
   const rawToolName = typeof event.tool_name === 'string' && event.tool_name ? event.tool_name : toolName;
   const hostToolName = rawToolName.slice(0, 128);
   if (rawToolName.length > 128) state.truncated = true; // exact: kept (the full name is in exact_hmac)
-  // Claude Code built-ins first hooked by PKG-H2 that are not plain shell calls (a native git
+  // Claude Code built-ins first hooked in 3.9.104 that are not plain shell calls (a native git
   // equivalent, Skill, a call whose words are not actions, an irregular Monitor or PowerShell call)
   // are keyed by their whole input, never by one field of it.
   const kind: NormalizedHookAction['tool_kind'] = isMcpHookTool(event.tool_name) || /^MCP:/i.test(hostToolName) ? 'mcp'

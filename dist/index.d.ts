@@ -17,7 +17,7 @@ declare const AUTO_HTTP_TRACE: unique symbol;
  * Validate a path parameter to prevent path traversal attacks.
  * Only allows alphanumeric, hyphens, underscores, and dots, starting with a
  * letter or digit, and never `..` anywhere: `.`, `..` and `a..b` would let a
- * fixed-method request with the caller's key reach another route (PKG-L5).
+ * fixed-method request with the caller's key reach another route.
  * Every id the service mints (UUIDs, `lease_`/`replay_`/`rtdec_` forms,
  * template slugs) passes.
  */

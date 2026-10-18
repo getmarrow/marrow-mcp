@@ -560,7 +560,7 @@ function stricterParts(a, b) {
         protected: a.protected || b.protected,
     };
 }
-/** The classification of a call under its own tool name only (every tool before PKG-H2). */
+/** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
 function classifyAsNamed(event, options) {
     const tool = String(event.tool_name || 'tool').slice(0, 64);
     const normalizedTool = (0, hook_tool_policy_1.normalizeHookToolName)(tool);

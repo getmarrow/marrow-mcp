@@ -31,7 +31,7 @@ export const OFFICIAL_CODEX_PLUGIN_PINS: Readonly<Record<string, Readonly<Record
     'package.json': '7ebeb726b358874e1ecb69bc9bafcb4ec7d5b6ec1fb703af659eb5655680be55',
     'package-lock.json': '266f078eebff4d54fe78431cc84a8d50b7aae972ef15b81592f377823ea47101',
   }),
-  // getmarrow/plugins: the Codex plugins pinned to @getmarrow/mcp 3.9.103 (PKG-M4). The 0.1.1 entries above
+  // getmarrow/plugins: the Codex plugins pinned to @getmarrow/mcp 3.9.103. The 0.1.1 entries above
   // stay so that installs of the older release are still proven, not turned into new friction.
   'marrow@0.1.2': Object.freeze({
     '.codex-plugin/plugin.json': 'd6319939f5548a1708badcf6d11d63221b63ea4b4a3791743e8d0744798e6fe7',

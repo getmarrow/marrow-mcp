@@ -442,7 +442,7 @@ function secretPath(value, base) {
         return false;
     if (SECRET_FILE.test(name))
         return true;
-    // One table (PKG-M1): every path the keyless seatbelt stops as a secret (S4) is a secret here too.
+    // One table: every path the keyless seatbelt stops as a secret (S4) is a secret here too.
     // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
     // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
     const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
@@ -750,7 +750,7 @@ function isSecretMaterialAccess(event) {
         return isSecretMaterialAccessAsNamed(readEquivalent(event));
     return reading.base === 'named' && isSecretMaterialAccessAsNamed(event);
 }
-/** isSecretMaterialAccess for the call's own tool name only (every tool before PKG-H2). */
+/** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
 function isSecretMaterialAccessAsNamed(event) {
     const tool = normalizeHookToolName(event.tool_name);
     if (CONTENT_READ_TOOLS.has(tool))
@@ -824,7 +824,7 @@ function isReadOnlyToolEvent(event) {
             : isReadOnlyToolEventAsNamed(event);
     return own && shellReadOnly;
 }
-/** isReadOnlyToolEvent for the call's own tool name only (every tool before PKG-H2). */
+/** isReadOnlyToolEvent for the call's own tool name only (every tool before the built-ins were hooked). */
 function isReadOnlyToolEventAsNamed(event) {
     const tool = normalizeHookToolName(event.tool_name);
     if (!tool)
@@ -850,7 +850,7 @@ function isReadOnlyToolEventAsNamed(event) {
         && !toolTargetPaths(event).some((path) => isSecretPath(path));
 }
 // ---------------------------------------------------------------------------
-// How a call is read for classification (PKG-H2). Keys always keep the call's
+// How a call is read for classification. Keys always keep the call's
 // own tool name and input (normalized-action, hook-contract).
 // ---------------------------------------------------------------------------
 // Claude Code tools that run their `command` (or `script`) as a shell command: Monitor in the same

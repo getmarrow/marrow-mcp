@@ -35,7 +35,7 @@ export const LIMITS = Object.freeze({
   maxParseCost: 24_000_000,
 });
 
-// S4 secret paths: one table with the keyed policy (src/secret-paths.ts, PKG-M1).
+// S4 secret paths: one table with the keyed policy (src/secret-paths.ts).
 export { PRESENT_SECRET_PATTERNS, SECRET_PATTERNS } from '../secret-paths';
 // Key material by extension, except under node_modules or test fixture folders.
 export const KEY_EXTENSIONS = /\.(?:pem|key|p12|pfx)$/;

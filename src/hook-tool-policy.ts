@@ -389,7 +389,7 @@ function secretPath(value: string, base: string): boolean {
   if (!pathLike) return SECRET_FILE.test(name) && !ENV_TEMPLATE_FILE.test(name);
   if (ENV_TEMPLATE_FILE.test(name)) return false;
   if (SECRET_FILE.test(name)) return true;
-  // One table (PKG-M1): every path the keyless seatbelt stops as a secret (S4) is a secret here too.
+  // One table: every path the keyless seatbelt stops as a secret (S4) is a secret here too.
   // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
   // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
   const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
@@ -639,7 +639,7 @@ export function isSecretMaterialAccess(event: ToolPolicyEvent): boolean {
   return reading.base === 'named' && isSecretMaterialAccessAsNamed(event);
 }
 
-/** isSecretMaterialAccess for the call's own tool name only (every tool before PKG-H2). */
+/** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
 export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent): boolean {
   const tool = normalizeHookToolName(event.tool_name);
   if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path));
@@ -705,7 +705,7 @@ export function isReadOnlyToolEvent(event: ToolPolicyEvent): boolean {
   return own && shellReadOnly;
 }
 
-/** isReadOnlyToolEvent for the call's own tool name only (every tool before PKG-H2). */
+/** isReadOnlyToolEvent for the call's own tool name only (every tool before the built-ins were hooked). */
 export function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent): boolean {
   const tool = normalizeHookToolName(event.tool_name);
   if (!tool) return false;
@@ -728,7 +728,7 @@ export function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// How a call is read for classification (PKG-H2). Keys always keep the call's
+// How a call is read for classification. Keys always keep the call's
 // own tool name and input (normalized-action, hook-contract).
 // ---------------------------------------------------------------------------
 
@@ -773,7 +773,7 @@ const NON_ACTING_NATIVE_TOOLS = new Set(['Agent', 'SendMessage', 'WebFetch', 'As
 const READ_EQUIVALENT_NATIVE_TOOLS = new Set(['Skill']);
 
 export type ToolPolicyReading = {
-  /** How the call's own name is read: as named (every tool before PKG-H2), as Read, or as a call whose words are not actions. */
+  /** How the call's own name is read: as named (every tool before the built-ins were hooked), as Read, or as a call whose words are not actions. */
   base: 'named' | 'read' | 'non_acting';
   /** Bash calls the call amounts to: its command or script text, or a native tool's fixed git command. */
   shell: Array<{ tool_name: string; tool_input: { command: string } }>;
