@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { emitBaseUrlNotice, resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 import { normalizedHookAction } from './normalized-action';
+import { isOfficialMarrowServerLaunch } from './own-server-identity';
 import {
   geminiMcpTarget, isGeminiOwnLabel, isMarrowOwnTool, isOfficialMarrowGeminiCall, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput,
   listNativeHookMatcher, nativeHookMatcher, normalizedMcpToolName, r2NativeHookMatcher,
@@ -510,7 +511,8 @@ export function readHookSettingsForInstall(startDir = process.cwd()): HookSettin
 // ---------------------------------------------------------------------------
 // The installer's local-runtime hook forms (@getmarrow/install, src/mcp-runtime.js):
 // the same entrypoint run from ~/.marrow/runtime/mcp/<version>/run when present,
-// else through npx. Recognized only in their exact generated shape, and only
+// else through npx; or (later installers) run by node on the installer's inline
+// loader, with no npx. Recognized only in their exact generated shape, and only
 // when every version in them is the same; anything else is not Marrow's.
 // ---------------------------------------------------------------------------
 
@@ -521,6 +523,25 @@ const LOCAL_SPAWN_RE = /spawn\(\.\.\.\(\(f,m,a\)=>f\.existsSync\(m\)\?\[m,a\.sli
 const LOCAL_GUARD_PREFIX_RE = /^N="\$HOME\/\.marrow\/runtime\/mcp\/(\d+\.\d+\.\d+)\/node"; \[ -x "\$N" \] \|\| N=node; exec "\$N" -e '/;
 const SPAWN_NPX = 'spawn(process.platform==="win32"?"npx.cmd":"npx",';
 
+// The inline-loader plain form (POSIX): /bin/sh picks node (the private runtime's,
+// else an absolute one outside the project) and runs the loader, passed as $0; with
+// no usable node it prints the installer's fixed text and exits 2 (pre-action) or 1.
+const INSTALLER_REPAIR = 'The owner can repair it by running npx -y @getmarrow/install@latest --repair --cwd <project folder> from a terminal outside the project.';
+const INSTALLER_HOLD_TEXT = `Marrow held this action: its verified local runtime could not start. ${INSTALLER_REPAIR}`;
+const INSTALLER_UNAVAILABLE_TEXT = `Marrow could not start its verified local runtime. ${INSTALLER_REPAIR}`;
+const INSTALLER_NODE_SEARCH = (version: string) => `N="$HOME/.marrow/runtime/mcp/${version}/node"; if [ ! -x "$N" ]; then N=; P="$PATH:/usr/local/bin:/opt/homebrew/bin"; while [ -n "$P" ]; do D="\${P%%:*}"; case "$P" in (*:*) P="\${P#*:}" ;; (*) P= ;; esac; case "$D" in ("$PWD"|"$PWD"/*) ;; (/*) if [ -f "$D/node" ] && [ -x "$D/node" ]; then N="$D/node"; break; fi ;; esac; done; fi; `;
+function installerLoaderPlain(version: string, sub: string, loader: string): string {
+  const pre = /-pre-action-hook$/.test(sub);
+  return `/bin/sh -c '${INSTALLER_NODE_SEARCH(version)}if [ -n "$N" ]; then exec "$N" -e "$0" -- --package=@getmarrow/mcp@${version} marrow-mcp ${sub}; fi; printf "%s\\n" "${pre ? INSTALLER_HOLD_TEXT : INSTALLER_UNAVAILABLE_TEXT}" >&2; exit ${pre ? 2 : 1}' "${loader}"`;
+}
+// Only picks out the parts; the command must then equal installerLoaderPlain of them exactly.
+const LOADER_PLAIN_RE = /^\/bin\/sh -c 'N="\$HOME\/\.marrow\/runtime\/mcp\/(\d+\.\d+\.\d+)\/node"; [^']* -- --package=@getmarrow\/mcp@\1 marrow-mcp ([a-z][a-z-]{0,63}); fi; printf [^']*' "([^"'\s]{16,16384})"$/;
+const MAX_LOADER_PLAIN_LENGTH = 32_768;
+// The loader must decode to the installer's launcher for this version with a pinned
+// runtime core: the same proof the installer's server launch gets (node -e <loader>).
+const installerLoaderFor = (loader: string, version: string): boolean =>
+  isOfficialMarrowServerLaunch('node', ['-e', loader, '--', `--package=@getmarrow/mcp@${version}`, 'marrow-mcp']);
+
 /**
  * The npx form of an installer local-runtime hook command, or the command
  * unchanged when it is not exactly one (another shape, a suffix, a different
@@ -530,6 +551,13 @@ export function delocalizeMarrowHookCommand(command: unknown): unknown {
   if (typeof command !== 'string') return command;
   const plain = LOCAL_PLAIN_RE.exec(command);
   if (plain) return plain[1] === plain[2] ? `npx -y --package=@getmarrow/mcp@${plain[2]} marrow-mcp ${plain[3]}` : command;
+  const loaderPlain = command.length <= MAX_LOADER_PLAIN_LENGTH ? LOADER_PLAIN_RE.exec(command) : null;
+  if (loaderPlain) {
+    const [, version, sub, loader] = loaderPlain;
+    return installerLoaderPlain(version, sub, loader) === command && installerLoaderFor(loader, version)
+      ? `npx -y --package=@getmarrow/mcp@${version} marrow-mcp ${sub}`
+      : command;
+  }
   const guard = LOCAL_GUARD_PREFIX_RE.exec(command);
   if (guard) {
     let consistent = true;
