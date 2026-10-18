@@ -1,6 +1,6 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.103",
+  "version": "3.9.104",
   "mcpName": "ai.getmarrow/marrow",
   "description": "Marrow AI MCP server: a named yes before your AI agent acts, and proof the next agent can reuse.",
   "bin": {
@@ -72,7 +72,7 @@
     "scripts/control-path-canary.cjs"
   ],
   "dependencies": {
-    "@getmarrow/sdk": "3.7.65"
+    "@getmarrow/sdk": "3.7.67"
   },
   "devDependencies": {
     "@types/node": "^25.5.2",

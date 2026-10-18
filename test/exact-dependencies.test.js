@@ -31,7 +31,7 @@ test('every runtime dependency of @getmarrow/mcp is an exact version', () => {
     if (Array.isArray(value)) continue; // bundleDependencies lists names only
     assert.deepEqual(inexact(value), [], `${field} must hold exact versions only`);
   }
-  assert.equal(manifest.dependencies['@getmarrow/sdk'], '3.7.65');
+  assert.equal(manifest.dependencies['@getmarrow/sdk'], '3.7.67');
 });
 
 test('the lockfile root records the same exact dependencies, and each is installed at that version with an integrity', () => {

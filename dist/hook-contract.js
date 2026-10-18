@@ -28,7 +28,7 @@ const node_path_1 = require("node:path");
 const env_1 = require("./env");
 const normalized_action_1 = require("./normalized-action");
 const own_tool_1 = require("./own-tool");
-exports.MCP_ADAPTER_VERSION = '3.9.103';
+exports.MCP_ADAPTER_VERSION = '3.9.104';
 exports.NATIVE_HOOK_MATCHER = (0, own_tool_1.nativeHookMatcher)();
 /**
  * Matchers older versions wrote, so a hook carrying one needs repair: the
