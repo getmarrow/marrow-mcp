@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "marrow": {
+      "command": "node",
+      "args": [
+        "./scripts/marrow-launch.cjs",
+        "mcp"
+      ],
+      "cwd": "./",
+      "env_vars": [
+        "MARROW_API_KEY"
+      ]
+    }
+  }
+}
