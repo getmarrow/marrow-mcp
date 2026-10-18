@@ -3541,19 +3541,27 @@ function cwdsList(ctx: Ctx): string[] { return ctx.cwds.map((c) => c || '/__unkn
 // S4: a secret path as an operand. Returns true on a stop.
 // `history`: git reads the path from its object store (a pathspec after `--`, a `REV:path` object), so it
 // need not exist in the work tree.
-function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string, history = false): boolean {
+// `pattern`: the pattern of a search (the word in `grep -rn <word> src`), which names no file to read.
+function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string, history = false, pattern = false): boolean {
   if (a.text === null && a.alts && a.alts.length) {
-    for (const v of a.alts) if (checkSecretOperand({ ...litArg(v), glob: a.glob, word: a.word }, ctx, run, reason, history)) return true;
+    for (const v of a.alts) if (checkSecretOperand({ ...litArg(v), glob: a.glob, word: a.word }, ctx, run, reason, history, pattern)) return true;
     return false;
   }
   for (const text of operandPaths(a)) {
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) continue;
+    // A name under an unknown working folder (the event gave no absolute cwd): a relative operand, `..` included,
+    // or one under /proc/<pid>/cwd. It may be there to read, so a `<name>.env` operand counts as present and a
+    // glob that can expand to a `*.env` name stops (fail closed). The pattern of a search names no file.
+    const underUnknown = !pattern && ctx.cwds.some((c) => c === null) && (() => {
+      const t = expandTilde(text, run);
+      return t !== null && (!path.posix.isAbsolute(t) || /^\/proc\/[^/]+\/cwd(?:\/|$)/.test(t));
+    })();
     // A glob is also listed (through links and names made in this command) and each match judged.
     if (a.text !== null && a.glob && /[*?[]/.test(text) && !a.nonAscii && run.env.fs.readdir) {
       const matches = expandGlob(text, ctx, run);
       if (matches !== null) {
-        for (const mm of matches.slice(0, LIMITS.maxGlobMatches)) if (checkSecretOperand({ ...litArg(mm), glob: false }, ctx, run, reason, history)) return true;
-        for (const k of linkNamesMatching(text, ctx, run)) if (checkSecretOperand({ ...litArg(k), glob: false }, ctx, run, reason, history)) return true;
+        for (const mm of matches.slice(0, LIMITS.maxGlobMatches)) if (checkSecretOperand({ ...litArg(mm), glob: false }, ctx, run, reason, history, pattern)) return true;
+        for (const k of linkNamesMatching(text, ctx, run)) if (checkSecretOperand({ ...litArg(k), glob: false }, ctx, run, reason, history, pattern)) return true;
       }
     }
     if (a.text === null || a.glob || a.nonAscii) {
@@ -3561,6 +3569,7 @@ function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string, history 
       if (/[A-Za-z0-9._~/-]/.test(probe.pattern.replace(new RegExp(DYN, 'g'), '')) && sampleMatch(probe, ctx, run, secretSamples(run.home, cwdsList(ctx)))) {
         return hit(run, 'S4', `${reason}_secret_pattern`);
       }
+      if (underUnknown && a.text !== null && a.glob && /[*?[]/.test(text) && globMayEndWith(text, '.env', run.fold)) return hit(run, 'S4', `${reason}_secret_pattern`);
       if (a.text === null) continue;
     }
     const abs = absCandidates(text, ctx, run);
@@ -3568,11 +3577,89 @@ function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string, history 
     for (const p of abs) {
       // A path through a link whose target the mapper cannot follow (audit N3).
       if (run.links.size > 0 && applyLinks(p, run) === '/__unknown_link__') return hit(run, 'S4', `${reason}_unknown_link`);
-      for (const r of realCandidates(p, run, true)) if (isSecretPath(r, run, !history)) return hit(run, 'S4', `${reason}_secret_path`);
+      const mustExist = !history && !(underUnknown || (!pattern && p.startsWith('/__unknown_cwd__/')));
+      for (const r of realCandidates(p, run, true)) if (isSecretPath(r, run, mustExist)) return hit(run, 'S4', `${reason}_secret_path`);
     }
   }
   return false;
 }
+
+// Whether some name the glob matches (shell rules: `*` and `?` stay inside one path segment) ends with `suffix`:
+// a walk over (glob position, how much of the suffix the name ends with so far), trying the suffix characters
+// and a few others for every wildcard.
+function globMayEndWith(glob: string, suffix: string, ci: boolean): boolean {
+  type Tok = { k: 'lit'; c: string } | { k: 'any1' } | { k: 'star' } | { k: 'cls'; neg: boolean; chars: string[]; ranges: Array<[string, string]> };
+  const fold = (c: string) => (ci ? c.toLowerCase() : c);
+  const toks: Tok[] = [];
+  for (let i = 0; i < glob.length; i += 1) {
+    const ch = glob[i];
+    if (ch === '*') { if (toks[toks.length - 1]?.k !== 'star') toks.push({ k: 'star' }); continue; }
+    if (ch === '?') { toks.push({ k: 'any1' }); continue; }
+    if (ch === '[') {
+      const end = glob.indexOf(']', i + 2);
+      if (end > 0) {
+        let body = glob.slice(i + 1, end);
+        const neg = body.startsWith('!') || body.startsWith('^');
+        if (neg) body = body.slice(1);
+        const tok: Tok = { k: 'cls', neg, chars: [], ranges: [] };
+        for (let q = 0; q < body.length; q += 1) {
+          if (body[q + 1] === '-' && q + 2 < body.length) { tok.ranges.push([fold(body[q]), fold(body[q + 2])]); q += 2; } else tok.chars.push(fold(body[q]));
+        }
+        toks.push(tok);
+        i = end;
+        continue;
+      }
+    }
+    toks.push({ k: 'lit', c: fold(ch) });
+  }
+  const want = fold(suffix);
+  const tries = [...new Set([...want, 'x', 'A', '0', '_', '-', ...toks.flatMap((t) => (t.k === 'cls' ? [...t.chars, ...t.ranges.flat()] : []))])].filter((c) => c !== '/');
+  const step = (k: number, c: string): number => {
+    const s = want.slice(0, k) + c;
+    for (let n = Math.min(s.length, want.length); n > 0; n -= 1) if (s.endsWith(want.slice(0, n))) return n;
+    return 0;
+  };
+  const accepts = (t: Tok, c: string): boolean => {
+    if (t.k === 'lit') return t.c === c;
+    if (t.k === 'any1' || t.k === 'star') return c !== '/';
+    const inSet = t.chars.includes(c) || t.ranges.some(([lo, hi]) => c >= lo && c <= hi);
+    return t.neg ? !inSet && c !== '/' : inSet;
+  };
+  const seen = new Set<string>();
+  const queue: Array<[number, number]> = [[0, 0]];
+  while (queue.length) {
+    const [i, k] = queue.pop() as [number, number];
+    const key = `${i}:${k}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (i === toks.length) { if (k === want.length) return true; continue; }
+    const t = toks[i];
+    const chars = t.k === 'lit' ? [t.c] : tries;
+    if (t.k === 'star') queue.push([i + 1, k]);
+    for (const c of chars) if (accepts(t, c)) queue.push([t.k === 'star' ? i : i + 1, step(k, c)]);
+  }
+  return false;
+}
+
+// The words a search reads as its pattern, not as a file: the value of -e/--regexp (also attached), and the
+// first operand when no -e/-f gave one. A form not listed here is read as a file (the strict reading).
+function searchPatternArgs(rest: Arg[], end: number = rest.length): Set<Arg> {
+  const out = new Set<Arg>();
+  let given = false;
+  let first: Arg | null = null;
+  for (let i = 0; i < end; i += 1) {
+    const t = rest[i].text;
+    if (t === null) { if (first === null) first = rest[i]; continue; }
+    if (t === '--') break;
+    if (t === '-e' || t === '--regexp') { given = true; if (rest[i + 1]) out.add(rest[i + 1]); i += 1; continue; }
+    if (/^(?:--regexp=|-e.)/.test(t)) { given = true; out.add(rest[i]); continue; }
+    if (t === '-f' || t === '--file' || /^(?:--file=|-f.)/.test(t)) { given = true; if (t === '-f' || t === '--file') i += 1; continue; }
+    if (first === null && !t.startsWith('-')) first = rest[i];
+  }
+  if (!given && first !== null) out.add(first);
+  return out;
+}
+const SEARCH_PROGRAMS = new Set(['grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'ack']);
 
 // Path-ish parts of an operand: the value after `--opt=`, after `@` (curl -d @file) and after `:`
 // for git object paths (HEAD:.env).
@@ -3828,13 +3915,14 @@ function genericOperandChecks(prog: string, args: Arg[], ctx: Ctx, run: Run, sub
   recursiveSecretDirRead(prog, rest, ctx, run);
   if (!S4_EXEMPT_PROGRAMS.has(prog) && prog !== 'git') {
     let skipNext = false;
+    const patterns = SEARCH_PROGRAMS.has(prog) ? searchPatternArgs(rest) : null;
     for (let i = 0; i < rest.length; i += 1) {
       const a = rest[i];
       if (skipNext) { skipNext = false; continue; }
       // ssh-style identity flags use the key without printing it.
       if (['scp', 'rsync', 'ssh-copy-id', 'sshfs'].includes(prog) && a.text === '-i') { skipNext = true; continue; }
       if (clock(run)) return;
-      checkSecretOperand(a, ctx, run, 'operand');
+      checkSecretOperand(a, ctx, run, 'operand', false, patterns !== null && patterns.has(a));
     }
   }
   // Copying or archiving a directory that holds credential files (cp -r ~/.ssh, tar ~) is a read too.
@@ -6281,12 +6369,13 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
     // log, whatchanged and format-patch take no message: their -m and -F are flags, and the next word is read.
     const prose = !GIT_PATCH_LOG_SUBS.has(sub);
     const dashDash = args.findIndex((a) => a.text === '--');
+    const patterns = sub === 'grep' ? searchPatternArgs(args, dashDash >= 0 ? dashDash : args.length) : null;
     for (let k = 0; k < args.length; k += 1) {
       const t = args[k].text;
       if (prose && (t === '-m' || t === '--message' || t === '-F' || t === '--file' || (t !== null && /^-[a-zA-Z]*m$/.test(t)))) { k += 1; continue; }
       if (prose && t !== null && /^(?:--message=|-m.)/.test(t)) continue;
       const history = (dashDash >= 0 && k > dashDash) || t === null || /^[^/:]+:/.test(t);
-      checkSecretOperand(args[k], gctx, run, 'git_operand', history);
+      checkSecretOperand(args[k], gctx, run, 'git_operand', history, patterns !== null && patterns.has(args[k]));
       // `-L<range>:<file>` (or `-L <range>:<file>`) prints the history of <file>: every part after a colon is read.
       if (!prose && t !== null && /^-L/.test(t) && (dashDash < 0 || k < dashDash)) {
         const value = t === '-L' ? (args[k + 1] ? args[k + 1].text : null) : t.slice(2);
