@@ -199,7 +199,11 @@ function defaultSourceClient() {
 }
 /**
  * Validate a path parameter to prevent path traversal attacks.
- * Only allows alphanumeric, hyphens, underscores, and dots.
+ * Only allows alphanumeric, hyphens, underscores, and dots, starting with a
+ * letter or digit, and never `..` anywhere: `.`, `..` and `a..b` would let a
+ * fixed-method request with the caller's key reach another route (PKG-L5).
+ * Every id the service mints (UUIDs, `lease_`/`replay_`/`rtdec_` forms,
+ * template slugs) passes.
  */
 function validatePathParam(value, paramName) {
     if (!value || typeof value !== 'string') {
@@ -210,6 +214,9 @@ function validatePathParam(value, paramName) {
     }
     if (value.length > 256) {
         throw new Error(`${paramName} exceeds maximum length`);
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$/.test(value) || value.includes('..')) {
+        throw new Error(`${paramName} must start with a letter or digit and must not contain ".."`);
     }
     return value;
 }
