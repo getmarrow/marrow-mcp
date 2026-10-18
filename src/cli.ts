@@ -73,7 +73,7 @@ import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookComma
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
 import { spawn } from 'node:child_process';
-import { nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
+import { emitBaseUrlNotice, nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
 import {
   BACKGROUND_NUDGE_MAX_LIFETIME_MS,
   backgroundNudgeEnabled,
@@ -218,6 +218,7 @@ async function runPingCommand(): Promise<void> {
     return;
   }
   const resolved = resolveMarrowEnv({ trustedOnly: true });
+  emitBaseUrlNotice(resolved);
   if (!resolved.apiKey) {
     process.stdout.write(JSON.stringify({ ok: false, error: 'missing_key', exact_fix: resolved.exactFix }) + '\n');
     process.exitCode = 1;
@@ -270,6 +271,7 @@ async function runSpoolCommand(drain: boolean): Promise<void> {
     return;
   }
   const resolved = resolveMarrowEnv({ trustedOnly: true });
+  emitBaseUrlNotice(resolved);
   const apiKey = resolved.apiKey || '';
   if (!apiKey) {
     process.stderr.write(`Error: MARROW_API_KEY required. ${resolved.exactFix}\n`);
@@ -470,6 +472,7 @@ function formatKeyMaterialWarning(): string {
 if (process.argv[2] === 'keys') {
   const cmd = process.argv[3];
   const resolvedEnv = resolveMarrowEnv();
+  emitBaseUrlNotice(resolvedEnv);
   const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
   if (!API_KEY) {
     process.stderr.write(`Error: MARROW_API_KEY required. ${resolvedEnv.exactFix}\n`);
@@ -598,6 +601,7 @@ if (cliArgs.hook) {
   runSetup();
 } else {
 const resolvedEnv = resolveMarrowEnv();
+emitBaseUrlNotice(resolvedEnv);
 const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
 
 // [SECURITY #3] Validate BASE_URL — require HTTPS to prevent SSRF / credential leakage

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
+import { emitBaseUrlNotice, resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 import { normalizedHookAction } from './normalized-action';
 import {
   geminiMcpTarget, isGeminiOwnLabel, isMarrowOwnTool, isOfficialMarrowGeminiCall, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput,
@@ -131,6 +131,7 @@ export function resolveNativeHookIdentity(
   const recognizedHarness = RECOGNIZED_NATIVE_ENTRYPOINTS[String(entrypoint || '').trim()] as Exclude<NativeHookHarness, 'mcp-client'> | undefined;
   const harness: NativeHookHarness = recognizedHarness || 'mcp-client';
   const environment = resolveMarrowEnv({ ...options, trustedOnly: true });
+  emitBaseUrlNotice(environment);
   const candidateAgentId = String(environment.agentId || '').trim();
   const agentId = /^[A-Za-z0-9._:-]{1,128}$/.test(candidateAgentId) ? candidateAgentId : undefined;
   return {

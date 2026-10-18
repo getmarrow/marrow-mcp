@@ -7,6 +7,7 @@ const ALLOWED_ENV_KEYS = new Set([
   'MARROW_API_KEY',
   'MARROW_KEY',
   'MARROW_BASE_URL',
+  'MARROW_ALLOWED_BASE_URLS',
   'MARROW_FLEET_AGENT_ID',
   'MARROW_AGENT_ID',
   'MARROW_SESSION_ID',
@@ -23,6 +24,8 @@ export interface ResolvedMarrowEnv {
   source: string | null;
   missing: boolean;
   exactFix: string;
+  /** Set when a base URL from the process environment was not used with an owner-file key. Names the source only, never a value. */
+  baseUrlNotice?: string;
 }
 
 /** Host (with port) of a non-default base URL, for status output; null for the default. */
@@ -62,6 +65,78 @@ function shellOperand(realPath: string): string | null {
   if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(realPath) || Array.from(realPath).length > MAX_PRINTED_PATH) return null;
   if (/^[A-Za-z0-9_@%+=:,./][A-Za-z0-9_@%+=:,./-]*$/.test(realPath)) return realPath;
   return `'${realPath.replace(/'/g, `'\\''`)}'`;
+}
+
+// Where an owner-file key may be sent. A key read from ~/.marrow/env goes only to the
+// default endpoint, the endpoint that same file names (MARROW_BASE_URL), or an exact
+// origin that file lists in MARROW_ALLOWED_BASE_URLS. A base URL that only the process
+// environment names (a project .mcp.json or .claude/settings.json env block, direnv, a
+// devcontainer) never moves it. A key from the process environment is unchanged.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+// Strict parse of a URL a key may be sent to: https, or http on a loopback host only.
+// No credentials, query, fragment, wildcard, whitespace, control or format characters.
+function parseKeyTarget(value: unknown): URL | null {
+  const text = String(value ?? '').trim();
+  if (!text || /[\s\p{Cc}\p{Cf}\\*?#@]/u.test(text)) return null;
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return null;
+  }
+  if (url.username || url.password || url.search || url.hash) return null;
+  if (url.protocol === 'https:') return url;
+  if (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname)) return url;
+  return null;
+}
+
+function isRootPath(url: URL): boolean {
+  return url.pathname === '/' || url.pathname === '';
+}
+
+// Exact origins only: an entry with a path, credentials, query, fragment or wildcard is skipped.
+function allowedOrigins(value: string | undefined): Set<string> {
+  const origins = new Set<string>();
+  for (const entry of String(value || '').split(',')) {
+    const url = parseKeyTarget(entry);
+    if (url && isRootPath(url)) origins.add(url.origin);
+  }
+  return origins;
+}
+
+function ownerKeyBaseUrl(
+  filePath: string,
+  parsed: Record<string, string>,
+  env: NodeJS.ProcessEnv,
+): { baseUrl: string; notice?: string } {
+  // The owner file names its own endpoint: the existing precedence, the env URL is not consulted.
+  if (parsed.MARROW_BASE_URL) return { baseUrl: parsed.MARROW_BASE_URL };
+  const candidate = String(env.MARROW_BASE_URL || '').trim();
+  if (!candidate) return { baseUrl: DEFAULT_BASE_URL };
+  const target = parseKeyTarget(candidate);
+  if (target && target.origin === new URL(DEFAULT_BASE_URL).origin && isRootPath(target)) return { baseUrl: DEFAULT_BASE_URL };
+  if (target && allowedOrigins(parsed.MARROW_ALLOWED_BASE_URLS).has(target.origin)) {
+    return { baseUrl: `${target.origin}${target.pathname.replace(/\/+$/, '')}` };
+  }
+  return {
+    baseUrl: DEFAULT_BASE_URL,
+    notice: `ignored MARROW_BASE_URL from the process environment: the key comes from ~/.marrow/${path.basename(filePath)}; list the URL in MARROW_ALLOWED_BASE_URLS in that file to allow it`,
+  };
+}
+
+const emittedNotices = new Set<string>();
+
+/** Writes a resolver notice to stderr once per process. Notices name a source, never a key or a URL. */
+export function emitBaseUrlNotice(resolved: { baseUrlNotice?: string }): void {
+  const notice = resolved.baseUrlNotice;
+  if (!notice || emittedNotices.has(notice)) return;
+  emittedNotices.add(notice);
+  try {
+    process.stderr.write(`[marrow] ${notice}\n`);
+  } catch {
+    // A closed stderr never changes the decision.
+  }
 }
 
 function stripQuotes(value: string): string {
@@ -347,9 +422,11 @@ function fromFile(
   parsed: Record<string, string>,
   env: NodeJS.ProcessEnv,
 ): ResolvedMarrowEnv {
+  const target = ownerKeyBaseUrl(filePath, parsed, env);
   return {
     apiKey: found.key,
-    baseUrl: parsed.MARROW_BASE_URL || env.MARROW_BASE_URL || DEFAULT_BASE_URL,
+    baseUrl: target.baseUrl,
+    ...(target.notice ? { baseUrlNotice: target.notice } : {}),
     agentId: parsed.MARROW_FLEET_AGENT_ID || parsed.MARROW_AGENT_ID || env.MARROW_FLEET_AGENT_ID || env.MARROW_AGENT_ID,
     sessionId: parsed.MARROW_SESSION_ID || env.MARROW_SESSION_ID,
     source: `${filePath}:${found.source}`,

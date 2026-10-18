@@ -1,0 +1,42 @@
+{
+  "name": "marrow-advisory",
+  "version": "0.1.2",
+  "description": "Advisory Marrow: the Marrow MCP server (pinned @getmarrow/mcp 3.9.103) and a short skill, with no hooks. Marrow sees an action only when the agent calls a marrow_* tool, so nothing is held or enforced.",
+  "author": {
+    "name": "Marrow",
+    "url": "https://getmarrow.ai"
+  },
+  "homepage": "https://getmarrow.ai/marrow-for-codex",
+  "repository": "https://github.com/getmarrow/plugins",
+  "license": "MIT",
+  "keywords": [
+    "governance",
+    "approvals",
+    "mcp",
+    "audit",
+    "advisory"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Marrow (advisory)",
+    "shortDescription": "Marrow MCP tools and skill, advisory only, no hooks",
+    "longDescription": "Advisory only: Marrow's MCP tools and skill let the agent ask Marrow before consequential actions and record results, but nothing is held or enforced, because this package has no hooks. For enforced approvals in Codex, install the marrow plugin from the getmarrow marketplace instead. Install one of the two Marrow Codex plugins (marrow or marrow-advisory), not both: both name their MCP server marrow.",
+    "developerName": "Marrow",
+    "category": "Security",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://getmarrow.ai",
+    "defaultPrompt": [
+      "Ask Marrow whether this deploy needs approval"
+    ]
+  },
+  "metadata": {
+    "pins": {
+      "@getmarrow/mcp": "3.9.103",
+      "@getmarrow/sdk": "3.7.65"
+    },
+    "advisory": true
+  }
+}
