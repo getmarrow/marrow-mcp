@@ -275,9 +275,16 @@ function operationIdentity(state, session, operation) {
         session.instruction_epoch,
     ]);
 }
-function denial(entry) {
-    const result = entry.outcome === 'success' ? 'passed' : 'failed';
-    return `Marrow local loop guard: this operation already ${result} with an unchanged result. Reuse the recorded result instead of repeating it. Receipt: ${entry.receipt}.`;
+const SAFE_TOOL_LABEL = /^[A-Za-z0-9_.:-]{1,64}$/;
+/** The tool name only, never its input. Anything that is not a plain name reads as "call". */
+function toolLabel(toolName) {
+    return typeof toolName === 'string' && SAFE_TOOL_LABEL.test(toolName) ? `${toolName} call` : 'call';
+}
+function denial(entry, toolName) {
+    const call = toolLabel(toolName);
+    return entry.outcome === 'success'
+        ? `Marrow loop guard: you already ran this exact ${call} in this session and nothing has changed since, so it was not run again. Use the earlier result. If an edit just failed, re-read only the lines you need (Read with offset and limit). Receipt: ${entry.receipt}.`
+        : `Marrow loop guard: this exact ${call} already failed in this session and nothing has changed since, so it was not run again. Change something before you try again. Receipt: ${entry.receipt}.`;
 }
 function consultSessionLoopGuard(operation, options = {}) {
     return withStateLock(options.home, () => {
@@ -290,7 +297,7 @@ function consultSessionLoopGuard(operation, options = {}) {
         if (existing) {
             const threshold = existing.kind === 'poll' || existing.outcome === 'failure' ? 2 : 1;
             if (existing.outcome && existing.unchanged_count >= threshold) {
-                return { allow: false, receipt: existing.receipt, reason: denial(existing), fingerprint };
+                return { allow: false, receipt: existing.receipt, reason: denial(existing, operation.toolName), fingerprint };
             }
             existing.attempts += 1;
             existing.updated_at = now;

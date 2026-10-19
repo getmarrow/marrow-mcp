@@ -51,7 +51,7 @@ test('successful verification is denied on the next unchanged repeat without ret
     recordSessionLoopOutcome(operation({ invocationId: 'tool-one', toolInput: {} }), true, { output: 'raw-private-result' }, { home: root });
     const denied = consultSessionLoopGuard(operation({ invocationId: 'tool-two' }), { home: root });
     assert.equal(denied.allow, false);
-    assert.match(denied.reason, /already passed.*Reuse the recorded result.*lgr_/i);
+    assert.match(denied.reason, /^Marrow loop guard: you already ran this exact functions\.exec call in this session and nothing has changed since, so it was not run again\. Use the earlier result\. .*Receipt: lgr_[0-9a-f]{24}\.$/);
     const raw = readFileSync(sessionLoopGuardPath(root), 'utf8');
     assert.doesNotMatch(raw, /raw-secret-command|raw-private-result|npm test|tool-one|session-one|agent-one/);
     assert.equal(lstatSync(sessionLoopGuardPath(root)).mode & 0o777, 0o600);
@@ -77,7 +77,7 @@ test('unchanged polls and failures allow two attempts and deny the third', () =>
     recordSessionLoopOutcome({ ...failed, invocationId: 'fail-two', toolInput: {} }, false, { code: 1 }, { home: root });
     const failureDenied = consultSessionLoopGuard({ ...failed, invocationId: 'fail-three' }, { home: root });
     assert.equal(failureDenied.allow, false);
-    assert.match(failureDenied.reason, /already failed/i);
+    assert.match(failureDenied.reason, /^Marrow loop guard: this exact functions\.exec call already failed in this session and nothing has changed since, so it was not run again\. Change something before you try again\. Receipt: lgr_[0-9a-f]{24}\.$/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -246,7 +246,7 @@ test('a local denial emits one compact client-reported block marker and no raw o
     await runPreActionHookCommand({ ...first, tool_use_id: 'read-two' });
     const denial = JSON.parse(output);
     assert.equal(denial.hookSpecificOutput.permissionDecision, 'deny');
-    assert.match(denial.hookSpecificOutput.permissionDecisionReason, /Reuse the recorded result.*lgr_/i);
+    assert.match(denial.hookSpecificOutput.permissionDecisionReason, /Use the earlier result\..*Receipt: lgr_/);
     assert.equal(calls.length, 1);
     assert.equal(calls[0].pathname, '/v1/agent/integrations/events');
     assert.equal(calls[0].body.event_type, 'pre_action_checked');
