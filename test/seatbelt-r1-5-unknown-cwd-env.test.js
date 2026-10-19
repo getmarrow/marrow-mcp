@@ -134,11 +134,14 @@ function sandbox() {
   put('proj/src/app.ts', 'export {};\n');
   return { root, home, proj, netspy: path.join(root, 'net.log'), cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
-function hook(sb, event) {
-  const r = spawnSync(process.execPath, ['--require', PRELOAD, CLI, 'claude-pre-action-hook'], {
+// `spawn` is a seam for the stub test below (R3): a hook that did not run to an answer is never a pass.
+function hook(sb, event, spawn = spawnSync) {
+  const r = spawn(process.execPath, ['--require', PRELOAD, CLI, 'claude-pre-action-hook'], {
     cwd: sb.proj, encoding: 'utf8', timeout: 60_000, input: JSON.stringify(event),
     env: { PATH: process.env.PATH, HOME: sb.home, SBT_PASSWD_HOME: sb.home, SBT_NETSPY: sb.netspy, MARROW_HOOK_BACKGROUND_NUDGE: 'false' },
   });
+  // A spawn error, a signal or timeout, or an exit other than 0 (answered) and 2 (stopped) is a hook that failed.
+  if (r.error || r.signal || (r.status !== 0 && r.status !== 2)) return 'hook_failed';
   let j = null;
   try { j = r.stdout && r.stdout.trim() ? JSON.parse(r.stdout) : null; } catch { j = null; }
   const text = JSON.stringify(j || '') + (r.stderr || '');
@@ -146,6 +149,8 @@ function hook(sb, event) {
   // STOP is the seatbelt's S4 stop only (a fail-closed budget stop on a loaded machine is not the answer under test).
   if ((r.status === 2 || d === 'deny' || d === 'block') && /MARROW SEATBELT stopped/.test(text)) return /S4\.credential_access/.test(text) ? 'STOP' : 'stop-other';
   if (r.status === 2 || d === 'deny' || d === 'block') return 'held';
+  // A pass is exit 0 with the host's answer: a JSON object (an empty one for Claude Code). Nothing, or text that is not JSON, is not an answer.
+  if (r.status !== 0 || j === null || typeof j !== 'object' || Array.isArray(j)) return 'hook_failed';
   return 'pass';
 }
 const sid = () => `r14-${crypto.randomBytes(6).toString('hex')}`;
@@ -183,4 +188,22 @@ test('R1-5 consumers: the outage hold never reads cat prod.env without a cwd as 
       assert.notEqual(r.risk, 'not_high', `cwd=${cwd}: ${command}`);
     }
   }
+});
+
+// R3 (Codex review of 24f17b60): the helper counted a hook that exited 1 with empty output as a pass, so the
+// "identifier searches and templates pass" assertions above could succeed with the hook broken. Stubbed spawnSync, no process.
+test('R3: a hook that exits 1 with empty output, or gives no valid answer, is a failure of the helper, never a pass', () => {
+  const sb = { proj: '/nowhere/proj', home: '/nowhere', netspy: '/nowhere/net.log' };
+  const ev = event('Bash', 'cat app.env.example', sb.proj);
+  const stub = (result) => () => result;
+  assert.equal(hook(sb, ev, stub({ status: 1, stdout: '', stderr: 'startup failed' })), 'hook_failed', 'exit 1, empty stdout');
+  assert.equal(hook(sb, ev, stub({ status: 1, stdout: '{}', stderr: '' })), 'hook_failed', 'exit 1 even with an object');
+  assert.equal(hook(sb, ev, stub({ status: 0, stdout: '', stderr: '' })), 'hook_failed', 'exit 0, no answer');
+  assert.equal(hook(sb, ev, stub({ status: 0, stdout: 'not json', stderr: '' })), 'hook_failed', 'exit 0, unparsable');
+  assert.equal(hook(sb, ev, stub({ status: 0, stdout: '[]', stderr: '' })), 'hook_failed', 'exit 0, not an object');
+  assert.equal(hook(sb, ev, stub({ status: 0, stdout: 'null', stderr: '' })), 'hook_failed', 'exit 0, null');
+  assert.equal(hook(sb, ev, stub({ status: null, signal: 'SIGKILL', stdout: '{}', stderr: '' })), 'hook_failed', 'killed');
+  assert.equal(hook(sb, ev, stub({ status: null, error: new Error('spawn failed'), stdout: '', stderr: '' })), 'hook_failed', 'spawn error');
+  assert.equal(hook(sb, ev, stub({ status: 0, stdout: '{}', stderr: '' })), 'pass', 'the expected answer is a pass');
+  assert.equal(hook(sb, ev, stub({ status: 2, stdout: '', stderr: 'MARROW SEATBELT stopped S4.credential_access' })), 'STOP', 'a stop is still a stop');
 });
