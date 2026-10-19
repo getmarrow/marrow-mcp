@@ -419,7 +419,7 @@ test('Claude Code auto mode asks only when the input proves a version whose hook
       const out = h.run('claude-pre-action-hook', payload);
       assert.equal(out.json.hookSpecificOutput.permissionDecision, expected, label);
       if (expected === 'deny') {
-        assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you\./, label);
+        assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode \(Shift\+Tab\) and ask you to retry this exact action, and Claude Code then asks them\. Do not treat a chat reply as approval\./, label);
         assert.doesNotMatch(out.stdout, /dashboard/i, `${label}: the dashboard is never the step to take`);
         assert.deepEqual(commits(h), [], `${label}: a waiting hold is never closed by the hook`);
       }
@@ -704,7 +704,7 @@ test('Claude Code without a dialog: switching to the default mode asks on the sa
     h.setConfig({ runtime: withLink('gate-held'), status: { 'gate-held': 'pending' } });
     const bypass = { ...fixture('claude-pre-tool-use.json'), permission_mode: 'bypassPermissions' };
     const first = h.run('claude-pre-action-hook', bypass);
-    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you\. Until then carry on with other work\./);
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /they switch Claude Code to default mode \(Shift\+Tab\) and ask you to retry this exact action, and Claude Code then asks them\. Do not treat a chat reply as approval\. Until then carry on with other work\. Do not report or claim an approval yourself\.$/);
     assert.doesNotMatch(first.stdout, /account owner|link/);
     const again = h.run('claude-pre-action-hook', { ...bypass, tool_use_id: 'toolu_same_mode' });
     assert.equal(again.json.hookSpecificOutput.permissionDecision, 'deny');
@@ -738,7 +738,7 @@ test('unattended runs (codex exec) hold quietly and email nobody; with the owner
     assert.equal(linkRequests(p).length, 1);
     // The same pings setting in an attended session sends nothing: a person can be asked there.
     const attended = p.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'bypassPermissions' });
-    assert.match(attended.json.hookSpecificOutput.permissionDecisionReason, /switch Claude Code to its default permission mode/);
+    assert.match(attended.json.hookSpecificOutput.permissionDecisionReason, /they switch Claude Code to default mode \(Shift\+Tab\)/);
     assert.equal(linkRequests(p).length, 1);
   } finally { p.cleanup(); }
   const q = harness();

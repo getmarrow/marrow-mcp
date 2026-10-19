@@ -243,7 +243,65 @@ export type HoldPlan =
     laterPrompt?: string;
     /** Waits quietly: nobody can be asked here (attended) or nobody is here (unattended). */
     quiet?: 'attended' | 'unattended';
+    /**
+     * Claude Code only: the user-only line (systemMessage) that says why nothing asked and that a chat
+     * reply does not approve. Words only: the kind of action, never a code, a receipt id or action text.
+     */
+    userNotice?: string;
   };
+
+/**
+ * The kind of a held action in words, from the categories the service reported. A closed list:
+ * anything else, or more than one kind, reads as "a protected action". Never action text.
+ */
+const HELD_KIND_LABEL: Readonly<Record<string, string>> = {
+  production_deploy: 'a production deploy',
+  package_publish: 'a package publish',
+  secrets_security: 'a secrets or security change',
+  data_migration: 'a data migration',
+  billing_access: 'a billing or access change',
+  destructive_action: 'a destructive action',
+  source_control: 'a source-control change',
+};
+const GENERIC_HELD_KIND = 'a protected action';
+
+export function heldKindLabel(categories: readonly unknown[] | null | undefined): string {
+  const labels = new Set<string>();
+  for (const category of Array.isArray(categories) ? categories : []) {
+    if (typeof category !== 'string' || !Object.prototype.hasOwnProperty.call(HELD_KIND_LABEL, category)) return GENERIC_HELD_KIND;
+    labels.add(HELD_KIND_LABEL[category]);
+  }
+  return labels.size === 1 ? [...labels][0] : GENERIC_HELD_KIND;
+}
+
+/** Claude Code, a hold that waits because no dialog is shown in this session (tier A1, user only). */
+export function dialogLaterNotice(kind: string): string {
+  return `Marrow is holding ${kind} for your approval. Approving in chat does not count. Press Shift+Tab until Claude Code is in default mode, then tell the agent to retry; Claude Code will ask you.`;
+}
+
+/** Claude Code, a hold that waits because nobody is in this run (tier A1, user only). */
+export function unattendedNotice(kind: string): string {
+  return `Marrow is holding ${kind} for your approval. Nobody can approve it in this run, and a chat reply does not count. Your next interactive Claude Code session shows it.`;
+}
+
+/** The notice a replayed denial of an open hold carries (the same kinds of hold as the plans above); null for any other hold. */
+export function holdNotice(hold: Pick<HoldRecord, 'dialog_later' | 'quiet' | 'arbitration_receipt_id'>, kind: string): string | null {
+  if (hold.dialog_later === true) return dialogLaterNotice(kind);
+  if (hold.quiet === 'unattended' && !hold.arbitration_receipt_id) return unattendedNotice(kind);
+  return null;
+}
+
+/** The agent text of a hold denied because Claude Code shows no dialog here: what to tell the user, and never an approval claim. */
+export const DIALOG_LATER_LIMIT = 900;
+const CLAIM_SENTENCE = 'Do not report or claim an approval yourself.';
+export function dialogLaterAgentText(held: string, reasonPart: string, unavailableReason: string, kind: string): string {
+  const unavailable = bounded(unavailableReason || 'it cannot prompt', 160);
+  const build = (reason: string) => bounded(`${held}${reason} Claude Code shows no approval dialog in this session (${unavailable}). Tell the user once: Marrow is holding ${kind}; a chat approval does not count; to approve it, they switch Claude Code to default mode (Shift+Tab) and ask you to retry this exact action, and Claude Code then asks them. Do not treat a chat reply as approval. Until then carry on with other work. ${CLAIM_SENTENCE}`, 100_000);
+  // The closing sentence is never cut: the reason, the variable part, gives way first.
+  const room = DIALOG_LATER_LIMIT - build('').length;
+  const text = build(room >= reasonPart.length ? reasonPart : room > 12 ? reasonPart.slice(0, room) : '');
+  return text.length <= DIALOG_LATER_LIMIT ? text : bounded(text.slice(0, DIALOG_LATER_LIMIT - CLAIM_SENTENCE.length - 1) + ` ${CLAIM_SENTENCE}`, DIALOG_LATER_LIMIT);
+}
 
 /** Shown when the owner's link is sent only if the operator asks for it. */
 export const OWNER_LINK_ON_REQUEST_TEXT = 'To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link.';
@@ -365,8 +423,9 @@ export function planHeldAction(input: {
   if (host === 'claude-code' && !input.claudePrompt?.headless && !unattended) {
     // The operator is present but this session shows no dialog: switching to a
     // mode with the dialog approves it here (the host's own prompt, one click).
-    const agentText = bounded(`${held} Claude Code shows no approval dialog in this session (${input.claudePrompt?.unavailableReason || 'it cannot prompt'}). To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you. Until then carry on with other work. Do not report or claim an approval yourself.`, 500);
-    return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, dialogLater: true, laterPrompt: claudePrompt };
+    const kind = heldKindLabel(guidance.approvalCategories);
+    const agentText = dialogLaterAgentText(`Marrow is holding this action for approval (gate receipt ${id}), so it did not run.`, reason, input.claudePrompt?.unavailableReason || '', kind);
+    return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, dialogLater: true, laterPrompt: claudePrompt, userNotice: dialogLaterNotice(kind) };
   }
   if (unattended || (host === 'claude-code' && input.claudePrompt?.headless)) {
     // Unattended: the action waits quietly and the agent carries on. The person
@@ -375,7 +434,7 @@ export function planHeldAction(input: {
     const agentText = pinged
       ? bounded(`${held} Nobody can approve it in this run. ${OWNER_APPROVAL_REQUEST_TEXT} If it is approved, retrying this exact action runs it once; meanwhile carry on with other work. Do not report or claim an approval yourself.`, 500)
       : bounded(`${held} Nobody can approve it in this run, so it waits quietly; nothing was sent to anyone. Carry on with other work and do not retry it in this run. A person sees it at their next interactive session and approves it there by retrying it where the host's prompt asks. Do not report or claim an approval yourself.`, 500);
-    return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, quiet: 'unattended', ...(pinged ? { ownerLink: 'now' as const } : {}) };
+    return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, quiet: 'unattended', ...(host === 'claude-code' ? { userNotice: unattendedNotice(heldKindLabel(guidance.approvalCategories)) } : {}), ...(pinged ? { ownerLink: 'now' as const } : {}) };
   }
   // A person is here, but Marrow can neither ask in this host nor observe the
   // answer: the host's own approval step decides (owner rule). Not after an

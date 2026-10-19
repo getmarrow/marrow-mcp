@@ -171,6 +171,9 @@ function heldActionHookOutput(harness, plan, code = null) {
     return {
         hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: plan.agentText },
         ...(harness === 'codex' && code ? { systemMessage: (0, host_approval_1.typedReplyUserText)(plan.userText, code) } : {}),
+        // Claude Code, a hold nobody can approve in chat (no dialog here, or nobody in this run): one user-only
+        // line says so. Output only: the decision above is the same deny, and the line carries no code or id.
+        ...(harness === 'claude-code' && plan.userNotice ? { systemMessage: plan.userNotice } : {}),
     };
 }
 /**
@@ -1266,7 +1269,9 @@ async function runPreActionHook(input, watch) {
         return;
     }
     if (waited?.kind === 'deny') {
-        emitHeldPlan(identity.harness, { kind: 'deny', agentText: waited.agentText, userText: waited.userText, code: Boolean(waited.hold.code) }, waited.hold.code);
+        // The retry of a hold that waits for an approval nobody can give in chat: the same user-only line again.
+        const userNotice = identity.harness === 'claude-code' ? (0, host_approval_1.holdNotice)(waited.hold, (0, host_approval_1.heldKindLabel)(localApprovalCategories(classified))) : null;
+        emitHeldPlan(identity.harness, { kind: 'deny', agentText: waited.agentText, userText: waited.userText, code: Boolean(waited.hold.code), ...(userNotice ? { userNotice } : {}) }, waited.hold.code);
         await afterAnswer(holdContext, { link: waited.deferredLink ? waited.hold : null });
         return;
     }
