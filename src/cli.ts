@@ -71,7 +71,7 @@ import { deliverQueuedForReceipt, holdSessionForReceipt, proofFieldsForReceipt, 
 import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
-import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
+import { installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
 import { spawn } from 'node:child_process';
 import { emitBaseUrlNotice, nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
 import {
@@ -472,6 +472,12 @@ ${MARROW_BLOCK_END}`;
 }
 
 const cliArgs = parseArgs();
+
+// `seatbelt-status`: one line of JSON for the installer's doctor. Read-only; it starts no server, hook or nudge.
+if (process.argv[2] === 'seatbelt-status') {
+  runSeatbeltStatusCommand();
+  process.exit(0);
+}
 
 // Never for a hook entrypoint: a hook that sees -h must still run its check.
 if (cliArgs.help && !(cliArgs.hook || cliArgs.contextHook || cliArgs.preActionHook || cliArgs.sessionHook || cliArgs.permissionRequestHook || cliArgs.backgroundNudge)) {

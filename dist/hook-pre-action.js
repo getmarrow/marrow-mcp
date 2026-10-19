@@ -28,6 +28,7 @@ exports.preActionHookOutput = preActionHookOutput;
 exports.closeDeniedDecision = closeDeniedDecision;
 exports.localApprovalCategories = localApprovalCategories;
 exports.installPreActionHook = installPreActionHook;
+exports.runSeatbeltStatusCommand = runSeatbeltStatusCommand;
 exports.outageHolds = outageHolds;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const node_crypto_1 = require("node:crypto");
@@ -956,6 +957,18 @@ function installPreActionHook(startDir = process.cwd()) {
     fs.mkdirSync(require('node:path').dirname(path), { recursive: true });
     fs.writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
     return { settingsPath: path, installed: reconciled.changed };
+}
+/**
+ * `marrow-mcp seatbelt-status`: exactly one line of JSON, exit 0. Read-only. On any error the unknown line.
+ * The installer's doctor reads it; it is not a user feature.
+ */
+function runSeatbeltStatusCommand() {
+    let status = { mode: 'unknown', reasons: [] };
+    try {
+        status = require('./seatbelt/hook').seatbeltStatus();
+    }
+    catch { /* the unknown line */ }
+    process.stdout.write(`${JSON.stringify({ mode: status.mode, reasons: status.reasons })}\n`);
 }
 /**
  * I3: whether a real outage (the gate never answered) holds this action. Never looser than master,

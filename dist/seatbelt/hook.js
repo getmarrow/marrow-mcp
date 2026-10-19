@@ -6,6 +6,7 @@ exports.accountFloorStops = accountFloorStops;
 exports.hostMapperFs = hostMapperFs;
 exports.hostSeatbeltGit = hostSeatbeltGit;
 exports.keylessSeatbelt = keylessSeatbelt;
+exports.seatbeltStatus = seatbeltStatus;
 exports.accountFloor = accountFloor;
 exports.outageRisk = outageRisk;
 const fallback_copy_1 = require("./fallback-copy");
@@ -307,6 +308,22 @@ function keylessSeatbelt(harness, event) {
     catch {
         return stop('hook_error');
     }
+}
+/** The reason codes mode resolution can emit (src/seatbelt-mode.ts), the only ones the status line may print. */
+const STATUS_REASONS = ['strict', 'key_rejected', 'home_unknown', 'home_unusable', 'env_home_unusable', 'home_mismatch', 'account_evidence', 'evidence_unknown'];
+/**
+ * What `marrow-mcp seatbelt-status` prints (the installer's doctor reads it): the mode this machine's
+ * hook would be in right now, from the same resolution the keyless hook runs (same key lookup, same
+ * rollout table), and the resolver's reason codes that are on a closed list. Reads only; writes no file
+ * or state, opens no connection, and names no key, path, user or environment value. Throws when the
+ * resolution does (the caller prints the unknown line).
+ */
+function seatbeltStatus() {
+    const { resolveSeatbeltModeOnHost } = require('../seatbelt-mode');
+    const resolution = resolveSeatbeltModeOnHost({ argv: [] });
+    const mode = resolution.mode === 'seatbelt' && exports.SEATBELT_ROLLOUT.keyless !== 'on' ? 'claimed_no_key' : resolution.mode;
+    const reasons = STATUS_REASONS.filter((code) => resolution.reasons.includes(code));
+    return { mode, reasons };
 }
 /**
  * The account floor. `watch`: computed after the answer, for the record only; it never throws and

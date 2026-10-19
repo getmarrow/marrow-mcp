@@ -403,6 +403,11 @@ ${MARROW_BLOCK_END}`;
     process.exit(0);
 }
 const cliArgs = parseArgs();
+// `seatbelt-status`: one line of JSON for the installer's doctor. Read-only; it starts no server, hook or nudge.
+if (process.argv[2] === 'seatbelt-status') {
+    (0, hook_pre_action_1.runSeatbeltStatusCommand)();
+    process.exit(0);
+}
 // Never for a hook entrypoint: a hook that sees -h must still run its check.
 if (cliArgs.help && !(cliArgs.hook || cliArgs.contextHook || cliArgs.preActionHook || cliArgs.sessionHook || cliArgs.permissionRequestHook || cliArgs.backgroundNudge)) {
     process.stdout.write(HELP_TEXT);

@@ -1054,6 +1054,18 @@ export function installPreActionHook(startDir = process.cwd()): { settingsPath: 
 }
 
 type SeatbeltModule = typeof import('./seatbelt/hook');
+
+/**
+ * `marrow-mcp seatbelt-status`: exactly one line of JSON, exit 0. Read-only. On any error the unknown line.
+ * The installer's doctor reads it; it is not a user feature.
+ */
+export function runSeatbeltStatusCommand(): void {
+  let status: { mode: string; reasons: string[] } = { mode: 'unknown', reasons: [] };
+  try {
+    status = (require('./seatbelt/hook') as SeatbeltModule).seatbeltStatus();
+  } catch { /* the unknown line */ }
+  process.stdout.write(`${JSON.stringify({ mode: status.mode, reasons: status.reasons })}\n`);
+}
 type SeatbeltEventInput = import('./seatbelt/hook').SeatbeltHookEvent;
 
 /**

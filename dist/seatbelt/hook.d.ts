@@ -59,6 +59,18 @@ export interface KeylessOutcome {
 }
 /** The keyless branch of the hook: mode (U4), then the mapper (U2) with the U3 resolvers. Never throws. */
 export declare function keylessSeatbelt(harness: string, event: SeatbeltHookEvent): KeylessOutcome;
+export interface SeatbeltStatus {
+    mode: 'seatbelt' | 'claimed_no_key' | 'account';
+    reasons: string[];
+}
+/**
+ * What `marrow-mcp seatbelt-status` prints (the installer's doctor reads it): the mode this machine's
+ * hook would be in right now, from the same resolution the keyless hook runs (same key lookup, same
+ * rollout table), and the resolver's reason codes that are on a closed list. Reads only; writes no file
+ * or state, opens no connection, and names no key, path, user or environment value. Throws when the
+ * resolution does (the caller prints the unknown line).
+ */
+export declare function seatbeltStatus(): SeatbeltStatus;
 /**
  * The account floor. `watch`: computed after the answer, for the record only; it never throws and
  * never writes output. `on` (not active): run before the server flow; a returned text is a stop.

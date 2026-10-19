@@ -196,6 +196,11 @@ export declare function installPreActionHook(startDir?: string): {
     installed: boolean;
 };
 /**
+ * `marrow-mcp seatbelt-status`: exactly one line of JSON, exit 0. Read-only. On any error the unknown line.
+ * The installer's doctor reads it; it is not a user feature.
+ */
+export declare function runSeatbeltStatusCommand(): void;
+/**
  * I3: whether a real outage (the gate never answered) holds this action. Never looser than master,
  * which allowed every action in an outage. A shell command is read by the seatbelt mapper: held for an
  * S0-S5/S-x hit or a program on the outage list (git push, publish, deploy, remote delete), allowed
