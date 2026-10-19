@@ -284,9 +284,14 @@ export function unattendedNotice(kind: string): string {
   return `Marrow is holding ${kind} for your approval. Nobody can approve it in this run, and a chat reply does not count. Your next interactive Claude Code session shows it.`;
 }
 
-/** The notice a replayed denial of an open hold carries (the same kinds of hold as the plans above); null for any other hold. */
-export function holdNotice(hold: Pick<HoldRecord, 'dialog_later' | 'quiet' | 'arbitration_receipt_id'>, kind: string): string | null {
-  if (hold.dialog_later === true) return dialogLaterNotice(kind);
+/**
+ * The notice a replayed denial of an open hold carries (the same kinds of hold as the plans above); null for any other hold.
+ * `waiting`: the denial is the one for a hold still waiting for its approval. The line that promises Claude Code's dialog
+ * is shown only then: a denial because Marrow cannot be reached, or because the approved call is already running, comes
+ * before the dialog can be asked for, so switching modes would not bring it.
+ */
+export function holdNotice(hold: Pick<HoldRecord, 'dialog_later' | 'quiet' | 'arbitration_receipt_id'>, kind: string, waiting: boolean): string | null {
+  if (hold.dialog_later === true) return waiting ? dialogLaterNotice(kind) : null;
   if (hold.quiet === 'unattended' && !hold.arbitration_receipt_id) return unattendedNotice(kind);
   return null;
 }
@@ -828,7 +833,7 @@ export function approvalSentence(status: MarrowOwnerApprovalStatus): string {
 export type WaitingResolution =
   | { kind: 'allow'; hold: HoldRecord; contextText: string }
   | { kind: 'ask'; hold: HoldRecord; promptText: string }
-  | { kind: 'deny'; hold: HoldRecord; agentText: string; userText: string; deferredLink?: boolean };
+  | { kind: 'deny'; hold: HoldRecord; agentText: string; userText: string; deferredLink?: boolean; /** Set only by the branch for a hold still waiting (pending or in arbitration review). */ waiting?: true };
 
 /**
  * The same action, retried after a hold that waited (denied while it waited
@@ -924,6 +929,7 @@ export async function resumeWaitingHold(ctx: HoldContext, input: {
         : hold.quiet === 'attended' ? HELD_FOR_YOU_TEXT
         : forPerson(text),
       ...(link.kind === 'deferred' ? { deferredLink: true } : {}),
+      waiting: true,
     };
   }
   if (status.state === 'declined') {

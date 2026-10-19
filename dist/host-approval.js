@@ -235,10 +235,15 @@ function dialogLaterNotice(kind) {
 function unattendedNotice(kind) {
     return `Marrow is holding ${kind} for your approval. Nobody can approve it in this run, and a chat reply does not count. Your next interactive Claude Code session shows it.`;
 }
-/** The notice a replayed denial of an open hold carries (the same kinds of hold as the plans above); null for any other hold. */
-function holdNotice(hold, kind) {
+/**
+ * The notice a replayed denial of an open hold carries (the same kinds of hold as the plans above); null for any other hold.
+ * `waiting`: the denial is the one for a hold still waiting for its approval. The line that promises Claude Code's dialog
+ * is shown only then: a denial because Marrow cannot be reached, or because the approved call is already running, comes
+ * before the dialog can be asked for, so switching modes would not bring it.
+ */
+function holdNotice(hold, kind, waiting) {
     if (hold.dialog_later === true)
-        return dialogLaterNotice(kind);
+        return waiting ? dialogLaterNotice(kind) : null;
     if (hold.quiet === 'unattended' && !hold.arbitration_receipt_id)
         return unattendedNotice(kind);
     return null;
@@ -810,6 +815,7 @@ async function resumeWaitingHold(ctx, input) {
                 : hold.quiet === 'attended' ? exports.HELD_FOR_YOU_TEXT
                     : forPerson(text),
             ...(link.kind === 'deferred' ? { deferredLink: true } : {}),
+            waiting: true,
         };
     }
     if (status.state === 'declined') {

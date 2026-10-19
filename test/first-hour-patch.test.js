@@ -286,3 +286,93 @@ test('PATCH-C14: every other hold plan still carries " Reason: <reason>" as at 8
   assert.equal(countOf(later.userNotice, reason), 0);
   assert.equal(countOf(later.laterPrompt, reason), 1);
 });
+
+// ------------------------------------------------------------------------------------------ PATCH-R1
+
+const NOTICE_LATER = 'Marrow is holding a production deploy for your approval. Approving in chat does not count. Press Shift+Tab until Claude Code is in default mode, then tell the agent to retry; Claude Code will ask you.';
+const NOTICE_QUIET = 'Marrow is holding a production deploy for your approval. Nobody can approve it in this run, and a chat reply does not count. Your next interactive Claude Code session shows it.';
+const stateModule = require(path.join(ROOT, 'dist', 'host-approval-state.js'));
+const indexModule = require(path.join(ROOT, 'dist', 'index.js'));
+
+test('PATCH-R1 (d10-unreachable): while Marrow cannot be reached the retry is denied without the dialog line; when it is reachable the dialog comes', () => {
+  withKeyed(hostRuntime(), (h) => {
+    const first = h.run('claude-pre-action-hook', deployEvent({ permission_mode: 'plan' }));
+    assert.equal(first.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(first.json.systemMessage, NOTICE_LATER);
+    // A pending hold read while Marrow answers: the line again, as before.
+    const pending = h.run('claude-pre-action-hook', deployEvent({ permission_mode: 'plan', tool_use_id: 'toolu_pending' }));
+    assert.equal(pending.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.equal(pending.json.systemMessage, NOTICE_LATER);
+    h.setConfig({ statusUnreachable: true });
+    const before = JSON.stringify(h.state());
+    for (const [label, event] of [['plan', deployEvent({ permission_mode: 'plan', tool_use_id: 'toolu_u1' })], ['default', deployEvent({ tool_use_id: 'toolu_u2' })], ['default again', deployEvent({ tool_use_id: 'toolu_u3' })]]) {
+      const out = h.run('claude-pre-action-hook', event);
+      assert.equal(out.json.hookSpecificOutput.permissionDecision, 'deny', label);
+      assert.equal(out.json.hookSpecificOutput.permissionDecisionReason, approval.HELD_UNREACHABLE_TEXT, label);
+      assert.equal(out.json.systemMessage, undefined, label);
+      assert.deepEqual(Object.keys(out.json), ['hookSpecificOutput'], label);
+      assert.equal(out.stdout.includes('Shift+Tab'), false, label);
+    }
+    assert.equal(JSON.stringify(h.state()), before, 'the hold is unchanged by the unreachable retries');
+    assert.equal(h.holds().length, 1);
+    h.setConfig({ statusUnreachable: false });
+    const back = h.run('claude-pre-action-hook', deployEvent({ tool_use_id: 'toolu_back' }));
+    assert.equal(back.json.hookSpecificOutput.permissionDecision, 'ask', 'reachable again: Claude Code asks');
+    assert.equal(back.json.systemMessage, undefined);
+    assert.deepEqual(commitsOf(h), []);
+  });
+});
+
+const commitsOf = (h) => h.requests().filter((r) => r.path === '/v1/agent/commit');
+
+test('PATCH-R1: only a hold still waiting is flagged for the dialog line; a read that fails, an unavailable status and an approved call already running are not', async () => {
+  const hold = { id: 'hold-r1', gate_receipt_id: 'gate-held', session_id: 'sess-r1', agent_id: null, mode: 'wait', state: 'open', dialog_later: true, ask_text: 'prompt', expires_at: '2030-01-01T00:30:00.000Z' };
+  const ctx = { apiKey: `mrw_test_${token(16)}`, baseUrl: 'https://api.example.test', sessionId: 'sess-r1', agentId: undefined, harness: 'claude-code', host: 'claude-code', hostSessionId: 'sess-r1' };
+  const call = { correlation: 'c1', target: 't1', toolUseId: 'tu1', generationId: null, dialogAvailable: false };
+  const saved = { find: stateModule.findHolds, claim: stateModule.claimHold, status: indexModule.marrowOwnerApprovalStatus };
+  const answer = (status) => { indexModule.marrowOwnerApprovalStatus = async () => ({ kind: 'found', status }); };
+  try {
+    stateModule.findHolds = () => [hold];
+    stateModule.claimHold = () => null;
+    // The status cannot be read.
+    indexModule.marrowOwnerApprovalStatus = async () => { throw new Error('unreachable'); };
+    let out = await approval.resumeWaitingHold(ctx, call);
+    assert.equal(out.kind, 'deny');
+    assert.equal(out.agentText, approval.HELD_UNREACHABLE_TEXT);
+    assert.equal(out.waiting, undefined);
+    assert.equal(approval.holdNotice(out.hold, 'a production deploy', out.waiting === true), null);
+    // The status says unavailable.
+    answer({ state: 'unavailable' });
+    out = await approval.resumeWaitingHold(ctx, call);
+    assert.equal(out.agentText, approval.HELD_UNREACHABLE_TEXT);
+    assert.equal(out.waiting, undefined);
+    assert.equal(approval.holdNotice(out.hold, 'a production deploy', out.waiting === true), null);
+    // Approved, and the claim is lost to an identical call already running.
+    answer({ state: 'approved', decision_id: 'decision-r1', approval_source: 'host_prompt', approval_answered_by: 'host_operator' });
+    out = await approval.resumeWaitingHold(ctx, call);
+    assert.equal(out.kind, 'deny');
+    assert.match(out.agentText, /^Marrow approved this held action once \(gate receipt gate-held\), and an identical call is already running on that approval, so this repeat did not run\./);
+    assert.equal(out.waiting, undefined);
+    assert.equal(approval.holdNotice(out.hold, 'a production deploy', out.waiting === true), null);
+    // Still waiting: pending and arbitration review keep the line.
+    for (const state of ['pending', 'arbitration_review']) {
+      answer({ state, expires_at: '2030-01-01T00:30:00.000Z' });
+      out = await approval.resumeWaitingHold(ctx, call);
+      assert.equal(out.kind, 'deny', state);
+      assert.equal(out.waiting, true, state);
+      assert.equal(approval.holdNotice(out.hold, 'a production deploy', out.waiting === true), NOTICE_LATER, state);
+    }
+    // The headless hold keeps its own line on a waiting deny, exactly as before.
+    const quiet = { ...hold, dialog_later: false, quiet: 'unattended' };
+    stateModule.findHolds = () => [quiet];
+    answer({ state: 'pending' });
+    out = await approval.resumeWaitingHold(ctx, call);
+    assert.equal(approval.holdNotice(out.hold, 'a production deploy', out.waiting === true), NOTICE_QUIET);
+    // A hold that is neither: no line, whatever the flag.
+    assert.equal(approval.holdNotice({ dialog_later: false, quiet: undefined, arbitration_receipt_id: undefined }, 'a production deploy', true), null);
+  } finally {
+    stateModule.findHolds = saved.find;
+    stateModule.claimHold = saved.claim;
+    indexModule.marrowOwnerApprovalStatus = saved.status;
+  }
+});

@@ -145,8 +145,13 @@ export declare function heldKindLabel(categories: readonly unknown[] | null | un
 export declare function dialogLaterNotice(kind: string): string;
 /** Claude Code, a hold that waits because nobody is in this run (tier A1, user only). */
 export declare function unattendedNotice(kind: string): string;
-/** The notice a replayed denial of an open hold carries (the same kinds of hold as the plans above); null for any other hold. */
-export declare function holdNotice(hold: Pick<HoldRecord, 'dialog_later' | 'quiet' | 'arbitration_receipt_id'>, kind: string): string | null;
+/**
+ * The notice a replayed denial of an open hold carries (the same kinds of hold as the plans above); null for any other hold.
+ * `waiting`: the denial is the one for a hold still waiting for its approval. The line that promises Claude Code's dialog
+ * is shown only then: a denial because Marrow cannot be reached, or because the approved call is already running, comes
+ * before the dialog can be asked for, so switching modes would not bring it.
+ */
+export declare function holdNotice(hold: Pick<HoldRecord, 'dialog_later' | 'quiet' | 'arbitration_receipt_id'>, kind: string, waiting: boolean): string | null;
 /** The agent text of a hold denied because Claude Code shows no dialog here: what to tell the user, and never an approval claim. */
 export declare const DIALOG_LATER_LIMIT = 900;
 export declare function dialogLaterAgentText(held: string, unavailableReason: string, kind: string): string;
@@ -311,7 +316,8 @@ export type WaitingResolution = {
     hold: HoldRecord;
     agentText: string;
     userText: string;
-    deferredLink?: boolean;
+    deferredLink?: boolean; /** Set only by the branch for a hold still waiting (pending or in arbitration review). */
+    waiting?: true;
 };
 /**
  * The same action, retried after a hold that waited (denied while it waited
