@@ -98,7 +98,7 @@ test('PATCH-BOUND: the longest real fallback stop keeps the person advice and en
       assert.ok(shown.endsWith(` Code: ${rule}/${reason}; mode: ${code}.`));
     }
   }
-  assert.ok(longest > 700, `the cases must include the long rows (${longest})`);
+  assert.ok(longest > 800, `the case must be one the old bound of 800 would have cut (${longest})`);
   assert.ok(longest <= 880, `longest ${longest}`);
 });
 
@@ -188,7 +188,8 @@ test('PATCH-BOUND: the real hook of each host, fallback evidence_unknown, longes
         lengths[`${host} ${command}`] = text.length;
       }
     }
-    // The hosts that take 880 get the same full text; Cline and Gemini CLI are held to 500.
+    // The row the old 800 bound would have cut: the hosts that take 880 get the full text and the same text as each other; Cline and Gemini CLI are held to 500.
+    assert.ok(lengths['claude-code cat .env'] > 800, JSON.stringify(lengths));
     assert.ok(lengths['windsurf cat .env'] === lengths['claude-code cat .env'] && lengths['cursor cat .env'] === lengths['claude-code cat .env'] && lengths['codex cat .env'] === lengths['claude-code cat .env'], JSON.stringify(lengths));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

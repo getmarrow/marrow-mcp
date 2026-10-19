@@ -23,7 +23,7 @@ const REASON_TEXT = {
     home_unusable: 'your login home folder is missing, is not a folder, or is /',
     env_home_unusable: 'HOME points to a folder that is missing, is not a folder, or is /',
     home_mismatch: 'HOME is not your login home folder',
-    evidence_unknown: 'a folder or file it checks (your home folder, ~/.claude or ~/.marrow) can be written by other users, belongs to another user, or could not be read',
+    evidence_unknown: 'a folder or file it checks (your home folder, ~/.marrow, or an agent folder such as ~/.claude) belongs to another user, can be written by other users, or could not be read',
     [exports.FALLBACK_OTHER]: 'it could not confirm this machine\'s setup',
 };
 const FIX_TEXT = {
@@ -33,7 +33,7 @@ const FIX_TEXT = {
     home_unusable: 'give this user a real home folder',
     env_home_unusable: 'set HOME to your login home folder',
     home_mismatch: 'start the agent with HOME set to your login home folder',
-    evidence_unknown: 'make sure it belongs to you, then run chmod go-w on it',
+    evidence_unknown: 'make sure your home folder, ~/.marrow and your agent folders (such as ~/.claude) belong to you and can be read, then run chmod go-w on them',
     [exports.FALLBACK_OTHER]: `run ${DOCTOR}`,
 };
 /** The one code that explains the fallback: the first of the resolver's reasons in the fixed order, else the generic code. */
