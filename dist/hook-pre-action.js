@@ -62,10 +62,30 @@ const STOP_TEXT_LIMIT = 800;
 const GEMINI_REASON_LIMIT = 500;
 /** Claude Code plugin only; a host with a tight limit drops it before it would lose the stop's code at the end. */
 const PLUGIN_KEY_HINT = ' (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins)';
-/** One line of hook text within a host's limit: the plugin hint goes first, then the end is cut as before. */
+/** The person's own way out; after the plugin hint it is the next thing a tight limit gives up. The agent's instruction stays. */
+const PERSON_ADVICE = ' If you (the person at this machine) meant it, run it yourself in your own terminal.';
+/**
+ * One line of hook text within a host's limit. A text over it first gives up the plugin hint, then the
+ * person's advice; if it is still over, the end of the explanation is cut at a sentence and the stop's
+ * code (the last "Code: ..." part) is kept. Texts that fit are untouched.
+ */
 function fitHookText(value, limit) {
-    const clean = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
-    return (clean.length > limit ? clean.replace(PLUGIN_KEY_HINT, '') : clean).slice(0, limit);
+    let text = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+    for (const part of [PLUGIN_KEY_HINT, PERSON_ADVICE]) {
+        if (text.length <= limit)
+            break;
+        text = text.replace(part, '');
+    }
+    if (text.length <= limit)
+        return text;
+    const at = text.lastIndexOf(' Code: ');
+    if (at > 0 && limit - (text.length - at) > 40) {
+        const tail = text.slice(at);
+        const head = text.slice(0, limit - tail.length);
+        const cut = head.lastIndexOf('. ');
+        return `${cut > 0 ? head.slice(0, cut + 1) : head}${tail}`.slice(0, limit);
+    }
+    return text.slice(0, limit);
 }
 // Claude Code sends the whole tool input, and a Write of a long document grows
 // further once JSON-escaped, so tens of kilobytes of markdown must still parse.

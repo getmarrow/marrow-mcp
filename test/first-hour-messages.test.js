@@ -339,3 +339,19 @@ test('FH-7 C11: the other two "MARROW_API_KEY required" sites follow the same ma
     assert.equal(plugin.stdout, plain.stdout);
   }
 });
+
+test('FH-4 on Gemini CLI: a fallback stop over its 500-character guard limit keeps the agent instruction and the codes', () => {
+  for (const code of ['strict', 'home_unknown', 'home_mismatch', 'evidence_unknown', 'setup_unconfirmed']) {
+    for (const [category, rule, reason] of [['S1', 'S1.protected_branch_force', 'protected_branch'], ['S4', 'S4.credential_access', 'operand_secret_path'], ['S2', 'S2.production_deploy', 'script_unreadable'], ['hook', 'U5.fail_closed', 'hook_error']]) {
+      const text = seatbelt.seatbeltStopText(category, rule, reason, 'claimed_no_key', false, code);
+      const out = pre.localLoopGuardDenyOutput('gemini', text);
+      assert.deepEqual(Object.keys(out).sort(), ['decision', 'reason']);
+      assert.ok(out.reason.length <= 500, `${code} ${category}: ${out.reason.length}`);
+      assert.ok(out.reason.startsWith('MARROW SEATBELT stopped this action: '), code);
+      assert.ok(out.reason.includes('Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped.'), `${code} ${category}`);
+      assert.ok(out.reason.endsWith(` Code: ${rule}/${reason}; mode: ${code}.`), `${code} ${category}: ${out.reason.slice(-80)}`);
+      // Hosts with room get the whole text.
+      assert.equal(pre.localLoopGuardDenyOutput('claude-code', text).hookSpecificOutput.permissionDecisionReason, text);
+    }
+  }
+});
