@@ -5,8 +5,11 @@ import { MARROW_OUTAGE_WARNING } from './hook-contract';
 export declare const NO_KEY_TEXT = "Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.";
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
 export declare const CLAIMED_NO_KEY_TEXT = "Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.";
-/** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
-export declare const SETUP_UNCONFIRMED_TEXT = "Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.";
+/**
+ * `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim.
+ * This constant is the generic wording; the hold names its reason (setupUnconfirmedText). Same text as src/seatbelt/hook.ts.
+ */
+export declare const SETUP_UNCONFIRMED_TEXT = "Marrow stopped this action: there is no Marrow key on this machine, and Marrow uses its stricter no-key mode here because it could not confirm this machine's setup. Fix (for the person at this machine, not the agent): run npx -y @getmarrow/install@latest doctor, or add a Marrow key (getmarrow.ai/docs#start-here). Agent: do not retry it another way and do not edit Marrow settings; tell the user why it was stopped. Code: setup_unconfirmed.";
 export { MARROW_OUTAGE_WARNING };
 export declare const MAX_PRE_ACTION_INPUT_BYTES: number;
 export declare const PRE_ACTION_CONTROL_TIMEOUT_MS = 8000;

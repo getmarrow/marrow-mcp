@@ -8,6 +8,7 @@ exports.hostSeatbeltGit = hostSeatbeltGit;
 exports.keylessSeatbelt = keylessSeatbelt;
 exports.accountFloor = accountFloor;
 exports.outageRisk = outageRisk;
+const fallback_copy_1 = require("./fallback-copy");
 /**
  * Compiled-in rollout table. Not env, not a file: changing a value is a one-line, reviewed code
  * change. `keyless: 'off'` makes every keyless machine `claimed_no_key` (3.9.103 holds plus the
@@ -24,8 +25,9 @@ exports.CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working
  * `claimed_no_key` with no account evidence and no rejected key: a fallback because the machine's
  * setup could not be confirmed (an evidence dir others can write, an unreadable probe, a home
  * mismatch, strict mode). Same holds as CLAIMED_NO_KEY_TEXT, but it never claims an account exists.
+ * This constant is the generic wording; a hold names its reason (setupUnconfirmedText, fallback-copy.ts).
  */
-exports.SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
+exports.SETUP_UNCONFIRMED_TEXT = (0, fallback_copy_1.setupUnconfirmedText)(fallback_copy_1.FALLBACK_OTHER);
 const LABELS = {
     S0: 'a change to Marrow seatbelt settings or an owner-only command',
     S1: 'force-push or delete of a protected branch',
@@ -49,14 +51,17 @@ function stopLabel(category, reason) {
     const label = LABELS[category] || LABELS.hook;
     return reason === 'script_unreadable' ? `a script Marrow could not read (treated as ${label})` : label;
 }
-function seatbeltStopText(category, rule, reason, mode, accountLinked = true) {
+/** `modeReason`: the fixed code that explains a fallback (pickFallbackReason); only read when the machine is not account-linked. */
+function seatbeltStopText(category, rule, reason, mode, accountLinked = true, modeReason) {
     const head = `MARROW SEATBELT stopped this action: ${stopLabel(category, reason)}. ${STOP_ADVICE}`;
-    const code = `Code: ${CODE.test(rule) ? rule : 'unknown'}/${CODE.test(reason) ? reason : 'unknown'}.`;
+    const code = `Code: ${CODE.test(rule) ? rule : 'unknown'}/${CODE.test(reason) ? reason : 'unknown'}`;
     if (mode === 'account')
-        return `${head} ${code}`;
+        return `${head} ${code}.`;
     if (mode === 'seatbelt')
-        return `${head} ${KEYLESS_KEY_ADVICE} ${code}`;
-    return `${head} ${accountLinked ? exports.CLAIMED_NO_KEY_TEXT : exports.SETUP_UNCONFIRMED_TEXT} ${code}`;
+        return `${head} ${KEYLESS_KEY_ADVICE} ${code}.`;
+    return accountLinked
+        ? `${head} ${exports.CLAIMED_NO_KEY_TEXT} ${code}.`
+        : `${head} ${(0, fallback_copy_1.fallbackSentence)(modeReason)} ${code}; mode: ${(0, fallback_copy_1.fallbackCode)(modeReason)}.`;
 }
 /** §4.2: an S0-S5 floor stop is lifted only by an enforced server allow (a verified permit); an advisory allow never lifts it. */
 function accountFloorStops(rollout, floor, server) {
@@ -269,16 +274,19 @@ function keylessSeatbelt(harness, event) {
     const started = Date.now();
     let mode = 'claimed_no_key';
     let accountLinked = false;
+    // A resolution that fails or has no reason keeps the generic code.
+    let modeReason = fallback_copy_1.FALLBACK_OTHER;
     let trustedHome;
     const stop = (reason) => {
         record({ v: 1, mode, enforcement: 'enforce', harness, decision: 'stop', category: 'hook', rule: 'U5.fail_closed', reasons: [reason], flags: [], parse: 'unparsed', latency_ms: Date.now() - started }, event, trustedHome);
-        return { mode, accountLinked, recognized: true, stopText: seatbeltStopText('hook', 'U5.fail_closed', reason, mode, accountLinked) };
+        return { mode, accountLinked, recognized: true, modeReason, stopText: seatbeltStopText('hook', 'U5.fail_closed', reason, mode, accountLinked, modeReason) };
     };
     try {
         const { resolveSeatbeltModeOnHost } = require('../seatbelt-mode');
         const resolution = resolveSeatbeltModeOnHost();
         mode = resolution.mode === 'seatbelt' && exports.SEATBELT_ROLLOUT.keyless === 'on' ? 'seatbelt' : 'claimed_no_key';
         accountLinked = resolution.reasons.includes('account_evidence') || resolution.reasons.includes('key_rejected');
+        modeReason = (0, fallback_copy_1.pickFallbackReason)(resolution.reasons);
         if (event.truncated)
             return stop('input_truncated');
         const home = resolution.homes[0] || passwdHome() || '/nonexistent-home';
@@ -293,8 +301,8 @@ function keylessSeatbelt(harness, event) {
             reasons, flags: codes(decision.flags), parse: CODE.test(decision.parse) ? decision.parse : 'unknown', latency_ms: Date.now() - started,
         }, event, home);
         if (decision.decision === 'pass')
-            return { mode, accountLinked, recognized: decision.recognized === true, stopText: null };
-        return { mode, accountLinked, recognized: true, stopText: seatbeltStopText(decision.category, decision.rule, reasons[0] || 'unspecified', mode, accountLinked) };
+            return { mode, accountLinked, recognized: decision.recognized === true, modeReason, stopText: null };
+        return { mode, accountLinked, recognized: true, modeReason, stopText: seatbeltStopText(decision.category, decision.rule, reasons[0] || 'unspecified', mode, accountLinked, modeReason) };
     }
     catch {
         return stop('hook_error');

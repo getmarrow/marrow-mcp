@@ -66,8 +66,11 @@ import {
 export const NO_KEY_TEXT = 'Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.';
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
 export const CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.';
-/** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
-export const SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
+/**
+ * `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim.
+ * This constant is the generic wording; the hold names its reason (setupUnconfirmedText). Same text as src/seatbelt/hook.ts.
+ */
+export const SETUP_UNCONFIRMED_TEXT = 'Marrow stopped this action: there is no Marrow key on this machine, and Marrow uses its stricter no-key mode here because it could not confirm this machine\'s setup. Fix (for the person at this machine, not the agent): run npx -y @getmarrow/install@latest doctor, or add a Marrow key (getmarrow.ai/docs#start-here). Agent: do not retry it another way and do not edit Marrow settings; tell the user why it was stopped. Code: setup_unconfirmed.';
 /** The seatbelt path itself could not run (its modules did not load): a stop (spec §2.1.4). */
 const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish. If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped. If this keeps happening, run npx -y @getmarrow/install@latest doctor. Code: U5.fail_closed/hook_error.';
 
@@ -1066,6 +1069,18 @@ export function outageHolds(
   return classifiedHighRisk;
 }
 
+/**
+ * The hold text of the keyless fallback, naming its reason. The words live in the seatbelt module (a lazy
+ * require, like the rest of the keyless path); if it cannot load the generic wording stands.
+ */
+function setupUnconfirmedHold(modeReason: string | null): string {
+  try {
+    return (require('./seatbelt/fallback-copy') as typeof import('./seatbelt/fallback-copy')).setupUnconfirmedText(modeReason);
+  } catch {
+    return SETUP_UNCONFIRMED_TEXT;
+  }
+}
+
 function seatbeltEvent(source: PreToolUseEvent, rawEvent: unknown): SeatbeltEventInput {
   const raw = asRecord(rawEvent) || {};
   const event = source as unknown as Record<string, unknown>;
@@ -1222,8 +1237,10 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   // The keyless hold text when the seatbelt does not answer: master's no-key text in seatbelt mode (a
   // tool the mapper does not recognise, audit H1), the claimed_no_key texts otherwise.
   let keylessSeatbeltMode = false;
+  // Why the stricter fallback is on (words only, read from the mode resolution; the mode is decided elsewhere).
+  let keylessModeReason: string | null = null;
   if (!resolved.apiKey) {
-    let keyless: { mode: 'seatbelt' | 'claimed_no_key'; stopText: string | null; accountLinked?: boolean; recognized?: boolean };
+    let keyless: { mode: 'seatbelt' | 'claimed_no_key'; stopText: string | null; accountLinked?: boolean; recognized?: boolean; modeReason?: string };
     try {
       keyless = (require('./seatbelt/hook') as SeatbeltModule).keylessSeatbelt(identity.harness, seatbeltEvent(source, rawEvent));
     } catch {
@@ -1231,6 +1248,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     }
     keylessAccountLinked = keyless.accountLinked === true;
     keylessSeatbeltMode = keyless.mode === 'seatbelt';
+    keylessModeReason = typeof keyless.modeReason === 'string' ? keyless.modeReason : null;
     if (keyless.stopText) {
       emitLoopGuardDenial(identity.harness, keyless.stopText);
       return;
@@ -1283,7 +1301,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       runtime: null,
       permit: null,
       protectedRisk: enforcementRequired,
-      enforcementError: keylessSeatbeltMode ? NO_KEY_TEXT : keylessAccountLinked ? CLAIMED_NO_KEY_TEXT : SETUP_UNCONFIRMED_TEXT,
+      enforcementError: keylessSeatbeltMode ? NO_KEY_TEXT : keylessAccountLinked ? CLAIMED_NO_KEY_TEXT : setupUnconfirmedHold(keylessModeReason),
       credentialsUnavailable: true,
     }, identity.harness);
     return;

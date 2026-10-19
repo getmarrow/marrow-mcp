@@ -259,7 +259,7 @@ test('protected command variants fail closed without trusted Marrow credentials'
       await runPreActionHookCommand({ tool_name: 'Bash', tool_input: { command } });
       const result = JSON.parse(output);
       assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
-      assert.match(result.hookSpecificOutput.permissionDecisionReason, /Marrow has no working key on this machine and its keyless mode is off here \(strict mode, or a home folder it cannot trust\); owner: run `npx -y @getmarrow\/install@latest doctor`\./);
+      assert.match(result.hookSpecificOutput.permissionDecisionReason, /Marrow uses its stricter no-key mode here because .+\. Fix \(for the person at this machine, not the agent\): .+, or add a Marrow key \(getmarrow\.ai\/docs#start-here\)\./);
     }
   } finally {
     process.stdout.write = originalWrite;
@@ -333,7 +333,7 @@ test('Codex pre-action CLI denies protected input without credentials and keeps 
     const output = JSON.parse(result.stdout);
     assert.equal(output.hookSpecificOutput.hookEventName, 'PreToolUse');
     assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
-    assert.match(output.hookSpecificOutput.permissionDecisionReason, /Marrow has no working key on this machine and its keyless mode is off here \(strict mode, or a home folder it cannot trust\); owner: run `npx -y @getmarrow\/install@latest doctor`\./);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /Marrow uses its stricter no-key mode here because .+\. Fix \(for the person at this machine, not the agent\): .+, or add a Marrow key \(getmarrow\.ai\/docs#start-here\)\./);
     assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /synthetic-private-proof|npm publish/);
     assert.equal('additionalContext' in output.hookSpecificOutput, false);
   } finally {
@@ -424,7 +424,7 @@ test('native enforcement ignores repository-local Marrow credentials', async () 
     await runPreActionHookCommand({ tool_name: 'Bash', tool_input: { command: 'npm publish' } });
     const result = JSON.parse(output);
     assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
-    assert.match(result.hookSpecificOutput.permissionDecisionReason, /Marrow has no working key on this machine and its keyless mode is off here \(strict mode, or a home folder it cannot trust\); owner: run `npx -y @getmarrow\/install@latest doctor`\./);
+    assert.match(result.hookSpecificOutput.permissionDecisionReason, /Marrow uses its stricter no-key mode here because .+\. Fix \(for the person at this machine, not the agent\): .+, or add a Marrow key \(getmarrow\.ai\/docs#start-here\)\./);
     assert.doesNotMatch(output, /hostile/);
   } finally {
     process.stdout.write = originalWrite;
@@ -456,7 +456,7 @@ test('protected pre-action hook denies when the Marrow credential is unavailable
     await runPreActionHookCommand({ tool_name: 'Bash', tool_input: { command: 'npm publish' } });
     const result = JSON.parse(output);
     assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
-    assert.match(result.hookSpecificOutput.permissionDecisionReason, /Marrow has no working key on this machine and its keyless mode is off here \(strict mode, or a home folder it cannot trust\); owner: run `npx -y @getmarrow\/install@latest doctor`\./);
+    assert.match(result.hookSpecificOutput.permissionDecisionReason, /Marrow uses its stricter no-key mode here because .+\. Fix \(for the person at this machine, not the agent\): .+, or add a Marrow key \(getmarrow\.ai\/docs#start-here\)\./);
   } finally {
     process.stdout.write = originalWrite;
     process.chdir(originalCwd);

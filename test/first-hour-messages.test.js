@@ -103,3 +103,129 @@ test('FH-1 consumer: the Cline credentials branch follows a structured flag, not
   assert.match(pre.clinePreActionHookOutput(result({ failure: 'unavailable' })).errorMessage, /^Marrow is unavailable/);
   assert.match(pre.clinePreActionHookOutput(result({ failure: 'credential_scope' })).errorMessage, /^This Marrow API key is not authorized/);
 });
+
+// ------------------------------------------------------------------------------------------ FH-4
+
+const fs = require('node:fs');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const { spawnSync, execFileSync } = require('node:child_process');
+const fallback = require(path.join(ROOT, 'dist', 'seatbelt', 'fallback-copy.js'));
+
+const CLI = path.join(ROOT, 'dist', 'cli.js');
+const PRELOAD = path.join(__dirname, 'support', 'seatbelt-hook-preload.cjs');
+
+const TABLE = {
+  strict: ['MARROW_SEATBELT_STRICT=1 is set', 'unset MARROW_SEATBELT_STRICT'],
+  key_rejected: ['the Marrow key on this machine was rejected', 'run npx -y @getmarrow/install@latest doctor'],
+  home_unknown: ['it cannot find your login home folder (common in containers that run as a user with no home)', 'run the agent as a user that has a home folder'],
+  home_unusable: ['your login home folder is missing, is not a folder, or is /', 'give this user a real home folder'],
+  env_home_unusable: ['HOME points to a folder that is missing, is not a folder, or is /', 'set HOME to your login home folder'],
+  home_mismatch: ['HOME is not your login home folder', 'start the agent with HOME set to your login home folder'],
+  evidence_unknown: ['a folder or file it checks (your home folder, ~/.claude or ~/.marrow) can be written by other users, belongs to another user, or could not be read', 'make sure it belongs to you, then run chmod go-w on it'],
+  setup_unconfirmed: ['it could not confirm this machine\'s setup', 'run npx -y @getmarrow/install@latest doctor'],
+};
+
+test('FH-4 C4/C5: each reason has its words; the first reason in the fixed order is picked; nothing known gives the generic row', () => {
+  for (const [code, [why, fix]] of Object.entries(TABLE)) {
+    const sentence = `Marrow uses its stricter no-key mode here because ${why}. Fix (for the person at this machine, not the agent): ${fix}, or add a Marrow key (getmarrow.ai/docs#start-here).`;
+    assert.equal(fallback.fallbackSentence(code), sentence, code);
+    assert.equal(fallback.setupUnconfirmedText(code), `Marrow stopped this action: there is no Marrow key on this machine, and ${sentence} Agent: do not retry it another way and do not edit Marrow settings; tell the user why it was stopped. Code: ${code}.`, code);
+    assert.match(fallback.setupUnconfirmedText(code), ASCII);
+    for (const word of NEVER) assert.doesNotMatch(fallback.setupUnconfirmedText(code), word, code);
+  }
+  const order = ['strict', 'key_rejected', 'home_unknown', 'home_unusable', 'env_home_unusable', 'home_mismatch', 'evidence_unknown'];
+  for (let i = 0; i < order.length; i += 1) {
+    assert.equal(fallback.pickFallbackReason([...order].reverse().filter((_, j) => order.length - 1 - j >= i)), order[i]);
+    assert.equal(fallback.pickFallbackReason(['account_evidence', order[i]]), order[i]);
+  }
+  for (const none of [[], ['account_evidence'], null, undefined, 'strict', 7, {}, ['STRICT'], ['__proto__'], ['toString']]) assert.equal(fallback.pickFallbackReason(none), 'setup_unconfirmed', JSON.stringify(none));
+  // An unknown code never reaches the text: only the table words and the fixed code are printed.
+  for (const odd of ['__proto__', 'toString', 'constructor', '', null, undefined, 'a'.repeat(300), '../../etc']) {
+    assert.equal(fallback.setupUnconfirmedText(odd), fallback.setupUnconfirmedText('setup_unconfirmed'));
+    assert.equal(fallback.fallbackCode(odd), 'setup_unconfirmed');
+  }
+  // The generic constants of both modules are the same text as the generic row.
+  assert.equal(pre.SETUP_UNCONFIRMED_TEXT, fallback.setupUnconfirmedText('setup_unconfirmed'));
+  assert.equal(seatbelt.SETUP_UNCONFIRMED_TEXT, pre.SETUP_UNCONFIRMED_TEXT);
+});
+
+test('FH-4 C4: a stop in the fallback names the reason and ends with its codes; an account-linked machine keeps the account text', () => {
+  const text = seatbelt.seatbeltStopText('S1', 'S1.force_push', 'protected_branch', 'claimed_no_key', false, 'home_mismatch');
+  assert.ok(text.startsWith('MARROW SEATBELT stopped this action: force-push or delete of a protected branch. If you (the person at this machine) meant it, '));
+  assert.ok(text.includes(` ${fallback.fallbackSentence('home_mismatch')} Code: S1.force_push/protected_branch; mode: home_mismatch.`));
+  assert.ok(text.endsWith('; mode: home_mismatch.'));
+  assert.doesNotMatch(text, /linked to an account/);
+  // No mode reason given: the generic row.
+  assert.ok(seatbelt.seatbeltStopText('S1', 'S1.force_push', 'protected_branch', 'claimed_no_key', false).endsWith('; mode: setup_unconfirmed.'));
+  // Account-linked (C3) and the other modes never print a mode code.
+  for (const [mode, linked] of [['claimed_no_key', true], ['account', false], ['seatbelt', false]]) {
+    assert.doesNotMatch(seatbelt.seatbeltStopText('S1', 'S1.force_push', 'protected_branch', mode, linked, 'strict'), /mode: /);
+  }
+});
+
+function home(root, name = 'home') {
+  const dir = path.join(root, name);
+  fs.mkdirSync(path.join(dir, 'proj'), { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  fs.mkdirSync(path.join(dir, '.claude'), { mode: 0o700 });
+  const git = (...args) => execFileSync('git', args, { cwd: path.join(dir, 'proj'), env: { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_NOSYSTEM: '1' }, stdio: 'ignore' });
+  git('init', '-q', '-b', 'feat/x');
+  git('remote', 'add', 'origin', 'git@github.com:acme/proj.git');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+  return dir;
+}
+
+// The real Claude Code pre-action hook, keyless, offline (the preload refuses every network attempt).
+function hookRun(root, command, { env = {}, passwd = 'home', homeEnv } = {}) {
+  const dir = path.join(root, 'home');
+  const net = path.join(root, `net-${crypto.randomBytes(3).toString('hex')}.log`);
+  const event = { hook_event_name: 'PreToolUse', session_id: `fh-${crypto.randomBytes(6).toString('hex')}`, tool_use_id: 't1', tool_name: 'Bash', tool_input: { command }, cwd: path.join(dir, 'proj') };
+  const result = spawnSync(process.execPath, ['--require', PRELOAD, CLI, 'claude-pre-action-hook'], {
+    cwd: path.join(dir, 'proj'), input: JSON.stringify(event), encoding: 'utf8', timeout: 30_000,
+    env: { PATH: process.env.PATH, HOME: homeEnv ?? dir, SBT_PASSWD_HOME: passwd === 'home' ? dir : passwd, SBT_NETSPY: net, MARROW_HOOK_BACKGROUND_NUDGE: 'false', ...env },
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(fs.existsSync(net), false, 'no network attempt');
+  const json = result.stdout.trim() ? JSON.parse(result.stdout) : null;
+  return { status: result.status, json, text: json?.hookSpecificOutput?.permissionDecisionReason || '', stderr: result.stderr };
+}
+
+// env_home_unusable is not driven here: with HOME missing the loop guard's own state is unsafe and that denial comes first.
+test('FH-4 C4/C5 end to end: the real hook names the real reason for a stop and for a hold (offline, no state written)', () => {
+  const cases = [
+    ['strict', () => ({ env: { MARROW_SEATBELT_STRICT: '1' } })],
+    ['home_mismatch', (root) => ({ homeEnv: fs.mkdtempSync(path.join(root, 'other-')) })],
+    ['home_unusable', (root) => ({ passwd: path.join(root, 'missing-passwd-home'), homeEnv: path.join(root, 'home') })],
+    ['evidence_unknown', (root) => { fs.chmodSync(path.join(root, 'home', '.claude'), 0o777); return {}; }],
+  ];
+  for (const [code, options] of cases) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-fh4-')));
+    try {
+      home(root);
+      const opts = options(root);
+      // A protected action outside the seatbelt floor is a hold (C5); a floor stop is C4.
+      const hold = hookRun(root, 'git push origin main', opts);
+      assert.equal(hold.json.hookSpecificOutput.permissionDecision, 'deny', code);
+      assert.equal(hold.text, fallback.setupUnconfirmedText(code), `${code} hold`);
+      assert.ok(hold.text.startsWith('Marrow stopped this action: there is no Marrow key on this machine, and '), code);
+      const stop = hookRun(root, 'npm publish', opts);
+      assert.equal(stop.json.hookSpecificOutput.permissionDecision, 'deny', code);
+      assert.ok(stop.text.endsWith(` Code: S3.package_publish/npm_publish; mode: ${code}.`), `${code} stop: ${stop.text.slice(-120)}`);
+      assert.ok(stop.text.includes(fallback.fallbackSentence(code)), code);
+      // No hold was recorded for a later approval (E2): nothing under ~/.marrow/host-approvals.
+      assert.equal(fs.existsSync(path.join(root, 'home', '.marrow', 'host-approvals')), false, `${code}: no approval state`);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test('FH-4: a mode resolution that throws keeps the generic reason; the hold is still a stop', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-fh4-')));
+  try {
+    home(root);
+    const stop = hookRun(root, 'npm publish', { env: { SBT_THROW: 'mode' } });
+    assert.equal(stop.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.ok(stop.text.startsWith('MARROW SEATBELT stopped this action: a safety check that could not finish. '));
+    assert.ok(stop.text.endsWith(' Code: U5.fail_closed/hook_error; mode: setup_unconfirmed.'), stop.text.slice(-100));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

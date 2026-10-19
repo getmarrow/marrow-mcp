@@ -2296,7 +2296,8 @@ test('HIGH-R7-1: with the host\'s own prompt off (Codex yolo/full-auto/never/con
 test('No key: a protected action names the one fix; a key in an owner-only ~/.marrow/env is used, a readable-by-others one is not', () => {
   const { chmodSync } = require('node:fs');
   // U5: the test HOME is not the passwd home, so the seatbelt mode is claimed_no_key and its text is shown.
-  const { NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT, SETUP_UNCONFIRMED_TEXT } = require('../dist/hook-pre-action.js');
+  const { NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT } = require('../dist/hook-pre-action.js');
+  const { fallbackSentence } = require('../dist/seatbelt/fallback-copy.js');
   assert.equal(NO_KEY_TEXT, 'Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.');
   const deploy = { ...fixture('claude-pre-tool-use.json'), tool_input: { command: 'wrangler deploy --env production', description: 'x' } };
   const run = (mode) => {
@@ -2318,7 +2319,8 @@ test('No key: a protected action names the one fix; a key in an owner-only ~/.ma
   assert.equal(none.runtimeCalls, 0);
   assert.equal(none.out.json.hookSpecificOutput.permissionDecision, 'deny');
   // No key file and no other account evidence: a mode fallback, never an account claim (F1 text).
-  assert.equal(none.out.json.hookSpecificOutput.permissionDecisionReason.includes(SETUP_UNCONFIRMED_TEXT), true);
+  // The test HOME is not the passwd home: the hold names that reason.
+  assert.equal(none.out.json.hookSpecificOutput.permissionDecisionReason.includes(fallbackSentence('home_mismatch')), true);
   const owner = run(0o600);
   assert.ok(owner.runtimeCalls > 0, 'the owner-only key file is read');
   assert.notEqual(owner.out.json?.hookSpecificOutput?.permissionDecisionReason || '', CLAIMED_NO_KEY_TEXT);

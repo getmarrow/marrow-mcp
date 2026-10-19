@@ -223,7 +223,9 @@ test('F1 text: a mode fallback never says "linked to an account"; account eviden
   assert.doesNotMatch(preAction.SETUP_UNCONFIRMED_TEXT, /linked to an account/);
   const fallback = seatbeltHook.seatbeltStopText('S1', 'S1.force_push', 'protected_branch', 'claimed_no_key', false);
   assert.doesNotMatch(fallback, /linked to an account/);
-  assert.ok(fallback.endsWith(`${preAction.SETUP_UNCONFIRMED_TEXT} Code: S1.force_push/protected_branch.`));
+  assert.ok(fallback.endsWith(` Code: S1.force_push/protected_branch; mode: setup_unconfirmed.`));
+  assert.ok(fallback.includes(' Marrow uses its stricter no-key mode here because it could not confirm this machine\'s setup. '));
+  assert.ok(seatbeltHook.seatbeltStopText('S1', 'S1.force_push', 'protected_branch', 'claimed_no_key', false, 'home_mismatch').endsWith(' Code: S1.force_push/protected_branch; mode: home_mismatch.'));
   assert.ok(seatbeltHook.seatbeltStopText('S1', 'S1.force_push', 'protected_branch', 'claimed_no_key').endsWith(`${preAction.CLAIMED_NO_KEY_TEXT} Code: S1.force_push/protected_branch.`));
 });
 
@@ -278,7 +280,7 @@ test('F1 matrix repro (CLI): 0775 home on this machine; answers match the privat
   for (const harness of Object.keys(ENTRY)) {
     const held = hook(sb, harness, 'git push -f origin feat/x', { MARROW_SEATBELT_STRICT: '1' });
     assert.equal(held.decision, 'stop', `${harness} strict holds`);
-    assert.match(held.text, /keyless mode is off here/, `${harness} strict text`);
+    assert.match(held.text, /stricter no-key mode here because MARROW_SEATBELT_STRICT=1 is set\. Fix .*: unset MARROW_SEATBELT_STRICT, or add a Marrow key/, `${harness} strict text`);
     assert.doesNotMatch(held.text, /linked to an account/, `${harness} strict text`);
     const floor = hook(sb, harness, 'npm publish', { MARROW_SEATBELT_STRICT: '1' });
     assert.equal(floor.decision, 'stop');

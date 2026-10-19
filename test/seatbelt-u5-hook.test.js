@@ -20,12 +20,12 @@ const ENTRY = { claude: 'claude-pre-action-hook', codex: 'codex-pre-action-hook'
 const HARNESSES = Object.keys(ENTRY);
 const SEATBELT_ADVICE = 'For approval prompts instead of stops, add a Marrow key: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins).';
 // The text ends with its code: "Code: <rule>/<reason>."
-const endsWithCode = (text, before, rulePrefix = '') => new RegExp(`${before.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} Code: ${rulePrefix.replace('.', '\\.')}[A-Za-z0-9_.:-]*\\/[A-Za-z0-9_.:-]+\\.$`).test(text);
+const endsWithCode = (text, before, rulePrefix = '') => new RegExp(`${before.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} Code: ${rulePrefix.replace('.', '\\.')}[A-Za-z0-9_.:-]*\\/[A-Za-z0-9_.:-]+(?:; mode: [a-z_]+)?\\.$`).test(text);
 const CLAIMED_TEXT = 'Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.';
 // A seatbelt pass of an action 3.9.103 held reaches Cursor as "ask" (Cursor's own prompt), never an explicit allow.
 const CURSOR_SEATBELT_ASK = require(path.join(ROOT, 'dist', 'hook-pre-action.js')).SEATBELT_CURSOR_ASK_AGENT_TEXT;
 // claimed_no_key without account evidence (strict, a HOME that is not the passwd home): F1 text.
-const SETUP_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
+const setupText = (reason) => require(path.join(ROOT, 'dist', 'seatbelt', 'fallback-copy.js')).fallbackSentence(reason);
 
 function sandbox() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-u5-hook-')));
@@ -93,7 +93,7 @@ function assertSeatbeltStop(out, label) {
   assert.equal(out.decision, 'stop', `${label}: ${out.stdout}`);
   assert.equal(out.status, 0, label);
   assert.notEqual(out.permission, 'ask', label);
-  assert.match(out.text, /^MARROW SEATBELT stopped this action: .+\. If you \(the person at this machine\) meant it, run it yourself in your own terminal\. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped\. .*Code: (S[0-5x]\.[a-z_]+|U5\.fail_closed)\/[A-Za-z0-9_.:-]+\.$/, label);
+  assert.match(out.text, /^MARROW SEATBELT stopped this action: .+\. If you \(the person at this machine\) meant it, run it yourself in your own terminal\. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped\. .*Code: (S[0-5x]\.[a-z_]+|U5\.fail_closed)\/[A-Za-z0-9_.:-]+(?:; mode: [a-z_]+)?\.$/, label);
 }
 
 // --------------------------------------------------------------------------------------- keyless
@@ -271,11 +271,11 @@ test('U5 mode: MARROW_* env cannot select seatbelt, an agent HOME is not the hom
     for (const harness of HARNESSES) assertClaimed(sb, harness, { env: select }, `env select ${harness}`);
     fs.rmSync(path.join(sb.home, '.marrow'), { recursive: true, force: true });
     // The strict switch can only tighten.
-    for (const harness of HARNESSES) assertClaimed(sb, harness, { env: { MARROW_SEATBELT_STRICT: '1' } }, `strict ${harness}`, SETUP_TEXT);
+    for (const harness of HARNESSES) assertClaimed(sb, harness, { env: { MARROW_SEATBELT_STRICT: '1' } }, `strict ${harness}`, setupText('strict'));
     // The agent's HOME is not the trusted home: not seatbelt, and the floor still uses the passwd home.
     const agentHome = fs.mkdtempSync(path.join(sb.root, 'x-'));
     for (const harness of HARNESSES) {
-      assertClaimed(sb, harness, { home: agentHome }, `HOME=/tmp/x ${harness}`, SETUP_TEXT);
+      assertClaimed(sb, harness, { home: agentHome }, `HOME=/tmp/x ${harness}`, setupText('home_mismatch'));
       assertSeatbeltStop(sh(sb, harness, `cat ${path.join(sb.home, '.ssh', 'id_ed25519')}`, { home: agentHome }), `passwd-home key ${harness}`);
     }
     // A cloned repo plants a key, a server and Marrow env files (A18): ignored; still seatbelt, still no network.
@@ -299,7 +299,7 @@ test('U5 fail closed: a mapper crash, a mode crash, a module that fails to load 
       for (const [env, reason] of [[{ SBT_THROW: 'mapper' }, 'hook_error'], [{ SBT_THROW: 'mode' }, 'hook_error'], [{ SBT_THROW: 'load' }, 'hook_error'], [{ SBT_SLOW_MS: '400' }, 'hook_budget']]) {
         const out = sh(sb, harness, 'ls -la', { env });
         assertSeatbeltStop(out, `${harness} ${JSON.stringify(env)}`);
-        assert.ok(out.text.includes(`Code: U5.fail_closed/${reason}.`), `${harness} ${JSON.stringify(env)}: ${out.text}`);
+        assert.ok(out.text.includes(`Code: U5.fail_closed/${reason}`), `${harness} ${JSON.stringify(env)}: ${out.text}`);
       }
       // A record hook that throws changes nothing.
       assert.equal(sh(sb, harness, 'ls -la', { env: { SBT_THROW: 'record' } }).decision, 'pass');
