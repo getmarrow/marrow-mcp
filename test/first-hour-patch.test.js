@@ -193,3 +193,96 @@ test('PATCH-BOUND: the real hook of each host, fallback evidence_unknown, longes
     assert.ok(lengths['windsurf cat .env'] === lengths['claude-code cat .env'] && lengths['cursor cat .env'] === lengths['claude-code cat .env'] && lengths['codex cat .env'] === lengths['claude-code cat .env'], JSON.stringify(lengths));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ------------------------------------------------------------------------------------------ PATCH-C14
+
+const { fixture, hostRuntime, keyedHarness } = require('./support/first-hour-harness.cjs');
+const approval = require(path.join(ROOT, 'dist', 'host-approval.js'));
+
+const CLOSING = 'Do not report or claim an approval yourself.';
+const deployEvent = (over = {}) => ({ ...fixture('claude-pre-tool-use.json'), ...over });
+const countOf = (text, needle) => String(text).split(needle).length - 1;
+const withKeyed = (runtime, fn) => {
+  const h = keyedHarness();
+  try {
+    h.setConfig({ runtime, status: { 'gate-held': 'pending' } });
+    return fn(h);
+  } finally { h.cleanup(); }
+};
+// A held deploy whose server reason is open text: a runtime random token is placed in it.
+const runtimeWithReason = (reasonText) => hostRuntime('gate-held', {}, {
+  risk_gate: { allow: true, decision: 'review_required', enforced: true, gate_required: true, gate_receipt_id: 'gate-held', risk_level: 'high', reasons: [{ message: reasonText }] },
+});
+
+test('PATCH-C14: the server reason is not in the agent text or the user line of a dialogLater hold; the dialog prompt still carries it once', () => {
+  const reasonToken = `rsn${token(10)}`;
+  withKeyed(runtimeWithReason(`Production deploys need approval ${reasonToken}`), (h) => {
+    const denied = h.run('claude-pre-action-hook', deployEvent({ permission_mode: 'plan' }));
+    assert.equal(denied.json.hookSpecificOutput.permissionDecision, 'deny');
+    const agentText = denied.json.hookSpecificOutput.permissionDecisionReason;
+    assert.equal(countOf(agentText, reasonToken), 0, 'agent text (permissionDecisionReason)');
+    assert.equal(countOf(denied.json.systemMessage, reasonToken), 0, 'systemMessage');
+    assert.equal(countOf(denied.stdout, reasonToken), 0, 'the whole hook output');
+    assert.equal(countOf(agentText, ' Reason: '), 0);
+    assert.ok(agentText.startsWith('Marrow is holding this action for approval (gate receipt gate-held), so it did not run. Claude Code shows no approval dialog in this session ('), agentText.slice(0, 160));
+    assert.ok(agentText.endsWith(CLOSING));
+    // The stored later prompt (hold.ask_text) carries the reason exactly once, as it did.
+    const stored = h.holds();
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].dialog_later, true);
+    assert.equal(countOf(stored[0].ask_text, reasonToken), 1, 'hold.ask_text');
+    assert.ok(stored[0].ask_text.includes(' Reason: Production deploys need approval '));
+    // In default mode the same hold becomes Claude Code's own dialog, which shows that prompt.
+    const asked = h.run('claude-pre-action-hook', deployEvent({ tool_use_id: 'toolu_default' }));
+    assert.equal(asked.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(countOf(asked.json.hookSpecificOutput.permissionDecisionReason, reasonToken), 1, 'the dialog prompt (permissionDecisionReason of the ask)');
+    assert.equal(asked.json.hookSpecificOutput.permissionDecisionReason, stored[0].ask_text);
+  });
+});
+
+test('PATCH-C14: the longest agent text keeps the gate receipt id and ends with the closing sentence, for every kind and the longest unavailable reason', () => {
+  const kinds = [['production_deploy'], ['package_publish'], ['secrets_security'], ['data_migration'], ['billing_access'], ['destructive_action'], ['source_control'], [], ['production_deploy', 'package_publish'], ['nothing_known']];
+  let longest = 0;
+  for (const categories of kinds) for (const idLength of [1, 60, 160]) for (const unavailable of ['u'.repeat(5), 'Claude Code permission mode '.concat('m'.repeat(32), ' cannot guarantee an owner prompt'), 'u'.repeat(400)]) {
+    const id = `i${'g'.repeat(idLength - 1)}`;
+    const kind = approval.heldKindLabel(categories);
+    const text = approval.dialogLaterAgentText(`Marrow is holding this action for approval (gate receipt ${id}), so it did not run.`, unavailable, kind);
+    longest = Math.max(longest, text.length);
+    assert.ok(text.length <= approval.DIALOG_LATER_LIMIT, String(text.length));
+    assert.ok(text.endsWith(CLOSING));
+    assert.ok(text.includes(`(gate receipt ${id})`));
+    assert.ok(text.includes(`Marrow is holding ${kind};`));
+    assert.equal(countOf(text, ' Reason: '), 0);
+    assert.match(text, /^[\t\n\x20-\x7e]*$/);
+  }
+  assert.equal(approval.DIALOG_LATER_LIMIT, 900);
+  assert.ok(longest > 800 && longest < 900, `the longest real text stays under 900 without the net (${longest})`);
+});
+
+test('PATCH-C14: every other hold plan still carries " Reason: <reason>" as at 8cf99d68', () => {
+  const reason = `rsn${token(8)}`;
+  const guidance = (over = {}) => ({
+    gateReceiptId: 'gate-held', hostApprovalAccepted: true, hostApprovalSupported: true, hostApprovalRefusal: null, verifiedApprovalRequired: false,
+    verifiedApprovalCategories: [], approvalCategories: ['production_deploy'], operatorOnly: false, operatorNotice: null, ownerDeclinedAt: null,
+    linkAvailable: null, linkReason: null, unattendedOwnerPing: null, approvalAuthority: 'host_operator_or_account_owner', ...over,
+  });
+  const held = `Marrow is holding this action for approval (gate receipt gate-held), so it did not run. Reason: ${reason}`;
+  const typed = approval.planHeldAction({ guidance: guidance(), host: 'codex', hookEvent: 'PreToolUse', reason, typedReply: true });
+  assert.equal(typed.kind, 'deny');
+  assert.ok(typed.agentText.startsWith(`${held} The operator was asked to approve it here.`), 'typed reply');
+  const legacy = approval.planHeldAction({ guidance: guidance({ hostApprovalSupported: false }), host: 'codex', hookEvent: 'PreToolUse', reason });
+  assert.ok(legacy.agentText.startsWith(held), 'legacy service');
+  const unattended = approval.planHeldAction({ guidance: guidance(), host: 'claude-code', hookEvent: 'PreToolUse', reason, unattended: true, claudePrompt: { available: false, unavailableReason: 'x', headless: true } });
+  assert.equal(unattended.quiet, 'unattended');
+  assert.ok(unattended.agentText.startsWith(held), 'unattended');
+  const quiet = approval.planHeldAction({ guidance: guidance(), host: 'gemini', hookEvent: 'BeforeTool', reason });
+  assert.equal(quiet.quiet, 'attended');
+  assert.ok(quiet.agentText.startsWith(held), 'attended quiet');
+  // The dialogLater plan keeps its laterPrompt with the reason, and its closing sentence.
+  const later = approval.planHeldAction({ guidance: guidance(), host: 'claude-code', hookEvent: 'PreToolUse', reason, claudePrompt: { available: false, unavailableReason: 'x' } });
+  assert.equal(later.dialogLater, true);
+  assert.equal(countOf(later.agentText, reason), 0);
+  assert.equal(countOf(later.userText, reason), 0);
+  assert.equal(countOf(later.userNotice, reason), 0);
+  assert.equal(countOf(later.laterPrompt, reason), 1);
+});

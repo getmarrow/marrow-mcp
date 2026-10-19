@@ -142,7 +142,7 @@ test('A2 C14: the agent is told to tell the user once, never to treat a chat rep
   withHarness((h) => {
     const out = h.run('claude-pre-action-hook', deploy({ permission_mode: 'bypassPermissions' }));
     const text = out.json.hookSpecificOutput.permissionDecisionReason;
-    assert.equal(text, 'Marrow is holding this action for approval (gate receipt gate-held), so it did not run. Reason: Production deploys need approval. Claude Code shows no approval dialog in this session (Claude Code permission mode bypassPermissions cannot guarantee an owner prompt). Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode (Shift+Tab) and ask you to retry this exact action, and Claude Code then asks them. Do not treat a chat reply as approval. Until then carry on with other work. Do not report or claim an approval yourself.');
+    assert.equal(text, 'Marrow is holding this action for approval (gate receipt gate-held), so it did not run. Claude Code shows no approval dialog in this session (Claude Code permission mode bypassPermissions cannot guarantee an owner prompt). Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode (Shift+Tab) and ask you to retry this exact action, and Claude Code then asks them. Do not treat a chat reply as approval. Until then carry on with other work. Do not report or claim an approval yourself.');
     assert.match(text, ASCII);
     for (const word of NEVER) assert.doesNotMatch(text, word);
   });

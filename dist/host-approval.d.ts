@@ -149,7 +149,7 @@ export declare function unattendedNotice(kind: string): string;
 export declare function holdNotice(hold: Pick<HoldRecord, 'dialog_later' | 'quiet' | 'arbitration_receipt_id'>, kind: string): string | null;
 /** The agent text of a hold denied because Claude Code shows no dialog here: what to tell the user, and never an approval claim. */
 export declare const DIALOG_LATER_LIMIT = 900;
-export declare function dialogLaterAgentText(held: string, reasonPart: string, unavailableReason: string, kind: string): string;
+export declare function dialogLaterAgentText(held: string, unavailableReason: string, kind: string): string;
 /** Shown when the owner's link is sent only if the operator asks for it. */
 export declare const OWNER_LINK_ON_REQUEST_TEXT = "To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link.";
 /** The sentence that replaces OWNER_APPROVAL_REQUEST_TEXT once Marrow sent the owner a one-tap link. */

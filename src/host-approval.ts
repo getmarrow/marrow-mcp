@@ -294,12 +294,11 @@ export function holdNotice(hold: Pick<HoldRecord, 'dialog_later' | 'quiet' | 'ar
 /** The agent text of a hold denied because Claude Code shows no dialog here: what to tell the user, and never an approval claim. */
 export const DIALOG_LATER_LIMIT = 900;
 const CLAIM_SENTENCE = 'Do not report or claim an approval yourself.';
-export function dialogLaterAgentText(held: string, reasonPart: string, unavailableReason: string, kind: string): string {
+export function dialogLaterAgentText(held: string, unavailableReason: string, kind: string): string {
   const unavailable = bounded(unavailableReason || 'it cannot prompt', 160);
-  const build = (reason: string) => bounded(`${held}${reason} Claude Code shows no approval dialog in this session (${unavailable}). Tell the user once: Marrow is holding ${kind}; a chat approval does not count; to approve it, they switch Claude Code to default mode (Shift+Tab) and ask you to retry this exact action, and Claude Code then asks them. Do not treat a chat reply as approval. Until then carry on with other work. ${CLAIM_SENTENCE}`, 100_000);
-  // The closing sentence is never cut: the reason, the variable part, gives way first.
-  const room = DIALOG_LATER_LIMIT - build('').length;
-  const text = build(room >= reasonPart.length ? reasonPart : room > 12 ? reasonPart.slice(0, room) : '');
+  // Closed parts only: the held sentence (gate receipt id), the unavailable reason (capped), the kind (closed table). The server's reason stays out of this text; the person reads it in the dialog (laterPrompt).
+  const text = bounded(`${held} Claude Code shows no approval dialog in this session (${unavailable}). Tell the user once: Marrow is holding ${kind}; a chat approval does not count; to approve it, they switch Claude Code to default mode (Shift+Tab) and ask you to retry this exact action, and Claude Code then asks them. Do not treat a chat reply as approval. Until then carry on with other work. ${CLAIM_SENTENCE}`, 100_000);
+  // The closing sentence is never cut (the longest real text is 815 characters; this is the net under it).
   return text.length <= DIALOG_LATER_LIMIT ? text : bounded(text.slice(0, DIALOG_LATER_LIMIT - CLAIM_SENTENCE.length - 1) + ` ${CLAIM_SENTENCE}`, DIALOG_LATER_LIMIT);
 }
 
@@ -424,7 +423,7 @@ export function planHeldAction(input: {
     // The operator is present but this session shows no dialog: switching to a
     // mode with the dialog approves it here (the host's own prompt, one click).
     const kind = heldKindLabel(guidance.approvalCategories);
-    const agentText = dialogLaterAgentText(`Marrow is holding this action for approval (gate receipt ${id}), so it did not run.`, reason, input.claudePrompt?.unavailableReason || '', kind);
+    const agentText = dialogLaterAgentText(`Marrow is holding this action for approval (gate receipt ${id}), so it did not run.`, input.claudePrompt?.unavailableReason || '', kind);
     return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, dialogLater: true, laterPrompt: claudePrompt, userNotice: dialogLaterNotice(kind) };
   }
   if (unattended || (host === 'claude-code' && input.claudePrompt?.headless)) {
