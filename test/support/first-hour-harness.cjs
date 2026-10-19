@@ -7,7 +7,7 @@
 //
 // Used by test/first-hour-tier-a.test.js and tools/fh-diff.cjs (which passes the base build's
 // cli.js to get the same scenario on both builds).
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
@@ -54,13 +54,20 @@ const ownerLockedRuntime = (receipt = 'gate-locked') => hostRuntime(receipt, { h
 
 function keyedHarness(options = {}) {
   const cli = options.cli || join(__dirname, '..', '..', 'dist', 'cli.js');
-  const dir = mkdtempSync(join(tmpdir(), 'marrow-first-hour-'));
+  // `dir`: a fixed folder (tools/fh-diff.cjs runs both builds in the same path); `nodeOptions`: the preloads, the fetch double last.
+  const dir = options.dir || mkdtempSync(join(tmpdir(), 'marrow-first-hour-'));
   const home = join(dir, 'home');
   const mockDir = join(dir, 'mock');
-  mkdirSync(home, { mode: 0o700 });
+  mkdirSync(home, { recursive: true, mode: 0o700 });
   writeOfficialHostConfigs(home);
   mkdirSync(mockDir);
-  const apiKey = `mrw_test_${randomBytes(16).toString('hex')}`;
+  const apiKey = options.apiKey || `mrw_test_${randomBytes(16).toString('hex')}`;
+  const nodeOptions = (options.nodeOptions || [MOCK]).map((file) => `--require=${file}`).join(' ');
+  const baseEnv = (env) => ({
+    PATH: process.env.PATH, HOME: home, MARROW_API_KEY: apiKey, MARROW_BASE_URL: 'https://api.example.test',
+    MARROW_AGENT_ID: 'agent-one', MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false',
+    MARROW_TEST_MOCK_DIR: mockDir, NODE_OPTIONS: nodeOptions, ...(options.extraEnv || {}), ...env,
+  });
   let config = {};
   const setConfig = (next) => { config = { ...config, ...next }; writeFileSync(join(mockDir, 'config.json'), JSON.stringify(config)); };
   const requests = () => {
@@ -70,11 +77,7 @@ function keyedHarness(options = {}) {
   const run = (entrypoint, payload, env = {}) => {
     const result = spawnSync(process.execPath, [cli, entrypoint], {
       input: typeof payload === 'string' ? payload : JSON.stringify(payload),
-      env: {
-        PATH: process.env.PATH, HOME: home, MARROW_API_KEY: apiKey, MARROW_BASE_URL: 'https://api.example.test',
-        MARROW_AGENT_ID: 'agent-one', MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false',
-        MARROW_TEST_MOCK_DIR: mockDir, NODE_OPTIONS: `--require=${MOCK}`, ...env,
-      },
+      env: baseEnv(env),
       encoding: 'utf8',
       timeout: 30_000,
     });
@@ -85,6 +88,26 @@ function keyedHarness(options = {}) {
     try { json = output ? JSON.parse(output) : null; } catch { json = null; }
     return { status: result.status, stdout: output, stderr: result.stderr, json };
   };
+  // The same as run, without blocking (tools/fh-diff.cjs runs several machines at once).
+  const runAsync = (entrypoint, payload, env = {}) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cli, entrypoint], { env: baseEnv(env), stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', (error) => { clearTimeout(timer); reject(error); });
+    child.on('close', (status) => {
+      clearTimeout(timer);
+      if (stdout.includes(apiKey) || stderr.includes(apiKey)) { reject(new Error('the key appeared in hook output')); return; }
+      const output = stdout.trim();
+      let json = null;
+      try { json = output ? JSON.parse(output) : null; } catch { json = null; }
+      resolve({ status, stdout: output, stderr, json });
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  });
   const statePath = join(home, '.marrow', 'host-approvals', 'state.json');
   const state = () => (existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null);
   const holds = () => Object.values(state()?.holds || {});
@@ -99,7 +122,7 @@ function keyedHarness(options = {}) {
     }
     return out;
   };
-  return { dir, home, apiKey, run, setConfig, requests, state, holds, stateSnapshot, statePath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, home, apiKey, run, runAsync, setConfig, requests, state, holds, stateSnapshot, statePath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 module.exports = { fixture, hostRuntime, ownerLockedRuntime, keyedHarness, MOCK, FIXTURES };
