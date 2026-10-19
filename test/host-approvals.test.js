@@ -2297,7 +2297,7 @@ test('No key: a protected action names the one fix; a key in an owner-only ~/.ma
   const { chmodSync } = require('node:fs');
   // U5: the test HOME is not the passwd home, so the seatbelt mode is claimed_no_key and its text is shown.
   const { NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT, SETUP_UNCONFIRMED_TEXT } = require('../dist/hook-pre-action.js');
-  assert.equal(NO_KEY_TEXT, 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.');
+  assert.equal(NO_KEY_TEXT, 'Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.');
   const deploy = { ...fixture('claude-pre-tool-use.json'), tool_input: { command: 'wrangler deploy --env production', description: 'x' } };
   const run = (mode) => {
     const h = harness();

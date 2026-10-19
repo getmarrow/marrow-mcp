@@ -2,7 +2,7 @@ import { marrowAgentRuntime, marrowEnforcement } from './index';
 import { type HoldPlan } from './host-approval';
 import { MARROW_OUTAGE_WARNING } from './hook-contract';
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
-export declare const NO_KEY_TEXT = "Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.";
+export declare const NO_KEY_TEXT = "Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.";
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
 export declare const CLAIMED_NO_KEY_TEXT = "Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.";
 /** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
@@ -62,6 +62,8 @@ type PreActionControlResult = {
     permit: Awaited<ReturnType<typeof marrowEnforcement>> | null;
     protectedRisk: boolean;
     enforcementError?: string;
+    /** The hold is because this machine has no usable key (NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT or SETUP_UNCONFIRMED_TEXT); set where those texts are set. */
+    credentialsUnavailable?: boolean;
     failure?: 'credential_scope' | 'unavailable';
     outage?: boolean;
     /** Marrow did not answer inside the hook's time budget (slow, not down). */
@@ -104,7 +106,7 @@ export declare function runtimeGateVerdict(runtime: PreActionControlResult['runt
 export declare function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt?: OwnerApprovalPrompt): string;
 export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
 /** Keyless seatbelt: a host that cannot hand this action to its own approval prompt holds it (no account to approve it). */
-export declare const SEATBELT_HELD_TEXT = "MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or link a Marrow account with \"npx -y @getmarrow/install@latest activate\" (it needs MARROW_API_KEY set first) so these become approval prompts.";
+export declare const SEATBELT_HELD_TEXT = "MARROW SEATBELT held this action: this host cannot show its own approval prompt here, and no Marrow account is linked to approve it. If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was held. For approval prompts, add a Marrow key: getmarrow.ai/docs#start-here.";
 export declare const SEATBELT_CURSOR_ASK_USER_TEXT = "Marrow seatbelt (no account linked): approve this action here only if you expected it.";
 export declare const SEATBELT_CURSOR_ASK_AGENT_TEXT = "Cursor is asking the user to approve this action (Marrow seatbelt, no account linked). Wait for the answer; do not retry it another way.";
 /**

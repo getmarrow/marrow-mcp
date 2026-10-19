@@ -31,7 +31,7 @@ const LABELS = {
     S1: 'force-push or delete of a protected branch',
     S2: 'production deploy',
     S3: 'package publish',
-    S4: 'credential or secret access',
+    S4: 'reading, copying or writing secrets (like .env files or private keys)',
     S5: 'recursive delete outside the workspace',
     Sx: 'obfuscated execution',
     hook: 'a safety check that could not finish',
@@ -40,14 +40,23 @@ const CODE = /^[A-Za-z0-9_.:-]{1,64}$/;
 function codes(list) {
     return Array.isArray(list) ? list.filter((item) => typeof item === 'string' && CODE.test(item)).slice(0, 16) : [];
 }
-function seatbeltStopText(category, rule, reason, mode, accountLinked = true) {
+/** What the agent and the person read after the label, in every stop. */
+const STOP_ADVICE = 'If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped.';
+/** Keyless (no account): the way to approval prompts. The plugin path is the one the plugin's own docs give. */
+const KEYLESS_KEY_ADVICE = 'For approval prompts instead of stops, add a Marrow key: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins).';
+/** The label of a stop. A script Marrow could not read is named as such: it is not known to be what its name says. */
+function stopLabel(category, reason) {
     const label = LABELS[category] || LABELS.hook;
-    const head = `MARROW SEATBELT stopped this action: ${label} (${CODE.test(rule) ? rule : 'unknown'}, ${CODE.test(reason) ? reason : 'unknown'}). This needs the machine owner. Do not retry it another way or edit Marrow settings.`;
+    return reason === 'script_unreadable' ? `a script Marrow could not read (treated as ${label})` : label;
+}
+function seatbeltStopText(category, rule, reason, mode, accountLinked = true) {
+    const head = `MARROW SEATBELT stopped this action: ${stopLabel(category, reason)}. ${STOP_ADVICE}`;
+    const code = `Code: ${CODE.test(rule) ? rule : 'unknown'}/${CODE.test(reason) ? reason : 'unknown'}.`;
     if (mode === 'account')
-        return `${head} Tell the owner: run it yourself in your own terminal.`;
-    return mode === 'seatbelt'
-        ? `${head} Tell the owner: run it yourself in your own terminal, or link a Marrow account with "npx -y @getmarrow/install@latest activate" (it needs MARROW_API_KEY set first) so these become approval prompts.`
-        : `${head} ${accountLinked ? exports.CLAIMED_NO_KEY_TEXT : exports.SETUP_UNCONFIRMED_TEXT}`;
+        return `${head} ${code}`;
+    if (mode === 'seatbelt')
+        return `${head} ${KEYLESS_KEY_ADVICE} ${code}`;
+    return `${head} ${accountLinked ? exports.CLAIMED_NO_KEY_TEXT : exports.SETUP_UNCONFIRMED_TEXT} ${code}`;
 }
 /** §4.2: an S0-S5 floor stop is lifted only by an enforced server allow (a verified permit); an advisory allow never lifts it. */
 function accountFloorStops(rollout, floor, server) {

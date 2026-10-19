@@ -63,13 +63,26 @@ import {
   exactHookTarget,
 } from './hook-contract';
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
-export const NO_KEY_TEXT = 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.';
+export const NO_KEY_TEXT = 'Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.';
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
 export const CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.';
 /** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
 export const SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
 /** The seatbelt path itself could not run (its modules did not load): a stop (spec §2.1.4). */
-const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish (U5.fail_closed, hook_error). This needs the machine owner. Do not retry it another way or edit Marrow settings.';
+const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish. If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped. If this keeps happening, run npx -y @getmarrow/install@latest doctor. Code: U5.fail_closed/hook_error.';
+
+/** Seatbelt stop and keyless hold texts end with their code, so they get room for it (about 600 characters at most). */
+const STOP_TEXT_LIMIT = 800;
+/** The installed Gemini CLI guard (@getmarrow/install, src/installer.js) turns a deny reason over 500 characters into its launch failure. */
+const GEMINI_REASON_LIMIT = 500;
+/** Claude Code plugin only; a host with a tight limit drops it before it would lose the stop's code at the end. */
+const PLUGIN_KEY_HINT = ' (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins)';
+
+/** One line of hook text within a host's limit: the plugin hint goes first, then the end is cut as before. */
+function fitHookText(value: string, limit: number): string {
+  const clean = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return (clean.length > limit ? clean.replace(PLUGIN_KEY_HINT, '') : clean).slice(0, limit);
+}
 
 export { MARROW_OUTAGE_WARNING };
 
@@ -229,6 +242,8 @@ type PreActionControlResult = {
   permit: Awaited<ReturnType<typeof marrowEnforcement>> | null;
   protectedRisk: boolean;
   enforcementError?: string;
+  /** The hold is because this machine has no usable key (NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT or SETUP_UNCONFIRMED_TEXT); set where those texts are set. */
+  credentialsUnavailable?: boolean;
   failure?: 'credential_scope' | 'unavailable';
   outage?: boolean;
   /** Marrow did not answer inside the hook's time budget (slow, not down). */
@@ -473,7 +488,7 @@ export function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'code
 /** The Cursor events where Cursor enforces "ask" with its own approval prompt (the installer's execution hooks). */
 const CURSOR_ASK_EVENTS: ReadonlySet<string> = new Set(['beforeShellExecution', 'beforeMCPExecution']);
 /** Keyless seatbelt: a host that cannot hand this action to its own approval prompt holds it (no account to approve it). */
-export const SEATBELT_HELD_TEXT = 'MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or link a Marrow account with "npx -y @getmarrow/install@latest activate" (it needs MARROW_API_KEY set first) so these become approval prompts.';
+export const SEATBELT_HELD_TEXT = 'MARROW SEATBELT held this action: this host cannot show its own approval prompt here, and no Marrow account is linked to approve it. If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was held. For approval prompts, add a Marrow key: getmarrow.ai/docs#start-here.';
 export const SEATBELT_CURSOR_ASK_USER_TEXT = 'Marrow seatbelt (no account linked): approve this action here only if you expected it.';
 export const SEATBELT_CURSOR_ASK_AGENT_TEXT = 'Cursor is asking the user to approve this action (Marrow seatbelt, no account linked). Wait for the answer; do not retry it another way.';
 
@@ -515,7 +530,7 @@ export function localLoopGuardDenyOutput(
   harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client',
   reason: string,
 ): Record<string, unknown> | null {
-  const bounded = reason.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+  const bounded = fitHookText(reason, harness === 'gemini' ? GEMINI_REASON_LIMIT : STOP_TEXT_LIMIT);
   if (harness === 'windsurf') return null;
   if (harness === 'cursor') return { permission: 'deny', user_message: bounded, agent_message: bounded };
   if (harness === 'cline') return { cancel: true, errorMessage: bounded };
@@ -531,7 +546,7 @@ function emitLoopGuardDenial(
 ): void {
   if (harness === 'windsurf') {
     process.exitCode = 2;
-    process.stderr.write(`${reason.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500)}\n`);
+    process.stderr.write(`${fitHookText(reason, STOP_TEXT_LIMIT)}\n`);
     return;
   }
   process.stdout.write(JSON.stringify(localLoopGuardDenyOutput(harness, reason)));
@@ -714,7 +729,7 @@ export function cursorPreActionHookOutput(result: PreActionControlResult): Recor
     return { permission: 'deny', user_message: denial, agent_message: denial };
   }
   if (protectedRisk && (!runtime || !permit?.verified)) {
-    const denial = boundedText(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.', 500);
+    const denial = boundedText(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.', STOP_TEXT_LIMIT);
     return {
       permission: 'deny',
       user_message: denial,
@@ -737,11 +752,9 @@ export function clinePreActionHookOutput(result: PreActionControlResult): Record
     };
   }
   if (result.protectedRisk && (!result.runtime || !result.permit?.verified)) {
-    const credentialsUnavailable = result.enforcementError === NO_KEY_TEXT || result.enforcementError === CLAIMED_NO_KEY_TEXT
-      || result.enforcementError === SETUP_UNCONFIRMED_TEXT;
     return {
       cancel: true,
-      errorMessage: credentialsUnavailable
+      errorMessage: result.credentialsUnavailable === true
         ? result.enforcementError as string
         : result.failure === 'credential_scope'
         ? 'This Marrow API key is not authorized to obtain action permits for this agent. Use the API key issued to this agent and retry.'
@@ -1271,6 +1284,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       permit: null,
       protectedRisk: enforcementRequired,
       enforcementError: keylessSeatbeltMode ? NO_KEY_TEXT : keylessAccountLinked ? CLAIMED_NO_KEY_TEXT : SETUP_UNCONFIRMED_TEXT,
+      credentialsUnavailable: true,
     }, identity.harness);
     return;
   }

@@ -223,8 +223,8 @@ test('F1 text: a mode fallback never says "linked to an account"; account eviden
   assert.doesNotMatch(preAction.SETUP_UNCONFIRMED_TEXT, /linked to an account/);
   const fallback = seatbeltHook.seatbeltStopText('S1', 'S1.force_push', 'protected_branch', 'claimed_no_key', false);
   assert.doesNotMatch(fallback, /linked to an account/);
-  assert.ok(fallback.endsWith(preAction.SETUP_UNCONFIRMED_TEXT));
-  assert.ok(seatbeltHook.seatbeltStopText('S1', 'S1.force_push', 'protected_branch', 'claimed_no_key').endsWith(preAction.CLAIMED_NO_KEY_TEXT));
+  assert.ok(fallback.endsWith(`${preAction.SETUP_UNCONFIRMED_TEXT} Code: S1.force_push/protected_branch.`));
+  assert.ok(seatbeltHook.seatbeltStopText('S1', 'S1.force_push', 'protected_branch', 'claimed_no_key').endsWith(`${preAction.CLAIMED_NO_KEY_TEXT} Code: S1.force_push/protected_branch.`));
 });
 
 // The matrix repro through the real hook CLI: a keyless Claude/Codex/Cursor hook in a 0775 home.

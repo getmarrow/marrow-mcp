@@ -173,7 +173,7 @@ test('Windsurf child pre hook exits exactly 0 for safe actions and 2 for unavail
   assert.equal(missingKey.status, 2);
   assert.equal(missingKey.stdout, '');
   // U5: keyless (claimed_no_key in this isolated HOME) stops a publish at the seatbelt floor, with its own text.
-  assert.match(missingKey.stderr, /^MARROW SEATBELT stopped this action: package publish \(S3\.package_publish, npm_publish\)\./);
+  assert.match(missingKey.stderr, /^MARROW SEATBELT stopped this action: package publish\. .* Code: S3\.package_publish\/npm_publish\./);
   assert.doesNotMatch(missingKey.stderr, /npm publish|synthetic-private-command/);
 
   const malformed = runPreChild({
