@@ -11,6 +11,7 @@ exports.pickFallbackReason = pickFallbackReason;
 exports.fallbackSentence = fallbackSentence;
 exports.fallbackCode = fallbackCode;
 exports.setupUnconfirmedText = setupUnconfirmedText;
+exports.setupUnconfirmedTexts = setupUnconfirmedTexts;
 /** The reason codes of the resolver that can explain a fallback, in the order the text picks one. */
 const REASON_ORDER = ['strict', 'key_rejected', 'home_unknown', 'home_unusable', 'env_home_unusable', 'home_mismatch', 'evidence_unknown'];
 exports.FALLBACK_OTHER = 'setup_unconfirmed';
@@ -59,5 +60,9 @@ function fallbackCode(code) {
 /** The hold text for a protected action when the fallback is on and the seatbelt did not answer. */
 function setupUnconfirmedText(code) {
     return `Marrow stopped this action: there is no Marrow key on this machine, and ${fallbackSentence(code)} Agent: do not retry it another way and do not edit Marrow settings; tell the user why it was stopped. Code: ${fallbackCode(code)}.`;
+}
+/** Every hold text setupUnconfirmedText can return: one per row of the table, generated from it and from no input. */
+function setupUnconfirmedTexts() {
+    return Object.keys(REASON_TEXT).map((code) => setupUnconfirmedText(code));
 }
 //# sourceMappingURL=fallback-copy.js.map

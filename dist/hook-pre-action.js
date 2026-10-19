@@ -60,6 +60,8 @@ const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety chec
 const STOP_TEXT_LIMIT = 800;
 /** The installed Gemini CLI guard (@getmarrow/install, src/installer.js) turns a deny reason over 500 characters into its launch failure. */
 const GEMINI_REASON_LIMIT = 500;
+/** The Cursor deny text of every enforcementError that is not one of the fixed keyless texts (as on 3.9.104). */
+const CURSOR_ENFORCEMENT_LIMIT = 500;
 /** Claude Code plugin only; a host with a tight limit drops it before it would lose the stop's code at the end. */
 const PLUGIN_KEY_HINT = ' (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins)';
 /** The person's own way out; after the plugin hint it is the next thing a tight limit gives up. The agent's instruction stays. */
@@ -676,7 +678,8 @@ function cursorPreActionHookOutput(result) {
         return { permission: 'deny', user_message: denial, agent_message: denial };
     }
     if (protectedRisk && (!runtime || !permit?.verified)) {
-        const denial = boundedText(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.', STOP_TEXT_LIMIT);
+        // Room for the code at the end only for the fixed keyless texts; every other text (it can carry a server error, an agent id) keeps the base bound.
+        const denial = boundedText(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.', isKeylessHoldText(result.enforcementError) ? STOP_TEXT_LIMIT : CURSOR_ENFORCEMENT_LIMIT);
         return {
             permission: 'deny',
             user_message: denial,
@@ -1019,6 +1022,25 @@ function setupUnconfirmedHold(modeReason) {
     }
     catch {
         return exports.SETUP_UNCONFIRMED_TEXT;
+    }
+}
+let keylessHoldTexts = null;
+/**
+ * True only for the fixed texts the keyless path sets as enforcementError (NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT, or one
+ * setupUnconfirmedHold text per row of the fallback table). An exact match against that generated set: never a prefix,
+ * a pattern or a flag, so no other text, whatever it starts with, is taken for one of them.
+ */
+function isKeylessHoldText(text) {
+    if (typeof text !== 'string')
+        return false;
+    if (text === exports.NO_KEY_TEXT || text === exports.CLAIMED_NO_KEY_TEXT || text === exports.SETUP_UNCONFIRMED_TEXT)
+        return true;
+    try {
+        keylessHoldTexts ??= new Set(require('./seatbelt/fallback-copy').setupUnconfirmedTexts());
+        return keylessHoldTexts.has(text);
+    }
+    catch {
+        return false;
     }
 }
 function seatbeltEvent(source, rawEvent) {

@@ -61,3 +61,8 @@ export function fallbackCode(code?: string | null): string {
 export function setupUnconfirmedText(code?: string | null): string {
   return `Marrow stopped this action: there is no Marrow key on this machine, and ${fallbackSentence(code)} Agent: do not retry it another way and do not edit Marrow settings; tell the user why it was stopped. Code: ${fallbackCode(code)}.`;
 }
+
+/** Every hold text setupUnconfirmedText can return: one per row of the table, generated from it and from no input. */
+export function setupUnconfirmedTexts(): string[] {
+  return Object.keys(REASON_TEXT).map((code) => setupUnconfirmedText(code));
+}

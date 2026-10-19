@@ -10,5 +10,7 @@ export declare function fallbackSentence(code?: string | null): string;
 export declare function fallbackCode(code?: string | null): string;
 /** The hold text for a protected action when the fallback is on and the seatbelt did not answer. */
 export declare function setupUnconfirmedText(code?: string | null): string;
+/** Every hold text setupUnconfirmedText can return: one per row of the table, generated from it and from no input. */
+export declare function setupUnconfirmedTexts(): string[];
 export {};
 //# sourceMappingURL=fallback-copy.d.ts.map
