@@ -289,3 +289,53 @@ test('FH-2 C10: a tool name that is not a plain name, or none, reads as "call"; 
     assert.equal(consultSessionLoopGuard(op('Grep', '2'), { home: root }).allow, true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// ------------------------------------------------------------------------------------------ FH-7
+
+function cliRun(args, env) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-fh7-')));
+  try {
+    const result = spawnSync(process.execPath, [CLI, ...args], {
+      cwd: root, encoding: 'utf8', timeout: 30_000, input: '',
+      env: { PATH: process.env.PATH, HOME: root, MARROW_HOOK_BACKGROUND_NUDGE: 'false', ...env },
+    });
+    assert.equal(result.error, undefined);
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+
+const PLUGIN_ERROR = 'Error: MARROW_API_KEY required. Marrow plugin: put MARROW_API_KEY in ~/.marrow/env, run chmod 600 ~/.marrow/env, then /reload-plugins. The seatbelt hooks keep working without a key. Do not run marrow-mcp setup or activate for the plugin.';
+
+test('FH-7 C11: a keyless MCP server started by the plugin points to ~/.marrow/env and /reload-plugins; nothing else changes', () => {
+  const marker = `/tmp/plugin-${crypto.randomBytes(8).toString('hex')}`;
+  const plain = cliRun([], {});
+  assert.equal(plain.status, 1);
+  assert.match(plain.stderr, /^Error: MARROW_API_KEY environment variable is required\n/);
+  assert.match(plain.stderr, /marrow-mcp setup/, 'without the plugin the old fix stays');
+  for (const value of ['', '   ']) {
+    const same = cliRun([], { CLAUDE_PLUGIN_ROOT: value });
+    assert.equal(same.status, 1);
+    assert.equal(same.stderr, plain.stderr, `an empty marker (${JSON.stringify(value)}) changes nothing`);
+  }
+  const plugin = cliRun([], { CLAUDE_PLUGIN_ROOT: marker });
+  assert.equal(plugin.status, plain.status, 'the exit code is unchanged');
+  assert.equal(plugin.stdout, plain.stdout);
+  assert.ok(plugin.stderr.startsWith(`${PLUGIN_ERROR}\n`));
+  assert.doesNotMatch(plugin.stderr.replace(PLUGIN_ERROR, ''), /marrow-mcp setup|activate/);
+  assert.equal(plugin.stderr.includes(marker), false, 'the value of the marker is never printed');
+  assert.match(plugin.stderr, /Get a key: https:\/\/getmarrow\.ai\/signup/);
+  assert.match(PLUGIN_ERROR, ASCII);
+});
+
+test('FH-7 C11: the other two "MARROW_API_KEY required" sites follow the same marker', () => {
+  const marker = `/tmp/plugin-${crypto.randomBytes(8).toString('hex')}`;
+  for (const args of [['keys', 'list'], ['spool-status']]) {
+    const plain = cliRun(args, {});
+    assert.equal(plain.status, 1, args.join(' '));
+    assert.match(plain.stderr, /^Error: MARROW_API_KEY required\. Create an API key/, args.join(' '));
+    const plugin = cliRun(args, { CLAUDE_PLUGIN_ROOT: marker });
+    assert.equal(plugin.status, 1, args.join(' '));
+    assert.equal(plugin.stderr, `${PLUGIN_ERROR}\n`, args.join(' '));
+    assert.equal(plugin.stdout, plain.stdout);
+  }
+});

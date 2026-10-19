@@ -211,7 +211,7 @@ async function runSpoolCommand(drain) {
     (0, env_1.emitBaseUrlNotice)(resolved);
     const apiKey = resolved.apiKey || '';
     if (!apiKey) {
-        process.stderr.write(`Error: MARROW_API_KEY required. ${resolved.exactFix}\n`);
+        process.stderr.write(`${keylessKeyError(resolved.exactFix)}\n`);
         process.exitCode = 1;
         return;
     }
@@ -230,6 +230,20 @@ async function runSpoolCommand(drain) {
 }
 const GET_A_KEY_URL = 'https://getmarrow.ai/signup';
 const ACTIVATE_COMMAND = 'npx -y @getmarrow/install@latest activate';
+/**
+ * The Claude Code plugin sets CLAUDE_PLUGIN_ROOT for the processes it starts (its launcher runs this
+ * server in-process, so the variable is the plugin's own marker). Plugin users add the key to
+ * ~/.marrow/env and reload; setup and activate would write a second copy of the hooks. Only its
+ * presence is read, never its value.
+ */
+function runningAsPlugin() {
+    const root = process.env.CLAUDE_PLUGIN_ROOT;
+    return typeof root === 'string' && root.trim() !== '';
+}
+const PLUGIN_KEY_ERROR = 'Error: MARROW_API_KEY required. Marrow plugin: put MARROW_API_KEY in ~/.marrow/env, run chmod 600 ~/.marrow/env, then /reload-plugins. The seatbelt hooks keep working without a key. Do not run marrow-mcp setup or activate for the plugin.';
+function keylessKeyError(exactFix) {
+    return runningAsPlugin() ? PLUGIN_KEY_ERROR : `Error: MARROW_API_KEY required. ${exactFix}`;
+}
 const ENFORCEMENT_SENTENCE = 'On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, hooks hold high-risk actions and let routine actions run with a warning, and the governed runner stops protected actions it cannot verify. Over MCP, the agent gets the decision and is expected to follow it.';
 const HELP_TEXT = `Marrow MCP server and hook commands (@getmarrow/mcp)
 
@@ -404,7 +418,7 @@ if (process.argv[2] === 'keys') {
     (0, env_1.emitBaseUrlNotice)(resolvedEnv);
     const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
     if (!API_KEY) {
-        process.stderr.write(`Error: MARROW_API_KEY required. ${resolvedEnv.exactFix}\n`);
+        process.stderr.write(`${keylessKeyError(resolvedEnv.exactFix)}\n`);
         process.exit(1);
     }
     const getFlag = (name, short) => {
@@ -573,8 +587,13 @@ if (process.argv[2] !== 'keys') {
         const FLEET_AGENT_ID = resolvedEnv.agentId || undefined;
         const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
         if (!API_KEY) {
-            process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
-            process.stderr.write(`${resolvedEnv.exactFix}\n`);
+            if (runningAsPlugin()) {
+                process.stderr.write(`${PLUGIN_KEY_ERROR}\n`);
+            }
+            else {
+                process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
+                process.stderr.write(`${resolvedEnv.exactFix}\n`);
+            }
             process.stderr.write(`Get a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
             process.exit(1);
         }
