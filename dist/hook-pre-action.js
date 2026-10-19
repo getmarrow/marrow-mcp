@@ -513,12 +513,13 @@ function localControlDisabled() {
 const CLASSIFICATION_TYPES = ['publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
 const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 /**
- * The classification of one tool call. A Monitor or PowerShell command (and a
- * native git equivalent such as EnterWorktree) is classified exactly as Bash
- * running it; any other call carrying a command or script string gets the
- * stricter of its own classification and Bash's for that text (its own
- * classification, unchanged, when that is already at least as strict). See
- * toolPolicyReading.
+ * The classification of one tool call. A Monitor command (and a native git
+ * equivalent such as EnterWorktree) is classified exactly as Bash running it;
+ * any other call carrying a command or script string gets the stricter of its
+ * own classification and Bash's for that text (its own classification,
+ * unchanged, when that is already at least as strict). A PowerShell call is
+ * one of those, with Bash's reading in the PowerShell dialect (no read-only
+ * allowlist) and never read-only. See toolPolicyReading.
  */
 function classifyTool(event, options = {}) {
     const reading = (0, hook_tool_policy_1.toolPolicyReading)(event);
@@ -532,7 +533,8 @@ function classifyTool(event, options = {}) {
     const own = reading.base === 'read' ? { ...classifyAsNamed((0, hook_tool_policy_1.readEquivalent)(event), options), tool: ownToolLabel(event) }
         : reading.base === 'non_acting' ? nonActingParts(event)
             : classifyAsNamed(event, options);
-    return classificationFrom(shell.reduce(stricterParts, own));
+    const merged = shell.reduce(stricterParts, own);
+    return classificationFrom(reading.dialect === 'powershell' ? { ...merged, readOnly: false } : merged);
 }
 function ownToolLabel(event) {
     return String(event.tool_name || 'tool').slice(0, 64);

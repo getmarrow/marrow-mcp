@@ -4,7 +4,11 @@
 // PowerShell) and other built-ins, so neither the keyed gate nor the keyless seatbelt saw them.
 //   1. The matcher hooks every label except Marrow's exact own labels and LS / ListMcpResourcesTool,
 //      and never skips a label the 3.9.103 list matcher hooked.
-//   2. A Monitor or PowerShell command is classified exactly as the same Bash command, keyless and keyed.
+//   2. A Monitor command is classified exactly as the same Bash command, keyless and keyed. A PowerShell command
+//      is read by the keyless seatbelt as Bash reads it, and by the keyed classifier as the stricter of its
+//      3.9.103 reading and Bash's reading with no Bash allowlist applied; it is never read-only and never
+//      below Bash (R1 of the Codex review: PowerShell's `type` reads a file; expectations in
+//      pkg-h2-powershell-table.test.js come from a PowerShell table, not from Bash).
 //   3. Any other call carrying a command or script string is never classified below Bash for that text,
 //      and is unchanged when its own classification is already at least as strict.
 //   4. Newly hooked non-acting built-ins add no hold for ordinary input; EnterWorktree is Bash `git worktree add`.
@@ -85,19 +89,40 @@ const SHELL_BATTERY = [
   // destructive / infra
   'rm -rf /', 'kubectl delete deployment web', 'terraform apply -auto-approve', 'curl -X POST https://api.example.com/x', 'Remove-Item -Recurse -Force C:\\x',
 ];
-const VARIANTS = ['Monitor', 'PowerShell', 'monitor', 'MONITOR', 'Monitor\n', 'Monitor ', 'powershell', 'POWERSHELL'];
+const MONITOR_VARIANTS = ['Monitor', 'monitor', 'MONITOR', 'Monitor\n', 'Monitor '];
+const POWERSHELL_VARIANTS = ['PowerShell', 'powershell', 'POWERSHELL', ' PowerShell ', 'PowerShell\n'];
+const VARIANTS = [...MONITOR_VARIANTS, ...POWERSHELL_VARIANTS];
 const monitorInput = (command) => ({ command, description: 'watch', timeout_ms: 60000 });
 
-test('PKG-H2 classification: a Monitor or PowerShell command (any case or padding, command or script field) is classified exactly as the same Bash command', () => {
+test('PKG-H2 classification: a Monitor command (any case or padding, command or script field) is classified exactly as the same Bash command', () => {
   for (const command of SHELL_BATTERY) {
     const bash = { tool_name: 'Bash', tool_input: { command, description: 'x' } };
     const want = classifyTool(bash);
-    for (const tool of VARIANTS) {
+    for (const tool of MONITOR_VARIANTS) {
       for (const tool_input of [monitorInput(command), { command }, { script: command }, { script: command, description: 'd', timeout: 5 }]) {
         const ev = { tool_name: tool, tool_input };
         assert.deepEqual(classifyTool(ev), want, `${JSON.stringify(tool)} ${JSON.stringify(tool_input)}`);
         assert.equal(isReadOnlyToolEvent(ev), isReadOnlyToolEvent(bash), `${tool} read-only ${command}`);
         assert.equal(isSecretMaterialAccess(ev), isSecretMaterialAccess(bash), `${tool} secret ${command}`);
+      }
+    }
+  }
+});
+
+test('PKG-H2 classification: a PowerShell command (any case or padding, command or script field) is never read-only and never below the same Bash command', () => {
+  for (const command of SHELL_BATTERY) {
+    const bash = { tool_name: 'Bash', tool_input: { command, description: 'x' } };
+    const want = classifyTool(bash);
+    for (const tool of POWERSHELL_VARIANTS) {
+      for (const tool_input of [monitorInput(command), { command }, { script: command }, { script: command, description: 'd', timeout: 5 }]) {
+        const ev = { tool_name: tool, tool_input };
+        const got = classifyTool(ev);
+        const label = `${JSON.stringify(tool)} ${JSON.stringify(tool_input)}`;
+        assert.equal(got.readOnly, false, `${label}: never read-only`);
+        assert.equal(isReadOnlyToolEvent(ev), false, `${label}: isReadOnlyToolEvent`);
+        if (want.protected) assert.equal(got.protected, true, `${label}: protected when Bash is`);
+        assert.ok(['low', 'medium', 'high'].indexOf(got.risk) >= Math.max(1, ['low', 'medium', 'high'].indexOf(want.risk)), `${label}: risk ${got.risk} below Bash ${want.risk} or medium`);
+        if (isSecretMaterialAccess(bash)) assert.equal(isSecretMaterialAccess(ev), true, `${label}: secret access when Bash reads one`);
       }
     }
   }

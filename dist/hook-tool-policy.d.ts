@@ -1,9 +1,17 @@
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
+/**
+ * Marks the Bash twin of a PowerShell call (toolPolicyReading): its text is PowerShell, not Bash. A symbol,
+ * so no field of a host event or of a tool input (JSON has no symbols) can set or clear it.
+ */
+export declare const SHELL_DIALECT: unique symbol;
 type ToolPolicyEvent = {
     tool_name?: string;
     tool_input?: unknown;
+    [SHELL_DIALECT]?: ShellDialect;
 };
+/** The shell a command text is written in, when it is not Bash's own. */
+export type ShellDialect = 'powershell';
 export declare function normalizeHookToolName(value: unknown): string;
 /** An MCP tool in any host form, including Codex's `functions.` namespace (repeated or padded). */
 export declare function isMcpHookTool(value: unknown): boolean;
@@ -22,7 +30,7 @@ export type ShellSegmentVerdict = 'read' | 'secret' | 'other';
  * the words alone (command or process substitution, subshells, heredocs,
  * complex parameter expansion); callers then fall back to whole-command rules.
  */
-export declare function parseShellSegments(command: string): ShellSegment[] | null;
+export declare function parseShellSegments(command: string, dialect?: ShellDialect): ShellSegment[] | null;
 /** Resolves ~, $HOME, ., .. and repeated slashes against the directory the command runs in. */
 export declare function normalizedToolPath(value: string, base?: string): string;
 /**
@@ -36,15 +44,22 @@ export declare function isSecretPath(value: string, base?: string): boolean;
 export declare function isProtectedWriteTarget(value: string, base?: string): boolean;
 /** True for an environment variable name that conventionally holds a secret. */
 export declare function isSecretVariableName(value: string): boolean;
-/** Classifies one simple command: a read-only inspection, a secret access, or anything else. */
-export declare function shellSegmentVerdict(segment: ShellSegment, cwd?: string | null): ShellSegmentVerdict;
+/**
+ * Classifies one simple command: a read-only inspection, a secret access, or anything else.
+ * In the PowerShell dialect no command is a read-only inspection and no program is exempt from
+ * the content-read check (Bash's allowlists name Bash programs; `type` and `cat` read files in
+ * PowerShell, and `ls env:` and `echo $env:X` print the environment): every word is judged as a
+ * file a command may read.
+ */
+export declare function shellSegmentVerdict(segment: ShellSegment, cwd?: string | null, dialect?: ShellDialect): ShellSegmentVerdict;
 /** Files a file-reading or file-editing tool targets, including apply_patch file headers. */
 export declare function toolTargetPaths(event: ToolPolicyEvent): string[];
 /**
  * True when a tool reads secret or credential material, or writes a secret file
  * or Marrow's local control state. Unparseable shell falls back to a token scan.
- * A Monitor or PowerShell command, and any shell text another tool carries, is
- * read as Bash reads its command (toolPolicyReading).
+ * A Monitor command, and any shell text another tool carries, is read as Bash
+ * reads its command; a PowerShell command in the PowerShell dialect, which
+ * reads every word as a file the command may read (toolPolicyReading).
  */
 export declare function isSecretMaterialAccess(event: ToolPolicyEvent): boolean;
 /** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
@@ -58,8 +73,9 @@ export declare function toolClassificationText(event: ToolPolicyEvent): string;
 /** Editing and task tools are judged by their target, not by shell-like text in their input. */
 export declare function isShellGovernedTool(event: ToolPolicyEvent): boolean;
 /**
- * Whether a call only reads. A shell reading (Monitor, PowerShell, a native git
- * equivalent) is read-only exactly when Bash running its text is; any other
+ * Whether a call only reads. A shell reading (Monitor, a native git
+ * equivalent) is read-only exactly when Bash running its text is; a PowerShell
+ * call never is (Bash's read-only commands are Bash's); any other
  * call carrying shell text is read-only only when both its own reading and
  * Bash running the text are (never more than before).
  */
@@ -70,16 +86,20 @@ export type ToolPolicyReading = {
     /** How the call's own name is read: as named (every tool before the built-ins were hooked), as Read, or as a call whose words are not actions. */
     base: 'named' | 'read' | 'non_acting';
     /** Bash calls the call amounts to: its command or script text, or a native tool's fixed git command. */
-    shell: Array<{
-        tool_name: string;
-        tool_input: {
-            command: string;
-        };
-    }>;
+    shell: BashTwin[];
     /** Read exactly as Bash running `shell` (its own reading ignored); otherwise the stricter of both. */
     exact: boolean;
-    /** An exact reading that is a shell tool (Monitor, PowerShell): classified under Bash's own label. */
+    /** An exact reading that is a shell tool (Monitor): classified under Bash's own label. */
     bashLabel: boolean;
+    /** Set when `shell` is not Bash's text: the dialect its twins are read in (PowerShell: never read-only, no allowlist). */
+    dialect?: ShellDialect;
+};
+type BashTwin = {
+    tool_name: string;
+    tool_input: {
+        command: string;
+    };
+    [SHELL_DIALECT]?: ShellDialect;
 };
 export declare function toolPolicyReading(event: ToolPolicyEvent): ToolPolicyReading;
 /** The Read call a Read-equivalent tool is read as (same input). */
