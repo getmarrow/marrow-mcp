@@ -56,10 +56,20 @@ exports.CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working
 exports.SETUP_UNCONFIRMED_TEXT = 'Marrow stopped this action: there is no Marrow key on this machine, and Marrow uses its stricter no-key mode here because it could not confirm this machine\'s setup. Fix (for the person at this machine, not the agent): run npx -y @getmarrow/install@latest doctor, or add a Marrow key (getmarrow.ai/docs#start-here). Agent: do not retry it another way and do not edit Marrow settings; tell the user why it was stopped. Code: setup_unconfirmed.';
 /** The seatbelt path itself could not run (its modules did not load): a stop (spec §2.1.4). */
 const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish. If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped. If this keeps happening, run npx -y @getmarrow/install@latest doctor. Code: U5.fail_closed/hook_error.';
-/** Seatbelt stop and keyless hold texts end with their code, so they get room for it (about 600 characters at most). */
-const STOP_TEXT_LIMIT = 800;
+/**
+ * Seatbelt stop and keyless hold texts end with their code, so they get room for it: the longest real stop
+ * (a fallback reason row with the longest label and codes) is about 850 characters. It is our own cap, not a host's:
+ * Claude Code, Codex, Cursor and Windsurf document no limit on the text of a denial and their installed hooks pass it on unchanged.
+ */
+const STOP_TEXT_LIMIT = 880;
 /** The installed Gemini CLI guard (@getmarrow/install, src/installer.js) turns a deny reason over 500 characters into its launch failure. */
 const GEMINI_REASON_LIMIT = 500;
+/** The installed Cline PreToolUse hook (@getmarrow/install, src/installer.js clinePreToolUseHookSource) replaces an errorMessage over 500 characters with its generic "did not return a valid decision" text. */
+const CLINE_ERROR_LIMIT = 500;
+/** The most characters of a stop or hold text this host takes without losing the code at its end. */
+function hostTextLimit(harness) {
+    return harness === 'gemini' ? GEMINI_REASON_LIMIT : harness === 'cline' ? CLINE_ERROR_LIMIT : STOP_TEXT_LIMIT;
+}
 /** The Cursor deny text of every enforcementError that is not one of the fixed keyless texts (as on 3.9.104). */
 const CURSOR_ENFORCEMENT_LIMIT = 500;
 /** Claude Code plugin only; a host with a tight limit drops it before it would lose the stop's code at the end. */
@@ -501,7 +511,7 @@ function seatbeltPassOutput(harness, hookEventName, heldBefore) {
     return {};
 }
 function localLoopGuardDenyOutput(harness, reason) {
-    const bounded = fitHookText(reason, harness === 'gemini' ? GEMINI_REASON_LIMIT : STOP_TEXT_LIMIT);
+    const bounded = fitHookText(reason, hostTextLimit(harness));
     if (harness === 'windsurf')
         return null;
     if (harness === 'cursor')
@@ -518,7 +528,7 @@ function localLoopGuardDenyOutput(harness, reason) {
 function emitLoopGuardDenial(harness, reason) {
     if (harness === 'windsurf') {
         process.exitCode = 2;
-        process.stderr.write(`${fitHookText(reason, STOP_TEXT_LIMIT)}\n`);
+        process.stderr.write(`${fitHookText(reason, hostTextLimit(harness))}\n`);
         return;
     }
     process.stdout.write(JSON.stringify(localLoopGuardDenyOutput(harness, reason)));
@@ -705,7 +715,7 @@ function clinePreActionHookOutput(result) {
         return {
             cancel: true,
             errorMessage: result.credentialsUnavailable === true
-                ? result.enforcementError
+                ? fitHookText(result.enforcementError, CLINE_ERROR_LIMIT)
                 : result.failure === 'credential_scope'
                     ? 'This Marrow API key is not authorized to obtain action permits for this agent. Use the API key issued to this agent and retry.'
                     : result.failure === 'unavailable'
