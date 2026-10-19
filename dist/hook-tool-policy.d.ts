@@ -109,6 +109,12 @@ export declare function readEquivalent(event: ToolPolicyEvent): ToolPolicyEvent;
  * that changes what runs besides it), else null. Only such a call is keyed as shell text.
  */
 export declare function shellCommandToolText(event: ToolPolicyEvent): string | null;
+/**
+ * The run options (`timeout`, `timeout_ms`, `run_in_background`) a Monitor or PowerShell call carries, in a
+ * fixed order and as sent, or null for any other call or when it carries none. They are part of the key
+ * of the call (normalized-action, hook-contract exactHookTarget); `description` is not.
+ */
+export declare function shellCommandToolRunOptions(event: ToolPolicyEvent): Record<string, unknown> | null;
 /** A Claude Code built-in keyed by its whole input (a native git equivalent, Skill, or a call whose words are not actions). */
 export declare function isWholeInputNativeTool(event: ToolPolicyEvent): boolean;
 //# sourceMappingURL=hook-tool-policy.d.ts.map

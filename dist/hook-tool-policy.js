@@ -22,6 +22,7 @@ exports.isReadOnlyToolEventAsNamed = isReadOnlyToolEventAsNamed;
 exports.toolPolicyReading = toolPolicyReading;
 exports.readEquivalent = readEquivalent;
 exports.shellCommandToolText = shellCommandToolText;
+exports.shellCommandToolRunOptions = shellCommandToolRunOptions;
 exports.isWholeInputNativeTool = isWholeInputNativeTool;
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
@@ -903,8 +904,11 @@ function isReadOnlyToolEventAsNamed(event) {
 // PowerShell call is never read-only and is classified as the stricter of its own (named) reading
 // and Bash's reading of its text with no allowlist applied (the PowerShell dialect of the splitter).
 const SHELL_COMMAND_TOOLS = new Set(['monitor', 'powershell']);
+// How long a Monitor or PowerShell call may run and whether it runs in the background: they are
+// part of what is approved (a short-timeout approval is not a long-timeout one).
+const SHELL_COMMAND_TOOL_RUN_FIELDS = ['timeout', 'timeout_ms', 'run_in_background'];
 // The fields a Monitor or PowerShell call may carry besides its shell text without changing what runs.
-const SHELL_COMMAND_TOOL_FIELDS = new Set(['description', 'timeout', 'timeout_ms', 'run_in_background']);
+const SHELL_COMMAND_TOOL_FIELDS = new Set(['description', ...SHELL_COMMAND_TOOL_RUN_FIELDS]);
 // Tools whose `command` names something other than shell text (a slash command, a skill, an editor
 // operation), and Workflow, whose `script` is JavaScript that only starts sub-agents.
 const NON_SHELL_COMMAND_TOOLS = new Set(['slashcommand', 'skill', 'str_replace_editor', 'str_replace_based_edit_tool', 'workflow']);
@@ -999,6 +1003,24 @@ function shellCommandToolText(event) {
         return null;
     const value = input[texts[0]];
     return typeof value === 'string' && value.trim() ? value : null;
+}
+/**
+ * The run options (`timeout`, `timeout_ms`, `run_in_background`) a Monitor or PowerShell call carries, in a
+ * fixed order and as sent, or null for any other call or when it carries none. They are part of the key
+ * of the call (normalized-action, hook-contract exactHookTarget); `description` is not.
+ */
+function shellCommandToolRunOptions(event) {
+    if (isMcpHookTool(event.tool_name) || !SHELL_COMMAND_TOOLS.has(normalizeHookToolName(event.tool_name)))
+        return null;
+    const input = asRecord(event.tool_input);
+    if (!input)
+        return null;
+    const options = {};
+    for (const key of SHELL_COMMAND_TOOL_RUN_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(input, key))
+            options[key] = input[key];
+    }
+    return Object.keys(options).length ? options : null;
 }
 /** A Claude Code built-in keyed by its whole input (a native git equivalent, Skill, or a call whose words are not actions). */
 function isWholeInputNativeTool(event) {

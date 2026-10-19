@@ -867,12 +867,16 @@ function exactHookTarget(event) {
             ? ['serverName', 'server_name', 'toolName', 'tool_name'].map((key) => (Object.prototype.hasOwnProperty.call(input, key) ? input[key] ?? null : null))
             : null;
         const mcp = (0, own_tool_1.geminiMcpTarget)(event.mcp_context);
+        // A Monitor or PowerShell call's run options (timeout, timeout_ms, run_in_background) bind its approval
+        // too; the element is absent for every other call, whose target is unchanged.
+        const runOptions = (0, normalized_action_1.shellToolRunOptionsKey)(event);
         return (0, node_crypto_1.createHash)('sha256').update(JSON.stringify([
             'marrow-hook-target-v1',
             typeof event.tool_name === 'string' ? event.tool_name : null,
             ADAPTER_MCP_EVENTS.has(String(event.hook_event_name ?? '')) ? 'adapter-mcp' : 'host-name',
             nested,
             mcp ? [mcp.server_name, mcp.tool_name] : null,
+            ...(runOptions === null ? [] : [runOptions]),
         ])).digest('hex');
     }
     catch {

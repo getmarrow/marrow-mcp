@@ -6,6 +6,7 @@ import {
   isShellGovernedTool,
   isWholeInputNativeTool,
   normalizeHookToolName,
+  shellCommandToolRunOptions,
   shellCommandToolText,
   toolTargetPaths,
 } from './hook-tool-policy';
@@ -1357,6 +1358,30 @@ function inputHash(input: unknown, state: Exactness): { input_sha256: string } |
   return { input_sha256: sha256(`${HASH_VERSION}\ninput\n${text}`) };
 }
 
+/**
+ * The run options of a Monitor or PowerShell call (timeout, timeout_ms, run_in_background) as key material:
+ * the hash of their canonical JSON with credentials replaced, as any tool input is hashed (so a replaced
+ * credential marks the action truncated here too), or null when the call sets none (and for any other tool).
+ * They decide how long and where the command runs, so an approval of one set is not an approval of another;
+ * `description` is not key material.
+ */
+function runOptionsKey(event: ToolEvent, state: Exactness): string | null {
+  const options = shellCommandToolRunOptions(event as Parameters<typeof shellCommandToolRunOptions>[0]);
+  if (options === null) return null;
+  return (inputHash(options, state) as { input_sha256: string }).input_sha256;
+}
+
+/** runOptionsKey as a standalone identity (no deadline), for the exact target of a call (hook-contract exactHookTarget). */
+export function shellToolRunOptionsKey(event: ToolEvent): string | null {
+  return runOptionsKey(event, newExactness(Number.POSITIVE_INFINITY));
+}
+
+/** The exact form of the run options (only certain credentials replaced), for the exact material of a truncated action. */
+function exactRunOptions(event: ToolEvent, state: Exactness): string | null {
+  const options = shellCommandToolRunOptions(event as Parameters<typeof shellCommandToolRunOptions>[0]);
+  return options === null ? null : JSON.stringify(sortedValue(redactedInput(options, state)));
+}
+
 function withExactness(action: NormalizedHookAction, state: Exactness): NormalizedHookAction {
   return state.truncated ? { ...action, truncated: true } : action;
 }
@@ -1448,13 +1473,22 @@ function exactShellForm(text: string, command: string, state: Exactness): string
   return `${text}\n${JSON.stringify(shellReferences(command))}\n${JSON.stringify(state.sigs)}`;
 }
 
+/** The raw shell text as material; a plain Monitor or PowerShell call also carries its run options (raw). */
+function rawShellMaterial(event: ToolEvent, command: string): string | null {
+  const options = shellCommandToolText(event as Parameters<typeof shellCommandToolText>[0]) === null
+    ? null : shellCommandToolRunOptions(event as Parameters<typeof shellCommandToolRunOptions>[0]);
+  if (options === null) return `raw-shell\n${command}`;
+  const json = canonicalJson(options);
+  return json === null ? null : `raw-shell+run\n${json}\n${command}`;
+}
+
 /** The raw input as material (a placeholder, or an exact pass that hit a limit): the command, or the canonical input. */
 function rawExactMaterial(event: ToolEvent, kind: NormalizedHookAction['tool_kind']): string | null {
   if (kind === 'shell') {
     try {
       const trimmed = shellCommand(event);
       const command = untrimmedShellText(event, trimmed) ?? trimmed;
-      return typeof command === 'string' && command.length <= MAX_RAW_EXACT_CHARS ? `raw-shell\n${command}` : null;
+      return typeof command === 'string' && command.length <= MAX_RAW_EXACT_CHARS ? rawShellMaterial(event, command) : null;
     } catch {
       return null;
     }
@@ -1475,9 +1509,14 @@ function exactMaterial(event: ToolEvent, kind: NormalizedHookAction['tool_kind']
     if (kind === 'shell') {
       const trimmed = shellCommand(event);
       const host = untrimmedShellText(event, trimmed);
-      if (host !== null) return bounded(`raw-shell\n${host}`);
+      if (host !== null) {
+        const raw = rawShellMaterial(event, host);
+        return raw === null ? null : bounded(raw);
+      }
       const { text } = normalizeInner(trimmed, state, 0);
-      return bounded(`exact-shell\n${exactShellForm(text, trimmed, state)}`);
+      const runOptions = shellCommandToolText(event as Parameters<typeof shellCommandToolText>[0]) !== null
+        ? exactRunOptions(event, newExactness(deadline, true)) : null;
+      return bounded(`exact-shell${runOptions === null ? '' : `+run\n${runOptions}`}\n${exactShellForm(text, trimmed, state)}`);
     }
     const input = event.tool_input;
     const text = input === undefined || input === null ? 'null' : JSON.stringify(sortedValue(redactedInput(input, state)));
@@ -1582,8 +1621,13 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     // A Monitor or PowerShell command carries its host tool name, so it never shares a hash with the
     // same Bash command (or another tool's): the line after the version is `shell` only for every
     // other shell call, whose hash is unchanged.
-    const domain = shellCommandToolText(event as Parameters<typeof shellCommandToolText>[0]) !== null
-      ? `shell-tool\n${JSON.stringify(hostToolName)}` : 'shell';
+    // Its run options (timeout, timeout_ms, run_in_background), when it sets any, are in the hash too: a
+    // different line after `shell-tool+run`, so no command text can stand for them.
+    const plainShellTool = shellCommandToolText(event as Parameters<typeof shellCommandToolText>[0]) !== null;
+    const runOptions = plainShellTool ? runOptionsKey(event, state) : null;
+    const domain = !plainShellTool ? 'shell'
+      : runOptions === null ? `shell-tool\n${JSON.stringify(hostToolName)}`
+      : `shell-tool+run\n${JSON.stringify(hostToolName)}\n${runOptions}`;
     return withExactness({
       tool_kind: 'shell',
       tool_name: hostToolName,
