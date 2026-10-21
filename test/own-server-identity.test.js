@@ -23,6 +23,7 @@ const { classifyTool } = require('../dist/hook-pre-action.js');
 const CLI = join(__dirname, '..', 'dist', 'cli.js');
 const OWN = [...MARROW_OWN_TOOL_NAMES];
 const INSTALLER = require('./fixtures/installer-mcp-server-launch.json');
+const { VIRTUAL_CWD, enterProjectCwd } = require('./support/hermetic-project.cjs');
 
 const OFFICIAL_TOML = '[mcp_servers.marrow]\ncommand = "npx"\nargs = ["-y", "@getmarrow/mcp"]\n';
 const toml = (name, command, args, extra = '') => `[mcp_servers.${JSON.stringify(name)}]\ncommand = ${JSON.stringify(command)}\nargs = ${JSON.stringify(args)}\n${extra}`;
@@ -33,7 +34,7 @@ const files = (table) => (path) => (Object.prototype.hasOwnProperty.call(table, 
   : { state: 'missing' });
 
 const CODEX_HOME = '/virtual/codex-home';
-const codex = (table, extra = {}) => codexOfficialMarrowServer({ env: { CODEX_HOME }, read: files(table), processArgs: null, ...extra });
+const codex = (table, extra = {}) => codexOfficialMarrowServer({ env: { CODEX_HOME }, read: files(table), processArgs: null, processCwd: VIRTUAL_CWD, ...extra });
 const global = (text) => ({ [`${CODEX_HOME}/config.toml`]: text });
 
 // ------------------------------------------------------------------ launch forms
@@ -312,7 +313,7 @@ test('TOML reader: a realistic codex config parses; malformed input throws', () 
 
 test('Cursor: installer-written .cursor/mcp.json (0.1.70 and train-2 forms, keyless and keyed env) is proven; preToolUse also needs it to be the only server', () => {
   const home = '/virtual/home';
-  const cursor = (table, onlyServer) => cursorOfficialMarrowServer({ home, cwds: ['/virtual/project'], read: files(table), onlyServer }).official;
+  const cursor = (table, onlyServer) => cursorOfficialMarrowServer({ home, cwds: ['/virtual/project'], processCwd: VIRTUAL_CWD, read: files(table), onlyServer }).official;
   const at = (servers) => ({ '/virtual/project/.cursor/mcp.json': JSON.stringify({ mcpServers: servers }) });
   const installer = (env) => ({ marrow: { ...INSTALLER.posix, env } });
   for (const env of [{ MARROW_BASE_URL: 'https://api.getmarrow.ai' }, { MARROW_BASE_URL: 'https://api.getmarrow.ai', MARROW_FLEET_AGENT_ID: 'agent-1', MARROW_TOOL_PROFILE: 'full' }]) {
@@ -346,6 +347,7 @@ test('Cursor: installer-written .cursor/mcp.json (0.1.70 and train-2 forms, keyl
 test('with a proven server, only the exact label is own on Codex; every look-alike from the audit matcher table is checked', () => {
   const dir = mkdtempSync(join(tmpdir(), 'marrow-identity-label-'));
   const saved = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME };
+  const leaveProject = enterProjectCwd();
   try {
     process.env.HOME = dir;
     process.env.CODEX_HOME = join(dir, 'codex');
@@ -370,6 +372,7 @@ test('with a proven server, only the exact label is own on Codex; every look-ali
       assert.equal(verdict.readOnly, false, tool);
     }
   } finally {
+    leaveProject();
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     resetOwnServerIdentityCache();
     rmSync(dir, { recursive: true, force: true });
@@ -469,7 +472,7 @@ test('a project-local @getmarrow/mcp copy (planted node_modules) unproves the np
     const sub = join(project, 'packages', 'app');
     mkdirSync(join(project, '.git'), { recursive: true });
     mkdirSync(sub, { recursive: true });
-    const run = (text, cwd) => codexOfficialMarrowServer({ env: { CODEX_HOME: '/virtual/codex-home' }, processArgs: null, cwds: [cwd], read: files(global(text)) }).official;
+    const run = (text, cwd) => codexOfficialMarrowServer({ env: { CODEX_HOME: '/virtual/codex-home' }, processArgs: null, cwds: [cwd], processCwd: VIRTUAL_CWD, read: files(global(text)) }).official;
     const bin = toml('marrow', 'marrow-mcp', []);
     assert.equal(run(OFFICIAL_TOML, sub), true, 'no local copy');
     mkdirSync(join(project, 'node_modules', '@getmarrow', 'mcp'), { recursive: true });
@@ -479,7 +482,7 @@ test('a project-local @getmarrow/mcp copy (planted node_modules) unproves the np
     mkdirSync(join(sub, 'node_modules', '.bin'), { recursive: true });
     writeFileSync(join(sub, 'node_modules', '.bin', 'marrow-mcp'), '#!/bin/sh\n');
     assert.equal(run(OFFICIAL_TOML, sub), false, 'planted bin');
-    const cursor = cursorOfficialMarrowServer({ home: '/virtual/home', cwds: [sub], onlyServer: true, read: files({ [join(sub, '.cursor', 'mcp.json')]: JSON.stringify({ mcpServers: { marrow: INSTALLER.posix } }) }) });
+    const cursor = cursorOfficialMarrowServer({ home: '/virtual/home', cwds: [sub], processCwd: VIRTUAL_CWD, onlyServer: true, read: files({ [join(sub, '.cursor', 'mcp.json')]: JSON.stringify({ mcpServers: { marrow: INSTALLER.posix } }) }) });
     assert.equal(cursor.official, true, 'the installer runtime verifies its own copy; a local node_modules does not shadow it');
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -488,6 +491,7 @@ test('a project-local @getmarrow/mcp copy (planted node_modules) unproves the np
 
 test('B3 Cursor workspace_roots: more than 8, a non-array, or any root that is not a usable absolute path is checked', () => {
   const dir = mkdtempSync(join(tmpdir(), 'marrow-roots-'));
+  const leaveProject = enterProjectCwd();
   try {
     const { writeOfficialHostConfigs } = require('./support/official-host-config.cjs');
     writeOfficialHostConfigs();
@@ -512,6 +516,7 @@ test('B3 Cursor workspace_roots: more than 8, a non-array, or any root that is n
       assert.equal(decide({ 0: roots[0] }, hook), false, `${hook}: an object instead of an array`);
     }
   } finally {
+    leaveProject();
     rmSync(dir, { recursive: true, force: true });
     resetOwnServerIdentityCache();
   }

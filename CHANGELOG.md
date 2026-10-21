@@ -1,6 +1,8 @@
 # Changelog
 
-## 3.9.104
+## 3.9.105 (2026-10-22)
+
+3.9.104 was never published. This release carries everything that was prepared for it (all items below except the last two) and changes nothing else in the package.
 
 - Security: Claude Code's hook now sees every tool call except Marrow's own exact tool names and the read-only `LS` and `ListMcpResourcesTool`. The 3.9.102 and 3.9.103 matcher was a fixed list of built-ins, so `Monitor`, `PowerShell`, `WebFetch`, `Agent`, `Skill` and tools added later never reached the hook (a `Monitor: git push --force origin master` ran unchecked). Now:
   - a `Monitor` command or script (any case or padding) is classified exactly as the same Bash command, keyless and keyed, and in an outage. A `PowerShell` command or script is read by the keyless seatbelt and in an outage as the same Bash command, and keyed as the stricter of its 3.9.103 reading and Bash's reading of its text with none of Bash's read-only lists applied (in PowerShell `type`, `cat`, `gc`, `find` and `ls env:` read files or print the environment): a `PowerShell` call is never read-only, and `type ./production.env` is a protected secret read. Any other call that carries a `command` or `script` string is held to the stricter of its own classification and Bash's for that text;
@@ -14,7 +16,12 @@
 - Security: ids and slugs that become part of an API path (workflow, instance, lease, comparison, handoff, decision, detected and template ids) must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$` and never contain `..`, so `.`, `..`, `a..b` and ids starting with `-`, `_` or `.` can no longer reroute a request that carries your key. A refused id sends no request. Every id Marrow issues (UUIDs, `lease_` and `replay_` ids, `rtdec_`, `thinkdec_` and `lcdec_` ids, the built-in template slugs) passes.
 - `@getmarrow/sdk` is pinned to exactly `3.7.67` in `dependencies` (it was `3.7.65`), and a test keeps runtime dependencies exact and equal to the lockfile.
 - The file digests of the Codex plugins `marrow` and `marrow-advisory` 0.1.2 are now listed next to the 0.1.1 digests. Nothing changes for an installed 0.1.1.
-- Version 3.9.104 in `package.json`, `package-lock.json`, `server.json` and the adapter version constant; `dist/` rebuilt from `src/`.
+- Tests only: the checks that decide whether Marrow's own MCP server is proven on Codex and Cursor started their upward walk from the package checkout, so a user npm config in a parent folder of that checkout (an account home, for example) made 15 of them fail when the tests ran from under such a home. They now start from a fresh empty project folder and no longer depend on where the checkout sits. The product walk is unchanged: a project npm config, a planted local `@getmarrow/mcp` copy or a look-alike server above the working folder still leaves the server unproven, and new tests pin that.
+- Version 3.9.105 in `package.json`, `package-lock.json`, `server.json` and the adapter version constant; `dist/` rebuilt from `src/`.
+
+## 3.9.104
+
+Not published. Its changes are in 3.9.105.
 
 ## 3.9.103
 

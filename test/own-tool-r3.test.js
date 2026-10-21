@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { writeOfficialHostConfigs } = require('./support/official-host-config.cjs');
 writeOfficialHostConfigs();
+const { enterProjectCwd, projectCwd } = require('./support/hermetic-project.cjs');
 const { spawnSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
@@ -253,6 +254,7 @@ function harness() {
   const run = (entrypoint, payload, env = {}) => {
     const result = spawnSync(process.execPath, [CLI, entrypoint], {
       input: JSON.stringify(payload),
+      cwd: projectCwd(),
       env: {
         PATH: process.env.PATH, HOME: home, MARROW_API_KEY: apiKey, MARROW_BASE_URL: 'https://api.example.test',
         MARROW_AGENT_ID: 'agent-r3', MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false',
@@ -442,10 +444,13 @@ async function runPre(entrypoint, payload, withKey) {
   };
   process.stdout.write = (chunk) => { stdout += String(chunk); return true; };
   process.stderr.write = () => true;
+  // The identity check walks up from the process cwd: a fresh empty project folder, not the checkout.
+  const leaveProject = enterProjectCwd();
   try {
     await runPreActionHookCommand(payload);
     return { stdout, exitCode: process.exitCode ?? 0, calls };
   } finally {
+    leaveProject();
     process.stdout.write = saved.write;
     process.stderr.write = saved.err;
     process.exitCode = saved.exitCode;

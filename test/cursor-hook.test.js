@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 require('./support/official-host-config.cjs').writeOfficialHostConfigs();
+const { enterProjectCwd } = require('./support/hermetic-project.cjs');
 
 const {
   normalizeHookEventPayload,
@@ -46,9 +47,12 @@ async function withCursorEnvironment(values, callback) {
   process.argv[2] = values.entrypoint || 'cursor-hook';
   for (const key of keys) delete process.env[key];
   Object.assign(process.env, values.env || {});
+  // `hermeticCwd`: for a call that reaches the own-server identity check, whose walk starts at the process cwd.
+  const leaveProject = values.hermeticCwd ? enterProjectCwd() : () => {};
   try {
     await callback();
   } finally {
+    leaveProject();
     process.argv[2] = originalArg;
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
@@ -128,7 +132,7 @@ test('Cursor native pre-action denies review and unavailable proof, never asks',
 
 test('Cursor missing-key protected action denies privately while Marrow MCP does not recurse', async () => {
   const privateCommand = 'npm publish --otp synthetic-private-credential';
-  await withCursorEnvironment({ entrypoint: 'cursor-pre-action-hook' }, async () => {
+  await withCursorEnvironment({ entrypoint: 'cursor-pre-action-hook', hermeticCwd: true }, async () => {
     const deniedText = await captureStdout(() => runPreActionHookCommand({
       eventName: 'preToolUse',
       conversationId: 'conversation-2',

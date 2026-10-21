@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { writeOfficialHostConfigs } = require('./support/official-host-config.cjs');
 writeOfficialHostConfigs();
+const { projectCwd } = require('./support/hermetic-project.cjs');
 const { spawn, spawnSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
@@ -90,6 +91,8 @@ function harness() {
   const run = (entrypoint, payload, env = {}) => {
     const result = spawnSync(process.execPath, entrypoint === 'marrow-mcp-server-placeholder' ? [CLI] : [CLI, entrypoint], {
       input: typeof payload === 'string' ? payload : JSON.stringify(payload),
+      // The hook runs in a fresh empty project folder: the own-server identity walk starts at its cwd.
+      cwd: projectCwd(),
       env: {
         PATH: process.env.PATH, HOME: home, MARROW_API_KEY: apiKey, MARROW_BASE_URL: 'https://api.example.test',
         MARROW_AGENT_ID: 'agent-one', MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false',
@@ -108,6 +111,7 @@ function harness() {
   // The same as run, without blocking: for calls a host makes at the same time.
   const runAsync = (entrypoint, payload, env = {}) => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, entrypoint], {
+      cwd: projectCwd(),
       env: {
         PATH: process.env.PATH, HOME: home, MARROW_API_KEY: apiKey, MARROW_BASE_URL: 'https://api.example.test',
         MARROW_AGENT_ID: 'agent-one', MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false',

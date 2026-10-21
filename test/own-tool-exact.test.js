@@ -6,6 +6,7 @@ const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 require('./support/official-host-config.cjs').writeOfficialHostConfigs();
+const { enterProjectCwd } = require('./support/hermetic-project.cjs');
 
 const { MARROW_OWN_TOOL_NAMES, isMarrowOwnTool } = require('../dist/own-tool.js');
 const { CORE_TOOL_NAMES, PRIMARY_TOOL_NAMES, TOOLS } = require('../dist/tool-catalog.js');
@@ -74,10 +75,13 @@ async function runPre(entrypoint, payload) {
   process.exitCode = undefined;
   process.stdout.write = (chunk) => { stdout += String(chunk); return true; };
   process.stderr.write = () => true;
+  // The identity check walks up from the process cwd: a fresh empty project folder, not the checkout.
+  const leaveProject = enterProjectCwd();
   try {
     await withEntrypoint(entrypoint, {}, () => runPreActionHookCommand(payload));
     return { stdout, exitCode: process.exitCode ?? 0 };
   } finally {
+    leaveProject();
     process.stdout.write = originalWrite;
     process.stderr.write = originalError;
     process.exitCode = originalExitCode;
