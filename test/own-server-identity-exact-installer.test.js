@@ -16,7 +16,7 @@ const {
 } = require('../dist/own-server-identity.js');
 const { MARROW_OWN_TOOL_NAMES } = require('../dist/own-tool.js');
 const { VIRTUAL_CWD } = require('./support/hermetic-project.cjs');
-const { launcherOf, installVerifiedRuntime, runThroughLoader, pool } = require('./support/installer-verified-runtime.cjs');
+const { launcherOf, installVerifiedRuntime, runThroughLoader, pool, assertDenied, assertSkipped } = require('./support/installer-verified-runtime.cjs');
 const { LOADER, CFG, V, ROWS, LEGACY, L104, OLD_INTEGRITY, loaderIn, sh, cfg } = require('./support/installer-lookalikes.cjs');
 
 const OWN = [...MARROW_OWN_TOOL_NAMES];
@@ -180,44 +180,46 @@ function hostDirs() {
   return { dir, home, project, codexHome: join(home, '.codex') };
 }
 
-test('end to end (installer 0.1.73 loader -> verified runtime -> this hook, no key): exact launch skips 58/58, L1 L2 L3 skip 0/58', async () => {
+test('end to end (installer 0.1.73 loader -> verified runtime -> this hook, no key): exact launch skips 58/58; L1 L2 L3 skip 0/58, each call exit 0 and a deny answer', async () => {
   const { dir, home, project, codexHome } = hostDirs();
   try {
     assert.equal(installVerifiedRuntime(home, LOADER), V);
     const beforeMcp = (tool) => ({ hook_event_name: 'beforeMCPExecution', conversation_id: 'c', generation_id: 'g', workspace_roots: [project], mcp_server_name: 'marrow', tool_name: tool, tool_input: '{}' });
     const preToolUse = (tool) => ({ hook_event_name: 'preToolUse', conversation_id: 'c', workspace_roots: [project], tool_name: `MCP:${tool}`, tool_input: {} });
     const codexEvent = (tool) => ({ hook_event_name: 'PreToolUse', session_id: 's', cwd: project, tool_name: `mcp__marrow__${tool}`, tool_input: {} });
-    const allow = '{"permission":"allow"}';
-    const cursorSkips = async (launch, event) => {
+    // Each call is judged on its own: a skip is exit 0 + the host's skip answer, "not proven" is exit 0 + the host's deny answer.
+    // A crashed hook (exit 1, no answer) is neither, so it can never pass as a held tool.
+    const cursorRuns = async (launch, event) => {
       writeFileSync(join(project, '.cursor', 'mcp.json'), cursorJson({ marrow: { ...entryOf(launch), env: { MARROW_BASE_URL: 'https://api.getmarrow.ai' } } }));
-      const results = await pool(OWN.map((tool) => () => runThroughLoader(LOADER, 'cursor-pre-action-hook', event(tool), { home, cwd: project })));
-      return results.filter((result) => result.stdout === allow).length;
+      return pool(OWN.map((tool) => async () => ({ tool, ...(await runThroughLoader(LOADER, 'cursor-pre-action-hook', event(tool), { home, cwd: project })) })));
     };
-    const codexSkips = async (launch) => {
+    const codexRuns = async (launch) => {
       writeFileSync(join(codexHome, 'config.toml'), tomlEntry('marrow', launch));
-      const results = await pool(OWN.map((tool) => () => runThroughLoader(LOADER, 'codex-pre-action-hook', codexEvent(tool), { home, codexHome, cwd: project })));
-      return results.filter((result) => result.stdout === '{}').length;
+      return pool(OWN.map((tool) => async () => ({ tool, ...(await runThroughLoader(LOADER, 'codex-pre-action-hook', codexEvent(tool), { home, codexHome, cwd: project })) })));
     };
-    assert.equal(await cursorSkips(sh(), beforeMcp), OWN.length, 'Cursor beforeMCPExecution, exact launch');
-    assert.equal(await cursorSkips(sh(), preToolUse), OWN.length, 'Cursor preToolUse, exact launch');
-    assert.equal(await codexSkips(sh()), OWN.length, 'Codex, exact launch');
+    const each = (check, host, results, label) => {
+      assert.equal(results.length, OWN.length, `${label}: one call per own tool`);
+      for (const result of results) check(host, result, `${label} ${result.tool}`);
+    };
+    each(assertSkipped, 'cursor', await cursorRuns(sh(), beforeMcp), 'Cursor beforeMCPExecution, exact launch');
+    each(assertSkipped, 'cursor', await cursorRuns(sh(), preToolUse), 'Cursor preToolUse, exact launch');
+    each(assertSkipped, 'codex', await codexRuns(sh()), 'Codex, exact launch');
     for (const id of ['L1', 'L2', 'L3']) {
       const launch = ROWS.find((row) => row[0] === id)[2];
-      assert.equal(await cursorSkips(launch, beforeMcp), 0, `Cursor ${id}`);
-      assert.equal(await codexSkips(launch), 0, `Codex ${id}`);
+      each(assertDenied, 'cursor', await cursorRuns(launch, beforeMcp), `Cursor ${id}`);
+      each(assertDenied, 'codex', await codexRuns(launch), `Codex ${id}`);
     }
     // What the user sees for an own tool on an unproven server (keyless): the ordinary gate answer, not a skip.
     writeFileSync(join(project, '.cursor', 'mcp.json'), cursorJson({ marrow: entryOf(sh(OLD_INTEGRITY)) }));
     const held = await runThroughLoader(LOADER, 'cursor-pre-action-hook', beforeMcp('marrow_status'), { home, cwd: project });
-    assert.match(held.stdout, /"permission":"deny"/);
-    assert.equal(held.code, 0, 'a gate answer, not a crash');
+    assertDenied('cursor', held, 'keyless own tool on an unproven server');
     // The same hook started without the loader (npx or bin) proves no installer form.
     writeFileSync(join(project, '.cursor', 'mcp.json'), cursorJson({ marrow: entryOf(sh()) }));
     const plain = spawnSync(process.execPath, [CLI, 'cursor-pre-action-hook'], {
       input: JSON.stringify(beforeMcp('marrow_status')), cwd: project, encoding: 'utf8', timeout: 30_000,
       env: { PATH: process.env.PATH, HOME: home, MARROW_PASSIVE_TOKEN_USAGE: 'false' },
     });
-    assert.notEqual(plain.stdout, allow);
+    assertDenied('cursor', { stdout: plain.stdout, code: plain.status }, 'the hook started without the loader');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

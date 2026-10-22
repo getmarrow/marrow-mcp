@@ -23,7 +23,7 @@ const { classifyTool } = require('../dist/hook-pre-action.js');
 const CLI = join(__dirname, '..', 'dist', 'cli.js');
 const OWN = [...MARROW_OWN_TOOL_NAMES];
 const INSTALLER = require('./fixtures/installer-mcp-server-launch.json');
-const { configOf, installVerifiedRuntime } = require('./support/installer-verified-runtime.cjs');
+const { configOf, installVerifiedRuntime, assertDenied, assertSkipped } = require('./support/installer-verified-runtime.cjs');
 // These checks run as the hook the installer 0.1.70 loader started: the loader leaves its decoded launcher
 // in global.MARROW_L, and an installer launch is proven only when it is exactly that launcher's own.
 globalThis.MARROW_L = brotliDecompressSync(Buffer.from(/\/([A-Za-z0-9_-]{16,})\/\.source,/.exec(INSTALLER.posix.args[2])[1], 'base64url')).toString('utf8');
@@ -397,7 +397,7 @@ test('Claude Code, Gemini, Grok, Cline, Windsurf and mcp-client keep the 3.9.102
 
 // ------------------------------------------------------------------ end to end through the built hook
 
-/** Run a built hook entry; with `loader`, through the installer's loader and core as an installed hook runs. */
+/** Run a built hook entry; with `loader`, through the installer's loader and core as an installed hook runs. Returns `{ stdout, code }`. */
 function hook(entry, payload, { home, codexHome, cwd, loader }) {
   const argv = loader ? ['-e', loader, '--', `--package=@getmarrow/mcp@${configOf(loader).version}`, 'marrow-mcp', entry] : [CLI, entry];
   const result = spawnSync(process.execPath, argv, {
@@ -407,7 +407,7 @@ function hook(entry, payload, { home, codexHome, cwd, loader }) {
     encoding: 'utf8',
     timeout: 30_000,
   });
-  return result.stdout;
+  return { stdout: result.stdout, code: result.status };
 }
 
 test('end to end (built hook, no key, isolated HOME): Codex official config skips all 58; each collision config holds', () => {
@@ -421,7 +421,7 @@ test('end to end (built hook, no key, isolated HOME): Codex official config skip
     mkdirSync(join(project, '.git'));
     const event = (tool) => ({ hook_event_name: 'PreToolUse', session_id: 's', cwd: project, tool_name: `mcp__marrow__${tool}`, tool_input: {} });
     writeFileSync(join(codexHome, 'config.toml'), OFFICIAL_TOML);
-    for (const tool of OWN) assert.equal(hook('codex-pre-action-hook', event(tool), { home, codexHome, cwd: project }), '{}', tool);
+    for (const tool of OWN) assertSkipped('codex', hook('codex-pre-action-hook', event(tool), { home, codexHome, cwd: project }), tool);
     const shapes = {
       mcp__marrow: toml('mcp__marrow', 'npx', ['-y', '@getmarrow/mcp']),
       'marrow-': toml('marrow-', 'npx', ['-y', '@getmarrow/mcp']),
@@ -433,13 +433,12 @@ test('end to end (built hook, no key, isolated HOME): Codex official config skip
     for (const [name, text] of Object.entries(shapes)) {
       writeFileSync(join(codexHome, 'config.toml'), text);
       for (const tool of ['marrow_think', 'marrow_commit', 'marrow_status']) {
-        const out = hook('codex-pre-action-hook', event(tool), { home, codexHome, cwd: project });
-        assert.match(out, /"permissionDecision":"deny"/, `${name} ${tool}`);
+        assertDenied('codex', hook('codex-pre-action-hook', event(tool), { home, codexHome, cwd: project }), `${name} ${tool}`);
       }
     }
     writeFileSync(join(codexHome, 'config.toml'), OFFICIAL_TOML);
     writeFileSync(join(project, '.codex', 'config.toml'), toml('marrow', 'node', ['/tmp/evil.js']));
-    assert.match(hook('codex-pre-action-hook', event('marrow_commit'), { home, codexHome, cwd: project }), /"permissionDecision":"deny"/, 'project override');
+    assertDenied('codex', hook('codex-pre-action-hook', event('marrow_commit'), { home, codexHome, cwd: project }), 'project override');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -458,17 +457,16 @@ test('end to end (built hook started by the installer 0.1.70 loader, no key): Cu
     const write = (servers) => writeFileSync(join(project, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: servers }));
     const before = (tool, extra = {}) => ({ hook_event_name: 'beforeMCPExecution', conversation_id: 'c', generation_id: 'g', workspace_roots: [project], mcp_server_name: 'marrow', tool_name: tool, tool_input: '{}', ...extra });
     const pre = (tool) => ({ hook_event_name: 'preToolUse', conversation_id: 'c', workspace_roots: [project], tool_name: `MCP:${tool}`, tool_input: {} });
-    const allow = '{"permission":"allow"}';
     write({ marrow: { ...INSTALLER.posix, env: { MARROW_BASE_URL: 'https://api.getmarrow.ai' } } });
     for (const tool of OWN) {
-      assert.equal(hook('cursor-pre-action-hook', before(tool), { home, cwd: project, loader }), allow, `before ${tool}`);
-      assert.equal(hook('cursor-pre-action-hook', pre(tool), { home, cwd: project, loader }), allow, `pre ${tool}`);
+      assertSkipped('cursor', hook('cursor-pre-action-hook', before(tool), { home, cwd: project, loader }), `before ${tool}`);
+      assertSkipped('cursor', hook('cursor-pre-action-hook', pre(tool), { home, cwd: project, loader }), `pre ${tool}`);
     }
-    assert.notEqual(hook('cursor-pre-action-hook', before('marrow_commit'), { home, cwd: project }), allow, 'not started by the loader: no installer launch is proven');
-    assert.notEqual(hook('cursor-pre-action-hook', before('marrow_commit', { url: 'https://evil.example/mcp' }), { home, cwd: project, loader }), allow, 'url server');
+    assertDenied('cursor', hook('cursor-pre-action-hook', before('marrow_commit'), { home, cwd: project }), 'not started by the loader: no installer launch is proven');
+    assertDenied('cursor', hook('cursor-pre-action-hook', before('marrow_commit', { url: 'https://evil.example/mcp' }), { home, cwd: project, loader }), 'url server');
     for (const servers of [{ marrow: { command: 'npx', args: ['-y', '@evil/mcp'] } }, { marrow: { url: 'https://evil.example' } }, { marrow: INSTALLER.posix, marrow_: { command: 'node', args: ['/tmp/e.js'] } }]) {
       write(servers);
-      assert.notEqual(hook('cursor-pre-action-hook', before('marrow_commit'), { home, cwd: project, loader }), allow, JSON.stringify(Object.keys(servers)));
+      assertDenied('cursor', hook('cursor-pre-action-hook', before('marrow_commit'), { home, cwd: project, loader }), JSON.stringify(Object.keys(servers)));
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

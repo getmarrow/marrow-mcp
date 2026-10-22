@@ -5,6 +5,7 @@
 // package inside is this checkout's build, so a hook started through the installer's real loader runs
 // the code under test exactly as an installed runtime would (global.MARROW_L set by the loader itself).
 // No key, no network: the record stands in for the npm install the core would have verified.
+const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
@@ -113,4 +114,26 @@ async function pool(jobs, limit = 6) {
   return results;
 }
 
-module.exports = { launcherOf, configOf, packLoader, withConfig, installVerifiedRuntime, runThroughLoader, pool };
+const SKIP = { cursor: '{"permission":"allow"}', codex: '{}' };
+
+/** The decision a hook answered in the host's own JSON form (Cursor `permission`, Codex `hookSpecificOutput.permissionDecision`); null when stdout is not one JSON document. */
+function decisionOf(host, stdout) {
+  let answer;
+  try { answer = JSON.parse(stdout); } catch { return null; }
+  if (host === 'cursor') return answer && typeof answer.permission === 'string' ? answer.permission : null;
+  return answer && answer.hookSpecificOutput && typeof answer.hookSpecificOutput.permissionDecision === 'string' ? answer.hookSpecificOutput.permissionDecision : null;
+}
+
+/** One hook call (`{ stdout, code }`) is a held answer: exit 0 AND a deny in the host's JSON form. A crashed hook (exit 1, empty or partial stdout) is not "not proven". */
+function assertDenied(host, result, label) {
+  assert.equal(result.code, 0, `${label}: exit 0 (a crash is not a deny)`);
+  assert.equal(decisionOf(host, result.stdout), 'deny', `${label}: a deny answer in the ${host} JSON form`);
+}
+
+/** One hook call (`{ stdout, code }`) skipped the gate: exit 0 AND the host's exact skip answer (Cursor allow, Codex `{}`). */
+function assertSkipped(host, result, label) {
+  assert.equal(result.code, 0, `${label}: exit 0`);
+  assert.equal(result.stdout, SKIP[host], `${label}: the ${host} skip answer`);
+}
+
+module.exports = { launcherOf, configOf, packLoader, withConfig, installVerifiedRuntime, runThroughLoader, pool, assertDenied, assertSkipped };
