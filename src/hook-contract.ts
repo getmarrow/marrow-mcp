@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { emitBaseUrlNotice, resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
 import { normalizedHookAction, shellToolRunOptionsKey } from './normalized-action';
-import { isOfficialMarrowServerLaunch } from './own-server-identity';
+import { isMarrowServerLaunchShape } from './own-server-identity';
 import {
   geminiMcpTarget, isGeminiOwnLabel, isMarrowOwnTool, isOfficialMarrowGeminiCall, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput,
   listNativeHookMatcher, nativeHookMatcher, normalizedMcpToolName, r2NativeHookMatcher,
@@ -538,9 +538,9 @@ function installerLoaderPlain(version: string, sub: string, loader: string): str
 const LOADER_PLAIN_RE = /^\/bin\/sh -c 'N="\$HOME\/\.marrow\/runtime\/mcp\/(\d+\.\d+\.\d+)\/node"; [^']* -- --package=@getmarrow\/mcp@\1 marrow-mcp ([a-z][a-z-]{0,63}); fi; printf [^']*' "([^"'\s]{16,16384})"$/;
 const MAX_LOADER_PLAIN_LENGTH = 32_768;
 // The loader must decode to the installer's launcher for this version with a pinned
-// runtime core: the same proof the installer's server launch gets (node -e <loader>).
+// runtime core: the installer's server launch shape (node -e <loader>), any pack integrity.
 const installerLoaderFor = (loader: string, version: string): boolean =>
-  isOfficialMarrowServerLaunch('node', ['-e', loader, '--', `--package=@getmarrow/mcp@${version}`, 'marrow-mcp']);
+  isMarrowServerLaunchShape('node',['-e', loader, '--', `--package=@getmarrow/mcp@${version}`, 'marrow-mcp']);
 
 /**
  * The npx form of an installer local-runtime hook command, or the command

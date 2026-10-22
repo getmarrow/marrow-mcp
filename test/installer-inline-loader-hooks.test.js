@@ -23,7 +23,8 @@ const CLI = join(__dirname, '..', 'dist', 'cli.js');
 // what the installer writes with its sealed pins (MCP 3.9.105, the current matcher). The 0.1.73 file is the installer's
 // own output for MCP 3.9.104 with only the MCP pin rewritten for 3.9.105: the runtime dir and `--package=` version in
 // each command, and the {version, integrity} of the MCP pack inside the loader's launcher (same runtime core, same
-// SDK pin, same compression). Regenerate it with the installer once its 3.9.105 pins are sealed.
+// compression); since 3.9.106 its SDK pin is the rebuilt SDK 3.7.67 pack in package-lock.json, as installer 0.1.73
+// e1cc4f75 writes it (the file is that output's size, 77060 bytes). Regenerate it with the installer when pins move.
 const FIXTURES = {
   '0.1.72': { file: join(__dirname, 'fixtures', 'installer-0172', 'claude-settings.json'), mcp: '3.9.103' },
   '0.1.73': { file: join(__dirname, 'fixtures', 'installer-0173', 'claude-settings.json'), mcp: '3.9.105' },

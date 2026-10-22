@@ -9,8 +9,10 @@
  *
  * Fail closed: a missing, unreadable, oversized, non-regular or unparsable
  * config, more than one colliding server, an unknown command, a wrapper, an
- * env override, an enabled Codex plugin or a config override on the codex
- * command line means "not proven": the call goes down the normal gate path.
+ * env override, an enabled Codex plugin, a config override on the codex
+ * command line, or an installer launch that is not exactly the one that
+ * started this hook (another version or pack integrity) means "not proven":
+ * the call goes down the normal gate path.
  * Reads are local, size-capped and done at most once per hook process; no
  * config content is ever logged.
  */
@@ -57,8 +59,21 @@ export declare function parseToml(text: string): TomlTable;
  *   /bin/sh -c <installer script> <installer loader> --package=@getmarrow/mcp@V marrow-mcp
  *   node -e <installer loader> -- --package=@getmarrow/mcp@V marrow-mcp
  * Nothing appended, no wrapper, no other package.
+ *
+ * An installer form is proven only as this process's own launch: V is the
+ * version of the installer launcher that started this process (`ownLoader`,
+ * default `global.MARROW_L`) and the loader decodes to exactly its bytes, so
+ * the version, the pack integrity, the SDK pin and the core are all its own.
+ * Another version or integrity, or a hook not started by an installer loader,
+ * proves no installer form.
  */
-export declare function isOfficialMarrowServerLaunch(command: unknown, args: unknown): boolean;
+export declare function isOfficialMarrowServerLaunch(command: unknown, args: unknown, ownLoader?: unknown): boolean;
+/**
+ * The forms isOfficialMarrowServerLaunch lists, with an installer form of any
+ * one version throughout (any pack integrity). For recognizing installer-written
+ * hooks (setup, doctor); it never proves a server.
+ */
+export declare function isMarrowServerLaunchShape(command: unknown, args: unknown): boolean;
 /** A server name a host could turn into the `marrow` label: case, separators and leading `mcp` ignored (wider than any host). */
 export declare function serverNameCollidesWithMarrow(name: string): boolean;
 /**
@@ -97,6 +112,8 @@ export type CodexIdentityOptions = {
     userHome?: string;
     /** Wall-clock start of the codex process (ms), or null when it cannot be found. */
     processStartMs?: number | null;
+    /** The installer launcher that started this hook (default `global.MARROW_L`; null: none). */
+    ownLoader?: unknown;
 };
 /** Whether the Codex `marrow` server is provably the official Marrow MCP server. */
 export declare function codexOfficialMarrowServer(options?: CodexIdentityOptions): ServerIdentity;
@@ -107,6 +124,8 @@ export type CursorIdentityOptions = {
     onlyServer: boolean;
     processCwd?: string;
     env?: NodeJS.ProcessEnv;
+    /** The installer launcher that started this hook (default `global.MARROW_L`; null: none). */
+    ownLoader?: unknown;
 };
 /** Whether Cursor's `marrow` server is provably the official one (and, at preToolUse, the only server). */
 export declare function cursorOfficialMarrowServer(options: CursorIdentityOptions): ServerIdentity;
