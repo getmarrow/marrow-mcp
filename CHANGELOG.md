@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.9.106 (unreleased)
+
+- With no Marrow key anywhere the server reads one, the MCP server now starts with zero tools and an `instructions` text that says how to connect a key (create one at https://getmarrow.ai/signup, then run `npx -y @getmarrow/install@latest activate`), instead of printing "MARROW_API_KEY environment variable is required" and exiting 1, which hosts showed as a broken server; `tools/call` is a JSON-RPC error, and it judges, records, reads and writes nothing. A key of any shape (an invalid or whitespace one, `MARROW_KEY`, a fleet `MARROW_KEY_<NAME>`, any `--key` argument) or an owner key file that fails the owner-only check keeps the previous behaviour; a key only in a project `.env` still never counts. Hooks, the keyless seatbelt and setup are unchanged.
+
 ## 3.9.105 (2026-10-22)
 
 3.9.104 was never published. This release carries everything that was prepared for it (all items below except the last two) and changes nothing else in the package.

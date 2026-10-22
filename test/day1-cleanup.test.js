@@ -141,7 +141,8 @@ test('the key-missing server start names the signup page and no longer advertise
   const s = sandbox();
   try {
     const r = s.run([]);
-    assert.equal(r.status, 1);
+    // 3.9.106: no key starts the keyless server (zero tools), which exits 0 when stdin ends.
+    assert.equal(r.status, 0);
     assert.match(r.stderr, /getmarrow\.ai\/signup/);
     assert.doesNotMatch(r.stderr, /--key mrw_yourkey/);
   } finally { s.cleanup(); }

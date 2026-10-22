@@ -427,9 +427,10 @@ test('identical owner state with different planted repository files resolves ide
 
 // ── end to end through the CLI ───────────────────────────────────────────
 
-function runCli(args, { cwd, env }) {
+function runCli(args, { cwd, env, endStdin = false }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (endStdin) child.stdin.end();
     let stderr = '';
     let stdout = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
@@ -455,9 +456,10 @@ test('MCP server refuses a planted repository key (0644 and 0600) and shows the 
     const file = path.join(cwd, '.env');
     write(file, PLANTED_LINES(key), mode);
     const home = emptyHome(root);
-    for (const args of [[], ['keys', 'list']]) {
-      const result = await runCli(args, { cwd, env: cliEnv(home) });
-      assert.equal(result.code, 1, args.join(' '));
+    // A repository key never counts: the MCP server starts keyless (zero tools, exit 0 when stdin ends); `keys` still exits 1.
+    for (const [args, code] of [[[], 0], [['keys', 'list'], 1]]) {
+      const result = await runCli(args, { cwd, env: cliEnv(home), endStdin: true });
+      assert.equal(result.code, code, args.join(' '));
       assert.equal(result.stderr.split(`Marrow key in ${file} ${NOTICE}`).length, 2, 'notice appears exactly once');
       assert.equal(`${result.stderr}${result.stdout}`.includes(key), false);
       assert.doesNotMatch(result.stderr, /attacker/);

@@ -21,6 +21,7 @@ const hook_session_1 = require("./hook-session");
 const hook_pre_action_1 = require("./hook-pre-action");
 const node_child_process_1 = require("node:child_process");
 const env_1 = require("./env");
+const keyless_server_1 = require("./keyless-server");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const spool_command_1 = require("./spool-command");
 const guidance_cache_1 = require("./guidance-cache");
@@ -577,765 +578,770 @@ if (process.argv[2] !== 'keys') {
     }
     else {
         const resolvedEnv = (0, env_1.resolveMarrowEnv)();
-        (0, env_1.emitBaseUrlNotice)(resolvedEnv);
-        const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
-        // [SECURITY #3] Validate BASE_URL — require HTTPS to prevent SSRF / credential leakage
-        const rawBaseUrl = resolvedEnv.baseUrl || 'https://api.getmarrow.ai';
-        const BASE_URL = (0, index_1.validateBaseUrl)(rawBaseUrl);
-        // A non-default endpoint receives every action; name its host wherever status is shown.
-        const ENDPOINT_HOST = (0, env_1.nonDefaultBaseUrlHost)(BASE_URL);
-        const SESSION_ID = resolvedEnv.sessionId || undefined;
-        // One identity must bind headers, bodies, queries, cache, and lifecycle events.
-        // resolveMarrowEnv already gives MARROW_FLEET_AGENT_ID precedence over MARROW_AGENT_ID.
-        // When no identity is configured, omit it and let the API resolve the key's
-        // bound agent instead of inventing a process-local identity that changes on restart.
-        const FLEET_AGENT_ID = resolvedEnv.agentId || undefined;
-        const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
-        if (!API_KEY) {
-            if (runningAsPlugin()) {
-                process.stderr.write(`${PLUGIN_KEY_ERROR}\n`);
+        if ((0, keyless_server_1.keylessStart)(resolvedEnv, process.argv.slice(2), process.env)) {
+            // No Marrow key anywhere this server reads one: zero tools and get-a-key instructions instead of exit 1.
+            (0, keyless_server_1.serveKeylessMcp)(hook_contract_2.MCP_ADAPTER_VERSION, `${keyless_server_1.KEYLESS_NOTICE}\n${resolvedEnv.exactFix}\nGet a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
+        }
+        else {
+            (0, env_1.emitBaseUrlNotice)(resolvedEnv);
+            const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
+            // [SECURITY #3] Validate BASE_URL — require HTTPS to prevent SSRF / credential leakage
+            const rawBaseUrl = resolvedEnv.baseUrl || 'https://api.getmarrow.ai';
+            const BASE_URL = (0, index_1.validateBaseUrl)(rawBaseUrl);
+            // A non-default endpoint receives every action; name its host wherever status is shown.
+            const ENDPOINT_HOST = (0, env_1.nonDefaultBaseUrlHost)(BASE_URL);
+            const SESSION_ID = resolvedEnv.sessionId || undefined;
+            // One identity must bind headers, bodies, queries, cache, and lifecycle events.
+            // resolveMarrowEnv already gives MARROW_FLEET_AGENT_ID precedence over MARROW_AGENT_ID.
+            // When no identity is configured, omit it and let the API resolve the key's
+            // bound agent instead of inventing a process-local identity that changes on restart.
+            const FLEET_AGENT_ID = resolvedEnv.agentId || undefined;
+            const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
+            if (!API_KEY) {
+                if (runningAsPlugin()) {
+                    process.stderr.write(`${PLUGIN_KEY_ERROR}\n`);
+                }
+                else {
+                    process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
+                    process.stderr.write(`${resolvedEnv.exactFix}\n`);
+                }
+                process.stderr.write(`Get a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
+                process.exit(1);
             }
-            else {
-                process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
-                process.stderr.write(`${resolvedEnv.exactFix}\n`);
+            if (ENDPOINT_HOST) {
+                process.stderr.write(`[marrow] Using a non-default Marrow endpoint: ${ENDPOINT_HOST} (MARROW_BASE_URL).\n`);
             }
-            process.stderr.write(`Get a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
-            process.exit(1);
-        }
-        if (ENDPOINT_HOST) {
-            process.stderr.write(`[marrow] Using a non-default Marrow endpoint: ${ENDPOINT_HOST} (MARROW_BASE_URL).\n`);
-        }
-        // [SECURITY #12] Warn if API key is visible in process args
-        if (cliArgs.apiKey) {
-            process.stderr.write('[marrow] Warning: --key flag exposes API key in process list. Use MARROW_API_KEY env var for production.\n');
-        }
-        // Auto-orient on startup — cache warnings, inject into EVERY marrow_think response
-        let cachedOrientWarnings = [];
-        let thinkCallCount = 0;
-        let orientCallCount = 0;
-        let initialized = false;
-        // ---------------------------------------------------------------------------
-        // MCP elicitation: where the client can ask its user mid-task, a held
-        // marrow_auto action is approved in the client's own dialog (one click). The
-        // request goes to the client UI, never to the model; the answer is reported to
-        // Marrow as client-attested.
-        // ---------------------------------------------------------------------------
-        const ELICITATION_PROTOCOL_VERSIONS = ['2025-06-18', '2025-11-25'];
-        const ELICITATION_TIMEOUT_MS = 120_000;
-        let clientElicitation = false;
-        let clientHost = 'other';
-        let serverRequestSeq = 0;
-        const pendingClientRequests = new Map();
-        function noteClientCapabilities(params) {
-            const record = params && typeof params === 'object' ? params : {};
-            const capabilities = record.capabilities && typeof record.capabilities === 'object' ? record.capabilities : {};
-            const requested = typeof record.protocolVersion === 'string' ? record.protocolVersion : '';
-            const info = record.clientInfo && typeof record.clientInfo === 'object' ? record.clientInfo : {};
-            const name = typeof info.name === 'string' ? info.name.toLowerCase() : '';
-            clientHost = /claude/.test(name) ? 'claude-code' : /cursor/.test(name) ? 'cursor' : /hermes/.test(name) ? 'hermes'
-                : /codex/.test(name) ? 'codex' : /gemini/.test(name) ? 'gemini' : 'other';
-            clientElicitation = Boolean(capabilities.elicitation && typeof capabilities.elicitation === 'object')
-                && ELICITATION_PROTOCOL_VERSIONS.includes(requested);
-            // Elicitation needs the protocol version that defines it; otherwise keep the version this server always spoke.
-            return clientElicitation ? requested : '2024-11-05';
-        }
-        function requestClient(method, params, timeoutMs) {
-            serverRequestSeq += 1;
-            const id = `marrow-server-${serverRequestSeq}`;
-            return new Promise((resolve) => {
-                const timer = setTimeout(() => {
-                    pendingClientRequests.delete(id);
-                    resolve({ error: { code: 'timeout' } });
-                }, timeoutMs);
-                timer.unref?.();
-                pendingClientRequests.set(id, { resolve, timer });
-                send({ jsonrpc: '2.0', id, method, params });
-            });
-        }
-        /** A response from the client to one of this server's requests (elicitation). */
-        function settleClientResponse(message) {
-            if (typeof message.id !== 'string' || message.method !== undefined)
-                return false;
-            const pending = pendingClientRequests.get(message.id);
-            if (!pending)
-                return false;
-            pendingClientRequests.delete(message.id);
-            clearTimeout(pending.timer);
-            pending.resolve({ result: message.result, error: message.error });
-            return true;
-        }
-        /** Asks the user in the client's own dialog; approved, declined, or null (cancelled, timed out, unsupported). */
-        async function elicitApproval(request) {
-            if (!clientElicitation)
-                return null;
-            const answer = await requestClient('elicitation/create', {
-                message: request.message,
-                requestedSchema: {
-                    type: 'object',
-                    properties: {
-                        decision: {
-                            type: 'string',
-                            title: 'Your answer',
-                            description: 'Approve only if you authorize this exact action.',
-                            enum: ['approve', 'decline'],
-                            enumNames: ['Approve this action', 'Decline it'],
+            // [SECURITY #12] Warn if API key is visible in process args
+            if (cliArgs.apiKey) {
+                process.stderr.write('[marrow] Warning: --key flag exposes API key in process list. Use MARROW_API_KEY env var for production.\n');
+            }
+            // Auto-orient on startup — cache warnings, inject into EVERY marrow_think response
+            let cachedOrientWarnings = [];
+            let thinkCallCount = 0;
+            let orientCallCount = 0;
+            let initialized = false;
+            // ---------------------------------------------------------------------------
+            // MCP elicitation: where the client can ask its user mid-task, a held
+            // marrow_auto action is approved in the client's own dialog (one click). The
+            // request goes to the client UI, never to the model; the answer is reported to
+            // Marrow as client-attested.
+            // ---------------------------------------------------------------------------
+            const ELICITATION_PROTOCOL_VERSIONS = ['2025-06-18', '2025-11-25'];
+            const ELICITATION_TIMEOUT_MS = 120_000;
+            let clientElicitation = false;
+            let clientHost = 'other';
+            let serverRequestSeq = 0;
+            const pendingClientRequests = new Map();
+            function noteClientCapabilities(params) {
+                const record = params && typeof params === 'object' ? params : {};
+                const capabilities = record.capabilities && typeof record.capabilities === 'object' ? record.capabilities : {};
+                const requested = typeof record.protocolVersion === 'string' ? record.protocolVersion : '';
+                const info = record.clientInfo && typeof record.clientInfo === 'object' ? record.clientInfo : {};
+                const name = typeof info.name === 'string' ? info.name.toLowerCase() : '';
+                clientHost = /claude/.test(name) ? 'claude-code' : /cursor/.test(name) ? 'cursor' : /hermes/.test(name) ? 'hermes'
+                    : /codex/.test(name) ? 'codex' : /gemini/.test(name) ? 'gemini' : 'other';
+                clientElicitation = Boolean(capabilities.elicitation && typeof capabilities.elicitation === 'object')
+                    && ELICITATION_PROTOCOL_VERSIONS.includes(requested);
+                // Elicitation needs the protocol version that defines it; otherwise keep the version this server always spoke.
+                return clientElicitation ? requested : '2024-11-05';
+            }
+            function requestClient(method, params, timeoutMs) {
+                serverRequestSeq += 1;
+                const id = `marrow-server-${serverRequestSeq}`;
+                return new Promise((resolve) => {
+                    const timer = setTimeout(() => {
+                        pendingClientRequests.delete(id);
+                        resolve({ error: { code: 'timeout' } });
+                    }, timeoutMs);
+                    timer.unref?.();
+                    pendingClientRequests.set(id, { resolve, timer });
+                    send({ jsonrpc: '2.0', id, method, params });
+                });
+            }
+            /** A response from the client to one of this server's requests (elicitation). */
+            function settleClientResponse(message) {
+                if (typeof message.id !== 'string' || message.method !== undefined)
+                    return false;
+                const pending = pendingClientRequests.get(message.id);
+                if (!pending)
+                    return false;
+                pendingClientRequests.delete(message.id);
+                clearTimeout(pending.timer);
+                pending.resolve({ result: message.result, error: message.error });
+                return true;
+            }
+            /** Asks the user in the client's own dialog; approved, declined, or null (cancelled, timed out, unsupported). */
+            async function elicitApproval(request) {
+                if (!clientElicitation)
+                    return null;
+                const answer = await requestClient('elicitation/create', {
+                    message: request.message,
+                    requestedSchema: {
+                        type: 'object',
+                        properties: {
+                            decision: {
+                                type: 'string',
+                                title: 'Your answer',
+                                description: 'Approve only if you authorize this exact action.',
+                                enum: ['approve', 'decline'],
+                                enumNames: ['Approve this action', 'Decline it'],
+                            },
                         },
+                        required: ['decision'],
                     },
-                    required: ['decision'],
-                },
-            }, ELICITATION_TIMEOUT_MS);
-            const result = answer.result && typeof answer.result === 'object' ? answer.result : null;
-            if (!result)
-                return null;
-            if (result.action === 'decline')
-                return 'declined';
-            if (result.action !== 'accept')
-                return null;
-            const content = result.content && typeof result.content === 'object' ? result.content : {};
-            return content.decision === 'approve' ? 'approved' : content.decision === 'decline' ? 'declined' : null;
-        }
-        function autoElicitationOptions() {
-            if (!clientElicitation)
-                return undefined;
-            const hostSessionId = typeof SESSION_ID === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(SESSION_ID) ? SESSION_ID : `mcp-${process.pid}`;
-            return { elicitApproval, elicitHost: clientHost, elicitHostSessionId: hostSessionId };
-        }
-        function formatWarningActionably(w) {
-            const pct = Math.round(w.failureRate * 100);
-            return `⚠️ ${w.type} has ${pct}% failure rate — check what went wrong last time before proceeding`;
-        }
-        // [FIX #4] Log orient refresh failures instead of silently ignoring
-        async function refreshOrientWarnings() {
-            try {
-                const r = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID, FLEET_AGENT_ID);
-                cachedOrientWarnings = r.warnings;
+                }, ELICITATION_TIMEOUT_MS);
+                const result = answer.result && typeof answer.result === 'object' ? answer.result : null;
+                if (!result)
+                    return null;
+                if (result.action === 'decline')
+                    return 'declined';
+                if (result.action !== 'accept')
+                    return null;
+                const content = result.content && typeof result.content === 'object' ? result.content : {};
+                return content.decision === 'approve' ? 'approved' : content.decision === 'decline' ? 'declined' : null;
             }
-            catch (err) {
-                const msg = err instanceof Error ? err.message : String(err);
-                process.stderr.write(`[marrow] Warning: failed to refresh orient warnings: ${msg}\n`);
+            function autoElicitationOptions() {
+                if (!clientElicitation)
+                    return undefined;
+                const hostSessionId = typeof SESSION_ID === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(SESSION_ID) ? SESSION_ID : `mcp-${process.pid}`;
+                return { elicitApproval, elicitHost: clientHost, elicitHostSessionId: hostSessionId };
             }
-        }
-        // Auto-commit tracking for session close
-        let lastDecisionId = null;
-        let lastCommitted = false;
-        // [FIX #5] Log auto-commit failures instead of silently ignoring; remove broken AbortController
-        async function autoCommitOnClose() {
-            if (lastDecisionId && !lastCommitted) {
+            function formatWarningActionably(w) {
+                const pct = Math.round(w.failureRate * 100);
+                return `⚠️ ${w.type} has ${pct}% failure rate — check what went wrong last time before proceeding`;
+            }
+            // [FIX #4] Log orient refresh failures instead of silently ignoring
+            async function refreshOrientWarnings() {
                 try {
-                    await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
-                        decision_id: lastDecisionId,
-                        success: false,
-                        outcome: 'Session ended without explicit commit',
-                    }, SESSION_ID, FLEET_AGENT_ID);
+                    const r = await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID, FLEET_AGENT_ID);
+                    cachedOrientWarnings = r.warnings;
                 }
                 catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    process.stderr.write(`[marrow] Warning: auto-commit on close failed: ${msg}\n`);
+                    process.stderr.write(`[marrow] Warning: failed to refresh orient warnings: ${msg}\n`);
                 }
             }
-        }
-        // [FIX #10] Handle both SIGTERM and SIGINT for clean shutdown
-        async function gracefulShutdown() {
-            const forceExit = setTimeout(() => process.exit(0), 5000);
-            forceExit.unref();
-            await autoCommitOnClose();
-            process.exit(0);
-        }
-        process.on('SIGTERM', gracefulShutdown);
-        process.on('SIGINT', gracefulShutdown);
-        function send(response) {
-            process.stdout.write(JSON.stringify(response) + '\n');
-        }
-        function success(id, result) {
-            send({ jsonrpc: '2.0', id, result });
-        }
-        function error(id, code, message) {
-            send({ jsonrpc: '2.0', id, error: { code, message } });
-        }
-        function toolSuccess(id, value, isError = false) {
-            success(id, {
-                content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-                ...(isError ? { isError: true } : {}),
-            });
-        }
-        /** Proof fields Marrow reported missing per decision or gate receipt, for a plain answer on a retry conflict. */
-        const commitProofMissing = new Map();
-        function proofFieldsGiven(proof) {
-            if (!proof || typeof proof !== 'object' || Array.isArray(proof))
-                return [];
-            return Object.entries(proof)
-                .filter(([, value]) => value !== null && value !== undefined && value !== ''
-                && !(Array.isArray(value) && value.length === 0)
-                && !(typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0))
-                .map(([key]) => key);
-        }
-        /**
-         * A retry of marrow_commit that added proof, refused as a conflict with the
-         * outcome Marrow already holds (409 MARROW_OUTCOME_OBSERVATION_CONFLICT):
-         * say plainly which proof fields are still missing.
-         */
-        function proofRetryConflict(keys, proof, requiredFromHold) {
-            const required = [...new Set([...keys.flatMap((key) => commitProofMissing.get(key) || []), ...requiredFromHold])];
-            const given = proofFieldsGiven(proof);
-            const stillMissing = required.filter((field) => !given.includes(field));
-            return {
-                committed: false,
-                code: 'MARROW_OUTCOME_OBSERVATION_CONFLICT',
-                proof_required: true,
-                failure_kind: 'validation',
-                still_missing: stillMissing,
-                exact_next_action: stillMissing.length
-                    ? `Still missing: ${stillMissing.join(', ')}. Call marrow_commit again with the same decision_id and gate_receipt_id, and a proof that has every field you sent plus these. Fill them from what really happened; do not invent values.`
-                    : 'Marrow already holds an outcome for this action with different proof. Call marrow_commit again with the same decision_id and gate_receipt_id and the complete proof in one call; do not invent values.',
-            };
-        }
-        function toolFailure(toolName, failure) {
-            const result = (0, request_reliability_1.structuredRequestFailure)(failure);
-            const proofValidation = failure.code === 'proof_required';
-            const infrastructureFailure = !proofValidation && !['authentication_required', 'permission_denied'].includes(failure.code);
-            const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_handoff_status', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
-            const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
-            result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
-            result.control_path = (0, control_path_state_1.controlPathStats)(toolName || 'marrow_control');
-            result.lifecycle_spool = {
-                state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
-                pending: spool.pending,
-                failed: spool.failed,
-                exact_fix: spool.failed > 0 || spool.pending > 0 ? spool.exact_fix : null,
-                drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
-                legacy_namespaces: spool.other_namespaces?.count || 0,
-            };
-            result.host_capability = mcpHostCapability();
-            if (proofValidation) {
-                result.proof_required = true;
-                result.exact_next_action = failure.exactFix;
-            }
-            if (infrastructureFailure && supportsStale) {
-                let cached = null;
-                try {
-                    cached = (0, guidance_cache_1.readGuidanceCache)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
+            // Auto-commit tracking for session close
+            let lastDecisionId = null;
+            let lastCommitted = false;
+            // [FIX #5] Log auto-commit failures instead of silently ignoring; remove broken AbortController
+            async function autoCommitOnClose() {
+                if (lastDecisionId && !lastCommitted) {
+                    try {
+                        await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
+                            decision_id: lastDecisionId,
+                            success: false,
+                            outcome: 'Session ended without explicit commit',
+                        }, SESSION_ID, FLEET_AGENT_ID);
+                    }
+                    catch (err) {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        process.stderr.write(`[marrow] Warning: auto-commit on close failed: ${msg}\n`);
+                    }
                 }
-                catch { /* owner-only cache is best effort */ }
-                result.stale_brief = cached?.context || [
-                    '## Marrow control-path outage brief',
-                    '- This is an infrastructure failure; Marrow returned no policy decision and did not deny the action.',
-                    '- Preserve local evidence and continue only low-risk, reversible work under the owner\'s existing safeguards.',
-                    '- Do not perform high-risk work until a fresh Marrow runtime gate returns allow, warn, review_required, or block.',
-                ].join('\n');
-                result.stale_source = cached ? 'last_known_guidance' : 'local_outage_safety';
-                result.stale_ms = cached?.stale_ms ?? null;
-                result.authorization_state = 'unavailable';
-                result.gate_obtained = false;
-                result.stale_can_authorize_high_risk = false;
-                const retryAfterMs = failure.retryAfterMs;
-                result.exact_next_action = cached
-                    ? 'Use this last-known brief for low-risk context only. Obtain a fresh Marrow runtime gate before high-risk work.'
-                    : retryAfterMs != null
-                        ? `Wait ${retryAfterMs} ms, then retry once. Do not perform high-risk work without a fresh Marrow runtime gate.`
-                        : failure.exactFix;
             }
-            return result;
-        }
-        function mcpHostCapability() {
-            return (0, host_capability_1.resolveHostCapability)({
-                hostLabel: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || process.env.MARROW_AGENT_CLIENT,
-            });
-        }
-        function clientOperationalPayload(toolName, value) {
-            const payload = value && typeof value === 'object' && !Array.isArray(value)
-                ? value
-                : { data: value };
-            const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
-            const habitLoopCopy = (0, habit_loop_copy_1.formatHabitLoopCopy)(payload) || (0, habit_loop_copy_1.formatHabitLoopCopy)(payload.data);
-            return {
-                ...payload,
-                ...(habitLoopCopy ? { habit_loop_copy: habitLoopCopy } : {}),
-                host_capability: payload.host_capability || mcpHostCapability(),
-                client_update: payload.client_update
-                    || (payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
-                        ? payload.data.client_update
-                        : null)
-                    || (0, request_reliability_1.localClientUpdate)(),
-                control_path: (0, control_path_state_1.controlPathStats)(toolName),
-                local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)),
-                lifecycle_spool: {
+            // [FIX #10] Handle both SIGTERM and SIGINT for clean shutdown
+            async function gracefulShutdown() {
+                const forceExit = setTimeout(() => process.exit(0), 5000);
+                forceExit.unref();
+                await autoCommitOnClose();
+                process.exit(0);
+            }
+            process.on('SIGTERM', gracefulShutdown);
+            process.on('SIGINT', gracefulShutdown);
+            function send(response) {
+                process.stdout.write(JSON.stringify(response) + '\n');
+            }
+            function success(id, result) {
+                send({ jsonrpc: '2.0', id, result });
+            }
+            function error(id, code, message) {
+                send({ jsonrpc: '2.0', id, error: { code, message } });
+            }
+            function toolSuccess(id, value, isError = false) {
+                success(id, {
+                    content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+                    ...(isError ? { isError: true } : {}),
+                });
+            }
+            /** Proof fields Marrow reported missing per decision or gate receipt, for a plain answer on a retry conflict. */
+            const commitProofMissing = new Map();
+            function proofFieldsGiven(proof) {
+                if (!proof || typeof proof !== 'object' || Array.isArray(proof))
+                    return [];
+                return Object.entries(proof)
+                    .filter(([, value]) => value !== null && value !== undefined && value !== ''
+                    && !(Array.isArray(value) && value.length === 0)
+                    && !(typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0))
+                    .map(([key]) => key);
+            }
+            /**
+             * A retry of marrow_commit that added proof, refused as a conflict with the
+             * outcome Marrow already holds (409 MARROW_OUTCOME_OBSERVATION_CONFLICT):
+             * say plainly which proof fields are still missing.
+             */
+            function proofRetryConflict(keys, proof, requiredFromHold) {
+                const required = [...new Set([...keys.flatMap((key) => commitProofMissing.get(key) || []), ...requiredFromHold])];
+                const given = proofFieldsGiven(proof);
+                const stillMissing = required.filter((field) => !given.includes(field));
+                return {
+                    committed: false,
+                    code: 'MARROW_OUTCOME_OBSERVATION_CONFLICT',
+                    proof_required: true,
+                    failure_kind: 'validation',
+                    still_missing: stillMissing,
+                    exact_next_action: stillMissing.length
+                        ? `Still missing: ${stillMissing.join(', ')}. Call marrow_commit again with the same decision_id and gate_receipt_id, and a proof that has every field you sent plus these. Fill them from what really happened; do not invent values.`
+                        : 'Marrow already holds an outcome for this action with different proof. Call marrow_commit again with the same decision_id and gate_receipt_id and the complete proof in one call; do not invent values.',
+                };
+            }
+            function toolFailure(toolName, failure) {
+                const result = (0, request_reliability_1.structuredRequestFailure)(failure);
+                const proofValidation = failure.code === 'proof_required';
+                const infrastructureFailure = !proofValidation && !['authentication_required', 'permission_denied'].includes(failure.code);
+                const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_handoff_status', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
+                const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
+                result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
+                result.control_path = (0, control_path_state_1.controlPathStats)(toolName || 'marrow_control');
+                result.lifecycle_spool = {
                     state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
                     pending: spool.pending,
                     failed: spool.failed,
                     exact_fix: spool.failed > 0 || spool.pending > 0 ? spool.exact_fix : null,
                     drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
                     legacy_namespaces: spool.other_namespaces?.count || 0,
-                },
-                mcp_tool_profile: mcpToolProfileStatus(payload),
-                marrow_endpoint: { host: ENDPOINT_HOST || 'api.getmarrow.ai', non_default: Boolean(ENDPOINT_HOST) },
-            };
-        }
-        // [FIX #9] Runtime validation helper for required string params
-        function requireString(args, name) {
-            const val = args[name];
-            if (typeof val !== 'string' || !val.trim()) {
-                throw new Error(`"${name}" is required and must be a non-empty string`);
-            }
-            return val;
-        }
-        function requireBoolean(args, name) {
-            const value = args[name];
-            if (typeof value !== 'boolean')
-                throw new Error(`"${name}" is required and must be boolean`);
-            return value;
-        }
-        const HIGH_RISK_ACTION = /\b(?:billing|credential|database|delete|deploy|destructive|financial|key|merge|migrat(?:e|ion)|payment|production|publish|release|remove|rollback|secret|security|token|truncate|wipe)\b/i;
-        function isHighRiskAction(action, type) {
-            return HIGH_RISK_ACTION.test(`${String(type || '')} ${String(action || '')}`);
-        }
-        async function withControlDeadline(operation, options = {}) {
-            const toolName = options.toolName || 'marrow_control';
-            const configuredTimeoutMs = Number(process.env.MARROW_REQUEST_TIMEOUT_MS);
-            const runtimeBudget = toolName === 'marrow_agent_runtime' || toolName === 'marrow_auto.runtime';
-            const commitBudget = toolName === 'marrow_commit';
-            const timeoutMs = Number.isFinite(configuredTimeoutMs)
-                ? Math.min(10_000, Math.max(150, Math.floor(configuredTimeoutMs)))
-                : commitBudget ? 8_000 : options.highRisk || runtimeBudget ? 4_500 : 4_000;
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), timeoutMs);
-            timer.unref?.();
-            const startedAt = Date.now();
-            try {
-                const result = await operation(controller.signal);
-                (0, control_path_state_1.recordControlPathSample)(toolName, Date.now() - startedAt, true);
+                };
+                result.host_capability = mcpHostCapability();
+                if (proofValidation) {
+                    result.proof_required = true;
+                    result.exact_next_action = failure.exactFix;
+                }
+                if (infrastructureFailure && supportsStale) {
+                    let cached = null;
+                    try {
+                        cached = (0, guidance_cache_1.readGuidanceCache)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
+                    }
+                    catch { /* owner-only cache is best effort */ }
+                    result.stale_brief = cached?.context || [
+                        '## Marrow control-path outage brief',
+                        '- This is an infrastructure failure; Marrow returned no policy decision and did not deny the action.',
+                        '- Preserve local evidence and continue only low-risk, reversible work under the owner\'s existing safeguards.',
+                        '- Do not perform high-risk work until a fresh Marrow runtime gate returns allow, warn, review_required, or block.',
+                    ].join('\n');
+                    result.stale_source = cached ? 'last_known_guidance' : 'local_outage_safety';
+                    result.stale_ms = cached?.stale_ms ?? null;
+                    result.authorization_state = 'unavailable';
+                    result.gate_obtained = false;
+                    result.stale_can_authorize_high_risk = false;
+                    const retryAfterMs = failure.retryAfterMs;
+                    result.exact_next_action = cached
+                        ? 'Use this last-known brief for low-risk context only. Obtain a fresh Marrow runtime gate before high-risk work.'
+                        : retryAfterMs != null
+                            ? `Wait ${retryAfterMs} ms, then retry once. Do not perform high-risk work without a fresh Marrow runtime gate.`
+                            : failure.exactFix;
+                }
                 return result;
             }
-            catch (error) {
-                (0, control_path_state_1.recordControlPathSample)(toolName, Date.now() - startedAt, false);
-                throw error;
-            }
-            finally {
-                clearTimeout(timer);
-            }
-        }
-        function storeRuntimeGuidance(runtime) {
-            try {
-                (0, guidance_cache_1.writeGuidanceCache)({
-                    apiKey: API_KEY,
-                    baseUrl: BASE_URL,
-                    agentId: FLEET_AGENT_ID,
-                    context: (0, hook_context_1.compactRuntimeContext)(runtime),
+            function mcpHostCapability() {
+                return (0, host_capability_1.resolveHostCapability)({
+                    hostLabel: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || process.env.MARROW_AGENT_CLIENT,
                 });
             }
-            catch { /* owner-only cache is best effort */ }
-        }
-        function storeLastKnownStatus(status, source) {
-            try {
-                (0, status_cache_1.writeStatusCache)({
-                    apiKey: API_KEY,
-                    baseUrl: BASE_URL,
-                    agentId: FLEET_AGENT_ID,
-                    status,
-                    source,
-                });
+            function clientOperationalPayload(toolName, value) {
+                const payload = value && typeof value === 'object' && !Array.isArray(value)
+                    ? value
+                    : { data: value };
+                const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
+                const habitLoopCopy = (0, habit_loop_copy_1.formatHabitLoopCopy)(payload) || (0, habit_loop_copy_1.formatHabitLoopCopy)(payload.data);
+                return {
+                    ...payload,
+                    ...(habitLoopCopy ? { habit_loop_copy: habitLoopCopy } : {}),
+                    host_capability: payload.host_capability || mcpHostCapability(),
+                    client_update: payload.client_update
+                        || (payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+                            ? payload.data.client_update
+                            : null)
+                        || (0, request_reliability_1.localClientUpdate)(),
+                    control_path: (0, control_path_state_1.controlPathStats)(toolName),
+                    local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)),
+                    lifecycle_spool: {
+                        state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
+                        pending: spool.pending,
+                        failed: spool.failed,
+                        exact_fix: spool.failed > 0 || spool.pending > 0 ? spool.exact_fix : null,
+                        drain_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp drain-spool',
+                        legacy_namespaces: spool.other_namespaces?.count || 0,
+                    },
+                    mcp_tool_profile: mcpToolProfileStatus(payload),
+                    marrow_endpoint: { host: ENDPOINT_HOST || 'api.getmarrow.ai', non_default: Boolean(ENDPOINT_HOST) },
+                };
             }
-            catch { /* owner-only cache is best effort */ }
-        }
-        function refreshStatusInBackground() {
-            void (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID)
-                .then((status) => storeLastKnownStatus(status, 'status'))
-                .catch(() => undefined);
-        }
-        // [FIX #6 & #7] Safe JSON response helper for memory API functions
-        async function safeMemoryResponse(res) {
-            if (!res.ok) {
-                let detail = '';
-                try {
-                    detail = await res.text();
+            // [FIX #9] Runtime validation helper for required string params
+            function requireString(args, name) {
+                const val = args[name];
+                if (typeof val !== 'string' || !val.trim()) {
+                    throw new Error(`"${name}" is required and must be a non-empty string`);
                 }
-                catch { /* ignore */ }
-                throw new Error(`API error ${res.status}: ${detail.slice(0, 200)}`);
+                return val;
             }
-            const json = await res.json();
-            if (json.error) {
-                throw new Error(json.error);
+            function requireBoolean(args, name) {
+                const value = args[name];
+                if (typeof value !== 'boolean')
+                    throw new Error(`"${name}" is required and must be boolean`);
+                return value;
             }
-            return json;
-        }
-        // Memory API functions — all patched with safeMemoryResponse and validatePathParam
-        async function marrowListMemories(apiKey, baseUrl, params, sessionId) {
-            const qs = new URLSearchParams();
-            if (params?.status)
-                qs.set('status', params.status);
-            if (params?.query)
-                qs.set('query', params.query);
-            if (params?.limit)
-                qs.set('limit', String(params.limit));
-            if (params?.agentId)
-                qs.set('agent_id', params.agentId);
-            const res = await fetch(`${baseUrl}/v1/memories?${qs.toString()}`, {
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data?.memories || [];
-        }
-        async function marrowGetMemory(apiKey, baseUrl, id, sessionId) {
-            const safeId = (0, index_1.validatePathParam)(id, 'id');
-            const res = await fetch(`${baseUrl}/v1/memories/${safeId}`, {
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data?.memory || null;
-        }
-        async function marrowUpdateMemory(apiKey, baseUrl, id, patch, sessionId) {
-            const safeId = (0, index_1.validatePathParam)(id, 'id');
-            const res = await fetch(`${baseUrl}/v1/memories/${safeId}`, {
-                method: 'PATCH',
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-                body: JSON.stringify(patch),
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data?.memory;
-        }
-        async function marrowDeleteMemory(apiKey, baseUrl, id, meta, sessionId) {
-            const safeId = (0, index_1.validatePathParam)(id, 'id');
-            const res = await fetch(`${baseUrl}/v1/memories/${safeId}`, {
-                method: 'DELETE',
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-                body: JSON.stringify(meta || {}),
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data?.memory;
-        }
-        async function marrowMarkOutdated(apiKey, baseUrl, id, meta, sessionId) {
-            const safeId = (0, index_1.validatePathParam)(id, 'id');
-            const res = await fetch(`${baseUrl}/v1/memories/${safeId}/outdated`, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-                body: JSON.stringify(meta || {}),
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data?.memory;
-        }
-        async function marrowSupersedeMemory(apiKey, baseUrl, id, replacement, sessionId) {
-            const safeId = (0, index_1.validatePathParam)(id, 'id');
-            const res = await fetch(`${baseUrl}/v1/memories/${safeId}/supersede`, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-                body: JSON.stringify(replacement),
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data;
-        }
-        async function marrowShareMemory(apiKey, baseUrl, id, agentIds, actor, sessionId) {
-            const safeId = (0, index_1.validatePathParam)(id, 'id');
-            const res = await fetch(`${baseUrl}/v1/memories/${safeId}/share`, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-                body: JSON.stringify({ agent_ids: agentIds, actor }),
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data?.memory;
-        }
-        async function marrowExportMemories(apiKey, baseUrl, params, sessionId) {
-            const qs = new URLSearchParams();
-            if (params?.format)
-                qs.set('format', params.format);
-            if (params?.status)
-                qs.set('status', params.status);
-            if (params?.tags)
-                qs.set('tags', params.tags);
-            const res = await fetch(`${baseUrl}/v1/memories/export?${qs.toString()}`, {
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data;
-        }
-        async function marrowImportMemories(apiKey, baseUrl, memories, mode, sessionId) {
-            const res = await fetch(`${baseUrl}/v1/memories/import`, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-                body: JSON.stringify({ memories, mode }),
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data;
-        }
-        async function marrowRetrieveMemories(apiKey, baseUrl, query, params, sessionId) {
-            const qs = new URLSearchParams();
-            // The query leaves the process redacted, like every other tool's text.
-            qs.set('q', (0, redact_1.redactSensitiveText)(query));
-            if (params?.limit)
-                qs.set('limit', String(params.limit));
-            if (params?.from)
-                qs.set('from', params.from);
-            if (params?.to)
-                qs.set('to', params.to);
-            if (params?.tags)
-                qs.set('tags', params.tags);
-            if (params?.source)
-                qs.set('source', params.source);
-            if (params?.status)
-                qs.set('status', params.status);
-            if (params?.shared !== undefined)
-                qs.set('shared', String(params.shared));
-            const res = await fetch(`${baseUrl}/v1/memories/retrieve?${qs.toString()}`, {
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
-                },
-            });
-            const json = await safeMemoryResponse(res);
-            return json.data;
-        }
-        function activeToolProfile() {
-            const configured = process.env.MARROW_TOOL_PROFILE;
-            if (configured === undefined || configured === 'primary')
-                return 'primary';
-            if (configured === 'core' || configured === 'full')
-                return configured;
-            throw new Error('Invalid MARROW_TOOL_PROFILE value. Set MARROW_TOOL_PROFILE=primary, core, or full, '
-                + 'or unset it for primary; then restart MCP.');
-        }
-        function toolsForProfile(profile) {
-            if (profile === 'full')
-                return tool_catalog_1.TOOLS;
-            const visibleNames = profile === 'primary' ? tool_catalog_1.PRIMARY_TOOL_NAMES : tool_catalog_1.CORE_TOOL_NAMES;
-            return tool_catalog_1.TOOLS.filter((tool) => visibleNames.has(tool.name));
-        }
-        function advertisedTools() {
-            return toolsForProfile(activeToolProfile());
-        }
-        function toolAllowedByActiveProfile(toolName) {
-            return Boolean(toolName && toolsForProfile(activeToolProfile()).some((tool) => tool.name === toolName));
-        }
-        function recordValue(value) {
-            return value && typeof value === 'object' && !Array.isArray(value)
-                ? value
-                : null;
-        }
-        function nonNegativeInteger(value) {
-            return Number.isInteger(value) && Number(value) >= 0;
-        }
-        function validatedPrimaryToolAvailability(value) {
-            const projection = recordValue(value);
-            const evidence = recordValue(projection?.entitlement_evidence);
-            const counts = recordValue(projection?.counts);
-            const tools = projection?.tools;
-            const expectedNames = [...tool_catalog_1.PRIMARY_TOOL_NAMES];
-            if (!projection
-                || projection.profile !== 'primary'
-                || (projection.current_plan !== null && typeof projection.current_plan !== 'string')
-                || typeof projection.owner_management_url !== 'string'
-                || !evidence
-                || (evidence.state !== 'available' && evidence.state !== 'unavailable')
-                || typeof evidence.source !== 'string'
-                || typeof evidence.authoritative !== 'boolean'
-                || evidence.authorizing !== false
-                || !counts
-                || !nonNegativeInteger(counts.total)
-                || !nonNegativeInteger(counts.entitled)
-                || !nonNegativeInteger(counts.upgrade_required)
-                || !nonNegativeInteger(counts.unavailable)
-                || counts.total !== expectedNames.length
-                || counts.entitled + counts.upgrade_required + counts.unavailable !== counts.total
-                || !Array.isArray(tools)
-                || tools.length !== expectedNames.length) {
-                return null;
+            const HIGH_RISK_ACTION = /\b(?:billing|credential|database|delete|deploy|destructive|financial|key|merge|migrat(?:e|ion)|payment|production|publish|release|remove|rollback|secret|security|token|truncate|wipe)\b/i;
+            function isHighRiskAction(action, type) {
+                return HIGH_RISK_ACTION.test(`${String(type || '')} ${String(action || '')}`);
             }
-            if ((evidence.state === 'available' && evidence.authoritative !== true)
-                || (evidence.state === 'unavailable' && evidence.authoritative !== false)) {
-                return null;
+            async function withControlDeadline(operation, options = {}) {
+                const toolName = options.toolName || 'marrow_control';
+                const configuredTimeoutMs = Number(process.env.MARROW_REQUEST_TIMEOUT_MS);
+                const runtimeBudget = toolName === 'marrow_agent_runtime' || toolName === 'marrow_auto.runtime';
+                const commitBudget = toolName === 'marrow_commit';
+                const timeoutMs = Number.isFinite(configuredTimeoutMs)
+                    ? Math.min(10_000, Math.max(150, Math.floor(configuredTimeoutMs)))
+                    : commitBudget ? 8_000 : options.highRisk || runtimeBudget ? 4_500 : 4_000;
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), timeoutMs);
+                timer.unref?.();
+                const startedAt = Date.now();
+                try {
+                    const result = await operation(controller.signal);
+                    (0, control_path_state_1.recordControlPathSample)(toolName, Date.now() - startedAt, true);
+                    return result;
+                }
+                catch (error) {
+                    (0, control_path_state_1.recordControlPathSample)(toolName, Date.now() - startedAt, false);
+                    throw error;
+                }
+                finally {
+                    clearTimeout(timer);
+                }
             }
-            const derivedCounts = { entitled: 0, upgrade_required: 0, unavailable: 0 };
-            for (let index = 0; index < tools.length; index++) {
-                const tool = recordValue(tools[index]);
-                const state = tool?.state;
-                if (!tool
-                    || tool.name !== expectedNames[index]
-                    || (state !== 'entitled' && state !== 'upgrade_required' && state !== 'unavailable')
-                    || typeof tool.always_available !== 'boolean'
-                    || (tool.plan_feature !== null && typeof tool.plan_feature !== 'string')
-                    || (tool.minimum_plan !== null && typeof tool.minimum_plan !== 'string')
-                    || typeof tool.owner_management_url !== 'string') {
+            function storeRuntimeGuidance(runtime) {
+                try {
+                    (0, guidance_cache_1.writeGuidanceCache)({
+                        apiKey: API_KEY,
+                        baseUrl: BASE_URL,
+                        agentId: FLEET_AGENT_ID,
+                        context: (0, hook_context_1.compactRuntimeContext)(runtime),
+                    });
+                }
+                catch { /* owner-only cache is best effort */ }
+            }
+            function storeLastKnownStatus(status, source) {
+                try {
+                    (0, status_cache_1.writeStatusCache)({
+                        apiKey: API_KEY,
+                        baseUrl: BASE_URL,
+                        agentId: FLEET_AGENT_ID,
+                        status,
+                        source,
+                    });
+                }
+                catch { /* owner-only cache is best effort */ }
+            }
+            function refreshStatusInBackground() {
+                void (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID)
+                    .then((status) => storeLastKnownStatus(status, 'status'))
+                    .catch(() => undefined);
+            }
+            // [FIX #6 & #7] Safe JSON response helper for memory API functions
+            async function safeMemoryResponse(res) {
+                if (!res.ok) {
+                    let detail = '';
+                    try {
+                        detail = await res.text();
+                    }
+                    catch { /* ignore */ }
+                    throw new Error(`API error ${res.status}: ${detail.slice(0, 200)}`);
+                }
+                const json = await res.json();
+                if (json.error) {
+                    throw new Error(json.error);
+                }
+                return json;
+            }
+            // Memory API functions — all patched with safeMemoryResponse and validatePathParam
+            async function marrowListMemories(apiKey, baseUrl, params, sessionId) {
+                const qs = new URLSearchParams();
+                if (params?.status)
+                    qs.set('status', params.status);
+                if (params?.query)
+                    qs.set('query', params.query);
+                if (params?.limit)
+                    qs.set('limit', String(params.limit));
+                if (params?.agentId)
+                    qs.set('agent_id', params.agentId);
+                const res = await fetch(`${baseUrl}/v1/memories?${qs.toString()}`, {
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data?.memories || [];
+            }
+            async function marrowGetMemory(apiKey, baseUrl, id, sessionId) {
+                const safeId = (0, index_1.validatePathParam)(id, 'id');
+                const res = await fetch(`${baseUrl}/v1/memories/${safeId}`, {
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data?.memory || null;
+            }
+            async function marrowUpdateMemory(apiKey, baseUrl, id, patch, sessionId) {
+                const safeId = (0, index_1.validatePathParam)(id, 'id');
+                const res = await fetch(`${baseUrl}/v1/memories/${safeId}`, {
+                    method: 'PATCH',
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json',
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                    body: JSON.stringify(patch),
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data?.memory;
+            }
+            async function marrowDeleteMemory(apiKey, baseUrl, id, meta, sessionId) {
+                const safeId = (0, index_1.validatePathParam)(id, 'id');
+                const res = await fetch(`${baseUrl}/v1/memories/${safeId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json',
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                    body: JSON.stringify(meta || {}),
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data?.memory;
+            }
+            async function marrowMarkOutdated(apiKey, baseUrl, id, meta, sessionId) {
+                const safeId = (0, index_1.validatePathParam)(id, 'id');
+                const res = await fetch(`${baseUrl}/v1/memories/${safeId}/outdated`, {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json',
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                    body: JSON.stringify(meta || {}),
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data?.memory;
+            }
+            async function marrowSupersedeMemory(apiKey, baseUrl, id, replacement, sessionId) {
+                const safeId = (0, index_1.validatePathParam)(id, 'id');
+                const res = await fetch(`${baseUrl}/v1/memories/${safeId}/supersede`, {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json',
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                    body: JSON.stringify(replacement),
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data;
+            }
+            async function marrowShareMemory(apiKey, baseUrl, id, agentIds, actor, sessionId) {
+                const safeId = (0, index_1.validatePathParam)(id, 'id');
+                const res = await fetch(`${baseUrl}/v1/memories/${safeId}/share`, {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json',
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                    body: JSON.stringify({ agent_ids: agentIds, actor }),
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data?.memory;
+            }
+            async function marrowExportMemories(apiKey, baseUrl, params, sessionId) {
+                const qs = new URLSearchParams();
+                if (params?.format)
+                    qs.set('format', params.format);
+                if (params?.status)
+                    qs.set('status', params.status);
+                if (params?.tags)
+                    qs.set('tags', params.tags);
+                const res = await fetch(`${baseUrl}/v1/memories/export?${qs.toString()}`, {
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data;
+            }
+            async function marrowImportMemories(apiKey, baseUrl, memories, mode, sessionId) {
+                const res = await fetch(`${baseUrl}/v1/memories/import`, {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json',
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                    body: JSON.stringify({ memories, mode }),
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data;
+            }
+            async function marrowRetrieveMemories(apiKey, baseUrl, query, params, sessionId) {
+                const qs = new URLSearchParams();
+                // The query leaves the process redacted, like every other tool's text.
+                qs.set('q', (0, redact_1.redactSensitiveText)(query));
+                if (params?.limit)
+                    qs.set('limit', String(params.limit));
+                if (params?.from)
+                    qs.set('from', params.from);
+                if (params?.to)
+                    qs.set('to', params.to);
+                if (params?.tags)
+                    qs.set('tags', params.tags);
+                if (params?.source)
+                    qs.set('source', params.source);
+                if (params?.status)
+                    qs.set('status', params.status);
+                if (params?.shared !== undefined)
+                    qs.set('shared', String(params.shared));
+                const res = await fetch(`${baseUrl}/v1/memories/retrieve?${qs.toString()}`, {
+                    headers: {
+                        Authorization: `Bearer ${apiKey}`,
+                        ...(sessionId ? { 'X-Marrow-Session-Id': sessionId } : {}),
+                    },
+                });
+                const json = await safeMemoryResponse(res);
+                return json.data;
+            }
+            function activeToolProfile() {
+                const configured = process.env.MARROW_TOOL_PROFILE;
+                if (configured === undefined || configured === 'primary')
+                    return 'primary';
+                if (configured === 'core' || configured === 'full')
+                    return configured;
+                throw new Error('Invalid MARROW_TOOL_PROFILE value. Set MARROW_TOOL_PROFILE=primary, core, or full, '
+                    + 'or unset it for primary; then restart MCP.');
+            }
+            function toolsForProfile(profile) {
+                if (profile === 'full')
+                    return tool_catalog_1.TOOLS;
+                const visibleNames = profile === 'primary' ? tool_catalog_1.PRIMARY_TOOL_NAMES : tool_catalog_1.CORE_TOOL_NAMES;
+                return tool_catalog_1.TOOLS.filter((tool) => visibleNames.has(tool.name));
+            }
+            function advertisedTools() {
+                return toolsForProfile(activeToolProfile());
+            }
+            function toolAllowedByActiveProfile(toolName) {
+                return Boolean(toolName && toolsForProfile(activeToolProfile()).some((tool) => tool.name === toolName));
+            }
+            function recordValue(value) {
+                return value && typeof value === 'object' && !Array.isArray(value)
+                    ? value
+                    : null;
+            }
+            function nonNegativeInteger(value) {
+                return Number.isInteger(value) && Number(value) >= 0;
+            }
+            function validatedPrimaryToolAvailability(value) {
+                const projection = recordValue(value);
+                const evidence = recordValue(projection?.entitlement_evidence);
+                const counts = recordValue(projection?.counts);
+                const tools = projection?.tools;
+                const expectedNames = [...tool_catalog_1.PRIMARY_TOOL_NAMES];
+                if (!projection
+                    || projection.profile !== 'primary'
+                    || (projection.current_plan !== null && typeof projection.current_plan !== 'string')
+                    || typeof projection.owner_management_url !== 'string'
+                    || !evidence
+                    || (evidence.state !== 'available' && evidence.state !== 'unavailable')
+                    || typeof evidence.source !== 'string'
+                    || typeof evidence.authoritative !== 'boolean'
+                    || evidence.authorizing !== false
+                    || !counts
+                    || !nonNegativeInteger(counts.total)
+                    || !nonNegativeInteger(counts.entitled)
+                    || !nonNegativeInteger(counts.upgrade_required)
+                    || !nonNegativeInteger(counts.unavailable)
+                    || counts.total !== expectedNames.length
+                    || counts.entitled + counts.upgrade_required + counts.unavailable !== counts.total
+                    || !Array.isArray(tools)
+                    || tools.length !== expectedNames.length) {
                     return null;
                 }
-                derivedCounts[state]++;
-            }
-            if (derivedCounts.entitled !== counts.entitled
-                || derivedCounts.upgrade_required !== counts.upgrade_required
-                || derivedCounts.unavailable !== counts.unavailable) {
-                return null;
-            }
-            return {
-                projection,
-                evidenceState: evidence.state,
-            };
-        }
-        function backendPrimaryToolAvailability(value) {
-            const payload = recordValue(value);
-            if (!payload)
-                return null;
-            const data = recordValue(payload.data);
-            const status = recordValue(payload.status);
-            const entitlements = recordValue(payload.entitlements);
-            const entitlementProjection = recordValue(payload.entitlement_projection);
-            const statusEntitlements = recordValue(status?.entitlements);
-            const statusProjection = recordValue(status?.entitlement_projection);
-            const candidates = [
-                payload.primary_tool_availability,
-                data?.primary_tool_availability,
-                status?.primary_tool_availability,
-                entitlements?.primary_tool_availability,
-                entitlementProjection?.primary_tool_availability,
-                statusEntitlements?.primary_tool_availability,
-                statusProjection?.primary_tool_availability,
-            ];
-            for (const candidate of candidates) {
-                const validated = validatedPrimaryToolAvailability(candidate);
-                if (validated)
-                    return validated;
-            }
-            return null;
-        }
-        function mcpToolProfileStatus(value) {
-            const profile = activeToolProfile();
-            const visibleToolNames = toolsForProfile(profile).map((tool) => tool.name);
-            const payload = recordValue(value);
-            const cachedOrStale = payload?.cached === true
-                || payload?.stale === true
-                || payload?.status_freshness === 'stale';
-            const backendProjection = cachedOrStale ? null : backendPrimaryToolAvailability(payload);
-            const backendProjectionAvailable = backendProjection?.evidenceState === 'available';
-            return {
-                configured_profile: process.env.MARROW_TOOL_PROFILE ?? 'unset',
-                effective_profile: profile,
-                visible_tool_count: visibleToolNames.length,
-                visible_tool_names: visibleToolNames,
-                local_visibility_grants_entitlement: false,
-                backend_entitlement_projection: {
-                    evidence_state: backendProjectionAvailable ? 'available' : 'unavailable',
-                    source: cachedOrStale
-                        ? 'cached_or_stale_status'
-                        : backendProjection
-                            ? 'authenticated_backend'
-                            : 'backend_projection_not_provided',
-                    authorizes_calls: false,
-                    primary_tool_availability: backendProjectionAvailable ? backendProjection.projection : null,
-                },
-            };
-        }
-        function withMcpToolProfileStatus(value) {
-            const payload = recordValue(value) || { data: value };
-            return {
-                ...payload,
-                mcp_tool_profile: mcpToolProfileStatus(payload),
-            };
-        }
-        // Request handler
-        async function handleRequest(req) {
-            const { id, method, params } = req;
-            const responseStartedAt = performance.now();
-            // [FIX #15] Enforce initialize-first per MCP spec
-            if (!initialized && method !== 'initialize') {
-                error(id, -32002, 'Server not initialized. Send initialize first.');
-                return;
-            }
-            try {
-                if (method === 'initialize') {
-                    initialized = true;
-                    const hostCapability = mcpHostCapability();
-                    const protocolVersion = noteClientCapabilities(params);
-                    success(id, {
-                        protocolVersion,
-                        capabilities: { tools: {}, prompts: {} },
-                        serverInfo: { name: 'marrow', version: hook_contract_2.MCP_ADAPTER_VERSION },
-                        ...(AUTO_ENROLL ? {
-                            instructions: `Use marrow_agent_runtime before consequential actions and follow its gate, proof and approval contract. Reuse runtime.decision_id when completion_contract identifies a created decision; keep runtime.runtime_authorization.id separate as gate_receipt_id. Call marrow_think only when decision creation is required. Close outcomes with marrow_commit; only committed:true confirms closure. ${activeToolProfile() === 'primary' ? 'The default primary profile exposes 17 tools. Use marrow_agent_status for status and marrow_fleet_lessons for prior lessons.' : 'This explicitly selected core/full profile also provides marrow_auto, marrow_status and marrow_ask. Resume pending auto only after retry_after_ms with the same operation_id and unchanged scope, outcome, proof and receipts.'} An advisory risk_gate.enforced:false is not live enforcement; review_required or block still does not grant permission. Infrastructure failures are not policy denials; continue only low-risk reversible work from returned outage-safe guidance and require a fresh gate for high-risk work. ${(0, host_capability_1.hostCapabilityInstructions)(hostCapability)}`,
-                        } : {}),
-                        _meta: { host_capability: hostCapability },
-                    });
-                    // Auto-enroll: emit enrollment notification on connection
-                    if (AUTO_ENROLL) {
-                        send({
-                            jsonrpc: '2.0',
-                            method: 'notifications/message',
-                            params: {
-                                level: 'info',
-                                logger: 'marrow',
-                                data: {
-                                    type: 'auto_enroll',
-                                    message: `Marrow operating contract available. MCP tools are on demand. ${hostCapability.exact_next_action}`,
-                                    agentId: FLEET_AGENT_ID,
-                                    client_update: (0, request_reliability_1.localClientUpdate)(),
-                                    host_capability: hostCapability,
-                                },
-                            },
-                        });
+                if ((evidence.state === 'available' && evidence.authoritative !== true)
+                    || (evidence.state === 'unavailable' && evidence.authoritative !== false)) {
+                    return null;
+                }
+                const derivedCounts = { entitled: 0, upgrade_required: 0, unavailable: 0 };
+                for (let index = 0; index < tools.length; index++) {
+                    const tool = recordValue(tools[index]);
+                    const state = tool?.state;
+                    if (!tool
+                        || tool.name !== expectedNames[index]
+                        || (state !== 'entitled' && state !== 'upgrade_required' && state !== 'unavailable')
+                        || typeof tool.always_available !== 'boolean'
+                        || (tool.plan_feature !== null && typeof tool.plan_feature !== 'string')
+                        || (tool.minimum_plan !== null && typeof tool.minimum_plan !== 'string')
+                        || typeof tool.owner_management_url !== 'string') {
+                        return null;
                     }
+                    derivedCounts[state]++;
+                }
+                if (derivedCounts.entitled !== counts.entitled
+                    || derivedCounts.upgrade_required !== counts.upgrade_required
+                    || derivedCounts.unavailable !== counts.unavailable) {
+                    return null;
+                }
+                return {
+                    projection,
+                    evidenceState: evidence.state,
+                };
+            }
+            function backendPrimaryToolAvailability(value) {
+                const payload = recordValue(value);
+                if (!payload)
+                    return null;
+                const data = recordValue(payload.data);
+                const status = recordValue(payload.status);
+                const entitlements = recordValue(payload.entitlements);
+                const entitlementProjection = recordValue(payload.entitlement_projection);
+                const statusEntitlements = recordValue(status?.entitlements);
+                const statusProjection = recordValue(status?.entitlement_projection);
+                const candidates = [
+                    payload.primary_tool_availability,
+                    data?.primary_tool_availability,
+                    status?.primary_tool_availability,
+                    entitlements?.primary_tool_availability,
+                    entitlementProjection?.primary_tool_availability,
+                    statusEntitlements?.primary_tool_availability,
+                    statusProjection?.primary_tool_availability,
+                ];
+                for (const candidate of candidates) {
+                    const validated = validatedPrimaryToolAvailability(candidate);
+                    if (validated)
+                        return validated;
+                }
+                return null;
+            }
+            function mcpToolProfileStatus(value) {
+                const profile = activeToolProfile();
+                const visibleToolNames = toolsForProfile(profile).map((tool) => tool.name);
+                const payload = recordValue(value);
+                const cachedOrStale = payload?.cached === true
+                    || payload?.stale === true
+                    || payload?.status_freshness === 'stale';
+                const backendProjection = cachedOrStale ? null : backendPrimaryToolAvailability(payload);
+                const backendProjectionAvailable = backendProjection?.evidenceState === 'available';
+                return {
+                    configured_profile: process.env.MARROW_TOOL_PROFILE ?? 'unset',
+                    effective_profile: profile,
+                    visible_tool_count: visibleToolNames.length,
+                    visible_tool_names: visibleToolNames,
+                    local_visibility_grants_entitlement: false,
+                    backend_entitlement_projection: {
+                        evidence_state: backendProjectionAvailable ? 'available' : 'unavailable',
+                        source: cachedOrStale
+                            ? 'cached_or_stale_status'
+                            : backendProjection
+                                ? 'authenticated_backend'
+                                : 'backend_projection_not_provided',
+                        authorizes_calls: false,
+                        primary_tool_availability: backendProjectionAvailable ? backendProjection.projection : null,
+                    },
+                };
+            }
+            function withMcpToolProfileStatus(value) {
+                const payload = recordValue(value) || { data: value };
+                return {
+                    ...payload,
+                    mcp_tool_profile: mcpToolProfileStatus(payload),
+                };
+            }
+            // Request handler
+            async function handleRequest(req) {
+                const { id, method, params } = req;
+                const responseStartedAt = performance.now();
+                // [FIX #15] Enforce initialize-first per MCP spec
+                if (!initialized && method !== 'initialize') {
+                    error(id, -32002, 'Server not initialized. Send initialize first.');
                     return;
                 }
-                if (method === 'prompts/list') {
-                    if (AUTO_ENROLL) {
+                try {
+                    if (method === 'initialize') {
+                        initialized = true;
+                        const hostCapability = mcpHostCapability();
+                        const protocolVersion = noteClientCapabilities(params);
                         success(id, {
-                            prompts: [
-                                {
-                                    name: 'marrow-always-on',
-                                    description: 'Marrow control and proof contract. MCP tools are on demand; host activity is client-self-reported and coverage remains unverified without independent authority.',
-                                    arguments: [],
-                                    _meta: { host_capability: mcpHostCapability() },
-                                },
-                            ],
+                            protocolVersion,
+                            capabilities: { tools: {}, prompts: {} },
+                            serverInfo: { name: 'marrow', version: hook_contract_2.MCP_ADAPTER_VERSION },
+                            ...(AUTO_ENROLL ? {
+                                instructions: `Use marrow_agent_runtime before consequential actions and follow its gate, proof and approval contract. Reuse runtime.decision_id when completion_contract identifies a created decision; keep runtime.runtime_authorization.id separate as gate_receipt_id. Call marrow_think only when decision creation is required. Close outcomes with marrow_commit; only committed:true confirms closure. ${activeToolProfile() === 'primary' ? 'The default primary profile exposes 17 tools. Use marrow_agent_status for status and marrow_fleet_lessons for prior lessons.' : 'This explicitly selected core/full profile also provides marrow_auto, marrow_status and marrow_ask. Resume pending auto only after retry_after_ms with the same operation_id and unchanged scope, outcome, proof and receipts.'} An advisory risk_gate.enforced:false is not live enforcement; review_required or block still does not grant permission. Infrastructure failures are not policy denials; continue only low-risk reversible work from returned outage-safe guidance and require a fresh gate for high-risk work. ${(0, host_capability_1.hostCapabilityInstructions)(hostCapability)}`,
+                            } : {}),
+                            _meta: { host_capability: hostCapability },
                         });
-                    }
-                    else {
-                        success(id, { prompts: [] });
-                    }
-                    return;
-                }
-                if (method === 'prompts/get') {
-                    const promptName = params?.name;
-                    if (promptName !== 'marrow-always-on' || !AUTO_ENROLL) {
-                        error(id, -32602, 'Unknown prompt');
+                        // Auto-enroll: emit enrollment notification on connection
+                        if (AUTO_ENROLL) {
+                            send({
+                                jsonrpc: '2.0',
+                                method: 'notifications/message',
+                                params: {
+                                    level: 'info',
+                                    logger: 'marrow',
+                                    data: {
+                                        type: 'auto_enroll',
+                                        message: `Marrow operating contract available. MCP tools are on demand. ${hostCapability.exact_next_action}`,
+                                        agentId: FLEET_AGENT_ID,
+                                        client_update: (0, request_reliability_1.localClientUpdate)(),
+                                        host_capability: hostCapability,
+                                    },
+                                },
+                            });
+                        }
                         return;
                     }
-                    const hostCapability = mcpHostCapability();
-                    success(id, {
-                        description: 'Marrow control and proof contract — MCP tools are on demand, host activity is client-self-reported, and coverage is unverified without independent authority',
-                        _meta: { host_capability: hostCapability },
-                        messages: [
-                            {
-                                role: 'user',
-                                content: {
-                                    type: 'text',
-                                    text: `You have Marrow — the agent control and proof layer around this workflow.
+                    if (method === 'prompts/list') {
+                        if (AUTO_ENROLL) {
+                            success(id, {
+                                prompts: [
+                                    {
+                                        name: 'marrow-always-on',
+                                        description: 'Marrow control and proof contract. MCP tools are on demand; host activity is client-self-reported and coverage remains unverified without independent authority.',
+                                        arguments: [],
+                                        _meta: { host_capability: mcpHostCapability() },
+                                    },
+                                ],
+                            });
+                        }
+                        else {
+                            success(id, { prompts: [] });
+                        }
+                        return;
+                    }
+                    if (method === 'prompts/get') {
+                        const promptName = params?.name;
+                        if (promptName !== 'marrow-always-on' || !AUTO_ENROLL) {
+                            error(id, -32602, 'Unknown prompt');
+                            return;
+                        }
+                        const hostCapability = mcpHostCapability();
+                        success(id, {
+                            description: 'Marrow control and proof contract — MCP tools are on demand, host activity is client-self-reported, and coverage is unverified without independent authority',
+                            _meta: { host_capability: hostCapability },
+                            messages: [
+                                {
+                                    role: 'user',
+                                    content: {
+                                        type: 'text',
+                                        text: `You have Marrow — the agent control and proof layer around this workflow.
 
 ## Capability-qualified operating contract
 
@@ -1366,995 +1372,996 @@ Use marrow_ask for authorized history questions such as:
 - "what worked last time we published?"
 
 Marrow is not a replacement agent or a standalone memory app. Context and prior lessons support the control loop; policy before action, proof after action, accountable outcomes, and fleet improvement are the product.`,
+                                    },
                                 },
-                            },
-                        ],
-                    });
-                    return;
-                }
-                if (method === 'tools/list') {
-                    success(id, { tools: advertisedTools() });
-                    return;
-                }
-                if (method === 'tools/call') {
-                    const toolName = params?.name;
-                    const args = (params?.arguments || {});
-                    if (!toolAllowedByActiveProfile(toolName)) {
-                        const repair = toolName && tool_catalog_1.PRIMARY_TOOL_NAMES.has(toolName)
-                            ? 'Unset MARROW_TOOL_PROFILE or set MARROW_TOOL_PROFILE=primary, then restart MCP.'
-                            : 'Set MARROW_TOOL_PROFILE=full, then restart MCP for the complete advanced/legacy catalog.';
-                        error(id, -32601, `Tool is not available in the active Marrow tool profile. ${repair}`);
+                            ],
+                        });
                         return;
                     }
-                    if (toolName === 'marrow_orient') {
-                        orientCallCount++;
-                        const wantAutoWarn = args.autoWarn ?? true;
-                        const taskType = args.taskType;
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType, autoWarn: wantAutoWarn }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(`Orient before ${taskType || 'general'} work`, taskType), toolName: 'marrow_orient' });
-                        if (AUTO_ENROLL && orientCallCount === 1) {
-                            const enrollmentText = `\n\n**Marrow control and proof active**\n\n` +
-                                `Marrow applies relevant policy and prior lessons before consequential actions, then records evidence and the real outcome afterward.\n\n` +
-                                `1. Respect allow, warn, review_required, and block decisions before acting.\n` +
-                                `2. Use marrow_agent_runtime when a risky action needs an explicit gate.\n` +
-                                `3. Close meaningful work with marrow_commit; a tool exit alone is not outcome proof.\n` +
-                                `4. Use marrow_decision_trace to explain the prior failure, lesson, gate, proof, workflow, and outcome path.\n\n` +
-                                `${(0, host_capability_1.hostCapabilityInstructions)(mcpHostCapability())}\n\nLeave unknown outcomes pending instead of inventing success.\n`;
-                            const orientText = JSON.stringify(result, null, 2);
-                            success(id, {
-                                content: [{ type: 'text', text: enrollmentText + orientText }],
-                            });
+                    if (method === 'tools/list') {
+                        success(id, { tools: advertisedTools() });
+                        return;
+                    }
+                    if (method === 'tools/call') {
+                        const toolName = params?.name;
+                        const args = (params?.arguments || {});
+                        if (!toolAllowedByActiveProfile(toolName)) {
+                            const repair = toolName && tool_catalog_1.PRIMARY_TOOL_NAMES.has(toolName)
+                                ? 'Unset MARROW_TOOL_PROFILE or set MARROW_TOOL_PROFILE=primary, then restart MCP.'
+                                : 'Set MARROW_TOOL_PROFILE=full, then restart MCP for the complete advanced/legacy catalog.';
+                            error(id, -32601, `Tool is not available in the active Marrow tool profile. ${repair}`);
+                            return;
                         }
-                        else {
+                        if (toolName === 'marrow_orient') {
+                            orientCallCount++;
+                            const wantAutoWarn = args.autoWarn ?? true;
+                            const taskType = args.taskType;
+                            const result = await withControlDeadline((signal) => (0, index_1.marrowOrient)(API_KEY, BASE_URL, { taskType, autoWarn: wantAutoWarn }, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(`Orient before ${taskType || 'general'} work`, taskType), toolName: 'marrow_orient' });
+                            if (AUTO_ENROLL && orientCallCount === 1) {
+                                const enrollmentText = `\n\n**Marrow control and proof active**\n\n` +
+                                    `Marrow applies relevant policy and prior lessons before consequential actions, then records evidence and the real outcome afterward.\n\n` +
+                                    `1. Respect allow, warn, review_required, and block decisions before acting.\n` +
+                                    `2. Use marrow_agent_runtime when a risky action needs an explicit gate.\n` +
+                                    `3. Close meaningful work with marrow_commit; a tool exit alone is not outcome proof.\n` +
+                                    `4. Use marrow_decision_trace to explain the prior failure, lesson, gate, proof, workflow, and outcome path.\n\n` +
+                                    `${(0, host_capability_1.hostCapabilityInstructions)(mcpHostCapability())}\n\nLeave unknown outcomes pending instead of inventing success.\n`;
+                                const orientText = JSON.stringify(result, null, 2);
+                                success(id, {
+                                    content: [{ type: 'text', text: enrollmentText + orientText }],
+                                });
+                            }
+                            else {
+                                success(id, {
+                                    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+                                });
+                            }
+                            return;
+                        }
+                        if (toolName === 'marrow_think') {
+                            // [FIX #9] Validate required param
+                            const action = requireString(args, 'action');
+                            const result = await (0, index_1.marrowThink)(API_KEY, BASE_URL, {
+                                action,
+                                type: args.type,
+                                context: args.context,
+                                previous_decision_id: args.previous_decision_id,
+                                previous_success: args.previous_success,
+                                previous_outcome: args.previous_outcome,
+                                checkLoop: args.checkLoop ?? true,
+                                source_kind: args.source_kind,
+                                human_directed: args.human_directed,
+                                instruction_ref: args.instruction_ref,
+                                source_meta: args.source_meta,
+                            }, SESSION_ID, FLEET_AGENT_ID, undefined, { idempotencyKey: args.idempotency_key, requestHash: args.request_hash });
+                            // Refresh orient warnings every 5th think call
+                            thinkCallCount++;
+                            if (thinkCallCount % 5 === 0) {
+                                refreshOrientWarnings();
+                            }
+                            // Inject cached orient warnings into intelligence.insights
+                            if (cachedOrientWarnings.length > 0) {
+                                const existingInsights = result.intelligence?.insights || [];
+                                result.intelligence.insights = [
+                                    ...cachedOrientWarnings.map((w) => ({
+                                        type: 'failure_pattern',
+                                        summary: w.message,
+                                        action: `Review past ${w.type} failures before proceeding`,
+                                        severity: (w.failureRate > 0.4 ? 'critical' : 'warning'),
+                                        count: 0,
+                                    })),
+                                    ...existingInsights,
+                                ];
+                            }
+                            lastDecisionId = result.decision_id;
+                            lastCommitted = false;
                             success(id, {
                                 content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
                             });
+                            return;
                         }
-                        return;
-                    }
-                    if (toolName === 'marrow_think') {
-                        // [FIX #9] Validate required param
-                        const action = requireString(args, 'action');
-                        const result = await (0, index_1.marrowThink)(API_KEY, BASE_URL, {
-                            action,
-                            type: args.type,
-                            context: args.context,
-                            previous_decision_id: args.previous_decision_id,
-                            previous_success: args.previous_success,
-                            previous_outcome: args.previous_outcome,
-                            checkLoop: args.checkLoop ?? true,
-                            source_kind: args.source_kind,
-                            human_directed: args.human_directed,
-                            instruction_ref: args.instruction_ref,
-                            source_meta: args.source_meta,
-                        }, SESSION_ID, FLEET_AGENT_ID, undefined, { idempotencyKey: args.idempotency_key, requestHash: args.request_hash });
-                        // Refresh orient warnings every 5th think call
-                        thinkCallCount++;
-                        if (thinkCallCount % 5 === 0) {
-                            refreshOrientWarnings();
-                        }
-                        // Inject cached orient warnings into intelligence.insights
-                        if (cachedOrientWarnings.length > 0) {
-                            const existingInsights = result.intelligence?.insights || [];
-                            result.intelligence.insights = [
-                                ...cachedOrientWarnings.map((w) => ({
-                                    type: 'failure_pattern',
-                                    summary: w.message,
-                                    action: `Review past ${w.type} failures before proceeding`,
-                                    severity: (w.failureRate > 0.4 ? 'critical' : 'warning'),
-                                    count: 0,
-                                })),
-                                ...existingInsights,
-                            ];
-                        }
-                        lastDecisionId = result.decision_id;
-                        lastCommitted = false;
-                        success(id, {
-                            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                        });
-                        return;
-                    }
-                    if (toolName === 'marrow_commit') {
-                        // [FIX #9] Validate required params
-                        const decision_id = requireString(args, 'decision_id');
-                        const outcome = requireString(args, 'outcome');
-                        const commitSuccess = requireBoolean(args, 'success');
-                        // A receipt a host hook held: commit in the session it was issued to,
-                        // and send the operator's queued answer first so the commit closes
-                        // with that approval.
-                        let commitSessionId = SESSION_ID;
-                        if (typeof args.gate_receipt_id === 'string' && args.gate_receipt_id) {
-                            const holdContext = {
-                                apiKey: API_KEY,
-                                baseUrl: BASE_URL,
-                                sessionId: SESSION_ID || 'mcp-server',
-                                agentId: FLEET_AGENT_ID,
-                                harness: 'mcp-client',
-                                host: 'other',
-                                hostSessionId: SESSION_ID || 'mcp-server',
-                            };
-                            commitSessionId = (0, host_approval_1.holdSessionForReceipt)(holdContext, args.gate_receipt_id) || SESSION_ID;
-                            await (0, host_approval_1.deliverQueuedForReceipt)(holdContext, args.gate_receipt_id).catch(() => undefined);
-                        }
-                        const proofKeys = [`decision:${decision_id}`, ...(typeof args.gate_receipt_id === 'string' && args.gate_receipt_id ? [`receipt:${args.gate_receipt_id}`] : [])];
-                        let result;
-                        try {
-                            result = await withControlDeadline((signal) => (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
-                                decision_id,
-                                success: commitSuccess,
-                                outcome,
-                                caused_by: args.caused_by,
-                                proof: args.proof,
-                                gate_receipt_id: args.gate_receipt_id,
-                                arbitration_receipt_id: args.arbitration_receipt_id,
-                                owner_approval_receipt_id: args.owner_approval_receipt_id,
-                                action: args.action,
-                                target: args.target,
-                                type: args.type,
-                                surfaces: args.surfaces,
-                                auto_gate: args.auto_gate,
-                                model_usage: args.model_usage,
-                            }, commitSessionId, FLEET_AGENT_ID, signal), { highRisk: true, cacheAware: false, toolName: 'marrow_commit' });
-                        }
-                        catch (err) {
-                            if (err instanceof request_reliability_1.MarrowRequestError && err.code === 'proof_required' && err.missingFields.length) {
-                                for (const key of proofKeys)
-                                    commitProofMissing.set(key, [...err.missingFields]);
+                        if (toolName === 'marrow_commit') {
+                            // [FIX #9] Validate required params
+                            const decision_id = requireString(args, 'decision_id');
+                            const outcome = requireString(args, 'outcome');
+                            const commitSuccess = requireBoolean(args, 'success');
+                            // A receipt a host hook held: commit in the session it was issued to,
+                            // and send the operator's queued answer first so the commit closes
+                            // with that approval.
+                            let commitSessionId = SESSION_ID;
+                            if (typeof args.gate_receipt_id === 'string' && args.gate_receipt_id) {
+                                const holdContext = {
+                                    apiKey: API_KEY,
+                                    baseUrl: BASE_URL,
+                                    sessionId: SESSION_ID || 'mcp-server',
+                                    agentId: FLEET_AGENT_ID,
+                                    harness: 'mcp-client',
+                                    host: 'other',
+                                    hostSessionId: SESSION_ID || 'mcp-server',
+                                };
+                                commitSessionId = (0, host_approval_1.holdSessionForReceipt)(holdContext, args.gate_receipt_id) || SESSION_ID;
+                                await (0, host_approval_1.deliverQueuedForReceipt)(holdContext, args.gate_receipt_id).catch(() => undefined);
                             }
-                            if (err instanceof request_reliability_1.MarrowRequestError && err.status === 409 && err.backendCode === 'MARROW_OUTCOME_OBSERVATION_CONFLICT') {
-                                const fromHold = typeof args.gate_receipt_id === 'string' && args.gate_receipt_id
-                                    ? (0, host_approval_1.proofFieldsForReceipt)({ apiKey: API_KEY, baseUrl: BASE_URL, sessionId: SESSION_ID || 'mcp-server', agentId: FLEET_AGENT_ID, harness: 'mcp-client', host: 'other', hostSessionId: SESSION_ID || 'mcp-server' }, args.gate_receipt_id)
-                                    : [];
-                                toolSuccess(id, proofRetryConflict(proofKeys, args.proof, fromHold), true);
-                                return;
+                            const proofKeys = [`decision:${decision_id}`, ...(typeof args.gate_receipt_id === 'string' && args.gate_receipt_id ? [`receipt:${args.gate_receipt_id}`] : [])];
+                            let result;
+                            try {
+                                result = await withControlDeadline((signal) => (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
+                                    decision_id,
+                                    success: commitSuccess,
+                                    outcome,
+                                    caused_by: args.caused_by,
+                                    proof: args.proof,
+                                    gate_receipt_id: args.gate_receipt_id,
+                                    arbitration_receipt_id: args.arbitration_receipt_id,
+                                    owner_approval_receipt_id: args.owner_approval_receipt_id,
+                                    action: args.action,
+                                    target: args.target,
+                                    type: args.type,
+                                    surfaces: args.surfaces,
+                                    auto_gate: args.auto_gate,
+                                    model_usage: args.model_usage,
+                                }, commitSessionId, FLEET_AGENT_ID, signal), { highRisk: true, cacheAware: false, toolName: 'marrow_commit' });
                             }
-                            throw err;
-                        }
-                        if (result.committed) {
-                            for (const key of proofKeys)
-                                commitProofMissing.delete(key);
-                        }
-                        else {
-                            // A short close is accepted unverified with the missing proof named ("Retry only after proof includes: a, b.").
-                            const unverified = result;
-                            const listed = unverified.governance_validation?.code === 'MARROW_PROOF_PACK_INCOMPLETE'
-                                ? /proof includes: ([A-Za-z0-9_, ]{1,600})\.?\s*$/.exec(String(unverified.exact_next_action || ''))?.[1]
-                                : undefined;
-                            const missing = listed ? listed.split(',').map((field) => field.trim()).filter(Boolean) : [];
-                            if (missing.length)
+                            catch (err) {
+                                if (err instanceof request_reliability_1.MarrowRequestError && err.code === 'proof_required' && err.missingFields.length) {
+                                    for (const key of proofKeys)
+                                        commitProofMissing.set(key, [...err.missingFields]);
+                                }
+                                if (err instanceof request_reliability_1.MarrowRequestError && err.status === 409 && err.backendCode === 'MARROW_OUTCOME_OBSERVATION_CONFLICT') {
+                                    const fromHold = typeof args.gate_receipt_id === 'string' && args.gate_receipt_id
+                                        ? (0, host_approval_1.proofFieldsForReceipt)({ apiKey: API_KEY, baseUrl: BASE_URL, sessionId: SESSION_ID || 'mcp-server', agentId: FLEET_AGENT_ID, harness: 'mcp-client', host: 'other', hostSessionId: SESSION_ID || 'mcp-server' }, args.gate_receipt_id)
+                                        : [];
+                                    toolSuccess(id, proofRetryConflict(proofKeys, args.proof, fromHold), true);
+                                    return;
+                                }
+                                throw err;
+                            }
+                            if (result.committed) {
                                 for (const key of proofKeys)
-                                    commitProofMissing.set(key, missing);
+                                    commitProofMissing.delete(key);
+                            }
+                            else {
+                                // A short close is accepted unverified with the missing proof named ("Retry only after proof includes: a, b.").
+                                const unverified = result;
+                                const listed = unverified.governance_validation?.code === 'MARROW_PROOF_PACK_INCOMPLETE'
+                                    ? /proof includes: ([A-Za-z0-9_, ]{1,600})\.?\s*$/.exec(String(unverified.exact_next_action || ''))?.[1]
+                                    : undefined;
+                                const missing = listed ? listed.split(',').map((field) => field.trim()).filter(Boolean) : [];
+                                if (missing.length)
+                                    for (const key of proofKeys)
+                                        commitProofMissing.set(key, missing);
+                            }
+                            const commitResult = { ...result, narrative: result.narrative ?? null };
+                            lastCommitted = result.committed;
+                            lastDecisionId = result.committed ? null : decision_id;
+                            success(id, {
+                                content: [{ type: 'text', text: JSON.stringify(commitResult, null, 2) }],
+                            });
+                            return;
                         }
-                        const commitResult = { ...result, narrative: result.narrative ?? null };
-                        lastCommitted = result.committed;
-                        lastDecisionId = result.committed ? null : decision_id;
-                        success(id, {
-                            content: [{ type: 'text', text: JSON.stringify(commitResult, null, 2) }],
-                        });
-                        return;
-                    }
-                    if (toolName === 'marrow_model_usage') {
-                        const result = await (0, index_1.marrowModelUsage)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, {
-                            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-                        });
-                        return;
-                    }
-                    if (toolName === 'marrow_run') {
-                        // [FIX #9] Validate required params
-                        const description = requireString(args, 'description');
-                        const outcome = requireString(args, 'outcome');
-                        const measuredSuccess = requireBoolean(args, 'success');
-                        // [FIX #16] Handle partial failures — return think result even if commit fails
-                        let thinkResult = null;
-                        try {
-                            await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID, FLEET_AGENT_ID);
+                        if (toolName === 'marrow_model_usage') {
+                            const result = await (0, index_1.marrowModelUsage)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, {
+                                content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+                            });
+                            return;
                         }
-                        catch (err) {
-                            const msg = err instanceof Error ? err.message : String(err);
-                            process.stderr.write(`[marrow] marrow_run orient failed (continuing): ${msg}\n`);
-                        }
-                        thinkResult = await (0, index_1.marrowThink)(API_KEY, BASE_URL, {
-                            action: description,
-                            type: args.type || 'general',
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        let commitResult = null;
-                        try {
-                            commitResult = await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
-                                decision_id: thinkResult.decision_id,
-                                success: measuredSuccess,
-                                outcome,
-                                proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
-                                    ? (0, redact_1.redactSensitiveValue)(args.proof)
-                                    : undefined,
-                                gate_receipt_id: typeof args.gate_receipt_id === 'string' ? args.gate_receipt_id : undefined,
+                        if (toolName === 'marrow_run') {
+                            // [FIX #9] Validate required params
+                            const description = requireString(args, 'description');
+                            const outcome = requireString(args, 'outcome');
+                            const measuredSuccess = requireBoolean(args, 'success');
+                            // [FIX #16] Handle partial failures — return think result even if commit fails
+                            let thinkResult = null;
+                            try {
+                                await (0, index_1.marrowOrient)(API_KEY, BASE_URL, undefined, SESSION_ID, FLEET_AGENT_ID);
+                            }
+                            catch (err) {
+                                const msg = err instanceof Error ? err.message : String(err);
+                                process.stderr.write(`[marrow] marrow_run orient failed (continuing): ${msg}\n`);
+                            }
+                            thinkResult = await (0, index_1.marrowThink)(API_KEY, BASE_URL, {
                                 action: description,
                                 type: args.type || 'general',
                             }, SESSION_ID, FLEET_AGENT_ID);
-                        }
-                        catch (err) {
-                            const msg = err instanceof Error ? err.message : String(err);
-                            process.stderr.write(`[marrow] marrow_run commit failed: ${msg}\n`);
+                            let commitResult = null;
+                            try {
+                                commitResult = await (0, index_1.marrowCommit)(API_KEY, BASE_URL, {
+                                    decision_id: thinkResult.decision_id,
+                                    success: measuredSuccess,
+                                    outcome,
+                                    proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+                                        ? (0, redact_1.redactSensitiveValue)(args.proof)
+                                        : undefined,
+                                    gate_receipt_id: typeof args.gate_receipt_id === 'string' ? args.gate_receipt_id : undefined,
+                                    action: description,
+                                    type: args.type || 'general',
+                                }, SESSION_ID, FLEET_AGENT_ID);
+                            }
+                            catch (err) {
+                                const msg = err instanceof Error ? err.message : String(err);
+                                process.stderr.write(`[marrow] marrow_run commit failed: ${msg}\n`);
+                                success(id, {
+                                    content: [{
+                                            type: 'text',
+                                            text: JSON.stringify({
+                                                think: thinkResult,
+                                                commit: null,
+                                                commit_error: msg,
+                                                decision_id: thinkResult.decision_id,
+                                            }, null, 2),
+                                        }],
+                                });
+                                return;
+                            }
                             success(id, {
                                 content: [{
                                         type: 'text',
-                                        text: JSON.stringify({
-                                            think: thinkResult,
-                                            commit: null,
-                                            commit_error: msg,
-                                            decision_id: thinkResult.decision_id,
-                                        }, null, 2),
+                                        text: JSON.stringify({ think: thinkResult, commit: commitResult }, null, 2),
                                     }],
                             });
                             return;
                         }
-                        success(id, {
-                            content: [{
-                                    type: 'text',
-                                    text: JSON.stringify({ think: thinkResult, commit: commitResult }, null, 2),
-                                }],
-                        });
-                        return;
-                    }
-                    if (toolName === 'marrow_auto') {
-                        const action = requireString(args, 'action');
-                        const outcome = args.outcome;
-                        const outcomeSuccess = typeof args.success === 'boolean' ? args.success : undefined;
-                        const type = args.type || 'general';
-                        const highRisk = isHighRiskAction(action, type);
-                        const suppliedProof = args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
-                            ? (0, redact_1.redactSensitiveValue)(args.proof)
-                            : undefined;
-                        const suppliedRuntimeReceiptId = typeof args.gate_receipt_id === 'string'
-                            ? args.gate_receipt_id
-                            : undefined;
-                        const suppliedArbitrationReceiptId = typeof args.arbitration_receipt_id === 'string'
-                            ? args.arbitration_receipt_id
-                            : undefined;
-                        const suppliedOwnerApprovalReceiptId = typeof args.owner_approval_receipt_id === 'string'
-                            ? args.owner_approval_receipt_id
-                            : undefined;
-                        const delivery = () => (0, index_1.marrowAuto)(API_KEY, BASE_URL, {
-                            action,
-                            outcome,
-                            success: outcomeSuccess,
-                            type,
-                            proof: suppliedProof,
-                            gate_receipt_id: suppliedRuntimeReceiptId || undefined,
-                            arbitration_receipt_id: suppliedArbitrationReceiptId,
-                            owner_approval_receipt_id: suppliedOwnerApprovalReceiptId,
-                            // Low-risk one-shot capture does not need a policy gate. Consequential
-                            // work obtains exactly one canonical runtime authorization inside auto.
-                            auto_gate: highRisk,
-                            operation_id: typeof args.operation_id === 'string' ? args.operation_id : undefined,
-                            ...(args.request_owner_link === true ? { request_owner_link: true } : {}),
-                        }, SESSION_ID, FLEET_AGENT_ID, 8_000, autoElicitationOptions());
-                        let delivered = null;
-                        let deliveryFailure = null;
-                        let failedHttpAttemptTrace = null;
-                        const coreStartedAt = performance.now();
-                        try {
-                            delivered = await delivery();
-                        }
-                        catch (err) {
-                            deliveryFailure = (0, request_reliability_1.structuredRequestFailure)(err);
-                            failedHttpAttemptTrace = (0, index_1.marrowAutoHttpTraceFromError)(err);
-                        }
-                        const coreDurationMs = Math.floor(performance.now() - coreStartedAt);
-                        const runtimeGate = delivered?.runtime_gate || null;
-                        if (runtimeGate)
-                            storeRuntimeGuidance(runtimeGate);
-                        const enqueueStartedAt = performance.now();
-                        const receipt = await (0, lifecycle_spool_1.recordLifecycleEvent)({
-                            apiKey: API_KEY,
-                            baseUrl: BASE_URL,
-                            deferDelivery: true,
-                            event: {
-                                ...(delivered?.operation_id ? {
-                                    // A closed operation has one record; each pending call is its own attempt.
-                                    event_id: delivered.committed
-                                        ? `auto_closed_${delivered.operation_id}`
-                                        : `auto_pending_${delivered.operation_id}_${(0, node_crypto_1.randomUUID)().replace(/-/g, '').slice(0, 12)}`,
-                                } : {}),
-                                event_type: delivered?.committed
-                                    ? 'outcome_committed'
-                                    : !highRisk && outcomeSuccess === false
-                                        ? 'tool_failed'
-                                        : !highRisk && outcomeSuccess === true
-                                            ? 'tool_completed'
-                                            : 'goal_started',
-                                harness: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || 'mcp',
-                                agent_id: FLEET_AGENT_ID,
-                                session_id: SESSION_ID,
-                                decision_id: delivered?.decision_id || undefined,
+                        if (toolName === 'marrow_auto') {
+                            const action = requireString(args, 'action');
+                            const outcome = args.outcome;
+                            const outcomeSuccess = typeof args.success === 'boolean' ? args.success : undefined;
+                            const type = args.type || 'general';
+                            const highRisk = isHighRiskAction(action, type);
+                            const suppliedProof = args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+                                ? (0, redact_1.redactSensitiveValue)(args.proof)
+                                : undefined;
+                            const suppliedRuntimeReceiptId = typeof args.gate_receipt_id === 'string'
+                                ? args.gate_receipt_id
+                                : undefined;
+                            const suppliedArbitrationReceiptId = typeof args.arbitration_receipt_id === 'string'
+                                ? args.arbitration_receipt_id
+                                : undefined;
+                            const suppliedOwnerApprovalReceiptId = typeof args.owner_approval_receipt_id === 'string'
+                                ? args.owner_approval_receipt_id
+                                : undefined;
+                            const delivery = () => (0, index_1.marrowAuto)(API_KEY, BASE_URL, {
                                 action,
-                                outcome_state: delivered?.committed ? 'closed' : 'pending',
-                                success: delivered?.committed ? outcomeSuccess : highRisk ? undefined : outcomeSuccess,
-                                source: 'client_self_reported',
-                            },
-                        });
-                        const enqueueDurationMs = Math.floor(performance.now() - enqueueStartedAt);
-                        const response = {
-                            action,
-                            outcome: outcome || 'pending',
-                            warnings: cachedOrientWarnings.map(formatWarningActionably),
-                            logging: delivered?.committed
-                                ? 'governed_commit_confirmed'
-                                : delivered?.resumable
-                                    ? 'resume_required'
-                                    : delivered
-                                        ? 'intent_confirmed'
-                                        : 'durably_queued',
-                            receipt,
-                            completion_state: delivered?.committed && delivered.closure === 'gate_denial'
-                                ? 'closed_as_denial'
-                                : delivered?.closure === 'already_closed_denial'
-                                    ? 'closed_earlier_as_denial'
-                                    : delivered?.closure === 'already_closed'
-                                        ? 'closed_earlier'
-                                        : delivered?.committed
-                                            ? 'closed_with_proof'
-                                            : delivered?.phase === 'review_required'
-                                                ? 'review_required_terminal'
-                                                : delivered?.phase === 'owner_approval_required'
-                                                    ? 'pending_owner_approval'
-                                                    : delivered?.phase === 'proof_required'
-                                                        ? 'pending_required_proof'
-                                                        : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
-                                                            ? 'pending_evidence'
-                                                            : 'delivery_pending',
-                            decision_id: delivered?.decision_id || null,
-                            operation_id: delivered?.operation_id || (typeof args.operation_id === 'string' ? args.operation_id : null),
-                            phase: delivered?.phase || null,
-                            resumable: delivered?.resumable || false,
-                            retry_after_ms: delivered?.retry_after_ms ?? null,
-                            phase_timings_ms: delivered?.phase_timings_ms || null,
-                            http_attempt_trace: delivered?.http_attempt_trace || failedHttpAttemptTrace || {
-                                attempts: [],
-                                dropped_count: 0,
-                            },
-                            exact_next_action: delivered?.committed && delivered.closure === 'gate_denial' && delivered.exact_next_action
-                                ? delivered.exact_next_action
-                                : delivered?.committed
-                                    ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
-                                    : delivered?.exact_next_action
-                                        ? delivered.exact_next_action
-                                        : delivered?.phase === 'owner_approval_required'
-                                            ? 'The account owner must approve one proposal of this arbitration before it runs; Marrow then issues an owner_approval_receipt_id. Do not run any proposal or write an approval yourself. Once Marrow issues the receipt, call marrow_auto once with this same operation_id, arbitration_receipt_id and owner_approval_receipt_id.'
-                                            : delivered?.phase === 'proof_required'
-                                                ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
-                                                : delivered?.resumable
-                                                    ? 'Retry marrow_auto with this same operation_id. Do not start a new auto operation.'
-                                                    : 'Close this decision after the real outcome is known.',
-                            live_delivery: {
-                                accepted: Boolean(delivered?.decision_id),
-                                committed: Boolean(delivered?.committed),
-                                ...(deliveryFailure ? { failure: deliveryFailure } : {}),
-                            },
-                            host_capability: mcpHostCapability(),
-                            client_update: (0, request_reliability_1.localClientUpdate)(),
-                            ...(delivered?.approval ? { approval: delivered.approval } : {}),
-                            ...(runtimeGate ? { runtime_gate: runtimeGate } : {}),
-                        };
-                        // Measure through response construction; stdout/host consumption occurs
-                        // after this snapshot and is not represented as server phase latency.
-                        response.response_timings_ms = {
-                            core: coreDurationMs,
-                            durable_enqueue: enqueueDurationMs,
-                            full_response: Math.floor(performance.now() - responseStartedAt),
-                        };
-                        success(id, {
-                            content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
-                        });
-                        // The existing bounded owner handles rejection and preserves queued
-                        // receipts across exit/restart. Network work never holds this response.
-                        void (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
-                        return;
-                    }
-                    if (toolName === 'marrow_ask') {
-                        const query = requireString(args, 'query');
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query }, SESSION_ID, FLEET_AGENT_ID, signal), { toolName: 'marrow_ask' });
-                        try {
-                            (0, guidance_cache_1.writeGuidanceCache)({
+                                outcome,
+                                success: outcomeSuccess,
+                                type,
+                                proof: suppliedProof,
+                                gate_receipt_id: suppliedRuntimeReceiptId || undefined,
+                                arbitration_receipt_id: suppliedArbitrationReceiptId,
+                                owner_approval_receipt_id: suppliedOwnerApprovalReceiptId,
+                                // Low-risk one-shot capture does not need a policy gate. Consequential
+                                // work obtains exactly one canonical runtime authorization inside auto.
+                                auto_gate: highRisk,
+                                operation_id: typeof args.operation_id === 'string' ? args.operation_id : undefined,
+                                ...(args.request_owner_link === true ? { request_owner_link: true } : {}),
+                            }, SESSION_ID, FLEET_AGENT_ID, 8_000, autoElicitationOptions());
+                            let delivered = null;
+                            let deliveryFailure = null;
+                            let failedHttpAttemptTrace = null;
+                            const coreStartedAt = performance.now();
+                            try {
+                                delivered = await delivery();
+                            }
+                            catch (err) {
+                                deliveryFailure = (0, request_reliability_1.structuredRequestFailure)(err);
+                                failedHttpAttemptTrace = (0, index_1.marrowAutoHttpTraceFromError)(err);
+                            }
+                            const coreDurationMs = Math.floor(performance.now() - coreStartedAt);
+                            const runtimeGate = delivered?.runtime_gate || null;
+                            if (runtimeGate)
+                                storeRuntimeGuidance(runtimeGate);
+                            const enqueueStartedAt = performance.now();
+                            const receipt = await (0, lifecycle_spool_1.recordLifecycleEvent)({
                                 apiKey: API_KEY,
                                 baseUrl: BASE_URL,
-                                agentId: FLEET_AGENT_ID,
-                                context: `## Marrow answer\n- ${String(result.answer || 'No relevant lesson found.').slice(0, 1200)}`,
+                                deferDelivery: true,
+                                event: {
+                                    ...(delivered?.operation_id ? {
+                                        // A closed operation has one record; each pending call is its own attempt.
+                                        event_id: delivered.committed
+                                            ? `auto_closed_${delivered.operation_id}`
+                                            : `auto_pending_${delivered.operation_id}_${(0, node_crypto_1.randomUUID)().replace(/-/g, '').slice(0, 12)}`,
+                                    } : {}),
+                                    event_type: delivered?.committed
+                                        ? 'outcome_committed'
+                                        : !highRisk && outcomeSuccess === false
+                                            ? 'tool_failed'
+                                            : !highRisk && outcomeSuccess === true
+                                                ? 'tool_completed'
+                                                : 'goal_started',
+                                    harness: process.env.MARROW_CLIENT || process.env.MARROW_HARNESS || 'mcp',
+                                    agent_id: FLEET_AGENT_ID,
+                                    session_id: SESSION_ID,
+                                    decision_id: delivered?.decision_id || undefined,
+                                    action,
+                                    outcome_state: delivered?.committed ? 'closed' : 'pending',
+                                    success: delivered?.committed ? outcomeSuccess : highRisk ? undefined : outcomeSuccess,
+                                    source: 'client_self_reported',
+                                },
                             });
-                        }
-                        catch { /* owner-only cache is best effort */ }
-                        toolSuccess(id, clientOperationalPayload('marrow_ask', result));
-                        return;
-                    }
-                    if (toolName === 'marrow_status') {
-                        let cached = null;
-                        try {
-                            cached = (0, status_cache_1.readStatusCache)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
-                        }
-                        catch { /* owner-only cache is best effort */ }
-                        if (cached?.freshness === 'fresh') {
-                            const startedAt = Date.now();
-                            refreshStatusInBackground();
-                            (0, control_path_state_1.recordControlPathSample)('marrow_status', Date.now() - startedAt, true);
-                            toolSuccess(id, clientOperationalPayload('marrow_status', (0, status_cache_1.cachedStatusPayload)(cached)));
+                            const enqueueDurationMs = Math.floor(performance.now() - enqueueStartedAt);
+                            const response = {
+                                action,
+                                outcome: outcome || 'pending',
+                                warnings: cachedOrientWarnings.map(formatWarningActionably),
+                                logging: delivered?.committed
+                                    ? 'governed_commit_confirmed'
+                                    : delivered?.resumable
+                                        ? 'resume_required'
+                                        : delivered
+                                            ? 'intent_confirmed'
+                                            : 'durably_queued',
+                                receipt,
+                                completion_state: delivered?.committed && delivered.closure === 'gate_denial'
+                                    ? 'closed_as_denial'
+                                    : delivered?.closure === 'already_closed_denial'
+                                        ? 'closed_earlier_as_denial'
+                                        : delivered?.closure === 'already_closed'
+                                            ? 'closed_earlier'
+                                            : delivered?.committed
+                                                ? 'closed_with_proof'
+                                                : delivered?.phase === 'review_required'
+                                                    ? 'review_required_terminal'
+                                                    : delivered?.phase === 'owner_approval_required'
+                                                        ? 'pending_owner_approval'
+                                                        : delivered?.phase === 'proof_required'
+                                                            ? 'pending_required_proof'
+                                                            : delivered?.phase === 'decision_created' || outcomeSuccess === undefined
+                                                                ? 'pending_evidence'
+                                                                : 'delivery_pending',
+                                decision_id: delivered?.decision_id || null,
+                                operation_id: delivered?.operation_id || (typeof args.operation_id === 'string' ? args.operation_id : null),
+                                phase: delivered?.phase || null,
+                                resumable: delivered?.resumable || false,
+                                retry_after_ms: delivered?.retry_after_ms ?? null,
+                                phase_timings_ms: delivered?.phase_timings_ms || null,
+                                http_attempt_trace: delivered?.http_attempt_trace || failedHttpAttemptTrace || {
+                                    attempts: [],
+                                    dropped_count: 0,
+                                },
+                                exact_next_action: delivered?.committed && delivered.closure === 'gate_denial' && delivered.exact_next_action
+                                    ? delivered.exact_next_action
+                                    : delivered?.committed
+                                        ? 'The governed outcome is closed. Reuse this decision_id only for read-only trace inspection.'
+                                        : delivered?.exact_next_action
+                                            ? delivered.exact_next_action
+                                            : delivered?.phase === 'owner_approval_required'
+                                                ? 'The account owner must approve one proposal of this arbitration before it runs; Marrow then issues an owner_approval_receipt_id. Do not run any proposal or write an approval yourself. Once Marrow issues the receipt, call marrow_auto once with this same operation_id, arbitration_receipt_id and owner_approval_receipt_id.'
+                                                : delivered?.phase === 'proof_required'
+                                                    ? 'Attach the required measured proof and retry marrow_auto with this same operation_id and unchanged action, context, and surfaces.'
+                                                    : delivered?.resumable
+                                                        ? 'Retry marrow_auto with this same operation_id. Do not start a new auto operation.'
+                                                        : 'Close this decision after the real outcome is known.',
+                                live_delivery: {
+                                    accepted: Boolean(delivered?.decision_id),
+                                    committed: Boolean(delivered?.committed),
+                                    ...(deliveryFailure ? { failure: deliveryFailure } : {}),
+                                },
+                                host_capability: mcpHostCapability(),
+                                client_update: (0, request_reliability_1.localClientUpdate)(),
+                                ...(delivered?.approval ? { approval: delivered.approval } : {}),
+                                ...(runtimeGate ? { runtime_gate: runtimeGate } : {}),
+                            };
+                            // Measure through response construction; stdout/host consumption occurs
+                            // after this snapshot and is not represented as server phase latency.
+                            response.response_timings_ms = {
+                                core: coreDurationMs,
+                                durable_enqueue: enqueueDurationMs,
+                                full_response: Math.floor(performance.now() - responseStartedAt),
+                            };
+                            success(id, {
+                                content: [{ type: 'text', text: JSON.stringify(response, null, 2) }],
+                            });
+                            // The existing bounded owner handles rejection and preserves queued
+                            // receipts across exit/restart. Network work never holds this response.
+                            void (0, lifecycle_spool_1.nudgeLifecycleSpool)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
                             return;
                         }
-                        try {
-                            const result = await withControlDeadline((signal) => (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_status' });
-                            storeLastKnownStatus(result, 'status');
-                            toolSuccess(id, clientOperationalPayload('marrow_status', result));
+                        if (toolName === 'marrow_ask') {
+                            const query = requireString(args, 'query');
+                            const result = await withControlDeadline((signal) => (0, index_1.marrowAsk)(API_KEY, BASE_URL, { query }, SESSION_ID, FLEET_AGENT_ID, signal), { toolName: 'marrow_ask' });
+                            try {
+                                (0, guidance_cache_1.writeGuidanceCache)({
+                                    apiKey: API_KEY,
+                                    baseUrl: BASE_URL,
+                                    agentId: FLEET_AGENT_ID,
+                                    context: `## Marrow answer\n- ${String(result.answer || 'No relevant lesson found.').slice(0, 1200)}`,
+                                });
+                            }
+                            catch { /* owner-only cache is best effort */ }
+                            toolSuccess(id, clientOperationalPayload('marrow_ask', result));
+                            return;
                         }
-                        catch (error) {
-                            if (cached) {
+                        if (toolName === 'marrow_status') {
+                            let cached = null;
+                            try {
+                                cached = (0, status_cache_1.readStatusCache)({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
+                            }
+                            catch { /* owner-only cache is best effort */ }
+                            if (cached?.freshness === 'fresh') {
                                 const startedAt = Date.now();
-                                (0, control_path_state_1.recordControlPathSample)('marrow_status', Date.now() - startedAt, false);
+                                refreshStatusInBackground();
+                                (0, control_path_state_1.recordControlPathSample)('marrow_status', Date.now() - startedAt, true);
                                 toolSuccess(id, clientOperationalPayload('marrow_status', (0, status_cache_1.cachedStatusPayload)(cached)));
                                 return;
                             }
-                            throw error;
-                        }
-                        return;
-                    }
-                    if (toolName === 'marrow_create_key') {
-                        const name = requireString(args, 'name');
-                        const result = await (0, index_1.marrowCreateKey)(API_KEY, BASE_URL, {
-                            name,
-                            key_type: args.key_type,
-                            scopes: args.scopes,
-                            agent_ids: args.agent_ids,
-                            expires_at: args.expires_at,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, {
-                            content: [{ type: 'text', text: JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) }],
-                        });
-                        return;
-                    }
-                    if (toolName === 'marrow_list_keys') {
-                        const result = await (0, index_1.marrowListKeys)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_get_key') {
-                        const keyId = requireString(args, 'id');
-                        const result = await (0, index_1.marrowGetKey)(API_KEY, BASE_URL, keyId, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_revoke_key') {
-                        const keyId = requireString(args, 'id');
-                        const result = await (0, index_1.marrowRevokeKey)(API_KEY, BASE_URL, keyId, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_rotate_key') {
-                        const keyId = requireString(args, 'id');
-                        const result = await (0, index_1.marrowRotateKey)(API_KEY, BASE_URL, keyId, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, {
-                            content: [{ type: 'text', text: JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) }],
-                        });
-                        return;
-                    }
-                    // Memory control tools — all use requireString for id validation
-                    if (toolName === 'marrow_list_memories') {
-                        const result = await marrowListMemories(API_KEY, BASE_URL, { status: args.status, query: args.query, limit: args.limit, agentId: args.agentId }, SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_get_memory') {
-                        const memId = requireString(args, 'id');
-                        const result = await marrowGetMemory(API_KEY, BASE_URL, memId, SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_update_memory') {
-                        const memId = requireString(args, 'id');
-                        const result = await marrowUpdateMemory(API_KEY, BASE_URL, memId, { text: args.text, source: args.source, tags: args.tags, actor: args.actor, note: args.note }, SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_delete_memory') {
-                        const memId = requireString(args, 'id');
-                        const result = await marrowDeleteMemory(API_KEY, BASE_URL, memId, { actor: args.actor, note: args.note }, SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_mark_outdated') {
-                        const memId = requireString(args, 'id');
-                        const result = await marrowMarkOutdated(API_KEY, BASE_URL, memId, { actor: args.actor, note: args.note }, SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_supersede_memory') {
-                        const memId = requireString(args, 'id');
-                        const newText = requireString(args, 'text');
-                        const result = await marrowSupersedeMemory(API_KEY, BASE_URL, memId, { text: newText, source: args.source, tags: args.tags, actor: args.actor, note: args.note }, SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_share_memory') {
-                        const memId = requireString(args, 'id');
-                        const result = await marrowShareMemory(API_KEY, BASE_URL, memId, args.agentIds || [], args.actor, SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_export_memories') {
-                        const result = await marrowExportMemories(API_KEY, BASE_URL, { format: args.format, status: args.status, tags: args.tags }, SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_import_memories') {
-                        const result = await marrowImportMemories(API_KEY, BASE_URL, args.memories || [], args.mode || 'merge', SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_retrieve_memories') {
-                        const query = requireString(args, 'query');
-                        const result = await marrowRetrieveMemories(API_KEY, BASE_URL, query, { limit: args.limit, from: args.from, to: args.to, tags: args.tags, source: args.source, status: args.status, shared: args.shared }, SESSION_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_workflow') {
-                        const result = await (0, index_1.marrowWorkflow)(API_KEY, BASE_URL, {
-                            action: args.action,
-                            workflowId: args.workflowId,
-                            instanceId: args.instanceId,
-                            name: args.name,
-                            description: args.description,
-                            steps: args.steps,
-                            tags: args.tags,
-                            agentId: args.agentId,
-                            context: args.context,
-                            inputs: args.inputs,
-                            stepCompleted: args.stepCompleted,
-                            outcome: args.outcome,
-                            nextAgentId: args.nextAgentId,
-                            contextUpdate: args.contextUpdate,
-                            status: args.status,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_dashboard') {
-                        const result = await (0, index_1.marrowDashboard)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_digest') {
-                        const result = await (0, index_1.marrowDigest)(API_KEY, BASE_URL, args.period || '7d', SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_agent_status') {
-                        const result = await withControlDeadline(async (signal) => {
-                            const [analyticsStatus, context] = await Promise.all([
-                                (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID, signal),
-                                (0, index_1.marrowAgentContext)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal)
-                                    .catch(() => null),
-                            ]);
-                            const contextProjection = recordValue(context)?.primary_tool_availability;
-                            return {
-                                ...analyticsStatus,
-                                ...(contextProjection === undefined ? {} : { primary_tool_availability: contextProjection }),
-                            };
-                        }, { cacheAware: false, toolName: 'marrow_agent_status' });
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus({ ...result, local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)) }), null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_runtime_status') {
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowRuntimeStatus)(API_KEY, BASE_URL, args.fast !== false, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_runtime_status' });
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus(result), null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_value_report') {
-                        const result = await (0, index_1.marrowValueReport)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_decision_brief') {
-                        const result = await (0, index_1.marrowDecisionBrief)(API_KEY, BASE_URL, {
-                            action: args.action,
-                            type: args.type,
-                            role: args.role,
-                            agent_id: args.agentId || FLEET_AGENT_ID,
-                            session_id: args.sessionId || SESSION_ID,
-                            surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
-                            period: args.period,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_first_value') {
-                        const result = await (0, index_1.marrowFirstValue)(API_KEY, BASE_URL, {
-                            action: args.action ? (0, redact_1.redactSensitiveText)(args.action) : undefined,
-                            type: args.type,
-                            role: args.role,
-                            agent_id: args.agentId || FLEET_AGENT_ID,
-                            session_id: args.sessionId || SESSION_ID,
-                            surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
-                            context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
-                                ? (0, redact_1.redactSensitiveValue)(args.context)
-                                : undefined,
-                            proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
-                                ? (0, redact_1.redactSensitiveValue)(args.proof)
-                                : undefined,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_agent_runtime') {
-                        const runtimeInput = {
-                            action: (0, redact_1.redactSensitiveText)(args.action),
-                            type: args.type,
-                            role: args.role,
-                            agent_id: args.agentId || FLEET_AGENT_ID,
-                            session_id: args.sessionId || SESSION_ID,
-                            surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
-                            context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
-                                ? (0, redact_1.redactSensitiveValue)(args.context)
-                                : undefined,
-                            proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
-                                ? (0, redact_1.redactSensitiveValue)(args.proof)
-                                : undefined,
-                            period: args.period,
-                        };
-                        const result = await withControlDeadline((signal) => (0, index_1.marrowAgentRuntime)(API_KEY, BASE_URL, runtimeInput, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(runtimeInput.action, runtimeInput.type), toolName: 'marrow_agent_runtime' });
-                        storeRuntimeGuidance(result);
-                        storeLastKnownStatus(result.status, 'runtime');
-                        toolSuccess(id, clientOperationalPayload('marrow_agent_runtime', result));
-                        return;
-                    }
-                    if (toolName === 'marrow_arbitrate') {
-                        const result = await (0, index_1.marrowArbitrate)(API_KEY, BASE_URL, {
-                            objective: (0, redact_1.redactSensitiveText)(args.objective),
-                            owner_intent: typeof args.ownerIntent === 'string' ? (0, redact_1.redactSensitiveText)(args.ownerIntent) : undefined,
-                            conflict_type: args.conflictType,
-                            proposals: Array.isArray(args.proposals)
-                                ? args.proposals
-                                : [],
-                            action: typeof args.action === 'string' ? (0, redact_1.redactSensitiveText)(args.action) : undefined,
-                            type: args.type,
-                            agent_id: args.agentId || FLEET_AGENT_ID,
-                            session_id: args.sessionId || SESSION_ID,
-                            surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
-                            context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
-                                ? (0, redact_1.redactSensitiveValue)(args.context)
-                                : undefined,
-                            proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
-                                ? (0, redact_1.redactSensitiveValue)(args.proof)
-                                : undefined,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_coordinate') {
-                        const coordinationArgs = { ...args };
-                        delete coordinationArgs.agent_id;
-                        delete coordinationArgs.source_agent_id;
-                        const result = await (0, index_1.marrowCoordinate)(API_KEY, BASE_URL, coordinationArgs, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_replay_compare') {
-                        const result = await (0, index_1.marrowReplayCompare)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_governance_control_plane') {
-                        const result = await (0, index_1.marrowGovernanceControlPlane)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_hermes_integration') {
-                        const result = await (0, index_1.marrowHermesIntegration)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_completion_contracts') {
-                        const result = await (0, index_1.marrowCompletionContracts)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_evaluate_completion_contract') {
-                        const input = {
-                            action: args.action,
-                            workflow_type: args.workflow_type,
-                            risk_level: args.risk_level,
-                            evidence: args.evidence && typeof args.evidence === 'object' && !Array.isArray(args.evidence)
-                                ? (0, redact_1.redactSensitiveValue)(args.evidence)
-                                : undefined,
-                        };
-                        const result = await (0, index_1.marrowEvaluateCompletionContract)(API_KEY, BASE_URL, input, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_governance_timeline') {
-                        const result = await (0, index_1.marrowGovernanceTimeline)(API_KEY, BASE_URL, {
-                            agentId: args.agentId || FLEET_AGENT_ID,
-                            limit: args.limit,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_decision_trace') {
-                        const decisionId = args.decisionId;
-                        if (!decisionId) {
-                            error(id, -32602, 'decisionId is required');
-                            return;
-                        }
-                        const result = await (0, index_1.marrowDecisionTrace)(API_KEY, BASE_URL, decisionId, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_buyer_proof') {
-                        const result = await (0, index_1.marrowBuyerProof)(API_KEY, BASE_URL, {
-                            agentId: args.agentId || FLEET_AGENT_ID,
-                            periodDays: args.periodDays,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_mode_recommend') {
-                        const result = await (0, index_1.marrowRecommendGovernanceMode)(API_KEY, BASE_URL, {
-                            project: args.project && typeof args.project === 'object' && !Array.isArray(args.project)
-                                ? (0, redact_1.redactSensitiveValue)(args.project)
-                                : undefined,
-                            workflow: args.workflow && typeof args.workflow === 'object' && !Array.isArray(args.workflow)
-                                ? (0, redact_1.redactSensitiveValue)(args.workflow)
-                                : undefined,
-                            agent: args.agent && typeof args.agent === 'object' && !Array.isArray(args.agent)
-                                ? (0, redact_1.redactSensitiveValue)(args.agent)
-                                : { id: FLEET_AGENT_ID },
-                            selected_mode: args.selected_mode,
-                            selection_source: args.selection_source,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_policy_profiles') {
-                        const result = await (0, index_1.marrowListPolicyProfiles)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_create_policy_profile') {
-                        const result = await (0, index_1.marrowCreatePolicyProfile)(API_KEY, BASE_URL, {
-                            name: args.name,
-                            description: args.description,
-                            rules: Array.isArray(args.rules) ? args.rules : undefined,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_assign_project_policy_profile') {
-                        const result = await (0, index_1.marrowAssignProjectPolicyProfile)(API_KEY, BASE_URL, {
-                            project_key: args.project_key,
-                            profile_id: args.profile_id,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_policy_resolve') {
-                        const result = await (0, index_1.marrowResolvePolicy)(API_KEY, BASE_URL, {
-                            profile_id: args.profile_id,
-                            profile_name: args.profile_name,
-                            project: args.project && typeof args.project === 'object' && !Array.isArray(args.project)
-                                ? (0, redact_1.redactSensitiveValue)(args.project)
-                                : undefined,
-                            workflow: args.workflow && typeof args.workflow === 'object' && !Array.isArray(args.workflow)
-                                ? (0, redact_1.redactSensitiveValue)(args.workflow)
-                                : undefined,
-                            agent: args.agent && typeof args.agent === 'object' && !Array.isArray(args.agent)
-                                ? (0, redact_1.redactSensitiveValue)(args.agent)
-                                : { id: FLEET_AGENT_ID },
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_workflow_gate') {
-                        const result = await (0, index_1.marrowWorkflowGate)(API_KEY, BASE_URL, {
-                            action: (0, redact_1.redactSensitiveText)(args.action),
-                            description: args.description ? (0, redact_1.redactSensitiveText)(args.description) : undefined,
-                            risk_tolerance: args.riskTolerance,
-                            requires_approval: args.requiresApproval,
-                            context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
-                                ? (0, redact_1.redactSensitiveValue)(args.context)
-                                : undefined,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_agent_performance') {
-                        const result = await (0, index_1.marrowAgentPerformance)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_fleet_lessons') {
-                        const result = await (0, index_1.marrowFleetLessons)(API_KEY, BASE_URL, {
-                            query: args.query,
-                            type: args.type,
-                            agentId: args.agentId || FLEET_AGENT_ID,
-                            limit: args.limit,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_record_deployment_memory') {
-                        const result = await (0, index_1.marrowRecordDeploymentMemory)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_create_handoff') {
-                        const result = await (0, index_1.marrowCreateHandoff)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_update_handoff') {
-                        const handoffId = args.handoffId;
-                        if (!handoffId) {
-                            error(id, -32602, 'handoffId is required');
-                            return;
-                        }
-                        const result = await (0, index_1.marrowUpdateHandoff)(API_KEY, BASE_URL, handoffId, args, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_handoff_status') {
-                        try {
-                            const result = await withControlDeadline((signal) => (0, index_1.marrowHandoffStatus)(API_KEY, BASE_URL, {
-                                status: args.status,
-                                agentId: args.agentId || FLEET_AGENT_ID,
-                                limit: args.limit,
-                            }, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_handoff_status' });
-                            toolSuccess(id, clientOperationalPayload('marrow_handoff_status', result));
-                        }
-                        catch (error) {
-                            if (error instanceof request_reliability_1.MarrowRequestError && error.backendCode === 'MARROW_PLAN_UPGRADE_REQUIRED') {
-                                toolSuccess(id, clientOperationalPayload('marrow_handoff_status', {
-                                    ok: true,
-                                    available: false,
-                                    state: 'not_entitled',
-                                    failure_kind: 'entitlement',
-                                    authorization_state: 'plan_limited',
-                                    credential_valid: true,
-                                    feature: 'fleet_handoff_status',
-                                    current_plan: error.currentPlan,
-                                    required_plan: 'team',
-                                    required_feature: error.requiredFeature || 'fleet_learning',
-                                    service_reachable: true,
-                                    exact_next_action: 'Use status, ask, runtime, auto, and commit on the current plan. Upgrade to Team before relying on fleet handoff status.',
-                                }));
+                            try {
+                                const result = await withControlDeadline((signal) => (0, index_1.marrowStatus)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_status' });
+                                storeLastKnownStatus(result, 'status');
+                                toolSuccess(id, clientOperationalPayload('marrow_status', result));
                             }
-                            else {
+                            catch (error) {
+                                if (cached) {
+                                    const startedAt = Date.now();
+                                    (0, control_path_state_1.recordControlPathSample)('marrow_status', Date.now() - startedAt, false);
+                                    toolSuccess(id, clientOperationalPayload('marrow_status', (0, status_cache_1.cachedStatusPayload)(cached)));
+                                    return;
+                                }
                                 throw error;
                             }
-                        }
-                        return;
-                    }
-                    if (toolName === 'marrow_session_end') {
-                        const result = await (0, index_1.marrowSessionEnd)(API_KEY, BASE_URL, (0, hook_session_1.sessionEndAutoCommitOpen)(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_accept_detected') {
-                        const detectedId = args.detectedId;
-                        if (!detectedId) {
-                            error(id, -32602, 'detectedId is required');
                             return;
                         }
-                        const result = await (0, index_1.marrowAcceptDetected)(API_KEY, BASE_URL, detectedId, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_list_templates') {
-                        const result = await (0, index_1.marrowListTemplates)(API_KEY, BASE_URL, {
-                            industry: args.industry,
-                            category: args.category,
-                            limit: args.limit,
-                        }, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
-                        return;
-                    }
-                    if (toolName === 'marrow_install_template') {
-                        const slug = args.slug;
-                        if (!slug) {
-                            error(id, -32602, 'slug is required');
+                        if (toolName === 'marrow_create_key') {
+                            const name = requireString(args, 'name');
+                            const result = await (0, index_1.marrowCreateKey)(API_KEY, BASE_URL, {
+                                name,
+                                key_type: args.key_type,
+                                scopes: args.scopes,
+                                agent_ids: args.agent_ids,
+                                expires_at: args.expires_at,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, {
+                                content: [{ type: 'text', text: JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) }],
+                            });
                             return;
                         }
-                        const result = await (0, index_1.marrowInstallTemplate)(API_KEY, BASE_URL, slug, SESSION_ID, FLEET_AGENT_ID);
-                        success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                        if (toolName === 'marrow_list_keys') {
+                            const result = await (0, index_1.marrowListKeys)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_get_key') {
+                            const keyId = requireString(args, 'id');
+                            const result = await (0, index_1.marrowGetKey)(API_KEY, BASE_URL, keyId, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_revoke_key') {
+                            const keyId = requireString(args, 'id');
+                            const result = await (0, index_1.marrowRevokeKey)(API_KEY, BASE_URL, keyId, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_rotate_key') {
+                            const keyId = requireString(args, 'id');
+                            const result = await (0, index_1.marrowRotateKey)(API_KEY, BASE_URL, keyId, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, {
+                                content: [{ type: 'text', text: JSON.stringify({ ...result, warning: formatKeyMaterialWarning() }, null, 2) }],
+                            });
+                            return;
+                        }
+                        // Memory control tools — all use requireString for id validation
+                        if (toolName === 'marrow_list_memories') {
+                            const result = await marrowListMemories(API_KEY, BASE_URL, { status: args.status, query: args.query, limit: args.limit, agentId: args.agentId }, SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_get_memory') {
+                            const memId = requireString(args, 'id');
+                            const result = await marrowGetMemory(API_KEY, BASE_URL, memId, SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_update_memory') {
+                            const memId = requireString(args, 'id');
+                            const result = await marrowUpdateMemory(API_KEY, BASE_URL, memId, { text: args.text, source: args.source, tags: args.tags, actor: args.actor, note: args.note }, SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_delete_memory') {
+                            const memId = requireString(args, 'id');
+                            const result = await marrowDeleteMemory(API_KEY, BASE_URL, memId, { actor: args.actor, note: args.note }, SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_mark_outdated') {
+                            const memId = requireString(args, 'id');
+                            const result = await marrowMarkOutdated(API_KEY, BASE_URL, memId, { actor: args.actor, note: args.note }, SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_supersede_memory') {
+                            const memId = requireString(args, 'id');
+                            const newText = requireString(args, 'text');
+                            const result = await marrowSupersedeMemory(API_KEY, BASE_URL, memId, { text: newText, source: args.source, tags: args.tags, actor: args.actor, note: args.note }, SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_share_memory') {
+                            const memId = requireString(args, 'id');
+                            const result = await marrowShareMemory(API_KEY, BASE_URL, memId, args.agentIds || [], args.actor, SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_export_memories') {
+                            const result = await marrowExportMemories(API_KEY, BASE_URL, { format: args.format, status: args.status, tags: args.tags }, SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_import_memories') {
+                            const result = await marrowImportMemories(API_KEY, BASE_URL, args.memories || [], args.mode || 'merge', SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_retrieve_memories') {
+                            const query = requireString(args, 'query');
+                            const result = await marrowRetrieveMemories(API_KEY, BASE_URL, query, { limit: args.limit, from: args.from, to: args.to, tags: args.tags, source: args.source, status: args.status, shared: args.shared }, SESSION_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_workflow') {
+                            const result = await (0, index_1.marrowWorkflow)(API_KEY, BASE_URL, {
+                                action: args.action,
+                                workflowId: args.workflowId,
+                                instanceId: args.instanceId,
+                                name: args.name,
+                                description: args.description,
+                                steps: args.steps,
+                                tags: args.tags,
+                                agentId: args.agentId,
+                                context: args.context,
+                                inputs: args.inputs,
+                                stepCompleted: args.stepCompleted,
+                                outcome: args.outcome,
+                                nextAgentId: args.nextAgentId,
+                                contextUpdate: args.contextUpdate,
+                                status: args.status,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_dashboard') {
+                            const result = await (0, index_1.marrowDashboard)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_digest') {
+                            const result = await (0, index_1.marrowDigest)(API_KEY, BASE_URL, args.period || '7d', SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_agent_status') {
+                            const result = await withControlDeadline(async (signal) => {
+                                const [analyticsStatus, context] = await Promise.all([
+                                    (0, index_1.marrowAgentStatus)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID, signal),
+                                    (0, index_1.marrowAgentContext)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID, signal)
+                                        .catch(() => null),
+                                ]);
+                                const contextProjection = recordValue(context)?.primary_tool_availability;
+                                return {
+                                    ...analyticsStatus,
+                                    ...(contextProjection === undefined ? {} : { primary_tool_availability: contextProjection }),
+                                };
+                            }, { cacheAware: false, toolName: 'marrow_agent_status' });
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus({ ...result, local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)) }), null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_runtime_status') {
+                            const result = await withControlDeadline((signal) => (0, index_1.marrowRuntimeStatus)(API_KEY, BASE_URL, args.fast !== false, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_runtime_status' });
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus(result), null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_value_report') {
+                            const result = await (0, index_1.marrowValueReport)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_decision_brief') {
+                            const result = await (0, index_1.marrowDecisionBrief)(API_KEY, BASE_URL, {
+                                action: args.action,
+                                type: args.type,
+                                role: args.role,
+                                agent_id: args.agentId || FLEET_AGENT_ID,
+                                session_id: args.sessionId || SESSION_ID,
+                                surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
+                                period: args.period,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_first_value') {
+                            const result = await (0, index_1.marrowFirstValue)(API_KEY, BASE_URL, {
+                                action: args.action ? (0, redact_1.redactSensitiveText)(args.action) : undefined,
+                                type: args.type,
+                                role: args.role,
+                                agent_id: args.agentId || FLEET_AGENT_ID,
+                                session_id: args.sessionId || SESSION_ID,
+                                surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
+                                context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+                                    ? (0, redact_1.redactSensitiveValue)(args.context)
+                                    : undefined,
+                                proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+                                    ? (0, redact_1.redactSensitiveValue)(args.proof)
+                                    : undefined,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_agent_runtime') {
+                            const runtimeInput = {
+                                action: (0, redact_1.redactSensitiveText)(args.action),
+                                type: args.type,
+                                role: args.role,
+                                agent_id: args.agentId || FLEET_AGENT_ID,
+                                session_id: args.sessionId || SESSION_ID,
+                                surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
+                                context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+                                    ? (0, redact_1.redactSensitiveValue)(args.context)
+                                    : undefined,
+                                proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+                                    ? (0, redact_1.redactSensitiveValue)(args.proof)
+                                    : undefined,
+                                period: args.period,
+                            };
+                            const result = await withControlDeadline((signal) => (0, index_1.marrowAgentRuntime)(API_KEY, BASE_URL, runtimeInput, SESSION_ID, FLEET_AGENT_ID, signal), { highRisk: isHighRiskAction(runtimeInput.action, runtimeInput.type), toolName: 'marrow_agent_runtime' });
+                            storeRuntimeGuidance(result);
+                            storeLastKnownStatus(result.status, 'runtime');
+                            toolSuccess(id, clientOperationalPayload('marrow_agent_runtime', result));
+                            return;
+                        }
+                        if (toolName === 'marrow_arbitrate') {
+                            const result = await (0, index_1.marrowArbitrate)(API_KEY, BASE_URL, {
+                                objective: (0, redact_1.redactSensitiveText)(args.objective),
+                                owner_intent: typeof args.ownerIntent === 'string' ? (0, redact_1.redactSensitiveText)(args.ownerIntent) : undefined,
+                                conflict_type: args.conflictType,
+                                proposals: Array.isArray(args.proposals)
+                                    ? args.proposals
+                                    : [],
+                                action: typeof args.action === 'string' ? (0, redact_1.redactSensitiveText)(args.action) : undefined,
+                                type: args.type,
+                                agent_id: args.agentId || FLEET_AGENT_ID,
+                                session_id: args.sessionId || SESSION_ID,
+                                surfaces: Array.isArray(args.surfaces) ? args.surfaces : undefined,
+                                context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+                                    ? (0, redact_1.redactSensitiveValue)(args.context)
+                                    : undefined,
+                                proof: args.proof && typeof args.proof === 'object' && !Array.isArray(args.proof)
+                                    ? (0, redact_1.redactSensitiveValue)(args.proof)
+                                    : undefined,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_coordinate') {
+                            const coordinationArgs = { ...args };
+                            delete coordinationArgs.agent_id;
+                            delete coordinationArgs.source_agent_id;
+                            const result = await (0, index_1.marrowCoordinate)(API_KEY, BASE_URL, coordinationArgs, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_replay_compare') {
+                            const result = await (0, index_1.marrowReplayCompare)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_governance_control_plane') {
+                            const result = await (0, index_1.marrowGovernanceControlPlane)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_hermes_integration') {
+                            const result = await (0, index_1.marrowHermesIntegration)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_completion_contracts') {
+                            const result = await (0, index_1.marrowCompletionContracts)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_evaluate_completion_contract') {
+                            const input = {
+                                action: args.action,
+                                workflow_type: args.workflow_type,
+                                risk_level: args.risk_level,
+                                evidence: args.evidence && typeof args.evidence === 'object' && !Array.isArray(args.evidence)
+                                    ? (0, redact_1.redactSensitiveValue)(args.evidence)
+                                    : undefined,
+                            };
+                            const result = await (0, index_1.marrowEvaluateCompletionContract)(API_KEY, BASE_URL, input, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_governance_timeline') {
+                            const result = await (0, index_1.marrowGovernanceTimeline)(API_KEY, BASE_URL, {
+                                agentId: args.agentId || FLEET_AGENT_ID,
+                                limit: args.limit,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_decision_trace') {
+                            const decisionId = args.decisionId;
+                            if (!decisionId) {
+                                error(id, -32602, 'decisionId is required');
+                                return;
+                            }
+                            const result = await (0, index_1.marrowDecisionTrace)(API_KEY, BASE_URL, decisionId, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_buyer_proof') {
+                            const result = await (0, index_1.marrowBuyerProof)(API_KEY, BASE_URL, {
+                                agentId: args.agentId || FLEET_AGENT_ID,
+                                periodDays: args.periodDays,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_mode_recommend') {
+                            const result = await (0, index_1.marrowRecommendGovernanceMode)(API_KEY, BASE_URL, {
+                                project: args.project && typeof args.project === 'object' && !Array.isArray(args.project)
+                                    ? (0, redact_1.redactSensitiveValue)(args.project)
+                                    : undefined,
+                                workflow: args.workflow && typeof args.workflow === 'object' && !Array.isArray(args.workflow)
+                                    ? (0, redact_1.redactSensitiveValue)(args.workflow)
+                                    : undefined,
+                                agent: args.agent && typeof args.agent === 'object' && !Array.isArray(args.agent)
+                                    ? (0, redact_1.redactSensitiveValue)(args.agent)
+                                    : { id: FLEET_AGENT_ID },
+                                selected_mode: args.selected_mode,
+                                selection_source: args.selection_source,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_policy_profiles') {
+                            const result = await (0, index_1.marrowListPolicyProfiles)(API_KEY, BASE_URL, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_create_policy_profile') {
+                            const result = await (0, index_1.marrowCreatePolicyProfile)(API_KEY, BASE_URL, {
+                                name: args.name,
+                                description: args.description,
+                                rules: Array.isArray(args.rules) ? args.rules : undefined,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_assign_project_policy_profile') {
+                            const result = await (0, index_1.marrowAssignProjectPolicyProfile)(API_KEY, BASE_URL, {
+                                project_key: args.project_key,
+                                profile_id: args.profile_id,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_policy_resolve') {
+                            const result = await (0, index_1.marrowResolvePolicy)(API_KEY, BASE_URL, {
+                                profile_id: args.profile_id,
+                                profile_name: args.profile_name,
+                                project: args.project && typeof args.project === 'object' && !Array.isArray(args.project)
+                                    ? (0, redact_1.redactSensitiveValue)(args.project)
+                                    : undefined,
+                                workflow: args.workflow && typeof args.workflow === 'object' && !Array.isArray(args.workflow)
+                                    ? (0, redact_1.redactSensitiveValue)(args.workflow)
+                                    : undefined,
+                                agent: args.agent && typeof args.agent === 'object' && !Array.isArray(args.agent)
+                                    ? (0, redact_1.redactSensitiveValue)(args.agent)
+                                    : { id: FLEET_AGENT_ID },
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_workflow_gate') {
+                            const result = await (0, index_1.marrowWorkflowGate)(API_KEY, BASE_URL, {
+                                action: (0, redact_1.redactSensitiveText)(args.action),
+                                description: args.description ? (0, redact_1.redactSensitiveText)(args.description) : undefined,
+                                risk_tolerance: args.riskTolerance,
+                                requires_approval: args.requiresApproval,
+                                context: args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+                                    ? (0, redact_1.redactSensitiveValue)(args.context)
+                                    : undefined,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_agent_performance') {
+                            const result = await (0, index_1.marrowAgentPerformance)(API_KEY, BASE_URL, args.period || '7d', args.agentId || FLEET_AGENT_ID, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_fleet_lessons') {
+                            const result = await (0, index_1.marrowFleetLessons)(API_KEY, BASE_URL, {
+                                query: args.query,
+                                type: args.type,
+                                agentId: args.agentId || FLEET_AGENT_ID,
+                                limit: args.limit,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_record_deployment_memory') {
+                            const result = await (0, index_1.marrowRecordDeploymentMemory)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_create_handoff') {
+                            const result = await (0, index_1.marrowCreateHandoff)(API_KEY, BASE_URL, args, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_update_handoff') {
+                            const handoffId = args.handoffId;
+                            if (!handoffId) {
+                                error(id, -32602, 'handoffId is required');
+                                return;
+                            }
+                            const result = await (0, index_1.marrowUpdateHandoff)(API_KEY, BASE_URL, handoffId, args, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_handoff_status') {
+                            try {
+                                const result = await withControlDeadline((signal) => (0, index_1.marrowHandoffStatus)(API_KEY, BASE_URL, {
+                                    status: args.status,
+                                    agentId: args.agentId || FLEET_AGENT_ID,
+                                    limit: args.limit,
+                                }, SESSION_ID, FLEET_AGENT_ID, signal), { cacheAware: false, toolName: 'marrow_handoff_status' });
+                                toolSuccess(id, clientOperationalPayload('marrow_handoff_status', result));
+                            }
+                            catch (error) {
+                                if (error instanceof request_reliability_1.MarrowRequestError && error.backendCode === 'MARROW_PLAN_UPGRADE_REQUIRED') {
+                                    toolSuccess(id, clientOperationalPayload('marrow_handoff_status', {
+                                        ok: true,
+                                        available: false,
+                                        state: 'not_entitled',
+                                        failure_kind: 'entitlement',
+                                        authorization_state: 'plan_limited',
+                                        credential_valid: true,
+                                        feature: 'fleet_handoff_status',
+                                        current_plan: error.currentPlan,
+                                        required_plan: 'team',
+                                        required_feature: error.requiredFeature || 'fleet_learning',
+                                        service_reachable: true,
+                                        exact_next_action: 'Use status, ask, runtime, auto, and commit on the current plan. Upgrade to Team before relying on fleet handoff status.',
+                                    }));
+                                }
+                                else {
+                                    throw error;
+                                }
+                            }
+                            return;
+                        }
+                        if (toolName === 'marrow_session_end') {
+                            const result = await (0, index_1.marrowSessionEnd)(API_KEY, BASE_URL, (0, hook_session_1.sessionEndAutoCommitOpen)(args.autoCommitOpen), SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_accept_detected') {
+                            const detectedId = args.detectedId;
+                            if (!detectedId) {
+                                error(id, -32602, 'detectedId is required');
+                                return;
+                            }
+                            const result = await (0, index_1.marrowAcceptDetected)(API_KEY, BASE_URL, detectedId, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_list_templates') {
+                            const result = await (0, index_1.marrowListTemplates)(API_KEY, BASE_URL, {
+                                industry: args.industry,
+                                category: args.category,
+                                limit: args.limit,
+                            }, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        if (toolName === 'marrow_install_template') {
+                            const slug = args.slug;
+                            if (!slug) {
+                                error(id, -32602, 'slug is required');
+                                return;
+                            }
+                            const result = await (0, index_1.marrowInstallTemplate)(API_KEY, BASE_URL, slug, SESSION_ID, FLEET_AGENT_ID);
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+                            return;
+                        }
+                        error(id, -32601, `Method not found: ${toolName}`);
                         return;
                     }
-                    error(id, -32601, `Method not found: ${toolName}`);
-                    return;
-                }
-                error(id, -32601, `Method not found: ${method}`);
-            }
-            catch (err) {
-                if (err instanceof request_reliability_1.MarrowRequestError && method === 'tools/call') {
-                    toolSuccess(id, toolFailure(params?.name, err), true);
-                    return;
-                }
-                const message = err instanceof Error ? err.message : String(err);
-                error(id, -32602, (0, redact_1.redactSensitiveText)(message).slice(0, 240));
-            }
-        }
-        // MCP stdio loop — raw stdin, no readline (readline writes prompts to stdout which breaks MCP)
-        let buffer = '';
-        let pendingRequests = 0;
-        let stdinEnded = false;
-        function checkExit() {
-            if (stdinEnded && pendingRequests === 0) {
-                autoCommitOnClose().then(() => process.exit(0));
-            }
-        }
-        process.stdin.setEncoding('utf8');
-        process.stdin.on('data', (chunk) => {
-            buffer += chunk;
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // keep incomplete line in buffer
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed)
-                    continue;
-                // [FIX #1] Wrap JSON.parse in try-catch to prevent crash on malformed input
-                let msg;
-                try {
-                    msg = JSON.parse(trimmed);
-                }
-                catch (parseErr) {
-                    process.stderr.write(`[marrow] JSON parse error: ${parseErr}\n`);
-                    send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
-                    continue;
-                }
-                // MCP notifications (no id) must be silently ignored per spec
-                if (msg.id === undefined || msg.id === null)
-                    continue;
-                // The client's answer to this server's own request (elicitation).
-                if (settleClientResponse(msg))
-                    continue;
-                pendingRequests++;
-                handleRequest(msg)
-                    .catch((err) => {
-                    process.stderr.write(`[marrow] Handler error: ${err}\n`);
-                })
-                    .finally(() => {
-                    pendingRequests--;
-                    checkExit();
-                });
-            }
-        });
-        process.stdin.on('end', () => {
-            stdinEnded = true;
-            if (buffer.trim()) {
-                let msg;
-                try {
-                    msg = JSON.parse(buffer.trim());
+                    error(id, -32601, `Method not found: ${method}`);
                 }
                 catch (err) {
-                    process.stderr.write(`[marrow] JSON parse error on remaining buffer: ${err}\n`);
-                    checkExit();
-                    return;
+                    if (err instanceof request_reliability_1.MarrowRequestError && method === 'tools/call') {
+                        toolSuccess(id, toolFailure(params?.name, err), true);
+                        return;
+                    }
+                    const message = err instanceof Error ? err.message : String(err);
+                    error(id, -32602, (0, redact_1.redactSensitiveText)(message).slice(0, 240));
                 }
-                if (msg.id === undefined || msg.id === null) {
-                    checkExit();
-                    return;
+            }
+            // MCP stdio loop — raw stdin, no readline (readline writes prompts to stdout which breaks MCP)
+            let buffer = '';
+            let pendingRequests = 0;
+            let stdinEnded = false;
+            function checkExit() {
+                if (stdinEnded && pendingRequests === 0) {
+                    autoCommitOnClose().then(() => process.exit(0));
                 }
-                pendingRequests++;
-                handleRequest(msg)
-                    .catch((err) => {
-                    process.stderr.write(`[marrow] Handler error on remaining: ${err}\n`);
-                })
-                    .finally(() => {
-                    pendingRequests--;
+            }
+            process.stdin.setEncoding('utf8');
+            process.stdin.on('data', (chunk) => {
+                buffer += chunk;
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ''; // keep incomplete line in buffer
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed)
+                        continue;
+                    // [FIX #1] Wrap JSON.parse in try-catch to prevent crash on malformed input
+                    let msg;
+                    try {
+                        msg = JSON.parse(trimmed);
+                    }
+                    catch (parseErr) {
+                        process.stderr.write(`[marrow] JSON parse error: ${parseErr}\n`);
+                        send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
+                        continue;
+                    }
+                    // MCP notifications (no id) must be silently ignored per spec
+                    if (msg.id === undefined || msg.id === null)
+                        continue;
+                    // The client's answer to this server's own request (elicitation).
+                    if (settleClientResponse(msg))
+                        continue;
+                    pendingRequests++;
+                    handleRequest(msg)
+                        .catch((err) => {
+                        process.stderr.write(`[marrow] Handler error: ${err}\n`);
+                    })
+                        .finally(() => {
+                        pendingRequests--;
+                        checkExit();
+                    });
+                }
+            });
+            process.stdin.on('end', () => {
+                stdinEnded = true;
+                if (buffer.trim()) {
+                    let msg;
+                    try {
+                        msg = JSON.parse(buffer.trim());
+                    }
+                    catch (err) {
+                        process.stderr.write(`[marrow] JSON parse error on remaining buffer: ${err}\n`);
+                        checkExit();
+                        return;
+                    }
+                    if (msg.id === undefined || msg.id === null) {
+                        checkExit();
+                        return;
+                    }
+                    pendingRequests++;
+                    handleRequest(msg)
+                        .catch((err) => {
+                        process.stderr.write(`[marrow] Handler error on remaining: ${err}\n`);
+                    })
+                        .finally(() => {
+                        pendingRequests--;
+                        checkExit();
+                    });
+                }
+                else {
                     checkExit();
-                });
-            }
-            else {
-                checkExit();
-            }
-        });
-        process.stdin.on('error', (err) => {
-            process.stderr.write(`[marrow] stdin error: ${err}\n`);
-            process.exit(1);
-        });
+                }
+            });
+            process.stdin.on('error', (err) => {
+                process.stderr.write(`[marrow] stdin error: ${err}\n`);
+                process.exit(1);
+            });
+        } // Close the keyless-start else
     } // Close the if (process.argv[2] !== 'keys') block
 }
 //# sourceMappingURL=cli.js.map

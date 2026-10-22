@@ -8,6 +8,8 @@ export interface ResolvedMarrowEnv {
     exactFix: string;
     /** Set when a base URL from the process environment was not used with an owner-file key. Names the source only, never a value. */
     baseUrlNotice?: string;
+    /** Set only on a no-key result: an owner key file exists but failed the owner-only check, so whatever it holds was refused. */
+    ownerFileRefused?: boolean;
 }
 /** Host (with port) of a non-default base URL, for status output; null for the default. */
 export declare function nonDefaultBaseUrlHost(baseUrl: string): string | null;

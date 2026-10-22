@@ -26,6 +26,8 @@ export interface ResolvedMarrowEnv {
   exactFix: string;
   /** Set when a base URL from the process environment was not used with an owner-file key. Names the source only, never a value. */
   baseUrlNotice?: string;
+  /** Set only on a no-key result: an owner key file exists but failed the owner-only check, so whatever it holds was refused. */
+  ownerFileRefused?: boolean;
 }
 
 /** Host (with port) of a non-default base URL, for status output; null for the default. */
@@ -325,9 +327,11 @@ export function resolveMarrowEnv(options: {
   // paths. A file that fails the check supplies nothing, key included.
   const ownerFiles = ownerEnvFiles(home);
   let ignored: string | null = null;
+  let ownerFileRefused = false;
   for (const filePath of ownerFiles) {
     const read = readOwnerEnvFile(filePath, home);
     if (read.status === 'rejected') {
+      ownerFileRefused = true;
       if (!ignored) ignored = ownerFileNotice(filePath, home);
       continue;
     }
@@ -335,7 +339,7 @@ export function resolveMarrowEnv(options: {
     const found = pickKey(read.values);
     if (found.key) return fromFile(filePath, found, read.values, env);
   }
-  if (options.trustedOnly === true) return missingKey(env, ignored);
+  if (options.trustedOnly === true) return missingKey(env, ignored, ownerFileRefused);
 
   // Repository-level files (found by walking up from cwd) never supply a key or
   // any other Marrow setting, whatever their owner or mode: a umask-077 clone or a
@@ -351,7 +355,7 @@ export function resolveMarrowEnv(options: {
     if (pickKey(peek?.values || {}).key && !ignored) ignored = repoKeyNotice(filePath);
   }
 
-  return missingKey(env, ignored);
+  return missingKey(env, ignored, ownerFileRefused);
 }
 
 function repoKeyNotice(filePath: string): string {
@@ -435,7 +439,7 @@ function fromFile(
   };
 }
 
-function missingKey(env: NodeJS.ProcessEnv, ignored: string | null): ResolvedMarrowEnv {
+function missingKey(env: NodeJS.ProcessEnv, ignored: string | null, ownerFileRefused: boolean): ResolvedMarrowEnv {
   return {
     apiKey: '',
     baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
@@ -443,6 +447,7 @@ function missingKey(env: NodeJS.ProcessEnv, ignored: string | null): ResolvedMar
     sessionId: env.MARROW_SESSION_ID,
     source: null,
     missing: true,
+    ...(ownerFileRefused ? { ownerFileRefused: true } : {}),
     exactFix: 'Create an API key at https://getmarrow.ai, then export MARROW_API_KEY from trusted secret storage or place it in ~/.marrow/env with owner-only permissions before running npx -y --package=@getmarrow/mcp@latest marrow-mcp setup.'
       + (ignored ? `\n${ignored}` : ''),
   };

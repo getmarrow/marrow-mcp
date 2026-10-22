@@ -338,9 +338,11 @@ function resolveMarrowEnv(options = {}) {
     // paths. A file that fails the check supplies nothing, key included.
     const ownerFiles = ownerEnvFiles(home);
     let ignored = null;
+    let ownerFileRefused = false;
     for (const filePath of ownerFiles) {
         const read = readOwnerEnvFile(filePath, home);
         if (read.status === 'rejected') {
+            ownerFileRefused = true;
             if (!ignored)
                 ignored = ownerFileNotice(filePath, home);
             continue;
@@ -352,7 +354,7 @@ function resolveMarrowEnv(options = {}) {
             return fromFile(filePath, found, read.values, env);
     }
     if (options.trustedOnly === true)
-        return missingKey(env, ignored);
+        return missingKey(env, ignored, ownerFileRefused);
     // Repository-level files (found by walking up from cwd) never supply a key or
     // any other Marrow setting, whatever their owner or mode: a umask-077 clone or a
     // mode-preserving archive yields a private file the owner never wrote. They are
@@ -368,7 +370,7 @@ function resolveMarrowEnv(options = {}) {
         if (pickKey(peek?.values || {}).key && !ignored)
             ignored = repoKeyNotice(filePath);
     }
-    return missingKey(env, ignored);
+    return missingKey(env, ignored, ownerFileRefused);
 }
 function repoKeyNotice(filePath) {
     return `Marrow key in ${printablePath(filePath)} ignored: keys are read only from ~/.marrow/env or your environment. Fix: ${REPO_KEY_FIX}.`;
@@ -448,7 +450,7 @@ function fromFile(filePath, found, parsed, env) {
         exactFix: `Marrow key was found in ${printablePath(filePath)}. Keep this file private and run npx @getmarrow/install doctor to verify.`,
     };
 }
-function missingKey(env, ignored) {
+function missingKey(env, ignored, ownerFileRefused) {
     return {
         apiKey: '',
         baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
@@ -456,6 +458,7 @@ function missingKey(env, ignored) {
         sessionId: env.MARROW_SESSION_ID,
         source: null,
         missing: true,
+        ...(ownerFileRefused ? { ownerFileRefused: true } : {}),
         exactFix: 'Create an API key at https://getmarrow.ai, then export MARROW_API_KEY from trusted secret storage or place it in ~/.marrow/env with owner-only permissions before running npx -y --package=@getmarrow/mcp@latest marrow-mcp setup.'
             + (ignored ? `\n${ignored}` : ''),
     };

@@ -74,6 +74,7 @@ import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen 
 import { installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
 import { spawn } from 'node:child_process';
 import { emitBaseUrlNotice, nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
+import { KEYLESS_NOTICE, keylessStart, serveKeylessMcp } from './keyless-server';
 import {
   BACKGROUND_NUDGE_MAX_LIFETIME_MS,
   backgroundNudgeEnabled,
@@ -622,6 +623,10 @@ if (cliArgs.hook) {
   runSetup();
 } else {
 const resolvedEnv = resolveMarrowEnv();
+if (keylessStart(resolvedEnv, process.argv.slice(2), process.env)) {
+  // No Marrow key anywhere this server reads one: zero tools and get-a-key instructions instead of exit 1.
+  serveKeylessMcp(MCP_ADAPTER_VERSION, `${KEYLESS_NOTICE}\n${resolvedEnv.exactFix}\nGet a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
+} else {
 emitBaseUrlNotice(resolvedEnv);
 const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
 
@@ -2761,5 +2766,6 @@ process.stdin.on('error', (err) => {
   process.stderr.write(`[marrow] stdin error: ${err}\n`);
   process.exit(1);
 });
+} // Close the keyless-start else
 } // Close the if (process.argv[2] !== 'keys') block
 }
