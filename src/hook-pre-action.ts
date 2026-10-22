@@ -643,6 +643,9 @@ type ClassificationParts = { tool: string; type: string; surfaces: string[]; rea
 const CLASSIFICATION_TYPES = ['publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
 const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 
+/** `ownUnproven` and `postTool` are described on classifyTool. */
+export type ClassifyOptions = { ownUnproven?: boolean; postTool?: boolean };
+
 /**
  * The classification of one tool call. A Monitor command (and a native git
  * equivalent such as EnterWorktree) is classified exactly as Bash running it;
@@ -651,8 +654,13 @@ const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'data
  * unchanged, when that is already at least as strict). A PowerShell call is
  * one of those, with Bash's reading in the PowerShell dialect (no read-only
  * allowlist) and never read-only. See toolPolicyReading.
+ *
+ * `postTool`: the PostToolUse hook (hook.ts) classifies a call that already ran, for the labels of its lifecycle event and the read-only
+ * flag of the local loop guard; no approval, redaction or stored output reads the result. That path must add ~no latency, so it asks no
+ * environment-print check and never loads the seatbelt mapper: its labels are the ones 3.9.103 gave (the secret-path table it shares with the
+ * seatbelt is the one stricter difference). Only the pre-action hook decides (and holds) on what prints the environment.
  */
-export function classifyTool(event: PreToolUseEvent, options: { ownUnproven?: boolean } = {}): ToolClassification {
+export function classifyTool(event: PreToolUseEvent, options: ClassifyOptions = {}): ToolClassification {
   const reading = toolPolicyReading(event);
   if (!reading.shell.length && reading.base === 'named') return classificationFrom(classifyAsNamed(event, options));
   const shell = reading.shell.map((twin) => classifyAsNamed(twin as PreToolUseEvent, options));
@@ -698,7 +706,8 @@ function stricterParts(a: ClassificationParts, b: ClassificationParts): Classifi
 // One reading of "prints the environment": the seatbelt mapper's (src/seatbelt/env-dump.ts holds the table). The keyed hook asks the
 // mapper about the command text, with no file system to read, and keeps only its env-dump reasons. The mapper loads on the first
 // shell command that holds a filter word; a mapper that cannot answer falls back to a word scan, so the answer is never looser than a hold.
-// The answer is passed into the tool policy (hook-tool-policy loads nothing), so only this hook ever loads the mapper.
+// The answer is passed into the tool policy (hook-tool-policy loads nothing), and only the pre-action path passes it (classifyTool's postTool
+// option passes none), so only the pre-action hook ever loads the mapper.
 type EnvDumpTools = { mapper: typeof import('./seatbelt/mapper'); reasons: { has(reason: string): boolean } };
 let envDumpTools: EnvDumpTools | null | undefined;
 let lastEnvDumpAnswer: { command: string; dumps: boolean } | null = null;
@@ -766,7 +775,7 @@ function shellPrintsEnvironment(command: string): boolean {
 }
 
 /** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
-function classifyAsNamed(event: PreToolUseEvent, options: { ownUnproven?: boolean }): ClassificationParts {
+function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): ClassificationParts {
   const tool = String(event.tool_name || 'tool').slice(0, 64);
   const normalizedTool = normalizeHookToolName(tool);
   // Editing and task tools are judged by their target; shell-like words in the
@@ -775,8 +784,10 @@ function classifyAsNamed(event: PreToolUseEvent, options: { ownUnproven?: boolea
   const command = shellGoverned ? hookToolCommand(event) : '';
   const input = toolClassificationText(event).toLowerCase();
   // A look-alike of Marrow's own tool is never read-only, whatever its verb.
-  const readOnly = options.ownUnproven !== true && isReadOnlyToolEventAsNamed(event, shellPrintsEnvironment);
-  const secretAccess = isSecretMaterialAccessAsNamed(event, shellPrintsEnvironment);
+  // The PostToolUse path passes no check (options.postTool): the mapper is never loaded for it.
+  const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment;
+  const readOnly = options.ownUnproven !== true && isReadOnlyToolEventAsNamed(event, printsEnvironment);
+  const secretAccess = isSecretMaterialAccessAsNamed(event, printsEnvironment);
   const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;

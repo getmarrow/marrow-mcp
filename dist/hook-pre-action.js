@@ -572,6 +572,11 @@ const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'data
  * unchanged, when that is already at least as strict). A PowerShell call is
  * one of those, with Bash's reading in the PowerShell dialect (no read-only
  * allowlist) and never read-only. See toolPolicyReading.
+ *
+ * `postTool`: the PostToolUse hook (hook.ts) classifies a call that already ran, for the labels of its lifecycle event and the read-only
+ * flag of the local loop guard; no approval, redaction or stored output reads the result. That path must add ~no latency, so it asks no
+ * environment-print check and never loads the seatbelt mapper: its labels are the ones 3.9.103 gave (the secret-path table it shares with the
+ * seatbelt is the one stricter difference). Only the pre-action hook decides (and holds) on what prints the environment.
  */
 function classifyTool(event, options = {}) {
     const reading = (0, hook_tool_policy_1.toolPolicyReading)(event);
@@ -697,8 +702,10 @@ function classifyAsNamed(event, options) {
     const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
     const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
     // A look-alike of Marrow's own tool is never read-only, whatever its verb.
-    const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEventAsNamed)(event, shellPrintsEnvironment);
-    const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccessAsNamed)(event, shellPrintsEnvironment);
+    // The PostToolUse path passes no check (options.postTool): the mapper is never loaded for it.
+    const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment;
+    const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEventAsNamed)(event, printsEnvironment);
+    const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccessAsNamed)(event, printsEnvironment);
     const protectedShellCommand = shellGoverned && (0, hook_tool_policy_1.isProtectedShellMutation)(command);
     const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
         && protectedShellCommand;

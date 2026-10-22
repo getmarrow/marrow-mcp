@@ -146,6 +146,11 @@ export type ToolClassification = {
     protected: boolean;
     readOnly: boolean;
 };
+/** `ownUnproven` and `postTool` are described on classifyTool. */
+export type ClassifyOptions = {
+    ownUnproven?: boolean;
+    postTool?: boolean;
+};
 /**
  * The classification of one tool call. A Monitor command (and a native git
  * equivalent such as EnterWorktree) is classified exactly as Bash running it;
@@ -154,10 +159,13 @@ export type ToolClassification = {
  * unchanged, when that is already at least as strict). A PowerShell call is
  * one of those, with Bash's reading in the PowerShell dialect (no read-only
  * allowlist) and never read-only. See toolPolicyReading.
+ *
+ * `postTool`: the PostToolUse hook (hook.ts) classifies a call that already ran, for the labels of its lifecycle event and the read-only
+ * flag of the local loop guard; no approval, redaction or stored output reads the result. That path must add ~no latency, so it asks no
+ * environment-print check and never loads the seatbelt mapper: its labels are the ones 3.9.103 gave (the secret-path table it shares with the
+ * seatbelt is the one stricter difference). Only the pre-action hook decides (and holds) on what prints the environment.
  */
-export declare function classifyTool(event: PreToolUseEvent, options?: {
-    ownUnproven?: boolean;
-}): ToolClassification;
+export declare function classifyTool(event: PreToolUseEvent, options?: ClassifyOptions): ToolClassification;
 export declare const ENV_FILTER_SECRET_NAME: RegExp;
 /** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
 export declare function mayPrintEnvironment(command: string): boolean;

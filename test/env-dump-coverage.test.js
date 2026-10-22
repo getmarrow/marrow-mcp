@@ -123,18 +123,36 @@ test('pypy keeps its -e reading (a stop) and gains python -c', () => {
   assert.equal(keylessStops(live, "pypy3 -c 'import os; print(os.environ)'"), true);
 });
 
-test('the tool policy never uses the mapper: only the pre-action hook does (U5), and the post-tool path loads none', () => {
+// Counts mapper loads and evaluateSeatbeltShell calls in a fresh process (test/support/env-filter-count.cjs). `post` drives the REAL PostToolUse
+// handler (dist/hook.js runHookCommand) with a private HOME and every network and process entry point trapped; `classify` is the pre-action classification.
+function countRows(rootDir, mode, rows, eventName) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-envdump-count-'));
+  try {
+    const file = path.join(dir, 'rows.json');
+    fs.writeFileSync(file, JSON.stringify(rows));
+    const out = spawnSync(process.execPath, [path.join(rootDir, 'test', 'support', 'env-filter-count.cjs'), mode, file, ...(eventName ? [eventName] : [])], { encoding: 'utf8' });
+    assert.equal(out.status, 0, out.stderr.slice(0, 300));
+    return JSON.parse(out.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+const postPathRows = () => [...stopRows.map((r) => r.cmd), ...passRows.map((r) => r.cmd), ...forms.outOfReach, ...ORDINARY_NO_LOAD];
+
+test('the tool policy never uses the mapper: only the pre-action hook does (U5)', () => {
   const policy = fs.readFileSync(path.join(ROOT, 'src', 'hook-tool-policy.ts'), 'utf8');
   assert.equal(/seatbelt\//.test(policy), false);
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-envdump-count-')), 'rows.json');
-  try {
-    fs.writeFileSync(file, JSON.stringify([...stopRows.map((r) => r.cmd), ...ORDINARY_NO_LOAD]));
-    const out = spawnSync(process.execPath, [path.join(__dirname, 'support', 'env-filter-count.cjs'), 'post', file], { encoding: 'utf8' });
-    assert.equal(out.status, 0, out.stderr.slice(0, 300));
-    const counted = JSON.parse(out.stdout);
-    assert.deepEqual({ loads: counted.loads, calls: counted.calls }, { loads: 0, calls: 0 });
-  } finally {
-    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+});
+
+test('counted, no clock: the real PostToolUse handler never loads the mapper or calls it, for the stop rows and for everyday commands', () => {
+  const rows = postPathRows();
+  assert.ok(rows.length >= 650, `${rows.length} rows`);
+  for (const eventName of ['PostToolUse', 'PostToolUseFailure']) {
+    const counted = countRows(ROOT, 'post', rows, eventName);
+    assert.deepEqual({ loads: counted.loads, calls: counted.calls, trapped: counted.trapped, stdoutBytes: counted.stdoutBytes }, { loads: 0, calls: 0, trapped: 0, stdoutBytes: 0 }, eventName);
+    assert.equal(counted.perCommand.length, rows.length);
+    // The handler reached its classification for every row (a handler that returned early would pass this test for nothing).
+    assert.ok(counted.classifyCalls >= rows.length, `${eventName}: ${counted.classifyCalls} classifications for ${rows.length} rows`);
   }
 });
 
@@ -156,24 +174,14 @@ const ORDINARY_NO_LOAD = [
 test('counted, no clock: the keyed hook never loads the mapper for ordinary commands, and runs it for every stop row', () => {
   assert.ok(ORDINARY_NO_LOAD.length >= 40, `${ORDINARY_NO_LOAD.length} ordinary commands`);
   for (const named of ["jq '.name' package.json", 'docker ps', 'ps aux', 'git checkout -b env-fix', 'node -e "console.log(process.env.HOME)"', 'git commit -m "set up ci"']) assert.ok(ORDINARY_NO_LOAD.includes(named), named);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-envdump-count-'));
-  const count = (rows) => {
-    const file = path.join(dir, 'rows.json');
-    fs.writeFileSync(file, JSON.stringify(rows));
-    const out = spawnSync(process.execPath, [path.join(__dirname, 'support', 'env-filter-count.cjs'), 'classify', file], { encoding: 'utf8' });
-    assert.equal(out.status, 0, out.stderr.slice(0, 300));
-    return JSON.parse(out.stdout);
-  };
-  try {
-    const ordinary = count(ORDINARY_NO_LOAD);
-    assert.deepEqual({ loads: ordinary.loads, calls: ordinary.calls }, { loads: 0, calls: 0 });
-    for (const cmd of ORDINARY_NO_LOAD) assert.equal(mayPrintEnvironment(cmd), false, cmd);
-    const stops = count(stopRows.map((r) => r.cmd));
-    assert.equal(stops.loads, 1);
-    assert.deepEqual(stopRows.filter((r, i) => stops.perCommand[i] < 1).map((r) => r.cmd), []);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  const count = (rows) => countRows(ROOT, 'classify', rows);
+  const ordinary = count(ORDINARY_NO_LOAD);
+  assert.deepEqual({ loads: ordinary.loads, calls: ordinary.calls }, { loads: 0, calls: 0 });
+  for (const cmd of ORDINARY_NO_LOAD) assert.equal(mayPrintEnvironment(cmd), false, cmd);
+  // The pre-action path is where the stop rows reach the mapper: one load, and at least one call for every row.
+  const stops = count(stopRows.map((r) => r.cmd));
+  assert.equal(stops.loads, 1);
+  assert.deepEqual(stopRows.filter((r, i) => stops.perCommand[i] < 1).map((r) => r.cmd), []);
 });
 
 test('the filter words: what it reads closely, and what no spelling can hide', () => {
@@ -251,8 +259,8 @@ const MUTANTS = [
   { id: 'filter: ps with e', file: 'hook-pre-action.js', edit: text('/[eE]/.test(words.slice(ps.index + 2))', 'false'), killers: ['ps e', 'ps -E'], keyedOnly: true },
   { id: 'filter: /proc folder', file: 'hook-pre-action.js', edit: text('|\\bproc\\b|', '|\\bprocX\\b|'), killers: ['grep -ra . /proc/self/'], keyedOnly: true },
   { id: 'filter: computed process name', file: 'hook-pre-action.js', edit: text('|\\bprocess\\s*(?:\\?\\.\\s*)?\\[', ''), killers: ["node -e \"const e = process['en' + 'v']; console.log(e)\""], keyedOnly: true },
-  { id: 'keyed asks the mapper', file: 'hook-pre-action.js', edit: text('isSecretMaterialAccessAsNamed)(event, shellPrintsEnvironment)', 'isSecretMaterialAccessAsNamed)(event)'), killers: ['bash -c env', 'compgen -e'], keyedOnly: true },
-  { id: 'keyed read-only bypass', file: 'hook-pre-action.js', edit: text('isReadOnlyToolEventAsNamed)(event, shellPrintsEnvironment)', 'isReadOnlyToolEventAsNamed)(event)'), killers: ['printenv "$NAME"'], keyedOnly: true },
+  { id: 'keyed asks the mapper', file: 'hook-pre-action.js', edit: text('isSecretMaterialAccessAsNamed)(event, printsEnvironment)', 'isSecretMaterialAccessAsNamed)(event)'), killers: ['bash -c env', 'compgen -e'], keyedOnly: true },
+  { id: 'keyed read-only bypass', file: 'hook-pre-action.js', edit: text('isReadOnlyToolEventAsNamed)(event, printsEnvironment)', 'isReadOnlyToolEventAsNamed)(event)'), killers: ['printenv "$NAME"'], keyedOnly: true },
 ];
 
 function mutantBuild(file, edit) {
@@ -261,6 +269,9 @@ function mutantBuild(file, edit) {
   fs.symlinkSync(path.join(ROOT, 'vendor'), path.join(dir, 'vendor'));
   fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'));
   fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(dir, 'package.json'));
+  // The counting helper reads the build next to it, so a mutant copy carries its own.
+  fs.mkdirSync(path.join(dir, 'test', 'support'), { recursive: true });
+  for (const helper of ['env-filter-count.cjs', 'passwd-home-fake.cjs']) fs.copyFileSync(path.join(ROOT, 'test', 'support', helper), path.join(dir, 'test', 'support', helper));
   const target = path.join(dir, 'dist', file);
   const before = fs.readFileSync(target, 'utf8');
   const after = before.replace(edit.from, edit.to);
@@ -280,6 +291,28 @@ for (const mutant of MUTANTS) {
       const mutated = checkersFor(dir);
       const survived = mutant.killers.filter((cmd) => mutated.keyed(cmd) && (mutant.keyedOnly || keylessStops(mutated, cmd)));
       assert.ok(survived.length < mutant.killers.length, `no killer row noticed the mutant: ${mutant.id}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+// The PostToolUse path asks no environment-print check (classifyTool's postTool option). Putting the mapper call back on it, in either place the
+// handler classifies, must fail the counted test: the real handler then loads the mapper and calls it.
+const POST_PATH_MUTANTS = [
+  { id: 'post path asks the mapper (classifyAsNamed ignores postTool)', file: 'hook-pre-action.js', edit: text('options.postTool === true ? undefined : shellPrintsEnvironment', 'shellPrintsEnvironment') },
+  { id: 'post path asks the mapper (deriveAction drops postTool)', file: 'hook.js', edit: text('classifyTool)(event, { postTool: true }).action', 'classifyTool)(event, {}).action') },
+];
+
+for (const mutant of POST_PATH_MUTANTS) {
+  test(`mutant killed: ${mutant.id}`, () => {
+    const rows = postPathRows();
+    const live = countRows(ROOT, 'post', rows, 'PostToolUse');
+    assert.deepEqual({ loads: live.loads, calls: live.calls }, { loads: 0, calls: 0 });
+    const dir = mutantBuild(mutant.file, mutant.edit);
+    try {
+      const mutated = countRows(dir, 'post', rows, 'PostToolUse');
+      assert.ok(mutated.loads >= 1 && mutated.calls >= 1, `the counted post-path test did not notice the mutant: ${mutant.id}`);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

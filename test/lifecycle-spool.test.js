@@ -464,7 +464,7 @@ test('passive hooks use joinable action bindings without treating tool exits as 
   assert.match(hook, /payloadBoundEvent\(`posttool-\$\{lifecycleCorrelation\}`/);
   assert.match(preAction, /payloadBoundEvent\(`pretool-\$\{correlation\}`/);
   assert.match(preAction, /const preActionEventId = preActionEvent\.event_id;/);
-  assert.match(hook, /return classifyTool\(event\)\.action/);
+  assert.match(hook, /return classifyTool\(event, \{ postTool: true \}\)\.action/);
   assert.match(hook, /outcome_state: 'pending'/);
   assert.doesNotMatch(hook, /marrowAuto\(/);
   assert.doesNotMatch(hook, /outcome_committed/);
