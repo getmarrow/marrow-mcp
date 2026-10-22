@@ -50,6 +50,7 @@ const tables_1 = require("./tables");
 const classifier_pin_1 = require("./classifier-pin");
 const longopts_1 = require("./longopts");
 const guards_1 = require("./guards");
+const env_dump_1 = require("./env-dump");
 /* eslint-disable @typescript-eslint/no-require-imports */
 const shellParse = require('../../vendor/classifier/shell-parse.js');
 const baseline = require('../../vendor/classifier/policy-baseline.js');
@@ -2932,6 +2933,8 @@ function dispatchProgram(prog, args, rest, pathLike, ctx, run, x) {
         run.headMayChange = true;
     // Generic operand checks apply to every program (S4 reads, S0 writes by write-programs).
     genericOperandChecks(prog, args, ctx, run, x.info.subs);
+    // Every command that prints the environment (a word-level table shared with the keyed hook).
+    envDumpChecks(prog, rest, ctx, run, x);
     // NEW-2: a protected path as an operand of a program that is not a known reader.
     protectedOperandCheck(prog, rest, ctx, run);
     // Patch round 4: the command zip runs to test its archive (-TT, --unzip-command) is command text.
@@ -3029,7 +3032,8 @@ function dispatchProgram(prog, args, rest, pathLike, ctx, run, x) {
         case 'script': return scriptSession(rest, ctx, run, x);
         case 'awk':
         case 'gawk':
-        case 'mawk': return awkProgram(rest, ctx, run, x);
+        case 'mawk':
+        case 'nawk': return awkProgram(rest, ctx, run, x);
         case 'sed':
         case 'gsed': return sedProgram(rest, ctx, run);
         case 'ps': return psProgram(rest, run);
@@ -3308,7 +3312,7 @@ const NESTED_NOT_PROGRAMS = new Set(['set', 'export', 'declare', 'typeset', 'rea
 // Every command hidden in the argv of a program the mapper has no handler for (`strace -f npm
 // publish`, `cross-env NODE_ENV=production vercel --prod`, `tmux new -d 'npm publish'`). Used for
 // unknown programs and for known wrappers with open grammars (docker run IMAGE CMD…).
-function scanArgvForCommands(rest, ctx, run, x, remote = false) {
+function scanArgvForCommands(rest, ctx, run, x, remote = false, execWrapper = false) {
     const fed = withFeed(ctx, x, run).stdinFeed;
     const base = remote ? childCtx(ctx, { cwds: [null], remote: true, vars: new Map(), aliases: new Map(), backstop: true, stdinFeed: fed }) : { ...ctx, backstop: true };
     const env = new Map(x.env);
@@ -3339,7 +3343,7 @@ function scanArgvForCommands(rest, ctx, run, x, remote = false) {
             continue;
         const tail = rest.slice(k);
         const b = progName(w, run);
-        if ((b === 'env' || b === 'printenv') && tail.length === 1)
+        if ((b === 'env' || b === 'printenv') && tail.length === 1 && !execWrapper)
             continue;
         trials += 1;
         if (trials > tables_1.LIMITS.maxTailTrials) {
@@ -3561,7 +3565,7 @@ function unknownProgram(prog, args, ctx, run, x) {
     if (tables_1.INERT_PROGRAMS.has(prog) || ctx.backstop)
         return;
     const rest = args.slice(1);
-    scanArgvForCommands(rest, ctx, run, x);
+    scanArgvForCommands(rest, ctx, run, x, false, env_dump_1.EXEC_WRAPPERS.has(prog));
     // stdin text: `echo 'npm publish' | at now`, `at now <<< 'npm publish'`, `batch <<EOF …`.
     const src = stdinSource(x, ctx, run);
     // Decoded text piped into a program that runs what it reads (at, batch, crontab, a function) or
@@ -3946,7 +3950,11 @@ function interpreterEnvDump(code) {
     if (rest.includes('\u0004SECRETENV\u0004'))
         return true;
     // What is left: any other mention of the environment object is a dump or a computed lookup.
-    return /\bos\.environ\b|\bprocess\.env\b|%ENV\b|\bENV\b(?!\s*(?:=|==)\s*['"])|\bENVIRON\b|\benviron\b\s*(?:[.)\],;:|]|$)|\$_ENV|\$_SERVER|\bSystem\.getenv\s*\(\s*\)|\bgetenv\s*\(\s*\)|\benvironment\.get_environment_variables|\bGet-ChildItem\s+env:/i.test(rest);
+    if (/\bos\.environb?\b|\bprocess\.env\b|%ENV\b|\bENV\b(?!\s*(?:=|==)\s*['"])|\bENVIRON\b|\benvironb?\b\s*(?:[.)\],;:|]|$)|\$_ENV|\$_SERVER|\bSystem\.getenv\s*\(\s*\)|\bSystem\.get_env\s*\(\s*\)|\bgetenv\s*\(\s*(?:null)?\s*\)|\bphpinfo\s*\(|\benvironment\.get_environment_variables|\bGet-ChildItem\s+env:/i.test(rest))
+        return true;
+    // JavaScript reaches the environment object without spelling it out: `const { env } = process`, `process['en' + 'v']`, `with (process) env`, `Reflect.get(process, 'env')`.
+    return (/\bprocess\b/.test(rest) && (/\benv\b/.test(rest) || /\bprocess\s*(?:\?\.)?\s*\[(?!\s*(['"])[A-Za-z_]\w*\1\s*\])/.test(rest)))
+        || /\b(?:globalThis|global)\s*(?:\?\.)?\s*\[(?!\s*(['"])[A-Za-z_]\w*\1\s*\])/.test(rest);
 }
 function scanInterpreterCode(code, run) {
     if ((0, tables_1.interpreterTreeDelete)(code))
@@ -6826,6 +6834,7 @@ function xargsWrapper(prog, rest, ctx, run, x) {
         const sep = inner.findIndex((a) => a.text !== null && /^::::?\+?$/.test(a.text));
         const inputs = sep >= 0 ? inner.slice(sep + 1) : [];
         inner = sep >= 0 ? inner.slice(0, sep) : inner;
+        xargsRunsBareEnv(inner, run);
         if (inner.length === 0) {
             // `parallel ::: 'cmd1' 'cmd2'` and `… | parallel`: every input line is a command line.
             if (sep >= 0) {
@@ -6848,6 +6857,7 @@ function xargsWrapper(prog, rest, ctx, run, x) {
         evalShell(/\{(?:[.\/#%]|\/\.|\d+)?\}/.test(inner.map((a) => a.text || '').join(' ')) ? text : `${text} ${marker}`, childCtx(ctx), run);
         return;
     }
+    xargsRunsBareEnv(inner, run);
     if (inner.length === 0)
         inner = [litArg('echo')];
     // Input lines become extra operands: unknown targets (spec A6). The -I replacement string stands
@@ -7050,11 +7060,11 @@ function handleShell(prog, rest, ctx, run, x) {
 }
 function handleInterpreter(prog, rest, ctx, run, x) {
     const codeFlags = {
-        node: /^(?:-e|--eval|-p|--print|-pe)$/, nodejs: /^(?:-e|--eval|-p|--print)$/, bun: /^(?:-e|--eval|-p|--print)$/,
+        node: /^(?:-e|--eval|-p|--print|-pe|-ep)$/, 'ts-node': /^(?:-e|--eval|-p|--print)$/, tsx: /^(?:-e|--eval|-p|--print)$/, nodejs: /^(?:-e|--eval|-p|--print)$/, bun: /^(?:-e|--eval|-p|--print)$/,
         deno: /^(?:eval)$/, php: /^-r$/, ruby: /^-[a-zA-Z]*e$/, perl: /^-[a-zA-Z]*[eE]$/, lua: /^-e$/, irb: /^-e$/,
         pwsh: /^-(?:c|command|e|ec|enc|encodedcommand)$/i, powershell: /^-(?:c|command|e|ec|enc|encodedcommand)$/i,
     };
-    const isPython = /^(?:python[23]?(?:\.\d+)?|ipython)$/.test(prog);
+    const isPython = /^(?:python[23]?(?:\.\d+)?|ipython|pypy3?(?:\.\d+)?)$/.test(prog);
     const codeRe = isPython ? /^-[a-zA-Z]*c$/ : (codeFlags[prog] || /^-e$/);
     for (let i = 0; i < rest.length; i += 1) {
         const a = rest[i];
@@ -7070,6 +7080,12 @@ function handleInterpreter(prog, rest, ctx, run, x) {
                 hit(run, 'Sx', 'dynamic_interpreter_code');
             return;
         }
+        // The code attached to its flag: `node --eval=CODE`, `perl -e'CODE'`, `ruby -e'CODE'`, `php -r'CODE'`, `python3 -c'CODE'`.
+        const attachedCode = /^(?:node|nodejs|bun)$/.test(prog) ? /^--(?:eval|print)=([\s\S]+)$/.exec(t)
+            : isPython ? /^-[a-zA-Z]*c([\s\S]+)$/.exec(t) : prog === 'perl' ? /^-[a-zA-Z]*[eE]([\s\S]+)$/.exec(t) : prog === 'ruby' ? /^-[a-zA-Z]*e([\s\S]+)$/.exec(t)
+                : prog === 'php' ? /^-r([\s\S]+)$/.exec(t) : null;
+        if (attachedCode)
+            scanInterpreterCode(attachedCode[1], run);
         if (codeRe.test(t) || (prog === 'deno' && t === 'eval')) {
             const code = rest[i + 1];
             if (!code)
@@ -7183,14 +7199,60 @@ function stdinInterpreter(prog, x, ctx, run) {
 }
 // BSD `ps e`, `ps auxe`, `ps eww` print every process's environment.
 function psProgram(rest, run) {
+    const words = rest.map((a) => a.text);
+    if ((0, env_dump_1.psPrintsEnvironment)(words))
+        hit(run, 'S4', 'ps_environment');
+    // What 3.9.103 stopped and no later version loosens: the keyed hook leaves this reading out.
+    else if ((0, env_dump_1.psLooselyPrintsEnvironment)(words))
+        hit(run, 'S4', 'ps_environment_loose');
+}
+// Commands that print many or all environment variables, found by their words alone (never by file contents):
+// `compgen -e`, `tmux show-environment`, `systemctl show-environment`, `php -i`, a jq filter that reads `env`,
+// `npm run env`, and any program given /proc/<pid>/environ.
+function envDumpChecks(prog, rest, ctx, run, x) {
+    const words = rest.map((a) => a.text);
+    if (prog === 'compgen' && (0, env_dump_1.compgenListsVariables)(words))
+        hit(run, 'S4', 'env_dump_compgen');
+    else if (prog === 'tmux' && ((0, env_dump_1.tmuxShowsEnvironment)(words) || (0, env_dump_1.tmuxRunsEnvironmentPrinter)(words)))
+        hit(run, 'S4', 'env_dump_tmux');
+    else if (prog === 'strace' && (0, env_dump_1.straceShowsEnvironment)(words))
+        hit(run, 'S4', 'env_dump_strace');
+    else if (prog === 'man' && (0, env_dump_1.manPagerPrintsEnvironment)(words))
+        hit(run, 'S4', 'env_dump_env');
+    else if (prog === 'systemctl' && (0, env_dump_1.systemctlShowsEnvironment)(words))
+        hit(run, 'S4', 'env_dump_systemctl');
+    else if (prog === 'php' && words.some((w) => w === '-i' || w === '--info'))
+        hit(run, 'S4', 'env_dump_php_info');
+    else if (prog === 'jq' && ((0, env_dump_1.jqFilters)(words).some(env_dump_1.jqFilterReadsEnvironment) || (x.cmd.heredoc !== null && words.some((w) => w !== null && STDIN_PATHS.has(w)) && (0, env_dump_1.jqFilterReadsEnvironment)(x.cmd.heredoc))))
+        hit(run, 'S4', 'env_dump_jq');
+    else if ((prog === 'npm' || prog === 'pnpm' || prog === 'yarn' || prog === 'bun') && (0, env_dump_1.packageRunsEnvScript)(words))
+        hit(run, 'S4', 'env_dump_npm_run_env');
+    for (const [name, values] of x.env) {
+        if (env_dump_1.HELPER_ENV_VARS.has(name) && values !== null && values.some((v) => env_dump_1.ENV_PRINTER_COMMAND.test(v))) {
+            hit(run, 'S4', 'env_dump_env');
+            break;
+        }
+    }
     for (const a of rest) {
-        if (a.text === null)
+        // A dynamic part of the path (`/proc/$(pgrep node)/environ`) stands for any pid.
+        const text = a.text !== null ? a.text : a.pattern.split(DYN).join('x');
+        if (!text.startsWith('/') && !text.includes('proc'))
             continue;
-        if (/^[a-zA-Z]*e[a-zA-Z]*$/.test(a.text) && !a.text.startsWith('-') && !/^\d+$/.test(a.text)) {
-            hit(run, 'S4', 'ps_environment');
+        const candidates = (a.text !== null ? absCandidates(a.text, ctx, run) || [] : [text]).map((p) => (p.length > 1 ? p.replace(/\/+$/, '') : p));
+        if (candidates.some((p) => env_dump_1.PROC_ENVIRON.test(p) || (0, env_dump_1.procGlobMatchesEnviron)(p) || (env_dump_1.RECURSIVE_READERS.has(prog) && env_dump_1.PROC_PROCESS_DIRECTORY.test(p)))) {
+            hit(run, 'S4', 'proc_environ');
             return;
         }
     }
+}
+// `xargs env`, `parallel env ::: x`: the command is `env` or `printenv` with only options and assignments, so it prints the environment.
+function xargsRunsBareEnv(words, run) {
+    const b = words[0] && words[0].text !== null ? progName(words[0], run) : null;
+    if (b !== 'env' && b !== 'printenv')
+        return;
+    const bare = words.slice(1).every((a) => a.text !== null && (a.text.startsWith('-') || (b === 'env' && (/^[A-Za-z_]\w*=/.test(a.text) || /^\{[^}]*\}$/.test(a.text)))));
+    if (bare)
+        hit(run, 'S4', b === 'env' ? 'env_dump_env' : 'env_dump_printenv');
 }
 // trap 'cmd' SIGNAL…: the command runs when the signal arrives.
 // util-linux `script [-q] [-c COMMAND] [file]`: COMMAND runs in a pty with this command's stdin.

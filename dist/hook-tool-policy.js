@@ -11,6 +11,7 @@ exports.secretPatternRegex = secretPatternRegex;
 exports.isSecretPath = isSecretPath;
 exports.isProtectedWriteTarget = isProtectedWriteTarget;
 exports.isSecretVariableName = isSecretVariableName;
+exports.mayPrintEnvironment = mayPrintEnvironment;
 exports.shellSegmentVerdict = shellSegmentVerdict;
 exports.toolTargetPaths = toolTargetPaths;
 exports.isSecretMaterialAccess = isSecretMaterialAccess;
@@ -447,7 +448,7 @@ function secretPath(value, base) {
         return true;
     if (!SOURCE_OR_DOC_FILE.test(name) && directories.some((part) => NAMED_SECRET_DIRECTORY.test(part)))
         return true;
-    if (/^\/proc\/[^/]+\/environ$/.test(path) || /^\/etc\/g?shadow$/.test(path))
+    if (secret_paths_1.PROC_ENVIRON.test(path) || /^\/etc\/g?shadow$/.test(path))
         return true;
     // Claude Code local settings can carry agent keys in their env block.
     if (name === 'settings.local.json' && parts[parts.length - 2] === '.claude')
@@ -524,6 +525,53 @@ function isProtectedWriteTarget(value, base = process.cwd()) {
 /** True for an environment variable name that conventionally holds a secret. */
 function isSecretVariableName(value) {
     return String(value || '').toUpperCase().split('_').some((part) => SECRET_VARIABLE_PART.has(part));
+}
+let envDumpTools;
+let lastEnvDumpAnswer = null;
+// Every form that prints the environment holds one of these words (env also covers environ, getenv, printenv, ENV and every wrapper's
+// last word; proc covers process and /proc). The mapper (about 100 ms to load and run once) is asked only for a command that holds one.
+const ENV_DUMP_WORDS = /env|export|declare|typeset|readonly|compgen|\bset\b|\bps\b|proc|tmux|systemctl|strace|php|\bjq\b|awk|global/i;
+/** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
+function mayPrintEnvironment(command) {
+    // Quotes and backslashes split a word without changing it (`e'n'v`); an ANSI-C quote can spell it in escapes.
+    return ENV_DUMP_WORDS.test(command.replace(/['"\\]/g, '')) || command.includes("$'") || command.includes('$"');
+}
+const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
+function shellPrintsEnvironment(command) {
+    if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command)
+        return lastEnvDumpAnswer.dumps;
+    if (!mayPrintEnvironment(command))
+        return false;
+    let dumps;
+    try {
+        if (envDumpTools === undefined) {
+            try {
+                envDumpTools = { mapper: require('./seatbelt/mapper'), reasons: require('./seatbelt/env-dump').ENV_DUMP_REASONS };
+            }
+            catch {
+                envDumpTools = null;
+            }
+        }
+        if (!envDumpTools)
+            dumps = ENV_DUMP_WORDS.test(command);
+        else {
+            const { mapper, reasons } = envDumpTools;
+            const decision = mapper.evaluateSeatbeltShell(command, {
+                cwd: process.cwd(),
+                home: homeDirectory(),
+                tmpdir: '/tmp',
+                platform: process.platform,
+                fs: { readFile: () => null, realpath: (path) => path },
+                git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
+            });
+            dumps = decision.hits.some((hit) => (hit.category === 'S4' && reasons.has(hit.reason)) || (MAPPER_UNSURE.test(hit.reason) && ENV_DUMP_WORDS.test(command)));
+        }
+    }
+    catch {
+        dumps = ENV_DUMP_WORDS.test(command);
+    }
+    lastEnvDumpAnswer = { command, dumps };
+    return dumps;
 }
 function programName(value) {
     if (!value.includes('/'))
@@ -788,6 +836,8 @@ function isSecretMaterialAccessAsNamed(event) {
     if (!SHELL_TOOLS.has(tool))
         return false;
     const command = shellCommandText(event);
+    if (event[exports.SHELL_DIALECT] !== 'powershell' && shellPrintsEnvironment(command))
+        return true;
     const analysis = shellAnalysis(command, event[exports.SHELL_DIALECT]);
     if (event[exports.SHELL_DIALECT] === 'powershell') {
         // The words are split as PowerShell splits them; text whose quoting Bash splits differently (an escaped quote,
@@ -885,6 +935,9 @@ function isReadOnlyToolEventAsNamed(event) {
         return true;
     const command = hookToolCommand(event);
     if (tool === 'bash' && command) {
+        // Printing the environment is never a read-only inspection.
+        if (shellPrintsEnvironment(shellCommandText(event)))
+            return false;
         // A compound command is read-only only when every simple command in it is.
         const analysis = shellAnalysis(shellCommandText(event));
         return Boolean(analysis?.segments.length && analysis.verdicts.every((verdict) => verdict === 'read'));

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PRESENT_SECRET_PATTERNS = exports.SECRET_PATTERNS = void 0;
+exports.PROC_ENVIRON = exports.PRESENT_SECRET_PATTERNS = exports.SECRET_PATTERNS = void 0;
 /**
  * The secret file paths both Marrow hooks read (one table): the keyless seatbelt stops a read
  * of one (S4), and the keyed policy treats it as a secret access. Home-anchored entries are matched
@@ -27,4 +27,6 @@ exports.SECRET_PATTERNS = [
  * above stay unconditional. `<name>.env.example` never matches.
  */
 exports.PRESENT_SECRET_PATTERNS = ['**/*.env'];
+/** `/proc/<pid>/environ` and `/proc/<pid>/task/<tid>/environ`, `self` and `thread-self` included: the process's whole environment. */
+exports.PROC_ENVIRON = /^\/proc\/[^/]+\/(?:task\/[^/]+\/)?environ$/;
 //# sourceMappingURL=secret-paths.js.map

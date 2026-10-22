@@ -197,7 +197,7 @@ export const KNOWN_COMMANDS = new Set([
   // shells and interpreters
   'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh', 'yash', 'rbash', 'csh', 'tcsh',
   'python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh',
-  'irb', 'ipython', 'awk', 'gawk', 'mawk', 'sed', 'gsed', 'tar', 'gtar', 'bsdtar', 'ps',
+  'irb', 'ipython', 'awk', 'gawk', 'mawk', 'nawk', 'sed', 'gsed', 'tar', 'gtar', 'bsdtar', 'ps',
 ]);
 
 // Programs whose arguments are text, patterns or paths and are never run. Their argv is not scanned

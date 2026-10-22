@@ -25,3 +25,6 @@ export const SECRET_PATTERNS: readonly string[] = [
  * above stay unconditional. `<name>.env.example` never matches.
  */
 export const PRESENT_SECRET_PATTERNS: readonly string[] = ['**/*.env'];
+
+/** `/proc/<pid>/environ` and `/proc/<pid>/task/<tid>/environ`, `self` and `thread-self` included: the process's whole environment. */
+export const PROC_ENVIRON = /^\/proc\/[^/]+\/(?:task\/[^/]+\/)?environ$/;

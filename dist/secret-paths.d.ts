@@ -12,4 +12,6 @@ export declare const SECRET_PATTERNS: readonly string[];
  * above stay unconditional. `<name>.env.example` never matches.
  */
 export declare const PRESENT_SECRET_PATTERNS: readonly string[];
+/** `/proc/<pid>/environ` and `/proc/<pid>/task/<tid>/environ`, `self` and `thread-self` included: the process's whole environment. */
+export declare const PROC_ENVIRON: RegExp;
 //# sourceMappingURL=secret-paths.d.ts.map

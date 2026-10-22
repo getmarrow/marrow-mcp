@@ -44,6 +44,8 @@ export declare function isSecretPath(value: string, base?: string): boolean;
 export declare function isProtectedWriteTarget(value: string, base?: string): boolean;
 /** True for an environment variable name that conventionally holds a secret. */
 export declare function isSecretVariableName(value: string): boolean;
+/** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
+export declare function mayPrintEnvironment(command: string): boolean;
 /**
  * Classifies one simple command: a read-only inspection, a secret access, or anything else.
  * In the PowerShell dialect no command is a read-only inspection and no program is exempt from

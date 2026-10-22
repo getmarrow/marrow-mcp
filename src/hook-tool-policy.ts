@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
-import { SECRET_PATTERNS } from './secret-paths';
+import { PROC_ENVIRON, SECRET_PATTERNS } from './secret-paths';
 
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
 
@@ -401,7 +401,7 @@ function secretPath(value: string, base: string): boolean {
   const directories = pathLike ? parts : parts.slice(0, -1);
   if (directories.some((part) => SECRET_STORE_DIRECTORY.test(part))) return true;
   if (!SOURCE_OR_DOC_FILE.test(name) && directories.some((part) => NAMED_SECRET_DIRECTORY.test(part))) return true;
-  if (/^\/proc\/[^/]+\/environ$/.test(path) || /^\/etc\/g?shadow$/.test(path)) return true;
+  if (PROC_ENVIRON.test(path) || /^\/etc\/g?shadow$/.test(path)) return true;
   // Claude Code local settings can carry agent keys in their env block.
   if (name === 'settings.local.json' && parts[parts.length - 2] === '.claude') return true;
   if (!pathLike) return SECRET_FILE.test(name) && !ENV_TEMPLATE_FILE.test(name);
@@ -461,6 +461,53 @@ export function isProtectedWriteTarget(value: string, base = process.cwd()): boo
 /** True for an environment variable name that conventionally holds a secret. */
 export function isSecretVariableName(value: string): boolean {
   return String(value || '').toUpperCase().split('_').some((part) => SECRET_VARIABLE_PART.has(part));
+}
+
+// One reading of "prints the environment": the seatbelt mapper's (src/seatbelt/env-dump.ts holds the table). The keyed policy asks the
+// mapper about the command text, with no file system to read, and keeps only its env-dump reasons. The mapper loads on the first
+// shell command; a mapper that cannot answer falls back to a word scan, so the answer is never looser than a hold.
+type MapperModule = typeof import('./seatbelt/mapper');
+type EnvDumpReasons = { has(reason: string): boolean };
+let envDumpTools: { mapper: MapperModule; reasons: EnvDumpReasons } | null | undefined;
+let lastEnvDumpAnswer: { command: string; dumps: boolean } | null = null;
+// Every form that prints the environment holds one of these words (env also covers environ, getenv, printenv, ENV and every wrapper's
+// last word; proc covers process and /proc). The mapper (about 100 ms to load and run once) is asked only for a command that holds one.
+const ENV_DUMP_WORDS = /env|export|declare|typeset|readonly|compgen|\bset\b|\bps\b|proc|tmux|systemctl|strace|php|\bjq\b|awk|global/i;
+/** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
+export function mayPrintEnvironment(command: string): boolean {
+  // Quotes and backslashes split a word without changing it (`e'n'v`); an ANSI-C quote can spell it in escapes.
+  return ENV_DUMP_WORDS.test(command.replace(/['"\\]/g, '')) || command.includes("$'") || command.includes('$"');
+}
+const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
+
+function shellPrintsEnvironment(command: string): boolean {
+  if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command) return lastEnvDumpAnswer.dumps;
+  if (!mayPrintEnvironment(command)) return false;
+  let dumps: boolean;
+  try {
+    if (envDumpTools === undefined) {
+      try {
+        envDumpTools = { mapper: require('./seatbelt/mapper') as MapperModule, reasons: (require('./seatbelt/env-dump') as typeof import('./seatbelt/env-dump')).ENV_DUMP_REASONS };
+      } catch { envDumpTools = null; }
+    }
+    if (!envDumpTools) dumps = ENV_DUMP_WORDS.test(command);
+    else {
+      const { mapper, reasons } = envDumpTools;
+      const decision = mapper.evaluateSeatbeltShell(command, {
+        cwd: process.cwd(),
+        home: homeDirectory(),
+        tmpdir: '/tmp',
+        platform: process.platform,
+        fs: { readFile: () => null, realpath: (path: string) => path },
+        git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
+      });
+      dumps = decision.hits.some((hit) => (hit.category === 'S4' && reasons.has(hit.reason)) || (MAPPER_UNSURE.test(hit.reason) && ENV_DUMP_WORDS.test(command)));
+    }
+  } catch {
+    dumps = ENV_DUMP_WORDS.test(command);
+  }
+  lastEnvDumpAnswer = { command, dumps };
+  return dumps;
 }
 
 function programName(value: string): string | null {
@@ -675,6 +722,7 @@ export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent): boolean {
   if (FILE_EDIT_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
   if (!SHELL_TOOLS.has(tool)) return false;
   const command = shellCommandText(event);
+  if (event[SHELL_DIALECT] !== 'powershell' && shellPrintsEnvironment(command)) return true;
   const analysis = shellAnalysis(command, event[SHELL_DIALECT]);
   if (event[SHELL_DIALECT] === 'powershell') {
     // The words are split as PowerShell splits them; text whose quoting Bash splits differently (an escaped quote,
@@ -757,6 +805,8 @@ export function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent): boolean {
 
   const command = hookToolCommand(event);
   if (tool === 'bash' && command) {
+    // Printing the environment is never a read-only inspection.
+    if (shellPrintsEnvironment(shellCommandText(event))) return false;
     // A compound command is read-only only when every simple command in it is.
     const analysis = shellAnalysis(shellCommandText(event));
     return Boolean(analysis?.segments.length && analysis.verdicts.every((verdict) => verdict === 'read'));
