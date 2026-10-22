@@ -99,11 +99,14 @@ test('a forged or unusable own loader proves nothing', () => {
     'version 3.9.105 with build metadata': launcherOf(cfg(() => ({ version: `${V}+x` }))),
     'integrity with extra padding': launcherOf(cfg((c) => ({ integrity: `${c.integrity}=` }))),
     'oversized': OWN_SOURCE + ' '.repeat(1 << 17),
+    'version wider than the shape check (5 digits)': launcherOf(cfg(() => ({ version: '3.9.10500' }))),
   };
   for (const [label, ownLoader] of Object.entries(forged)) {
     assert.equal(isOfficialMarrowServerLaunch(...sh(), ownLoader), false, label);
     assert.equal(cursorWith(sh(), ownLoader), false, `Cursor ${label}`);
   }
+  const wide = forged['version wider than the shape check (5 digits)'];
+  assert.equal(isOfficialMarrowServerLaunch(...sh(cfg(() => ({ version: '3.9.10500' })), '3.9.10500'), wide), false, 'never wider than master');
   // A forged own pair cannot be matched by launching it: the null-integrity launch stays unproven under itself.
   assert.equal(isOfficialMarrowServerLaunch(LEGACY.posix_next.command, LEGACY.posix_next.args, forged['integrity null (train-2)']), false);
 });

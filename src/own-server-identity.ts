@@ -388,8 +388,9 @@ function installerServerScript(version: string): string {
 }
 
 const MAX_LAUNCHER_BYTES = 1 << 17;
-// What the installer core itself requires of CFG before it verifies or runs a runtime.
-const CFG_VERSION_RE = /^\d+\.\d+\.\d+$/;
+// What the installer core itself requires of CFG before it verifies or runs a runtime, with the
+// version bounded as PINNED_SPEC bounds it (so no launch is proven that the shape check refuses).
+const CFG_VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
 const CFG_INTEGRITY_RE = /^sha512-[A-Za-z0-9+/]{86}==$/;
 
 /** The CFG of a decoded installer launcher with a pinned core, or null when the source is not exactly one. */

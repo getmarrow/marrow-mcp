@@ -540,7 +540,7 @@ const MAX_LOADER_PLAIN_LENGTH = 32_768;
 // The loader must decode to the installer's launcher for this version with a pinned
 // runtime core: the installer's server launch shape (node -e <loader>), any pack integrity.
 const installerLoaderFor = (loader: string, version: string): boolean =>
-  isMarrowServerLaunchShape('node',['-e', loader, '--', `--package=@getmarrow/mcp@${version}`, 'marrow-mcp']);
+  isMarrowServerLaunchShape('node', ['-e', loader, '--', `--package=@getmarrow/mcp@${version}`, 'marrow-mcp']);
 
 /**
  * The npx form of an installer local-runtime hook command, or the command

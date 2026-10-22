@@ -488,8 +488,9 @@ function installerServerScript(version) {
     return `N="$HOME/.marrow/runtime/mcp/${version}/node"; if [ ! -x "$N" ]; then N=; P="$PATH:/usr/local/bin:/opt/homebrew/bin"; while [ -n "$P" ]; do D="\${P%%:*}"; case "$P" in (*:*) P="\${P#*:}" ;; (*) P= ;; esac; case "$D" in ("$PWD"|"$PWD"/*) ;; (/*) if [ -f "$D/node" ] && [ -x "$D/node" ]; then N="$D/node"; break; fi ;; esac; done; fi; if [ -n "$N" ]; then exec "$N" -e "$0" -- "$@"; fi; printf "%s\\n" "${INSTALLER_UNAVAILABLE_TEXT}" >&2; exit 1`;
 }
 const MAX_LAUNCHER_BYTES = 1 << 17;
-// What the installer core itself requires of CFG before it verifies or runs a runtime.
-const CFG_VERSION_RE = /^\d+\.\d+\.\d+$/;
+// What the installer core itself requires of CFG before it verifies or runs a runtime, with the
+// version bounded as PINNED_SPEC bounds it (so no launch is proven that the shape check refuses).
+const CFG_VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
 const CFG_INTEGRITY_RE = /^sha512-[A-Za-z0-9+/]{86}==$/;
 /** The CFG of a decoded installer launcher with a pinned core, or null when the source is not exactly one. */
 function installerLauncherConfig(source) {
