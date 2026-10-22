@@ -12,10 +12,33 @@
  * The keyless server judges, checks and records nothing. It starts no child
  * process, opens no network and no file, reads no environment, and writes only
  * to stdout and stderr. Hooks are separate entrypoints and are not touched.
- * Wording and protocol handling match the plugin launcher's keyless stub
+ * Protocol handling matches the plugin launcher's keyless stub
  * (marrow-plugins plugins/<plugin>/scripts/marrow-launch.cjs, serveKeyless).
+ *
+ * Never looser than the exit 1 it replaces: until a valid `initialize` request has
+ * been answered, a frame that is not JSON-RPC 2.0 (a Cursor or Claude hook payload
+ * piped to the entry, a parse error, an oversize line) or an end of stdin ends the
+ * process with the no-key refusal on stderr, nothing on stdout, and exit 1. After
+ * an initialize, the end of stdin is exit 0.
+ *
+ * The key text (URL, activate command, plugin steps, the refusal) is owned by cli.ts
+ * and passed in; this file holds no second copy of it.
  */
-export declare const KEYLESS_INSTRUCTIONS: string;
+export interface KeylessInstructionParts {
+    getKeyUrl: string;
+    activateCommand: string;
+    /** Set when the server runs under the Claude Code plugin: its key steps replace the activate command. */
+    pluginSteps?: string;
+}
+/** The `instructions` string of the initialize answer. */
+export declare function keylessInstructions(parts: KeylessInstructionParts): string;
+export interface KeylessTexts {
+    instructions: string;
+    /** Written to stderr once, when the first initialize is answered. */
+    notice: string;
+    /** The server's own no-key refusal, written to stderr before the exit 1 that a non-MCP first frame or an early end of stdin gets. */
+    refusal: string;
+}
 export declare const KEYLESS_NOTICE = "Marrow: no Marrow key on this machine, so the Marrow MCP server started with no tools. Marrow hooks, where they are set up, keep their free keyless seatbelt.";
 /**
  * Whether the MCP server starts keyless. `resolved` must be the server's own resolveMarrowEnv() result.
@@ -25,6 +48,6 @@ export declare const KEYLESS_NOTICE = "Marrow: no Marrow key on this machine, so
  */
 export declare function keylessStart(resolved: unknown, argv: readonly unknown[], env: Record<string, string | undefined>): boolean;
 export declare function keylessProtocolVersion(params: unknown): string;
-/** Newline-delimited JSON-RPC 2.0 on stdio with zero tools. Exits 0 when stdin ends. */
-export declare function serveKeylessMcp(serverVersion: string, notice: string): void;
+/** Newline-delimited JSON-RPC 2.0 on stdio with zero tools. Exits 0 when stdin ends after an initialize, 1 for a non-MCP start. */
+export declare function serveKeylessMcp(serverVersion: string, texts: KeylessTexts): void;
 //# sourceMappingURL=keyless-server.d.ts.map

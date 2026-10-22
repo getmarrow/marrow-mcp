@@ -12,7 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
-const { KEYLESS_INSTRUCTIONS, KEYLESS_NOTICE, keylessStart, keylessProtocolVersion } = require('../dist/keyless-server.js');
+const { KEYLESS_NOTICE, keylessInstructions, keylessStart, keylessProtocolVersion } = require('../dist/keyless-server.js');
 const { resolveMarrowEnv } = require('../dist/env.js');
 const { cursorOfficialMarrowServer, codexOfficialMarrowServer, isOfficialMarrowServerLaunch } = require('../dist/own-server-identity.js');
 
@@ -20,6 +20,21 @@ const CLI = path.join(__dirname, '..', 'dist', 'cli.js');
 const EFFECTS = path.join(__dirname, 'support', 'keyless-effects-recorder.cjs');
 const NETWORK = path.join(__dirname, 'support', 'm2-network-recorder.cjs');
 const dummyKey = (label) => `synthetic-${label}-${crypto.randomBytes(12).toString('hex')}`;
+const GET_A_KEY_URL = 'https://getmarrow.ai/signup';
+const ACTIVATE_COMMAND = 'npx -y @getmarrow/install@latest activate';
+const KEYLESS_INSTRUCTIONS = keylessInstructions({ getKeyUrl: GET_A_KEY_URL, activateCommand: ACTIVATE_COMMAND });
+// The text the 3.9.106 builder shipped, pinned whole: the parts passed in from cli.ts must rebuild exactly this.
+const SHIPPED_INSTRUCTIONS = 'This Marrow server started without a Marrow key on this machine, so it has no tools. '
+  + 'It does not judge, check or record any action. '
+  + 'Marrow hooks, where they are set up on this machine, are separate from this server and keep their free keyless seatbelt; this server does not show whether any are set up. '
+  + 'To connect a Marrow account, the owner creates a key at https://getmarrow.ai/signup and runs npx -y @getmarrow/install@latest activate in their own terminal, then restarts this agent host. '
+  + 'A key can not be added from this chat.';
+// The FH no-key refusal (first-hour tip), byte for byte, for the Claude Code plugin and for everything else.
+const PLUGIN_REFUSAL = 'Error: MARROW_API_KEY required. Marrow plugin: put MARROW_API_KEY in ~/.marrow/env, run chmod 600 ~/.marrow/env, then /reload-plugins. The seatbelt hooks keep working without a key. Do not run marrow-mcp setup or activate for the plugin.\n'
+  + 'Get a key: https://getmarrow.ai/signup. Day-one steps and commands: npx @getmarrow/mcp --help\n';
+const PLAIN_REFUSAL = 'Error: MARROW_API_KEY environment variable is required\n'
+  + 'Create an API key at https://getmarrow.ai, then export MARROW_API_KEY from trusted secret storage or place it in ~/.marrow/env with owner-only permissions before running npx -y --package=@getmarrow/mcp@latest marrow-mcp setup.\n'
+  + 'Get a key: https://getmarrow.ai/signup. Day-one steps and commands: npx @getmarrow/mcp --help\n';
 const STATUS_WORDS = /\b(allowed|active|protected|enforced|enforcement|covered|coverage|approved|verified)\b/i;
 
 function scratch(label) {
@@ -70,7 +85,7 @@ function run({ home, cwd, env = {}, args = [], writes = [INIT], preload = [EFFEC
 }
 
 function assertKeyless(result, label) {
-  assert.equal(result.code, 0, `${label}: exit 0 on stdin end`);
+  assert.equal(result.code, 0, `${label}: exit 0 on stdin end after an initialize`);
   const init = result.byId.get(1);
   assert.ok(init && init.result, `${label}: initialize answered`);
   assert.equal(init.result.instructions, KEYLESS_INSTRUCTIONS, `${label}: keyless instructions`);
@@ -314,11 +329,8 @@ test('cross-host: identical keyless answer for Claude Code, Codex, Cursor, Gemin
 
 // ---------------------------------------------------------------- S6: stdio framing
 
-test('stdio: stdin closed early, partial frame at EOF, two frames in one write, a frame split across writes, oversize line', async () => {
+test('stdio: partial frame at EOF, two frames in one write, a frame split across writes, oversize line (all after an initialize)', async () => {
   const { home, cwd } = scratch('stdio');
-  const empty = await run({ home, cwd, writes: [] });
-  assert.equal(empty.code, 0, 'stdin closed before any frame: exit 0');
-  assert.equal(empty.stdout, '');
   const partial = await run({ home, cwd, writes: [INIT.trimEnd()] });
   assert.equal(partial.code, 0);
   assert.ok(partial.byId.get(1).result, 'a final frame without newline is still answered');
@@ -351,6 +363,166 @@ test('stdio: a closed stdout (EPIPE) ends the keyless server with exit 0', async
     setTimeout(() => { for (let i = 0; i < 50; i++) child.stdin.write(INIT); }, 100);
   });
   assert.equal(result, 0);
+});
+
+// ---------------------------------------------------------------- F1: exit 1 unless a valid initialize arrived
+
+// What master did with no key: the refusal on stderr, nothing on stdout, exit 1.
+function assertNoKeyExit(result, label, { stdout = '' } = {}) {
+  assert.equal(result.code, 1, `${label}: exit 1 as master`);
+  assert.equal(result.stdout, stdout, `${label}: stdout`);
+  assert.equal(result.stderr, PLAIN_REFUSAL, `${label}: master's three stderr lines, nothing else (no "started with no tools" notice)`);
+}
+
+const CURSOR_HOOK = `${JSON.stringify({ hook_event_name: 'beforeShellExecution', command: 'rm -rf /' })}\n`;
+const CLAUDE_HOOK = `${JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push --force' }, session_id: 's' })}\n`;
+
+test('F1: the audit repro and other non-MCP first frames exit 1 like master (nothing on stdout, master\'s stderr text)', async () => {
+  const { home, cwd } = scratch('f1');
+  const frames = [
+    ['Cursor beforeShellExecution payload', [CURSOR_HOOK]],
+    ['Claude PreToolUse payload', [CLAUDE_HOOK]],
+    ['pre-initialize parse error', ['this is not json\n']],
+    ['pre-initialize truncated frame at EOF', ['{"jsonrpc":"2.0","id":1,"method":"initial']],
+    ['pre-initialize JSON array', ['[1,2]\n']],
+    ['pre-initialize null', ['null\n']],
+    ['pre-initialize string', ['"initialize"\n']],
+    ['jsonrpc 1.0 initialize', ['{"jsonrpc":"1.0","id":1,"method":"initialize"}\n']],
+    ['no method', ['{"jsonrpc":"2.0","id":1}\n']],
+    ['non-string method', ['{"jsonrpc":"2.0","id":1,"method":7}\n']],
+    ['initialize with an invalid id', ['{"jsonrpc":"2.0","id":{},"method":"initialize"}\n']],
+    ['pre-initialize oversize line', [`{"jsonrpc":"2.0","id":1,"method":"initialize","pad":"${'x'.repeat(1024 * 1024 + 10)}"}\n`]],
+    ['hook payload after blank lines', ['\n\n', CURSOR_HOOK]],
+    ['hook payload split across writes', [CURSOR_HOOK.slice(0, 20), CURSOR_HOOK.slice(20)]],
+    ['hook payload first, then a valid initialize (never reached)', [CURSOR_HOOK, INIT]],
+  ];
+  for (const [label, writes] of frames) {
+    assertNoKeyExit(await run({ home, cwd, writes }), label);
+  }
+  // The audit's own repro, through a real shell pipe.
+  const piped = spawnSync('sh', ['-c', `printf '%s\\n' '{"hook_event_name":"beforeShellExecution","command":"rm -rf /"}' | "$0" "$1"`, process.execPath, CLI], {
+    encoding: 'utf8', cwd, env: { PATH: process.env.PATH, HOME: home },
+  });
+  assert.equal(piped.status, 1, 'the audit repro exits 1');
+  assert.equal(piped.stdout, '');
+  assert.equal(piped.stderr, PLAIN_REFUSAL);
+});
+
+test('F1: empty stdin, a notification only, or an early end of stdin before any initialize exit 1 like master', async () => {
+  const { home, cwd } = scratch('f1-eof');
+  assertNoKeyExit(await run({ home, cwd, writes: [] }), 'empty stdin');
+  assertNoKeyExit(await run({ home, cwd, writes: ['\n'] }), 'blank line only');
+  assertNoKeyExit(await run({ home, cwd, writes: ['{"jsonrpc":"2.0","method":"notifications/initialized"}\n'] }), 'notification only');
+  assertNoKeyExit(await run({ home, cwd, writes: ['{"jsonrpc":"2.0","method":"initialize"}\n'] }), 'initialize with no id is a notification, not a request');
+  assertNoKeyExit(await run({ home, cwd, writes: [], endStdin: true, gapMs: 0 }), 'stdin closed at once');
+});
+
+test('F1: a request before initialize is refused -32002 and does not count as an initialize: EOF is still exit 1; initialize afterwards serves', async () => {
+  const { home, cwd } = scratch('f1-ping');
+  const ping = await run({ home, cwd, writes: [frame(1, 'ping')] });
+  assert.equal(ping.code, 1, 'ping before initialize, then EOF: exit 1');
+  assert.deepEqual(ping.lines.map((l) => [l.id, l.error && l.error.code]), [[1, -32002]], 'the only stdout line is the -32002 refusal');
+  assert.equal(ping.stderr, PLAIN_REFUSAL);
+  const list = await run({ home, cwd, writes: [frame(1, 'tools/list'), frame(2, 'tools/call', { name: 'marrow_agent_runtime', arguments: {} })] });
+  assert.equal(list.code, 1);
+  assert.deepEqual(list.lines.map((l) => [l.id, l.error.code]), [[1, -32002], [2, -32002]]);
+  assert.equal(list.stderr, PLAIN_REFUSAL);
+  const then = await run({ home, cwd, writes: [frame(1, 'ping'), frame(2, 'initialize', { protocolVersion: '2024-11-05', capabilities: {} }), frame(3, 'tools/list')] });
+  assert.equal(then.code, 0, 'a valid initialize arrived: EOF is exit 0');
+  assert.equal(then.byId.get(1).error.code, -32002);
+  assert.equal(then.byId.get(2).result.instructions, KEYLESS_INSTRUCTIONS);
+  assert.deepEqual(then.byId.get(3).result, { tools: [] });
+  assert.match(then.stderr, new RegExp(KEYLESS_NOTICE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(then.stderr, /environment variable is required/);
+});
+
+test('F1: once initialized, bad frames are answered as before and EOF is exit 0; a garbage frame before initialize can not be undone', async () => {
+  const { home, cwd } = scratch('f1-after');
+  const r = await run({ home, cwd, writes: [INIT, 'not json\n', '[1]\n', CURSOR_HOOK, frame(2, 'tools/list')] });
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.lines.map((l) => (l.error ? l.error.code : 'ok')), ['ok', -32700, -32600, -32600, 'ok']);
+  assert.doesNotMatch(r.stderr, /environment variable is required/);
+  assertNoKeyExit(await run({ home, cwd, writes: ['not json\n', INIT] }), 'garbage, then a valid initialize: never reached');
+});
+
+test('F1: under the Claude Code plugin the non-MCP exit 1 prints FH\'s plugin refusal, and the exit-1 text of both modes equals the server\'s own', async () => {
+  const { home, cwd } = scratch('f1-plugin');
+  const plugin = await run({ home, cwd, env: { CLAUDE_PLUGIN_ROOT: cwd }, writes: [CURSOR_HOOK] });
+  assert.equal(plugin.code, 1);
+  assert.equal(plugin.stdout, '');
+  assert.equal(plugin.stderr, PLUGIN_REFUSAL);
+  // The same text on the path that never reaches the keyless server: a refused owner file still exits 1 with the chmod advice.
+  const refusedHome = scratch('f1-plugin-refused').home;
+  ownerFile(refusedHome, 'env', [`MARROW_API_KEY=${dummyKey('plugin')}`], 0o644);
+  const refused = await run({ home: refusedHome, cwd, env: { CLAUDE_PLUGIN_ROOT: cwd }, writes: [] });
+  assert.equal(refused.code, 1);
+  assert.equal(refused.stderr, PLUGIN_REFUSAL, 'plugin text, byte for byte, on the unchanged exit-1 path');
+  const refusedPlain = await run({ home: refusedHome, cwd, writes: [] });
+  assert.equal(refusedPlain.code, 1);
+  assert.equal(refusedPlain.stderr.startsWith(PLAIN_REFUSAL.split('\n')[0]), true);
+  assert.match(refusedPlain.stderr, /not owner-only[\s\S]*chmod 600[\s\S]*Get a key: https:\/\/getmarrow\.ai\/signup\. Day-one steps and commands: npx @getmarrow\/mcp --help\n$/);
+});
+
+test('plugin mode: the keyless answer carries the plugin key steps (one source with the exit-1 text), never the activate command', async () => {
+  const { home, cwd } = scratch('plugin-keyless');
+  const r = await run({ home, cwd, env: { CLAUDE_PLUGIN_ROOT: cwd }, writes: [INIT, frame(2, 'tools/list')] });
+  assert.equal(r.code, 0);
+  const text = r.byId.get(1).result.instructions;
+  const steps = PLUGIN_REFUSAL.split('\n')[0].replace('Error: MARROW_API_KEY required. ', '');
+  assert.ok(text.includes(steps), 'the plugin steps, word for word');
+  assert.ok(r.stderr.includes(steps), 'and in the stderr notice');
+  assert.doesNotMatch(text, /npx -y @getmarrow\/install|marrow-mcp setup$/);
+  assert.match(text, /no tools/);
+  assert.match(text, /A key can not be added from this chat\.$/);
+  assert.doesNotMatch(text, /allow|approv|permit|grant|authori[sz]|proceed|decision|safe to/i);
+  assert.doesNotMatch(text, STATUS_WORDS);
+  assert.deepEqual(r.byId.get(2).result, { tools: [] });
+  assert.equal(keylessInstructions({ getKeyUrl: GET_A_KEY_URL, activateCommand: ACTIVATE_COMMAND, pluginSteps: steps }), text);
+  assert.equal(SHIPPED_INSTRUCTIONS, KEYLESS_INSTRUCTIONS, 'without the plugin the text is what the builder shipped');
+  for (const blank of ['', '   ']) {
+    const plain = await run({ home, cwd, env: { CLAUDE_PLUGIN_ROOT: blank }, writes: [INIT] });
+    assert.equal(plain.byId.get(1).result.instructions, KEYLESS_INSTRUCTIONS, 'a blank CLAUDE_PLUGIN_ROOT is not the plugin');
+  }
+});
+
+// ---------------------------------------------------------------- consumer: the installer doctor's seatbelt-status
+
+test('consumer: seatbelt-status (installer doctor) with no key is read-only, prints one JSON line, exits 0 and starts no keyless server', async () => {
+  const { root, home, cwd } = scratch('status');
+  const before = fs.readdirSync(root).join(',');
+  for (const writes of [[], [INIT]]) {
+    const r = await run({ home, cwd, args: ['seatbelt-status'], writes });
+    assert.equal(r.code, 0, 'seatbelt-status exits 0 with no key');
+    assert.equal(r.stdout.trim().split('\n').length, 1, 'one line of JSON');
+    assert.equal(r.lines.length, 1);
+    assert.equal(typeof r.lines[0], 'object');
+    assert.equal(r.lines[0].jsonrpc, undefined, 'a status line, not an MCP answer');
+    assert.doesNotMatch(r.stderr, /EFFECT |no Marrow key on this machine|environment variable is required/);
+  }
+  assert.equal(fs.readdirSync(root).join(','), before);
+  assert.deepEqual(fs.readdirSync(home), [], 'nothing written under HOME');
+});
+
+// ---------------------------------------------------------------- F3: packaging
+
+test('packaging: npm pack lists dist/keyless-server.js (and its types); package.json "files" covers dist', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  assert.ok(pkg.files.includes('dist'), 'package.json files names dist');
+  const { root, home } = scratch('pack');
+  const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts', '--offline'], {
+    encoding: 'utf8', cwd: path.join(__dirname, '..'),
+    env: { PATH: process.env.PATH, HOME: home, npm_config_cache: path.join(root, 'npm-cache'), npm_config_update_notifier: 'false' },
+  });
+  assert.equal(packed.status, 0, `npm pack --dry-run: ${packed.stderr.slice(0, 300)}`);
+  const listed = new Set(JSON.parse(packed.stdout)[0].files.map((file) => file.path));
+  for (const required of ['dist/cli.js', 'dist/keyless-server.js', 'dist/keyless-server.d.ts', 'dist/env.js']) {
+    assert.ok(listed.has(required), `${required} is in the packed list`);
+  }
+  // Every module the entry requires locally is itself in the packed list, so a new module can not be left out of the package.
+  const entry = fs.readFileSync(path.join(__dirname, '..', 'dist', 'cli.js'), 'utf8');
+  const local = [...entry.matchAll(/require\("\.\/([^"]+)"\)/g)].map((m) => `dist/${m[1].replace(/\.js$/, '')}.js`);
+  assert.ok(local.includes('dist/keyless-server.js'), 'the entry loads the keyless module');
+  for (const file of new Set(local)) assert.ok(listed.has(file), `${file} (required by dist/cli.js) is in the packed list`);
 });
 
 // ---------------------------------------------------------------- consumers: identity, setup

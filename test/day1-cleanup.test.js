@@ -17,8 +17,8 @@ function sandbox() {
   const work = join(root, 'work');
   mkdirSync(home, { mode: 0o700 });
   mkdirSync(join(work, '.claude'), { recursive: true });
-  const run = (args, extra = {}) => spawnSync(process.execPath, [CLI, ...args], {
-    cwd: work, encoding: 'utf8', timeout: 15_000,
+  const run = (args, { input, ...extra } = {}) => spawnSync(process.execPath, [CLI, ...args], {
+    cwd: work, encoding: 'utf8', timeout: 15_000, input,
     env: { PATH: process.env.PATH, HOME: home, MARROW_HOOK_BACKGROUND_NUDGE: 'false', ...extra },
   });
   const entries = () => {
@@ -140,11 +140,22 @@ test('--help works without a key, lists doctor --self-test, the signup link and 
 test('the key-missing server start names the signup page and no longer advertises --key', () => {
   const s = sandbox();
   try {
-    const r = s.run([]);
-    // 3.9.106: no key starts the keyless server (zero tools), which exits 0 when stdin ends.
+    // 3.9.106: no key starts the keyless server (zero tools); it exits 0 when stdin ends after an initialize.
+    const init = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {} } };
+    const r = s.run([], { input: `${JSON.stringify(init)}\n${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n` });
     assert.equal(r.status, 0);
+    const answers = r.stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(answers.length, 2, 'initialize and tools/list are answered');
+    assert.match(answers[0].result.instructions, /started without a Marrow key on this machine, so it has no tools/, 'the keyless server answered, not a real one');
+    assert.match(answers[0].result.instructions, /getmarrow\.ai\/signup/);
+    assert.deepEqual(answers[1].result, { tools: [] }, 'zero tools');
     assert.match(r.stderr, /getmarrow\.ai\/signup/);
     assert.doesNotMatch(r.stderr, /--key mrw_yourkey/);
+    // With no frame at all (stdin closed) the server still exits 1 with the no-key text, as before 3.9.106.
+    const closed = s.run([]);
+    assert.equal(closed.status, 1);
+    assert.match(closed.stderr, /MARROW_API_KEY environment variable is required/);
+    assert.equal(closed.stdout, '');
   } finally { s.cleanup(); }
 });
 

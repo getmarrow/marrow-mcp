@@ -12,17 +12,47 @@
  * The keyless server judges, checks and records nothing. It starts no child
  * process, opens no network and no file, reads no environment, and writes only
  * to stdout and stderr. Hooks are separate entrypoints and are not touched.
- * Wording and protocol handling match the plugin launcher's keyless stub
+ * Protocol handling matches the plugin launcher's keyless stub
  * (marrow-plugins plugins/<plugin>/scripts/marrow-launch.cjs, serveKeyless).
+ *
+ * Never looser than the exit 1 it replaces: until a valid `initialize` request has
+ * been answered, a frame that is not JSON-RPC 2.0 (a Cursor or Claude hook payload
+ * piped to the entry, a parse error, an oversize line) or an end of stdin ends the
+ * process with the no-key refusal on stderr, nothing on stdout, and exit 1. After
+ * an initialize, the end of stdin is exit 0.
+ *
+ * The key text (URL, activate command, plugin steps, the refusal) is owned by cli.ts
+ * and passed in; this file holds no second copy of it.
  */
 
 import { validateBaseUrl } from './index';
 
-export const KEYLESS_INSTRUCTIONS = 'This Marrow server started without a Marrow key on this machine, so it has no tools. '
-  + 'It does not judge, check or record any action. '
-  + 'Marrow hooks, where they are set up on this machine, are separate from this server and keep their free keyless seatbelt; this server does not show whether any are set up. '
-  + 'To connect a Marrow account, the owner creates a key at https://getmarrow.ai/signup and runs npx -y @getmarrow/install@latest activate in their own terminal, then restarts this agent host. '
-  + 'A key can not be added from this chat.';
+export interface KeylessInstructionParts {
+  getKeyUrl: string;
+  activateCommand: string;
+  /** Set when the server runs under the Claude Code plugin: its key steps replace the activate command. */
+  pluginSteps?: string;
+}
+
+/** The `instructions` string of the initialize answer. */
+export function keylessInstructions(parts: KeylessInstructionParts): string {
+  const connect = parts.pluginSteps
+    ? `To connect a Marrow account, the owner follows these steps. ${parts.pluginSteps} `
+    : `To connect a Marrow account, the owner creates a key at ${parts.getKeyUrl} and runs ${parts.activateCommand} in their own terminal, then restarts this agent host. `;
+  return 'This Marrow server started without a Marrow key on this machine, so it has no tools. '
+    + 'It does not judge, check or record any action. '
+    + (parts.pluginSteps ? '' : 'Marrow hooks, where they are set up on this machine, are separate from this server and keep their free keyless seatbelt; this server does not show whether any are set up. ')
+    + connect
+    + 'A key can not be added from this chat.';
+}
+
+export interface KeylessTexts {
+  instructions: string;
+  /** Written to stderr once, when the first initialize is answered. */
+  notice: string;
+  /** The server's own no-key refusal, written to stderr before the exit 1 that a non-MCP first frame or an early end of stdin gets. */
+  refusal: string;
+}
 
 export const KEYLESS_NOTICE = 'Marrow: no Marrow key on this machine, so the Marrow MCP server started with no tools. Marrow hooks, where they are set up, keep their free keyless seatbelt.';
 
@@ -64,44 +94,65 @@ export function keylessProtocolVersion(params: unknown): string {
   return elicits ? requested : DEFAULT_PROTOCOL_VERSION;
 }
 
-/** Newline-delimited JSON-RPC 2.0 on stdio with zero tools. Exits 0 when stdin ends. */
-export function serveKeylessMcp(serverVersion: string, notice: string): void {
+/** Newline-delimited JSON-RPC 2.0 on stdio with zero tools. Exits 0 when stdin ends after an initialize, 1 for a non-MCP start. */
+export function serveKeylessMcp(serverVersion: string, texts: KeylessTexts): void {
   const has = (object: object, key: string) => Object.prototype.hasOwnProperty.call(object, key);
   const send = (id: unknown, body: Record<string, unknown>) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...body })}\n`);
   const refuse = (id: unknown, code: number, message: string) => send(id, { error: { code, message } });
   let initialized = false;
+
+  // Today's no-key exit: the refusal on stderr, nothing on stdout, exit 1.
+  function exitAsNoKey(): never {
+    try {
+      process.stderr.write(texts.refusal);
+    } catch {
+      // a closed stderr changes nothing
+    }
+    process.exit(1);
+  }
+
+  // A frame that is not a usable JSON-RPC 2.0 message. Before an initialize it proves the process was not started by an MCP host.
+  function badFrame(id: unknown, code: number, message: string): void {
+    if (!initialized) exitAsNoKey();
+    refuse(id, code, message);
+  }
 
   function handle(text: string): void {
     let msg: unknown;
     try {
       msg = JSON.parse(text);
     } catch {
-      refuse(null, -32700, 'Parse error.');
+      badFrame(null, -32700, 'Parse error.');
       return;
     }
     if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) {
-      refuse(null, -32600, 'Invalid request.');
+      badFrame(null, -32600, 'Invalid request.');
       return;
     }
     const request = msg as Record<string, unknown>;
     if (request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
-      refuse(null, -32600, 'Invalid request.');
+      badFrame(null, -32600, 'Invalid request.');
       return;
     }
     if (!has(request, 'id')) return; // a notification gets no reply
     const id = request.id;
     if (!(typeof id === 'string' || id === null || (typeof id === 'number' && Number.isFinite(id)))) {
-      refuse(null, -32600, 'Invalid request.');
+      badFrame(null, -32600, 'Invalid request.');
       return;
     }
     if (request.method === 'initialize') {
       initialized = true;
+      try {
+        process.stderr.write(texts.notice);
+      } catch {
+        // a closed stderr changes nothing
+      }
       send(id, {
         result: {
           protocolVersion: keylessProtocolVersion(request.params),
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: 'marrow', version: serverVersion },
-          instructions: KEYLESS_INSTRUCTIONS,
+          instructions: texts.instructions,
         },
       });
       return;
@@ -127,14 +178,14 @@ export function serveKeylessMcp(serverVersion: string, notice: string): void {
     try {
       handle(text);
     } catch {
-      refuse(null, -32603, 'Internal error.');
+      badFrame(null, -32603, 'Internal error.');
     }
   }
 
   let chunks: Buffer[] = [];
   let size = 0;
   let skipping = false; // inside a line over the limit: dropped up to the next newline, never buffered
-  process.stdout.on('error', () => process.exit(0));
+  process.stdout.on('error', () => process.exit(initialized ? 0 : 1));
   process.stdin.on('error', () => { process.exitCode = 1; });
   process.stdin.on('data', (data: Buffer | string) => {
     const chunk = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
@@ -148,7 +199,7 @@ export function serveKeylessMcp(serverVersion: string, notice: string): void {
           skipping = true;
           chunks = [];
           size = 0;
-          refuse(null, -32600, 'Request too large.');
+          badFrame(null, -32600, 'Request too large.');
         } else if (to > from) {
           chunks.push(chunk.subarray(from, to));
         }
@@ -163,10 +214,6 @@ export function serveKeylessMcp(serverVersion: string, notice: string): void {
   });
   process.stdin.on('end', () => {
     if (!skipping) dispatch(chunks);
+    if (!initialized) exitAsNoKey(); // empty stdin, or an end before any initialize: no MCP host ever spoke
   });
-  try {
-    process.stderr.write(notice);
-  } catch {
-    // a closed stderr changes nothing
-  }
 }

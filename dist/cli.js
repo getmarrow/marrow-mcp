@@ -241,7 +241,14 @@ function runningAsPlugin() {
     const root = process.env.CLAUDE_PLUGIN_ROOT;
     return typeof root === 'string' && root.trim() !== '';
 }
-const PLUGIN_KEY_ERROR = 'Error: MARROW_API_KEY required. Marrow plugin: put MARROW_API_KEY in ~/.marrow/env, run chmod 600 ~/.marrow/env, then /reload-plugins. The seatbelt hooks keep working without a key. Do not run marrow-mcp setup or activate for the plugin.';
+const PLUGIN_KEY_STEPS = 'Marrow plugin: put MARROW_API_KEY in ~/.marrow/env, run chmod 600 ~/.marrow/env, then /reload-plugins. The seatbelt hooks keep working without a key. Do not run marrow-mcp setup or activate for the plugin.';
+const PLUGIN_KEY_ERROR = `Error: MARROW_API_KEY required. ${PLUGIN_KEY_STEPS}`;
+const GET_A_KEY_LINE = `Get a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help`;
+// The server's no-key refusal, whole: written before exit 1, and by the keyless server when its first frame shows it was not started by an MCP host.
+function serverKeyRequiredText(exactFix) {
+    const fix = runningAsPlugin() ? PLUGIN_KEY_ERROR : `Error: MARROW_API_KEY environment variable is required\n${exactFix}`;
+    return `${fix}\n${GET_A_KEY_LINE}\n`;
+}
 function keylessKeyError(exactFix) {
     return runningAsPlugin() ? PLUGIN_KEY_ERROR : `Error: MARROW_API_KEY required. ${exactFix}`;
 }
@@ -580,7 +587,13 @@ if (process.argv[2] !== 'keys') {
         const resolvedEnv = (0, env_1.resolveMarrowEnv)();
         if ((0, keyless_server_1.keylessStart)(resolvedEnv, process.argv.slice(2), process.env)) {
             // No Marrow key anywhere this server reads one: zero tools and get-a-key instructions instead of exit 1.
-            (0, keyless_server_1.serveKeylessMcp)(hook_contract_2.MCP_ADAPTER_VERSION, `${keyless_server_1.KEYLESS_NOTICE}\n${resolvedEnv.exactFix}\nGet a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
+            // Plugin or not, the key steps come from the same constants as the exit-1 text below.
+            const pluginSteps = runningAsPlugin() ? PLUGIN_KEY_STEPS : undefined;
+            (0, keyless_server_1.serveKeylessMcp)(hook_contract_2.MCP_ADAPTER_VERSION, {
+                instructions: (0, keyless_server_1.keylessInstructions)({ getKeyUrl: GET_A_KEY_URL, activateCommand: ACTIVATE_COMMAND, pluginSteps }),
+                notice: `${keyless_server_1.KEYLESS_NOTICE}\n${pluginSteps ?? resolvedEnv.exactFix}\n${GET_A_KEY_LINE}\n`,
+                refusal: serverKeyRequiredText(resolvedEnv.exactFix),
+            });
         }
         else {
             (0, env_1.emitBaseUrlNotice)(resolvedEnv);
@@ -598,14 +611,7 @@ if (process.argv[2] !== 'keys') {
             const FLEET_AGENT_ID = resolvedEnv.agentId || undefined;
             const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
             if (!API_KEY) {
-                if (runningAsPlugin()) {
-                    process.stderr.write(`${PLUGIN_KEY_ERROR}\n`);
-                }
-                else {
-                    process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
-                    process.stderr.write(`${resolvedEnv.exactFix}\n`);
-                }
-                process.stderr.write(`Get a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
+                process.stderr.write(serverKeyRequiredText(resolvedEnv.exactFix));
                 process.exit(1);
             }
             if (ENDPOINT_HOST) {
