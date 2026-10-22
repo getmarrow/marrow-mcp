@@ -3032,8 +3032,11 @@ function dispatchProgram(prog, args, rest, pathLike, ctx, run, x) {
         case 'script': return scriptSession(rest, ctx, run, x);
         case 'awk':
         case 'gawk':
-        case 'mawk':
-        case 'nawk': return awkProgram(rest, ctx, run, x);
+        case 'mawk': return awkProgram(rest, ctx, run, x);
+        // nawk was read as an unknown program before: it keeps that argv scan (the break falls through to unknownProgram) besides the awk reading.
+        case 'nawk':
+            awkProgram(rest, ctx, run, x);
+            break;
         case 'sed':
         case 'gsed': return sedProgram(rest, ctx, run);
         case 'ps': return psProgram(rest, run);
@@ -7065,7 +7068,8 @@ function handleInterpreter(prog, rest, ctx, run, x) {
         pwsh: /^-(?:c|command|e|ec|enc|encodedcommand)$/i, powershell: /^-(?:c|command|e|ec|enc|encodedcommand)$/i,
     };
     const isPython = /^(?:python[23]?(?:\.\d+)?|ipython|pypy3?(?:\.\d+)?)$/.test(prog);
-    const codeRe = isPython ? /^-[a-zA-Z]*c$/ : (codeFlags[prog] || /^-e$/);
+    // pypy keeps the `-e` it was read with before it was read as Python (a stop, never a pass), besides Python's `-c`.
+    const codeRe = isPython ? (prog.startsWith('pypy') ? /^(?:-[a-zA-Z]*c|-e)$/ : /^-[a-zA-Z]*c$/) : (codeFlags[prog] || /^-e$/);
     for (let i = 0; i < rest.length; i += 1) {
         const a = rest[i];
         const t = a.text;
@@ -7287,6 +7291,12 @@ function trapBuiltin(rest, ctx, run, x) {
 }
 // awk programs run commands through system() and pipes.
 const AWK_EXEC = /\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b|\bENVIRON\b|\bPROCINFO\b/;
+// A program that can start a command and names its own arguments (`system(ARGV[1])`, `for (i = 1; i < ARGC; i++) s = s ARGV[i]`) may run them: they are command text.
+const AWK_RUNS_ARGV = /\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b/;
+function awkArgvCommands(text, rest, ctx, run, x) {
+    if (AWK_RUNS_ARGV.test(text) && /\b(?:ARGV|ARGC)\b/.test(text) && !ctx.backstop)
+        scanArgvForCommands(rest, ctx, run, x);
+}
 function awkProgram(rest, ctx, run, x) {
     const vf = new Set(['-F', '-v', '-W', '--field-separator', '--assign', '-i', '-l', '--include', '--load']);
     let program = null;
@@ -7298,8 +7308,10 @@ function awkProgram(rest, ctx, run, x) {
             if (f && f.text !== null && (f.text === '-' || STDIN_PATHS.has(f.text))) {
                 const src = stdinSource(x, ctx, run);
                 for (const text of src.texts)
-                    if (AWK_EXEC.test(text))
+                    if (AWK_EXEC.test(text)) {
                         scanInterpreterCode(text, run);
+                        awkArgvCommands(text, rest, ctx, run, x);
+                    }
                 if (src.unknown || (src.texts.length === 0 && src.files.length === 0)) {
                     worseParse(run, 'dynamic');
                     hit(run, 'Sx', 'dynamic_stdin_code');
@@ -7310,8 +7322,10 @@ function awkProgram(rest, ctx, run, x) {
             if (f && f.text !== null) {
                 for (const abs of absCandidates(f.text, ctx, run) || []) {
                     const content = safeRead(run.env, abs, tables_1.LIMITS.maxScriptBytes);
-                    if (content !== null && AWK_EXEC.test(content))
+                    if (content !== null && AWK_EXEC.test(content)) {
                         scanInterpreterCode(content, run);
+                        awkArgvCommands(content, rest, ctx, run, x);
+                    }
                 }
             }
             i += 1;
@@ -7331,6 +7345,7 @@ function awkProgram(rest, ctx, run, x) {
     const code = program.text !== null ? program.text : argText(program);
     if (AWK_EXEC.test(code)) {
         scanInterpreterCode(code, run);
+        awkArgvCommands(code, rest, ctx, run, x);
         // `awk '{system($0)}'` runs the lines it reads: the input is a command text (audit N1).
         if (/\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b/.test(code))
             stdinExec('sh', [], x, ctx, run);

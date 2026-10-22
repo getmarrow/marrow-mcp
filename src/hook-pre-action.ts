@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
 import { marrowAgentRuntime, marrowCommit, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { MarrowRequestError } from './request-reliability';
 import { payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
@@ -694,6 +695,76 @@ function stricterParts(a: ClassificationParts, b: ClassificationParts): Classifi
   };
 }
 
+// One reading of "prints the environment": the seatbelt mapper's (src/seatbelt/env-dump.ts holds the table). The keyed hook asks the
+// mapper about the command text, with no file system to read, and keeps only its env-dump reasons. The mapper loads on the first
+// shell command that holds a filter word; a mapper that cannot answer falls back to a word scan, so the answer is never looser than a hold.
+// The answer is passed into the tool policy (hook-tool-policy loads nothing), so only this hook ever loads the mapper.
+type EnvDumpTools = { mapper: typeof import('./seatbelt/mapper'); reasons: { has(reason: string): boolean } };
+let envDumpTools: EnvDumpTools | null | undefined;
+let lastEnvDumpAnswer: { command: string; dumps: boolean } | null = null;
+// Every form that prints the environment holds one of these words (env also covers environ, getenv, printenv, ENV and every wrapper's
+// last word). The mapper (about 100 ms to load and run once) is asked only for a command that holds one. Four words are read more closely
+// (what the mapper needs, and nothing less), each unless an expansion could spell it:
+//   set    only a bare `set` (the mapper's rule is no operand: `set -e` and the word in a message are not);
+//   ps     only with an `e` or `E` after it (BSD `ps e`, `-E`); `ps aux` and `docker ps` are not;
+//   jq     only with `env` in the text (a filter reads the environment by that word);
+//   proc   only as `/proc`, or `process[...]` (a computed name); `process.env` holds `env`.
+// A literal read of one non-secret name (`process.env.HOME`, the mapper's own rule) and a word that only joins `env` to a branch name in a
+// plain `git` command (`git checkout -b env-fix`) hold nothing. A `$`, a backtick or a brace can spell any of these words, so a command that
+// holds one of them and a narrowed word is read exactly as before.
+export const ENV_FILTER_SECRET_NAME = /KEY|TOKEN|SECRET|PASS|CRED/i; // the mapper's SECRET_VAR (src/seatbelt/tables.ts); a test keeps the two equal
+const ENV_DUMP_WORDS = /env|export|declare|typeset|readonly|compgen|tmux|systemctl|strace|php|awk|global|\bproc\b|\bprocess\s*(?:\?\.\s*)?\[|\bset\b(?=[^\S\n]*(?:$|[\n\r;&|)}<>#]|\d+[<>]))/i;
+const NARROWED_WORDS = /\bjq\b|\bps\b|\bset\b|proc/i;
+const EXPANSION = /[$`{]/;
+const ONE_NAME_READ = /\bprocess\.env\.(?!(?:items|keys|copy)\b)([A-Za-z_]\w*)/g;
+const PLAIN_GIT = /^\s*git\s[^$`;&|<>(){}\\\n]*$/;
+/** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
+export function mayPrintEnvironment(command: string): boolean {
+  // An ANSI-C quote can spell a word in escapes.
+  if (command.includes("$'") || command.includes('$"')) return true;
+  // Quotes and backslashes split a word without changing it (`e'n'v`).
+  const text = command.replace(/['"\\]/g, '');
+  // The word `env` only hyphen-joined in a plain git command with no secret-looking word (data to git, never a program or a name).
+  let words = PLAIN_GIT.test(command) && !ENV_FILTER_SECRET_NAME.test(command) ? text.replace(/-env(?![\w])|env-/gi, '') : text;
+  words = words.replace(ONE_NAME_READ, (read, name: string) => (ENV_FILTER_SECRET_NAME.test(name) ? read : ''));
+  if (ENV_DUMP_WORDS.test(words)) return true;
+  // `ps` with an `e` or `E` anywhere after the first `ps` (an `e` after a later `ps` is after the first one too: one scan, no backtracking).
+  const ps = /\bps\b/i.exec(words);
+  if (ps && /[eE]/.test(words.slice(ps.index + 2))) return true;
+  return EXPANSION.test(text) && NARROWED_WORDS.test(text);
+}
+const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
+
+function shellPrintsEnvironment(command: string): boolean {
+  if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command) return lastEnvDumpAnswer.dumps;
+  if (!mayPrintEnvironment(command)) return false;
+  let dumps: boolean;
+  try {
+    if (envDumpTools === undefined) {
+      try {
+        envDumpTools = { mapper: require('./seatbelt/mapper') as EnvDumpTools['mapper'], reasons: (require('./seatbelt/env-dump') as typeof import('./seatbelt/env-dump')).ENV_DUMP_REASONS };
+      } catch { envDumpTools = null; }
+    }
+    if (!envDumpTools) dumps = ENV_DUMP_WORDS.test(command);
+    else {
+      const { mapper, reasons } = envDumpTools;
+      const decision = mapper.evaluateSeatbeltShell(command, {
+        cwd: process.cwd(),
+        home: process.env.HOME || homedir(),
+        tmpdir: '/tmp',
+        platform: process.platform,
+        fs: { readFile: () => null, realpath: (path: string) => path },
+        git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
+      });
+      dumps = decision.hits.some((hit) => (hit.category === 'S4' && reasons.has(hit.reason)) || (MAPPER_UNSURE.test(hit.reason) && ENV_DUMP_WORDS.test(command)));
+    }
+  } catch {
+    dumps = ENV_DUMP_WORDS.test(command);
+  }
+  lastEnvDumpAnswer = { command, dumps };
+  return dumps;
+}
+
 /** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
 function classifyAsNamed(event: PreToolUseEvent, options: { ownUnproven?: boolean }): ClassificationParts {
   const tool = String(event.tool_name || 'tool').slice(0, 64);
@@ -704,8 +775,8 @@ function classifyAsNamed(event: PreToolUseEvent, options: { ownUnproven?: boolea
   const command = shellGoverned ? hookToolCommand(event) : '';
   const input = toolClassificationText(event).toLowerCase();
   // A look-alike of Marrow's own tool is never read-only, whatever its verb.
-  const readOnly = options.ownUnproven !== true && isReadOnlyToolEventAsNamed(event);
-  const secretAccess = isSecretMaterialAccessAsNamed(event);
+  const readOnly = options.ownUnproven !== true && isReadOnlyToolEventAsNamed(event, shellPrintsEnvironment);
+  const secretAccess = isSecretMaterialAccessAsNamed(event, shellPrintsEnvironment);
   const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;

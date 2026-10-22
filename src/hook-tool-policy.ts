@@ -463,52 +463,9 @@ export function isSecretVariableName(value: string): boolean {
   return String(value || '').toUpperCase().split('_').some((part) => SECRET_VARIABLE_PART.has(part));
 }
 
-// One reading of "prints the environment": the seatbelt mapper's (src/seatbelt/env-dump.ts holds the table). The keyed policy asks the
-// mapper about the command text, with no file system to read, and keeps only its env-dump reasons. The mapper loads on the first
-// shell command; a mapper that cannot answer falls back to a word scan, so the answer is never looser than a hold.
-type MapperModule = typeof import('./seatbelt/mapper');
-type EnvDumpReasons = { has(reason: string): boolean };
-let envDumpTools: { mapper: MapperModule; reasons: EnvDumpReasons } | null | undefined;
-let lastEnvDumpAnswer: { command: string; dumps: boolean } | null = null;
-// Every form that prints the environment holds one of these words (env also covers environ, getenv, printenv, ENV and every wrapper's
-// last word; proc covers process and /proc). The mapper (about 100 ms to load and run once) is asked only for a command that holds one.
-const ENV_DUMP_WORDS = /env|export|declare|typeset|readonly|compgen|\bset\b|\bps\b|proc|tmux|systemctl|strace|php|\bjq\b|awk|global/i;
-/** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
-export function mayPrintEnvironment(command: string): boolean {
-  // Quotes and backslashes split a word without changing it (`e'n'v`); an ANSI-C quote can spell it in escapes.
-  return ENV_DUMP_WORDS.test(command.replace(/['"\\]/g, '')) || command.includes("$'") || command.includes('$"');
-}
-const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
-
-function shellPrintsEnvironment(command: string): boolean {
-  if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command) return lastEnvDumpAnswer.dumps;
-  if (!mayPrintEnvironment(command)) return false;
-  let dumps: boolean;
-  try {
-    if (envDumpTools === undefined) {
-      try {
-        envDumpTools = { mapper: require('./seatbelt/mapper') as MapperModule, reasons: (require('./seatbelt/env-dump') as typeof import('./seatbelt/env-dump')).ENV_DUMP_REASONS };
-      } catch { envDumpTools = null; }
-    }
-    if (!envDumpTools) dumps = ENV_DUMP_WORDS.test(command);
-    else {
-      const { mapper, reasons } = envDumpTools;
-      const decision = mapper.evaluateSeatbeltShell(command, {
-        cwd: process.cwd(),
-        home: homeDirectory(),
-        tmpdir: '/tmp',
-        platform: process.platform,
-        fs: { readFile: () => null, realpath: (path: string) => path },
-        git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
-      });
-      dumps = decision.hits.some((hit) => (hit.category === 'S4' && reasons.has(hit.reason)) || (MAPPER_UNSURE.test(hit.reason) && ENV_DUMP_WORDS.test(command)));
-    }
-  } catch {
-    dumps = ENV_DUMP_WORDS.test(command);
-  }
-  lastEnvDumpAnswer = { command, dumps };
-  return dumps;
-}
+// Whether a shell command prints the environment is answered by the pre-action hook, which passes its check in as an argument. The
+// policy loads nothing for it, so the PostToolUse path (hook.ts calls isReadOnlyToolEvent with no check) never pays for the answer.
+export type EnvironmentPrintCheck = (command: string) => boolean;
 
 function programName(value: string): string | null {
   if (!value.includes('/')) return value.toLowerCase();
@@ -707,22 +664,22 @@ function shellCommandText(event: ToolPolicyEvent): string {
  * reads its command; a PowerShell command in the PowerShell dialect, which
  * reads every word as a file the command may read (toolPolicyReading).
  */
-export function isSecretMaterialAccess(event: ToolPolicyEvent): boolean {
+export function isSecretMaterialAccess(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean {
   const reading = toolPolicyReading(event);
-  if (reading.shell.some((twin) => isSecretMaterialAccessAsNamed(twin))) return true;
+  if (reading.shell.some((twin) => isSecretMaterialAccessAsNamed(twin, printsEnvironment))) return true;
   if (reading.exact) return false;
-  if (reading.base === 'read') return isSecretMaterialAccessAsNamed(readEquivalent(event));
-  return reading.base === 'named' && isSecretMaterialAccessAsNamed(event);
+  if (reading.base === 'read') return isSecretMaterialAccessAsNamed(readEquivalent(event), printsEnvironment);
+  return reading.base === 'named' && isSecretMaterialAccessAsNamed(event, printsEnvironment);
 }
 
 /** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
-export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent): boolean {
+export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean {
   const tool = normalizeHookToolName(event.tool_name);
   if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path));
   if (FILE_EDIT_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
   if (!SHELL_TOOLS.has(tool)) return false;
   const command = shellCommandText(event);
-  if (event[SHELL_DIALECT] !== 'powershell' && shellPrintsEnvironment(command)) return true;
+  if (printsEnvironment && event[SHELL_DIALECT] !== 'powershell' && printsEnvironment(command)) return true;
   const analysis = shellAnalysis(command, event[SHELL_DIALECT]);
   if (event[SHELL_DIALECT] === 'powershell') {
     // The words are split as PowerShell splits them; text whose quoting Bash splits differently (an escaped quote,
@@ -792,13 +749,13 @@ export function isReadOnlyToolEvent(event: ToolPolicyEvent): boolean {
 }
 
 /** isReadOnlyToolEvent for the call's own tool name only (every tool before the built-ins were hooked). */
-export function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent): boolean {
+export function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean {
   const tool = normalizeHookToolName(event.tool_name);
   if (!tool) return false;
   // Nothing PowerShell runs is a read-only inspection: the Bash twin of a PowerShell call never is.
   if (event[SHELL_DIALECT] === 'powershell') return false;
   if (LOCAL_TASK_TOOLS.has(tool)) return true;
-  if (READ_ONLY_TOOLS.has(tool)) return !isSecretMaterialAccess(event);
+  if (READ_ONLY_TOOLS.has(tool)) return !isSecretMaterialAccess(event, printsEnvironment);
   if (['edit', 'write', 'multiedit', 'search_replace', 'run_terminal_command', 'spawn_subagent'].includes(tool)) return false;
   if (MUTATION_TOOL_VERB.test(tool)) return false;
   if (READ_ONLY_TOOL_VERB.test(tool)) return true;
@@ -806,7 +763,7 @@ export function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent): boolean {
   const command = hookToolCommand(event);
   if (tool === 'bash' && command) {
     // Printing the environment is never a read-only inspection.
-    if (shellPrintsEnvironment(shellCommandText(event))) return false;
+    if (printsEnvironment && printsEnvironment(shellCommandText(event))) return false;
     // A compound command is read-only only when every simple command in it is.
     const analysis = shellAnalysis(shellCommandText(event));
     return Boolean(analysis?.segments.length && analysis.verdicts.every((verdict) => verdict === 'read'));

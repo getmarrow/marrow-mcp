@@ -44,8 +44,7 @@ export declare function isSecretPath(value: string, base?: string): boolean;
 export declare function isProtectedWriteTarget(value: string, base?: string): boolean;
 /** True for an environment variable name that conventionally holds a secret. */
 export declare function isSecretVariableName(value: string): boolean;
-/** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
-export declare function mayPrintEnvironment(command: string): boolean;
+export type EnvironmentPrintCheck = (command: string) => boolean;
 /**
  * Classifies one simple command: a read-only inspection, a secret access, or anything else.
  * In the PowerShell dialect no command is a read-only inspection and no program is exempt from
@@ -63,9 +62,9 @@ export declare function toolTargetPaths(event: ToolPolicyEvent): string[];
  * reads its command; a PowerShell command in the PowerShell dialect, which
  * reads every word as a file the command may read (toolPolicyReading).
  */
-export declare function isSecretMaterialAccess(event: ToolPolicyEvent): boolean;
+export declare function isSecretMaterialAccess(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean;
 /** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
-export declare function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent): boolean;
+export declare function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean;
 /**
  * The text whose words decide a tool's action type, surfaces and keyword
  * protection. Read-only shell segments, task bookkeeping and the content an
@@ -83,7 +82,7 @@ export declare function isShellGovernedTool(event: ToolPolicyEvent): boolean;
  */
 export declare function isReadOnlyToolEvent(event: ToolPolicyEvent): boolean;
 /** isReadOnlyToolEvent for the call's own tool name only (every tool before the built-ins were hooked). */
-export declare function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent): boolean;
+export declare function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean;
 export type ToolPolicyReading = {
     /** How the call's own name is read: as named (every tool before the built-ins were hooked), as Read, or as a call whose words are not actions. */
     base: 'named' | 'read' | 'non_acting';

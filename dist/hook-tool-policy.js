@@ -11,7 +11,6 @@ exports.secretPatternRegex = secretPatternRegex;
 exports.isSecretPath = isSecretPath;
 exports.isProtectedWriteTarget = isProtectedWriteTarget;
 exports.isSecretVariableName = isSecretVariableName;
-exports.mayPrintEnvironment = mayPrintEnvironment;
 exports.shellSegmentVerdict = shellSegmentVerdict;
 exports.toolTargetPaths = toolTargetPaths;
 exports.isSecretMaterialAccess = isSecretMaterialAccess;
@@ -526,53 +525,6 @@ function isProtectedWriteTarget(value, base = process.cwd()) {
 function isSecretVariableName(value) {
     return String(value || '').toUpperCase().split('_').some((part) => SECRET_VARIABLE_PART.has(part));
 }
-let envDumpTools;
-let lastEnvDumpAnswer = null;
-// Every form that prints the environment holds one of these words (env also covers environ, getenv, printenv, ENV and every wrapper's
-// last word; proc covers process and /proc). The mapper (about 100 ms to load and run once) is asked only for a command that holds one.
-const ENV_DUMP_WORDS = /env|export|declare|typeset|readonly|compgen|\bset\b|\bps\b|proc|tmux|systemctl|strace|php|\bjq\b|awk|global/i;
-/** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
-function mayPrintEnvironment(command) {
-    // Quotes and backslashes split a word without changing it (`e'n'v`); an ANSI-C quote can spell it in escapes.
-    return ENV_DUMP_WORDS.test(command.replace(/['"\\]/g, '')) || command.includes("$'") || command.includes('$"');
-}
-const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
-function shellPrintsEnvironment(command) {
-    if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command)
-        return lastEnvDumpAnswer.dumps;
-    if (!mayPrintEnvironment(command))
-        return false;
-    let dumps;
-    try {
-        if (envDumpTools === undefined) {
-            try {
-                envDumpTools = { mapper: require('./seatbelt/mapper'), reasons: require('./seatbelt/env-dump').ENV_DUMP_REASONS };
-            }
-            catch {
-                envDumpTools = null;
-            }
-        }
-        if (!envDumpTools)
-            dumps = ENV_DUMP_WORDS.test(command);
-        else {
-            const { mapper, reasons } = envDumpTools;
-            const decision = mapper.evaluateSeatbeltShell(command, {
-                cwd: process.cwd(),
-                home: homeDirectory(),
-                tmpdir: '/tmp',
-                platform: process.platform,
-                fs: { readFile: () => null, realpath: (path) => path },
-                git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
-            });
-            dumps = decision.hits.some((hit) => (hit.category === 'S4' && reasons.has(hit.reason)) || (MAPPER_UNSURE.test(hit.reason) && ENV_DUMP_WORDS.test(command)));
-        }
-    }
-    catch {
-        dumps = ENV_DUMP_WORDS.test(command);
-    }
-    lastEnvDumpAnswer = { command, dumps };
-    return dumps;
-}
 function programName(value) {
     if (!value.includes('/'))
         return value.toLowerCase();
@@ -816,18 +768,18 @@ function shellCommandText(event) {
  * reads its command; a PowerShell command in the PowerShell dialect, which
  * reads every word as a file the command may read (toolPolicyReading).
  */
-function isSecretMaterialAccess(event) {
+function isSecretMaterialAccess(event, printsEnvironment) {
     const reading = toolPolicyReading(event);
-    if (reading.shell.some((twin) => isSecretMaterialAccessAsNamed(twin)))
+    if (reading.shell.some((twin) => isSecretMaterialAccessAsNamed(twin, printsEnvironment)))
         return true;
     if (reading.exact)
         return false;
     if (reading.base === 'read')
-        return isSecretMaterialAccessAsNamed(readEquivalent(event));
-    return reading.base === 'named' && isSecretMaterialAccessAsNamed(event);
+        return isSecretMaterialAccessAsNamed(readEquivalent(event), printsEnvironment);
+    return reading.base === 'named' && isSecretMaterialAccessAsNamed(event, printsEnvironment);
 }
 /** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
-function isSecretMaterialAccessAsNamed(event) {
+function isSecretMaterialAccessAsNamed(event, printsEnvironment) {
     const tool = normalizeHookToolName(event.tool_name);
     if (CONTENT_READ_TOOLS.has(tool))
         return toolTargetPaths(event).some((path) => isSecretPath(path));
@@ -836,7 +788,7 @@ function isSecretMaterialAccessAsNamed(event) {
     if (!SHELL_TOOLS.has(tool))
         return false;
     const command = shellCommandText(event);
-    if (event[exports.SHELL_DIALECT] !== 'powershell' && shellPrintsEnvironment(command))
+    if (printsEnvironment && event[exports.SHELL_DIALECT] !== 'powershell' && printsEnvironment(command))
         return true;
     const analysis = shellAnalysis(command, event[exports.SHELL_DIALECT]);
     if (event[exports.SHELL_DIALECT] === 'powershell') {
@@ -916,7 +868,7 @@ function isReadOnlyToolEvent(event) {
     return own && shellReadOnly;
 }
 /** isReadOnlyToolEvent for the call's own tool name only (every tool before the built-ins were hooked). */
-function isReadOnlyToolEventAsNamed(event) {
+function isReadOnlyToolEventAsNamed(event, printsEnvironment) {
     const tool = normalizeHookToolName(event.tool_name);
     if (!tool)
         return false;
@@ -926,7 +878,7 @@ function isReadOnlyToolEventAsNamed(event) {
     if (LOCAL_TASK_TOOLS.has(tool))
         return true;
     if (READ_ONLY_TOOLS.has(tool))
-        return !isSecretMaterialAccess(event);
+        return !isSecretMaterialAccess(event, printsEnvironment);
     if (['edit', 'write', 'multiedit', 'search_replace', 'run_terminal_command', 'spawn_subagent'].includes(tool))
         return false;
     if (MUTATION_TOOL_VERB.test(tool))
@@ -936,7 +888,7 @@ function isReadOnlyToolEventAsNamed(event) {
     const command = hookToolCommand(event);
     if (tool === 'bash' && command) {
         // Printing the environment is never a read-only inspection.
-        if (shellPrintsEnvironment(shellCommandText(event)))
+        if (printsEnvironment && printsEnvironment(shellCommandText(event)))
             return false;
         // A compound command is read-only only when every simple command in it is.
         const analysis = shellAnalysis(shellCommandText(event));

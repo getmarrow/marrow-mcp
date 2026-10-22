@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_OFFLINE_TEXT = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.ENV_FILTER_SECRET_NAME = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_OFFLINE_TEXT = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
 exports.isMarrowControlTimeout = isMarrowControlTimeout;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.heldActionHookOutput = heldActionHookOutput;
@@ -19,6 +19,7 @@ exports.localControlAllowOutput = localControlAllowOutput;
 exports.seatbeltPassOutput = seatbeltPassOutput;
 exports.localLoopGuardDenyOutput = localLoopGuardDenyOutput;
 exports.classifyTool = classifyTool;
+exports.mayPrintEnvironment = mayPrintEnvironment;
 exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
 exports.clinePreActionHookOutput = clinePreActionHookOutput;
 exports.windsurfPreActionDecision = windsurfPreActionDecision;
@@ -32,6 +33,7 @@ exports.runSeatbeltStatusCommand = runSeatbeltStatusCommand;
 exports.outageHolds = outageHolds;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const node_crypto_1 = require("node:crypto");
+const node_os_1 = require("node:os");
 const index_1 = require("./index");
 const request_reliability_1 = require("./request-reliability");
 const lifecycle_spool_1 = require("./lifecycle-spool");
@@ -612,6 +614,79 @@ function stricterParts(a, b) {
         protected: a.protected || b.protected,
     };
 }
+let envDumpTools;
+let lastEnvDumpAnswer = null;
+// Every form that prints the environment holds one of these words (env also covers environ, getenv, printenv, ENV and every wrapper's
+// last word). The mapper (about 100 ms to load and run once) is asked only for a command that holds one. Four words are read more closely
+// (what the mapper needs, and nothing less), each unless an expansion could spell it:
+//   set    only a bare `set` (the mapper's rule is no operand: `set -e` and the word in a message are not);
+//   ps     only with an `e` or `E` after it (BSD `ps e`, `-E`); `ps aux` and `docker ps` are not;
+//   jq     only with `env` in the text (a filter reads the environment by that word);
+//   proc   only as `/proc`, or `process[...]` (a computed name); `process.env` holds `env`.
+// A literal read of one non-secret name (`process.env.HOME`, the mapper's own rule) and a word that only joins `env` to a branch name in a
+// plain `git` command (`git checkout -b env-fix`) hold nothing. A `$`, a backtick or a brace can spell any of these words, so a command that
+// holds one of them and a narrowed word is read exactly as before.
+exports.ENV_FILTER_SECRET_NAME = /KEY|TOKEN|SECRET|PASS|CRED/i; // the mapper's SECRET_VAR (src/seatbelt/tables.ts); a test keeps the two equal
+const ENV_DUMP_WORDS = /env|export|declare|typeset|readonly|compgen|tmux|systemctl|strace|php|awk|global|\bproc\b|\bprocess\s*(?:\?\.\s*)?\[|\bset\b(?=[^\S\n]*(?:$|[\n\r;&|)}<>#]|\d+[<>]))/i;
+const NARROWED_WORDS = /\bjq\b|\bps\b|\bset\b|proc/i;
+const EXPANSION = /[$`{]/;
+const ONE_NAME_READ = /\bprocess\.env\.(?!(?:items|keys|copy)\b)([A-Za-z_]\w*)/g;
+const PLAIN_GIT = /^\s*git\s[^$`;&|<>(){}\\\n]*$/;
+/** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
+function mayPrintEnvironment(command) {
+    // An ANSI-C quote can spell a word in escapes.
+    if (command.includes("$'") || command.includes('$"'))
+        return true;
+    // Quotes and backslashes split a word without changing it (`e'n'v`).
+    const text = command.replace(/['"\\]/g, '');
+    // The word `env` only hyphen-joined in a plain git command with no secret-looking word (data to git, never a program or a name).
+    let words = PLAIN_GIT.test(command) && !exports.ENV_FILTER_SECRET_NAME.test(command) ? text.replace(/-env(?![\w])|env-/gi, '') : text;
+    words = words.replace(ONE_NAME_READ, (read, name) => (exports.ENV_FILTER_SECRET_NAME.test(name) ? read : ''));
+    if (ENV_DUMP_WORDS.test(words))
+        return true;
+    // `ps` with an `e` or `E` anywhere after the first `ps` (an `e` after a later `ps` is after the first one too: one scan, no backtracking).
+    const ps = /\bps\b/i.exec(words);
+    if (ps && /[eE]/.test(words.slice(ps.index + 2)))
+        return true;
+    return EXPANSION.test(text) && NARROWED_WORDS.test(text);
+}
+const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
+function shellPrintsEnvironment(command) {
+    if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command)
+        return lastEnvDumpAnswer.dumps;
+    if (!mayPrintEnvironment(command))
+        return false;
+    let dumps;
+    try {
+        if (envDumpTools === undefined) {
+            try {
+                envDumpTools = { mapper: require('./seatbelt/mapper'), reasons: require('./seatbelt/env-dump').ENV_DUMP_REASONS };
+            }
+            catch {
+                envDumpTools = null;
+            }
+        }
+        if (!envDumpTools)
+            dumps = ENV_DUMP_WORDS.test(command);
+        else {
+            const { mapper, reasons } = envDumpTools;
+            const decision = mapper.evaluateSeatbeltShell(command, {
+                cwd: process.cwd(),
+                home: process.env.HOME || (0, node_os_1.homedir)(),
+                tmpdir: '/tmp',
+                platform: process.platform,
+                fs: { readFile: () => null, realpath: (path) => path },
+                git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
+            });
+            dumps = decision.hits.some((hit) => (hit.category === 'S4' && reasons.has(hit.reason)) || (MAPPER_UNSURE.test(hit.reason) && ENV_DUMP_WORDS.test(command)));
+        }
+    }
+    catch {
+        dumps = ENV_DUMP_WORDS.test(command);
+    }
+    lastEnvDumpAnswer = { command, dumps };
+    return dumps;
+}
 /** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
 function classifyAsNamed(event, options) {
     const tool = String(event.tool_name || 'tool').slice(0, 64);
@@ -622,8 +697,8 @@ function classifyAsNamed(event, options) {
     const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
     const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
     // A look-alike of Marrow's own tool is never read-only, whatever its verb.
-    const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEventAsNamed)(event);
-    const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccessAsNamed)(event);
+    const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEventAsNamed)(event, shellPrintsEnvironment);
+    const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccessAsNamed)(event, shellPrintsEnvironment);
     const protectedShellCommand = shellGoverned && (0, hook_tool_policy_1.isProtectedShellMutation)(command);
     const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
         && protectedShellCommand;
