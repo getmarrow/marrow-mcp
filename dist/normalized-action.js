@@ -1108,6 +1108,17 @@ function isKnownProgram(program) {
     const stem = programStem(program).replace(/\.(?:cmd|bat|com)$/, '');
     return KNOWN_FEEDER_PROGRAMS.has(stem) || CLASSIFIER_PROGRAMS.has(stem);
 }
+/**
+ * Whether a word of a tool that does not run shell text may stay in `programs[]`: a known program, or one of the programs
+ * that take credentials (the table `takesSecrets` reads, and the password program of the SEC1 cases). A name the seatbelt or
+ * the classifier reasons about is never replaced by the marker; the feeder rule below stays on the narrower known set.
+ */
+function isListableProgram(program) {
+    if (isKnownProgram(program))
+        return true;
+    const stem = programStem(program).replace(/\.(?:cmd|bat|com)$/, '');
+    return SECRET_PROGRAMS.has(stem) || stem === 'smbpasswd';
+}
 /** Whether the program of a stage that feeds a password program is a program name rather than possibly a value. */
 function feederNameKept(program, stage) {
     if (!isKnownProgram(program))
@@ -1196,7 +1207,7 @@ function normalizeInner(command, state, depth) {
             // A tool that does not run shell text (ToolSearch's query, a prompt, a path, an unknown tool's `command`) is read
             // as shell words only for classification: its first word is a value, not a program, unless it names a known one.
             // Not marked truncated: the text hash is keyed, so binding stays safe (see keyTextHash).
-            if (listed && state.freeText && program !== WITHHELD_FEEDER && !isKnownProgram(program))
+            if (listed && state.freeText && program !== WITHHELD_FEEDER && !isListableProgram(program))
                 program = UNLISTED_PROGRAM;
             if (listed && !programs.includes(program))
                 programs.push(program);

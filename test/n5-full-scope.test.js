@@ -177,7 +177,7 @@ test('rule P: a non-shell tool lists only known programs; any other first word i
   assert.deepEqual(act('FooTool', { command: `ls && ${secret} | cat` }).programs, ['ls', 'unlisted-program', 'cat']);
   // a feeder stage keeps build 1's rule (marker + cut); the 40-hex word is still never listed
   const feeder = act('FooTool', { command: `${secret} x | smbpasswd -s` });
-  assert.deepEqual(feeder.programs, ['unlisted-feeder', 'unlisted-program']); // smbpasswd is no classifier name: a free-text field lists only known programs
+  assert.deepEqual(feeder.programs, ['unlisted-feeder', 'smbpasswd']); // the password program is a name the seatbelt reads: it stays listed
   assert.equal(feeder.truncated, true);
   assert.deepEqual(act('FooTool', { command: dummy('hex', 40) }).programs, []);
 });
@@ -201,6 +201,12 @@ test('rule P: dangerous programs keep their names in an unknown tool (the vendor
     if (shell.programs.length) checked += 1;
   }
   assert.ok(checked > 300, `checked ${checked} names`);
+  // The programs that take credentials (the seatbelt's table, mirrored here) keep their names in an unknown tool as in Bash.
+  for (const name of ['vault', 'op', 'pass', 'gopass', 'sops', 'age', 'kubeseal', 'ssh-add', 'sshpass', 'chpasswd', 'passwd', 'htpasswd', 'keytool', 'security', 'gpg', 'gpg2',
+    'systemd-creds', 'bw', 'lpass', 'doppler', 'infisical', 'dotenvx', 'secret-tool', 'smbpasswd']) {
+    assert.deepEqual(act('FooTool', { command: `${name} x --y` }).programs, act('Bash', { command: `${name} x --y` }).programs, `${name} keeps its name`);
+    assert.deepEqual(act('FooTool', { command: `${name}.exe x` }).programs, act('Bash', { command: `${name}.exe x` }).programs, `${name}.exe keeps its name`);
+  }
   for (const command of ['psql prod -c "drop table x"', 'crontab -r', 'systemctl stop nginx', 'iptables -F', 'mysql -e "drop database a"', 'wrangler deploy --env production', 'terraform destroy', 'rm -rf /']) {
     const programs = act('FooTool', { command }).programs;
     assert.ok(!programs.includes('unlisted-program'), command);
