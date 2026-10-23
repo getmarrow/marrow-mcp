@@ -436,3 +436,12 @@ test('K4: the real keyless hook leaves no approval state behind (so no account e
     assert.equal(fs.existsSync(path.join(home, '.marrow', 'host-approvals')), false, `${passwd}: no approval state was made`);
   }
 });
+
+test('K4: a missing state answered null without the opt-in is not cached: the same process may still make it once the keyed hook allows it', () => {
+  const home = freshHome();
+  const code = `const h = require(${JSON.stringify(HAS)}); const before = h.nokeyFallbackKey(); h.allowNokeyFallbackCreate(); const after = h.nokeyFallbackKey(); process.stdout.write(JSON.stringify({ before: before === null, after: after !== null && after.length === 32 }));`;
+  const run = spawnSync(process.execPath, ['-e', code], { env: { PATH: PATH_ENV, HOME: home, SBT_PASSWD_HOME: home }, encoding: 'utf8', timeout: 20_000 });
+  assert.equal(run.status, 0);
+  assert.deepEqual(JSON.parse(run.stdout), { before: true, after: true });
+  assert.equal(fs.existsSync(stateFile(home)), true);
+});
