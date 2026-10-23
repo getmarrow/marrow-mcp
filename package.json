@@ -1,6 +1,6 @@
 {
   "name": "@getmarrow/mcp",
-  "version": "3.9.105",
+  "version": "3.9.106",
   "mcpName": "ai.getmarrow/marrow",
   "description": "Marrow AI MCP server: a named yes before your AI agent acts, and proof the next agent can reuse.",
   "bin": {
