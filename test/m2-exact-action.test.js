@@ -513,8 +513,9 @@ test('every truncation site has an exact-pass decision (grep count against the l
   const sites = lines.filter((line) => line.includes('state.truncated = true'));
   const unmarked = sites.filter((line) => !/\/\/ exact: (?:kept|raw|certain|nonce|n\/a)\b/.test(line));
   assert.deepEqual(unmarked, [], 'every `state.truncated = true` names its exact-pass decision');
-  // The list: 17 marked sites, and every `withheld(` call keeps the original in the exact pass.
-  assert.equal(sites.length, 17, `truncation sites: ${sites.length}`);
+  // The list: 18 marked sites, and every `withheld(` call keeps the original in the exact pass.
+  // 18 with the n5 hotfix: the first word of a stage that feeds a password program, withheld as a fixed marker.
+  assert.equal(sites.length, 18, `truncation sites: ${sites.length}`);
   // 18 with M2-R1: a URL userinfo span holding `#` or `?` (hidden, kept by the exact pass).
   const withheldCalls = (source.match(/\bwithheld\(state,/g) || []).length;
   assert.equal(withheldCalls, 18, `withheld() sites: ${withheldCalls}`);
