@@ -198,11 +198,12 @@ test('R5: a token cut by the scan window leaves no part of itself, even after ea
     const earlier = [];
     // The dot keeps the whole path from being one word (a path of only letters, digits and `/_-` is withheld whole by the older word rule).
     let text = '/a.b';
-    while (text.length < 700) { const token = SHAPES.ghp(); earlier.push(token); text += `/${token}`; }
+    // `.x` after each token: the older word rule does not see it, so the paths stays over the window until the scanner shrinks it.
+    while (text.length < 700) { const token = SHAPES.ghp(); earlier.push(token); text += `/${token}.x`; }
     while (text.length + 2 <= cutAt) text += '/q';
     while (text.length < cutAt) text += 'q';
     const last = SHAPES.ghp();
-    const file = `${text}/${last}${'/q'.repeat(100)}`;
+    const file = `${text}/${last}.x${'/q'.repeat(100)}`;
     const action = act('Edit', file);
     const sent = JSON.stringify(action);
     for (const token of [...earlier, last]) for (let i = 0; i + 6 <= token.length; i += 1) assert.equal(sent.includes(token.slice(i, i + 6)), false, `cut ${cutAt}`);
