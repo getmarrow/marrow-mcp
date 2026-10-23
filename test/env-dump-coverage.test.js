@@ -362,9 +362,11 @@ test('part B: the Read and Grep tools on a process environ file or a process fol
   }
 });
 
-test('part B: the normalized action (the approval key input) is the command text only, so these rows hash exactly as before and differ from each other', () => {
+test('part B: the normalized action (the approval key input) is the command text only, so a row hashes equal to itself and differs from every other row', () => {
   const { normalizedHookAction } = require('../dist/normalized-action.js');
-  const hash = (command) => JSON.stringify(normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }, { salt: null }).tool_input);
+  // The text hash is keyed per install (a null salt gives a random value that matches nothing), so the rows are hashed under a dummy key made now.
+  const salt = require('node:crypto').randomBytes(32);
+  const hash = (command) => JSON.stringify(normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }, { salt }).tool_input);
   const a = hash('cat < /proc/self/task/1/environ');
   assert.equal(a, hash('cat < /proc/self/task/1/environ'));
   for (const other of ['cat < /proc/self/task/2/environ', 'cat < /proc/self/task/1/environ; true', 'cat < /proc/self/task/1/status', 'cat 0< /proc/self/task/1/environ']) {
