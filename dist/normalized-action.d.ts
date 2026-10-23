@@ -132,6 +132,11 @@ export declare function deployCommandText(command: string): string | null;
 /** runOptionsKey as a standalone identity (no deadline), for the exact target of a call (hook-contract exactHookTarget). */
 export declare function shellToolRunOptionsKey(event: ToolEvent): string | null;
 /**
+ * The keyed hash of a hold's exact target (hook-contract exactHookTarget): the same sub-key as keyTextHash, its own
+ * domain. null without a usable device key (the caller then makes a target nothing can match).
+ */
+export declare function keyedTargetHash(parts: unknown): string | null;
+/**
  * The normalized action of a hook event. `deadlineAt` bounds the time it may
  * take (default one second from now): past it, or past the size limits, the
  * action is a truncated placeholder (kind and tool name only), which the

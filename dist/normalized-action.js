@@ -6,6 +6,7 @@ exports.classifySecretName = classifySecretName;
 exports.normalizeShellCommand = normalizeShellCommand;
 exports.deployCommandText = deployCommandText;
 exports.shellToolRunOptionsKey = shellToolRunOptionsKey;
+exports.keyedTargetHash = keyedTargetHash;
 exports.normalizedHookAction = normalizedHookAction;
 const node_crypto_1 = require("node:crypto");
 const node_os_1 = require("node:os");
@@ -29,7 +30,7 @@ const DEFAULT_NORMALIZE_MS = 1_000;
 class NormalizationLimit extends Error {
 }
 function newExactness(deadline = Date.now() + DEFAULT_NORMALIZE_MS, exact = false) {
-    return { truncated: false, budget: { scanned: 0, deadline }, exact, sigs: [] };
+    return { truncated: false, budget: { scanned: 0, deadline }, exact, sigs: [], freeText: false };
 }
 /**
  * A value withheld only because it MAY be a secret (it may also be an id, a commit or a name that decides the
@@ -334,7 +335,7 @@ function dataMarker(text, feedsSecrets, state, words = null) {
         // The exact pass: only the certain credentials inside the data are replaced and the rest is hashed, also for
         // data a secrets command or file reads (a vault policy, an authorized_keys line, a kubeconfig differ outside
         // any secret), so data that differs outside a certain credential never shares exact material.
-        const probe = { truncated: false, budget: state.budget, exact: true, sigs: [] };
+        const probe = { truncated: false, budget: state.budget, exact: true, sigs: [], freeText: false };
         return `[data:${sha256(`${HASH_VERSION}\nexact-data\n${redactText(text, probe)}`)}]`;
     }
     if (feedsSecrets) {
@@ -345,7 +346,7 @@ function dataMarker(text, feedsSecrets, state, words = null) {
     // replaced and the rest is hashed, so data that differs outside a secret gives
     // a different key, data that differs only in a secret the same one. Withheld:
     // the action is truncated and never binds an approval.
-    const probe = { truncated: false, budget: state.budget, exact: false, sigs: [] };
+    const probe = { truncated: false, budget: state.budget, exact: false, sigs: [], freeText: false };
     const redacted = redactText(text, probe);
     if (redacted !== text) {
         state.truncated = true; // exact: kept (hashed above, certain credentials replaced)
@@ -362,7 +363,7 @@ function dataMarker(text, feedsSecrets, state, words = null) {
  */
 function printedData(words, feedsSecrets, state) {
     if (state.exact) {
-        const probe = { truncated: false, budget: state.budget, exact: true, sigs: [] };
+        const probe = { truncated: false, budget: state.budget, exact: true, sigs: [], freeText: false };
         return `[data:${sha256(`${HASH_VERSION}\nexact-words\n${JSON.stringify(words.map((word) => redactText(word, probe)))}`)}]`;
     }
     return dataMarker(words.join(' '), feedsSecrets, state, words);
@@ -1078,14 +1079,38 @@ const KNOWN_FEEDER_PROGRAMS = new Set([
     'wait', 'watch', 'wc', 'wget', 'whereis', 'which', 'whoami', 'wl-copy', 'wrangler', 'write-host', 'write-output',
     'xargs', 'xclip', 'xxd', 'xz', 'xzcat', 'yarn', 'yash', 'yes', 'yq', 'zcat', 'zip', 'zsh', 'zstd',
 ]);
+/**
+ * Program names the vendored classifier's policy table knows and the set above lacks (psql, mysql, crontab, iptables,
+ * systemctl, ...): a name the classifier judges stays a name in `programs[]`, so withholding unknown words never drops one
+ * (test/n5-full-scope.test.js fails when the table gains a name neither set has).
+ */
+const CLASSIFIER_PROGRAMS = new Set([
+    '7z', 'actionlint', 'ansible', 'ansible-playbook', 'astro', 'base32', 'biome', 'black', 'chpasswd', 'clang-format',
+    'clang_format', 'clickhouse-client', 'cloc', 'code', 'cqlsh', 'createdb', 'crontab', 'dir', 'doctl', 'dropdb',
+    'eksctl', 'emacs', 'enable', 'esbuild', 'fdisk', 'flake8', 'gatsby', 'go', 'gofmt', 'golangci-lint',
+    'golangci_lint', 'hadolint', 'halt', 'husky', 'init', 'iptables', 'isort', 'killall', 'launchctl', 'll',
+    'marrow-agentd', 'marrow-mcp', 'mkfs', 'mkfs.ext4', 'mkfs.xfs', 'mongo', 'mongosh', 'mosh', 'mount', 'mypy',
+    'mysql', 'nano', 'nc', 'ncat', 'next', 'nft', 'nox', 'nuxi', 'nuxt', 'nvim', 'open', 'parcel', 'parted', 'passwd',
+    'pg_dump', 'pg_restore', 'pip', 'pip3', 'pkill', 'pnpx', 'poweroff', 'psql', 'pylint', 'pytest', 'reboot',
+    'redis-cli', 'remix', 'rollup', 'ruff', 'rustfmt', 'scp', 'service', 'sftp', 'shellcheck', 'shopt', 'shutdown',
+    'socat', 'sqlite3', 'storybook', 'stripe', 'supabase', 'swapoff', 'systemctl', 'telnet', 'tokei', 'tox', 'tsup',
+    'ufw', 'umount', 'unxz', 'useradd', 'userdel', 'usermod', 'vim', 'visudo', 'vite', 'webpack', 'webpack-cli',
+    'wipefs', 'xdg-open', 'xh', 'yamllint',
+]);
 /** A lone word (no argument, no redirection) is a program only when it is one of the stdin producers; a lone password is a lone word. */
 const LONE_FEEDER_PROGRAMS = new Set(['cat', 'yes', 'pbpaste']);
 /** Stands in `programs[]` for a withheld first word: constant, derived from nothing about the word. */
 const WITHHELD_FEEDER = 'unlisted-feeder';
+/** Stands in `programs[]` for a program word of a tool that does not run shell text, when it is not a known program. */
+const UNLISTED_PROGRAM = 'unlisted-program';
+/** Whether a program word names a known program (`git.exe`, `npm.cmd` and `wrangler.ps1` are the program they name). */
+function isKnownProgram(program) {
+    const stem = programStem(program).replace(/\.(?:cmd|bat|com)$/, '');
+    return KNOWN_FEEDER_PROGRAMS.has(stem) || CLASSIFIER_PROGRAMS.has(stem);
+}
 /** Whether the program of a stage that feeds a password program is a program name rather than possibly a value. */
 function feederNameKept(program, stage) {
-    // `git.exe`, `npm.cmd` and `wrangler.ps1` are the program they name (Windows spellings keep their names, as on base).
-    if (!KNOWN_FEEDER_PROGRAMS.has(programStem(program).replace(/\.(?:cmd|bat|com)$/, '')))
+    if (!isKnownProgram(program))
         return false;
     if (stage.length !== 1)
         return true;
@@ -1167,9 +1192,14 @@ function normalizeInner(command, state, depth) {
                 program = WITHHELD_FEEDER;
                 state.truncated = true; // exact: n/a (programs are not exact material; the hashed text keeps the word)
             }
-            if (program && /^[a-z0-9][a-z0-9._+-]{0,63}$/.test(program) && !looksLikeKey(program) && !programs.includes(program)) {
+            const listed = !!program && /^[a-z0-9][a-z0-9._+-]{0,63}$/.test(program) && !looksLikeKey(program);
+            // A tool that does not run shell text (ToolSearch's query, a prompt, a path, an unknown tool's `command`) is read
+            // as shell words only for classification: its first word is a value, not a program, unless it names a known one.
+            // Not marked truncated: the text hash is keyed, so binding stays safe (see keyTextHash).
+            if (listed && state.freeText && program !== WITHHELD_FEEDER && !isKnownProgram(program))
+                program = UNLISTED_PROGRAM;
+            if (listed && !programs.includes(program))
                 programs.push(program);
-            }
         }
         const op = segment.op;
         if (op && (op !== ';' || (words.length && words[words.length - 1] !== ';')))
@@ -1402,6 +1432,11 @@ function inputHash(input, state) {
     const preimage = inputPreimage(input, state);
     return preimage === null ? {} : { input_sha256: sha256(preimage) };
 }
+/** Whether every run option of a Monitor or PowerShell call is a number or a boolean (none: yes). */
+function runOptionsScalar(event) {
+    const options = (0, hook_tool_policy_1.shellCommandToolRunOptions)(event);
+    return options === null || Object.values(options).every((value) => typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)));
+}
 /**
  * The run options of a Monitor or PowerShell call (timeout, timeout_ms, run_in_background) as key material:
  * the hash of their canonical JSON with credentials replaced, as any tool input is hashed (so a replaced
@@ -1434,9 +1469,10 @@ function withExactness(action, state) {
 const EXACT_DOMAIN = 'marrow-exact-action-v2';
 const TEXT_KEY_LABEL = 'marrow-text-hmac-key-v2';
 const TEXT_MAC_DOMAIN = 'marrow-text-hmac-v2';
+const TARGET_MAC_DOMAIN = 'marrow-hook-target-v2';
 /** Raw canonical input past this is never keyed: a nonce instead (it matches nothing). */
 const MAX_RAW_EXACT_CHARS = 1_048_576;
-const EXACT_SALT_NOTE = 'Marrow: the private device key for exact action matching is unavailable or unsafe on this machine, so a held action that hides a value is asked again instead of resumed on retry. Owner: run the Marrow installer doctor command in a terminal.';
+const EXACT_SALT_NOTE = 'Marrow: the private device key for exact action matching is unavailable or unsafe on this machine, so a held action is asked again instead of resumed on retry. Owner: run the Marrow installer doctor command in a terminal.';
 /** Canonical JSON (keys sorted at every depth), or null past 1 MB, past 64 levels, or when it cannot be serialized. */
 function canonicalJson(value) {
     const parts = [];
@@ -1613,9 +1649,10 @@ function exactHmac(salt, kind, toolName, material) {
     return (0, node_crypto_1.createHmac)('sha256', salt).update(`${EXACT_DOMAIN}\n${kind}\n${JSON.stringify(toolName)}\n`).update(material).digest('hex').slice(0, 32);
 }
 /**
- * The hash of the text of a TRUNCATED action (`command_sha256`, `input_sha256`): HMAC-SHA256 under a sub-key of the
- * device salt, 64 hex (the plain hash had the same shape). The text may hold a value the redactor did not recognise,
- * so a plain hash of it could be brute-forced offline; the key never leaves this machine. The kind and the host's tool
+ * The hash of the text of an action (`command_sha256`, `input_sha256`; every action but a deploy sent in clear):
+ * HMAC-SHA256 under a sub-key of the device salt, 64 hex (the plain hash had the same shape). The text may hold a
+ * value the redactor did not recognise, so a plain hash of it could be brute-forced offline; the key never leaves
+ * this machine. The kind and the host's tool
  * name are in the input, as for exact_hmac. Without a usable salt it is a random value that matches nothing (the
  * action is asked again): never the plain hash, never a fixed value.
  */
@@ -1624,6 +1661,17 @@ function keyTextHash(salt, kind, toolName, preimage) {
         return (0, node_crypto_1.randomBytes)(32).toString('hex');
     const key = (0, node_crypto_1.createHmac)('sha256', salt).update(TEXT_KEY_LABEL).digest();
     return (0, node_crypto_1.createHmac)('sha256', key).update(`${TEXT_MAC_DOMAIN}\n${kind}\n${JSON.stringify(toolName)}\n`).update(preimage).digest('hex');
+}
+/**
+ * The keyed hash of a hold's exact target (hook-contract exactHookTarget): the same sub-key as keyTextHash, its own
+ * domain. null without a usable device key (the caller then makes a target nothing can match).
+ */
+function keyedTargetHash(parts) {
+    const salt = exactSalt();
+    if (!salt || salt.length < 16)
+        return null;
+    const key = (0, node_crypto_1.createHmac)('sha256', salt).update(TEXT_KEY_LABEL).digest();
+    return (0, node_crypto_1.createHmac)('sha256', key).update(`${TARGET_MAC_DOMAIN}\n`).update(JSON.stringify(parts)).digest('hex');
 }
 /**
  * The normalized action of a hook event. `deadlineAt` bounds the time it may
@@ -1666,9 +1714,10 @@ function normalizedHookAction(event, options = {}) {
     let action;
     let preimage = null;
     let hashField = 'input_sha256';
+    let plain = false;
     let placeholder = false;
     try {
-        ({ action, preimage, hashField } = normalizedOfKind(event, kind, hostToolName, state));
+        ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state));
     }
     catch (error) {
         if (!(error instanceof NormalizationLimit))
@@ -1676,20 +1725,25 @@ function normalizedHookAction(event, options = {}) {
         action = { tool_kind: kind, tool_name: hostToolName, tool_input: {}, truncated: true };
         placeholder = true;
     }
-    if (action.truncated !== true)
+    const cut = action.truncated === true;
+    // Nothing to key: the deploy text sent in clear (plain hash, see BuiltAction), or an action with no text hash.
+    if (!cut && (plain || preimage === null))
         return action;
-    const material = inputCut ? null : placeholder ? rawExactMaterial(event, kind) : exactMaterial(event, kind, deadline);
-    const salt = options.salt !== undefined ? options.salt : material === null && preimage === null ? null : exactSalt();
-    // A truncated action never binds, so its text hash is keyed: the plain hash of text that may hold a value the
-    // redactor did not see could be guessed offline. A bindable action keeps the plain hash the service binds on.
+    const material = !cut || inputCut ? null : placeholder ? rawExactMaterial(event, kind) : exactMaterial(event, kind, deadline);
+    const salt = options.salt !== undefined ? options.salt : cut && material === null && preimage === null ? null : exactSalt();
+    // EVERY text hash is keyed, bound or not: the text of any tool field may hold a value the redactor did not see
+    // (a prompt, a message, a plan, a query, a filter, an id, an unknown tool's `command`), and a plain hash of it could be
+    // guessed offline. The key is per install and stable, so the same call on the same install still binds and resumes.
     const keyed = preimage === null ? {} : { [hashField]: keyTextHash(salt, kind, rawToolName, preimage) };
+    if (!cut)
+        return { ...action, tool_input: { ...action.tool_input, ...keyed } };
     return { ...action, tool_input: { ...action.tool_input, ...keyed, exact_hmac: exactHmac(salt, kind, rawToolName, material) } };
 }
 /** An action whose tool input is hashed whole (mcp, edit, other). */
 function inputAction(base, input, state) {
     const preimage = inputPreimage(input, state);
     const action = { ...base, tool_input: preimage === null ? {} : { input_sha256: sha256(preimage) } };
-    return { action: withExactness(action, state), hashField: 'input_sha256', preimage };
+    return { action: withExactness(action, state), hashField: 'input_sha256', preimage, plain: false };
 }
 function normalizedOfKind(event, kind, hostToolName, state) {
     if (kind === 'mcp') {
@@ -1699,6 +1753,7 @@ function normalizedOfKind(event, kind, hostToolName, state) {
         const raw = shellCommand(event);
         if (untrimmedShellText(event, raw) !== null)
             state.truncated = true; // exact: raw (the host's untrimmed text)
+        state.freeText = !(0, hook_tool_policy_1.isShellTextTool)(event);
         const { text, programs } = normalizeInner(raw, state, 0);
         // A secret was replaced: the action is never bound or reused (it asks each time).
         if (text.includes(SECRET))
@@ -1732,6 +1787,9 @@ function normalizedOfKind(event, kind, hostToolName, state) {
             }, state),
             hashField: 'command_sha256',
             preimage,
+            // Only the grammar-bound deploy text is sent in clear, so only its hash may stay plain (the service binds a deploy
+            // word for word). The run options in the preimage must be numbers or booleans: any other value takes the keyed form.
+            plain: deployText !== null && deployText === text && !state.truncated && runOptionsScalar(event),
         };
     }
     if (kind === 'edit') {

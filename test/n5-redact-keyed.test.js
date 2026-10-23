@@ -13,6 +13,7 @@ const path = require('node:path');
 const { normalizedHookAction, normalizeShellCommand } = require('../dist/normalized-action.js');
 const tables = require('../dist/seatbelt/tables.js');
 const { COLLISION_CASES } = require('./support/normalized-collision-cases.cjs');
+const keyedHash = require('./support/keyed-text-hash.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const FAKE = path.join(__dirname, 'support', 'passwd-home-fake.cjs');
@@ -23,6 +24,8 @@ const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 const bash = (command, options = {}) => normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }, { salt: SALT_A, ...options });
 // What an attacker who knows the algorithm and guesses the value computes for a plain Bash command.
 const plainShellHash = (command) => sha256(`${HASH_VERSION}\nshell\n${normalizeShellCommand(command).text}`);
+// What this install sends for the same command: the per-install keyed hash (SALT_A is the test seam key).
+const keyedShellHash = (command, salt = SALT_A) => keyedHash.shellMac(salt, 'Bash', normalizeShellCommand(command).text);
 
 const ALPHABETS = {
   hex: '0123456789abcdef',
@@ -65,16 +68,18 @@ test('(a) first word of a stage that feeds a password program is withheld: every
   }
 });
 
-test('KNOWN GAP (follow-up, not fixed here): N1 and N5 forms stay bindable with a plain hash that depends on the secret; no clear value reaches programs[]', () => {
+test('N1 and N5 forms (the redactor does not see the value): bindable, but the hash is keyed per install, never the plain hash; no clear value reaches programs[]', () => {
   // The redactor does not see the value (sudo -u root parses `root` as the program; cmd /c and pwsh -c keep their quoted text as one word),
-  // so the action is bindable and the backend binds on this hash. Removing the dependence would lose binding (SPEC section 2).
+  // so the action stays bindable. Build 2: its hash is the per-install keyed MAC (SPEC section 10.2), so a guessed value cannot be tested offline.
   const value = dummy('alnum', 12);
   for (const command of [`sudo -u root smbpasswd -a u1 ${value}`, `cmd /c "${value} | smbpasswd -s -a u1"`, `pwsh -c '"${value}" | smbpasswd -s -a u1'`]) {
     const action = bash(command);
     assert.equal(action.truncated, undefined, command.split(' ')[0]);
     assert.equal(reaches({ programs: action.programs }, value), false, 'programs[] holds no clear or case-folded value');
-    assert.equal(action.tool_input.command_sha256, plainShellHash(command), 'unchanged from base: the plain hash');
-    assert.notEqual(action.tool_input.command_sha256, plainShellHash(command.split(value).join(dummy('alnum', 12))), 'still depends on the value');
+    assert.equal(action.tool_input.command_sha256, keyedShellHash(command), 'the per-install keyed hash');
+    assert.notEqual(action.tool_input.command_sha256, plainShellHash(command), 'never the plain hash an attacker can compute');
+    assert.notEqual(action.tool_input.command_sha256, keyedShellHash(command, SALT_B), 'differs per install');
+    assert.notEqual(action.tool_input.command_sha256, keyedShellHash(command.split(value).join(dummy('alnum', 12))), 'the same install still tells two values apart (keyed)');
   }
 });
 
@@ -99,7 +104,7 @@ test('(a) known programs keep their name and their base behaviour (not cut, same
     const action = bash(command);
     assert.deepEqual(action.programs, programs, command);
     assert.equal(action.truncated, undefined, `${command}: bindable as on base`);
-    assert.equal(action.tool_input.command_sha256, plainShellHash(command), `${command}: plain hash as on base`);
+    assert.equal(action.tool_input.command_sha256, keyedShellHash(command), `${command}: keyed hash (bindable on this install)`);
   }
 });
 
@@ -166,13 +171,15 @@ test('(b) no usable key: a random value that matches nothing (never the plain ha
   }
 });
 
-test('(b) a bindable action keeps the plain hash the service binds on (shell, mcp, edit, other)', () => {
-  assert.equal(bash('ls -la').tool_input.command_sha256, plainShellHash('ls -la'));
-  assert.equal(bash('git push --force | smbpasswd -s').tool_input.command_sha256, plainShellHash('git push --force | smbpasswd -s'));
-  for (const [tool, input] of [['mcp__x__run', { a: 1 }], ['Edit', { file_path: '/w/a.txt', new_string: 'hello' }], ['Agent', { prompt: 'summarize the readme' }]]) {
+test('(b) a bindable action is bindable still, with a per-install keyed hash (shell, mcp, edit, other)', () => {
+  assert.equal(bash('ls -la').tool_input.command_sha256, keyedShellHash('ls -la'));
+  assert.equal(bash('git push --force | smbpasswd -s').tool_input.command_sha256, keyedShellHash('git push --force | smbpasswd -s'));
+  for (const [tool, input, kind] of [['mcp__x__run', { a: 1 }, 'mcp'], ['Edit', { file_path: '/w/a.txt', new_string: 'hello' }, 'edit'], ['Agent', { prompt: 'summarize the readme' }, 'other']]) {
     const action = normalizedHookAction({ tool_name: tool, tool_input: input }, { salt: SALT_A });
     assert.equal(action.truncated, undefined, tool);
-    assert.equal(action.tool_input.input_sha256, sha256(`${HASH_VERSION}\ninput\n${JSON.stringify(Object.fromEntries(Object.entries(input).sort()))}`), tool);
+    const json = JSON.stringify(Object.fromEntries(Object.entries(input).sort()));
+    assert.equal(action.tool_input.input_sha256, keyedHash.inputMac(SALT_A, kind, tool, json), tool);
+    assert.notEqual(action.tool_input.input_sha256, sha256(`${HASH_VERSION}\ninput\n${json}`), `${tool}: never the plain hash`);
     assert.equal(action.tool_input.exact_hmac, undefined, tool);
   }
 });

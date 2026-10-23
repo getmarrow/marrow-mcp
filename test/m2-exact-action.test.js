@@ -526,7 +526,9 @@ test('V1 (unit): v3 keys never equal the v2 keys of the same text', () => {
   const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
   for (const command of ['wrangler deploy --env production', 'git push origin main', 'kubectl delete namespace prod']) {
     const v3 = norm(bash(command)).tool_input.command_sha256;
-    assert.equal(v3, sha(`marrow-normalized-action-v3\nshell\n${normalizeShellCommand(command).text}`));
+    const keyed = require('./support/keyed-text-hash.cjs');
+    assert.equal(v3, keyed.shellMac(keyed.deviceSalt(), 'Bash', normalizeShellCommand(command).text));
+    assert.notEqual(v3, sha(`marrow-normalized-action-v3\nshell\n${normalizeShellCommand(command).text}`), 'never the plain hash');
     assert.notEqual(v3, sha(`marrow-normalized-action-v2\nshell\n${normalizeShellCommand(command).text}`));
   }
 });

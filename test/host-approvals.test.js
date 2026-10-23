@@ -61,10 +61,11 @@ function hostRuntime(receipt = 'gate-held', approval = {}, extra = {}) {
   };
 }
 
-// The normalized action of the fixture's deploy: program names and a hash, never the command text.
+// The normalized action of the fixture's deploy: program names and a keyed hash, never the command text.
 const DEPLOY_NORMALIZED = {
   tool_kind: 'shell', tool_name: 'Bash', programs: ['wrangler'],
-  tool_input: { command_sha256: require('node:crypto').createHash('sha256').update('marrow-normalized-action-v3\nshell\nwrangler deploy --env production').digest('hex') },
+  // The text hash is keyed with this install's device key (the hook children share the scratch passwd home).
+  tool_input: { command_sha256: require('./support/keyed-text-hash.cjs').shellMac(require('./support/keyed-text-hash.cjs').deviceSalt(), 'Bash', 'wrangler deploy --env production') },
 };
 
 function noProofRuntime(receipt = 'gate-held') {

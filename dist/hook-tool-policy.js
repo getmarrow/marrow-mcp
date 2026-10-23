@@ -16,6 +16,7 @@ exports.toolTargetPaths = toolTargetPaths;
 exports.isSecretMaterialAccess = isSecretMaterialAccess;
 exports.isSecretMaterialAccessAsNamed = isSecretMaterialAccessAsNamed;
 exports.toolClassificationText = toolClassificationText;
+exports.isShellTextTool = isShellTextTool;
 exports.isShellGovernedTool = isShellGovernedTool;
 exports.isReadOnlyToolEvent = isReadOnlyToolEvent;
 exports.isReadOnlyToolEventAsNamed = isReadOnlyToolEventAsNamed;
@@ -833,6 +834,17 @@ function toolClassificationText(event) {
         serialized = '';
     }
     return `${tool} ${command} ${serialized}`;
+}
+/**
+ * Whether a tool runs its text as a shell command: Bash and the other terminal tools (Codex exec, Cursor Shell, ...),
+ * Monitor and PowerShell. Every other tool whose text is read as shell words (ToolSearch, a prompt, a path, an unknown
+ * tool's `command`) only borrows the parser, so no word of it is known to be a program.
+ */
+function isShellTextTool(event) {
+    if (isMcpHookTool(event.tool_name))
+        return false;
+    const tool = normalizeHookToolName(event.tool_name);
+    return SHELL_TOOLS.has(tool) || SHELL_COMMAND_TOOLS.has(tool);
 }
 /** Editing and task tools are judged by their target, not by shell-like text in their input. */
 function isShellGovernedTool(event) {

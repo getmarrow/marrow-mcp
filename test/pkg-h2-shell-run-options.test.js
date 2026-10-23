@@ -113,11 +113,14 @@ test('R2 keys: `description` is not part of the key; a call with no option keeps
       assertAllSame(keys({ tool_name, tool_input: make(COMMAND) }), keys({ tool_name, tool_input: { ...make(COMMAND), description: 'x' } }), `${tool_name} ${form} none vs description`);
     }
   }
-  // 3.9.104's hash of a plain call without options is unchanged, byte for byte.
+  // 3.9.104's preimage of a plain call without options is unchanged, byte for byte (the hash over it is keyed now).
   const plain = normalizedHookAction({ tool_name: 'PowerShell', tool_input: { command: 'ls' } }, { salt });
-  assert.equal(plain.tool_input.command_sha256, createHash('sha256').update('marrow-normalized-action-v3\nshell-tool\n"PowerShell"\nls').digest('hex'));
+  // ... now under the per-install key (the same preimage), never the plain hash.
+  const keyed = require('./support/keyed-text-hash.cjs');
+  assert.equal(plain.tool_input.command_sha256, keyed.textMac(salt, 'shell', 'PowerShell', 'marrow-normalized-action-v3\nshell-tool\n"PowerShell"\nls'));
   const bash = normalizedHookAction({ tool_name: 'Bash', tool_input: { command: 'ls' } }, { salt });
-  assert.equal(bash.tool_input.command_sha256, createHash('sha256').update('marrow-normalized-action-v3\nshell\nls').digest('hex'));
+  assert.equal(bash.tool_input.command_sha256, keyed.shellMac(salt, 'Bash', 'ls'));
+  assert.notEqual(bash.tool_input.command_sha256, createHash('sha256').update('marrow-normalized-action-v3\nshell\nls').digest('hex'));
 });
 
 test('R2 keys: Bash is as it was (its own timeout field is not touched); Bash, Monitor and PowerShell never share a key', () => {

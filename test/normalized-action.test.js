@@ -4,6 +4,7 @@ const { randomBytes, randomInt } = require('node:crypto');
 const { normalizedHookAction, normalizeShellCommand, looksLikeKey, classifySecretName } = require('../dist/normalized-action.js');
 const { ordinaryApprovalGuidance } = require('../dist/runtime-contract.js');
 const { withoutServerNextActions } = require('../dist/index.js');
+const keyed = require('./support/keyed-text-hash.cjs');
 
 // Dummy secrets generated at runtime, in the shapes real ones have. None is printed.
 const b64 = (n) => randomBytes(n).toString('base64').replace(/[+/=]/g, 'A').slice(0, n);
@@ -110,9 +111,10 @@ test('the five commands one coarse class used to merge give five different hashe
   assert.notEqual(bash('wrangler deploy --env production').tool_input.command_sha256, bash('wrangler deploy --env staging').tool_input.command_sha256);
 });
 
-test('the hash is the same on every machine: it depends only on the secret-free command (pinned)', () => {
-  assert.equal(bash('wrangler deploy --env production').tool_input.command_sha256,
-    require('node:crypto').createHash('sha256').update('marrow-normalized-action-v3\nshell\nwrangler deploy --env production').digest('hex'));
+test('the hash depends only on the command and this install\'s key (pinned formula, never the plain hash)', () => {
+  const plain = require('node:crypto').createHash('sha256').update('marrow-normalized-action-v3\nshell\nwrangler deploy --env production').digest('hex');
+  assert.equal(bash('wrangler deploy --env production').tool_input.command_sha256, keyed.shellMac(keyed.deviceSalt(), 'Bash', 'wrangler deploy --env production'));
+  assert.notEqual(bash('wrangler deploy --env production').tool_input.command_sha256, plain, 'a plain hash of a command that may hold a secret is never sent');
   // Two commands that differ only in a secret value are the same action.
   assert.equal(bash(`npm publish --otp ${randomInt(100000, 999999)}`).tool_input.command_sha256, bash(`npm publish --otp ${randomInt(100000, 999999)}`).tool_input.command_sha256);
   // Codex's argument vector and the string form are the same action.
@@ -178,12 +180,12 @@ test('MEDIUM-R1-1: commands that differ only in the data they read get different
   assert.equal(hashOf('echo "DROP TABLE users" | npx wrangler d1 execute marrow-db --remote --command -'), hashOf("echo  'DROP TABLE users'  |  npx wrangler d1 execute marrow-db --remote --command -"));
   assert.equal(hashOf("psql prod <<'SQL'\nDROP TABLE x;\nSQL"), hashOf('psql prod <<SQL\r\nDROP TABLE x;\r\nSQL'));
   assert.equal(hashOf('kubectl apply -f d.yaml <<< "replicas: 0"'), hashOf("kubectl apply -f d.yaml <<< 'replicas: 0'"));
-  // And on every machine: the hash depends only on the command and its data (pinned).
+  // On one install: the hash depends only on the command, its data and the install's key (pinned).
   // Printed text is hashed as its list of words (M2 R3: word boundaries and flags count).
   const data = digest('marrow-normalized-action-v3\nwords\n["DROP TABLE users"]');
-  assert.equal(hashOf('echo "DROP TABLE users" | psql prod'), digest(`marrow-normalized-action-v3\nshell\necho [data:${data}] | psql prod`));
+  assert.equal(hashOf('echo "DROP TABLE users" | psql prod'), keyed.shellMac(keyed.deviceSalt(), 'Bash', `echo [data:${data}] | psql prod`));
   const here = digest('marrow-normalized-action-v3\ndata\nDROP TABLE users');
-  assert.equal(hashOf('psql prod <<< "DROP TABLE users"'), digest(`marrow-normalized-action-v3\nshell\npsql prod '<<<' [data:${here}]`));
+  assert.equal(hashOf('psql prod <<< "DROP TABLE users"'), keyed.shellMac(keyed.deviceSalt(), 'Bash', `psql prod '<<<' [data:${here}]`));
 });
 
 test('MEDIUM-R1-1: data that feeds a secrets command or file, or looks secret, is withheld and the action is marked truncated (Marrow always asks)', () => {

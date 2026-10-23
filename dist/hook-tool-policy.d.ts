@@ -71,6 +71,12 @@ export declare function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, pr
  * editing tool writes are excluded: naming a word is not performing it.
  */
 export declare function toolClassificationText(event: ToolPolicyEvent): string;
+/**
+ * Whether a tool runs its text as a shell command: Bash and the other terminal tools (Codex exec, Cursor Shell, ...),
+ * Monitor and PowerShell. Every other tool whose text is read as shell words (ToolSearch, a prompt, a path, an unknown
+ * tool's `command`) only borrows the parser, so no word of it is known to be a program.
+ */
+export declare function isShellTextTool(event: ToolPolicyEvent): boolean;
 /** Editing and task tools are judged by their target, not by shell-like text in their input. */
 export declare function isShellGovernedTool(event: ToolPolicyEvent): boolean;
 /**
