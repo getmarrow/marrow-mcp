@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
-import { PROC_ENVIRON, SECRET_PATTERNS } from './secret-paths';
+import { PROC_ENVIRON, PROC_PROCESS_TREE, SECRET_PATTERNS } from './secret-paths';
 
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
 
@@ -452,6 +452,11 @@ export function isSecretPath(value: string, base = process.cwd()): boolean {
   return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base));
 }
 
+/** A process folder (`/proc`, `/proc/self/task`): a search tool that walks it reads the `environ` of every process under it. */
+function isProcessFolder(value: string, base = process.cwd()): boolean {
+  return pathCandidates(String(value || '')).some((candidate) => PROC_PROCESS_TREE.test(normalizedToolPath(candidate, base)));
+}
+
 /** True for a secret file or Marrow's own local control state. */
 export function isProtectedWriteTarget(value: string, base = process.cwd()): boolean {
   return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base)
@@ -675,7 +680,7 @@ export function isSecretMaterialAccess(event: ToolPolicyEvent, printsEnvironment
 /** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
 export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean {
   const tool = normalizeHookToolName(event.tool_name);
-  if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path));
+  if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path) || (tool === 'grep' && isProcessFolder(path)));
   if (FILE_EDIT_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
   if (!SHELL_TOOLS.has(tool)) return false;
   const command = shellCommandText(event);

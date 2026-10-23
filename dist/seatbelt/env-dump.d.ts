@@ -25,13 +25,34 @@ export declare function jqFilterReadsEnvironment(filter: string): boolean;
 export declare function jqFilters(args: ReadonlyArray<string | null>): string[];
 /** `npm run env` (also pnpm, yarn and bun) runs npm's built-in `env` script, which prints the environment. */
 export declare function packageRunsEnvScript(args: ReadonlyArray<string | null>): boolean;
-export { PROC_ENVIRON } from '../secret-paths';
+export { PROC_ENVIRON, PROC_PROCESS_TREE } from '../secret-paths';
 /** A glob that can name `environ`: `/proc/self/env*`, `/proc/1/*`, `/proc/self/task/1/e[n]viron`. */
 export declare function procGlobMatchesEnviron(path: string): boolean;
 /** `/proc`, `/proc/<pid>` and `/proc/<pid>/task[/<tid>]`: a folder whose recursive read reaches every `environ` under it. */
 export declare const PROC_PROCESS_DIRECTORY: RegExp;
 /** Programs that read or copy every file under a folder named to them. */
 export declare const RECURSIVE_READERS: ReadonlySet<string>;
+/**
+ * Inline interpreter code that can start a command (`system`, `exec*`, `popen`, `spawn*`, `passthru`, `proc_open`, `shell_exec`, Lua's `os.execute`,
+ * Perl `qx`, backticks, Node's `child_process`, Python's `subprocess`). Used only to decide that a bare `env` / `printenv` operand of the same command
+ * line is the command it starts (`perl -e 'system(shift)' env`); code that cannot start a command leaves the operand a plain name.
+ */
+export declare const CODE_STARTS_COMMAND: RegExp;
+/** awk code that can start a command: `system(` or a pipe to or from one (not `||`). A bare `getline` reads a file. */
+export declare const AWK_STARTS_COMMAND: RegExp;
+/**
+ * Shell code whose command word is an expansion (`"$@"`, `$1`, `$0`, `exec "$@"`, `eval "$1"`, `then $x`): the words after the script text are
+ * its positional parameters, and it runs one of them as a command. The captured character names the expansion (`@` or `*` all of them, a digit one
+ * of them, a letter a variable that may hold one).
+ */
+export declare const SHELL_RUNS_EXPANSION: RegExp;
+/** Interpreter code that reads its environment (`ENVIRON["X"]`, `$ENV{X}`, `os.environ`, `process.env`, `getenv`, `ENV["X"]`). */
+export declare const CODE_READS_ENVIRONMENT: RegExp;
+/**
+ * A word a command-running helper may run: the environment printer itself (`env`, `/usr/bin/printenv -0`) or a command line that holds one
+ * (`sh -c env`, `command printenv`). A one-word operand that only mentions `env` (`echo`'s argument) is not one unless it starts with it.
+ */
+export declare function mayRunEnvPrinter(word: string): boolean;
 /** Variables whose value runs as a command: a pager, editor, askpass or diff helper set to `env` prints the environment. */
 export declare const HELPER_ENV_VARS: ReadonlySet<string>;
 /** A command word that is the environment printer, alone or followed by arguments. */

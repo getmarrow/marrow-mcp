@@ -55,7 +55,7 @@ export function secretSamples(home: string, cwds: string[]): string[] {
     `${h}/.config/gcloud/credentials.db`, `${h}/.config/gcloud/access_tokens.db`, `${h}/.azure/accessTokens.json`,
     `${h}/.kube/config`, `${h}/.docker/config.json`, `${h}/.npmrc`, `${h}/.pypirc`, `${h}/.netrc`, `${h}/.git-credentials`,
     `${h}/.config/gh/hosts.yml`, `${h}/.config/op/config`, `${h}/.gnupg/private-keys-v1.d/k.key`, `${h}/.marrow/env`,
-    `${h}/.marrow/env.local`, `${h}/.claude.json`, `${h}/.claude/settings.local.json`, '/proc/self/environ', '/proc/1/environ',
+    `${h}/.marrow/env.local`, `${h}/.claude.json`, `${h}/.claude/settings.local.json`, '/proc/self/environ', '/proc/1/environ', '/proc/self/task/1/environ',
     `${h}/.env`, '/root/.ssh/id_rsa', '/root/.aws/credentials', `${h}/.marrow/seatbelt/salt`,
     `${h}/.marrow/fleet.env`, `${h}/.marrow/credentials/k`,
   ];

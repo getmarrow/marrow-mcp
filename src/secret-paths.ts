@@ -9,7 +9,7 @@ export const SECRET_PATTERNS: readonly string[] = [
   '**/.config/gcloud/**/*credentials*', '**/.config/gcloud/**/access_tokens.db', '**/.azure/**',
   '**/.kube/config', '**/.docker/config.json', '**/.npmrc', '**/.pypirc', '**/.netrc', '**/.git-credentials',
   '**/.config/gh/hosts.yml', '**/.config/op/**', '**/.gnupg/private-keys*', '**/.gnupg/private-keys*/**',
-  '**/.marrow/env*', '**/.claude.json', '**/.claude/settings.local.json', '/proc/*/environ',
+  '**/.marrow/env*', '**/.claude.json', '**/.claude/settings.local.json', '/proc/*/environ', '/proc/*/task/*/environ',
   '**/.env', '**/.env.*', '**/.dev.vars',
   // Marrow's own fleet env file and credential store.
   '**/.marrow/fleet.env', '**/.marrow/credentials/**',
@@ -28,3 +28,9 @@ export const PRESENT_SECRET_PATTERNS: readonly string[] = ['**/*.env'];
 
 /** `/proc/<pid>/environ` and `/proc/<pid>/task/<tid>/environ`, `self` and `thread-self` included: the process's whole environment. */
 export const PROC_ENVIRON = /^\/proc\/[^/]+\/(?:task\/[^/]+\/)?environ$/;
+
+/**
+ * `/proc`, `/proc/<pid|self|thread-self>` and `/proc/<…>/task[/<tid>]` (a number, `self`, or a glob in the id's place): a folder a search tool
+ * walks, reaching the `environ` of every process under it. `/proc/cpuinfo` and `/proc/sys` hold none.
+ */
+export const PROC_PROCESS_TREE = /^\/proc(?:\/(?:\d+|self|thread-self|[^/]*[*?[][^/]*)(?:\/task(?:\/(?:\d+|self|thread-self|[^/]*[*?[][^/]*))?)?)?\/?$/;

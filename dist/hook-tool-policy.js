@@ -517,6 +517,10 @@ function globVariants(value) {
 function isSecretPath(value, base = process.cwd()) {
     return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base));
 }
+/** A process folder (`/proc`, `/proc/self/task`): a search tool that walks it reads the `environ` of every process under it. */
+function isProcessFolder(value, base = process.cwd()) {
+    return pathCandidates(String(value || '')).some((candidate) => secret_paths_1.PROC_PROCESS_TREE.test(normalizedToolPath(candidate, base)));
+}
 /** True for a secret file or Marrow's own local control state. */
 function isProtectedWriteTarget(value, base = process.cwd()) {
     return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base)
@@ -783,7 +787,7 @@ function isSecretMaterialAccess(event, printsEnvironment) {
 function isSecretMaterialAccessAsNamed(event, printsEnvironment) {
     const tool = normalizeHookToolName(event.tool_name);
     if (CONTENT_READ_TOOLS.has(tool))
-        return toolTargetPaths(event).some((path) => isSecretPath(path));
+        return toolTargetPaths(event).some((path) => isSecretPath(path) || (tool === 'grep' && isProcessFolder(path)));
     if (FILE_EDIT_TOOLS.has(tool))
         return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
     if (!SHELL_TOOLS.has(tool))

@@ -262,6 +262,9 @@ function evaluateEvent(event, env) {
             if (clock(run))
                 break;
             checkSecretOperand(litArg(p), ctx, run, 'tool_grep');
+            // The tool searches every file under a folder: a process folder reaches the `environ` of each.
+            if (namesProcEnviron(absCandidates(p, ctx, run) || [], env_dump_1.PROC_PROCESS_TREE))
+                hit(run, 'S4', 'proc_environ');
         }
         for (const key of ['glob', 'include', 'file_pattern']) {
             const g = input[key];
@@ -4404,6 +4407,24 @@ function compileGlob(pattern, opts) {
 function patternToRegex(pattern, lookalike) {
     return compileGlob(pattern, { dyn: true, lookalike, ci: true });
 }
+// `..` read lexically (`/tmp/../p*/self/e*` is `/p*/self/e*`): a segment before it, a glob or a dynamic part too, is dropped with it. A dynamic or
+// relative first segment that is dropped leaves the root, so the absolute reading stays.
+function collapseParents(p) {
+    if (!p.includes('..'))
+        return p;
+    const out = [];
+    for (const part of p.split('/')) {
+        if (part !== '..') {
+            out.push(part);
+            continue;
+        }
+        if (out.length > 1)
+            out.pop();
+        else if (out.length === 1 && out[0] !== '')
+            out[0] = out[0].includes(DYN) ? '' : '.';
+    }
+    return out.join('/') || '/';
+}
 function sampleMatch(a, ctx, run, samples) {
     const raw = a.pattern;
     const lookalike = a.nonAscii;
@@ -4415,13 +4436,52 @@ function sampleMatch(a, ctx, run, samples) {
         for (const c of ctx.cwds)
             cands.push(`${(c || '/__unknown_cwd__').replace(/\/$/, '')}/${expanded}`);
     for (const cand of cands) {
-        const re = patternToRegex(cand.replace(/\/\.\//g, '/'), lookalike);
+        const re = patternToRegex(collapseParents(cand.replace(/\/\.\//g, '/')), lookalike);
         if (samples.some((s) => re.test(s) && isSecretPath(s, run)))
             return true;
     }
     return false;
 }
 function cwdsList(ctx) { return ctx.cwds.map((c) => c || '/__unknown_cwd__'); }
+// `${P:-/proc/self/task/1/environ}`, `${P:=…}`, `${P:+…}`: whenever the name is unset (or set, for `+`) the word after the operator is the path, so the
+// word is also read with that default in place of the expansion (any other expansion in it stays dynamic). Null when no part has such a default.
+const PARAM_DEFAULT = /^[A-Za-z_][A-Za-z0-9_]*:?[-=+]([\s\S]*)$/;
+const NESTED_DEFAULT = /^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([\s\S]*)$/;
+function parameterDefaultReading(a) {
+    if (!a.word || a.word.slots.length === 0)
+        return null;
+    const parts = a.word.text.split('\u0000');
+    let text = parts[0];
+    let any = false;
+    a.word.slots.forEach((slot, k) => {
+        const m = slot.type === 'var' && slot.name ? PARAM_DEFAULT.exec(slot.name) : null;
+        if (m)
+            any = true;
+        // The parser ends an expansion at its first `}`: a default that opens another (`${A:-${B:-/x}/y}`) is read as the innermost default, followed
+        // by the text up to each closing brace it left after the slot.
+        let inner = m ? m[1] : '';
+        let depth = 0;
+        for (let n = NESTED_DEFAULT.exec(inner); n && depth < 16; n = NESTED_DEFAULT.exec(inner)) {
+            inner = n[1];
+            depth += 1;
+        }
+        const word = m ? inner.replace(/^(["'])([\s\S]*)\1$/, '$2').replace(/\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z_][A-Za-z0-9_]*|`[^`]*`/g, DYN) : DYN;
+        let rest = parts[k + 1] || '';
+        let tail = '';
+        for (let level = 0; level < depth; level += 1) {
+            const close = rest.indexOf('}');
+            if (close < 0)
+                break;
+            tail += rest.slice(0, close);
+            rest = rest.slice(close + 1);
+        }
+        text += `${word}${tail}${rest}`;
+    });
+    if (!any)
+        return null;
+    // No word: the reading is final (it is not read for defaults again).
+    return text.includes(DYN) ? { text: null, alts: null, pattern: text, glob: a.glob, word: null, nonAscii: a.nonAscii } : { ...litArg(text), glob: a.glob };
+}
 // S4: a secret path as an operand. Returns true on a stop.
 // `history`: git reads the path from its object store (a pathspec after `--`, a `REV:path` object), so it
 // need not exist in the work tree.
@@ -4457,7 +4517,11 @@ function checkSecretOperand(a, ctx, run, reason, history = false, pattern = fals
         }
         if (a.text === null || a.glob || a.nonAscii) {
             const probe = a.text === null ? a : { ...a, pattern: text };
-            if (/[A-Za-z0-9._~/-]/.test(probe.pattern.replace(new RegExp(DYN, 'g'), '')) && sampleMatch(probe, ctx, run, (0, tables_1.secretSamples)(run.home, cwdsList(ctx)))) {
+            const samples = /[A-Za-z0-9._~/-]/.test(probe.pattern.replace(new RegExp(DYN, 'g'), '')) ? (0, tables_1.secretSamples)(run.home, cwdsList(ctx)) : [];
+            if (samples.length > 0 && sampleMatch(probe, ctx, run, samples)) {
+                // A glob or dynamic path that can spell a process environment file also carries the env-dump reason (the keyed hook keeps only those).
+                if (sampleMatch(probe, ctx, run, samples.filter((s) => env_dump_1.PROC_ENVIRON.test(s))))
+                    hit(run, 'S4', 'proc_environ');
                 return hit(run, 'S4', `${reason}_secret_pattern`);
             }
             if (underUnknown && a.text !== null && a.glob && /[*?[]/.test(text) && globMayEndWith(text, '.env', run.fold))
@@ -4473,12 +4537,18 @@ function checkSecretOperand(a, ctx, run, reason, history = false, pattern = fals
             if (run.links.size > 0 && applyLinks(p, run) === '/__unknown_link__')
                 return hit(run, 'S4', `${reason}_unknown_link`);
             const mustExist = !history && !(underUnknown || (!pattern && p.startsWith('/__unknown_cwd__/')));
-            for (const r of realCandidates(p, run, true))
-                if (isSecretPath(r, run, mustExist))
-                    return hit(run, 'S4', `${reason}_secret_path`);
+            for (const r of realCandidates(p, run, true)) {
+                if (!isSecretPath(r, run, mustExist))
+                    continue;
+                if (env_dump_1.PROC_ENVIRON.test(r))
+                    hit(run, 'S4', 'proc_environ');
+                return hit(run, 'S4', `${reason}_secret_path`);
+            }
         }
     }
-    return false;
+    // Read last, so a stop the operand already had keeps its reason.
+    const defaulted = a.text === null ? parameterDefaultReading(a) : null;
+    return defaulted !== null && checkSecretOperand(defaulted, ctx, run, reason, history, pattern);
 }
 // Whether some name the glob matches (shell rules: `*` and `?` stay inside one path segment) ends with `suffix`:
 // a walk over (glob position, how much of the suffix the name ends with so far), trying the suffix characters
@@ -6083,6 +6153,17 @@ function targetDirFlag(rest) {
 }
 // ---------------------------------------------------------------------------------------------
 // builtins
+// `cd /proc/$$`, `cd /proc/$(pgrep node)/task/*`, `cd $PID` from `/proc`: a target that is a process or thread id (a dynamic part or a glob) under
+// `/proc` is also read as `self`, so a later `cat environ` names the process file. The unknown folder stays possible, as before.
+function procFolderGuesses(target, ctx) {
+    const spelled = target.text !== null ? target.text : target.pattern;
+    if (spelled === '-')
+        return [];
+    const guess = (t) => t.split(DYN).join('self').replace(/\*+/g, 'self').replace(/\?/g, '1').replace(/\[[^\]]*\]/g, '1');
+    if (spelled.startsWith('/'))
+        return /^\/proc(?:\/|$)/.test(spelled) ? [path.posix.normalize(guess(spelled))] : [];
+    return ctx.cwds.filter((c) => c !== null && /^\/proc(?:\/|$)/.test(c)).map((c) => path.posix.resolve(c, guess(spelled)));
+}
 function changeDir(rest, ctx, run, subshell) {
     const ops = nonOptions(rest);
     const target = ops[0];
@@ -6091,7 +6172,7 @@ function changeDir(rest, ctx, run, subshell) {
         return;
     }
     if (target.text === null || target.text === '-' || target.glob) {
-        ctx.cwds = [...new Set([...ctx.cwds, null])];
+        ctx.cwds = [...new Set([...ctx.cwds, ...procFolderGuesses(target, ctx), null])];
         return;
     }
     const next = [];
@@ -6984,6 +7065,36 @@ function sshRemote(rest, ctx, run, x) {
     else
         dynamicCode({ text: null, alts: null, pattern: remoteCmd.map((a) => (a.text !== null ? a.text : a.pattern)).join(' '), glob: false, word: null, nonAscii: false }, remoteCtx, run, 'dynamic_remote_command');
 }
+// `sh -c '"$@"' _ env`, `bash -c 'exec "$@"' x printenv`: the words after the script text are its positional parameters ($0 first), and a script whose
+// command word is an expansion runs them. `"$@"` / `$*` run the words after $0 as one command line, `$N` runs word N (alone or with the rest after it),
+// and a name (`for c; do "$c"; done`) may hold any of them. The mapper reads each such line; a dynamic word is left to the dynamic-command stop.
+function positionalCommands(code, positional, ctx, run) {
+    if (code.text === null || positional.some((p) => p.text === null))
+        return;
+    const tokens = [...code.text.matchAll(new RegExp(env_dump_1.SHELL_RUNS_EXPANSION.source, 'g'))].map((m) => m[1]);
+    if (tokens.length === 0)
+        return;
+    const words = positional.map((p) => p.text);
+    const quoted = (list) => list.map((w) => `'${w.replace(/'/g, "'\\''")}'`).join(' ');
+    const lines = new Set();
+    for (const t of tokens) {
+        if (t === '@' || t === '*')
+            lines.add(quoted(words.slice(1)));
+        else if (/[0-9]/.test(t)) {
+            const at = Number(t);
+            if (at < words.length) {
+                lines.add(words[at]);
+                lines.add(quoted(words.slice(at)));
+            }
+        }
+        else
+            for (const w of words.slice(1))
+                lines.add(w);
+    }
+    for (const line of lines)
+        if (line.trim() !== '')
+            evalShell(line, childCtx(ctx), run);
+}
 function handleShell(prog, rest, ctx, run, x) {
     // `env BASH_ENV=f bash -c :`: a startup file named by a wrapper's assignment (audit N1).
     for (const name of ['BASH_ENV', 'ENV']) {
@@ -7026,16 +7137,20 @@ function handleShell(prog, rest, ctx, run, x) {
         if (/^[-+][a-zA-Z]+$/.test(t) && /[coO]/.test(t)) {
             let used = 0;
             let codeArg = null;
+            let codeAt = -1;
             for (const ch of t.slice(1)) {
                 if (ch === 'c' && t[0] === '-') {
-                    codeArg = rest[i + 1 + used] || null;
+                    codeAt = i + 1 + used;
+                    codeArg = rest[codeAt] || null;
                     used += 1;
                 }
                 else if (ch === 'o' || ch === 'O')
                     used += 1;
             }
-            if (codeArg)
+            if (codeArg) {
+                positionalCommands(codeArg, rest.slice(codeAt + 1), ctx, run);
                 return shellString(codeArg, withFeed(ctx, x, run), run, x.info.subs);
+            }
             i += used;
             continue;
         }
@@ -7043,6 +7158,7 @@ function handleShell(prog, rest, ctx, run, x) {
             const code = rest[i + 1];
             if (!code)
                 return;
+            positionalCommands(code, rest.slice(i + 2), ctx, run);
             // What this command's stdin carries (here-string, heredoc, pipe, enclosing group) reaches any
             // reader inside the `-c` text.
             return shellString(code, withFeed(ctx, x, run), run, x.info.subs);
@@ -7104,8 +7220,26 @@ function handleInterpreter(prog, rest, ctx, run, x) {
                     return;
                 }
             }
-            const codeText = code.text !== null ? code.text : argText(code);
-            scanInterpreterCode(codeText, run);
+            const firstCode = code.text !== null ? code.text : argText(code);
+            scanInterpreterCode(firstCode, run);
+            // A repeated code flag (`perl -e 'print 1' -e 'system(shift)' env`) runs every piece: each is read like the first, and a dynamic one is code
+            // nobody can read.
+            let codeText = firstCode;
+            for (let j = i + 2; j < rest.length; j += 1) {
+                const flag = rest[j].text;
+                if (flag === null || !codeRe.test(flag) || !rest[j + 1])
+                    continue;
+                const more = rest[j + 1];
+                if (more.text === null && !more.alts) {
+                    worseParse(run, 'dynamic');
+                    tripwire(run.topSource, run);
+                    hit(run, 'Sx', 'dynamic_interpreter_code');
+                    continue;
+                }
+                const moreText = more.text !== null ? more.text : argText(more);
+                scanInterpreterCode(moreText, run);
+                codeText = `${codeText}\n${moreText}`;
+            }
             // Code that reads its own stdin and runs what it reads: the stdin text is a command too.
             // Code that can start a process passes its stdin on to it, whether or not it reads it itself.
             if (tables_1.INTERPRETER_EXEC.test(codeText))
@@ -7119,6 +7253,16 @@ function handleInterpreter(prog, rest, ctx, run, x) {
                     if (extra.text !== null && !extra.text.startsWith('-'))
                         evalShell(extra.text, childCtx(ctx), run);
             }
+            else if (env_dump_1.CODE_STARTS_COMMAND.test(codeText)) {
+                // Code that starts a command and takes its name some other way (`system(shift)`, `os.execvp(sys.argv[1], …)`, `passthru($argv[1])`,
+                // `os.execute(arg[1])`): an environment printer among the arguments is that command.
+                for (const extra of rest.slice(i + 2))
+                    if (extra.text !== null && (0, env_dump_1.mayRunEnvPrinter)(extra.text))
+                        evalShell(extra.text, childCtx(ctx), run);
+            }
+            // …or takes it from its environment: a value set on this command line (`C=env perl -e 'system $ENV{C}'`).
+            if (env_dump_1.CODE_STARTS_COMMAND.test(codeText) && env_dump_1.CODE_READS_ENVIRONMENT.test(codeText))
+                assignedEnvPrinters(x, ctx, run);
             return;
         }
         if ((prog === 'deno' || prog === 'bun') && (t === 'run' || t === 'repl'))
@@ -7242,12 +7386,16 @@ function envDumpChecks(prog, rest, ctx, run, x) {
         const text = a.text !== null ? a.text : a.pattern.split(DYN).join('x');
         if (!text.startsWith('/') && !text.includes('proc'))
             continue;
-        const candidates = (a.text !== null ? absCandidates(a.text, ctx, run) || [] : [text]).map((p) => (p.length > 1 ? p.replace(/\/+$/, '') : p));
-        if (candidates.some((p) => env_dump_1.PROC_ENVIRON.test(p) || (0, env_dump_1.procGlobMatchesEnviron)(p) || (env_dump_1.RECURSIVE_READERS.has(prog) && env_dump_1.PROC_PROCESS_DIRECTORY.test(p)))) {
+        if (namesProcEnviron(a.text !== null ? absCandidates(a.text, ctx, run) || [] : [text], env_dump_1.RECURSIVE_READERS.has(prog) ? env_dump_1.PROC_PROCESS_DIRECTORY : null)) {
             hit(run, 'S4', 'proc_environ');
             return;
         }
     }
+}
+// A path that is, or can spell, a process environment file; for a program that reads every file under a folder, a process folder too.
+function namesProcEnviron(candidates, folder) {
+    return candidates.map((p) => collapseParents(p.length > 1 ? p.replace(/\/+$/, '') : p))
+        .some((p) => env_dump_1.PROC_ENVIRON.test(p) || (0, env_dump_1.procGlobMatchesEnviron)(p) || (folder !== null && folder.test(p)));
 }
 // `xargs env`, `parallel env ::: x`: the command is `env` or `printenv` with only options and assignments, so it prints the environment.
 function xargsRunsBareEnv(words, run) {
@@ -7296,6 +7444,33 @@ const AWK_RUNS_ARGV = /\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b/;
 function awkArgvCommands(text, rest, ctx, run, x) {
     if (AWK_RUNS_ARGV.test(text) && /\b(?:ARGV|ARGC)\b/.test(text) && !ctx.backstop)
         scanArgvForCommands(rest, ctx, run, x);
+    if (env_dump_1.AWK_STARTS_COMMAND.test(text)) {
+        awkEnvPrinterWords(text, rest, ctx, run);
+        if (env_dump_1.CODE_READS_ENVIRONMENT.test(text))
+            assignedEnvPrinters(x, ctx, run);
+    }
+}
+// A value assigned on the command line itself (`X=env awk 'BEGIN{system(ENVIRON["X"])}'`) reaches code that reads its environment: a value that is
+// the environment printer, or a command line that holds it, is a command that code may run.
+function assignedEnvPrinters(x, ctx, run) {
+    for (const values of x.env.values())
+        if (values !== null)
+            for (const v of values)
+                if ((0, env_dump_1.mayRunEnvPrinter)(v))
+                    evalShell(v, childCtx(ctx), run);
+}
+// A program that can start a command may run any word of its command line: an ARGV word, a `-v NAME=VALUE` or `NAME=VALUE` value. A word that
+// is the environment printer (`env`, `printenv`, alone or with options) is that command, even by itself (`awk 'BEGIN{system(ARGV[1])}' env`).
+function awkEnvPrinterWords(program, rest, ctx, run) {
+    for (const a of rest) {
+        // The program text is code (it may say `env` in a string), not a word it runs.
+        if (a.text === null || a.text === program)
+            continue;
+        const m = /^(?:-v|--assign=)?(?:[A-Za-z_][A-Za-z0-9_]*=)?([\s\S]*)$/.exec(a.text);
+        const value = a.text.startsWith('-') && !/^-v[\s\S]|^--assign=/.test(a.text) ? '' : (m ? m[1] : a.text);
+        if ((0, env_dump_1.mayRunEnvPrinter)(value))
+            evalShell(value, childCtx(ctx), run);
+    }
 }
 function awkProgram(rest, ctx, run, x) {
     const vf = new Set(['-F', '-v', '-W', '--field-separator', '--assign', '-i', '-l', '--include', '--load']);
@@ -10393,7 +10568,11 @@ function handleFind(rest, ctx, run, x) {
         const samples = (0, tables_1.secretSamples)(run.home, cwdsList(ctx));
         for (const n of names) {
             const re = patternToRegex(n.replace(/^\*\*\//, ''), false);
-            if (samples.some((smp) => (re.test(path.posix.basename(smp)) || re.test(smp)) && isSecretPath(smp, run))) {
+            const named = samples.filter((smp) => (re.test(path.posix.basename(smp)) || re.test(smp)) && isSecretPath(smp, run));
+            if (named.length > 0) {
+                // `find /proc/self/task -name environ -exec cat {} +`: the process files are what the name reaches (the keyed hook keeps this reason).
+                if (named.some((smp) => env_dump_1.PROC_ENVIRON.test(smp)) && starts.some((st) => st.text === null || /^\/proc(?:\/|$)/.test(collapseParents(st.text))))
+                    hit(run, 'S4', 'proc_environ');
                 hit(run, 'S4', 'find_exec_secret_name');
                 break;
             }

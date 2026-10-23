@@ -738,10 +738,31 @@ export function mayPrintEnvironment(command: string): boolean {
   let words = PLAIN_GIT.test(command) && !ENV_FILTER_SECRET_NAME.test(command) ? text.replace(/-env(?![\w])|env-/gi, '') : text;
   words = words.replace(ONE_NAME_READ, (read, name: string) => (ENV_FILTER_SECRET_NAME.test(name) ? read : ''));
   if (ENV_DUMP_WORDS.test(words)) return true;
+  if (globInFolderPart(words)) return true;
   // `ps` with an `e` or `E` anywhere after the first `ps` (an `e` after a later `ps` is after the first one too: one scan, no backtracking).
   const ps = /\bps\b/i.exec(words);
   if (ps && /[eE]/.test(words.slice(ps.index + 2))) return true;
   return EXPANSION.test(text) && NARROWED_WORDS.test(text);
+}
+/**
+ * A path whose folder part holds a glob character can spell `/proc/self/task/1/environ` with neither word in it (`/p*\/self/e*`, `/???c/s*\/e*`,
+ * `/p[r]oc/self/en[v]iron`). A word that starts like a path (`/`, `~`, `.`, `$`), or any word after a `cd` (or when the hook itself runs in `/` or
+ * under `/proc`), is asked of the mapper when a glob sits in a folder of it. One pass over the words, no backtracking.
+ */
+const WORD_BREAK = /[\s=:<>(;&|]+/;
+const GLOB_CHAR = /[*?[]/;
+const PATH_START = /^[/~.$]/;
+const CHANGES_FOLDER = /\b(?:cd|pushd|popd)\b/;
+function runsAtFilesystemRoot(): boolean {
+  try { const cwd = process.cwd(); return cwd === '/' || cwd === '/proc' || cwd.startsWith('/proc/'); } catch { return false; }
+}
+function globInFolderPart(words: string): boolean {
+  const anywhere = CHANGES_FOLDER.test(words) || runsAtFilesystemRoot();
+  for (const word of words.split(WORD_BREAK)) {
+    const slash = word.lastIndexOf('/');
+    if (slash > 0 && (anywhere || PATH_START.test(word)) && GLOB_CHAR.test(word.slice(0, slash))) return true;
+  }
+  return false;
 }
 const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
 
