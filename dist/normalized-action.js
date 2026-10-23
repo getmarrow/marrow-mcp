@@ -1084,7 +1084,8 @@ const LONE_FEEDER_PROGRAMS = new Set(['cat', 'yes', 'pbpaste']);
 const WITHHELD_FEEDER = 'unlisted-feeder';
 /** Whether the program of a stage that feeds a password program is a program name rather than possibly a value. */
 function feederNameKept(program, stage) {
-    if (!KNOWN_FEEDER_PROGRAMS.has(program))
+    // `git.exe`, `npm.cmd` and `wrangler.ps1` are the program they name (Windows spellings keep their names, as on base).
+    if (!KNOWN_FEEDER_PROGRAMS.has(programStem(program).replace(/\.(?:cmd|bat|com)$/, '')))
         return false;
     if (stage.length !== 1)
         return true;

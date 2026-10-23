@@ -112,3 +112,9 @@ Backend: (1) treat `programs[]` marker `unlisted-feeder` as unknown (never lower
 ## 8. Test plan (Phase 2/3)
 
 Unit: `test/n5-redact-keyed.test.js` (feeder rule R1 table, keyed hash states, nonce on failure, domain separation, collisions, forged fields, known-list parity with seatbelt tables, shape asserts). Real-hook wire: scratch harness (not shipped) runs `dist/cli.js` per host event with the repo mock, base and branch, all SEC1 rows (inputs/abuse.tsv, abuse-feeder-Pa-vs-D.tsv) plus the extra rows above; table with columns case | label | base | branch | expected | verdict. Full suites twice (npm ci --ignore-scripts and build under `env -i` with an empty HOME, node --test concurrency 4). `seatbelt-vendor` parity test result reported.
+
+## 9. Amendments made during the build (after the Phase 1 commit; nothing else in this spec changed)
+
+1. K1 compares the program STEM: `programStem` (removes `.sh .bash .py .js .mjs .ts .rb .pl .ps1 .exe`) plus `.cmd .bat .com`, so `git.exe`, `npm.cmd`, `WRANGLER.EXE` keep their names like `git`, `npm`, `wrangler` (found by the adversarial pass: without it a Windows spelling of a dangerous feeder lost its name). K2 (lone word) still needs the exact lower-case name, no extension, no path.
+2. Nested shells: only `bash/sh/zsh -c`, `eval`, `ssh host CMD` and `su -c` are re-parsed by the normalizer. `pwsh -c '...'` and `cmd /c "..."` keep their quoted text as ONE word, so a feeder inside them is not seen: those actions (SEC1 N5) stay bindable with a plain hash that depends on the value. The test file pins this as a KNOWN GAP (follow-up item 4 in section 7); it is not claimed fixed.
+3. The first-word rule runs inside `normalizeInner`, so a withheld word inside `bash -c '...'` sets `truncated` (programs[] of nested text is not listed, as on base).

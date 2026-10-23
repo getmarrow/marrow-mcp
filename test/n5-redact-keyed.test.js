@@ -92,6 +92,8 @@ test('(a) known programs keep their name and their base behaviour (not cut, same
     ['rm -rf x | smbpasswd -s', ['rm', 'smbpasswd']], ['cat x | smbpasswd -s', ['cat', 'smbpasswd']], ['cat | smbpasswd -s', ['cat', 'smbpasswd']],
     ['yes | smbpasswd -s', ['yes', 'smbpasswd']], ['CAT x | smbpasswd -s', ['cat', 'smbpasswd']], ['/bin/cat x | smbpasswd -s', ['cat', 'smbpasswd']],
     ['X=1 cat | smbpasswd -s', ['cat', 'smbpasswd']], ['terraform apply | smbpasswd -s', ['terraform', 'smbpasswd']],
+    ['git.exe push --force | smbpasswd -s', ['git.exe', 'smbpasswd']], ['npm.cmd publish | smbpasswd -s', ['npm.cmd', 'smbpasswd']],
+    ['WRANGLER.EXE deploy --env production | smbpasswd -s', ['wrangler.exe', 'smbpasswd']],
   ];
   for (const [command, programs] of kept) {
     const action = bash(command);
@@ -102,7 +104,7 @@ test('(a) known programs keep their name and their base behaviour (not cut, same
 });
 
 test('(a) a lone word is a value unless it is exactly a stdin producer; case games do not leak a case-folded value', () => {
-  for (const word of ['Cat', 'CAT', 'Yes', '/bin/cat', './cat', 'whoami', 'date', 'test', 'echo', 'git', 'rm']) {
+  for (const word of ['Cat', 'CAT', 'Yes', '/bin/cat', './cat', 'whoami', 'date', 'test', 'echo', 'git', 'rm', 'git.exe', 'cat.exe']) {
     const action = bash(`${word} | smbpasswd -s -a u1`);
     assert.ok(!(action.programs || []).some((p) => p === word.toLowerCase().replace(/^.*\//, '')), `${word}: withheld`);
     assert.ok(action.programs.includes('unlisted-feeder'), word);

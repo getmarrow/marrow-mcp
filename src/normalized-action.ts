@@ -1126,7 +1126,8 @@ const WITHHELD_FEEDER = 'unlisted-feeder';
 
 /** Whether the program of a stage that feeds a password program is a program name rather than possibly a value. */
 function feederNameKept(program: string, stage: string[]): boolean {
-  if (!KNOWN_FEEDER_PROGRAMS.has(program)) return false;
+  // `git.exe`, `npm.cmd` and `wrangler.ps1` are the program they name (Windows spellings keep their names, as on base).
+  if (!KNOWN_FEEDER_PROGRAMS.has(programStem(program).replace(/\.(?:cmd|bat|com)$/, ''))) return false;
   if (stage.length !== 1) return true;
   // Alone, only the exact lower-case name of a stdin producer: no path, no other case (`"Cat" | smbpasswd` is a value).
   return LONE_FEEDER_PROGRAMS.has(program) && stage[0] === program;
