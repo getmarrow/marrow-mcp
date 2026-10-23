@@ -339,18 +339,15 @@ function nokeyFallbackKey(home) {
     if (!mayCreate && !(0, node_fs_1.existsSync)(paths(home).target))
         return null;
     let key = null;
-    let absent = false;
     // A plain error (two first starts racing to make the directories: the loser's mkdir finds it made) is tried again;
     // a state that is unsafe, or unusable, is the same on every try (null at once).
-    for (let attempt = 0; attempt < 3 && key === null && !absent; attempt += 1) {
+    for (let attempt = 0; attempt < 3 && key === null; attempt += 1) {
         try {
             key = withLock(home, () => {
                 const { state, target, directory } = readState(home);
                 if (!(0, node_fs_1.existsSync)(target)) {
-                    if (!mayCreate) {
-                        absent = true;
+                    if (!mayCreate)
                         return null;
-                    }
                     writeState(state, target, directory);
                 }
                 return (0, node_crypto_1.createHmac)('sha256', Buffer.from(state.secret, 'base64url')).update(NOKEY_FALLBACK_LABEL).digest();
@@ -361,7 +358,7 @@ function nokeyFallbackKey(home) {
                 break;
         }
     }
-    if (home === undefined && !absent)
+    if (home === undefined)
         nokeyFallbackCache = { key };
     return key;
 }
