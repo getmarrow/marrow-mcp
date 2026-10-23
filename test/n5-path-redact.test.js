@@ -227,6 +227,23 @@ test('R5: long, hostile paths finish fast and give a truncated, bounded result',
   }
 });
 
+test('R5: the scan cost does not grow with the path (a bounded window, not the whole text)', () => {
+  // Best of three, and relative to a path of a fifth of the size: no fixed wall-clock limit that a loaded machine could break.
+  const best = (file) => {
+    let fastest = Infinity;
+    for (let round = 0; round < 3; round += 1) {
+      const started = process.hrtime.bigint();
+      act('Edit', file);
+      fastest = Math.min(fastest, Number(process.hrtime.bigint() - started) / 1e6);
+    }
+    return fastest;
+  };
+  // `eyJ-` repeated is a candidate span start at every fourth character and never completes (a JWT needs its dots).
+  const small = best('eyJ-'.repeat(800));
+  const large = best('eyJ-'.repeat(4000));
+  assert.ok(large < Math.max(small * 12, 40), `16000 characters took ${large.toFixed(1)} ms, 3200 characters ${small.toFixed(1)} ms`);
+});
+
 test('R5: 64+ targets: the first 64 are scanned, the action is truncated, no value is left', () => {
   const tokens = Array.from({ length: 70 }, () => SHAPES.ghp());
   const patch = tokens.map((token) => `*** Update File: /p/${token}.txt`).join('\n');
