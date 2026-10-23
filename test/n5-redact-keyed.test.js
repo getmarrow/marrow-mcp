@@ -275,6 +275,8 @@ test('PowerShell command and script with the same text still share one key (by d
 // ---- key store states: a child process per state (the device salt is cached per process) ----
 
 const CHILD = `
+// The keyed hook allows the no-device-key fallback to make its approval state before it hashes anything.
+require(${JSON.stringify(path.join(ROOT, 'dist/host-approval-state.js'))}).allowNokeyFallbackCreate();
 const { normalizedHookAction } = require(${JSON.stringify(path.join(ROOT, 'dist/normalized-action.js'))});
 const command = process.argv[1];
 const a = normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }, {});

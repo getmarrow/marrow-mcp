@@ -99,7 +99,7 @@ test('K1: a foreign-owner state is refused (owner check)', { skip: typeof proces
 
 test('K1: 8 processes starting at once on one HOME agree on one key and leave one state', async () => {
   const home = freshHome();
-  const code = `const k = require(${JSON.stringify(HAS)}).nokeyFallbackKey(); process.stdout.write(k ? require('node:crypto').createHmac('sha256', k).update('probe').digest('hex') : 'null');`;
+  const code = `const h = require(${JSON.stringify(HAS)}); h.allowNokeyFallbackCreate(); const k = h.nokeyFallbackKey(); process.stdout.write(k ? require('node:crypto').createHmac('sha256', k).update('probe').digest('hex') : 'null');`;
   const run = () => new Promise((resolve) => {
     const child = spawn(process.execPath, ['-e', code], { env: { PATH: PATH_ENV, HOME: home, SBT_PASSWD_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
@@ -127,7 +127,7 @@ fs.mkdirSync = function (target, ...rest) {
   return real.call(this, target, ...rest);
 };`, { mode: 0o600 });
   try {
-    const code = `const k = require(${JSON.stringify(HAS)}).nokeyFallbackKey(); process.stdout.write(k ? 'key' : 'null');`;
+    const code = `const h = require(${JSON.stringify(HAS)}); h.allowNokeyFallbackCreate(); const k = h.nokeyFallbackKey(); process.stdout.write(k ? 'key' : 'null');`;
     for (const [mode, expected] of [['none', 'key'], ['race', 'key'], ['denied', 'null']]) {
       const home = freshHome();
       const run = spawnSync(process.execPath, ['-e', code], { env: { PATH: PATH_ENV, HOME: home, SBT_PASSWD_HOME: home, P1_MODE: mode, NODE_OPTIONS: `--require=${preload}` }, encoding: 'utf8', timeout: 20_000 });
@@ -139,7 +139,7 @@ fs.mkdirSync = function (target, ...rest) {
 
 test('K1: HOME unset does not crash; the key is read from where the state lives', () => {
   const home = freshHome();
-  const code = `const k = require(${JSON.stringify(HAS)}).nokeyFallbackKey(); process.stdout.write(k ? 'key' : 'null');`;
+  const code = `const h = require(${JSON.stringify(HAS)}); h.allowNokeyFallbackCreate(); const k = h.nokeyFallbackKey(); process.stdout.write(k ? 'key' : 'null');`;
   const run = spawnSync(process.execPath, ['-e', code], { env: { PATH: PATH_ENV, SBT_PASSWD_HOME: home }, encoding: 'utf8', timeout: 20_000 });
   assert.equal(run.status, 0);
   assert.match(run.stdout, /^(key|null)$/);
@@ -149,7 +149,8 @@ test('K1: HOME unset does not crash; the key is read from where the state lives'
 // ---------------------------------------------------------------------------------------------------------------
 // The normalizer in a process of its own (HOME and the passwd home are one scratch dir)
 // ---------------------------------------------------------------------------------------------------------------
-const CHILD = `const na = require(${JSON.stringify(NA)});
+const CHILD = `if (process.env.P1_KEYLESS !== '1') require(${JSON.stringify(HAS)}).allowNokeyFallbackCreate(); // the keyed hook allows it; a keyless one does not
+const na = require(${JSON.stringify(NA)});
 const a = na.normalizedHookAction({ tool_name: 'Bash', tool_input: { command: process.argv[1] } });
 const b = na.normalizedHookAction({ tool_name: 'PF', tool_input: { command: process.argv[1] } });
 process.stdout.write(JSON.stringify({ sha: a.tool_input.command_sha256, sha2: b.tool_input.command_sha256, target: require(${JSON.stringify(path.join(ROOT, 'dist', 'hook-contract.js'))}).exactHookTarget({ tool_name: 'Bash', tool_input: { command: process.argv[1] } }) }));`;
@@ -384,4 +385,54 @@ test('F2 abuse: two API keys on one machine and one state never share a hold', (
     assert.deepEqual(one.counts(), { gates: 1, reports: 0, commits: 0 });
     void env;
   } finally { one.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// K4: a machine with no key never gives itself the approval state (the mode resolution reads that file as account evidence)
+// ---------------------------------------------------------------------------------------------------------------
+test('K4: without the keyed opt-in nothing is created and the key is null (nonce, one note); a state made by a keyed process is read, never changed', () => {
+  const command = 'ls Payments-Service-Blue-Green-A1';
+  const fresh = freshHome();
+  fs.writeFileSync(saltFile(fresh), crypto.randomBytes(32), { mode: 0o600 });
+  fs.chmodSync(saltFile(fresh), 0o644); // an unsafe device key: the fallback is the only key there could be
+  runChild(fresh, command, { P1_KEYLESS: '1' }); // the device-key store makes its own receipts directory on a first look (as before)
+  const empty = snapshot(fresh);
+  const keyless = runChild(fresh, command, { P1_KEYLESS: '1' });
+  assert.notEqual(runChild(fresh, command, { P1_KEYLESS: '1' }).out.sha, keyless.out.sha, 'a nonce, not a stable value');
+  assert.equal(keyless.stderr.split('\n').filter((line) => line.includes('private device key')).length, 1, 'one note');
+  assert.deepEqual(snapshot(fresh), empty, 'nothing was created');
+  assert.equal(fs.existsSync(path.join(fresh, '.marrow', 'host-approvals')), false);
+  // A keyed process makes the state and gets the key; a keyless process then reads the same key and changes nothing.
+  const keyedRun = runChild(fresh, command);
+  assert.match(keyedRun.out.sha, /^[0-9a-f]{64}$/);
+  const before = snapshot(fresh);
+  const later = runChild(fresh, command, { P1_KEYLESS: '1' });
+  assert.equal(later.out.sha, keyedRun.out.sha, 'the keyless process reads the keyed one');
+  assert.equal(later.stderr, '', 'no note: the key works');
+  assert.deepEqual(snapshot(fresh), before, 'read only: nothing changed');
+  // An unsafe state is still null for the keyless process, and still changes nothing.
+  fs.chmodSync(stateFile(fresh), 0o666);
+  const unsafe = snapshot(fresh);
+  const refused = runChild(fresh, command, { P1_KEYLESS: '1' });
+  assert.notEqual(refused.out.sha, runChild(fresh, command, { P1_KEYLESS: '1' }).out.sha, 'a nonce again');
+  assert.deepEqual(snapshot(fresh), unsafe);
+});
+
+test('K4: the real keyless hook leaves no approval state behind (so no account evidence is made), with the passwd home usable or not', () => {
+  const PRELOAD = path.join(__dirname, 'support', 'seatbelt-hook-preload.cjs');
+  for (const passwd of ['home', 'missing']) {
+    const home = fs.realpathSync(freshHome());
+    fs.mkdirSync(path.join(home, 'proj'), { mode: 0o700 });
+    const net = path.join(home, '..', `net-${crypto.randomBytes(3).toString('hex')}.log`);
+    for (const command of ['ls -la', 'npm publish', 'git push origin main']) {
+      const event = { hook_event_name: 'PreToolUse', session_id: `k4-${crypto.randomBytes(6).toString('hex')}`, tool_use_id: 't1', tool_name: 'Bash', tool_input: { command }, cwd: path.join(home, 'proj') };
+      const run = spawnSync(process.execPath, ['--require', PRELOAD, CLI, 'claude-pre-action-hook'], {
+        cwd: path.join(home, 'proj'), input: JSON.stringify(event), encoding: 'utf8', timeout: 30_000,
+        env: { PATH: PATH_ENV, HOME: home, SBT_PASSWD_HOME: passwd === 'home' ? home : path.join(home, 'missing-passwd-home'), SBT_NETSPY: net, MARROW_HOOK_BACKGROUND_NUDGE: 'false' },
+      });
+      assert.equal(run.error, undefined);
+      assert.equal(fs.existsSync(net), false, 'no network attempt');
+    }
+    assert.equal(fs.existsSync(path.join(home, '.marrow', 'host-approvals')), false, `${passwd}: no approval state was made`);
+  }
 });

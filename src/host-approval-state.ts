@@ -379,33 +379,50 @@ function keyed(secret: string, value: unknown, length = 64): string {
 
 const NOKEY_FALLBACK_LABEL = 'marrow-nokey-fallback-v1';
 let nokeyFallbackCache: { key: Buffer | null } | null = null;
+let nokeyFallbackMayCreate = false;
+
+/**
+ * Called by the keyed pre-action hook, once an API key is resolved, before it computes anything from an action. Only
+ * then may nokeyFallbackKey create the approval state on a machine that has none: a machine with no key must not give
+ * itself the state, which the mode resolution reads as account evidence (seatbelt-mode host_approvals_state).
+ */
+export function allowNokeyFallbackCreate(): void {
+  nokeyFallbackMayCreate = true;
+}
 
 /**
  * The key that keys the exact-action hashes (normalized-action exactSalt) on a machine whose private device key is
  * unusable: HMAC-SHA256(this state's secret, a fixed label), 32 bytes. The secret is the one that already keys the key
  * refs and the codes of this file, in the same state file, with the same checks as a hold (owner, mode, symlink, size,
- * validity, lock); the file is created here, as a hold creates it, when it does not exist yet, so every later hook
- * process of the machine gets the same key. A hold can only exist where this state is writable, so the key exists
- * exactly where holds exist. Cached per process; null on any error (the caller then keys nothing: a nonce, asked again).
- * Never printed, logged or sent. `home` is a test seam and bypasses the cache.
+ * validity, lock). The file is created here, as a hold creates it, when it does not exist yet and the keyed hook has
+ * allowed it (allowNokeyFallbackCreate), so every later hook process of the machine gets the same key; otherwise a
+ * missing state gives null and nothing is written (not cached). A hold can only exist where this state is writable, so
+ * the key exists exactly where holds exist. Cached per process; null on any error (the caller then keys nothing: a
+ * nonce, asked again). Never printed, logged or sent. `home` is a test seam: it bypasses the cache and may create.
  */
 export function nokeyFallbackKey(home?: string): Buffer | null {
   if (home === undefined && nokeyFallbackCache) return nokeyFallbackCache.key;
+  const mayCreate = home !== undefined || nokeyFallbackMayCreate;
+  if (!mayCreate && !existsSync(paths(home).target)) return null;
   let key: Buffer | null = null;
+  let absent = false;
   // A plain error (two first starts racing to make the directories: the loser's mkdir finds it made) is tried again;
   // a state that is unsafe, or unusable, is the same on every try (null at once).
-  for (let attempt = 0; attempt < 3 && key === null; attempt += 1) {
+  for (let attempt = 0; attempt < 3 && key === null && !absent; attempt += 1) {
     try {
       key = withLock(home, () => {
         const { state, target, directory } = readState(home);
-        if (!existsSync(target)) writeState(state, target, directory);
+        if (!existsSync(target)) {
+          if (!mayCreate) { absent = true; return null; }
+          writeState(state, target, directory);
+        }
         return createHmac('sha256', Buffer.from(state.secret, 'base64url')).update(NOKEY_FALLBACK_LABEL).digest();
       });
     } catch (error) {
       if (error instanceof UnsafeHostApprovalStateError) break;
     }
   }
-  if (home === undefined) nokeyFallbackCache = { key };
+  if (home === undefined && !absent) nokeyFallbackCache = { key };
   return key;
 }
 

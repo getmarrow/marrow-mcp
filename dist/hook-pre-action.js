@@ -40,6 +40,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
 const host_approval_1 = require("./host-approval");
+const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
 const own_server_identity_1 = require("./own-server-identity");
 const normalized_action_1 = require("./normalized-action");
@@ -1252,6 +1253,9 @@ async function runPreActionHook(input, watch) {
     const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
         || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
     const agentId = identity.agent_id;
+    // With a resolved key, the no-device-key fallback may make its approval state (nokeyFallbackKey); with none it never does.
+    if (resolved.apiKey)
+        (0, host_approval_state_1.allowNokeyFallbackCreate)();
     const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
     const loopOperation = {
         sessionId,

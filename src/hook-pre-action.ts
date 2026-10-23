@@ -32,6 +32,7 @@ import {
   type HoldPlan,
   type OwnerLinkOutcome,
 } from './host-approval';
+import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
 import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
@@ -1338,6 +1339,8 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
     || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
   const agentId = identity.agent_id;
+  // With a resolved key, the no-device-key fallback may make its approval state (nokeyFallbackKey); with none it never does.
+  if (resolved.apiKey) allowNokeyFallbackCreate();
   const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
   const loopOperation: LoopGuardOperation = {
     sessionId,

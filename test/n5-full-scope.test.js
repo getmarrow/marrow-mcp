@@ -264,6 +264,8 @@ test('migration: the correlation of a call never equals the one the old plain fo
 // ---- key store states for a BINDABLE action: a child process per state (the device key is cached per process) ----
 
 const CHILD = `
+// The keyed hook allows the no-device-key fallback to make its approval state before it hashes anything.
+require(${JSON.stringify(path.join(ROOT, 'dist/host-approval-state.js'))}).allowNokeyFallbackCreate();
 const { normalizedHookAction } = require(${JSON.stringify(path.join(ROOT, 'dist/normalized-action.js'))});
 const event = { tool_name: 'FooTool', tool_input: { command: process.argv[1] } };
 const a = normalizedHookAction(event, {});
