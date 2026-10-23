@@ -183,10 +183,28 @@ test('R3: a path without a span does not change the truncated state; a path with
 test('straddling the 512-character cut: a token that crosses it is replaced whole, never halved', () => {
   for (const pad of [490, 500, 505, 511, 512, 600]) {
     const secret = SHAPES.ghp();
-    const file = `/${'d'.repeat(pad)}/${secret}.txt`;
+    const file = `/${'z'.repeat(pad)}/${secret}.txt`;
     const action = act('Edit', file);
     const sent = JSON.stringify(action.paths);
     for (let i = 0; i + 6 <= secret.length; i += 1) assert.equal(sent.includes(secret.slice(i, i + 6)), false, `pad ${pad} slice ${i}`);
+    assert.equal(action.truncated, true);
+    // The pad is not a hex run, so the token really does start before the cut and end after it (the test is not vacuous).
+    assert.ok(action.paths[0].startsWith(`/${'z'.repeat(Math.min(pad, 511))}`), `pad ${pad} is kept`);
+  }
+});
+
+test('R5: a token cut by the scan window leaves no part of itself, even after earlier tokens shrank the text', () => {
+  for (const cutAt of [1000, 1008, 1012, 1016, 1020]) {
+    const earlier = [];
+    let text = '';
+    while (text.length < 700) { const token = SHAPES.ghp(); earlier.push(token); text += `/${token}`; }
+    while (text.length + 2 <= cutAt) text += '/q';
+    while (text.length < cutAt) text += 'q';
+    const last = SHAPES.ghp();
+    const file = `${text}/${last}${'/q'.repeat(100)}`;
+    const action = act('Edit', file);
+    const sent = JSON.stringify(action);
+    for (const token of [...earlier, last]) for (let i = 0; i + 6 <= token.length; i += 1) assert.equal(sent.includes(token.slice(i, i + 6)), false, `cut ${cutAt}`);
     assert.equal(action.truncated, true);
   }
 });
@@ -196,7 +214,7 @@ test('R5: long, hostile paths finish fast and give a truncated, bounded result',
   const hostile = [
     'sk-'.repeat(33_000), 'eyJ-'.repeat(25_000), 'ghp_'.repeat(25_000), `${'a'.repeat(100_000)}`, `/${'AKIA'.repeat(25_000)}`, '/p/'.repeat(33_000),
     'sk-'.repeat(5_000), 'eyJ-'.repeat(4_000), 'eyJ.'.repeat(4_000), `${'0'.repeat(30)}x`.repeat(450), `${'ab'.repeat(15)}-`.repeat(500), '9'.repeat(16_000),
-    `/${'d'.repeat(1_200)}/${secret}.txt`, `/${'d'.repeat(1_023)}/${secret}`,
+    `/${'z'.repeat(1_200)}/${secret}.txt`, `/${'z'.repeat(1_023)}/${secret}`,
   ];
   for (const file of hostile) {
     const started = process.hrtime.bigint();
