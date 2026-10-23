@@ -99,6 +99,7 @@ type ToolEvent = {
     tool_name?: unknown;
     tool_input?: unknown;
 };
+export declare const KNOWN_KEY_PREFIX: RegExp;
 /** A value shaped like a key, token or password hash (mixed-case random text, long hex, known prefixes). */
 export declare function looksLikeKey(value: string): boolean;
 type NameClass = 'credential' | 'ambiguous' | 'reference' | 'plain';

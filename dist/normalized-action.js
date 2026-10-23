@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MAX_SCAN_CHARS = void 0;
+exports.KNOWN_KEY_PREFIX = exports.MAX_SCAN_CHARS = void 0;
 exports.looksLikeKey = looksLikeKey;
 exports.classifySecretName = classifySecretName;
 exports.normalizeShellCommand = normalizeShellCommand;
@@ -52,7 +52,16 @@ function sha256(text) {
 // ---------------------------------------------------------------------------
 // Key-shaped values
 // ---------------------------------------------------------------------------
-const KNOWN_KEY_PREFIX = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}$|^github_pat_[A-Za-z0-9_]{20,}$|^(?:sk|pk|rk)[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{12,}$|^xox[abprs]-[A-Za-z0-9-]{10,}$|^AIza[0-9A-Za-z_-]{30,}$|^glpat-[A-Za-z0-9_-]{16,}$|^npm_[A-Za-z0-9]{20,}$|^mrw_[A-Za-z0-9_-]{8,}$|^cfut_[A-Za-z0-9_-]{12,}$|^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/;
+exports.KNOWN_KEY_PREFIX = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}$|^github_pat_[A-Za-z0-9_]{20,}$|^(?:sk|pk|rk)[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{12,}$|^xox[abprs]-[A-Za-z0-9-]{10,}$|^AIza[0-9A-Za-z_-]{30,}$|^glpat-[A-Za-z0-9_-]{16,}$|^npm_[A-Za-z0-9]{20,}$|^mrw_[A-Za-z0-9_-]{8,}$|^cfut_[A-Za-z0-9_-]{12,}$|^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/;
+/**
+ * KNOWN_KEY_PREFIX as spans inside a longer text (an edit path): the same alternatives with their anchors cut off, so
+ * the two cannot drift apart, plus a hex run of 32 or more characters. A span starts at the start of the text or after
+ * any character that is not a letter or digit (`/`, `\`, `.`, `-`, `=`), and its greedy token class ends it at the first
+ * character the class does not hold (the `.` before an extension, `/`, `\`, `?`, `#`, the end).
+ */
+const PATH_KEY_SPAN = new RegExp(`(?<![A-Za-z0-9])(?:${exports.KNOWN_KEY_PREFIX.source.split('|^').map((alt) => alt.replace(/^\^/, '').replace(/\$$/, '')).join('|')}|[0-9A-Fa-f]{32,})`, 'g');
+/** An edit path is scanned for spans on its first characters only, twice the 512 that are sent: the work stays bounded. */
+const PATH_SCAN_CHARS = 1024;
 const PEM = /-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)-----/;
 /** Known formats that only name a key or are public (AWS key, user, group and role ids; publishable keys): the exact pass keeps them. */
 const PUBLIC_KNOWN_KEY = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^pk[-_]/;
@@ -61,7 +70,7 @@ function looksLikeKey(value) {
     const text = value.trim();
     if (!text)
         return false;
-    if (KNOWN_KEY_PREFIX.test(text))
+    if (exports.KNOWN_KEY_PREFIX.test(text))
         return true;
     if (PEM.test(text))
         return true;
@@ -83,7 +92,7 @@ const KEY_SPLIT = /([\s=:,;@/?&'"`()[\]{}<>|!*$])/;
 function redactKeyShapes(text, state) {
     const whole = text.trim();
     if (whole && !/\s/.test(whole) && looksLikeKey(whole)) {
-        if (!KNOWN_KEY_PREFIX.test(whole) && !PEM.test(whole))
+        if (!exports.KNOWN_KEY_PREFIX.test(whole) && !PEM.test(whole))
             return withheld(state, text);
         return state.exact && PUBLIC_KNOWN_KEY.test(whole) ? text : SECRET;
     }
@@ -94,7 +103,7 @@ function redactKeyShapes(text, state) {
     return text.split(KEY_SPLIT).map((part) => {
         if (!looksLikeKey(part))
             return part;
-        if (!KNOWN_KEY_PREFIX.test(part))
+        if (!exports.KNOWN_KEY_PREFIX.test(part))
             return withheld(state, part);
         return state.exact && PUBLIC_KNOWN_KEY.test(part) ? part : SECRET;
     }).join('');
@@ -1346,6 +1355,19 @@ function withoutUserName(path, state) {
     state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
     return `${other[1]}/[user]${path.slice(other[0].length)}`;
 }
+/**
+ * An edit path with each known-format secret span (PATH_KEY_SPAN) replaced by `[secret]`: only the span, so the
+ * extension, `.env.`, `backup-`, the directories and the Windows, `file://` and `~/` forms stay readable for the
+ * service's path classifier. The action is then marked truncated by the caller (it never binds). Only the first 512
+ * characters of a path are sent, and a path longer than the scan window is never bound: it is scanned on the window
+ * without its last run of token characters (a token that began there and was cut), and marked truncated.
+ */
+function redactPathSpans(path, state) {
+    if (path.length <= PATH_SCAN_CHARS)
+        return path.replace(PATH_KEY_SPAN, SECRET);
+    state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
+    return path.slice(0, PATH_SCAN_CHARS).replace(/[A-Za-z0-9_.-]+$/, '').replace(PATH_KEY_SPAN, SECRET);
+}
 // ---------------------------------------------------------------------------
 // Deploy command text (the only command text ever sent)
 // ---------------------------------------------------------------------------
@@ -1808,7 +1830,7 @@ function normalizedOfKind(event, kind, hostToolName, state) {
         if (targets.length > 64)
             state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
         const paths = targets.slice(0, 64).map((path) => {
-            const redacted = redactText(withoutUserName(path, state), state);
+            const redacted = redactPathSpans(redactText(withoutUserName(path, state), state), state);
             if (redacted.length > 512 || redacted.includes(SECRET))
                 state.truncated = true; // exact: n/a (as above)
             return redacted.slice(0, 512);
