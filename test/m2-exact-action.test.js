@@ -461,10 +461,14 @@ test('A4 (unit) + mutants: without a salt exact_hmac is a fresh nonce every time
   assert.equal(norm(bash('wrangler deploy --env production')).tool_input.exact_hmac, undefined);
 });
 
-test('A4 (process): a broken salt store gives a nonce, one stderr note without paths or values, and no crash', () => {
+test('A4 (process): a broken salt store AND an unusable approval state give a nonce, one stderr note without paths or values, and no crash', () => {
   const base = mkdtempSync(join(tmpdir(), 'm2-salt-proc-'));
   try {
     const home = join(base, 'passwd-home');
+    // The approval state of this process's HOME cannot be used either (`.marrow` is a file): no fallback key (P1 F2).
+    const blocked = join(base, 'blocked-home');
+    mkdirSync(blocked, { mode: 0o700 });
+    writeFileSync(join(blocked, '.marrow'), 'x', { mode: 0o600 });
     mkdirSync(join(home, '.marrow', 'seatbelt'), { recursive: true, mode: 0o700 });
     chmodSync(join(home, '.marrow'), 0o700);
     const salt = join(home, '.marrow', 'seatbelt', 'salt');
@@ -474,7 +478,7 @@ test('A4 (process): a broken salt store gives a nonce, one stderr note without p
       const e = { tool_name: 'Bash', tool_input: { command: 'kubectl delete deployment PaymentsServiceBlueGreenA1' } };
       const a = na.normalizedHookAction(e).tool_input.exact_hmac; const b = na.normalizedHookAction(e).tool_input.exact_hmac;
       process.stdout.write(JSON.stringify({ a, b }));`;
-    const run = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, SBT_PASSWD_HOME: home }, encoding: 'utf8', timeout: 20_000 });
+    const run = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, SBT_PASSWD_HOME: home, HOME: blocked }, encoding: 'utf8', timeout: 20_000 });
     assert.equal(run.status, 0, 'no crash');
     const out = JSON.parse(run.stdout);
     assert.match(out.a, /^[0-9a-f]{32}$/);

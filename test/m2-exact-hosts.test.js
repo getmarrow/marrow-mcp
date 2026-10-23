@@ -251,7 +251,7 @@ test('two agents on one machine: agent two never resumes agent one\'s approved h
   } finally { h.cleanup(); }
 });
 
-test('A4 (hosts): with an unsafe salt store no held action is resumed, truncated or not (every text hash is keyed: a nonce); asked again; one note, no path', () => {
+test('A4 (hosts): with an unsafe salt store the approval state keys the hashes: a held action is resumed on the same install, truncated or not; no note (P1 F2)', () => {
   const passwd = mkdtempSync(join(tmpdir(), 'm2-unsafe-passwd-'));
   try {
     mkdirSync(join(passwd, '.marrow', 'seatbelt'), { recursive: true, mode: 0o700 });
@@ -262,26 +262,17 @@ test('A4 (hosts): with an unsafe salt store no held action is resumed, truncated
     for (const spec of [HOSTS[0], HOSTS[1], HOSTS[4]]) {
       const h = harness({ SBT_PASSWD_HOME: passwd });
       try {
-        const command = `kubectl delete deployment ${camel('A')}`;
-        h.setConfig({ runtime: hostRuntime('gate-wait'), status: { 'gate-wait': 'pending' } });
-        const first = h.run(spec.pre, spec.event(command, uid('a-')), spec.env);
-        assert.ok(h.holdFor('gate-wait'), `${spec.host}: held`);
-        h.setConfig({ status: { 'gate-wait': 'approved' }, runtime: hostRuntime('gate-other') });
-        h.run(spec.pre, spec.event(command, uid('a2-')), spec.env);
-        assert.equal(runtimes(h).length, 2, `${spec.host}: a nonce never resumes: asked again`);
-        assert.equal(h.holdFor('gate-wait')?.state, 'open');
-        const notes = `${first.stderr}`.split('\n').filter((line) => line.includes('private device key'));
-        if (spec.host !== 'grok') assert.equal(notes.length <= 1, true, `${spec.host}: at most one note per process`);
-        for (const line of notes) assert.equal(/\/|salt/.test(line), false, 'no path in the note');
-        // An exact (untruncated) action is asked again too: its text hash is keyed as well (a nonce without a safe key,
-        // never the plain hash), so nothing resumes it. Stricter than before (it used to resume); never looser.
-        h.setConfig({ runtime: hostRuntime('gate-plain'), status: { 'gate-plain': 'pending' } });
-        h.run(spec.pre, spec.event('kubectl delete deployment payments-blue-green-a', uid('p-')), spec.env);
-        const before = runtimes(h).length;
-        h.setConfig({ status: { 'gate-plain': 'approved' }, runtime: hostRuntime('gate-never') });
-        h.run(spec.pre, spec.event('kubectl delete deployment payments-blue-green-a', uid('p2-')), spec.env);
-        assert.equal(runtimes(h).length, before + 1, `${spec.host}: an untruncated action is asked again with no safe key`);
-        assert.equal(h.holdFor('gate-plain')?.state, 'open', `${spec.host}: an untruncated hold is not resumed with no safe key`);
+        for (const [receipt, command] of [['gate-wait', `kubectl delete deployment ${camel('A')}`], ['gate-plain', 'kubectl delete deployment payments-blue-green-a']]) {
+          const before = runtimes(h).length;
+          h.setConfig({ runtime: hostRuntime(receipt), status: { [receipt]: 'pending' } });
+          const first = h.run(spec.pre, spec.event(command, uid('a-')), spec.env);
+          assert.ok(h.holdFor(receipt), `${spec.host}: held`);
+          h.setConfig({ status: { [receipt]: 'approved' }, runtime: hostRuntime(`${receipt}-other`) });
+          h.run(spec.pre, spec.event(command, uid('a2-')), spec.env);
+          assert.equal(runtimes(h).length, before + 1, `${spec.host}: the held action is resumed on the same install (no new gate)`);
+          assert.notEqual(h.holdFor(receipt)?.state, 'open', `${spec.host}: released on the approval`);
+          assert.equal(`${first.stderr}`.split('\n').filter((line) => line.includes('private device key')).length, 0, `${spec.host}: no note while the fallback key works`);
+        }
       } finally { h.cleanup(); }
     }
   } finally { rmSync(passwd, { recursive: true, force: true }); }

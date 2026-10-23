@@ -310,7 +310,14 @@ test('key store (bindable action): created once, stable across processes, per in
   assert.notEqual(runChild(home, command).out.sha, first.out.sha);
 });
 
-test('key store (bindable action): unsafe, corrupt, unreadable or unwritable key -> a nonce per call, one note, no plain hash', () => {
+// The approval state of this install cannot be used either (`host-approvals` is a file): no fallback key (P1 F2).
+function blockApprovalState(home) {
+  fs.mkdirSync(path.join(home, '.marrow'), { recursive: true, mode: 0o700 });
+  fs.chmodSync(path.join(home, '.marrow'), 0o700);
+  fs.writeFileSync(path.join(home, '.marrow', 'host-approvals'), 'x', { mode: 0o600 });
+}
+
+test('key store (bindable action): unsafe, corrupt or unreadable device key -> the approval-state fallback key (stable, no note, no plain hash); both unusable -> a nonce per call, one note', () => {
   const command = `ls ${dummy('lower', 12)}`;
   const states = {
     'wrong mode (group-readable)': (dir) => { fs.writeFileSync(path.join(dir, 'salt'), randomBytes(32), { mode: 0o644 }); fs.chmodSync(path.join(dir, 'salt'), 0o644); },
@@ -319,14 +326,27 @@ test('key store (bindable action): unsafe, corrupt, unreadable or unwritable key
     'unreadable': (dir) => { fs.writeFileSync(path.join(dir, 'salt'), randomBytes(32), { mode: 0o000 }); fs.chmodSync(path.join(dir, 'salt'), 0o000); },
     'directory unsafe (group-writable)': (dir) => { fs.writeFileSync(path.join(dir, 'salt'), randomBytes(32), { mode: 0o600 }); fs.chmodSync(dir, 0o770); },
   };
+  const plain = sha256(`marrow-normalized-action-v3\nshell\n${normalizeShellCommand(command).text}`);
   for (const [name, make] of Object.entries(states)) {
+    // The fallback key works: the hash is stable, keyed, never the plain hash, and there is no note.
     const home = freshHome();
     make(seatbeltDir(home));
-    const { out, stderr } = runChild(home, command);
+    const first = runChild(home, command);
+    assert.match(first.out.sha, /^[0-9a-f]{64}$/, name);
+    assert.notEqual(first.out.sha, plain, `${name}: never the plain hash`);
+    assert.equal(first.out.sha, first.out.sha2, `${name}: stable inside the process`);
+    assert.equal(runChild(home, command).out.sha, first.out.sha, `${name}: stable across processes`);
+    assert.notEqual(runChild(freshHome(), command).out.sha, first.out.sha, `${name}: another install has its own key`);
+    assert.equal(first.stderr.split('\n').filter((line) => line.includes('private device key')).length, 0, `${name}: no note while the fallback key works`);
+    // Neither key: a nonce per call, one note, never the plain hash.
+    const blocked = freshHome();
+    make(seatbeltDir(blocked));
+    blockApprovalState(blocked);
+    const { out, stderr } = runChild(blocked, command);
     assert.match(out.sha, /^[0-9a-f]{64}$/, name);
-    assert.notEqual(out.sha, sha256(`marrow-normalized-action-v3\nshell\n${normalizeShellCommand(command).text}`), `${name}: never the plain hash`);
+    assert.notEqual(out.sha, plain, `${name}: never the plain hash`);
     assert.notEqual(out.sha, out.sha2, `${name}: a nonce per call`);
-    assert.notEqual(runChild(home, command).out.sha, out.sha, `${name}: nothing matches across processes`);
+    assert.notEqual(runChild(blocked, command).out.sha, out.sha, `${name}: nothing matches across processes`);
     const notes = stderr.split('\n').filter((line) => line.includes('private device key'));
     assert.equal(notes.length, 1, `${name}: one note per process`);
     assert.equal(/\/|salt/.test(notes[0]), false, `${name}: no path in the note`);

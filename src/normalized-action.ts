@@ -1384,13 +1384,12 @@ function withoutUserName(path: string, state: Exactness): string {
 /**
  * An edit path with each known-format secret span (PATH_KEY_SPAN) replaced by `[secret]`: only the span, so the
  * extension, `.env.`, `backup-`, the directories and the Windows, `file://` and `~/` forms stay readable for the
- * service's path classifier. The action is then marked truncated by the caller (it never binds). Only the first 512
- * characters of a path are sent, and a path longer than the scan window is never bound: it is scanned on the window
- * without its last run of token characters (a token that began there and was cut), and marked truncated.
+ * service's path classifier. The caller marks the action truncated when a span was replaced or the path is longer than
+ * the scan window (it never binds). Only the first 512 characters of a path are sent: a path longer than the window is
+ * scanned on the window without its last run of token characters (a token that began there and was cut).
  */
-function redactPathSpans(path: string, state: Exactness): string {
+function redactPathSpans(path: string): string {
   if (path.length <= PATH_SCAN_CHARS) return path.replace(PATH_KEY_SPAN, SECRET);
-  state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
   return path.slice(0, PATH_SCAN_CHARS).replace(/[A-Za-z0-9_.-]+$/, '').replace(PATH_KEY_SPAN, SECRET);
 }
 
@@ -1537,7 +1536,7 @@ const TEXT_MAC_DOMAIN = 'marrow-text-hmac-v2';
 const TARGET_MAC_DOMAIN = 'marrow-hook-target-v2';
 /** Raw canonical input past this is never keyed: a nonce instead (it matches nothing). */
 const MAX_RAW_EXACT_CHARS = 1_048_576;
-const EXACT_SALT_NOTE = 'Marrow: the private device key for exact action matching is unavailable or unsafe on this machine, so a held action is asked again instead of resumed on retry. Owner: run the Marrow installer doctor command in a terminal.';
+const EXACT_SALT_NOTE = 'Marrow: neither the private device key nor the local approval state for exact action matching is usable on this machine, so a held action is asked again instead of resumed on retry. Owner: run the Marrow installer doctor command in a terminal.';
 
 /** Canonical JSON (keys sorted at every depth), or null past 1 MB, past 64 levels, or when it cannot be serialized. */
 function canonicalJson(value: unknown): string | null {
@@ -1672,13 +1671,24 @@ function exactMaterial(event: ToolEvent, kind: NormalizedHookAction['tool_kind']
 
 let saltNoted = false;
 
-/** The device salt (seatbelt store, same checks), or null with one stderr line per process (no path, no value). */
+/**
+ * The device salt (the same checks as the receipts store). Without one, the fallback key of the host-approval state
+ * (nokeyFallbackKey: where a hold can be made, the same hashes stay stable, so an approved action is still reported and
+ * committed). null, with one stderr line per process (no path, no value), only when neither key is usable.
+ */
 function exactSalt(): Buffer | null {
   let salt: Buffer | null = null;
   try {
     salt = (require('./seatbelt/record') as typeof import('./seatbelt/record')).deviceSalt();
   } catch {
     salt = null;
+  }
+  if (!salt) {
+    try {
+      salt = (require('./host-approval-state') as typeof import('./host-approval-state')).nokeyFallbackKey();
+    } catch {
+      salt = null;
+    }
   }
   if (!salt && !saltNoted) {
     saltNoted = true;
@@ -1734,9 +1744,9 @@ export function keyedTargetHash(parts: unknown): string | null {
  * credentials replaced, so two actions that differ anywhere else never share a
  * correlation, hold or key, and a retry that differs only in a certain
  * credential (an OTP) still does. A placeholder keys the raw input (up to
- * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a missing or
- * unsafe salt give a random nonce: the action matches nothing (it is asked
- * again). `salt` is a test seam (undefined: the device salt).
+ * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a machine with neither a
+ * device salt nor a usable host-approval state (exactSalt) give a random nonce: the action matches
+ * nothing (it is asked again). `salt` is a test seam (undefined: the device salt).
  */
 export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: number; salt?: Buffer | null } = {}): NormalizedHookAction {
   const deadline = options.deadlineAt ?? Date.now() + DEFAULT_NORMALIZE_MS;
@@ -1847,8 +1857,8 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     const targets = toolTargetPaths(event as Parameters<typeof toolTargetPaths>[0]);
     if (targets.length > 64) state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
     const paths = targets.slice(0, 64).map((path) => {
-      const redacted = redactPathSpans(redactText(withoutUserName(path, state), state), state);
-      if (redacted.length > 512 || redacted.includes(SECRET)) state.truncated = true; // exact: n/a (as above)
+      const redacted = redactPathSpans(redactText(withoutUserName(path, state), state));
+      if (redacted.length > 512 || redacted.includes(SECRET) || path.length > PATH_SCAN_CHARS) state.truncated = true; // exact: n/a (as above)
       return redacted.slice(0, 512);
     });
     return inputAction({ tool_kind: 'edit', tool_name: hostToolName, paths }, event.tool_input, state);

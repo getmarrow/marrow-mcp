@@ -95,6 +95,16 @@ export type HoldRecord = {
 export declare class UnsafeHostApprovalStateError extends Error {
     constructor();
 }
+/**
+ * The key that keys the exact-action hashes (normalized-action exactSalt) on a machine whose private device key is
+ * unusable: HMAC-SHA256(this state's secret, a fixed label), 32 bytes. The secret is the one that already keys the key
+ * refs and the codes of this file, in the same state file, with the same checks as a hold (owner, mode, symlink, size,
+ * validity, lock); the file is created here, as a hold creates it, when it does not exist yet, so every later hook
+ * process of the machine gets the same key. A hold can only exist where this state is writable, so the key exists
+ * exactly where holds exist. Cached per process; null on any error (the caller then keys nothing: a nonce, asked again).
+ * Never printed, logged or sent. `home` is a test seam and bypasses the cache.
+ */
+export declare function nokeyFallbackKey(home?: string): Buffer | null;
 export type HoldScope = {
     apiKey: string;
     baseUrl: string;

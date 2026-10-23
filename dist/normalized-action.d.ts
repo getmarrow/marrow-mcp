@@ -150,9 +150,9 @@ export declare function keyedTargetHash(parts: unknown): string | null;
  * credentials replaced, so two actions that differ anywhere else never share a
  * correlation, hold or key, and a retry that differs only in a certain
  * credential (an OTP) still does. A placeholder keys the raw input (up to
- * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a missing or
- * unsafe salt give a random nonce: the action matches nothing (it is asked
- * again). `salt` is a test seam (undefined: the device salt).
+ * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a machine with neither a
+ * device salt nor a usable host-approval state (exactSalt) give a random nonce: the action matches
+ * nothing (it is asked again). `salt` is a test seam (undefined: the device salt).
  */
 export declare function normalizedHookAction(event: ToolEvent, options?: {
     deadlineAt?: number;

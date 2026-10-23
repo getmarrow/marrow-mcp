@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UnsafeHostApprovalStateError = exports.APPROVAL_CODE = exports.HOLD_RECORD_TTL_MS = void 0;
+exports.nokeyFallbackKey = nokeyFallbackKey;
 exports.recordHold = recordHold;
 exports.boundSessionId = boundSessionId;
 exports.findHolds = findHolds;
@@ -308,6 +309,36 @@ function writeState(state, target, directory) {
 }
 function keyed(secret, value, length = 64) {
     return (0, node_crypto_1.createHmac)('sha256', Buffer.from(secret, 'base64url')).update(JSON.stringify(value)).digest('hex').slice(0, length);
+}
+const NOKEY_FALLBACK_LABEL = 'marrow-nokey-fallback-v1';
+let nokeyFallbackCache = null;
+/**
+ * The key that keys the exact-action hashes (normalized-action exactSalt) on a machine whose private device key is
+ * unusable: HMAC-SHA256(this state's secret, a fixed label), 32 bytes. The secret is the one that already keys the key
+ * refs and the codes of this file, in the same state file, with the same checks as a hold (owner, mode, symlink, size,
+ * validity, lock); the file is created here, as a hold creates it, when it does not exist yet, so every later hook
+ * process of the machine gets the same key. A hold can only exist where this state is writable, so the key exists
+ * exactly where holds exist. Cached per process; null on any error (the caller then keys nothing: a nonce, asked again).
+ * Never printed, logged or sent. `home` is a test seam and bypasses the cache.
+ */
+function nokeyFallbackKey(home) {
+    if (home === undefined && nokeyFallbackCache)
+        return nokeyFallbackCache.key;
+    let key = null;
+    try {
+        key = withLock(home, () => {
+            const { state, target, directory } = readState(home);
+            if (!(0, node_fs_1.existsSync)(target))
+                writeState(state, target, directory);
+            return (0, node_crypto_1.createHmac)('sha256', Buffer.from(state.secret, 'base64url')).update(NOKEY_FALLBACK_LABEL).digest();
+        });
+    }
+    catch {
+        key = null;
+    }
+    if (home === undefined)
+        nokeyFallbackCache = { key };
+    return key;
 }
 function keyRef(state, scope) {
     return keyed(state.secret, ['key', scope.apiKey, scope.baseUrl.replace(/\/+$/, ''), scope.agentId || null], 32);

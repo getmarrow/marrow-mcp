@@ -377,6 +377,34 @@ function keyed(secret: string, value: unknown, length = 64): string {
   return createHmac('sha256', Buffer.from(secret, 'base64url')).update(JSON.stringify(value)).digest('hex').slice(0, length);
 }
 
+const NOKEY_FALLBACK_LABEL = 'marrow-nokey-fallback-v1';
+let nokeyFallbackCache: { key: Buffer | null } | null = null;
+
+/**
+ * The key that keys the exact-action hashes (normalized-action exactSalt) on a machine whose private device key is
+ * unusable: HMAC-SHA256(this state's secret, a fixed label), 32 bytes. The secret is the one that already keys the key
+ * refs and the codes of this file, in the same state file, with the same checks as a hold (owner, mode, symlink, size,
+ * validity, lock); the file is created here, as a hold creates it, when it does not exist yet, so every later hook
+ * process of the machine gets the same key. A hold can only exist where this state is writable, so the key exists
+ * exactly where holds exist. Cached per process; null on any error (the caller then keys nothing: a nonce, asked again).
+ * Never printed, logged or sent. `home` is a test seam and bypasses the cache.
+ */
+export function nokeyFallbackKey(home?: string): Buffer | null {
+  if (home === undefined && nokeyFallbackCache) return nokeyFallbackCache.key;
+  let key: Buffer | null = null;
+  try {
+    key = withLock(home, () => {
+      const { state, target, directory } = readState(home);
+      if (!existsSync(target)) writeState(state, target, directory);
+      return createHmac('sha256', Buffer.from(state.secret, 'base64url')).update(NOKEY_FALLBACK_LABEL).digest();
+    });
+  } catch {
+    key = null;
+  }
+  if (home === undefined) nokeyFallbackCache = { key };
+  return key;
+}
+
 export type HoldScope = { apiKey: string; baseUrl: string; agentId?: string | null };
 
 function keyRef(state: ApprovalState, scope: HoldScope): string {

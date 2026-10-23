@@ -360,7 +360,7 @@ test('key store: concurrent first start: one key, every process agrees', () => {
   assert.deepEqual(leftovers, []);
 });
 
-test('key store: unsafe or unreadable key -> a nonce per call (asked again), never the plain hash', () => {
+test('key store: unsafe or unreadable device key -> the approval-state fallback key (stable); with the state unusable too -> a nonce per call (asked again), never the plain hash', () => {
   const states = {
     'wrong mode (group-readable)': (dir) => { fs.writeFileSync(path.join(dir, 'salt'), randomBytes(32), { mode: 0o644 }); fs.chmodSync(path.join(dir, 'salt'), 0o644); },
     'corrupt (short)': (dir) => { fs.writeFileSync(path.join(dir, 'salt'), randomBytes(16), { mode: 0o600 }); },
@@ -372,13 +372,21 @@ test('key store: unsafe or unreadable key -> a nonce per call (asked again), nev
   for (const [name, make] of Object.entries(states)) {
     const home = freshHome();
     make(seatbeltDir(home));
-    const { out } = runChild(home, PF);
+    const first = runChild(home, PF);
+    assert.equal(first.out.truncated, true, name);
+    assert.match(first.out.sha, /^[0-9a-f]{64}$/, name);
+    assert.notEqual(first.out.sha, plainShellHash(PF), `${name}: never the plain hash`);
+    assert.equal(first.out.sha, first.out.sha2, `${name}: stable inside the process (fallback key)`);
+    assert.equal(runChild(home, PF).out.sha, first.out.sha, `${name}: stable across processes (fallback key)`);
+    const blocked = freshHome();
+    make(seatbeltDir(blocked));
+    fs.writeFileSync(path.join(blocked, '.marrow', 'host-approvals'), 'x', { mode: 0o600 });
+    const { out } = runChild(blocked, PF);
     assert.equal(out.truncated, true, name);
     assert.match(out.sha, /^[0-9a-f]{64}$/, name);
     assert.notEqual(out.sha, plainShellHash(PF), `${name}: never the plain hash`);
     assert.notEqual(out.sha, out.sha2, `${name}: a nonce per call`);
-    const again = runChild(home, PF);
-    assert.notEqual(again.out.sha, out.sha, `${name}: nothing matches across processes`);
+    assert.notEqual(runChild(blocked, PF).out.sha, out.sha, `${name}: nothing matches across processes`);
   }
 });
 
