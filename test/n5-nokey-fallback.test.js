@@ -114,6 +114,29 @@ test('K1: 8 processes starting at once on one HOME agree on one key and leave on
   assert.equal(fs.statSync(stateFile(home)).mode & 0o777, 0o600);
 });
 
+test('K1: a first start that loses the directory race (EEXIST) still gets the key; a directory that can never be made gives null at once', () => {
+  const preload = path.join(os.tmpdir(), `marrow-p1-mkdir-race-${crypto.randomBytes(4).toString('hex')}.cjs`);
+  // race: the first mkdirSync of `host-approvals` makes the directory and then fails EEXIST, as for the loser of a race.
+  // denied: every mkdirSync of it fails EACCES and makes nothing.
+  fs.writeFileSync(preload, `const fs = require('node:fs'); const real = fs.mkdirSync; let lost = process.env.P1_MODE === 'race';
+fs.mkdirSync = function (target, ...rest) {
+  if (String(target).endsWith('host-approvals')) {
+    if (process.env.P1_MODE === 'denied') { const error = new Error('EACCES: permission denied, mkdir'); error.code = 'EACCES'; throw error; }
+    if (lost) { lost = false; real.call(this, target, ...rest); const error = new Error('EEXIST: file already exists, mkdir'); error.code = 'EEXIST'; throw error; }
+  }
+  return real.call(this, target, ...rest);
+};`, { mode: 0o600 });
+  try {
+    const code = `const k = require(${JSON.stringify(HAS)}).nokeyFallbackKey(); process.stdout.write(k ? 'key' : 'null');`;
+    for (const [mode, expected] of [['none', 'key'], ['race', 'key'], ['denied', 'null']]) {
+      const home = freshHome();
+      const run = spawnSync(process.execPath, ['-e', code], { env: { PATH: PATH_ENV, HOME: home, SBT_PASSWD_HOME: home, P1_MODE: mode, NODE_OPTIONS: `--require=${preload}` }, encoding: 'utf8', timeout: 20_000 });
+      assert.equal(run.status, 0);
+      assert.equal(run.stdout, expected, mode);
+    }
+  } finally { fs.rmSync(preload, { force: true }); }
+});
+
 test('K1: HOME unset does not crash; the key is read from where the state lives', () => {
   const home = freshHome();
   const code = `const k = require(${JSON.stringify(HAS)}).nokeyFallbackKey(); process.stdout.write(k ? 'key' : 'null');`;

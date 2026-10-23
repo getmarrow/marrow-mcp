@@ -196,7 +196,8 @@ test('straddling the 512-character cut: a token that crosses it is replaced whol
 test('R5: a token cut by the scan window leaves no part of itself, even after earlier tokens shrank the text', () => {
   for (const cutAt of [1000, 1008, 1012, 1016, 1020]) {
     const earlier = [];
-    let text = '';
+    // The dot keeps the whole path from being one word (a path of only letters, digits and `/_-` is withheld whole by the older word rule).
+    let text = '/a.b';
     while (text.length < 700) { const token = SHAPES.ghp(); earlier.push(token); text += `/${token}`; }
     while (text.length + 2 <= cutAt) text += '/q';
     while (text.length < cutAt) text += 'q';

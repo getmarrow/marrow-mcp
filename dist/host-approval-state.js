@@ -325,16 +325,21 @@ function nokeyFallbackKey(home) {
     if (home === undefined && nokeyFallbackCache)
         return nokeyFallbackCache.key;
     let key = null;
-    try {
-        key = withLock(home, () => {
-            const { state, target, directory } = readState(home);
-            if (!(0, node_fs_1.existsSync)(target))
-                writeState(state, target, directory);
-            return (0, node_crypto_1.createHmac)('sha256', Buffer.from(state.secret, 'base64url')).update(NOKEY_FALLBACK_LABEL).digest();
-        });
-    }
-    catch {
-        key = null;
+    // A plain error (two first starts racing to make the directories: the loser's mkdir finds it made) is tried again;
+    // a state that is unsafe, or unusable, is the same on every try (null at once).
+    for (let attempt = 0; attempt < 3 && key === null; attempt += 1) {
+        try {
+            key = withLock(home, () => {
+                const { state, target, directory } = readState(home);
+                if (!(0, node_fs_1.existsSync)(target))
+                    writeState(state, target, directory);
+                return (0, node_crypto_1.createHmac)('sha256', Buffer.from(state.secret, 'base64url')).update(NOKEY_FALLBACK_LABEL).digest();
+            });
+        }
+        catch (error) {
+            if (error instanceof UnsafeHostApprovalStateError)
+                break;
+        }
     }
     if (home === undefined)
         nokeyFallbackCache = { key };
