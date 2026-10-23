@@ -118,3 +118,89 @@ Unit: `test/n5-redact-keyed.test.js` (feeder rule R1 table, keyed hash states, n
 1. K1 compares the program STEM: `programStem` (removes `.sh .bash .py .js .mjs .ts .rb .pl .ps1 .exe`) plus `.cmd .bat .com`, so `git.exe`, `npm.cmd`, `WRANGLER.EXE` keep their names like `git`, `npm`, `wrangler` (found by the adversarial pass: without it a Windows spelling of a dangerous feeder lost its name). K2 (lone word) still needs the exact lower-case name, no extension, no path.
 2. Nested shells: only `bash/sh/zsh -c`, `eval`, `ssh host CMD` and `su -c` are re-parsed by the normalizer. `pwsh -c '...'` and `cmd /c "..."` keep their quoted text as ONE word, so a feeder inside them is not seen: those actions (SEC1 N5) stay bindable with a plain hash that depends on the value. The test file pins this as a KNOWN GAP (follow-up item 4 in section 7); it is not claimed fixed.
 3. The first-word rule runs inside `normalizeInner`, so a withheld word inside `bash -c '...'` sets `truncated` (programs[] of nested text is not listed, as on base).
+
+## 10. BUILD 2 AMENDMENT: full scope (every hooked tool, unknown tool names, Codex, Cursor). Written and committed BEFORE any build-2 code.
+
+Base for this amendment: build 1 tip 4e6b5c2 (on b8973d3a). Sections 0-9 stay in force unless this section says otherwise. Dummy secrets are made at run time and never printed; rows record yes/no and counts.
+
+### 10.0 What build 1 left (re-measured on 4e6b5c2 with the real normalizer, dummy secrets of three shapes)
+
+- All 11 G-1 tools and the unknown-name tool are BINDABLE on 4e6b5c2 with a PLAIN `input_sha256` or `command_sha256` that depends on the secret (WebFetch, Workflow, KillShell, SendMessage, CronCreate, PushNotification, ExitPlanMode, SlashCommand: `input_sha256`; RemoteTrigger, BashOutput, ToolSearch, FooTool: `command_sha256`). Also NotebookEdit, Skill, TodoWrite, TaskOutput, Agent and Edit carry a plain input hash of text that may hold a secret.
+- ToolSearch (`query`) and any unknown tool with a `command` field (FooTool) put the clear or case-folded first word of the field into `programs[]`. So do Read/Glob/Grep/LS (path basename), WebSearch (query), Task (description) on every build including base: the normalizer reads the text of ANY tool that is not file-editing or a local task tool as a shell command (`isShellGovernedTool`: "not a file-edit tool and not a local task tool"), so the first word of a free-text field is listed as a "program".
+- The holds `correlation` (state.json) and the lifecycle `correlation_id` (sent to the backend in POST /v1/agent/integrations/events) are `sha256` over [session, tool, identity{kind, programs, paths, input}] where `input` is the tool_input above, so they inherit every one of those dependences.
+- `exactHookTarget` (hold.target in state.json, never sent) is an unkeyed sha256 over the tool name, the nested `serverName/server_name/toolName/tool_name` input fields and the run options as sent.
+
+### 10.1 Scope: one shared path, no per-tool list
+
+Every host event reaches the wire, state.json, the correlation and the seatbelt receipt key through `normalizedHookAction` (hook-pre-action.ts Claude/Codex/Cursor, hook.ts PostToolUse, host-approval.ts PostToolBatch, hook-contract.ts `actionIdentity`, seatbelt/record.ts `actionKey`). The three rules below sit in that path (and in `exactHookTarget`), so a tool added later is covered without a list, and an unknown tool name is covered because nothing keys on the name.
+
+### 10.2 Rule U: EVERY text hash is the per-install keyed MAC (replaces section 2's "bindable actions keep the plain hash")
+
+For every action that carries `tool_input.command_sha256` or `tool_input.input_sha256` (shell, mcp, edit, other; truncated or not; every tool name) the value is `HMAC-SHA256(K_text, "marrow-text-hmac-v2\n" + kind + "\n" + JSON(tool name) + "\n" + preimage)` as 64 hex, with the same K_text, the same preimage, the same output format as build 1. No new wire field.
+
+Exception E1 (the only one): when the action carries the clear deploy `command` text (`deployText !== null && deployText === text`, the grammar-bound deploy form the service judges word for word) the hash stays the plain hash over text that is itself sent in clear, so it exposes nothing new and every learned/deploy approval keeps matching as on b8973d3a. E1 additionally requires that the run options of a Monitor/PowerShell call (part of the preimage) are numbers or booleans; any other type (a string, an object) takes the keyed form.
+
+Decision on plain bindable hashes of non-command inputs (the build 1 known gap M1): they are KEYED, bindable still. Reasons: (1) a free-text field (prompt, message, plan, query, filter, shell_id, script, url, new_string, content) cannot be proven secret-free: the redactor knows names and shapes, not intent; (2) a keyed hash keeps binding where binding is safe: the key is stable on one install, so the same call on the same install resumes the same hold and matches the same learned approval; (3) cost, stated plainly: an approval learned on one machine no longer matches on another (the backend key now differs per install), an approval learned BEFORE this change never matches again (the user is asked once more), and a machine with no usable device key asks every time (below). Each of these is MORE asks, never fewer, so none is looser than b8973d3a. This is the owner-visible behaviour change of the hotfix; the CHANGELOG says so.
+
+Key states (extends the section 2 table; nothing is weakened):
+| state | result for a bindable action (new) | result for a truncated action (as build 1) |
+|---|---|---|
+| key present and safe | keyed 64 hex, stable | keyed 64 hex + exact_hmac |
+| key missing | created once (O_EXCL temp file + link), then keyed | same |
+| unreadable, wrong mode, symlink, other uid, wrong size, unsafe dir, read-only home, no `getuid` | random 64-hex nonce per call: the action matches no hold and no approval and is asked again. NEVER the plain hash, never a fixed value | nonce (as build 1) |
+| rotation (file deleted) | every keyed value changes; every old hold and learned approval stops matching (asked again) | same |
+Consequence to state in RESULT: on a machine whose device key cannot be made or read, no hash-bound step resumes (approval retry, post-tool link) until the owner fixes the key store; actions are still gated by the same decision, they are only never resumed from a hold. The one stderr line per process (no path, no value) names this; its text is updated from "a held action that hides a value" to every held action.
+
+### 10.3 Rule P (programs[] for tools that are not shell tools)
+
+A shell tool is a tool whose text IS a shell command: after `normalizeHookToolName`, one of `bash, run_terminal_command, shell, execute_command, run_shell_command` (Bash, Codex exec/exec_command, Cursor Shell, Gemini/Cline/Cursor terminal tools) or `monitor`, `powershell`. For every other tool whose text is read as shell text (the 11 G-1 tools that are shell-kind, ToolSearch, BashOutput, RemoteTrigger, WebSearch, Read, Glob, Grep, LS, Task, and any unknown tool name with a `command`, `cmd`, `query`, `path`, `url`, `name` or `description` field), the program word of EVERY stage must be a known program stem (the section 1 set `KNOWN_FEEDER_PROGRAMS`, Windows spellings by stem, exact as build 1) to be listed. Any other word that base would have listed is replaced by the constant `unlisted-program` (deduplicated; derived from nothing about the word; matches `^[a-z0-9][a-z0-9._+-]{0,63}$`; not key-shaped). The action is NOT marked truncated: the text hash is keyed (rule U), so binding is safe and unchanged in kind.
+- A known word (`git`, `npm`, `wrangler`, `rm`, ...) keeps its name, so `FooTool {command: "git push --force"}` lists `git` exactly as base: classification inputs for dangerous programs are unchanged.
+- Genuine shell tools: unchanged from build 1 (rule R1 for feeder stages only). Not widened to every unknown word of a Bash command: that would change programs[] for ordinary commands, a classification input the backend reads (follow-up item to decide with the backend).
+- Different unknown words never merge: the keyed hash of the full text separates them.
+- Residual (stated): a secret that equals a known program name is sent as that name (a dictionary word; no hash protects it).
+
+### 10.4 Rule T: `exactHookTarget` is keyed
+
+`hold.target` becomes `HMAC-SHA256(K_text, "marrow-hook-target-v2\n" + JSON(parts))` over the same parts as today (tool name, adapter flag, nested server/tool fields, MCP context, run-options key). No usable key: the existing "unmatched" nonce (the hold is never claimed). The run-options key itself stays an internal plain hash that only ever sits inside a keyed preimage.
+
+### 10.5 Collision rules (binding; each has a test and table rows)
+
+- Same preimage, so any action pair that differed outside a secret on b8973d3a still differs (the MAC is injective over distinct preimages up to 2^-256). Tool name and kind are inside the MAC: the same text under ToolSearch.query vs FooTool.command, Bash vs Monitor, Agent vs Task, WebFetch vs Workflow differ.
+- Actions that differ only in a secret the redactor replaces still share keys (as base); actions that differ in a free-text secret the redactor does not see now differ by a keyed value (as they differed by a plain value on base).
+- `rm -rf x | smbpasswd` vs `cat x | smbpasswd` still differ (R1 names, text hash). `unlisted-program` withheld words differ by text hash.
+- Forged client fields: `tool_input` fields named `command_sha256`, `input_sha256`, `exact_hmac`, `programs`, `truncated`, `risk_level`, `tool_kind` sent BY the tool are data inside the hashed text, never read as normalizer output.
+- A secret never appears in a key, a log, state.json, stdout/stderr, or the key store path in an error.
+
+### 10.6 Migration (state and test it; fail closed)
+
+| stored thing | old value | new action | result |
+|---|---|---|---|
+| hold in host-approvals state.json (written by b8973d3a or 4e6b5c2) | correlation over plain `command_sha256`/`input_sha256`, target plain, exact_hmac `v1` or `v2` | keyed hashes, keyed target | different correlation, different target: never claimed; the retry makes a new gate request and a new hold (asked again). Old holds expire by TTL. `STATE_VERSION` unchanged |
+| backend learned/task approval on `fleet_action_key` or stored `normalized_action_hash` made from an old plain hash | plain hash | keyed hash | never matches again (asked again): stricter. The old stored key is a secret-dependent unkeyed value that stays in the backend: follow-up to purge |
+| deploy approval (E1) | plain hash + clear `command` | same | unchanged, still matches |
+| seatbelt receipts (local, `actionKey`) | key over the normalized action with plain hashes | key over keyed hashes | old receipts never match new keys (local audit trail only) |
+
+### 10.7 Round-1 consumers added to section 3
+
+| # | consumer | what changes | test |
+|---|---|---|---|
+| C11 | lifecycle events POST /v1/agent/integrations/events (`correlation_id`) and the spool on disk | correlation inherits keyed hashes | capture every request body of each hook run; count clear / folded / dependent; scan the spool |
+| C12 | PostToolUse / PostToolBatch settle (host-approval POST body `normalized_action`) | same function | host-approval body scan, hold-resume flow |
+| C13 | seatbelt `actionKey` (local receipts) | keyed hashes inside the key material | receipts scan; seatbelt tests |
+| C14 | session loop guard (state.json, in-file HMAC secret), hook stdout/stderr | not changed; scanned | scan for clear, folded, 8-char windows |
+| C15 | backend `agent-runtime.service.ts:3617-3635`, `owner-approval-events.service.ts:209-238`, `runtime-shadow.service.ts:116-135` [read from SEC1 AUDIT, not re-verified] | all keep `tool_input` and `programs[]` as sent; `normalized_action_hash`/`gateActionKeys` now hash keyed values (unguessable), `programs[]` may be `unlisted-program` | wire shape asserts (64-hex, 32-hex exact_hmac, programs regex); backend behaviour on the marker is a FOLLOW-UP, never verified here |
+| C16 | marrow-install 0.1.74 / plugins / Codex plugin pins | `vendor/classifier`, `classifier-pin.ts`, `codex-plugin-pins.ts` not edited | `seatbelt-vendor` and pins tests in the suite; installer re-vendor + plugin re-pin follow-ups |
+
+### 10.8 Abuse cases added to section 4 (all run base vs branch through the real hooks, plus the in-process normalizer for the shapes)
+
+Rows for each of WebFetch (prompt), Workflow (script), KillShell (shell_id), SendMessage (message), CronCreate (prompt), PushNotification (message), ExitPlanMode (plan), SlashCommand (command), RemoteTrigger (prompt), BashOutput (filter), ToolSearch (query), FooTool (command); controls NotebookEdit (new_source), Skill (args), TodoWrite (content), TaskOutput (task_id); Agent (prompt), Task, Edit (new_string), Write (content), WebSearch (query), Read/Glob/Grep (path); build 1's known-gap cases N1 (`sudo -u root smbpasswd -a u1 S`), N5 (`cmd /c`, `pwsh -c`); each with a free-text secret of shapes hex16, lower24, alnum20 in the named field. Plus: tool name lookalikes (`Tool `, `toolsearch`, `TOOLSEARCH`, `mcp__x__y`), forged fields inside `tool_input`, chained commands inside a FooTool command (`git push --force | S`, `a && S`), dangerous program inside an unknown tool (`FooTool {command: "git push --force"}` keeps `git`), deploy text (E1 plain), run options as string, no-key / unsafe-key / read-only home (nonce, stderr note), two installs (differ), and all of the 83 SEC1 rows and build 1's rows again.
+
+### 10.9 Expected deltas vs b8973d3a (the yardstick for the LOOSER line)
+
+- `command_sha256` / `input_sha256` values change for every action except E1 deploys; format identical (64 hex). `hold.target` and `correlation` values change.
+- `programs[]` changes only for (a) build 1's withheld feeder words and (b) words of non-shell tools that are not known program stems (new constant).
+- No decision, risk level, gate-request count, seatbelt (keyless) answer or proof field changes. Never fewer holds. Any row where the branch is less strict than base is a LOOSER finding.
+
+### 10.10 Follow-ups added (not done here)
+
+Backend: treat `unlisted-feeder` and `unlisted-program` as unknown programs (never lowering risk); purge or expire stored keys derived from old plain hashes; hash stored keys with a server key; redact `programs[]` server-side. MCP/next: make the redactor see SEC1 N1/N5 (they are cut by keying, not by redaction); a key store for hosts with a read-only home or Windows (today those ask every time); decide with the backend whether Bash programs[] should withhold every unknown word; `Grep` pattern and `Glob` pattern are not part of the hashed text (only `path`), a pre-existing collision, equal to base. Release chain: installer re-vendor/re-pin, plugin re-pin, CHANGELOG/website line (no version bump here).
