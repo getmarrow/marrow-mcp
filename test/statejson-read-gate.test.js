@@ -156,3 +156,20 @@ test('keyed: `cd <folder>; cat ~+/state.json` is read as the salt form is (the h
   assert.ok(!APPROVAL_STATE_TREE.test('/home/u/.marrow/host-approvals') && !APPROVAL_STATE_TREE.test('/home/u/.marrow/seatbelt/state.json') && !APPROVAL_STATE_TREE.test('/home/u/proj/host-approvals/state.json'));
   for (const command of ['cd ~/.marrow/host-approvals; ls ~+', 'cd ~/.marrow/host-approvals; pwd', 'cd ~/.marrow/host-approvals && ls -la']) assert.equal(keyed(bash(command)).protected, false, command);
 });
+
+test('a glob or dynamic spelling with nothing to list is judged by sample and still carries the reason; the outage reading of every form is high, not unknown', () => {
+  const bare = makeEnv({ dirs: [`${HOME}/.marrow/host-approvals`] });
+  for (const command of ['cat ~/.marrow/host-*/st*', 'cat "$HOME/.marrow/$A/state.json"', 'cat ~/.marrow/host-approvals/st?te.json']) {
+    const d = evaluateSeatbeltShell(command, bare);
+    assert.equal(d.decision, 'stop', command);
+    assert.ok(d.hits.some((h) => h.category === 'S4' && h.reason === APPROVAL_STATE_REASON), command);
+    assert.ok(d.hits.some((h) => h.reason.endsWith('_secret_pattern')), `${command}: judged by sample`);
+  }
+  // outageHolds lets a mapper reading of `not_high` free a keyed protected action and `high` hold an unprotected one: the reading itself must be `high`.
+  const reading = (command) => outageRisk(bash(command), Date.now() + 5000).risk;
+  for (const [name, form] of Object.entries(GATED)) {
+    if (NAMES_BESIDE.has(name) || reading(form(SALT)) !== 'high') continue;
+    assert.equal(reading(form(STATE)), 'high', `outage reading ${name}`);
+  }
+  for (const name of ['cat', 'cp', 'bashC', 'nodeE', 'findMarrow']) assert.equal(reading(GATED[name](STATE)), 'high', name);
+});
