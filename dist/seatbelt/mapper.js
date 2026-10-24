@@ -3083,6 +3083,9 @@ function dispatchProgram(prog, args, rest, pathLike, ctx, run, x) {
         }
         default: break;
     }
+    // An awk by a name the table does not have (`original-awk`, `goawk`, `my-awk`): read as awk, and then as the unknown program it also is (as `nawk` is).
+    if (/awk/i.test(prog))
+        awkProgram(rest, ctx, run, x);
     if (/^mkfs(?:\.|$)/.test(prog)) {
         hit(run, 'S5', 'mkfs');
         return;
@@ -7580,6 +7583,13 @@ function awkTokens(src, bracketAware) {
                     v += String.fromCharCode(parseInt(hex[0], 16));
                     j += hex[0].length;
                 }
+                else if (e === 'u' && /^[0-9a-fA-F]/.test(src.slice(j, j + 1))) {
+                    // gawk 5.3 reads `\u` and up to eight hex digits as that code point. A run of up to four is the same under every reading; a longer one is
+                    // read as four or as all of them, so it is a text nobody can read here (a mark no literal reading accepts).
+                    const digits = /^[0-9a-fA-F]{1,8}/.exec(src.slice(j, j + 8))[0];
+                    v += digits.length <= 4 ? String.fromCharCode(parseInt(digits, 16)) : DYN;
+                    j += digits.length;
+                }
                 else
                     v += `\\${e}`;
             }
@@ -7754,7 +7764,7 @@ function awkFacts(t, taintedNames, all) {
                     // `print LIST | CMD`: LIST is back to the `print` or `printf` of this statement.
                     const before = awkBefore(t, i, false);
                     const at = before.findIndex((b) => b.k === 'id' && (b.v === 'print' || b.v === 'printf'));
-                    facts.sinks.push({ command: awkAfter(t, i + 1, false), printed: at === -1 ? null : before.slice(at + 1) });
+                    facts.sinks.push({ command: awkAfter(t, i + 1, false), printed: at === -1 ? null : before.slice(at + 1), printf: at !== -1 && before[at].v === 'printf' });
                 }
             }
             continue;
@@ -7849,7 +7859,51 @@ function awkJoin(words, from, to) {
     }
     return out;
 }
-const AWK_SHELL_SINK = /(?:^|[|;&(]\s*|\b(?:env|sudo|exec|command|nohup|nice|time|xargs|timeout\s+\S+|stdbuf\s+\S+\s+\S+)\s+)(?:\S*\/)?(?:sh|bash|dash|zsh|ksh|ash|fish|csh|tcsh|eval|python[0-9.]*|perl|ruby|node|php)\b/;
+// What a program may print into without the words it prints being run: a command that only reads its input and writes it out. A fail-closed list: any other
+// command (a shell by any name or wrapper, an interpreter, `env`, `xargs`, a program nobody knows) may run what it is given, so the words printed into it are
+// judged as the commands they would be. A bare name or one in a system bin folder, plain words and plain redirects only; `sort --compress-program=PROG` and
+// `less +!CMD` run a program of their own.
+const AWK_READERS = new Set(['cat', 'tee', 'sort', 'uniq', 'wc', 'grep', 'egrep', 'fgrep', 'head', 'tail', 'less', 'more', 'cut', 'tr', 'column', 'nl', 'rev', 'fold', 'paste', 'tac']);
+function awkReaderSink(text) {
+    if (text.trim() === '')
+        return true;
+    const parsed = safeParse(text, { depth: 1 });
+    if (!parsed.ok || parsed.dynamic || parsed.reasons.length > 0 || parsed.substitutions.length > 0 || parsed.commands.length === 0 || parsed.commands.length > 8)
+        return false;
+    const plain = (w) => !w.dynamic && !w.substitution && !w.glob;
+    return parsed.commands.every((c) => {
+        if (c.words.length === 0 || c.assignments.length > 0 || c.heredoc !== null || c.forLoop !== undefined || !c.words.every(plain))
+            return false;
+        // A command word that starts with `-` names no program (a command variable that may still be unset reads ` -u`).
+        if (c.words[0].text.startsWith('-'))
+            return true;
+        const m = /^(?:\/usr\/bin\/|\/bin\/)?([a-z]+)$/.exec(c.words[0].text);
+        if (!m || !AWK_READERS.has(m[1]))
+            return false;
+        // getopt takes any prefix of a long option that only one option starts with: `sort --compr=PROG` and `sort --co PROG` are `--compress-program`.
+        if (c.words.slice(1).some((w) => /compress-program/.test(w.text) || (m[1] === 'sort' && w.text.startsWith('--co')) || ((m[1] === 'less' || m[1] === 'more') && w.text.startsWith('+'))))
+            return false;
+        return c.redirects.every((r) => /^(?:>|>>|<|>&)$/.test(r.op) && r.target !== null && plain(r.target));
+    });
+}
+// The items of a print list (the tokens between its commas), each as the words it can be, or null when any item is not made of literals.
+function awkItems(printed, facts) {
+    const items = [[]];
+    for (const t of printed) {
+        if (t.k === 'op' && t.v === ',')
+            items.push([]);
+        else
+            items[items.length - 1].push(t);
+    }
+    const out = [];
+    for (const item of items) {
+        const words = awkWords(item, facts, new Set());
+        if (words === null)
+            return null;
+        out.push(words);
+    }
+    return out;
+}
 // Every place a program starts a command is `system(CMD)`, `print … | CMD`, `printf … | CMD` or `CMD | getline` (and gawk's `|&`). A CMD made only of
 // literals is a command line, judged like a nested shell string: the same stop the direct command gets (every part of a concatenation is judged
 // too, since awks differ on what `"a" "b" | getline` runs). Any other CMD is a command nobody can read here (ARGV, ENVIRON, a -v or NAME=VALUE
@@ -7889,6 +7943,37 @@ function awkCommandSinks(program, words, taintedNames, taintAll, ctx, run, x) {
                 if (b - a < w.length)
                     judge(awkJoin(w, a, b));
     };
+    // The line a `print` or `printf` writes into a command that is not a known reader: the command may run it, so it must be made of literals and is judged as
+    // the shell string it is. A print list is written with OFS (a space) between its words, and is also read with nothing between them. A `%` in a printf format
+    // is a conversion that puts something else in the line (`%c`, `%s`): a stop. OFS set by the program or the command line is not a space nobody can rely on: a stop.
+    const judgePrinted = (sink, facts) => {
+        const lists = sink.printed ? awkItems(sink.printed, facts) : null;
+        // A bare `print` prints the input line: not a literal.
+        if (lists === null || lists.every((l) => l.length === 0)) {
+            dynamic = true;
+            return;
+        }
+        if (sink.printf) {
+            const format = awkJoin(lists[0], 0, lists[0].length);
+            if (format === null || format.some((f) => f.includes('%'))) {
+                dynamic = true;
+                return;
+            }
+        }
+        judgeWords(lists.flat(), true);
+        if (lists.length < 2)
+            return;
+        if (facts.all || facts.tainted.has('OFS') || facts.assigns.has('OFS')) {
+            dynamic = true;
+            return;
+        }
+        const spaced = [];
+        lists.forEach((l, k) => { if (k > 0)
+            spaced.push([' ']); spaced.push(...l); });
+        judge(awkJoin(spaced, 0, spaced.length));
+        for (const l of lists)
+            judge(awkJoin(l, 0, l.length));
+    };
     if (program.length > 65536)
         dynamic = true;
     else {
@@ -7910,14 +7995,8 @@ function awkCommandSinks(program, words, taintedNames, taintAll, ctx, run, x) {
                 judgeWords(w, true);
                 if (sink.printed !== undefined) {
                     const command = awkJoin(w, 0, w.length);
-                    if (command === null || command.some((c) => AWK_SHELL_SINK.test(c))) {
-                        const data = sink.printed === null ? null : awkWords(sink.printed.filter((d) => !(d.k === 'op' && d.v === ',')), facts, new Set());
-                        // A bare `print` prints the input line: not a literal.
-                        if (data === null || data.length === 0)
-                            dynamic = true;
-                        else
-                            judgeWords(data, true);
-                    }
+                    if (command === null || !command.every(awkReaderSink))
+                        judgePrinted(sink, facts);
                 }
             }
         }
@@ -7934,6 +8013,26 @@ function awkCommandSinks(program, words, taintedNames, taintAll, ctx, run, x) {
                     evalShell(v, childCtx(ctx), run);
     worseParse(run, 'dynamic');
     hit(run, 'Sx', 'dynamic_awk_command');
+}
+// A word with no readable text: it is wholly a variable, a substitution or a parameter default. The word parser ends `${P:-BEGIN{…}}` at its first `}`, which
+// leaves a closing brace that nothing opened; no awk program text has that, so such a word is read as unreadable too.
+function awkUnreadable(a) {
+    if (a.text !== null)
+        return false;
+    const literal = a.pattern.split(DYN).join('');
+    if (literal.trim() === '')
+        return true;
+    let depth = 0;
+    for (const ch of literal) {
+        if (ch === '{')
+            depth += 1;
+        else if (ch === '}') {
+            if (depth === 0)
+                return true;
+            depth -= 1;
+        }
+    }
+    return false;
 }
 // The word that awk programs were read from before the options were parsed: the first word that is not an option or the value of one.
 function awkOlderProgram(rest) {
@@ -7957,6 +8056,9 @@ function awkProgram(rest, ctx, run, x) {
     let unread = false;
     // A word that may be the program itself and cannot be read (`awk "${P:-…}"`): judged like the code of `python3 -c "$P"`, by the whole command text.
     let unreadCode = false;
+    // ... and when it is code for certain (`-e "$P"`, the word after `--`) or one word that is not a list of options (a quoted `"$P"`), as that code is a stop.
+    // An unquoted `$OPTS` before a program may be options, which word splitting turns into several words: it is judged by name only.
+    let unreadHit = false;
     let programFile = false;
     // The text of a program word: its literal text, or its pattern (an unreadable part is DYN, never nothing). Never its `alts`: the word
     // parser brace-expands a quoted `{a,b}`, so a program with a comma inside braces has no single text but its pattern is the program.
@@ -7969,6 +8071,12 @@ function awkProgram(rest, ctx, run, x) {
             return;
         substituted(a);
         programFile = true;
+        // `awk -e "$P"`: a program that is wholly a variable or a substitution is code nobody can read.
+        if (awkUnreadable(a)) {
+            unread = true;
+            unreadCode = true;
+            unreadHit = true;
+        }
         for (const text of programTexts(a))
             texts.push([text, true]);
     };
@@ -8017,9 +8125,11 @@ function awkProgram(rest, ctx, run, x) {
         let t = a.text;
         if (t === null) {
             // A word nobody can read may be an option, its value or the program: it is judged by name (unread), and the options go on after it.
-            if (a.pattern.split(DYN).join('').trim() === '') {
+            if (awkUnreadable(a)) {
                 unread = true;
                 unreadCode = true;
+                if (a.word && a.word.quoted)
+                    unreadHit = true;
                 substituted(a);
                 continue;
             }
@@ -8108,9 +8218,10 @@ function awkProgram(rest, ctx, run, x) {
         const program = operands[0];
         operands = operands.slice(1);
         substituted(program);
-        if (program.text === null && program.pattern.replace(new RegExp(DYN, 'g'), '').trim() === '') {
+        if (awkUnreadable(program)) {
             unread = true;
             unreadCode = true;
+            unreadHit = true;
         }
         for (const text of programTexts(program))
             texts.push([text, true]);
@@ -8140,8 +8251,11 @@ function awkProgram(rest, ctx, run, x) {
         worseParse(run, 'dynamic');
         tripwire(rest.map(argText).join(' '), run);
     }
-    if (unreadCode)
+    if (unreadCode) {
         tripwire(run.topSource.slice(0, tables_1.LIMITS.maxCommandBytes), run);
+        if (unreadHit)
+            hit(run, 'Sx', 'dynamic_interpreter_code');
+    }
     // What base read of each program text it was given stays as it was; the commands it names are then read from all of them as one program.
     for (const [raw, inline] of texts) {
         const text = raw.split(DYN).join('');

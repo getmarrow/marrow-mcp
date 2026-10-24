@@ -21,13 +21,13 @@ function checkersFor(root) {
   const event = (command) => ({ tool_name: 'Bash', tool_input: { command } });
   return {
     keyed: (command) => { const c = classifyTool(event(command)); return c.protected === true && c.readOnly === false; },
-    keyless: (command) => evaluateSeatbelt(event(command), makeEnv({ classifierClass: 'routine' })),
+    keyless: (command, files) => evaluateSeatbelt(event(command), makeEnv({ classifierClass: 'routine', ...(files ? { files } : {}) })),
     // The outage hold: the mapper's reading of the action, or the client classifier's answer where the mapper could not finish.
     outage: (command) => { const c = classifyTool(event(command)); return outageHolds(c.protected === true, () => outageRisk(event(command), Number.POSITIVE_INFINITY)); },
   };
 }
 const live = checkersFor(ROOT);
-const stops = (checkers, cmd) => checkers.keyless(cmd).decision === 'stop';
+const stops = (checkers, cmd, files) => checkers.keyless(cmd, files).decision === 'stop';
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 const TARGETS = ['wrangler deploy --prod', 'wrangler deploy --env production', 'git push --force origin main', 'git push -f origin master', 'git push --force-with-lease origin main',
@@ -203,11 +203,11 @@ test('program text that cannot be read is judged as for an interpreter that is g
   analogue("awk -f <(echo 'BEGIN{system(\"npm publish\")}') data", "python3 <(echo 'import os; os.system(\"npm publish\")') data");
   // the word the older reading took as the program is still judged (awk reads these words as file names)
   for (const cmd of ["awk -f prog.awk 'BEGIN{system(\"gh release create v1\")}'", "awk -- -e 'BEGIN{system(\"gh release create v1\")}'", "awk -f prog.awk 'BEGIN{system(ARGV[1])}' ls"]) assert.equal(stops(live, cmd), true, cmd);
-  for (const cmd of ["awk \"$P\" 'git push --force origin main'", "gawk -E \"$F\" 'npm publish'", "awk \"$(cat prog.awk)\" 'git push --force origin main'", "awk $X 'BEGIN{system(\"npm publish\")}'"]) {
+  for (const cmd of ["awk \"$P\" 'git push --force origin main'", 'awk "$P" data', 'awk "$(cat prog.awk)" data', "gawk -E \"$F\" 'npm publish'", "awk \"$(cat prog.awk)\" 'git push --force origin main'", "awk $X 'BEGIN{system(\"npm publish\")}'"]) {
     assert.equal(stops(live, cmd), true, cmd);
   }
-  for (const cmd of ['awk -f prog.awk data', "awk -fprog.awk data", 'gawk -E prog.awk data', 'gawk --exec prog.awk data', 'gawk --file=prog.awk data', 'awk -f a.awk -f b.awk data', 'awk "$P" data', 'gawk -f "$F" data',
-    'awk "$(cat prog.awk)" data', "gawk -i inplace '{print}' f", "gawk -l ordchr 'BEGIN{print ord(\"a\")}'", "gawk -i inplace -f prog.awk f", 'gawk @include "x" \'BEGIN{}\'', "awk '{print $1}' <(ls)"]) {
+  for (const cmd of ['awk -f prog.awk data', "awk -fprog.awk data", 'gawk -E prog.awk data', 'gawk --exec prog.awk data', 'gawk --file=prog.awk data', 'awk -f a.awk -f b.awk data', 'gawk -f "$F" data',
+    "gawk -i inplace '{print}' f", "gawk -l ordchr 'BEGIN{print ord(\"a\")}'", "gawk -i inplace -f prog.awk f", 'gawk @include "x" \'BEGIN{}\'', "awk '{print $1}' <(ls)"]) {
     assert.equal(stops(live, cmd), false, cmd);
   }
   // a program given on stdin is read: from a heredoc it is judged, from an unknown source it stops
@@ -330,7 +330,111 @@ test('the keyless hook entry stops the stopped forms and passes the friction row
   }
 });
 
+// ---- patch round after the audit (aud-mcp-awk-argv, MED-1..4 and LOW-1..3) ----
+// A row is a command text or [command text, files]. They are STRINGS fed to the checkers: nothing here runs a command.
+const rowCmd = (r) => (typeof r === 'string' ? r : r[0]);
+const rowFiles = (r) => (typeof r === 'string' ? undefined : r[1]);
+const wrongRows = (rows, want) => rows.filter((r) => stops(live, rowCmd(r), rowFiles(r)) !== want).map(rowCmd);
+
+test('MED-1: a print list is written with OFS (a space) between its words, and a printf format with a % conversion is dynamic', () => {
+  assert.deepEqual(wrongRows([
+    `awk 'BEGIN{print "gh", "release create v1" | "sh"}'`,
+    `awk 'BEGIN{print "npm", "pub" "lish" | "sh"}'`,
+    `awk 'BEGIN{print "git", "push", "--fo" "rce", "origin", "main" | "sh"}'`,
+    String.raw`awk 'BEGIN{printf "%s %s\n", "gh", "release create v1" | "sh"}'`,
+    String.raw`awk 'BEGIN{printf "%c%s\n", 103, "h release create v1" | "sh"}'`,
+    `awk 'BEGIN{print("gh", "release create v1") | "sh"}'`,
+    `awk 'BEGIN{print "gh ", "release create v1" | "sh"}'`,
+    `awk 'BEGIN{print "gh", "release", "create", "v1" | "sh"}'`,
+    `awk 'BEGIN{printf "gh release create v1\\n" | "sh"}'`,
+    String.raw`awk 'BEGIN{printf "100%%\n" | "sh"}'`,
+    // an OFS that the program or the command line sets is a separator nobody can rely on
+    `awk -v OFS=- 'BEGIN{print "gh", "release create v1" | "sh"}'`,
+    `awk 'BEGIN{OFS="x"; print "a", "b" | "sh"}'`,
+  ], true), []);
+  assert.deepEqual(wrongRows([
+    // no shell sink: nothing is judged
+    `awk '{print $1, $2}' f`, String.raw`awk '{printf "%d\n", NR}' f`, String.raw`awk 'BEGIN{printf "%d\n", 3}'`, `awk -v OFS=, '{print $1, $2}' f`,
+    // a reader sink: the words are not run
+    `awk '{print $1, $2 | "sort -k2"}' f`, String.raw`awk '{printf "%d\n", NR | "sort"}' f`, String.raw`awk '{printf "%s %s\n", $1, $2 | "sort"}' f`,
+    // harmless words into a shell, and a concatenation that prints one word
+    `awk 'BEGIN{print "echo", "hi" | "sh"}'`, `awk 'BEGIN{print "gh" "release create v1" | "sh"}'`,
+  ], false), []);
+  // a printf conversion is the dynamic-command stop, as for any other line nobody can read
+  assert.ok(live.keyless(String.raw`awk 'BEGIN{printf "%s\n", "x" | "sh"}'`).reasons.includes('dynamic_awk_command'));
+});
+
+test('MED-2: the words printed into a command are judged unless the command is a known reader', () => {
+  const sinks = ['busybox sh', 'busybox ash', 'mksh', 'yash', 'posh', 'nice -n 1 sh', 'setsid sh', 'script -q /dev/null', 'source /dev/stdin', 'env sh', 'command sh', 'ksh93', 'rbash',
+    'sudo -n sh', 'xargs sh -c', 'dash', 'zsh -s', 'bash -s', 'sh -s', '/bin/sh', 'python3', 'perl', 'node', 'eval', 'sort | sh', 'cat | mksh', 'sort; mksh', 'cat && yash', '(posh)', '{ mksh; }',
+    'unknown-reader', 'tclsh', 'lua', 'sort --compress-program=sh', 'sort --compress-prog=sh', 'sort --compr=sh', 'sort --co sh', 'sort -S 1 --com=sh', 'less +!sh', 'sort $X', 'sort `echo x`', 'LESSOPEN=x less', 'cat <<EOF', 'for i in 1; do sort; done'];
+  assert.deepEqual(wrongRows(sinks.map((sink) => `awk 'BEGIN{print "gh release create v1" | ${JSON.stringify(sink)}}'`), true), []);
+  const readers = ['sort', 'cat', 'tee out.txt', 'sort | uniq -c', 'wc -l', 'grep foo', 'head -n 2', 'tail -n +2', 'less', 'cat 1>&2', 'sort -t, -k2', '/usr/bin/sort', 'cut -d, -f1', 'tr a-z A-Z', 'sort -u', 'column -t',
+    'grep -v "a b"', 'sort > out.txt', 'sort 2>/dev/null', 'sort --check', 'sort -T /tmp -u'];
+  assert.deepEqual(wrongRows(readers.map((sink) => `awk 'BEGIN{print "gh release create v1" | ${JSON.stringify(sink)}}'`), false), []);
+  // a reader that gets non-literal words stays a pass (the friction rows), while an unlisted command that gets them stops
+  assert.deepEqual(wrongRows(["awk '{print $1 | \"sort -u\"}' f", "awk '{print | \"cat 1>&2\"}' f", "awk '{print $1, $2 | \"sort | uniq -c\"}' f", "awk '{print $1 | \"wc -l\"}' f", "awk '{print $0 | \"tee out.txt\"}' f"], false), []);
+  assert.deepEqual(wrongRows(["awk '{print $0 | \"mail -s x u\"}' f", "awk '{print $1 | \"sort --compress-program=sh\"}' f", "awk '{print $1 | \"xargs echo\"}' f"], true), []);
+  // the command that receives the words is itself judged as before
+  assert.equal(stops(live, `awk 'BEGIN{print "x" | "tee ~/.marrow/hooks/x"}'`), true);
+});
+
+test('MED-3: a quoted program word that is wholly a variable, a substitution or a parameter default is code nobody can read, as for python3 -c "$P"', () => {
+  const stopRows = [`awk "$P" 'gh release create v1'`, `awk "$(echo 'BEGIN{system(\\"gh release create v1\\")}')"`, `awk "\${P:-BEGIN{system(ARGV[1])}}" 'gh release create v1'`,
+    `awk "$P" f`, `awk "$P"`, `awk -e "$P" f`, `gawk --source "$P" f`, `awk "\${P:-{print}}" f`, `awk "\${P:-BEGIN{x=1}}x" f`, `awk "x\${P:-BEGIN{x=1}}" f`, `awk -- "$P" f`, `awk "$P" data`];
+  assert.deepEqual(wrongRows(stopRows, true), []);
+  for (const cmd of stopRows) assert.deepEqual(live.keyless(cmd).reasons.filter((r) => r === 'dynamic_interpreter_code'), ['dynamic_interpreter_code'], cmd);
+  // the same hit as the interpreter's own
+  assert.ok(live.keyless('python3 -c "$P" x').reasons.includes('dynamic_interpreter_code'));
+  assert.deepEqual(wrongRows([
+    `awk -v n="$N" '{print n}' f`, `awk "NR==$N" f`, String.raw`awk "{print \$$COL}" f`, `awk -F "$SEP" '{print $1}' f`, `awk '{print $1}' "$F"`, `awk -f "$F" data`, `awk -v "$A" '{print}' f`,
+    `awk $OPTS '{print}' f`, `awk -F$SEP '{print $1}' f`,
+  ], false), []);
+});
+
+test('MED-4: an awk by a name the table does not know is read as awk, and keeps the unknown program\'s own argument scan', () => {
+  assert.deepEqual(wrongRows([
+    `C='gh release create v1' original-awk 'BEGIN{system(ENVIRON["C"])}'`, [`goawk '{system($0)}' cmds.txt`, { '/home/u/proj/cmds.txt': 'gh release create v1\n' }], `goawk 'BEGIN{system("gh release create v1")}'`,
+    `original-awk 'BEGIN{system("gh release create v1")}'`, `/opt/x/bin/my-awk 'BEGIN{system(ARGV[1])}' ls`, `one-true-awk -v c=ls 'BEGIN{system(c)}'`, `frawk 'BEGIN{print ARGV[1] | "sh"}' ls`,
+    `awk-5.2 --frobnicate '{print}' f`, `env goawk 'BEGIN{system("gh release create v1")}'`, `nice goawk 'BEGIN{system("gh release create v1")}'`,
+  ], true), []);
+  assert.deepEqual(wrongRows([`goawk '{print $1}' f`, `original-awk -F: '{print $1}' f`, `goawk 'BEGIN{system("date")}'`, `my-awk -v n=3 'NR==n' f`, `goawk -f prog.awk data`, `which goawk`, `command -v goawk`,
+    `bioawk -c fastx '{print $name}' f`], false), []);
+  // the CHANGELOG says what the stop covers: names with awk in them, not every unknown program
+  assert.equal(stops(live, `bwk 'BEGIN{system("gh release create v1")}'`), false);
+});
+
+test('LOW-1: gawk unicode escapes are decoded; a run of five or more hex digits is read differently by awks and is a stop', () => {
+  // (the backslash-u spelling is built, so that no file holds it as text)
+  const BSU = String.fromCharCode(92) + 'u';
+  assert.deepEqual(wrongRows([
+    `gawk 'BEGIN{system("${BSU}0067h release create v1")}'`, `gawk 'BEGIN{system("${BSU}67h release create v1")}'`, `gawk 'BEGIN{system("${BSU}0067" "h release create v1")}'`,
+    `gawk 'BEGIN{c="${BSU}0067h release create v1"; system(c)}'`, `gawk 'BEGIN{print "${BSU}0067h release create v1" | "sh"}'`, `gawk 'BEGIN{system("${BSU}000067h release create v1")}'`,
+    `gawk 'BEGIN{system("${BSU}0067${BSU}0068 release create v1")}'`,
+  ], true), []);
+  assert.deepEqual(wrongRows([`gawk 'BEGIN{print "${BSU}0067h"}'`, `gawk 'BEGIN{system("${BSU}0070wd")}'`, `gawk 'BEGIN{system("${BSU}0073ort -u")}'`], false), []);
+  // the decoded text is what is judged: the reason is the direct command's own
+  assert.equal(live.keyless(`gawk 'BEGIN{system("${BSU}0067h release create v1")}'`).hits[0].reason, live.keyless('gh release create v1').hits[0].reason);
+});
+
+test('LOW-2: a special variable is never a literal, and --file= and --exec= name the program file', () => {
+  assert.deepEqual(wrongRows([`awk 'BEGIN{FILENAME="date"; system(FILENAME)}'`, `gawk 'BEGIN{RT="date"; system(RT)}'`, `awk 'BEGIN{NR="date"; system(NR)}'`, `gawk 'BEGIN{ERRNO="date"; system(ERRNO)}'`,
+    `awk 'BEGIN{FS="date"; system(FS)}'`, `awk 'BEGIN{RS="date"; print | RS}' f`], true), []);
+  for (const cmd of [`awk 'BEGIN{FILENAME="date"; system(FILENAME)}'`, `gawk 'BEGIN{RT="date"; system(RT)}'`]) assert.ok(live.keyless(cmd).reasons.includes('dynamic_awk_command'), cmd);
+  const RUNS = { '/home/u/proj/prog.awk': 'BEGIN{system(ARGV[1])}\n' };
+  assert.deepEqual(wrongRows([[`gawk --exec=prog.awk 'npm publish'`, RUNS], [`gawk --file=prog.awk 'npm publish'`, RUNS], [`gawk --exec prog.awk 'npm publish'`, RUNS],
+    [`gawk --file prog.awk 'git push --force origin main'`, RUNS], [`gawk --file=prog.awk 'wrangler deploy --prod'`, RUNS], [`gawk -E prog.awk 'npm publish'`, RUNS], [`gawk -f prog.awk 'npm publish'`, RUNS]], true), []);
+  assert.deepEqual(wrongRows([[`gawk --file=prog.awk data`, { '/home/u/proj/prog.awk': '{print $1}\n' }], [`gawk --exec=prog.awk data`, { '/home/u/proj/prog.awk': '{print $1}\n' }], `gawk --file=prog.awk data`], false), []);
+});
+
+test('LOW-3: `command` looks a name up only as a leading -v or -V, for every program: friction rows are unchanged', () => {
+  assert.deepEqual(wrongRows(['command npm publish -v', 'command git push -v --force origin main', 'command wrangler deploy --prod -V', 'command rm -rf ~ -v', 'command git push --force origin main -v'], true), []);
+  assert.deepEqual(wrongRows(['command -v node', 'command -V git', 'command node -v', 'command npm -v', 'command -p git status', 'command grep -v foo f', 'command -p -v awk', 'command -v git push'], false), []);
+  for (const cmd of ['command node -v', 'command npm -v', 'command -p git status', 'command grep -v foo f', 'command -v node']) assert.equal(live.keyed(cmd), false, cmd);
+});
+
 // ---- mutants: each new rule, switched off in a copy of the build, must let a killer row through ----
+const BSU0 = String.fromCharCode(92) + 'u';
 const edit = (from, to) => ({ from, to: () => to });
 const MUTANTS = [
   { id: 'a command that is not literal is not a stop', edit: edit(/if \(!dynamic\)\s*return;/, 'return;'), killers: ["awk 'BEGIN{system(ENVIRON[\"C\"])}'", "awk '{system($0)}' cmds.txt", "awk -v c=ls 'BEGIN{system(c)}'"] },
@@ -342,15 +446,35 @@ const MUTANTS = [
   { id: 'an unreadable command-line word does not make variables non-literal', edit: edit(/if \(facts\.all \|\|/, 'if ('), killers: ["awk 'BEGIN{c=\"ls\"; system(c)}' \"$F\"", "awk -v \"$ASSIGN\" 'BEGIN{c=\"ls\"; system(c)}'"] },
   { id: 'a name written from the command line stays a literal', edit: edit(/tainted: new Set\(taintedNames\), all,/, 'tainted: new Set(), all: false,'), killers: ["awk 'BEGIN{c=\"ls\"; system(c)}' c=ls /dev/null", "awk -v c=ls 'BEGIN{c=\"ls\"; system(c)}'"] },
   { id: 'a command with an unreadable part is judged as if the part were empty', edit: edit(/if \(text\.includes\(DYN\)\) \{/, 'if (false) {'), killers: ["awk \"BEGIN{system(\\\"$X\\\")}\""] },
-  { id: 'words printed into a shell need not be literal', edit: edit(/command\.some\(\(c\) => AWK_SHELL_SINK\.test\(c\)\)/, 'false'), killers: ["awk '{print $0 | \"sh\"}' cmds.txt"] },
+  { id: 'words printed into a shell need not be literal', edit: edit(/!command\.every\(awkReaderSink\)/, 'false'), killers: ["awk '{print $0 | \"sh\"}' cmds.txt"] },
   { id: 'an unreadable program is not judged by name', edit: edit(/if \(unread\) \{\s*worseParse/, 'if (false) { worseParse'), killers: ["awk -f \"$F\" 'git push --force origin main'", "awk \"$P\" 'git push --force origin main'"] },
-  { id: 'a program word that is a variable is not read as code', edit: edit(/if \(unreadCode\)\s*tripwire\(/, 'if (false) tripwire('), killers: ["awk \"${P:-npm publish}\" f", "echo \"npm publish done\" && awk \"$P\" f"] },
+  { id: 'a program word that is a variable is not read as code', edit: edit(/if \(unreadCode\) \{\s*tripwire\(/, 'if (false) { tripwire('), killers: ["awk \"${P:-npm publish}\" f", "echo \"npm publish done\" && awk \"$P\" f"] },
   { id: 'a program or program file that is a substitution is not read', edit: edit(/const substituted = \(a\) => \{ if \(a\.word && a\.word\.substitution\)/, 'const substituted = (a) => { if (false)'), killers: ["awk -f <(echo 'BEGIN{system(\"npm publish\")}') data"] },
   { id: 'the program is read under one reading of a bracket expression only', edit: edit(/for \(const bracketAware of \[true, false\]\)/, 'for (const bracketAware of [true])'), killers: ["awk '/[/ {system(\"gh release create v1\")} /]/'"] },
   { id: 'command -v anywhere is a lookup', edit: edit(/if \(a\.text === null \|\| a\.text === '--' \|\| !a\.text\.startsWith\('-'\)\)\s*break;/, ''), killers: ["command awk -v c='npm publish' 'BEGIN{system(c)}'", 'command git push --force origin main -v'] },
   { id: 'the word the older reading took as the program is not judged', edit: edit(/if \(older\)/, 'if (false)'), killers: ["awk -f prog.awk 'BEGIN{system(\"gh release create v1\")}'", "awk -- -e 'BEGIN{system(\"gh release create v1\")}'"] },
   { id: 'an indirect call is not a command', edit: edit(/if \(facts\.indirect\)/, 'if (false)'), killers: ["awk 'BEGIN{@f(\"ls\")}'"] },
   { id: 'a program that cannot be cut into tokens is not a stop', edit: edit(/if \(tokens === null\) \{\s*dynamic = true;/, 'if (tokens === null) { dynamic = false;'), killers: ["awk 'BEGIN{ system(\"ls) }'"] },
+  // ---- the patch round (aud-mcp-awk-argv): each of the seven changes switched off on its own, and the audit's m05 and m18 ----
+  { id: 'MED-1: a print list is not read with OFS between its words', edit: edit(/judge\(awkJoin\(spaced, 0, spaced\.length\)\);/, ''), killers: [`awk 'BEGIN{print "gh", "release create v1" | "sh"}'`, `awk 'BEGIN{print "git", "push", "--fo" "rce", "origin", "main" | "sh"}'`] },
+  { id: 'MED-1: a printf format with a % conversion is not dynamic', edit: edit(/format\.some\(\(f\) => f\.includes\('%'\)\)/, 'false'), killers: [String.raw`awk 'BEGIN{printf "%s %s\n", "gh", "release create v1" | "sh"}'`, String.raw`awk 'BEGIN{printf "%c%s\n", 103, "h release create v1" | "sh"}'`] },
+  { id: 'MED-1: an OFS the program sets is taken for a space', edit: edit(/facts\.all \|\| facts\.tainted\.has\('OFS'\) \|\| facts\.assigns\.has\('OFS'\)/, 'false'), killers: [`awk 'BEGIN{OFS="x"; print "a", "b" | "sh"}'`] },
+  { id: 'MED-2: only the shells the old list knew are judged', edit: edit(/!command\.every\(awkReaderSink\)/, 'command.some((c) => /^(?:sh|bash|dash|zsh|ksh|ash)\\b/.test(c))'), killers: [`awk 'BEGIN{print "gh release create v1" | "mksh"}'`, `awk 'BEGIN{print "gh release create v1" | "busybox sh"}'`, `awk 'BEGIN{print "gh release create v1" | "nice -n 1 sh"}'`, `awk 'BEGIN{print "gh release create v1" | "source /dev/stdin"}'`] },
+  { id: 'MED-2: every command is a known reader', edit: edit(/function awkReaderSink\(text\) \{/, 'function awkReaderSink(text) { return true;'), killers: [`awk 'BEGIN{print "gh release create v1" | "yash"}'`, `awk 'BEGIN{print "gh release create v1" | "posh"}'`] },
+  { id: 'MED-2: a reader that runs a program of its own is still a reader', edit: edit(/\/compress-program\/\.test\(w\.text\) \|\| \(m\[1\] === 'sort' && w\.text\.startsWith\('--co'\)\) \|\| /, ''), killers: [`awk 'BEGIN{print "gh release create v1" | "sort --compress-program=sh"}'`] },
+  { id: 'MED-2: the compress-program word is a stop for any reader', edit: edit(/\/compress-program\/\.test\(w\.text\) \|\| /, ''), killers: [`awk 'BEGIN{print "gh release create v1" | "cat --compress-program=sh"}'`] },
+  { id: 'MED-2: sort --compr=PROG (a prefix of the long option) is still a reader', edit: edit(/\(m\[1\] === 'sort' && w\.text\.startsWith\('--co'\)\) \|\| /, ''), killers: [`awk 'BEGIN{print "gh release create v1" | "sort --compr=sh"}'`, `awk 'BEGIN{print "gh release create v1" | "sort --co sh"}'`, `awk 'BEGIN{print "gh release create v1" | "sort -S 1 --com=sh"}'`] },
+  { id: 'MED-2: a reader with an option that runs a command (less +!CMD) is still a reader', edit: edit(/\(m\[1\] === 'less' \|\| m\[1\] === 'more'\) && w\.text\.startsWith\('\+'\)/, 'false'), killers: [`awk 'BEGIN{print "gh release create v1" | "less +!sh"}'`] },
+  { id: 'MED-3: a quoted variable program is not a stop', edit: edit(/if \(unreadHit\)\s*hit\(run, 'Sx', 'dynamic_interpreter_code'\);/, ''), killers: [`awk "$P" 'gh release create v1'`, `awk "$(echo 'BEGIN{system(\\"gh release create v1\\")}')"`] },
+  { id: 'MED-3: a parameter default that holds braces is read as text', edit: edit(/if \(depth === 0\)\s*return true;/, 'if (depth === 0) return false;'), killers: [`awk "\${P:-BEGIN{system(ARGV[1])}}" 'gh release create v1'`, `awk "\${P:-{print}}" f`] },
+  { id: 'MED-3: an -e or --source program that is a variable is not code nobody can read', edit: edit(/(?<=`awk -e "\$P"`[^\n]*\n\s*)if \(awkUnreadable\(a\)\)/, 'if (false)'), killers: [`awk -e "$P" f`, `gawk --source "$P" f`] },
+  { id: 'MED-4: an awk by a name the table does not know is not read as awk', edit: edit(/if \(\/awk\/i\.test\(prog\)\)/, 'if (false)'), killers: [`goawk 'BEGIN{system("gh release create v1")}'`, `C='gh release create v1' original-awk 'BEGIN{system(ENVIRON["C"])}'`, `original-awk 'BEGIN{system("gh release create v1")}'`] },
+  { id: 'LOW-1: a unicode escape is not decoded', edit: edit(/else if \(e === 'u' && \/\^\[0-9a-fA-F\]\/\.test\(src\.slice\(j, j \+ 1\)\)\)/, 'else if (false)'), killers: [`gawk 'BEGIN{system("${BSU0}0067h release create v1")}'`, `gawk 'BEGIN{system("${BSU0}0067${BSU0}0068 release create v1")}'`] },
+  { id: 'LOW-1: a unicode escape with more than four digits is read as four', edit: edit(/digits\.length <= 4 \? String\.fromCharCode\(parseInt\(digits, 16\)\) : DYN/, 'String.fromCharCode(parseInt(digits.slice(0, 4), 16))'), killers: [`gawk 'BEGIN{system("${BSU0}000067h release create v1")}'`] },
+  { id: 'm05: special variables such as RT and FILENAME are literals', edit: edit(/AWK_SPECIAL_VARS\.has\(name\) \|\| /, ''), killers: [`awk 'BEGIN{FILENAME="date"; system(FILENAME)}'`, `gawk 'BEGIN{RT="date"; system(RT)}'`, `awk 'BEGIN{NR="date"; system(NR)}'`] },
+  { id: 'm18: --file= and --exec= long options are ignored', edit: edit(/if \(name === 'file' \|\| name === 'exec'\)/, 'if (false)'),
+    killers: [[`gawk --exec=prog.awk 'npm publish'`, { '/home/u/proj/prog.awk': 'BEGIN{system(ARGV[1])}\n' }], [`gawk --file=prog.awk 'npm publish'`, { '/home/u/proj/prog.awk': 'BEGIN{system(ARGV[1])}\n' }], [`gawk --file prog.awk 'git push --force origin main'`, { '/home/u/proj/prog.awk': 'BEGIN{system(ARGV[1])}\n' }]] },
+  { id: 'LOW-3: command -v anywhere is a lookup, for every program', edit: edit(/if \(a\.text === null \|\| a\.text === '--' \|\| !a\.text\.startsWith\('-'\)\)\s*break;/, ''), killers: ['command npm publish -v', 'command git push -v --force origin main', 'command wrangler deploy --prod -V'] },
 ];
 
 function mutantBuild(edit) {
@@ -369,11 +493,11 @@ function mutantBuild(edit) {
 
 for (const mutant of MUTANTS) {
   test(`mutant killed: ${mutant.id}`, () => {
-    for (const cmd of mutant.killers) assert.equal(stops(live, cmd), true, `${cmd} keyless`);
+    for (const row of mutant.killers) assert.equal(stops(live, rowCmd(row), rowFiles(row)), true, `${rowCmd(row)} keyless`);
     const dir = mutantBuild(mutant.edit);
     try {
       const mutated = checkersFor(dir);
-      const survived = mutant.killers.filter((cmd) => stops(mutated, cmd));
+      const survived = mutant.killers.filter((row) => stops(mutated, rowCmd(row), rowFiles(row)));
       assert.ok(survived.length < mutant.killers.length, `no killer row noticed the mutant: ${mutant.id}`);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
