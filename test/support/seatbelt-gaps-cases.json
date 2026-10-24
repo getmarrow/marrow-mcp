@@ -1,0 +1,104 @@
+{
+ "friction": [
+  "docker run -v $PWD/src:/src alpine ls /src",
+  "find . -name '*.ts' -exec cat {} +",
+  "ls | xargs wc -l",
+  "docker run -v $PWD/.env.example:/x alpine cat /x",
+  "find . -name '.env.example' -exec cat {} \\;",
+  "echo .env.example | xargs cat",
+  "cat .env.example",
+  "ls .env* | xargs -I {} wc -l {}",
+  "ls .env* | xargs -I % stat %"
+ ],
+ "folder": [
+  "docker run -v $PWD:/app alpine ls /app",
+  "docker run -v ~/proj:/w alpine ls /w",
+  "docker run --mount type=bind,source=$PWD/cfg,target=/app alpine ls /app",
+  "docker run -v $PWD/cfg:/app alpine ls /app"
+ ],
+ "reasons": [
+  [
+   "docker run -v $PWD/.env.local:/x alpine cat /x",
+   "docker_mount_secret_path"
+  ],
+  [
+   "find . -name '.env.staging' -exec cat {} \\;",
+   "find_exec_secret_name"
+  ],
+  [
+   "ls .env.local | xargs cat",
+   "xargs_input_secret_path"
+  ],
+  [
+   "docker run -v $UNKNOWN/.env.zzz:/x alpine",
+   "docker_mount_secret_name"
+  ],
+  [
+   "find . -samefile .env.local -exec cat {} \\;",
+   "find_start_secret_path"
+  ]
+ ],
+ "tokenRows": [
+  "docker run -v $PWD/.env.{{TOK}}:/x alpine cat /x",
+  "find . -name '.env.{{TOK}}' -exec cat {} \\;"
+ ],
+ "differ": [
+  [
+   "docker run -v $PWD/.env.staging:/x alpine cat /x",
+   "docker run -v $PWD/.env.staging:/x alpine ls /x"
+  ],
+  [
+   "docker run -v $PWD/.env.staging:/x alpine cat /x",
+   "docker run -v $PWD/.env.staging:/y alpine cat /x"
+  ],
+  [
+   "find . -name '.env.staging' -exec cat {} \\;",
+   "find . -name '.env.staging' -exec head {} \\;"
+  ],
+  [
+   "ls .env* | xargs cat",
+   "ls .env* | xargs head"
+  ],
+  [
+   "ls .env.staging | xargs cat",
+   "ls .env.staging | xargs cat; git push -f origin main"
+  ],
+  [
+   "docker run -v $PWD/.env.staging:/x alpine cat /x",
+   "docker run -v $PWD/.env.example:/x alpine cat /x"
+  ],
+  [
+   "echo .env.staging | xargs cat",
+   "echo .env.staging | xargs cat && echo done"
+  ],
+  [
+   "docker run -v $PWD/.env.staging:/x alpine cat /x",
+   "docker run -v $PWD/.env.staging:/x alpine cat /x -e K=1"
+  ],
+  [
+   "find . -name '.env.staging' -exec cat {} \\;",
+   "find . -name '.env.staging' -exec cat {} \\; | head -n 1"
+  ]
+ ],
+ "realClosed": [
+  "docker run -v $PWD/.env.local:/x:ro alpine cat /x",
+  "docker run --mount type=bind,src=$PWD/.env.staging,dst=/x alpine cat /x",
+  "find . -name '.env.staging' -exec cat {} \\;",
+  "ls .env* | xargs cat",
+  "docker run -v $PWD/src:/src -v $PWD/.env.local:/x alpine cat /x",
+  "echo .env.{{TOK}} | xargs cat"
+ ],
+ "realOpen": [
+  "docker run -v $PWD/src:/src alpine ls /src",
+  "find . -name '*.ts' -exec cat {} +",
+  "ls | xargs wc -l",
+  "docker run -v $PWD/.env.example:/x alpine cat /x"
+ ],
+ "unresolvedClosed": [
+  "docker run -v $SRC -l x=y,.env.staging alpine true",
+  "docker run -v $SRC -e 'F=(.env.staging)' alpine true",
+  "docker run -v $SRC -e F=a,.env.local alpine true",
+  "docker run -v $SRC alpine sh -c \"echo .env.staging\"",
+  "docker run -v $SRC -e F=x=.env.local alpine true"
+ ]
+}
