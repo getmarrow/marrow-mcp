@@ -27,6 +27,11 @@ export const SECRET_PATTERNS: readonly string[] = [
  * file system reads `.MARROW/Host-Approvals/State.json` as the file). The keyed hook uses it next to SECRET_PATTERNS.
  */
 export const APPROVAL_STATE_PATH = /(?:^|\/)\.marrow\/host-approvals\/[^/]+$/i;
+/**
+ * Anything below the folder, at any depth. The keyed hook resolves `cd <folder>; cat ~+/state.json` to `<folder>/~+/state.json` (it never
+ * expands `~+`), which the salt's `**` pattern reads as the salt: the state file is read the same way.
+ */
+export const APPROVAL_STATE_TREE = /(?:^|\/)\.marrow\/host-approvals\/.+$/i;
 /** The extra S4 reason the seatbelt mapper adds to a hit on that file; the keyed hook keeps it, as it keeps the env-dump reasons. */
 export const APPROVAL_STATE_REASON = 'host_approvals_state';
 

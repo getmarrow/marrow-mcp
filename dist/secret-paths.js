@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PROC_PROCESS_TREE = exports.PROC_ENVIRON = exports.PRESENT_SECRET_PATTERNS = exports.APPROVAL_STATE_REASON = exports.APPROVAL_STATE_PATH = exports.SECRET_PATTERNS = void 0;
+exports.PROC_PROCESS_TREE = exports.PROC_ENVIRON = exports.PRESENT_SECRET_PATTERNS = exports.APPROVAL_STATE_REASON = exports.APPROVAL_STATE_TREE = exports.APPROVAL_STATE_PATH = exports.SECRET_PATTERNS = void 0;
 /**
  * The secret file paths both Marrow hooks read (one table): the keyless seatbelt stops a read
  * of one (S4), and the keyed policy treats it as a secret access. Home-anchored entries are matched
@@ -29,6 +29,11 @@ exports.SECRET_PATTERNS = [
  * file system reads `.MARROW/Host-Approvals/State.json` as the file). The keyed hook uses it next to SECRET_PATTERNS.
  */
 exports.APPROVAL_STATE_PATH = /(?:^|\/)\.marrow\/host-approvals\/[^/]+$/i;
+/**
+ * Anything below the folder, at any depth. The keyed hook resolves `cd <folder>; cat ~+/state.json` to `<folder>/~+/state.json` (it never
+ * expands `~+`), which the salt's `**` pattern reads as the salt: the state file is read the same way.
+ */
+exports.APPROVAL_STATE_TREE = /(?:^|\/)\.marrow\/host-approvals\/.+$/i;
 /** The extra S4 reason the seatbelt mapper adds to a hit on that file; the keyed hook keeps it, as it keeps the env-dump reasons. */
 exports.APPROVAL_STATE_REASON = 'host_approvals_state';
 /**

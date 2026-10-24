@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const { evaluateSeatbelt, evaluateSeatbeltShell } = require('../dist/seatbelt/mapper.js');
 const { outageRisk } = require('../dist/seatbelt/hook.js');
 const { classifyTool, outageHolds, mayReadApprovalState, mayPrintEnvironment } = require('../dist/hook-pre-action.js');
-const { SECRET_PATTERNS, APPROVAL_STATE_PATH, APPROVAL_STATE_REASON } = require('../dist/secret-paths.js');
+const { SECRET_PATTERNS, APPROVAL_STATE_PATH, APPROVAL_STATE_TREE, APPROVAL_STATE_REASON } = require('../dist/secret-paths.js');
 const { makeEnv } = require('./support/seatbelt-fakes.cjs');
 
 const HOME = '/home/u';
@@ -144,4 +144,15 @@ test('the keyed hook asks the mapper only for a command that can reach the file:
   for (const command of ['cat ~/.marrow/host-approvals/state.json', 'bash -c "cat ~/.marrow/h*/s*"', 'cat ~/.marrow/*/state.json', "cat $'~/.marrow'", 'grep -r x ~', 'rg x /', 'find ~/.marrow -type f', 'cat "$HOME/.marrow/$A/state.json"', 'cd ~/.marrow; cat h*/s*']) {
     assert.equal(mayReadApprovalState(command), true, command);
   }
+});
+
+test('keyed: `cd <folder>; cat ~+/state.json` is read as the salt form is (the hook never expands ~+, so the path is <folder>/~+/state.json); the folder itself stays open', () => {
+  const forms = (t) => [`cd ${t.dir}; cat ~+/${t.file}`, `cd ${t.dir} && head -n 1 ~+/${t.file}`, `cd ${t.dir}; grep x ~+/${t.file}`, `cd ${t.dir}; cp ~+/${t.file} /tmp/x`];
+  for (const [salt, state] of forms(SALT).map((s, i) => [s, forms(STATE)[i]])) {
+    assert.equal(keyed(bash(salt)).protected, true, salt);
+    assert.equal(keyed(bash(state)).protected, true, state);
+  }
+  assert.ok(APPROVAL_STATE_TREE.test('/home/u/.marrow/host-approvals/state.json') && APPROVAL_STATE_TREE.test('/home/u/.marrow/host-approvals/~+/state.json'));
+  assert.ok(!APPROVAL_STATE_TREE.test('/home/u/.marrow/host-approvals') && !APPROVAL_STATE_TREE.test('/home/u/.marrow/seatbelt/state.json') && !APPROVAL_STATE_TREE.test('/home/u/proj/host-approvals/state.json'));
+  for (const command of ['cd ~/.marrow/host-approvals; ls ~+', 'cd ~/.marrow/host-approvals; pwd', 'cd ~/.marrow/host-approvals && ls -la']) assert.equal(keyed(bash(command)).protected, false, command);
 });

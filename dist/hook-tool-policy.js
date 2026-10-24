@@ -463,7 +463,7 @@ function secretPath(value, base) {
     // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
     // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
     const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
-    if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)) || secret_paths_1.APPROVAL_STATE_PATH.test(tail))
+    if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)) || secret_paths_1.APPROVAL_STATE_TREE.test(tail))
         return true;
     return SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }

@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
-import { APPROVAL_STATE_PATH, PROC_ENVIRON, PROC_PROCESS_TREE, SECRET_PATTERNS } from './secret-paths';
+import { APPROVAL_STATE_TREE, PROC_ENVIRON, PROC_PROCESS_TREE, SECRET_PATTERNS } from './secret-paths';
 
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
 
@@ -411,7 +411,7 @@ function secretPath(value: string, base: string): boolean {
   // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
   // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
   const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
-  if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)) || APPROVAL_STATE_PATH.test(tail)) return true;
+  if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)) || APPROVAL_STATE_TREE.test(tail)) return true;
   return SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }
 
