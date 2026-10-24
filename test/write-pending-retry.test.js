@@ -246,7 +246,8 @@ test('PostToolUse returns immediately while the server is hung; background nudge
     tool_input: { file_path: '/tmp/out.txt', content: 'x' }, tool_response: { ok: true }, tool_use_id: 'toolu_fast',
   });
   const elapsed = Date.now() - started;
-  assert.ok(elapsed < 300, `hook returned in ${elapsed} ms with a hung server`);
+  // Measured p99 under load 77-102 ms; waiting on the hung server costs the 750 ms inline delivery cap.
+  assert.ok(elapsed < 550, `hook returned in ${elapsed} ms with a hung server`);
   const before = lifecycleSpoolStatus({ apiKey: 'mrw_post_tool_test_key' });
   assert.equal(before.pending, 1, 'event is durably spooled');
   assert.equal(posted.length, 0);

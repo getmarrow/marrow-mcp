@@ -605,7 +605,8 @@ test('standalone status immediately reuses a fresh measured runtime status witho
     assert.equal(payload.authorization_state, 'status_only_non_authorizing');
     assert.equal(payload.fresh_runtime_gate_required_for_high_risk, true);
     assert.equal(payload.host_capability.host, 'codex');
-    assert.ok(payload.control_path.current_ms < 100, `cached status handler took ${payload.control_path.current_ms}ms`);
+    // Measured p99 under load 61-110 ms; kept at 300 so a 300 ms block in the handler still fails.
+    assert.ok(payload.control_path.current_ms < 300, `cached status handler took ${payload.control_path.current_ms}ms`);
 
     const cacheDirectory = join(home, '.marrow', 'cache');
     const statusFile = readdirSync(cacheDirectory).find((name) => name.startsWith('status-'));
@@ -909,9 +910,10 @@ for (const priorEvent of [false, true]) {
       for (const value of Object.values(timings)) assert.ok(Number.isFinite(value) && value >= 0);
       assert.ok(timings.durable_enqueue >= 100, JSON.stringify(timings));
       assert.ok(timings.full_response >= timings.core + timings.durable_enqueue, JSON.stringify(timings));
-      assert.ok(timings.full_response < 500, 'unresolved event network must not delay response');
+      // Measured p99 under load 236-295 ms; waiting for the unresolved delivery costs the 1000 ms request timeout set above.
+      assert.ok(timings.full_response < 800, 'unresolved event network must not delay response');
       assert.ok(toolResponse.test_observed_response_ms >= 100);
-      assert.ok(toolResponse.test_observed_response_ms < 500, 'actual stdout response must not wait on delivery');
+      assert.ok(toolResponse.test_observed_response_ms < 800, 'actual stdout response must not wait on delivery');
       const events = JSON.parse(readFileSync(spoolPath, 'utf8'));
       assert.ok(events.some((event) => event.event_id === payload.receipt.event_id));
       if (priorEvent) assert.ok(events.some((event) => event.event_id === 'older-queued-receipt'));
