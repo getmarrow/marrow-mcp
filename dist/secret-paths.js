@@ -45,7 +45,7 @@ exports.APPROVAL_STATE_REASON = 'host_approvals_state';
 exports.PRESENT_SECRET_PATTERNS = ['**/*.env'];
 /**
  * The only `.env` templates, by name: `.env.example`, `.env.sample` and `.env.template`. The keyed policy builds its template test from this list; the keyless
- * table (ENV_TEMPLATE_SUFFIX in src/seatbelt/tables.ts) names the same three, and test/keyed-env-dist-defaults.test.js fails when the two differ. Every other
+ * table (ENV_TEMPLATE_SUFFIX in the keyless tables.ts) names the same three, and test/keyed-env-dist-defaults.test.js fails when the two differ. Every other
  * `.env.<word>` (`.env.dist`, `.env.defaults` and `.env.default` too) is a secret file in both modes. Never widen this list.
  */
 exports.ENV_TEMPLATE_WORDS = ['example', 'sample', 'template'];
