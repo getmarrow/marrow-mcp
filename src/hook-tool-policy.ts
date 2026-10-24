@@ -2,7 +2,7 @@ import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
-import { APPROVAL_STATE_TREE, PROC_ENVIRON, PROC_PROCESS_TREE, SECRET_PATTERNS } from './secret-paths';
+import { APPROVAL_STATE_TREE, ENV_TEMPLATE_WORDS, PROC_ENVIRON, PROC_PROCESS_TREE, SECRET_PATTERNS } from './secret-paths';
 
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
 
@@ -87,7 +87,9 @@ const SECRET_STORE_DIRECTORY = /^(?:\.ssh|\.gnupg|\.aws|\.azure|\.kube|\.docker|
 // A plainly named secrets/credentials directory holds secret material, but source code may live in one too.
 const NAMED_SECRET_DIRECTORY = /^(?:secrets?|credentials?)$/i;
 const SECRET_FILE = /^(?:\.env(?:\..+)?|.+\.env|\.dev\.vars|\.git-credentials|\.netrc|_netrc|\.npmrc|\.yarnrc\.ya?ml|\.pypirc|\.pgpass|\.my\.cnf|\.htpasswd|\.?credentials\.(?:json|ya?ml|toml|ini|csv|txt|xml)|secrets?\.(?:json|ya?ml|toml|env|txt)|id_(?:rsa|dsa|ecdsa|ed25519)(?:_[A-Za-z0-9]+)?|.+\.(?:pem|key|p12|pfx|jks|keystore|kdbx|ppk))$/i;
-const ENV_TEMPLATE_FILE = /(?:^|\.)env\.(?:example|sample|template|dist|defaults?)$/i;
+// One list with the keyless seatbelt (ENV_TEMPLATE_WORDS, src/secret-paths.ts): a `.env` template is `.example`, `.sample` or `.template` and nothing else, so
+// `.env.dist`, `.env.defaults` and `.env.default` are secret files in both modes. A test keeps this list equal to the keyless table's.
+const ENV_TEMPLATE_FILE = new RegExp(`(?:^|\\.)env\\.(?:${ENV_TEMPLATE_WORDS.join('|')})$`, 'i');
 const SECRET_KEYWORD_FILE = /(?:^|[._-])(?:secrets?|credentials?|tokens?|api[_-]?keys?|passwords?|private[_-]?keys?)(?:[._-]|$)/i;
 const SOURCE_OR_DOC_FILE = /\.(?:[cm]?[jt]sx?|md|mdx|rst|py|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|sh|bash|zsh|ps1|sql|html|css|scss|vue|svelte|map|snap|lock)$/i;
 const SECRET_VARIABLE_PART = new Set(['KEY', 'APIKEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PAT', 'CREDENTIAL', 'CREDENTIALS', 'AUTH']);

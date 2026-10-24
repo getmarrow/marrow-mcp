@@ -24,6 +24,12 @@ export declare const APPROVAL_STATE_REASON = "host_approvals_state";
  * above stay unconditional. `<name>.env.example` never matches.
  */
 export declare const PRESENT_SECRET_PATTERNS: readonly string[];
+/**
+ * The only `.env` templates, by name: `.env.example`, `.env.sample` and `.env.template`. The keyed policy builds its template test from this list; the keyless
+ * table (ENV_TEMPLATE_SUFFIX in src/seatbelt/tables.ts) names the same three, and test/keyed-env-dist-defaults.test.js fails when the two differ. Every other
+ * `.env.<word>` (`.env.dist`, `.env.defaults` and `.env.default` too) is a secret file in both modes. Never widen this list.
+ */
+export declare const ENV_TEMPLATE_WORDS: readonly string[];
 /** `/proc/<pid>/environ` and `/proc/<pid>/task/<tid>/environ`, `self` and `thread-self` included: the process's whole environment. */
 export declare const PROC_ENVIRON: RegExp;
 /**
