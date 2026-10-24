@@ -21,6 +21,7 @@ exports.localLoopGuardDenyOutput = localLoopGuardDenyOutput;
 exports.classifyTool = classifyTool;
 exports.mayPrintEnvironment = mayPrintEnvironment;
 exports.mayReadApprovalState = mayReadApprovalState;
+exports.mayReadSecret = mayReadSecret;
 exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
 exports.clinePreActionHookOutput = clinePreActionHookOutput;
 exports.windsurfPreActionDecision = windsurfPreActionDecision;
@@ -34,7 +35,9 @@ exports.runSeatbeltStatusCommand = runSeatbeltStatusCommand;
 exports.outageHolds = outageHolds;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const node_crypto_1 = require("node:crypto");
+const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
+const node_path_1 = require("node:path");
 const index_1 = require("./index");
 const request_reliability_1 = require("./request-reliability");
 const lifecycle_spool_1 = require("./lifecycle-spool");
@@ -728,15 +731,141 @@ function mayReadApprovalState(command) {
         return false;
     return HOME_OR_ROOT_OPERAND.test(command) || (CWD_RELATIVE_OPERAND.test(command) && runsInHomeOrAbove());
 }
+/**
+ * False for a command that cannot read a secret FILE inside code the keyed policy does not parse (a quoted `bash -c`, `eval`, `sudo sh -c`, `ssh host` or
+ * `xargs` string is one word to it). A command that can spell one holds a word of the secret-path table (src/secret-paths.ts: `.env`, `.npmrc`, `.ssh`, ...)
+ * or of the policy's secret file names, a word that starts with a dot and holds a glob or an expansion (`.e*`, `.e$X`), a variable set to a dot
+ * word beside any expansion (`A=.e; B=nv; cat $A$B`), or an expansion of a secret-looking variable (`$GITHUB_TOKEN`: ENV_FILTER_SECRET_NAME). Env and
+ * process words are not here (mayPrintEnvironment has them), nor are the programs that print a credential, nor an ANSI-C quote: the same text-only
+ * answer as before holds for those. A name that variables spell with no dot word in an assignment (`A=x.e`) is read by the keyless mapper but not asked
+ * of it here, as for the state file above. A dot word that only a brace spells (`cat .en{v,x}`) is not asked either: test/pre-action-hook.test.js pins it as
+ * not protected, and that expectation is left as it is.
+ */
+const SECRET_FILE_WORDS = /(?<!process)\.env(?![a-z0-9_])|\.(?:ssh|aws|azure|kube|docker|gnupg|config|claude|marrow)|npmrc|netrc|pypirc|pgpass|git-credentials|dev\.vars|id_(?:rsa|dsa|ecdsa|ed25519)|hosts\.yml|settings\.local|htpasswd|my\.cnf|yarnrc|\.(?:pem|key|p12|pfx|jks|keystore|kdbx|ppk)\b/;
+// A word (split at white space and `/`) with a dot that starts it, or follows one of `=:(;&|<>`, and a glob character or an expansion after that dot (`.e*`,
+// `a=.e?v`, `.e$X`). One pass over the words and the first such dot only (a later dot's rest is part of its rest): linear, where one regular expression
+// for it took seconds on a 100 KB command of `a=.b` repeated.
+const DOT_LEAD = '=:(;&|<>';
+function dotWordSpelled(text) {
+    for (const word of text.split(/[\s/]+/)) {
+        let dot = word.indexOf('.');
+        while (dot > 0 && !DOT_LEAD.includes(word[dot - 1]))
+            dot = word.indexOf('.', dot + 1);
+        if (dot !== -1 && /[*?[$`]/.test(word.slice(dot + 1)))
+            return true;
+    }
+    return false;
+}
+// A variable set to a dot word (`A=.e; B=nv; cat $A$B`) and an expansion anywhere: the name may be spelled by joining them.
+const ASSIGNED_DOT_WORD = /(?:^|[\s;&|(])[a-z_]\w*=\.[^\s/;&|)]*/;
+const SECRET_VARIABLE_USE = new RegExp(`\\$\\{?!?\\w*(?:${exports.ENV_FILTER_SECRET_NAME.source.toLowerCase()})`);
+function mayReadSecret(command) {
+    const text = command.replace(/['"\\]/g, '').toLowerCase();
+    return SECRET_FILE_WORDS.test(text) || dotWordSpelled(text) || (text.includes('$') && ASSIGNED_DOT_WORD.test(text)) || SECRET_VARIABLE_USE.test(text);
+}
+/**
+ * `link` when a word of the command is a symbolic link, or a path through one (it reads as what it points at, whatever its name; the text alone cannot say);
+ * with `onlySecret` (a command the policy reads whole), only a link whose target is a secret path. `unread` when the command has more words than the limit.
+ * A word is read as a path from the working folder, the home (`~`, `$HOME`) and any folder the command names that exists (a `cd` target); words that hold an
+ * expansion or a glob are not paths yet. The mapper is then given the real `realpath` for this command, and only for it. A command with more words than the
+ * limit is asked of the mapper, so an unread word is never a pass.
+ */
+const LINK_WORD_LIMIT = 2048;
+function namesSymlink(command, onlySecret = false) {
+    let cwd;
+    try {
+        cwd = process.cwd();
+    }
+    catch {
+        return 'none';
+    }
+    const home = (process.env.HOME || (0, node_os_1.homedir)()).replace(/\/+$/, '');
+    const words = command.replace(/['"\\]/g, '').split(WORD_BREAK).filter((word) => word.length > 0 && word.length <= 4096 && !word.startsWith('-') && !/[*?[{$`]/.test(word.replace(/^\$\{?HOME\}?(?=\/|$)/, '')));
+    const bases = [cwd];
+    const moved = (word, base) => {
+        const lexical = word === '~' || word.startsWith('~/') ? (0, node_path_1.resolve)(home, word.slice(2)) : word.startsWith('$HOME') || word.startsWith('${HOME}') ? (0, node_path_1.resolve)(home, word.replace(/^\$\{?HOME\}?\/?/, '')) : (0, node_path_1.resolve)(base, word);
+        // `/proc/self` and `/proc/thread-self` are links the kernel makes; a word under /proc is read by the env-dump words, not as a link.
+        if (lexical === '/proc' || lexical.startsWith('/proc/'))
+            return false;
+        try {
+            const real = (0, node_fs_1.realpathSync)(lexical);
+            return real !== lexical && (!onlySecret || (0, hook_tool_policy_1.isSecretPath)(real));
+        }
+        catch {
+            return false;
+        }
+    };
+    let reads = 0;
+    if (CHANGES_FOLDER.test(command)) {
+        for (const word of words) {
+            if (bases.length >= 9)
+                break;
+            const lexical = word.startsWith('/') ? word : (0, node_path_1.resolve)(cwd, word);
+            try {
+                if ((0, node_fs_1.statSync)(lexical).isDirectory())
+                    bases.push(lexical);
+            }
+            catch { /* not a folder that exists */ }
+        }
+    }
+    for (const word of words) {
+        for (const base of bases) {
+            reads += 1;
+            if (reads > LINK_WORD_LIMIT)
+                return 'unread';
+            if (moved(word, base))
+                return 'link';
+        }
+    }
+    return 'none';
+}
+const fsGone = (error) => ['ENOENT', 'ENOTDIR'].includes(error?.code || '');
+const fsDenied = (error) => ['EACCES', 'EPERM'].includes(error?.code || '');
+const REAL_FS_VIEW = {
+    readFile: () => null,
+    realpath(path) { try {
+        return (0, node_fs_1.realpathSync)(path);
+    }
+    catch (error) {
+        if (fsGone(error))
+            return null;
+        throw error;
+    } },
+    readdir(path) { try {
+        return (0, node_fs_1.readdirSync)(path);
+    }
+    catch (error) {
+        if (fsGone(error) || fsDenied(error))
+            return null;
+        throw error;
+    } },
+};
+const TEXT_ONLY_FS_VIEW = { readFile: () => null, realpath: (path) => path };
+// What the second run may add to the first: an S4 hit on a PATH (a secret file named, a link to one, a glob or pattern that can spell one, a secret folder
+// walked). Never `ps_environment_loose` or a credential-printing command (`gh auth token`, `aws sts get-session-token`: not a read of a file), and never a
+// reason the mapper only gives a word that is no path (the pattern of `grep .env README.md`) in a command the policy reads whole (policyReadsAllWords).
+const SECOND_RUN_REASONS = /_secret_(?:path|pattern|dir)$|_secret_name$|_unknown_link$|^copy_secret_directory$|^tool_grep_glob_secret$/;
 function shellPrintsEnvironment(command) {
     if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command)
         return lastEnvDumpAnswer.dumps;
-    if (!mayPrintEnvironment(command) && !mayReadApprovalState(command))
+    const secretNamed = mayReadSecret(command);
+    const readsWhole = (0, hook_tool_policy_1.policyReadsAllWords)(command);
+    const links = namesSymlink(command, readsWhole);
+    // A command the policy reads whole is held when a link in it points at a secret path (the policy judges the target as it judges any path); any other
+    // command that names a link, or has too many words to read, is asked of the mapper.
+    const linkedSecret = readsWhole && links === 'link';
+    const linked = linkedSecret || (readsWhole ? links === 'unread' : links !== 'none');
+    if (!mayPrintEnvironment(command) && !mayReadApprovalState(command) && !secretNamed && !linked)
         return false;
+    if (linkedSecret) {
+        lastEnvDumpAnswer = { command, dumps: true };
+        return true;
+    }
     let dumps;
     try {
         if (envDumpTools === undefined) {
             try {
+                // eslint-disable-next-line @typescript-eslint/no-var-requires
                 envDumpTools = { mapper: require('./seatbelt/mapper'), reasons: require('./seatbelt/env-dump').ENV_DUMP_REASONS };
             }
             catch {
@@ -744,26 +873,33 @@ function shellPrintsEnvironment(command) {
             }
         }
         if (!envDumpTools)
-            dumps = ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command);
+            dumps = ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command) || secretNamed || linked;
         else {
             const { mapper, reasons } = envDumpTools;
-            const decision = mapper.evaluateSeatbeltShell(command, {
+            const namesMarrow = /approvals|\.marrow/i.test(command.replace(/['"\\]/g, ''));
+            const ask = (fs) => mapper.evaluateSeatbeltShell(command, {
                 cwd: process.cwd(),
                 home: process.env.HOME || (0, node_os_1.homedir)(),
                 tmpdir: '/tmp',
                 platform: process.platform,
-                fs: { readFile: () => null, realpath: (path) => path },
+                fs,
                 git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
             });
             // The same answer holds both reads: the env-dump reasons, and the host-approvals state file: the reason the mapper adds to a hit on it, or
-            // any S4 or S0 stop of a command that names the folder or ~/.marrow (a wrapper, a copy, a walk that reaches it).
-            const namesMarrow = /approvals|\.marrow/i.test(command.replace(/['"\\]/g, ''));
-            dumps = decision.hits.some((hit) => (hit.category === 'S4' && (reasons.has(hit.reason) || hit.reason === secret_paths_1.APPROVAL_STATE_REASON)) || ((hit.category === 'S4' || hit.category === 'S0') && namesMarrow)
-                || (MAPPER_UNSURE.test(hit.reason) && (ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command))));
+            // any S4 or S0 stop of a command that names the folder or ~/.marrow (a wrapper, a copy, a walk that reaches it); and a mapper that cannot decide
+            // (an error, an exhausted budget) on a command that may read a secret.
+            const unsure = ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command) || secretNamed || linked;
+            const holds = (decision, paths) => decision.hits.some((hit) => (hit.category === 'S4' && (reasons.has(hit.reason) || hit.reason === secret_paths_1.APPROVAL_STATE_REASON || (paths && SECOND_RUN_REASONS.test(hit.reason)))) || ((hit.category === 'S4' || hit.category === 'S0') && namesMarrow)
+                || (MAPPER_UNSURE.test(hit.reason) && unsure));
+            // The text alone is read first, exactly as before. A command that can name a secret file inside code the policy does not read (a wrapper, a glob, a
+            // variable, a name it cannot parse), or names a link, is then read again with the real `realpath` and `readdir` (no file contents): a word is a secret
+            // path only where the file is there (`process.env` in `grep -rn process.env src` names no file; the text alone cannot say), a link reads as its target
+            // and a glob as the names it expands to. Either run can hold the command, so no answer is looser than the text's.
+            dumps = holds(ask(TEXT_ONLY_FS_VIEW), false) || (((secretNamed && !readsWhole) || linked) && holds(ask(REAL_FS_VIEW), true));
         }
     }
     catch {
-        dumps = ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command);
+        dumps = ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command) || secretNamed || linked;
     }
     lastEnvDumpAnswer = { command, dumps };
     return dumps;

@@ -12,6 +12,7 @@ exports.isSecretPath = isSecretPath;
 exports.isProtectedWriteTarget = isProtectedWriteTarget;
 exports.isSecretVariableName = isSecretVariableName;
 exports.shellSegmentVerdict = shellSegmentVerdict;
+exports.policyReadsAllWords = policyReadsAllWords;
 exports.toolTargetPaths = toolTargetPaths;
 exports.isSecretMaterialAccess = isSecretMaterialAccess;
 exports.isSecretMaterialAccessAsNamed = isSecretMaterialAccessAsNamed;
@@ -25,6 +26,7 @@ exports.readEquivalent = readEquivalent;
 exports.shellCommandToolText = shellCommandToolText;
 exports.shellCommandToolRunOptions = shellCommandToolRunOptions;
 exports.isWholeInputNativeTool = isWholeInputNativeTool;
+const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const own_tool_1 = require("./own-tool");
@@ -529,6 +531,25 @@ function isApprovalStateFolder(value, base = process.cwd()) {
 function isProcessFolder(value, base = process.cwd()) {
     return pathCandidates(String(value || '')).some((candidate) => secret_paths_1.PROC_PROCESS_TREE.test(normalizedToolPath(candidate, base)));
 }
+/**
+ * True when a path the tool names is a symbolic link, or goes through one, to a secret file (or, for a write, to a protected one): a read or an edit
+ * through it is of the file it points at, whatever the link is called. Only a path that exists and resolves elsewhere is read; nothing else changes.
+ */
+function secretThroughLink(value, write, base = process.cwd()) {
+    return pathCandidates(String(value || '')).some((candidate) => {
+        let real;
+        try {
+            const lexical = normalizedToolPath(candidate, base);
+            real = (0, node_fs_1.realpathSync)(lexical);
+            if (real === lexical)
+                return false;
+        }
+        catch {
+            return false;
+        }
+        return write ? isProtectedWriteTarget(real) : isSecretPath(real);
+    });
+}
 /** True for a secret file or Marrow's own local control state. */
 function isProtectedWriteTarget(value, base = process.cwd()) {
     return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base)
@@ -732,6 +753,23 @@ function shellAnalysis(command, dialect, parse = dialect) {
     });
     return { segments, verdicts };
 }
+/**
+ * True when the policy's own reading is the whole answer for a shell command: it parses, every simple command in it is a recognised read-only
+ * program (a `cat`, `grep`, `ls`, `jq`, `ps`, never a wrapper such as `bash -c`, `eval`, `sudo`, `ssh`, `xargs` or a program that writes), and no word
+ * holds a glob, a brace or a variable (those can spell a name the text does not hold). Such a command names its files in the words the policy already
+ * judges, so a second reading of it by the mapper could only add the mapper's own over-stops (the pattern or filter operand of `grep .env README.md`).
+ */
+function policyReadsAllWords(command) {
+    try {
+        const analysis = shellAnalysis(command);
+        if (!analysis?.segments.length || !analysis.verdicts.every((verdict) => verdict === 'read'))
+            return false;
+        return analysis.segments.every((segment) => segment.expansions.length === 0 && ![...segment.words, ...segment.inputs, ...segment.outputs].some((word) => /[*?[{]/.test(word)));
+    }
+    catch {
+        return false;
+    }
+}
 function stringLeaves(value, depth = 0, output = []) {
     if (output.length >= 64 || depth > 4)
         return output;
@@ -795,9 +833,9 @@ function isSecretMaterialAccess(event, printsEnvironment) {
 function isSecretMaterialAccessAsNamed(event, printsEnvironment) {
     const tool = normalizeHookToolName(event.tool_name);
     if (CONTENT_READ_TOOLS.has(tool))
-        return toolTargetPaths(event).some((path) => isSecretPath(path) || (tool === 'grep' && (isProcessFolder(path) || isApprovalStateFolder(path))));
+        return toolTargetPaths(event).some((path) => isSecretPath(path) || secretThroughLink(path, false) || (tool === 'grep' && (isProcessFolder(path) || isApprovalStateFolder(path))));
     if (FILE_EDIT_TOOLS.has(tool))
-        return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
+        return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path) || secretThroughLink(path, true));
     if (!SHELL_TOOLS.has(tool))
         return false;
     const command = shellCommandText(event);

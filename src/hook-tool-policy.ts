@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
@@ -466,6 +467,22 @@ function isProcessFolder(value: string, base = process.cwd()): boolean {
   return pathCandidates(String(value || '')).some((candidate) => PROC_PROCESS_TREE.test(normalizedToolPath(candidate, base)));
 }
 
+/**
+ * True when a path the tool names is a symbolic link, or goes through one, to a secret file (or, for a write, to a protected one): a read or an edit
+ * through it is of the file it points at, whatever the link is called. Only a path that exists and resolves elsewhere is read; nothing else changes.
+ */
+function secretThroughLink(value: string, write: boolean, base = process.cwd()): boolean {
+  return pathCandidates(String(value || '')).some((candidate) => {
+    let real: string;
+    try {
+      const lexical = normalizedToolPath(candidate, base);
+      real = realpathSync(lexical);
+      if (real === lexical) return false;
+    } catch { return false; }
+    return write ? isProtectedWriteTarget(real) : isSecretPath(real);
+  });
+}
+
 /** True for a secret file or Marrow's own local control state. */
 export function isProtectedWriteTarget(value: string, base = process.cwd()): boolean {
   return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base)
@@ -635,6 +652,20 @@ function shellAnalysis(command: string, dialect?: ShellDialect, parse: ShellDial
   return { segments, verdicts };
 }
 
+/**
+ * True when the policy's own reading is the whole answer for a shell command: it parses, every simple command in it is a recognised read-only
+ * program (a `cat`, `grep`, `ls`, `jq`, `ps`, never a wrapper such as `bash -c`, `eval`, `sudo`, `ssh`, `xargs` or a program that writes), and no word
+ * holds a glob, a brace or a variable (those can spell a name the text does not hold). Such a command names its files in the words the policy already
+ * judges, so a second reading of it by the mapper could only add the mapper's own over-stops (the pattern or filter operand of `grep .env README.md`).
+ */
+export function policyReadsAllWords(command: string): boolean {
+  try {
+    const analysis = shellAnalysis(command);
+    if (!analysis?.segments.length || !analysis.verdicts.every((verdict) => verdict === 'read')) return false;
+    return analysis.segments.every((segment) => segment.expansions.length === 0 && ![...segment.words, ...segment.inputs, ...segment.outputs].some((word) => /[*?[{]/.test(word)));
+  } catch { return false; }
+}
+
 function stringLeaves(value: unknown, depth = 0, output: string[] = []): string[] {
   if (output.length >= 64 || depth > 4) return output;
   if (typeof value === 'string') output.push(value);
@@ -689,8 +720,8 @@ export function isSecretMaterialAccess(event: ToolPolicyEvent, printsEnvironment
 /** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
 export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean {
   const tool = normalizeHookToolName(event.tool_name);
-  if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path) || (tool === 'grep' && (isProcessFolder(path) || isApprovalStateFolder(path))));
-  if (FILE_EDIT_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
+  if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path) || secretThroughLink(path, false) || (tool === 'grep' && (isProcessFolder(path) || isApprovalStateFolder(path))));
+  if (FILE_EDIT_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path) || secretThroughLink(path, true));
   if (!SHELL_TOOLS.has(tool)) return false;
   const command = shellCommandText(event);
   if (printsEnvironment && event[SHELL_DIALECT] !== 'powershell' && printsEnvironment(command)) return true;
