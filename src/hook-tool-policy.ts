@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
-import { PROC_ENVIRON, PROC_PROCESS_TREE, SECRET_PATTERNS } from './secret-paths';
+import { APPROVAL_STATE_PATH, PROC_ENVIRON, PROC_PROCESS_TREE, SECRET_PATTERNS } from './secret-paths';
 
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
 
@@ -411,7 +411,7 @@ function secretPath(value: string, base: string): boolean {
   // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
   // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
   const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
-  if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail))) return true;
+  if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)) || APPROVAL_STATE_PATH.test(tail)) return true;
   return SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }
 
@@ -450,6 +450,15 @@ function globVariants(value: string): string[] {
 /** True for a path that holds secret or credential material. */
 export function isSecretPath(value: string, base = process.cwd()): boolean {
   return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base));
+}
+
+/** The host-approvals folder, or ~/.marrow that holds it: a search tool that walks either reads the state file. */
+function isApprovalStateFolder(value: string, base = process.cwd()): boolean {
+  const folder = posix.join(homeDirectory(), '.marrow', 'host-approvals').toLowerCase();
+  return pathCandidates(String(value || '')).some((candidate) => {
+    const walked = normalizedToolPath(candidate, base).replace(/\/+$/, '').toLowerCase();
+    return walked === folder || walked === posix.dirname(folder);
+  });
 }
 
 /** A process folder (`/proc`, `/proc/self/task`): a search tool that walks it reads the `environ` of every process under it. */
@@ -680,7 +689,7 @@ export function isSecretMaterialAccess(event: ToolPolicyEvent, printsEnvironment
 /** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
 export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean {
   const tool = normalizeHookToolName(event.tool_name);
-  if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path) || (tool === 'grep' && isProcessFolder(path)));
+  if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path) || (tool === 'grep' && (isProcessFolder(path) || isApprovalStateFolder(path))));
   if (FILE_EDIT_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
   if (!SHELL_TOOLS.has(tool)) return false;
   const command = shellCommandText(event);

@@ -463,7 +463,7 @@ function secretPath(value, base) {
     // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
     // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
     const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
-    if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)))
+    if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)) || secret_paths_1.APPROVAL_STATE_PATH.test(tail))
         return true;
     return SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }
@@ -516,6 +516,14 @@ function globVariants(value) {
 /** True for a path that holds secret or credential material. */
 function isSecretPath(value, base = process.cwd()) {
     return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base));
+}
+/** The host-approvals folder, or ~/.marrow that holds it: a search tool that walks either reads the state file. */
+function isApprovalStateFolder(value, base = process.cwd()) {
+    const folder = node_path_1.posix.join(homeDirectory(), '.marrow', 'host-approvals').toLowerCase();
+    return pathCandidates(String(value || '')).some((candidate) => {
+        const walked = normalizedToolPath(candidate, base).replace(/\/+$/, '').toLowerCase();
+        return walked === folder || walked === node_path_1.posix.dirname(folder);
+    });
 }
 /** A process folder (`/proc`, `/proc/self/task`): a search tool that walks it reads the `environ` of every process under it. */
 function isProcessFolder(value, base = process.cwd()) {
@@ -787,7 +795,7 @@ function isSecretMaterialAccess(event, printsEnvironment) {
 function isSecretMaterialAccessAsNamed(event, printsEnvironment) {
     const tool = normalizeHookToolName(event.tool_name);
     if (CONTENT_READ_TOOLS.has(tool))
-        return toolTargetPaths(event).some((path) => isSecretPath(path) || (tool === 'grep' && isProcessFolder(path)));
+        return toolTargetPaths(event).some((path) => isSecretPath(path) || (tool === 'grep' && (isProcessFolder(path) || isApprovalStateFolder(path))));
     if (FILE_EDIT_TOOLS.has(tool))
         return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
     if (!SHELL_TOOLS.has(tool))

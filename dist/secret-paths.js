@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PROC_PROCESS_TREE = exports.PROC_ENVIRON = exports.PRESENT_SECRET_PATTERNS = exports.SECRET_PATTERNS = void 0;
+exports.PROC_PROCESS_TREE = exports.PROC_ENVIRON = exports.PRESENT_SECRET_PATTERNS = exports.APPROVAL_STATE_REASON = exports.APPROVAL_STATE_PATH = exports.SECRET_PATTERNS = void 0;
 /**
  * The secret file paths both Marrow hooks read (one table): the keyless seatbelt stops a read
  * of one (S4), and the keyed policy treats it as a secret access. Home-anchored entries are matched
@@ -19,7 +19,18 @@ exports.SECRET_PATTERNS = [
     // The receipts' device salt (U6) and any other salt in Marrow's state: with it an agent could compute receipt and
     // exact-action keys. Writes there are S0.
     '**/.marrow/**/salt',
+    // The host-approvals state file (holds, the secret that keys them, and the no-device-key fallback key derived from it) and every
+    // name beside it: its temp copy (`.state-<pid>-<hex>.tmp`) and any backup hold the same secret. The folder itself is not listed: names
+    // and stat stay open, only reads of what is in it stop. Writes there are S0.
+    '**/.marrow/host-approvals/*',
 ];
+/**
+ * The host-approvals state file, its temp copies and any backup beside it, by absolute path. Matched case-insensitively (a case-folding
+ * file system reads `.MARROW/Host-Approvals/State.json` as the file). The keyed hook uses it next to SECRET_PATTERNS.
+ */
+exports.APPROVAL_STATE_PATH = /(?:^|\/)\.marrow\/host-approvals\/[^/]+$/i;
+/** The extra S4 reason the seatbelt mapper adds to a hit on that file; the keyed hook keeps it, as it keeps the env-dump reasons. */
+exports.APPROVAL_STATE_REASON = 'host_approvals_state';
 /**
  * A `<name>.env` file is read as `.env` is (same operations, same S-code) when it is there to
  * read, or when git names it as a pathspec or object (history holds it). A word that names no file,

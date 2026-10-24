@@ -6,6 +6,13 @@
  */
 export declare const SECRET_PATTERNS: readonly string[];
 /**
+ * The host-approvals state file, its temp copies and any backup beside it, by absolute path. Matched case-insensitively (a case-folding
+ * file system reads `.MARROW/Host-Approvals/State.json` as the file). The keyed hook uses it next to SECRET_PATTERNS.
+ */
+export declare const APPROVAL_STATE_PATH: RegExp;
+/** The extra S4 reason the seatbelt mapper adds to a hit on that file; the keyed hook keeps it, as it keeps the env-dump reasons. */
+export declare const APPROVAL_STATE_REASON = "host_approvals_state";
+/**
  * A `<name>.env` file is read as `.env` is (same operations, same S-code) when it is there to
  * read, or when git names it as a pathspec or object (history holds it). A word that names no file,
  * such as `process.env` in `grep -rn "process.env" src`, is not a secret path; `.env` and `.env.*`

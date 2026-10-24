@@ -20,6 +20,7 @@ exports.seatbeltPassOutput = seatbeltPassOutput;
 exports.localLoopGuardDenyOutput = localLoopGuardDenyOutput;
 exports.classifyTool = classifyTool;
 exports.mayPrintEnvironment = mayPrintEnvironment;
+exports.mayReadApprovalState = mayReadApprovalState;
 exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
 exports.clinePreActionHookOutput = clinePreActionHookOutput;
 exports.windsurfPreActionDecision = windsurfPreActionDecision;
@@ -44,6 +45,7 @@ const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
 const own_server_identity_1 = require("./own-server-identity");
 const normalized_action_1 = require("./normalized-action");
+const secret_paths_1 = require("./secret-paths");
 const session_loop_guard_1 = require("./session-loop-guard");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
@@ -686,10 +688,40 @@ function globInFolderPart(words) {
     return false;
 }
 const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
+/**
+ * False for a command that cannot read the host-approvals state file: the keyed hook then does not load the mapper for it on that account. A command that
+ * can spell the folder, or a folder that holds it, holds the word `approvals` or `marrow` (quotes and backslashes split a word without changing it), an
+ * ANSI-C quote, a glob in a folder part of a path (`~/.m*\/h*\/state.json`, `cd ~/.marrow; cat h*\/s*`), or a tree walker (grep, rg, find, tar, cp, ...) given
+ * the home or the root, or given `.`/`..`/`*` while the hook runs in the home or the root. A path that only a computed name spells
+ * (`cd ~; cd .m*; cd h*; cat s*`) is read by the keyless mapper but not asked of it here.
+ */
+const TREE_WALKERS = /\b(?:grep|egrep|fgrep|zgrep|rg|ag|ack|find|tar|zip|rsync|cp|scp|xargs|7z|bsdtar|cpio|pax)\b/;
+const HOME_OR_ROOT_OPERAND = /(?:^|[\s=:'"])(?:~|\$HOME|\$\{HOME\}|\/home|\/Users|\/)\/?(?=[\s'";&|)]|$)/;
+const CWD_RELATIVE_OPERAND = /(?:^|\s)(?:\.\.?|\*|\.\/\*|\.\*)\/?(?=\s|$)/;
+function runsInHomeOrAbove() {
+    try {
+        const home = (process.env.HOME || (0, node_os_1.homedir)()).replace(/\/+$/, '');
+        const cwd = process.cwd().replace(/\/+$/, '') || '/';
+        return cwd === '/' || cwd === home || home.startsWith(`${cwd}/`);
+    }
+    catch {
+        return false;
+    }
+}
+function mayReadApprovalState(command) {
+    if (command.includes("$'") || command.includes('$"'))
+        return true;
+    const text = command.replace(/['"\\]/g, '').toLowerCase();
+    if (text.includes('approvals') || text.includes('marrow') || globInFolderPart(text))
+        return true;
+    if (!TREE_WALKERS.test(text))
+        return false;
+    return HOME_OR_ROOT_OPERAND.test(command) || (CWD_RELATIVE_OPERAND.test(command) && runsInHomeOrAbove());
+}
 function shellPrintsEnvironment(command) {
     if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command)
         return lastEnvDumpAnswer.dumps;
-    if (!mayPrintEnvironment(command))
+    if (!mayPrintEnvironment(command) && !mayReadApprovalState(command))
         return false;
     let dumps;
     try {
@@ -702,7 +734,7 @@ function shellPrintsEnvironment(command) {
             }
         }
         if (!envDumpTools)
-            dumps = ENV_DUMP_WORDS.test(command);
+            dumps = ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command);
         else {
             const { mapper, reasons } = envDumpTools;
             const decision = mapper.evaluateSeatbeltShell(command, {
@@ -713,11 +745,15 @@ function shellPrintsEnvironment(command) {
                 fs: { readFile: () => null, realpath: (path) => path },
                 git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
             });
-            dumps = decision.hits.some((hit) => (hit.category === 'S4' && reasons.has(hit.reason)) || (MAPPER_UNSURE.test(hit.reason) && ENV_DUMP_WORDS.test(command)));
+            // The same answer holds both reads: the env-dump reasons, and the host-approvals state file: the reason the mapper adds to a hit on it, or
+            // any S4 or S0 stop of a command that names the folder or ~/.marrow (a wrapper, a copy, a walk that reaches it).
+            const namesMarrow = /approvals|\.marrow/i.test(command.replace(/['"\\]/g, ''));
+            dumps = decision.hits.some((hit) => (hit.category === 'S4' && (reasons.has(hit.reason) || hit.reason === secret_paths_1.APPROVAL_STATE_REASON)) || ((hit.category === 'S4' || hit.category === 'S0') && namesMarrow)
+                || (MAPPER_UNSURE.test(hit.reason) && (ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command))));
         }
     }
     catch {
-        dumps = ENV_DUMP_WORDS.test(command);
+        dumps = ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command);
     }
     lastEnvDumpAnswer = { command, dumps };
     return dumps;

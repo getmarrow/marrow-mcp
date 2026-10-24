@@ -169,6 +169,7 @@ export declare function classifyTool(event: PreToolUseEvent, options?: ClassifyO
 export declare const ENV_FILTER_SECRET_NAME: RegExp;
 /** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
 export declare function mayPrintEnvironment(command: string): boolean;
+export declare function mayReadApprovalState(command: string): boolean;
 export declare function cursorPreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function clinePreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function windsurfPreActionDecision(result: PreActionControlResult): {

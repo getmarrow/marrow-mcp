@@ -46,6 +46,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.evaluateSeatbeltShell = evaluateSeatbeltShell;
 exports.evaluateSeatbelt = evaluateSeatbelt;
 const path = __importStar(require("node:path"));
+const secret_paths_1 = require("../secret-paths");
 const tables_1 = require("./tables");
 const classifier_pin_1 = require("./classifier-pin");
 const longopts_1 = require("./longopts");
@@ -265,6 +266,10 @@ function evaluateEvent(event, env) {
             // The tool searches every file under a folder: a process folder reaches the `environ` of each.
             if (namesProcEnviron(absCandidates(p, ctx, run) || [], env_dump_1.PROC_PROCESS_TREE))
                 hit(run, 'S4', 'proc_environ');
+            // Likewise the host-approvals folder, and ~/.marrow that holds it.
+            if (namesApprovalStateFolder(absCandidates(p, ctx, run) || [], run)) {
+                checkSecretOperand(litArg(`${path.posix.join(run.home, '.marrow', 'host-approvals')}/state.json`), ctx, run, 'tool_grep');
+            }
         }
         for (const key of ['glob', 'include', 'file_pattern']) {
             const g = input[key];
@@ -4522,6 +4527,8 @@ function checkSecretOperand(a, ctx, run, reason, history = false, pattern = fals
                 // A glob or dynamic path that can spell a process environment file also carries the env-dump reason (the keyed hook keeps only those).
                 if (sampleMatch(probe, ctx, run, samples.filter((s) => env_dump_1.PROC_ENVIRON.test(s))))
                     hit(run, 'S4', 'proc_environ');
+                if (sampleMatch(probe, ctx, run, samples.filter((s) => secret_paths_1.APPROVAL_STATE_PATH.test(s))))
+                    hit(run, 'S4', secret_paths_1.APPROVAL_STATE_REASON);
                 return hit(run, 'S4', `${reason}_secret_pattern`);
             }
             if (underUnknown && a.text !== null && a.glob && /[*?[]/.test(text) && globMayEndWith(text, '.env', run.fold))
@@ -4542,6 +4549,8 @@ function checkSecretOperand(a, ctx, run, reason, history = false, pattern = fals
                     continue;
                 if (env_dump_1.PROC_ENVIRON.test(r))
                     hit(run, 'S4', 'proc_environ');
+                if (secret_paths_1.APPROVAL_STATE_PATH.test(r))
+                    hit(run, 'S4', secret_paths_1.APPROVAL_STATE_REASON);
                 return hit(run, 'S4', `${reason}_secret_path`);
             }
         }
@@ -4912,7 +4921,11 @@ function isSecretDirOrAncestor(text, ctx, run) {
     if (!abs)
         return false;
     const dirs = SECRET_DIRS.map((d) => path.posix.join(run.home, d));
-    return abs.some((p) => realCandidates(p, run, true).some((r) => dirs.some((d) => isAncestorOrSelf(r, d) || isAncestorOrSelf(d, r))));
+    const secretDir = abs.some((p) => realCandidates(p, run, true).some((r) => dirs.some((d) => isAncestorOrSelf(r, d) || isAncestorOrSelf(d, r))));
+    // Every caller stops (S4) on true. A walk that reaches the host-approvals state file also carries the reason the keyed hook keeps.
+    if (secretDir && reachesApprovalState(text, ctx, run))
+        hit(run, 'S4', secret_paths_1.APPROVAL_STATE_REASON);
+    return secretDir;
 }
 // `cat $(echo ~/.ssh/id_rsa)`, `cat $(ls ~/.ssh/id_*)`, `cat $(find ~/.ssh -name 'id_*')`: the path
 // is produced by a substitution that the reader then opens.
@@ -4941,6 +4954,14 @@ function substitutionOperandCheck(prog, rest, ctx, run, subs) {
 }
 // grep -r, rg, ag and ack over a credential directory, or over a directory that holds one, print
 // matches from the credential files inside it.
+// True when `text` names the host-approvals folder, or a folder that holds it (~/.marrow, the home, /): a search walking it reads the state file.
+function reachesApprovalState(text, ctx, run) {
+    const abs = absCandidates(text, ctx, run);
+    if (!abs)
+        return false;
+    const dir = path.posix.join(run.home, '.marrow', 'host-approvals');
+    return abs.some((p) => realCandidates(p, run, true).some((r) => isAncestorOrSelf(run.fold ? r.toLowerCase() : r, run.fold ? dir.toLowerCase() : dir)));
+}
 function recursiveSecretDirRead(prog, rest, ctx, run) {
     const searchers = new Set(['grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'ack']);
     if (!searchers.has(prog))
@@ -4994,6 +5015,11 @@ function genericOperandChecks(prog, args, ctx, run, subs = []) {
             const abs = absCandidates(a.text, ctx, run);
             if (!abs)
                 continue;
+            if (reachesApprovalState(a.text, ctx, run)) {
+                hit(run, 'S4', secret_paths_1.APPROVAL_STATE_REASON);
+                hit(run, 'S4', 'copy_secret_directory');
+                break;
+            }
             if (abs.some((p) => realCandidates(p, run, true).some((r) => secretDirs.some((d) => isAncestorOrSelf(r, d))))) {
                 hit(run, 'S4', 'copy_secret_directory');
                 break;
@@ -10624,12 +10650,24 @@ function handleDd(rest, run) {
 }
 // ---------------------------------------------------------------------------------------------
 // Grep tool glob, Edit/Write tool on protected files
+function namesApprovalStateFolder(abs, run) {
+    const folder = path.posix.join(run.home, '.marrow', 'host-approvals');
+    const same = (a, b) => (run.fold ? a.toLowerCase() === b.toLowerCase() : a === b);
+    return abs.some((p) => { const q = path.posix.normalize(p).replace(/\/+$/, ''); return same(q, folder) || same(q, path.posix.dirname(folder)); });
+}
 function checkGrepGlob(glob, ctx, run) {
     const g = glob.replace(/^\*\*\//, '');
     const re = patternToRegex(g, false);
     const samples = (0, tables_1.secretSamples)(run.home, cwdsList(ctx));
-    if (samples.some((s) => re.test(path.posix.basename(s)) && isSecretPath(s, run)))
+    // The state file's name is generic (`state.json`): a glob on the name alone is not read as that file (the folder rule and the suffix rule below are).
+    if (samples.some((s) => !secret_paths_1.APPROVAL_STATE_PATH.test(s) && re.test(path.posix.basename(s)) && isSecretPath(s, run)))
         hit(run, 'S4', 'tool_grep_glob_secret');
+    // A glob with folders (`.marrow/host-approvals/state.json`, an absolute one) is read against the same number of trailing names of the state file samples.
+    const depth = g.split('/').filter(Boolean).length;
+    if (depth > 1 && samples.some((s) => secret_paths_1.APPROVAL_STATE_PATH.test(s) && patternToRegex(g.replace(/^\/+/, ''), false).test(s.split('/').slice(-depth).join('/')))) {
+        hit(run, 'S4', 'tool_grep_glob_secret');
+        hit(run, 'S4', secret_paths_1.APPROVAL_STATE_REASON);
+    }
 }
 // Patch round 3 (delta audit F-CODEX): `.codex/hooks.json` is not compared like the others: any write under .codex stops (S0)
 // on every host, including a gemini write_file that leaves the Marrow part as it was.
