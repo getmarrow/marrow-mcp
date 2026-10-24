@@ -34,6 +34,8 @@ export type PreToolUseEvent = {
     tool_input?: unknown;
     permission_mode?: string;
     scratchpad_dir?: string;
+    /** The host's working folder for the call (the keyless seatbelt reads it too); only an absolute path is used. */
+    cwd?: string;
 };
 type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
 /** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
@@ -146,10 +148,11 @@ export type ToolClassification = {
     protected: boolean;
     readOnly: boolean;
 };
-/** `ownUnproven` and `postTool` are described on classifyTool. */
+/** `ownUnproven` and `postTool` are described on classifyTool. `cwd` is the event's working folder (classifyTool fills it from the event when it is an absolute path). */
 export type ClassifyOptions = {
     ownUnproven?: boolean;
     postTool?: boolean;
+    cwd?: string;
 };
 /**
  * The classification of one tool call. A Monitor command (and a native git

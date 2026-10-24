@@ -26,6 +26,18 @@ fs.writeFileSync(path.join(proj, 'package.json'), '{"name":"p"}');
 fs.symlinkSync(path.join(proj, '.env.local'), path.join(proj, 'link.txt'));
 fs.symlinkSync(path.join(proj, '.env.local'), path.join(proj, 'innocent.log'));
 fs.symlinkSync(path.join(proj, 'README.md'), path.join(proj, 'docs-link.md'));
+// Patch round 2 (MED-1, LOW-1, LOW-2): a link whose own name holds `)`, a link in the home, a second folder where the same names are plain files, and a folder the hook may be spawned in.
+fs.symlinkSync(path.join(proj, '.env.local'), path.join(proj, 'odd)'));
+fs.mkdirSync(path.join(home, '.aws'), { recursive: true });
+fs.writeFileSync(path.join(home, '.aws', 'credentials'), 'DUMMY=1\n');
+fs.symlinkSync(path.join(home, '.aws', 'credentials'), path.join(home, 'notes.log'));
+const plain = path.join(base, 'plain');
+fs.mkdirSync(plain, { recursive: true });
+for (const f of ['innocent.log', 'link.txt', 'docs.md']) fs.writeFileSync(path.join(plain, f), 'plain file\n');
+const elsewhere = path.join(base, 'elsewhere');
+fs.mkdirSync(elsewhere, { recursive: true });
+const otherHome = path.join(base, 'other-home');
+fs.mkdirSync(otherHome, { recursive: true });
 fs.mkdirSync(path.join(proj, 'node_modules', '.bin'), { recursive: true });
 fs.writeFileSync(path.join(proj, 'node_modules', 'real.js'), '1');
 fs.symlinkSync(path.join(proj, 'node_modules', 'real.js'), path.join(proj, 'node_modules', '.bin', 'tool'));
@@ -61,6 +73,13 @@ for (const c of ['true && cat .env.local', 'ls; cat .env.local', 'false || cat .
   "bash -c 'for f in .env.local; do cat $f; done'", "bash -c 'cat .npmrc'", "eval 'cat .dev.vars'", "bash -c 'cat .netrc'", "eval 'cat .git-credentials'", "bash -c 'cat ~/.ssh/id_ed25519'", "eval 'cat ~/.aws/credentials'", "bash -c 'echo $GITHUB_TOKEN'", "bash -c 'printenv'"]) SECRET_ROWS.push([c, bash(c)]);
 for (const [n, t] of [['Read .env.local', tool('Read', { file_path: '.env.local' })], ['Read link', tool('Read', { file_path: 'link.txt' })], ['Read abs link', tool('Read', { file_path: path.join(proj, 'innocent.log') })],
   ['Grep link', tool('Grep', { pattern: 'K', path: 'link.txt' })], ['Edit link', tool('Edit', { file_path: 'link.txt', old_string: 'a', new_string: 'b' })], ['Monitor bash -c', tool('Monitor', { command: "bash -c 'cat .env.local'" })]]) SECRET_ROWS.push([n, t]);
+
+// MED-1: a link to a secret file named inside a subshell, a substitution or a backtick pair (the word ends in `)` or a backtick); a link whose own name holds `)`.
+// LOW-1: a read nested deep enough that the mapper falls back to its text tripwire (`tripwire_env_file`).
+for (const c of ['(cat innocent.log)', '$(cat link.txt)', '`cat innocent.log`', 'echo $(cat link.txt)', 'echo `cat innocent.log`', 'x=$(cat link.txt); echo done', '(cat link.txt) | wc -l', 'echo "$(cat innocent.log)"',
+  '(true; cat innocent.log)', "bash -c '(cat innocent.log)'", "cat 'odd)'", 'echo ${V:-$(cat link.txt)}', '(cd sub && cat ../link.txt)', 'diff <(cat innocent.log) README.md',
+  "bash -c \"true && timeout 5 bash -c 'for f in .env.local; do cat $f; done'\"", "bash -c \"true && timeout 5 bash -c 'for f in .env.production; do cat $f; done'\"",
+  "bash -c \"true && timeout 5 bash -c 'for f in .env.{TOK}; do cat $f; done'\""]) SECRET_ROWS.push([c, bash(c)]);
 
 test('every secret read the seatbelt stops is a protected keyed action and an outage hold', () => {
   const missed = [];
@@ -156,7 +175,7 @@ test('a link in a command the policy reads whole is held only when it points at 
 
 const CLI = path.join(ROOT, 'dist', 'cli.js');
 const KEY = `mrw_test_${crypto.randomBytes(16).toString('hex')}`;
-function realHook(mode, command) {
+function realHook(mode, command, spawnCwd = proj, eventCwd = proj) {
   const mock = path.join(base, 'mock');
   fs.mkdirSync(mock, { recursive: true });
   fs.writeFileSync(path.join(mock, 'config.json'), JSON.stringify({ runtime: { ok: true, decision_id: 'd-allow', risk_gate: { allow: true, decision: 'allow', enforced: true, gate_required: false, risk_level: 'low' } } }));
@@ -168,8 +187,8 @@ function realHook(mode, command) {
     keyless: { args: [...req('passwd-home-fake.cjs'), ...req('seatbelt-hook-preload.cjs')], env: common },
   };
   const m = modes[mode];
-  const r = spawnSync(process.execPath, [...m.args, CLI, 'claude-pre-action-hook'], { cwd: proj, encoding: 'utf8', timeout: 60000, env: m.env,
-    input: JSON.stringify({ session_id: 's', cwd: proj, hook_event_name: 'PreToolUse', permission_mode: 'default', tool_name: 'Bash', tool_input: { command: command.split('{TOK}').join(TOK) } }) });
+  const r = spawnSync(process.execPath, [...m.args, CLI, 'claude-pre-action-hook'], { cwd: spawnCwd, encoding: 'utf8', timeout: 60000, env: m.env,
+    input: JSON.stringify({ session_id: 's', cwd: eventCwd, hook_event_name: 'PreToolUse', permission_mode: 'default', tool_name: 'Bash', tool_input: { command: command.split('{TOK}').join(TOK) } }) });
   assert.equal(r.error, undefined);
   assert.equal(`${r.stdout}${r.stderr}`.includes(KEY) || `${r.stdout}${r.stderr}`.includes(TOK), false, 'no secret in hook output');
   let j = null;
@@ -182,6 +201,162 @@ test('the real hook stops the F-A forms in keyed (service answers allow), outage
   for (const mode of ['keyed', 'outage', 'keyless']) {
     for (const c of stops) if (realHook(mode, c) !== 'deny') wrong.push(`${mode}: ${c}`);
     for (const c of ['git status', 'cat README.md', "bash -c 'cat README.md'", 'grep -rn process.env src']) if (realHook(mode, c) === 'deny' && mode !== 'outage') wrong.push(`friction ${mode}: ${c}`);
+  }
+  assert.deepEqual(wrong, []);
+});
+
+// ---- Patch round 2: MED-1 (links in a subshell or substitution), LOW-1 (the text tripwire), LOW-2 (the event's folder) ----
+function from(dir, fn) {
+  const was = process.cwd();
+  process.chdir(dir);
+  try { return fn(); } finally { process.chdir(was); }
+}
+const keylessStopsIn = (dir, event) => evaluateSeatbelt(event, { cwd: dir, home, tmpdir: '/tmp', platform: 'linux', budgetMs: 30000, fs: realFs, git: { toplevel: () => null, getAll: () => [], currentBranch: () => 'main', remoteHead: () => 'main' } }).decision === 'stop';
+
+test('MED-1: a link named inside a subshell, a substitution or a backtick pair is a protected read only when it points at a secret file', () => {
+  const rows = ['(cat NAME)', '$(cat NAME)', '`cat NAME`', 'echo $(cat NAME)', 'echo `cat NAME`', 'x=$(cat NAME); echo done', '(cat NAME) | wc -l', 'echo "$(cat NAME)"', '(true; cat NAME)', "bash -c '(cat NAME)'", 'echo ${V:-$(cat NAME)}'];
+  for (const name of ['innocent.log', 'link.txt']) {
+    for (const row of rows) {
+      const event = bash(row.split('NAME').join(name));
+      const c = classifyTool(event);
+      assert.equal(c.protected === true && c.readOnly === false, true, `keyed: ${row} ${name}`);
+      assert.equal(keylessStops(event), true, `keyless: ${row} ${name}`);
+      assert.equal(held(event), true, `outage: ${row} ${name}`);
+    }
+  }
+  // The same names as plain files (not links), and a link to an ordinary file: nothing changes.
+  for (const [dir, names] of [[plain, ['innocent.log', 'link.txt', 'docs.md']], [proj, ['docs-link.md', 'README.md']]]) {
+    for (const name of names) {
+      for (const row of rows) {
+        const event = bash(row.split('NAME').join(name));
+        const c = from(dir, () => classifyTool(event));
+        assert.equal(c.protected, false, `plain or ordinary: ${row} ${name} in ${path.basename(dir)}`);
+        // A substitution or backtick pair AS the command (`$(cat x)`) runs what the file says: the seatbelt stops that for its own reason, whatever x is.
+        if (!/^[$`]/.test(row)) assert.equal(keylessStopsIn(dir, event), false, `keyless: ${row} ${name} in ${path.basename(dir)}`);
+      }
+    }
+  }
+});
+
+test('MED-1: a link whose own name holds `)` is still read as a link (the words are read both ways)', () => {
+  assert.equal(classifyTool(bash("cat 'odd)'")).protected, true);
+  assert.equal(keylessStops(bash("cat 'odd)'")), true);
+});
+
+test('LOW-1: a read nested so deep that the mapper falls back to its text tripwire is protected keyed, held in an outage, and stopped keyless', () => {
+  for (const c of ["bash -c \"true && timeout 5 bash -c 'for f in .env.local; do cat $f; done'\"", "bash -c \"true && timeout 5 bash -c 'for f in .env.production; do cat $f; done'\"",
+    "bash -c \"true && timeout 5 bash -c 'for f in .env.{TOK}; do cat $f; done'\""]) {
+    const event = bash(c);
+    assert.equal(classifyTool(event).protected, true, c);
+    assert.equal(keylessStops(event), true, c);
+    assert.equal(held(event), true, c);
+  }
+  for (const c of ["bash -c \"true && timeout 5 bash -c 'for f in README.md; do cat $f; done'\"", "bash -c \"true && timeout 5 bash -c 'for f in .env.example; do cat $f; done'\"", "bash -c \"true && timeout 5 bash -c 'for f in src/index.ts; do cat $f; done'\""]) {
+    assert.equal(classifyTool(bash(c)).protected, false, c);
+    assert.equal(keylessStops(bash(c)), false, c);
+  }
+});
+
+const ELSEWHERE_ROWS = ['cat link.txt', '(cat innocent.log)', "bash -c 'cat innocent.log'", "eval 'cat link.txt'", 'echo $(cat link.txt)', 'echo `cat innocent.log`', "cat 'odd)'", '(cd sub && cat ../link.txt)', "sh -c 'cat ./innocent.log'", "bash -c 'cat linkdir/../link.txt'"];
+test('LOW-2: a hook spawned in another folder resolves words against the event folder, as the keyless seatbelt does', () => {
+  for (const row of ELSEWHERE_ROWS) {
+    const event = { ...bash(row), cwd: proj };
+    assert.equal(keylessStopsIn(proj, event), true, `keyless: ${row}`);
+    const c = from(elsewhere, () => classifyTool(event));
+    assert.equal(c.protected === true && c.readOnly === false, true, `keyed from another folder: ${row}`);
+    assert.equal(from(elsewhere, () => held(event)), true, `outage from another folder: ${row}`);
+    assert.equal(from(elsewhere, () => classifyTool(bash(row), { cwd: proj })).protected, true, `option cwd: ${row}`);
+  }
+});
+
+test('LOW-2: with no event folder, or a relative one, the answer is the one the hook\'s own folder gave before', () => {
+  for (const row of ['cat link.txt', '(cat innocent.log)', "bash -c 'cat innocent.log'"]) {
+    for (const cwd of [undefined, 'proj', '', './proj', '../proj', `${proj}\0x`, 12]) {
+      const event = cwd === undefined ? bash(row) : { ...bash(row), cwd };
+      assert.equal(from(elsewhere, () => classifyTool(event)).protected, false, `no usable folder, hook elsewhere: ${row} ${JSON.stringify(cwd)}`);
+      assert.equal(classifyTool(event).protected, true, `no usable folder, hook in the project: ${row} ${JSON.stringify(cwd)}`);
+    }
+  }
+});
+
+test('LOW-2: the hook\'s own folder is always read too (an event folder only adds), and one command is answered per folder, never from the last answer', () => {
+  // Hook in the project, event folder somewhere else: the link is still found from the hook's own folder, as every earlier build found it.
+  for (const row of ['cat link.txt', '(cat innocent.log)', "bash -c 'cat innocent.log'"]) {
+    assert.equal(from(proj, () => classifyTool({ ...bash(row), cwd: elsewhere })).protected, true, `own folder kept: ${row}`);
+  }
+  // The same command text, asked in turn from two event folders in one process: each folder gets its own answer.
+  const row = "bash -c 'cat innocent.log'";
+  from(elsewhere, () => {
+    for (const cwd of [proj, elsewhere, proj, elsewhere]) assert.equal(classifyTool({ ...bash(row), cwd }).protected, cwd === proj, `event folder ${path.basename(cwd)}`);
+  });
+});
+
+test('LOW-2: the passwd home is read as the seatbelt reads it, beside the hook\'s own $HOME', () => {
+  const realInfo = os.userInfo;
+  const oldEnvHome = process.env.HOME;
+  os.userInfo = (o) => ({ ...realInfo.call(os, o), homedir: home });
+  process.env.HOME = otherHome;
+  try {
+    for (const row of ['cat ~/notes.log', '(cat ~/notes.log)', "bash -c 'cat ~/notes.log'", 'cat $HOME/notes.log', 'echo $(cat ~/notes.log)']) {
+      const event = { ...bash(row), cwd: proj };
+      assert.equal(keylessStopsIn(proj, event), true, `keyless: ${row}`);
+      assert.equal(classifyTool(event).protected, true, `passwd home: ${row}`);
+      assert.equal(classifyTool(bash(row)).protected, false, `no event folder: the hook's own $HOME only: ${row}`);
+    }
+  } finally {
+    os.userInfo = realInfo;
+    process.env.HOME = oldEnvHome;
+  }
+});
+
+test('LOW-2: ordinary work keeps its answers when the hook is spawned in another folder', () => {
+  for (const c of FRICTION) {
+    const event = { ...bash(c), cwd: proj };
+    const here = classifyTool(event);
+    const there = from(elsewhere, () => classifyTool(event));
+    assert.deepEqual([there.protected, there.readOnly, there.risk, there.type, there.target], [here.protected, here.readOnly, here.risk, here.type, here.target], c);
+    assert.equal(there.protected, FRICTION_PROTECTED_BEFORE.has(c), c);
+  }
+  for (const c of ['grep .env README.md', "jq '.env' package.json", 'ps -p 1 -o etime', 'ps -C node -o pid=', 'cat docs-link.md', '(cat docs-link.md)', 'echo $(cat docs-link.md)', 'cat .env.example']) {
+    assert.equal(from(elsewhere, () => classifyTool({ ...bash(c), cwd: proj })).protected, false, c);
+  }
+});
+
+test('collisions (patch round 2): a link in a subshell or a nested loop never shares a key with an ordinary one; text after the link stays in the key; no secret in the key', () => {
+  const salt = crypto.randomBytes(32);
+  const n = (c) => normalizedHookAction(bash(c), { salt });
+  const key = (a) => JSON.stringify([a.programs, a.paths, a.tool_input.command, a.tool_input.command_sha256, a.tool_input.exact_hmac, a.truncated]);
+  const nested = (name, tail = '') => `bash -c "true && timeout 5 bash -c 'for f in ${name}; do cat $f; done'${tail}"`;
+  assert.notEqual(key(n('(cat innocent.log)')), key(n('(cat docs-link.md)')));
+  assert.notEqual(key(n('echo $(cat innocent.log)')), key(n('echo $(cat docs-link.md)')));
+  assert.notEqual(key(n('(cat innocent.log) && ls')), key(n('(cat innocent.log) && rm x')));
+  assert.notEqual(key(n(nested('.env.local'))), key(n(nested('README.md'))));
+  assert.notEqual(key(n(nested('.env.local'))), key(n(nested('.env.other'))));
+  assert.notEqual(key(n(nested(`.env.${TOK}`, ' && ls'))), key(n(nested(`.env.${TOK}`, ' && rm x'))));
+  assert.equal(key(n(nested(`.env.${TOK}`))), key(n(nested(`.env.${TOK}`))));
+  const out = JSON.stringify([n(nested(`.env.${TOK}`)), classifyTool(bash(nested(`.env.${TOK}`))), keylessStops(bash(nested(`.env.${TOK}`)))]);
+  assert.equal(out.includes(TOK) || out.includes(TOK.slice(4, 24)), false);
+  // The event's folder is not part of any key: the same command from two folders has one key.
+  const withCwd = (c, cwd) => normalizedHookAction({ ...bash(c), cwd }, { salt });
+  assert.equal(key(withCwd('(cat innocent.log)', proj)), key(withCwd('(cat innocent.log)', elsewhere)));
+});
+
+test('the real hook stops the MED-1 and LOW-1 forms in keyed (service answers allow), outage and keyless mode, and leaves plain files and ordinary links alone', () => {
+  const stops = ['(cat innocent.log)', '$(cat link.txt)', 'echo `cat innocent.log`', "cat 'odd)'", "bash -c \"true && timeout 5 bash -c 'for f in .env.local; do cat $f; done'\""];
+  const passes = ['(cat plain/innocent.log)', 'echo $(cat plain/link.txt)', '(cat docs-link.md)', 'echo $(git rev-parse HEAD)', "bash -c \"true && timeout 5 bash -c 'for f in README.md; do cat $f; done'\""];
+  const wrong = [];
+  for (const mode of ['keyed', 'outage', 'keyless']) {
+    for (const c of stops) if (realHook(mode, c) !== 'deny') wrong.push(`${mode}: ${c}`);
+    if (mode !== 'outage') for (const c of passes) if (realHook(mode, c) === 'deny') wrong.push(`friction ${mode}: ${c}`);
+  }
+  assert.deepEqual(wrong, []);
+});
+
+test('the real hook, spawned in another folder than the event\'s, stops a relative link in keyed (service answers allow), outage and keyless mode', () => {
+  const wrong = [];
+  for (const mode of ['keyed', 'outage', 'keyless']) {
+    for (const c of ['cat link.txt', '(cat innocent.log)', "bash -c 'cat innocent.log'", "cat 'odd)'"]) if (realHook(mode, c, elsewhere, proj) !== 'deny') wrong.push(`${mode}: ${c}`);
+    if (mode !== 'outage') for (const c of ['git status', 'cat README.md', '(cat docs-link.md)']) if (realHook(mode, c, elsewhere, proj) === 'deny') wrong.push(`friction ${mode}: ${c}`);
   }
   assert.deepEqual(wrong, []);
 });

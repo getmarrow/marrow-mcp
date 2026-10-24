@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, realpathSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
 import { marrowAgentRuntime, marrowCommit, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { MarrowRequestError } from './request-reliability';
@@ -196,6 +196,8 @@ export type PreToolUseEvent = {
   tool_input?: unknown;
   permission_mode?: string;
   scratchpad_dir?: string;
+  /** The host's working folder for the call (the keyless seatbelt reads it too); only an absolute path is used. */
+  cwd?: string;
 };
 
 type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client';
@@ -649,8 +651,8 @@ type ClassificationParts = { tool: string; type: string; surfaces: string[]; rea
 const CLASSIFICATION_TYPES = ['publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
 const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 
-/** `ownUnproven` and `postTool` are described on classifyTool. */
-export type ClassifyOptions = { ownUnproven?: boolean; postTool?: boolean };
+/** `ownUnproven` and `postTool` are described on classifyTool. `cwd` is the event's working folder (classifyTool fills it from the event when it is an absolute path). */
+export type ClassifyOptions = { ownUnproven?: boolean; postTool?: boolean; cwd?: string };
 
 /**
  * The classification of one tool call. A Monitor command (and a native git
@@ -667,6 +669,8 @@ export type ClassifyOptions = { ownUnproven?: boolean; postTool?: boolean };
  * seatbelt is the one stricter difference). Only the pre-action hook decides (and holds) on what prints the environment.
  */
 export function classifyTool(event: PreToolUseEvent, options: ClassifyOptions = {}): ToolClassification {
+  const cwd = absoluteFolder(options.cwd) ?? absoluteFolder(event.cwd);
+  if (cwd !== options.cwd) options = { ...options, cwd };
   const reading = toolPolicyReading(event);
   if (!reading.shell.length && reading.base === 'named') return classificationFrom(classifyAsNamed(event, options));
   const shell = reading.shell.map((twin) => classifyAsNamed(twin as PreToolUseEvent, options));
@@ -716,7 +720,7 @@ function stricterParts(a: ClassificationParts, b: ClassificationParts): Classifi
 // option passes none), so only the pre-action hook ever loads the mapper.
 type EnvDumpTools = { mapper: typeof import('./seatbelt/mapper'); reasons: { has(reason: string): boolean } };
 let envDumpTools: EnvDumpTools | null | undefined;
-let lastEnvDumpAnswer: { command: string; dumps: boolean } | null = null;
+let lastEnvDumpAnswer: { command: string; where: string; dumps: boolean } | null = null;
 // Every form that prints the environment holds one of these words (env also covers environ, getenv, printenv, ENV and every wrapper's
 // last word). The mapper (about 100 ms to load and run once) is asked only for a command that holds one. Four words are read more closely
 // (what the mapper needs, and nothing less), each unless an expansion could spell it:
@@ -842,11 +846,50 @@ export function mayReadSecret(command: string): boolean {
  * limit is asked of the mapper, so an unread word is never a pass.
  */
 const LINK_WORD_LIMIT = 2048;
-function namesSymlink(command: string, onlySecret = false): 'none' | 'link' | 'unread' {
-  let cwd: string;
-  try { cwd = process.cwd(); } catch { return 'none'; }
-  const home = (process.env.HOME || homedir()).replace(/\/+$/, '');
-  const words = command.replace(/['"\\]/g, '').split(WORD_BREAK).filter((word) => word.length > 0 && word.length <= 4096 && !word.startsWith('-') && !/[*?[{$`]/.test(word.replace(/^\$\{?HOME\}?(?=\/|$)/, '')));
+// A subshell `(cat x)`, a substitution `$(cat x)` and a backtick pair `cat x` end a word with `)` or a backtick, so the words are read split there too
+// (WORD_BREAK has neither). A name that holds one of those characters is still read whole: a word is a path in either spelling.
+const LINK_WORD_BREAK = /[\s=:<>(;&|)`}]+/;
+/** The working folder and home words are resolved against. */
+type WordContext = { cwd: string; home: string };
+/** `value` when it is an absolute path (the keyless seatbelt's own test for an event's cwd, and no NUL byte), else undefined. */
+function absoluteFolder(value: unknown): string | undefined {
+  return typeof value === 'string' && value.startsWith('/') && !value.includes('\0') ? value : undefined;
+}
+function passwdHome(): string | null {
+  try {
+    const home = userInfo().homedir;
+    return typeof home === 'string' && home.startsWith('/') ? home : null;
+  } catch { return null; }
+}
+/**
+ * The folders a command's words are read in. The hook process's own (its working folder and $HOME) are always one: that is the reading every earlier build
+ * gave, so no answer is looser than it. An event that names an absolute working folder adds the keyless seatbelt's reading of it (that folder and the passwd home),
+ * so a host that spawns the hook in another folder is read as the seatbelt reads it, a relative link name included. Any of them can hold the command.
+ */
+function wordContexts(eventCwd: string | undefined): WordContext[] {
+  const contexts: WordContext[] = [];
+  try { contexts.push({ cwd: process.cwd(), home: process.env.HOME || homedir() }); } catch { /* the hook's own folder is gone: the event's is read alone */ }
+  const eventContext = eventCwd === undefined ? null : { cwd: eventCwd, home: passwdHome() || '/nonexistent-home' };
+  if (eventContext && !contexts.some((own) => own.cwd === eventContext.cwd && own.home === eventContext.home)) contexts.push(eventContext);
+  return contexts;
+}
+function namesSymlink(command: string, onlySecret: boolean, contexts: WordContext[]): 'none' | 'link' | 'unread' {
+  const text = command.replace(/['"\\]/g, '');
+  const readable = (word: string) => word.length > 0 && word.length <= 4096 && !word.startsWith('-') && !/[*?[{$`]/.test(word.replace(/^\$\{?HOME\}?(?=\/|$)/, ''));
+  const whole = text.split(WORD_BREAK).filter(readable);
+  const known = new Set(whole);
+  const words = whole.concat(text.split(LINK_WORD_BREAK).filter((word) => readable(word) && !known.has(word)));
+  let unread = false;
+  for (const where of contexts) {
+    const answer = namesSymlinkIn(command, words, onlySecret, where);
+    if (answer === 'link') return 'link';
+    if (answer === 'unread') unread = true;
+  }
+  return unread ? 'unread' : 'none';
+}
+function namesSymlinkIn(command: string, words: string[], onlySecret: boolean, where: WordContext): 'none' | 'link' | 'unread' {
+  const cwd = where.cwd;
+  const home = where.home.replace(/\/+$/, '');
   const bases = [cwd];
   const moved = (word: string, base: string): boolean => {
     const lexical = word === '~' || word.startsWith('~/') ? resolvePath(home, word.slice(2)) : word.startsWith('$HOME') || word.startsWith('${HOME}') ? resolvePath(home, word.replace(/^\$\{?HOME\}?\/?/, '')) : resolvePath(base, word);
@@ -886,18 +929,21 @@ const TEXT_ONLY_FS_VIEW: MapperFsView = { readFile: () => null, realpath: (path:
 // What the second run may add to the first: an S4 hit on a PATH (a secret file named, a link to one, a glob or pattern that can spell one, a secret folder
 // walked). Never `ps_environment_loose` or a credential-printing command (`gh auth token`, `aws sts get-session-token`: not a read of a file), and never a
 // reason the mapper only gives a word that is no path (the pattern of `grep .env README.md`) in a command the policy reads whole (policyReadsAllWords).
-const SECOND_RUN_REASONS = /_secret_(?:path|pattern|dir)$|_secret_name$|_unknown_link$|^copy_secret_directory$|^tool_grep_glob_secret$/;
-function shellPrintsEnvironment(command: string): boolean {
-  if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command) return lastEnvDumpAnswer.dumps;
+const SECOND_RUN_REASONS = /_secret_(?:path|pattern|dir)$|_secret_name$|_unknown_link$|^copy_secret_directory$|^tool_grep_glob_secret$|^tripwire_env_file$/;
+// `eventCwd` comes first so classifyAsNamed can bind it and hand the policy a one-argument check.
+function shellPrintsEnvironment(eventCwd: string | undefined, command: string): boolean {
+  const contexts = wordContexts(eventCwd);
+  const where = contexts.map((context) => `${context.cwd}\0${context.home}`).join('\n');
+  if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command && lastEnvDumpAnswer.where === where) return lastEnvDumpAnswer.dumps;
   const secretNamed = mayReadSecret(command);
   const readsWhole = policyReadsAllWords(command);
-  const links = namesSymlink(command, readsWhole);
+  const links = namesSymlink(command, readsWhole, contexts);
   // A command the policy reads whole is held when a link in it points at a secret path (the policy judges the target as it judges any path); any other
   // command that names a link, or has too many words to read, is asked of the mapper.
   const linkedSecret = readsWhole && links === 'link';
   const linked = linkedSecret || (readsWhole ? links === 'unread' : links !== 'none');
   if (!mayPrintEnvironment(command) && !mayReadApprovalState(command) && !secretNamed && !linked) return false;
-  if (linkedSecret) { lastEnvDumpAnswer = { command, dumps: true }; return true; }
+  if (linkedSecret) { lastEnvDumpAnswer = { command, where, dumps: true }; return true; }
   let dumps: boolean;
   try {
     if (envDumpTools === undefined) {
@@ -910,9 +956,9 @@ function shellPrintsEnvironment(command: string): boolean {
     else {
       const { mapper, reasons } = envDumpTools;
       const namesMarrow = /approvals|\.marrow/i.test(command.replace(/['"\\]/g, ''));
-      const ask = (fs: MapperFsView) => mapper.evaluateSeatbeltShell(command, {
-        cwd: process.cwd(),
-        home: process.env.HOME || homedir(),
+      const ask = (fs: MapperFsView, at: WordContext) => mapper.evaluateSeatbeltShell(command, {
+        cwd: at.cwd,
+        home: at.home,
         tmpdir: '/tmp',
         platform: process.platform,
         fs,
@@ -928,12 +974,13 @@ function shellPrintsEnvironment(command: string): boolean {
       // variable, a name it cannot parse), or names a link, is then read again with the real `realpath` and `readdir` (no file contents): a word is a secret
       // path only where the file is there (`process.env` in `grep -rn process.env src` names no file; the text alone cannot say), a link reads as its target
       // and a glob as the names it expands to. Either run can hold the command, so no answer is looser than the text's.
-      dumps = holds(ask(TEXT_ONLY_FS_VIEW), false) || (((secretNamed && !readsWhole) || linked) && holds(ask(REAL_FS_VIEW), true));
+      if (!contexts.length) throw new Error('no working folder');
+      dumps = contexts.some((at) => holds(ask(TEXT_ONLY_FS_VIEW, at), false) || (((secretNamed && !readsWhole) || linked) && holds(ask(REAL_FS_VIEW, at), true)));
     }
   } catch {
     dumps = ENV_DUMP_WORDS.test(command) || mayReadApprovalState(command) || secretNamed || linked;
   }
-  lastEnvDumpAnswer = { command, dumps };
+  lastEnvDumpAnswer = { command, where, dumps };
   return dumps;
 }
 
@@ -948,7 +995,7 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   const input = toolClassificationText(event).toLowerCase();
   // A look-alike of Marrow's own tool is never read-only, whatever its verb.
   // The PostToolUse path passes no check (options.postTool): the mapper is never loaded for it.
-  const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment;
+  const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment.bind(null, options.cwd);
   const readOnly = options.ownUnproven !== true && isReadOnlyToolEventAsNamed(event, printsEnvironment);
   const secretAccess = isSecretMaterialAccessAsNamed(event, printsEnvironment);
   const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
