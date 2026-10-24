@@ -2,8 +2,8 @@
 // Seatbelt rule tables (spec SEATBELT-SPEC.md §1.2 as amended by the owner decisions of 2026-10-12).
 // Compiled into the package on purpose: no local file can extend or relax them (spec §2.1.7).
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.OPTION_OBJECT_KEYS = exports.CWD_KEYS = exports.ENV_KEYS = exports.TERMINAL_TEXT_KEYS = exports.GH_HEAD_SAFE = exports.HEAD_CHANGERS = exports.HEAD_RUNNERS = exports.BUILD_TOOLS = exports.TERMINAL_SEGMENTS = exports.STDIN_KEYS = exports.CODE_KEYS = exports.ARGV_STRICT = exports.ARGV_SEGMENTS = exports.ARGV_KEYS = exports.COMMAND_KEYS = exports.FILE_TOOL_NAMES = exports.SHELL_TOOL_NAMES = exports.GIT_CONFIG_ENV_FILES = exports.GIT_CONFIG_INCLUDE = exports.GIT_EXEC_CONFIG = exports.NPM_BOOL_FLAGS = exports.NPM_VALUE_FLAGS = exports.NPM_ALIASES = exports.NPM_COMMANDS = exports.EVAL_PRODUCERS = exports.NON_SCRIPT_NAMES = exports.SCRIPT_SUFFIX = exports.INERT_PROGRAMS = exports.KNOWN_COMMANDS = exports.NAME_TRIPWIRE = exports.TRIPWIRE = exports.GIT_PUSH_RISKY_LONG = exports.GIT_PUSH_LONG = exports.GIT_BUILTINS = exports.PACKAGE_BINS = exports.MARROW_OWNER_SUBS = exports.INTERPRETER_EXEC = exports.INTERPRETERS = exports.SHELLS = exports.GIT_S4_EXEMPT_SUBS = exports.S4_EXEMPT_PROGRAMS = exports.PROD_ENV = exports.SECRET_VAR = exports.SSH_PUBLIC = exports.ENV_TEMPLATE_SUFFIX = exports.KEY_FIXTURE_SEGMENTS = exports.KEY_EXTENSIONS = exports.SECRET_PATTERNS = exports.LIMITS = exports.SEATBELT_RULES_VERSION = void 0;
-exports.LANGUAGE_KEYS = void 0;
+exports.CWD_KEYS = exports.ENV_KEYS = exports.TERMINAL_TEXT_KEYS = exports.GH_HEAD_SAFE = exports.HEAD_CHANGERS = exports.HEAD_RUNNERS = exports.BUILD_TOOLS = exports.TERMINAL_SEGMENTS = exports.STDIN_KEYS = exports.CODE_KEYS = exports.ARGV_STRICT = exports.ARGV_SEGMENTS = exports.ARGV_KEYS = exports.COMMAND_KEYS = exports.FILE_TOOL_NAMES = exports.SHELL_TOOL_NAMES = exports.GIT_CONFIG_ENV_FILES = exports.GIT_CONFIG_INCLUDE = exports.GIT_EXEC_CONFIG = exports.NPM_BOOL_FLAGS = exports.NPM_VALUE_FLAGS = exports.NPM_ALIASES = exports.NPM_COMMANDS = exports.EVAL_PRODUCERS = exports.NON_SCRIPT_NAMES = exports.SCRIPT_SUFFIX = exports.INERT_PROGRAMS = exports.KNOWN_COMMANDS = exports.NAME_TRIPWIRE = exports.TRIPWIRE = exports.GIT_PUSH_RISKY_LONG = exports.GIT_PUSH_LONG = exports.GIT_BUILTINS = exports.PACKAGE_BINS = exports.MARROW_OWNER_SUBS = exports.INTERPRETER_EXEC = exports.INTERPRETERS = exports.SHELLS = exports.GIT_S4_EXEMPT_SUBS = exports.S4_EXEMPT_PROGRAMS = exports.PROD_ENV = exports.SECRET_VAR = exports.SSH_PUBLIC = exports.ENV_TEMPLATE_SUFFIX = exports.KEY_FIXTURE_SEGMENTS = exports.KEY_EXTENSIONS = exports.SECRET_PATTERNS = exports.PRESENT_SECRET_PATTERNS = exports.LIMITS = exports.SEATBELT_RULES_VERSION = void 0;
+exports.LANGUAGE_KEYS = exports.OPTION_OBJECT_KEYS = void 0;
 exports.secretSamples = secretSamples;
 exports.interpreterTreeDelete = interpreterTreeDelete;
 exports.interpreterDecodeToken = interpreterDecodeToken;
@@ -41,18 +41,10 @@ exports.LIMITS = Object.freeze({
     maxBraceChars: 1024,
     maxParseCost: 24_000_000,
 });
-// S4 secret paths. Home-anchored entries in the spec are matched home-agnostic ("**/"), which is
-// stricter: another user's or root's credential file is just as secret.
-exports.SECRET_PATTERNS = [
-    '**/.ssh/id_*', '**/.ssh/*_key', '**/.aws/credentials', '**/.aws/sso/cache/**',
-    '**/.config/gcloud/**/*credentials*', '**/.config/gcloud/**/access_tokens.db', '**/.azure/**',
-    '**/.kube/config', '**/.docker/config.json', '**/.npmrc', '**/.pypirc', '**/.netrc', '**/.git-credentials',
-    '**/.config/gh/hosts.yml', '**/.config/op/**', '**/.gnupg/private-keys*', '**/.gnupg/private-keys*/**',
-    '**/.marrow/env*', '**/.claude.json', '**/.claude/settings.local.json', '/proc/*/environ',
-    '**/.env', '**/.env.*', '**/.dev.vars',
-    // The receipts' device salt (U6): with it an agent could compute receipt keys. Writes there are S0.
-    '**/.marrow/seatbelt/salt',
-];
+// S4 secret paths: one table with the keyed policy (src/secret-paths.ts).
+var secret_paths_1 = require("../secret-paths");
+Object.defineProperty(exports, "PRESENT_SECRET_PATTERNS", { enumerable: true, get: function () { return secret_paths_1.PRESENT_SECRET_PATTERNS; } });
+Object.defineProperty(exports, "SECRET_PATTERNS", { enumerable: true, get: function () { return secret_paths_1.SECRET_PATTERNS; } });
 // Key material by extension, except under node_modules or test fixture folders.
 exports.KEY_EXTENSIONS = /\.(?:pem|key|p12|pfx)$/;
 exports.KEY_FIXTURE_SEGMENTS = new Set(['node_modules', 'fixtures', '__fixtures__', 'testdata', 'test', 'tests', '__tests__']);
@@ -72,10 +64,11 @@ function secretSamples(home, cwds) {
         `${h}/.config/gh/hosts.yml`, `${h}/.config/op/config`, `${h}/.gnupg/private-keys-v1.d/k.key`, `${h}/.marrow/env`,
         `${h}/.marrow/env.local`, `${h}/.claude.json`, `${h}/.claude/settings.local.json`, '/proc/self/environ', '/proc/1/environ',
         `${h}/.env`, '/root/.ssh/id_rsa', '/root/.aws/credentials', `${h}/.marrow/seatbelt/salt`,
+        `${h}/.marrow/fleet.env`, `${h}/.marrow/credentials/k`,
     ];
     for (const c of cwds) {
         const d = c.replace(/\/$/, '');
-        out.push(`${d}/.env`, `${d}/.env.local`, `${d}/.env.production`, `${d}/app/.env`, `${d}/.dev.vars`, `${d}/server.pem`, `${d}/tls.key`, `${d}/cert.p12`, `${d}/cert.pfx`, `${d}/.claude/settings.local.json`, `${d}/.npmrc`);
+        out.push(`${d}/.env`, `${d}/.env.local`, `${d}/.env.production`, `${d}/app/.env`, `${d}/app.env`, `${d}/.dev.vars`, `${d}/server.pem`, `${d}/tls.key`, `${d}/cert.p12`, `${d}/cert.pfx`, `${d}/.claude/settings.local.json`, `${d}/.npmrc`);
     }
     return out;
 }
@@ -200,7 +193,7 @@ exports.KNOWN_COMMANDS = new Set([
     // shells and interpreters
     'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh', 'yash', 'rbash', 'csh', 'tcsh',
     'python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh',
-    'irb', 'ipython', 'awk', 'gawk', 'mawk', 'sed', 'gsed', 'tar', 'gtar', 'bsdtar', 'ps',
+    'irb', 'ipython', 'awk', 'gawk', 'mawk', 'nawk', 'sed', 'gsed', 'tar', 'gtar', 'bsdtar', 'ps',
 ]);
 // Programs whose arguments are text, patterns or paths and are never run. Their argv is not scanned
 // for a command. A program with an exec-capable flag (find -exec, xargs, tar --to-command) is not

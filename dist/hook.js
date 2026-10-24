@@ -49,9 +49,10 @@ function deriveAction(event, harness, raw) {
     if (harness === undefined ? (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event) : (0, own_server_identity_1.isOfficialMarrowMcpEventOnHost)(harness, event, raw))
         return null;
     // An own label whose server the host check did not prove is another server's protected tool.
+    // postTool: the PostToolUse path asks no environment-print check, so it never loads the seatbelt mapper (classifyTool).
     if ((0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event))
-        return (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: true }).action;
-    return (0, hook_pre_action_1.classifyTool)(event).action;
+        return (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: true, postTool: true }).action;
+    return (0, hook_pre_action_1.classifyTool)(event, { postTool: true }).action;
 }
 function deriveToolOutcome(event) {
     const response = event.tool_output ?? event.tool_response ?? event.tool_result;
@@ -210,7 +211,8 @@ async function runHookCommand(input) {
             return;
         }
         const privateLoopPayload = (0, hook_contract_1.privateHookLoopGuardPayload)(event);
-        const classified = (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event) });
+        // Labels and the loop guard's read-only flag only: no mapper on this path (postTool), so it adds ~no latency.
+        const classified = (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event), postTool: true });
         const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
             || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
         const agentId = identity.agent_id;

@@ -590,6 +590,20 @@ export function sessionMarker(kind: 'interactive' | 'prompt_hook', scope: HoldSc
   return marker ? marker.value : null;
 }
 
+/**
+ * Read-only: this host session has an open hold that waits for an approval a chat reply cannot give,
+ * because no dialog was shown (denied for later) or nobody was in the run (quiet, unattended). An
+ * unexpired, unspent hold that was asked in a real dialog is never this. Writes nothing and, with an
+ * unreadable or unsafe state, throws (the caller shows nothing).
+ */
+export function hasOpenChatOnlyHold(scope: HoldScope, hostSessionId: string, home?: string, now = Date.now()): boolean {
+  return findHolds(scope, { hostSessionId, mode: 'wait', states: ['open'] }, home).some((hold) => {
+    const expiry = hold.expires_at ? Date.parse(hold.expires_at) : NaN;
+    if (Number.isFinite(expiry) && expiry <= now) return false;
+    return hold.dialog_later === true || (hold.quiet === 'unattended' && !hold.arbitration_receipt_id);
+  });
+}
+
 /** True when this key has any hold that still needs work (cheap check before network). */
 export function hasPendingHolds(scope: HoldScope, query: HoldQuery = {}, home?: string): boolean {
   try {

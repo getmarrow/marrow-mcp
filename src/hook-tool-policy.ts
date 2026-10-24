@@ -1,13 +1,24 @@
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
+import { PROC_ENVIRON, SECRET_PATTERNS } from './secret-paths';
 
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
+
+/**
+ * Marks the Bash twin of a PowerShell call (toolPolicyReading): its text is PowerShell, not Bash. A symbol,
+ * so no field of a host event or of a tool input (JSON has no symbols) can set or clear it.
+ */
+export const SHELL_DIALECT = Symbol('marrow.shellDialect');
 
 type ToolPolicyEvent = {
   tool_name?: string;
   tool_input?: unknown;
+  [SHELL_DIALECT]?: ShellDialect;
 };
+
+/** The shell a command text is written in, when it is not Bash's own. */
+export type ShellDialect = 'powershell';
 
 const READ_ONLY_TOOLS = new Set([
   'read',
@@ -86,6 +97,9 @@ const MAX_SHELL_ANALYSIS_BYTES = 8192;
 // or line separators as word characters, so splitting on them could hide one
 // command inside another; such input takes the conservative whole-command path.
 const UNMODELED_SHELL_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u00a0\u00ad\u061c\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff\ufff9-\ufffb]/;
+// PowerShell reads the typographic single and double quotation marks as quotes; Bash does not, so
+// a PowerShell text holding one has quoting the splitter cannot follow.
+const POWERSHELL_QUOTE_CHARACTER = /[\u2018-\u201f]/;
 // Programs whose options can execute, write, or change what runs; an expanded
 // variable could supply such an option, so they are not read-only with one.
 const OPTION_SENSITIVE_PROGRAMS = new Set(['find', 'rg', 'sort', 'git', 'gh', 'date', 'env', 'file', 'npm', 'pnpm', 'yarn', 'node', 'npx',
@@ -192,8 +206,10 @@ export type ShellSegmentVerdict = 'read' | 'secret' | 'other';
  * the words alone (command or process substitution, subshells, heredocs,
  * complex parameter expansion); callers then fall back to whole-command rules.
  */
-export function parseShellSegments(command: string): ShellSegment[] | null {
+export function parseShellSegments(command: string, dialect?: ShellDialect): ShellSegment[] | null {
   if (command.length > MAX_SHELL_ANALYSIS_BYTES || UNMODELED_SHELL_CHARACTER.test(command)) return null;
+  const powershell = dialect === 'powershell';
+  if (powershell && POWERSHELL_QUOTE_CHARACTER.test(command)) return null;
   const segments: ShellSegment[] = [];
   let segment: ShellSegment = { words: [], outputs: [], inputs: [], expansions: [] };
   let word = '';
@@ -261,7 +277,7 @@ export function parseShellSegments(command: string): ShellSegment[] | null {
         const inner = command[index];
         if (inner === '"') { closed = true; index += 1; break; }
         if (inner === '`') return null;
-        if (inner === '\\' && index + 1 < command.length && '$`"\\\n'.includes(command[index + 1])) {
+        if (!powershell && inner === '\\' && index + 1 < command.length && '$`"\\\n'.includes(command[index + 1])) {
           if (command[index + 1] !== '\n') word += command[index + 1];
           index += 2;
           continue;
@@ -278,7 +294,8 @@ export function parseShellSegments(command: string): ShellSegment[] | null {
       if (!closed) return null;
       continue;
     }
-    if (char === '\\') {
+    // PowerShell's escape is the backtick (unmodeled); a backslash there is a path separator.
+    if (char === '\\' && !powershell) {
       if (next === undefined) return null;
       if (next !== '\n') { word += next; inWord = true; }
       index += 2;
@@ -286,6 +303,8 @@ export function parseShellSegments(command: string): ShellSegment[] | null {
     }
     // Braces expand or group commands, so the words would not be what runs.
     if (char === '`' || char === '(' || char === ')' || char === '{') return null;
+    // A PowerShell here-string (@' or @") holds lines of text up to a closing quote at a line start: not words.
+    if (powershell && char === '@' && (next === "'" || next === '"')) return null;
     if (char === '$') {
       const consumed = expansion(index);
       if (consumed < 0) return null;
@@ -382,14 +401,44 @@ function secretPath(value: string, base: string): boolean {
   const directories = pathLike ? parts : parts.slice(0, -1);
   if (directories.some((part) => SECRET_STORE_DIRECTORY.test(part))) return true;
   if (!SOURCE_OR_DOC_FILE.test(name) && directories.some((part) => NAMED_SECRET_DIRECTORY.test(part))) return true;
-  if (/^\/proc\/[^/]+\/environ$/.test(path) || /^\/etc\/g?shadow$/.test(path)) return true;
+  if (PROC_ENVIRON.test(path) || /^\/etc\/g?shadow$/.test(path)) return true;
   // Claude Code local settings can carry agent keys in their env block.
   if (name === 'settings.local.json' && parts[parts.length - 2] === '.claude') return true;
   if (!pathLike) return SECRET_FILE.test(name) && !ENV_TEMPLATE_FILE.test(name);
   if (ENV_TEMPLATE_FILE.test(name)) return false;
   if (SECRET_FILE.test(name)) return true;
+  // One table: every path the keyless seatbelt stops as a secret (S4) is a secret here too.
+  // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
+  // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
+  const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
+  if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail))) return true;
   return SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }
+
+/**
+ * A SECRET_PATTERNS glob (src/secret-paths.ts) as a regex, the way the vendored classifier's globToRegex reads
+ * it (the table holds only `**`/`*` globs, home-agnostic `**`/ prefixes and absolute paths).
+ */
+export function secretPatternRegex(pattern: string): RegExp {
+  let p = pattern;
+  let anchored = true;
+  if (p.startsWith('**/')) { anchored = false; p = p.slice(3); }
+  let out = '';
+  for (let i = 0; i < p.length; i += 1) {
+    const ch = p[i];
+    if (ch === '*' && p[i + 1] === '*') {
+      if (p[i + 2] === '/') { out += '(?:.*/)?'; i += 2; }
+      else if (out.endsWith('/') && i + 2 === p.length) { out = `${out.slice(0, -1)}(?:/.*)?`; i += 1; }
+      else { out += '.*'; i += 1; }
+    } else if (ch === '*') out += '[^/]*';
+    else if (ch === '?') out += '[^/]';
+    else out += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`${anchored ? '^' : '(?:^|/)'}${out}$`);
+}
+
+const SEATBELT_SECRET_PATHS: readonly RegExp[] = SECRET_PATTERNS.map(secretPatternRegex);
+const SECRET_PATH_TABLE_CHARS = 4096;
 
 // A glob such as .env* or *.pem names secret files without spelling one out.
 function globVariants(value: string): string[] {
@@ -413,6 +462,10 @@ export function isProtectedWriteTarget(value: string, base = process.cwd()): boo
 export function isSecretVariableName(value: string): boolean {
   return String(value || '').toUpperCase().split('_').some((part) => SECRET_VARIABLE_PART.has(part));
 }
+
+// Whether a shell command prints the environment is answered by the pre-action hook, which passes its check in as an argument. The
+// policy loads nothing for it, so the PostToolUse path (hook.ts calls isReadOnlyToolEvent with no check) never pays for the answer.
+export type EnvironmentPrintCheck = (command: string) => boolean;
 
 function programName(value: string): string | null {
   if (!value.includes('/')) return value.toLowerCase();
@@ -506,15 +559,22 @@ function readOnlyProgramInvocation(program: string, args: string[]): boolean {
   return true;
 }
 
-/** Classifies one simple command: a read-only inspection, a secret access, or anything else. */
-export function shellSegmentVerdict(segment: ShellSegment, cwd: string | null = process.cwd()): ShellSegmentVerdict {
+/**
+ * Classifies one simple command: a read-only inspection, a secret access, or anything else.
+ * In the PowerShell dialect no command is a read-only inspection and no program is exempt from
+ * the content-read check (Bash's allowlists name Bash programs; `type` and `cat` read files in
+ * PowerShell, and `ls env:` and `echo $env:X` print the environment): every word is judged as a
+ * file a command may read.
+ */
+export function shellSegmentVerdict(segment: ShellSegment, cwd: string | null = process.cwd(), dialect?: ShellDialect): ShellSegmentVerdict {
+  const powershell = dialect === 'powershell';
   // After a cd Marrow cannot follow, relative paths are unknown, so nothing that follows is read-only.
   const base = cwd ?? process.cwd();
   const secret = (value: string) => isSecretPath(value, base);
   const protectedTarget = (value: string) => isProtectedWriteTarget(value, base);
   const writes = segment.outputs.filter((target) => !['/dev/null', '/dev/stdout', '/dev/stderr'].includes(target));
   if (segment.inputs.some(secret) || writes.some(protectedTarget)) return 'secret';
-  if (!segment.words.length) return writes.length || cwd === null ? 'other' : 'read';
+  if (!segment.words.length) return writes.length || cwd === null || powershell ? 'other' : 'read';
   // A leading assignment can redirect a pager or helper into arbitrary code.
   const program = /^[A-Za-z_][A-Za-z0-9_]*=/.test(segment.words[0]) ? null : programName(segment.words[0]);
   const args = segment.words.slice(1);
@@ -528,11 +588,13 @@ export function shellSegmentVerdict(segment: ShellSegment, cwd: string | null = 
     if ((program === 'env' || program === 'printenv') && args.every((arg) => arg.startsWith('-'))) return 'secret';
     if (program === 'jq' && args.some((arg) => /\$ENV\b|(?:^|[^A-Za-z0-9_$.])env\b/.test(arg))) return 'secret';
     if (program === 'cd' && args.some(secret)) return 'secret';
-    if (!NON_CONTENT_BASH_COMMANDS.has(program)) {
+    if (powershell || !NON_CONTENT_BASH_COMMANDS.has(program)) {
       const targets = ['grep', 'egrep', 'fgrep', 'rg', 'jq'].includes(program) ? contentReadTargets(program, args) : args.filter((arg) => !arg.startsWith('-') || arg.includes('='));
       if (targets.some(secret)) return 'secret';
     }
-    return writes.length || cwd === null ? 'other' : 'read';
+    // A PowerShell parameter binds its value in the same word (-Path:.env).
+    if (powershell && segment.words.some(protectedTarget)) return 'secret';
+    return writes.length || cwd === null || powershell ? 'other' : 'read';
   }
   return segment.words.some(protectedTarget) ? 'secret' : 'other';
 }
@@ -546,12 +608,13 @@ function nextWorkingDirectory(segment: ShellSegment, cwd: string | null): string
   return normalizedToolPath(targets[0], cwd);
 }
 
-function shellAnalysis(command: string): { segments: ShellSegment[]; verdicts: ShellSegmentVerdict[] } | null {
-  const segments = parseShellSegments(command);
+/** `parse`: the dialect the words are split in; `dialect`: the dialect the simple commands are judged in (default: the same). */
+function shellAnalysis(command: string, dialect?: ShellDialect, parse: ShellDialect | 'bash' | undefined = dialect): { segments: ShellSegment[]; verdicts: ShellSegmentVerdict[] } | null {
+  const segments = parseShellSegments(command, parse === 'bash' ? undefined : parse);
   if (!segments) return null;
   let cwd: string | null = process.cwd();
   const verdicts = segments.map((segment) => {
-    const verdict = shellSegmentVerdict(segment, cwd);
+    const verdict = shellSegmentVerdict(segment, cwd, dialect);
     cwd = nextWorkingDirectory(segment, cwd);
     return verdict;
   });
@@ -597,15 +660,35 @@ function shellCommandText(event: ToolPolicyEvent): string {
 /**
  * True when a tool reads secret or credential material, or writes a secret file
  * or Marrow's local control state. Unparseable shell falls back to a token scan.
+ * A Monitor command, and any shell text another tool carries, is read as Bash
+ * reads its command; a PowerShell command in the PowerShell dialect, which
+ * reads every word as a file the command may read (toolPolicyReading).
  */
-export function isSecretMaterialAccess(event: ToolPolicyEvent): boolean {
+export function isSecretMaterialAccess(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean {
+  const reading = toolPolicyReading(event);
+  if (reading.shell.some((twin) => isSecretMaterialAccessAsNamed(twin, printsEnvironment))) return true;
+  if (reading.exact) return false;
+  if (reading.base === 'read') return isSecretMaterialAccessAsNamed(readEquivalent(event), printsEnvironment);
+  return reading.base === 'named' && isSecretMaterialAccessAsNamed(event, printsEnvironment);
+}
+
+/** isSecretMaterialAccess for the call's own tool name only (every tool before the built-ins were hooked). */
+export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean {
   const tool = normalizeHookToolName(event.tool_name);
   if (CONTENT_READ_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isSecretPath(path));
   if (FILE_EDIT_TOOLS.has(tool)) return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
   if (!SHELL_TOOLS.has(tool)) return false;
   const command = shellCommandText(event);
-  const analysis = shellAnalysis(command);
-  if (analysis) return analysis.verdicts.includes('secret');
+  if (printsEnvironment && event[SHELL_DIALECT] !== 'powershell' && printsEnvironment(command)) return true;
+  const analysis = shellAnalysis(command, event[SHELL_DIALECT]);
+  if (event[SHELL_DIALECT] === 'powershell') {
+    // The words are split as PowerShell splits them; text whose quoting Bash splits differently (an escaped quote,
+    // a typographic quote) is also split as Bash splits it, judged with no allowlist: a secret either finds is one.
+    // Where either split cannot be modelled, every token of the text is judged as a path.
+    const asBash = shellAnalysis(command, 'powershell', 'bash');
+    if (analysis?.verdicts.includes('secret') || asBash?.verdicts.includes('secret')) return true;
+    if (analysis && asBash) return false;
+  } else if (analysis) return analysis.verdicts.includes('secret');
   return command.split(/[\s'"`;&|<>(){}]+/).some((token) => isProtectedWriteTarget(token));
 }
 
@@ -620,7 +703,7 @@ export function toolClassificationText(event: ToolPolicyEvent): string {
   if (FILE_EDIT_TOOLS.has(tool)) return [tool, ...toolTargetPaths(event)].join(' ');
   const command = hookToolCommand(event);
   if (SHELL_TOOLS.has(tool)) {
-    const analysis = shellAnalysis(shellCommandText(event));
+    const analysis = shellAnalysis(shellCommandText(event), event[SHELL_DIALECT]);
     if (analysis) {
       return [tool, ...analysis.segments
         .filter((_, index) => analysis.verdicts[index] !== 'read')
@@ -647,17 +730,40 @@ function pathOnlyInput(value: unknown): boolean {
     && Object.values(input).every((item) => typeof item === 'string' && item.trim().length > 0);
 }
 
+/**
+ * Whether a call only reads. A shell reading (Monitor, a native git
+ * equivalent) is read-only exactly when Bash running its text is; a PowerShell
+ * call never is (Bash's read-only commands are Bash's); any other
+ * call carrying shell text is read-only only when both its own reading and
+ * Bash running the text are (never more than before).
+ */
 export function isReadOnlyToolEvent(event: ToolPolicyEvent): boolean {
+  const reading = toolPolicyReading(event);
+  if (reading.dialect === 'powershell') return false;
+  const shellReadOnly = reading.shell.every((twin) => isReadOnlyToolEventAsNamed(twin));
+  if (reading.exact) return reading.shell.length > 0 && shellReadOnly;
+  const own = reading.base === 'read' ? isReadOnlyToolEventAsNamed(readEquivalent(event))
+    : reading.base === 'non_acting' ? false
+    : isReadOnlyToolEventAsNamed(event);
+  return own && shellReadOnly;
+}
+
+/** isReadOnlyToolEvent for the call's own tool name only (every tool before the built-ins were hooked). */
+export function isReadOnlyToolEventAsNamed(event: ToolPolicyEvent, printsEnvironment?: EnvironmentPrintCheck): boolean {
   const tool = normalizeHookToolName(event.tool_name);
   if (!tool) return false;
+  // Nothing PowerShell runs is a read-only inspection: the Bash twin of a PowerShell call never is.
+  if (event[SHELL_DIALECT] === 'powershell') return false;
   if (LOCAL_TASK_TOOLS.has(tool)) return true;
-  if (READ_ONLY_TOOLS.has(tool)) return !isSecretMaterialAccess(event);
+  if (READ_ONLY_TOOLS.has(tool)) return !isSecretMaterialAccess(event, printsEnvironment);
   if (['edit', 'write', 'multiedit', 'search_replace', 'run_terminal_command', 'spawn_subagent'].includes(tool)) return false;
   if (MUTATION_TOOL_VERB.test(tool)) return false;
   if (READ_ONLY_TOOL_VERB.test(tool)) return true;
 
   const command = hookToolCommand(event);
   if (tool === 'bash' && command) {
+    // Printing the environment is never a read-only inspection.
+    if (printsEnvironment && printsEnvironment(shellCommandText(event))) return false;
     // A compound command is read-only only when every simple command in it is.
     const analysis = shellAnalysis(shellCommandText(event));
     return Boolean(analysis?.segments.length && analysis.verdicts.every((verdict) => verdict === 'read'));
@@ -666,4 +772,155 @@ export function isReadOnlyToolEvent(event: ToolPolicyEvent): boolean {
   return !['edit', 'write', 'multiedit', 'search_replace'].includes(tool)
     && pathOnlyInput(event.tool_input)
     && !toolTargetPaths(event).some((path) => isSecretPath(path));
+}
+
+// ---------------------------------------------------------------------------
+// How a call is read for classification. Keys always keep the call's
+// own tool name and input (normalized-action, hook-contract).
+// ---------------------------------------------------------------------------
+
+// Claude Code tools that run their `command` (or `script`) as a shell command: Monitor in the same
+// shell environment as Bash, PowerShell in PowerShell. Any case or padding of the name. Monitor's
+// text goes through Bash's rules exactly. PowerShell's does not: Bash's allowlists name Bash
+// programs (`type`, `cat`, `find`, `ls`, `echo` read or print different things in PowerShell), so a
+// PowerShell call is never read-only and is classified as the stricter of its own (named) reading
+// and Bash's reading of its text with no allowlist applied (the PowerShell dialect of the splitter).
+const SHELL_COMMAND_TOOLS = new Set(['monitor', 'powershell']);
+// How long a Monitor or PowerShell call may run and whether it runs in the background: they are
+// part of what is approved (a short-timeout approval is not a long-timeout one).
+const SHELL_COMMAND_TOOL_RUN_FIELDS = ['timeout', 'timeout_ms', 'run_in_background'] as const;
+// The fields a Monitor or PowerShell call may carry besides its shell text without changing what runs.
+const SHELL_COMMAND_TOOL_FIELDS = new Set(['description', ...SHELL_COMMAND_TOOL_RUN_FIELDS]);
+// Tools whose `command` names something other than shell text (a slash command, a skill, an editor
+// operation), and Workflow, whose `script` is JavaScript that only starts sub-agents.
+const NON_SHELL_COMMAND_TOOLS = new Set(['slashcommand', 'skill', 'str_replace_editor', 'str_replace_based_edit_tool', 'workflow']);
+// Claude Code built-ins that run a fixed local git command (exact host label): read as Bash running it.
+const NATIVE_SHELL_EQUIVALENTS: ReadonlyMap<string, string> = new Map([
+  ['EnterWorktree', 'git worktree add'],
+  ['ExitWorktree', 'git worktree remove'],
+]);
+// Claude Code built-ins no released Marrow matcher hooked that never act themselves (exact host
+// label): what they lead to (a sub-agent's tools, a scheduled prompt, the agent's next step after a
+// fetch, a message or a question) reaches the hook on its own. As for task bookkeeping, words in
+// their prompt, message, plan or URL are not performed by the call, so they never make it
+// protected; the call is still reported to Marrow (never read-only). Monitor is here only without
+// shell text (its WebSocket source). The tools that only report, notify, structure output, render or
+// hand text back, and what each one does:
+//   Artifact, ArtifactCheck, ArtifactComments, ArtifactData: the host's artifact pane (render a page
+//     for the user, check it, comment on it, give it data); no command, no local file.
+//   ListAgents: lists the agents SendMessage can reach.
+//   PushNotification: a desktop or phone notification with a one-line `message`.
+//   ReportFindings: hands a code review's findings to the host UI to render.
+//   StructuredOutput: hands the final structured result back to the caller.
+//   SubagentHandback: hands a sub-agent's text back to the agent that started it.
+//   Workflow: its `script` (JavaScript) only starts sub-agents, whose own tools reach the hook.
+// Tools a released matcher already hooked keep their reading (BashOutput, NotebookRead,
+// ReadMcpResourceTool, Task*, TodoWrite, ToolSearch); RemoteTrigger and DesignSync act on remote
+// services and stay as named.
+const NON_ACTING_NATIVE_TOOLS = new Set(['Agent', 'SendMessage', 'WebFetch', 'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode',
+  'SlashCommand', 'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'KillShell', 'Monitor',
+  'Artifact', 'ArtifactCheck', 'ArtifactComments', 'ArtifactData', 'ListAgents', 'PushNotification', 'ReportFindings',
+  'StructuredOutput', 'SubagentHandback', 'Workflow']);
+// Claude Code's Skill loads a skill's instructions (exact host label): read as Read.
+const READ_EQUIVALENT_NATIVE_TOOLS = new Set(['Skill']);
+
+export type ToolPolicyReading = {
+  /** How the call's own name is read: as named (every tool before the built-ins were hooked), as Read, or as a call whose words are not actions. */
+  base: 'named' | 'read' | 'non_acting';
+  /** Bash calls the call amounts to: its command or script text, or a native tool's fixed git command. */
+  shell: BashTwin[];
+  /** Read exactly as Bash running `shell` (its own reading ignored); otherwise the stricter of both. */
+  exact: boolean;
+  /** An exact reading that is a shell tool (Monitor): classified under Bash's own label. */
+  bashLabel: boolean;
+  /** Set when `shell` is not Bash's text: the dialect its twins are read in (PowerShell: never read-only, no allowlist). */
+  dialect?: ShellDialect;
+};
+
+type BashTwin = { tool_name: string; tool_input: { command: string }; [SHELL_DIALECT]?: ShellDialect };
+
+function bashTwin(command: string): BashTwin {
+  return { tool_name: 'Bash', tool_input: { command } };
+}
+
+function powerShellTwin(command: string): BashTwin {
+  return { tool_name: 'Bash', tool_input: { command }, [SHELL_DIALECT]: 'powershell' };
+}
+
+/** The string `command` and `script` texts of a call that are not blank (both when both are set). */
+function shellTexts(event: ToolPolicyEvent): string[] {
+  const input = asRecord(event.tool_input);
+  if (!input) return [];
+  const texts: string[] = [];
+  for (const key of ['command', 'script']) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim() && !texts.includes(value)) texts.push(value);
+  }
+  return texts;
+}
+
+export function toolPolicyReading(event: ToolPolicyEvent): ToolPolicyReading {
+  const named: ToolPolicyReading = { base: 'named', shell: [], exact: false, bashLabel: false };
+  const tool = normalizeHookToolName(event.tool_name);
+  // Bash and the other shell tools are read as they always were; Marrow's own and MCP calls keep their reading plus any shell text.
+  if (!tool || SHELL_TOOLS.has(tool)) return named;
+  const label = typeof event.tool_name === 'string' ? event.tool_name : '';
+  const texts = NON_SHELL_COMMAND_TOOLS.has(tool) ? [] : shellTexts(event);
+  const equivalent = isMcpHookTool(event.tool_name) ? undefined : NATIVE_SHELL_EQUIVALENTS.get(label);
+  if (equivalent !== undefined) return { base: 'named', shell: [equivalent, ...texts].map(bashTwin), exact: true, bashLabel: false };
+  if (tool === 'monitor' && texts.length && !isMcpHookTool(event.tool_name)) {
+    return { base: 'named', shell: texts.map(bashTwin), exact: true, bashLabel: true };
+  }
+  // PowerShell: the stricter of its named reading and Bash's reading of the text in the PowerShell dialect.
+  if (tool === 'powershell' && texts.length && !isMcpHookTool(event.tool_name)) {
+    return { base: 'named', shell: texts.map(powerShellTwin), exact: false, bashLabel: false, dialect: 'powershell' };
+  }
+  const base: ToolPolicyReading['base'] = isMcpHookTool(event.tool_name) ? 'named'
+    : READ_EQUIVALENT_NATIVE_TOOLS.has(label) ? 'read'
+    : NON_ACTING_NATIVE_TOOLS.has(label) ? 'non_acting'
+    : 'named';
+  return { base, shell: texts.map(bashTwin), exact: false, bashLabel: false };
+}
+
+/** The Read call a Read-equivalent tool is read as (same input). */
+export function readEquivalent(event: ToolPolicyEvent): ToolPolicyEvent {
+  return { tool_name: 'Read', tool_input: event.tool_input };
+}
+
+/**
+ * The shell text of a plain Monitor or PowerShell call (one command or script string, no field
+ * that changes what runs besides it), else null. Only such a call is keyed as shell text.
+ */
+export function shellCommandToolText(event: ToolPolicyEvent): string | null {
+  if (isMcpHookTool(event.tool_name) || !SHELL_COMMAND_TOOLS.has(normalizeHookToolName(event.tool_name))) return null;
+  const input = asRecord(event.tool_input);
+  if (!input) return null;
+  const texts = Object.keys(input).filter((key) => !SHELL_COMMAND_TOOL_FIELDS.has(key));
+  if (texts.length !== 1 || !['command', 'script'].includes(texts[0])) return null;
+  const value = input[texts[0]];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+/**
+ * The run options (`timeout`, `timeout_ms`, `run_in_background`) a Monitor or PowerShell call carries, in a
+ * fixed order and as sent, or null for any other call or when it carries none. They are part of the key
+ * of the call (normalized-action, hook-contract exactHookTarget); `description` is not.
+ */
+export function shellCommandToolRunOptions(event: ToolPolicyEvent): Record<string, unknown> | null {
+  if (isMcpHookTool(event.tool_name) || !SHELL_COMMAND_TOOLS.has(normalizeHookToolName(event.tool_name))) return null;
+  const input = asRecord(event.tool_input);
+  if (!input) return null;
+  const options: Record<string, unknown> = {};
+  for (const key of SHELL_COMMAND_TOOL_RUN_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) options[key] = input[key];
+  }
+  return Object.keys(options).length ? options : null;
+}
+
+/** A Claude Code built-in keyed by its whole input (a native git equivalent, Skill, or a call whose words are not actions). */
+export function isWholeInputNativeTool(event: ToolPolicyEvent): boolean {
+  const reading = toolPolicyReading(event);
+  if ((reading.exact && !reading.bashLabel) || reading.base !== 'named') return true;
+  // A Monitor or PowerShell call is keyed as shell text only when it is a plain one.
+  return ((reading.exact && reading.bashLabel) || reading.dialect === 'powershell') && shellCommandToolText(event) === null;
 }

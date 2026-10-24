@@ -134,7 +134,27 @@ export type HoldPlan = {
     laterPrompt?: string;
     /** Waits quietly: nobody can be asked here (attended) or nobody is here (unattended). */
     quiet?: 'attended' | 'unattended';
+    /**
+     * Claude Code only: the user-only line (systemMessage) that says why nothing asked and that a chat
+     * reply does not approve. Words only: the kind of action, never a code, a receipt id or action text.
+     */
+    userNotice?: string;
 };
+export declare function heldKindLabel(categories: readonly unknown[] | null | undefined): string;
+/** Claude Code, a hold that waits because no dialog is shown in this session (tier A1, user only). */
+export declare function dialogLaterNotice(kind: string): string;
+/** Claude Code, a hold that waits because nobody is in this run (tier A1, user only). */
+export declare function unattendedNotice(kind: string): string;
+/**
+ * The notice a replayed denial of an open hold carries (the same kinds of hold as the plans above); null for any other hold.
+ * `waiting`: the denial is the one for a hold still waiting for its approval. The line that promises Claude Code's dialog
+ * is shown only then: a denial because Marrow cannot be reached, or because the approved call is already running, comes
+ * before the dialog can be asked for, so switching modes would not bring it.
+ */
+export declare function holdNotice(hold: Pick<HoldRecord, 'dialog_later' | 'quiet' | 'arbitration_receipt_id'>, kind: string, waiting: boolean): string | null;
+/** The agent text of a hold denied because Claude Code shows no dialog here: what to tell the user, and never an approval claim. */
+export declare const DIALOG_LATER_LIMIT = 900;
+export declare function dialogLaterAgentText(held: string, unavailableReason: string, kind: string): string;
 /** Shown when the owner's link is sent only if the operator asks for it. */
 export declare const OWNER_LINK_ON_REQUEST_TEXT = "To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link.";
 /** The sentence that replaces OWNER_APPROVAL_REQUEST_TEXT once Marrow sent the owner a one-tap link. */
@@ -296,7 +316,8 @@ export type WaitingResolution = {
     hold: HoldRecord;
     agentText: string;
     userText: string;
-    deferredLink?: boolean;
+    deferredLink?: boolean; /** Set only by the branch for a hold still waiting (pending or in arbitration review). */
+    waiting?: true;
 };
 /**
  * The same action, retried after a hold that waited (denied while it waited

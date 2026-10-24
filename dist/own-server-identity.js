@@ -10,8 +10,10 @@
  *
  * Fail closed: a missing, unreadable, oversized, non-regular or unparsable
  * config, more than one colliding server, an unknown command, a wrapper, an
- * env override, an enabled Codex plugin or a config override on the codex
- * command line means "not proven": the call goes down the normal gate path.
+ * env override, an enabled Codex plugin, a config override on the codex
+ * command line, or an installer launch that is not exactly the one that
+ * started this hook (another version or pack integrity) means "not proven":
+ * the call goes down the normal gate path.
  * Reads are local, size-capped and done at most once per hook process; no
  * config content is ever logged.
  */
@@ -21,6 +23,7 @@ exports.readHostConfigFile = readHostConfigFile;
 exports.readHostConfigBytes = readHostConfigBytes;
 exports.parseToml = parseToml;
 exports.isOfficialMarrowServerLaunch = isOfficialMarrowServerLaunch;
+exports.isMarrowServerLaunchShape = isMarrowServerLaunchShape;
 exports.serverNameCollidesWithMarrow = serverNameCollidesWithMarrow;
 exports.codexServerNameCanProduceMarrowLabel = codexServerNameCanProduceMarrowLabel;
 exports.npmProjectConfigIsHarmless = npmProjectConfigIsHarmless;
@@ -484,6 +487,36 @@ const LOADER_TAIL = ')().main(CFG, global.MARROW_L);\n';
 function installerServerScript(version) {
     return `N="$HOME/.marrow/runtime/mcp/${version}/node"; if [ ! -x "$N" ]; then N=; P="$PATH:/usr/local/bin:/opt/homebrew/bin"; while [ -n "$P" ]; do D="\${P%%:*}"; case "$P" in (*:*) P="\${P#*:}" ;; (*) P= ;; esac; case "$D" in ("$PWD"|"$PWD"/*) ;; (/*) if [ -f "$D/node" ] && [ -x "$D/node" ]; then N="$D/node"; break; fi ;; esac; done; fi; if [ -n "$N" ]; then exec "$N" -e "$0" -- "$@"; fi; printf "%s\\n" "${INSTALLER_UNAVAILABLE_TEXT}" >&2; exit 1`;
 }
+const MAX_LAUNCHER_BYTES = 1 << 17;
+// What the installer core itself requires of CFG before it verifies or runs a runtime, with the
+// version bounded as PINNED_SPEC bounds it (so no launch is proven that the shape check refuses).
+const CFG_VERSION_RE = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
+const CFG_INTEGRITY_RE = /^sha512-[A-Za-z0-9+/]{86}==$/;
+/** The CFG of a decoded installer launcher with a pinned core, or null when the source is not exactly one. */
+function installerLauncherConfig(source) {
+    if (!source.startsWith(LOADER_HEAD))
+        return null;
+    const lineEnd = source.indexOf('\n', LOADER_HEAD.length);
+    if (lineEnd < 0)
+        return null;
+    const cfgLine = source.slice(LOADER_HEAD.length, lineEnd);
+    if (!cfgLine.endsWith(';'))
+        return null;
+    let cfg;
+    try {
+        cfg = JSON.parse(cfgLine.slice(0, -1));
+    }
+    catch {
+        return null;
+    }
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg) || JSON.stringify(cfg) !== cfgLine.slice(0, -1))
+        return null;
+    const body = source.slice(lineEnd + 1);
+    if (!body.startsWith('(') || !body.endsWith(LOADER_TAIL))
+        return null;
+    const core = body.slice(1, -LOADER_TAIL.length);
+    return INSTALLER_RUNTIME_CORE_SHA256.has((0, node_crypto_1.createHash)('sha256').update(core).digest('hex')) ? cfg : null;
+}
 /** Whether a loader decodes to exactly the installer's launcher for this version, with a pinned core. */
 function installerLoaderFor(loader, version) {
     const match = LOADER_RE.exec(loader);
@@ -491,35 +524,45 @@ function installerLoaderFor(loader, version) {
         return false;
     let source;
     try {
-        source = (0, node_zlib_1.brotliDecompressSync)(Buffer.from(match[1], 'base64url'), { maxOutputLength: 1 << 17 }).toString('utf8');
+        source = (0, node_zlib_1.brotliDecompressSync)(Buffer.from(match[1], 'base64url'), { maxOutputLength: MAX_LAUNCHER_BYTES }).toString('utf8');
     }
     catch {
         return false;
     }
-    if (!source.startsWith(LOADER_HEAD))
+    const cfg = installerLauncherConfig(source);
+    return cfg !== null && cfg.version === version;
+}
+/**
+ * The installer launcher that started this process: the core runs as
+ * `eval(global.MARROW_L=<decoded loader>+[])`, verifies the runtime for its
+ * CFG {version, integrity} and then requires that runtime in the same process.
+ * Null unless it is exactly an installer launcher with a pinned core and the
+ * version and integrity the core itself accepts.
+ */
+function ownInstallerLauncher(own) {
+    if (typeof own !== 'string' || own.length > MAX_LAUNCHER_BYTES)
+        return null;
+    const cfg = installerLauncherConfig(own);
+    if (!cfg || typeof cfg.version !== 'string' || !CFG_VERSION_RE.test(cfg.version))
+        return null;
+    if (typeof cfg.integrity !== 'string' || !CFG_INTEGRITY_RE.test(cfg.integrity))
+        return null;
+    return { source: Buffer.from(own, 'utf8'), version: cfg.version };
+}
+/** Whether a loader's canonical base64url payload decodes to exactly these launcher bytes. */
+function loaderIsExactly(loader, source) {
+    const match = LOADER_RE.exec(loader);
+    if (!match)
         return false;
-    const lineEnd = source.indexOf('\n', LOADER_HEAD.length);
-    if (lineEnd < 0)
+    const packed = Buffer.from(match[1], 'base64url');
+    if (packed.toString('base64url') !== match[1])
         return false;
-    const cfgLine = source.slice(LOADER_HEAD.length, lineEnd);
-    if (!cfgLine.endsWith(';'))
-        return false;
-    let cfg;
     try {
-        cfg = JSON.parse(cfgLine.slice(0, -1));
+        return (0, node_zlib_1.brotliDecompressSync)(packed, { maxOutputLength: MAX_LAUNCHER_BYTES }).equals(source);
     }
     catch {
         return false;
     }
-    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg) || JSON.stringify(cfg) !== cfgLine.slice(0, -1))
-        return false;
-    if (cfg.version !== version)
-        return false;
-    const body = source.slice(lineEnd + 1);
-    if (!body.startsWith('(') || !body.endsWith(LOADER_TAIL))
-        return false;
-    const core = body.slice(1, -LOADER_TAIL.length);
-    return INSTALLER_RUNTIME_CORE_SHA256.has((0, node_crypto_1.createHash)('sha256').update(core).digest('hex'));
 }
 /**
  * Whether (command, args) start the official Marrow MCP server, in one of the
@@ -531,8 +574,34 @@ function installerLoaderFor(loader, version) {
  *   /bin/sh -c <installer script> <installer loader> --package=@getmarrow/mcp@V marrow-mcp
  *   node -e <installer loader> -- --package=@getmarrow/mcp@V marrow-mcp
  * Nothing appended, no wrapper, no other package.
+ *
+ * An installer form is proven only as this process's own launch: V is the
+ * version of the installer launcher that started this process (`ownLoader`,
+ * default `global.MARROW_L`) and the loader decodes to exactly its bytes, so
+ * the version, the pack integrity, the SDK pin and the core are all its own.
+ * Another version or integrity, or a hook not started by an installer loader,
+ * proves no installer form.
  */
-function isOfficialMarrowServerLaunch(command, args) {
+function isOfficialMarrowServerLaunch(command, args, ownLoader = globalThis.MARROW_L) {
+    if (command !== '/bin/sh' && command !== 'node')
+        return isMarrowServerLaunchShape(command, args);
+    const own = ownInstallerLauncher(ownLoader);
+    if (!own || !Array.isArray(args) || args.length !== 5 || !args.every((arg) => typeof arg === 'string'))
+        return false;
+    const argv = args;
+    const spec = `--package=@getmarrow/mcp@${own.version}`;
+    if (command === '/bin/sh') {
+        return argv[0] === '-c' && argv[1] === installerServerScript(own.version) && argv[3] === spec && argv[4] === 'marrow-mcp'
+            && loaderIsExactly(argv[2], own.source);
+    }
+    return argv[0] === '-e' && argv[2] === '--' && argv[3] === spec && argv[4] === 'marrow-mcp' && loaderIsExactly(argv[1], own.source);
+}
+/**
+ * The forms isOfficialMarrowServerLaunch lists, with an installer form of any
+ * one version throughout (any pack integrity). For recognizing installer-written
+ * hooks (setup, doctor); it never proves a server.
+ */
+function isMarrowServerLaunchShape(command, args) {
     if (typeof command !== 'string')
         return false;
     const list = args === undefined ? [] : args;
@@ -735,7 +804,7 @@ function launchesWithNpx(entry) {
     return command === 'npx' || command === 'npx.cmd';
 }
 /** One server definition: an official launch with only the keys and env names Marrow writes. */
-function officialDefinition(entry, keys) {
+function officialDefinition(entry, keys, ownLoader) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry))
         return false;
     const record = entry;
@@ -751,7 +820,7 @@ function officialDefinition(entry, keys) {
         if (!Object.keys(env).every((key) => SERVER_ENV_KEYS.has(key) && typeof env[key] === 'string'))
             return false;
     }
-    return isOfficialMarrowServerLaunch(record.command, record.args);
+    return isOfficialMarrowServerLaunch(record.command, record.args, ownLoader);
 }
 function addServers(into, servers, where) {
     if (servers === undefined)
@@ -766,7 +835,9 @@ function addServers(into, servers, where) {
         into.names.set(name, list);
     }
 }
-function decide(set, keys, onlyServer, cwds, npm, codexNames = false) {
+/** `undefined` means this process's own installer launcher (`global.MARROW_L`). */
+const ownLoaderOf = (given) => (given === undefined ? globalThis.MARROW_L : given);
+function decide(set, keys, onlyServer, cwds, npm, ownLoader, codexNames = false) {
     if (set.bad)
         return { official: false, reason: set.bad };
     const colliding = [...set.names.keys()].filter(codexNames ? codexServerNameCanProduceMarrowLabel : serverNameCollidesWithMarrow);
@@ -774,7 +845,7 @@ function decide(set, keys, onlyServer, cwds, npm, codexNames = false) {
         return { official: false, reason: colliding.length ? 'more than one server can produce the marrow label' : 'no marrow server configured' };
     if (colliding[0] !== 'marrow')
         return { official: false, reason: 'the colliding server is not named exactly marrow' };
-    if (!set.names.get('marrow').every((entry) => officialDefinition(entry, keys)))
+    if (!set.names.get('marrow').every((entry) => officialDefinition(entry, keys, ownLoader)))
         return { official: false, reason: 'the marrow server is not the official Marrow MCP launch' };
     if (set.names.get('marrow').some(resolvesLocally) && localPackageCopy(cwds))
         return { official: false, reason: 'a project-local Marrow MCP copy could shadow the npx or bin launch' };
@@ -949,7 +1020,7 @@ function codexOfficialMarrowServer(options = {}) {
             return { official: false, reason: 'the official plugin and another server can both produce the marrow label' };
         return { official: true, reason: 'official plugin' };
     }
-    return decide(set, CODEX_SERVER_KEYS, false, cwds, { env, home: options.userHome ?? (0, node_os_1.homedir)() }, true);
+    return decide(set, CODEX_SERVER_KEYS, false, cwds, { env, home: options.userHome ?? (0, node_os_1.homedir)() }, ownLoaderOf(options.ownLoader), true);
 }
 /** Whether Cursor's `marrow` server is provably the official one (and, at preToolUse, the only server). */
 function cursorOfficialMarrowServer(options) {
@@ -978,7 +1049,7 @@ function cursorOfficialMarrowServer(options) {
             return { official: false, reason: 'a Cursor MCP config is not an object' };
         addServers(set, parsed.mcpServers, 'mcpServers');
     }
-    return decide(set, CURSOR_SERVER_KEYS, options.onlyServer, cwds, { env: options.env ?? process.env, home });
+    return decide(set, CURSOR_SERVER_KEYS, options.onlyServer, cwds, { env: options.env ?? process.env, home }, ownLoaderOf(options.ownLoader));
 }
 // ---------------------------------------------------------------------------
 // The host-aware own-tool decision

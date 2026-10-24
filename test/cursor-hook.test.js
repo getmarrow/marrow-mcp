@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 require('./support/official-host-config.cjs').writeOfficialHostConfigs();
+const { enterProjectCwd } = require('./support/hermetic-project.cjs');
 
 const {
   normalizeHookEventPayload,
@@ -46,9 +47,12 @@ async function withCursorEnvironment(values, callback) {
   process.argv[2] = values.entrypoint || 'cursor-hook';
   for (const key of keys) delete process.env[key];
   Object.assign(process.env, values.env || {});
+  // `hermeticCwd`: for a call that reaches the own-server identity check, whose walk starts at the process cwd.
+  const leaveProject = values.hermeticCwd ? enterProjectCwd() : () => {};
   try {
     await callback();
   } finally {
+    leaveProject();
     process.argv[2] = originalArg;
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
@@ -128,7 +132,7 @@ test('Cursor native pre-action denies review and unavailable proof, never asks',
 
 test('Cursor missing-key protected action denies privately while Marrow MCP does not recurse', async () => {
   const privateCommand = 'npm publish --otp synthetic-private-credential';
-  await withCursorEnvironment({ entrypoint: 'cursor-pre-action-hook' }, async () => {
+  await withCursorEnvironment({ entrypoint: 'cursor-pre-action-hook', hermeticCwd: true }, async () => {
     const deniedText = await captureStdout(() => runPreActionHookCommand({
       eventName: 'preToolUse',
       conversationId: 'conversation-2',
@@ -139,7 +143,7 @@ test('Cursor missing-key protected action denies privately while Marrow MCP does
     }));
     const denied = JSON.parse(deniedText);
     assert.equal(denied.permission, 'deny');
-    assert.match(denied.user_message, /Marrow has no working key on this machine and its keyless mode is off here \(strict mode, or a home folder it cannot trust\); owner: run `npx -y @getmarrow\/install@latest doctor`\./);
+    assert.match(denied.user_message, /Marrow uses its stricter no-key mode here because .+\. Fix \(for the person at this machine, not the agent\): .+, or add a Marrow key \(getmarrow\.ai\/docs#start-here\)\./);
     assert.equal(denied.agent_message, denied.user_message);
     assert.deepEqual(Object.keys(denied).sort(), ['agent_message', 'permission', 'user_message']);
     assert.doesNotMatch(deniedText, /synthetic-private-credential|npm publish/);

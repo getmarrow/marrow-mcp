@@ -30,7 +30,7 @@
  * (isOfficialMarrowMcpEventOnHost); every other host keeps this label rule.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MARROW_OWN_TOOL_NAMES = exports.MARROW_OWN_SERVER_NAME = void 0;
+exports.NATIVE_HOOK_UNHOOKED_READ_ONLY_TOOLS = exports.MARROW_OWN_TOOL_NAMES = exports.MARROW_OWN_SERVER_NAME = void 0;
 exports.isMarrowOwnTool = isMarrowOwnTool;
 exports.isOfficialMarrowMcpTool = isOfficialMarrowMcpTool;
 exports.geminiMcpTarget = geminiMcpTarget;
@@ -39,6 +39,7 @@ exports.isGeminiOwnLabel = isGeminiOwnLabel;
 exports.isOfficialMarrowNestedInput = isOfficialMarrowNestedInput;
 exports.isOfficialMarrowMcpEvent = isOfficialMarrowMcpEvent;
 exports.nativeHookMatcher = nativeHookMatcher;
+exports.listNativeHookMatcher = listNativeHookMatcher;
 exports.r2NativeHookMatcher = r2NativeHookMatcher;
 exports.normalizedMcpToolName = normalizedMcpToolName;
 const tool_catalog_1 = require("./tool-catalog");
@@ -115,20 +116,30 @@ function isOfficialMarrowMcpEvent(event) {
  * raw names, so it stays a distinct, gated MCP action.
  */
 const NATIVE_HOOK_BUILTIN_TOOLS = 'Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task';
+/**
+ * Read-only Claude Code tools that no released matcher sent to the hook (they list names, never
+ * content), so they stay unhooked by exact label. A tool any released matcher hooked is never here.
+ */
+exports.NATIVE_HOOK_UNHOOKED_READ_ONLY_TOOLS = ['LS', 'ListMcpResourcesTool'];
 function ownAlternation(names) {
     return [...names].sort().map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
 }
 /**
  * The Claude Code hook matcher (marrow-install writes the identical bytes): every
- * built-in it covers, and every label holding `mcp__` or `functions.` anywhere,
- * except exactly `mcp__marrow__<registered name>`. Claude Code's label proves
- * server `marrow` (it maps every other character to `_`, without trimming);
- * no other host form is skipped. Hosts test it unanchored (search) or as a
- * full match; with no m flag `^` and `$` are the start and end of the label,
- * and every consuming part is `[\s\S]*`, so a label padded anywhere (line
+ * label except exactly `mcp__marrow__<registered name>` and the exact read-only
+ * labels above. Unknown and future tools (Monitor, PowerShell, WebFetch, Agent and
+ * any tool Claude Code adds later) reach the hook by default. Claude Code's label
+ * proves server `marrow` (it maps every other character to `_`, without
+ * trimming); no other host form is skipped. Hosts test it unanchored (search) or
+ * as a full match; with no m flag `^` and `$` are the start and end of the label,
+ * and the consuming part is `[\s\S]*`, so a label padded anywhere (line
  * terminators, NUL, spaces) reaches the hook either way.
  */
 function nativeHookMatcher(names = exports.MARROW_OWN_TOOL_NAMES) {
+    return `^(?!(?:mcp__marrow__(?:${ownAlternation(names)})|${exports.NATIVE_HOOK_UNHOOKED_READ_ONLY_TOOLS.join('|')})$)[\\s\\S]*`;
+}
+/** The matcher @getmarrow/mcp 3.9.102 and 3.9.103 wrote: a fixed list of built-ins, so Monitor, PowerShell, WebFetch and Agent were skipped. A hook carrying it is repaired. */
+function listNativeHookMatcher(names = exports.MARROW_OWN_TOOL_NAMES) {
     return `${NATIVE_HOOK_BUILTIN_TOOLS}|^(?!mcp__marrow__(?:${ownAlternation(names)})$)[\\s\\S]*(?:functions\\.|mcp__)[\\s\\S]*`;
 }
 /** The never-released r2 matcher (c5354487): `.*` tails and a `functions.` exemption. A hook carrying it is repaired. */

@@ -58,16 +58,24 @@ export declare function isGeminiOwnLabel(value: unknown): boolean;
 export declare function isOfficialMarrowNestedInput(input: unknown): boolean;
 export declare function isOfficialMarrowMcpEvent(event: OwnToolEvent): boolean;
 /**
+ * Read-only Claude Code tools that no released matcher sent to the hook (they list names, never
+ * content), so they stay unhooked by exact label. A tool any released matcher hooked is never here.
+ */
+export declare const NATIVE_HOOK_UNHOOKED_READ_ONLY_TOOLS: readonly string[];
+/**
  * The Claude Code hook matcher (marrow-install writes the identical bytes): every
- * built-in it covers, and every label holding `mcp__` or `functions.` anywhere,
- * except exactly `mcp__marrow__<registered name>`. Claude Code's label proves
- * server `marrow` (it maps every other character to `_`, without trimming);
- * no other host form is skipped. Hosts test it unanchored (search) or as a
- * full match; with no m flag `^` and `$` are the start and end of the label,
- * and every consuming part is `[\s\S]*`, so a label padded anywhere (line
+ * label except exactly `mcp__marrow__<registered name>` and the exact read-only
+ * labels above. Unknown and future tools (Monitor, PowerShell, WebFetch, Agent and
+ * any tool Claude Code adds later) reach the hook by default. Claude Code's label
+ * proves server `marrow` (it maps every other character to `_`, without
+ * trimming); no other host form is skipped. Hosts test it unanchored (search) or
+ * as a full match; with no m flag `^` and `$` are the start and end of the label,
+ * and the consuming part is `[\s\S]*`, so a label padded anywhere (line
  * terminators, NUL, spaces) reaches the hook either way.
  */
 export declare function nativeHookMatcher(names?: Iterable<string>): string;
+/** The matcher @getmarrow/mcp 3.9.102 and 3.9.103 wrote: a fixed list of built-ins, so Monitor, PowerShell, WebFetch and Agent were skipped. A hook carrying it is repaired. */
+export declare function listNativeHookMatcher(names?: Iterable<string>): string;
 /** The never-released r2 matcher (c5354487): `.*` tails and a `functions.` exemption. A hook carrying it is repaired. */
 export declare function r2NativeHookMatcher(names?: Iterable<string>): string;
 /**

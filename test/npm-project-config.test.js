@@ -14,6 +14,7 @@ const {
   resetOwnServerIdentityCache,
 } = require('../dist/own-server-identity.js');
 const { MARROW_OWN_TOOL_NAMES } = require('../dist/own-tool.js');
+const { enterProjectCwd } = require('./support/hermetic-project.cjs');
 
 const OWN = [...MARROW_OWN_TOOL_NAMES];
 const OFFICIAL_TOML = '[mcp_servers.marrow]\ncommand = "npx"\nargs = ["-y", "@getmarrow/mcp"]\n';
@@ -410,6 +411,8 @@ test('B4 follow-up end to end: the README npx form with a harmless project confi
     put(proj, text);
     process.env.HOME = home;
     process.env.CODEX_HOME = codexHome;
+    // The hook's own cwd is walked too: a fresh empty project folder, not the checkout (and not whatever sits above it).
+    const leaveProject = enterProjectCwd();
     try {
       let skipped = 0;
       for (const name of OWN) {
@@ -418,6 +421,7 @@ test('B4 follow-up end to end: the README npx form with a harmless project confi
       }
       return skipped;
     } finally {
+      leaveProject();
       process.env.HOME = saved.HOME;
       if (saved.CODEX_HOME === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved.CODEX_HOME;
       resetOwnServerIdentityCache();

@@ -141,6 +141,13 @@ export declare function protectedCategoriesAmong(scope: HoldScope, categories: s
 export declare function markDialogShown(scope: HoldScope, query: HoldQuery, at: string, home?: string): HoldRecord | null;
 export declare function setSessionMarker(kind: 'interactive' | 'prompt_hook', scope: HoldScope, hostSessionId: string, value: boolean, home?: string): void;
 export declare function sessionMarker(kind: 'interactive' | 'prompt_hook', scope: HoldScope, hostSessionId: string, home?: string): boolean | null;
+/**
+ * Read-only: this host session has an open hold that waits for an approval a chat reply cannot give,
+ * because no dialog was shown (denied for later) or nobody was in the run (quiet, unattended). An
+ * unexpired, unspent hold that was asked in a real dialog is never this. Writes nothing and, with an
+ * unreadable or unsafe state, throws (the caller shows nothing).
+ */
+export declare function hasOpenChatOnlyHold(scope: HoldScope, hostSessionId: string, home?: string, now?: number): boolean;
 /** True when this key has any hold that still needs work (cheap check before network). */
 export declare function hasPendingHolds(scope: HoldScope, query?: HoldQuery, home?: string): boolean;
 //# sourceMappingURL=host-approval-state.d.ts.map

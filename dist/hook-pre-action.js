@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_OFFLINE_TEXT = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.ENV_FILTER_SECRET_NAME = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_OFFLINE_TEXT = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
 exports.isMarrowControlTimeout = isMarrowControlTimeout;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.heldActionHookOutput = heldActionHookOutput;
@@ -19,6 +19,7 @@ exports.localControlAllowOutput = localControlAllowOutput;
 exports.seatbeltPassOutput = seatbeltPassOutput;
 exports.localLoopGuardDenyOutput = localLoopGuardDenyOutput;
 exports.classifyTool = classifyTool;
+exports.mayPrintEnvironment = mayPrintEnvironment;
 exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
 exports.clinePreActionHookOutput = clinePreActionHookOutput;
 exports.windsurfPreActionDecision = windsurfPreActionDecision;
@@ -28,9 +29,11 @@ exports.preActionHookOutput = preActionHookOutput;
 exports.closeDeniedDecision = closeDeniedDecision;
 exports.localApprovalCategories = localApprovalCategories;
 exports.installPreActionHook = installPreActionHook;
+exports.runSeatbeltStatusCommand = runSeatbeltStatusCommand;
 exports.outageHolds = outageHolds;
 exports.runPreActionHookCommand = runPreActionHookCommand;
 const node_crypto_1 = require("node:crypto");
+const node_os_1 = require("node:os");
 const index_1 = require("./index");
 const request_reliability_1 = require("./request-reliability");
 const lifecycle_spool_1 = require("./lifecycle-spool");
@@ -45,13 +48,59 @@ const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 Object.defineProperty(exports, "MARROW_OUTAGE_WARNING", { enumerable: true, get: function () { return hook_contract_1.MARROW_OUTAGE_WARNING; } });
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
-exports.NO_KEY_TEXT = 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.';
+exports.NO_KEY_TEXT = 'Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.';
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
 exports.CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.';
-/** `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim. Same text as src/seatbelt/hook.ts. */
-exports.SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
+/**
+ * `claimed_no_key` without account evidence (a mode fallback): the same holds, never an account claim.
+ * This constant is the generic wording; the hold names its reason (setupUnconfirmedText). Same text as src/seatbelt/hook.ts.
+ */
+exports.SETUP_UNCONFIRMED_TEXT = 'Marrow stopped this action: there is no Marrow key on this machine, and Marrow uses its stricter no-key mode here because it could not confirm this machine\'s setup. Fix (for the person at this machine, not the agent): run npx -y @getmarrow/install@latest doctor, or add a Marrow key (getmarrow.ai/docs#start-here). Agent: do not retry it another way and do not edit Marrow settings; tell the user why it was stopped. Code: setup_unconfirmed.';
 /** The seatbelt path itself could not run (its modules did not load): a stop (spec §2.1.4). */
-const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish (U5.fail_closed, hook_error). This needs the machine owner. Do not retry it another way or edit Marrow settings.';
+const SEATBELT_FAILED_TEXT = 'MARROW SEATBELT stopped this action: a safety check that could not finish. If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped. If this keeps happening, run npx -y @getmarrow/install@latest doctor. Code: U5.fail_closed/hook_error.';
+/**
+ * Seatbelt stop and keyless hold texts end with their code, so they get room for it: the longest real stop
+ * (a fallback reason row with the longest label and codes) is about 850 characters. It is our own cap, not a host's:
+ * Claude Code, Codex, Cursor and Windsurf document no limit on the text of a denial and their installed hooks pass it on unchanged.
+ */
+const STOP_TEXT_LIMIT = 880;
+/** The installed Gemini CLI guard (@getmarrow/install, src/installer.js) turns a deny reason over 500 characters into its launch failure. */
+const GEMINI_REASON_LIMIT = 500;
+/** The installed Cline PreToolUse hook (@getmarrow/install, src/installer.js clinePreToolUseHookSource) replaces an errorMessage over 500 characters with its generic "did not return a valid decision" text. */
+const CLINE_ERROR_LIMIT = 500;
+/** The most characters of a stop or hold text this host takes without losing the code at its end. */
+function hostTextLimit(harness) {
+    return harness === 'gemini' ? GEMINI_REASON_LIMIT : harness === 'cline' ? CLINE_ERROR_LIMIT : STOP_TEXT_LIMIT;
+}
+/** The Cursor deny text of every enforcementError that is not one of the fixed keyless texts (as on 3.9.104). */
+const CURSOR_ENFORCEMENT_LIMIT = 500;
+/** Claude Code plugin only; a host with a tight limit drops it before it would lose the stop's code at the end. */
+const PLUGIN_KEY_HINT = ' (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins)';
+/** The person's own way out; after the plugin hint it is the next thing a tight limit gives up. The agent's instruction stays. */
+const PERSON_ADVICE = ' If you (the person at this machine) meant it, run it yourself in your own terminal.';
+/**
+ * One line of hook text within a host's limit. A text over it first gives up the plugin hint, then the
+ * person's advice; if it is still over, the end of the explanation is cut at a sentence and the stop's
+ * code (the last "Code: ..." part) is kept. Texts that fit are untouched.
+ */
+function fitHookText(value, limit) {
+    let text = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+    for (const part of [PLUGIN_KEY_HINT, PERSON_ADVICE]) {
+        if (text.length <= limit)
+            break;
+        text = text.replace(part, '');
+    }
+    if (text.length <= limit)
+        return text;
+    const at = text.lastIndexOf(' Code: ');
+    if (at > 0 && limit - (text.length - at) > 40) {
+        const tail = text.slice(at);
+        const head = text.slice(0, limit - tail.length);
+        const cut = head.lastIndexOf('. ');
+        return `${cut > 0 ? head.slice(0, cut + 1) : head}${tail}`.slice(0, limit);
+    }
+    return text.slice(0, limit);
+}
 // Claude Code sends the whole tool input, and a Write of a long document grows
 // further once JSON-escaped, so tens of kilobytes of markdown must still parse.
 exports.MAX_PRE_ACTION_INPUT_BYTES = 4 * 1024 * 1024;
@@ -157,6 +206,9 @@ function heldActionHookOutput(harness, plan, code = null) {
     return {
         hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: plan.agentText },
         ...(harness === 'codex' && code ? { systemMessage: (0, host_approval_1.typedReplyUserText)(plan.userText, code) } : {}),
+        // Claude Code, a hold nobody can approve in chat (no dialog here, or nobody in this run): one user-only
+        // line says so. Output only: the decision above is the same deny, and the line carries no code or id.
+        ...(harness === 'claude-code' && plan.userNotice ? { systemMessage: plan.userNotice } : {}),
     };
 }
 /**
@@ -423,7 +475,7 @@ function localControlAllowOutput(harness) {
 /** The Cursor events where Cursor enforces "ask" with its own approval prompt (the installer's execution hooks). */
 const CURSOR_ASK_EVENTS = new Set(['beforeShellExecution', 'beforeMCPExecution']);
 /** Keyless seatbelt: a host that cannot hand this action to its own approval prompt holds it (no account to approve it). */
-exports.SEATBELT_HELD_TEXT = 'MARROW SEATBELT held this action: this host cannot hand it to its own approval prompt here, and no Marrow account is linked to approve it. This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or link a Marrow account with "npx -y @getmarrow/install@latest activate" (it needs MARROW_API_KEY set first) so these become approval prompts.';
+exports.SEATBELT_HELD_TEXT = 'MARROW SEATBELT held this action: this host cannot show its own approval prompt here, and no Marrow account is linked to approve it. If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was held. For approval prompts, add a Marrow key: getmarrow.ai/docs#start-here.';
 exports.SEATBELT_CURSOR_ASK_USER_TEXT = 'Marrow seatbelt (no account linked): approve this action here only if you expected it.';
 exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = 'Cursor is asking the user to approve this action (Marrow seatbelt, no account linked). Wait for the answer; do not retry it another way.';
 /**
@@ -461,7 +513,7 @@ function seatbeltPassOutput(harness, hookEventName, heldBefore) {
     return {};
 }
 function localLoopGuardDenyOutput(harness, reason) {
-    const bounded = reason.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500);
+    const bounded = fitHookText(reason, hostTextLimit(harness));
     if (harness === 'windsurf')
         return null;
     if (harness === 'cursor')
@@ -478,7 +530,7 @@ function localLoopGuardDenyOutput(harness, reason) {
 function emitLoopGuardDenial(harness, reason) {
     if (harness === 'windsurf') {
         process.exitCode = 2;
-        process.stderr.write(`${reason.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500)}\n`);
+        process.stderr.write(`${fitHookText(reason, hostTextLimit(harness))}\n`);
         return;
     }
     process.stdout.write(JSON.stringify(localLoopGuardDenyOutput(harness, reason)));
@@ -509,13 +561,139 @@ function localControlDisabled() {
         return false;
     }
 }
+// The order classifyTool picks a type and lists surfaces in; earlier types are the more specific (stricter) ones.
+const CLASSIFICATION_TYPES = ['publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
+const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 /**
- * `ownUnproven`: the label is one of Marrow's own, but the host's server
- * identity check did not prove the official server (Codex, Cursor). Such a
- * call is classified as a protected MCP tool of another server, never
- * read-only (it imitates Marrow's names, so a read verb proves nothing).
+ * The classification of one tool call. A Monitor command (and a native git
+ * equivalent such as EnterWorktree) is classified exactly as Bash running it;
+ * any other call carrying a command or script string gets the stricter of its
+ * own classification and Bash's for that text (its own classification,
+ * unchanged, when that is already at least as strict). A PowerShell call is
+ * one of those, with Bash's reading in the PowerShell dialect (no read-only
+ * allowlist) and never read-only. See toolPolicyReading.
+ *
+ * `postTool`: the PostToolUse hook (hook.ts) classifies a call that already ran, for the labels of its lifecycle event and the read-only
+ * flag of the local loop guard; no approval, redaction or stored output reads the result. That path must add ~no latency, so it asks no
+ * environment-print check and never loads the seatbelt mapper: its labels are the ones 3.9.103 gave (the secret-path table it shares with the
+ * seatbelt is the one stricter difference). Only the pre-action hook decides (and holds) on what prints the environment.
  */
 function classifyTool(event, options = {}) {
+    const reading = (0, hook_tool_policy_1.toolPolicyReading)(event);
+    if (!reading.shell.length && reading.base === 'named')
+        return classificationFrom(classifyAsNamed(event, options));
+    const shell = reading.shell.map((twin) => classifyAsNamed(twin, options));
+    if (reading.exact) {
+        const merged = shell.reduce(stricterParts);
+        return classificationFrom(reading.bashLabel ? merged : { ...merged, tool: ownToolLabel(event) });
+    }
+    const own = reading.base === 'read' ? { ...classifyAsNamed((0, hook_tool_policy_1.readEquivalent)(event), options), tool: ownToolLabel(event) }
+        : reading.base === 'non_acting' ? nonActingParts(event)
+            : classifyAsNamed(event, options);
+    const merged = shell.reduce(stricterParts, own);
+    return classificationFrom(reading.dialect === 'powershell' ? { ...merged, readOnly: false } : merged);
+}
+function ownToolLabel(event) {
+    return String(event.tool_name || 'tool').slice(0, 64);
+}
+// A call whose words are not actions (toolPolicyReading): reported, never read-only, never protected by its text.
+function nonActingParts(event) {
+    return { tool: ownToolLabel(event), type: 'process', surfaces: [], readOnly: false, protected: false };
+}
+/** `a`, unchanged, when it is at least as strict as `b` on every axis; otherwise the stricter of each. */
+function stricterParts(a, b) {
+    const rank = (type) => {
+        const index = CLASSIFICATION_TYPES.indexOf(type);
+        return index < 0 ? CLASSIFICATION_TYPES.length : index;
+    };
+    const covers = (!a.readOnly || b.readOnly) && (a.protected || !b.protected) && rank(a.type) <= rank(b.type)
+        && b.surfaces.every((surface) => a.surfaces.includes(surface));
+    if (covers)
+        return a;
+    const surfaces = new Set([...a.surfaces, ...b.surfaces]);
+    return {
+        tool: a.tool,
+        type: rank(a.type) <= rank(b.type) ? a.type : b.type,
+        surfaces: [...CLASSIFICATION_SURFACES.filter((surface) => surfaces.has(surface)), ...[...surfaces].filter((surface) => !CLASSIFICATION_SURFACES.includes(surface))],
+        readOnly: a.readOnly && b.readOnly,
+        protected: a.protected || b.protected,
+    };
+}
+let envDumpTools;
+let lastEnvDumpAnswer = null;
+// Every form that prints the environment holds one of these words (env also covers environ, getenv, printenv, ENV and every wrapper's
+// last word). The mapper (about 100 ms to load and run once) is asked only for a command that holds one. Four words are read more closely
+// (what the mapper needs, and nothing less), each unless an expansion could spell it:
+//   set    only a bare `set` (the mapper's rule is no operand: `set -e` and the word in a message are not);
+//   ps     only with an `e` or `E` after it (BSD `ps e`, `-E`); `ps aux` and `docker ps` are not;
+//   jq     only with `env` in the text (a filter reads the environment by that word);
+//   proc   only as `/proc`, or `process[...]` (a computed name); `process.env` holds `env`.
+// A literal read of one non-secret name (`process.env.HOME`, the mapper's own rule) and a word that only joins `env` to a branch name in a
+// plain `git` command (`git checkout -b env-fix`) hold nothing. A `$`, a backtick or a brace can spell any of these words, so a command that
+// holds one of them and a narrowed word is read exactly as before.
+exports.ENV_FILTER_SECRET_NAME = /KEY|TOKEN|SECRET|PASS|CRED/i; // the mapper's SECRET_VAR (src/seatbelt/tables.ts); a test keeps the two equal
+const ENV_DUMP_WORDS = /env|export|declare|typeset|readonly|compgen|tmux|systemctl|strace|php|awk|global|\bproc\b|\bprocess\s*(?:\?\.\s*)?\[|\bset\b(?=[^\S\n]*(?:$|[\n\r;&|)}<>#]|\d+[<>]))/i;
+const NARROWED_WORDS = /\bjq\b|\bps\b|\bset\b|proc/i;
+const EXPANSION = /[$`{]/;
+const ONE_NAME_READ = /\bprocess\.env\.(?!(?:items|keys|copy)\b)([A-Za-z_]\w*)/g;
+const PLAIN_GIT = /^\s*git\s[^$`;&|<>(){}\\\n]*$/;
+/** False for a command that cannot print the environment: the keyed hook then never loads the mapper for it. */
+function mayPrintEnvironment(command) {
+    // An ANSI-C quote can spell a word in escapes.
+    if (command.includes("$'") || command.includes('$"'))
+        return true;
+    // Quotes and backslashes split a word without changing it (`e'n'v`).
+    const text = command.replace(/['"\\]/g, '');
+    // The word `env` only hyphen-joined in a plain git command with no secret-looking word (data to git, never a program or a name).
+    let words = PLAIN_GIT.test(command) && !exports.ENV_FILTER_SECRET_NAME.test(command) ? text.replace(/-env(?![\w])|env-/gi, '') : text;
+    words = words.replace(ONE_NAME_READ, (read, name) => (exports.ENV_FILTER_SECRET_NAME.test(name) ? read : ''));
+    if (ENV_DUMP_WORDS.test(words))
+        return true;
+    // `ps` with an `e` or `E` anywhere after the first `ps` (an `e` after a later `ps` is after the first one too: one scan, no backtracking).
+    const ps = /\bps\b/i.exec(words);
+    if (ps && /[eE]/.test(words.slice(ps.index + 2)))
+        return true;
+    return EXPANSION.test(text) && NARROWED_WORDS.test(text);
+}
+const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
+function shellPrintsEnvironment(command) {
+    if (lastEnvDumpAnswer && lastEnvDumpAnswer.command === command)
+        return lastEnvDumpAnswer.dumps;
+    if (!mayPrintEnvironment(command))
+        return false;
+    let dumps;
+    try {
+        if (envDumpTools === undefined) {
+            try {
+                envDumpTools = { mapper: require('./seatbelt/mapper'), reasons: require('./seatbelt/env-dump').ENV_DUMP_REASONS };
+            }
+            catch {
+                envDumpTools = null;
+            }
+        }
+        if (!envDumpTools)
+            dumps = ENV_DUMP_WORDS.test(command);
+        else {
+            const { mapper, reasons } = envDumpTools;
+            const decision = mapper.evaluateSeatbeltShell(command, {
+                cwd: process.cwd(),
+                home: process.env.HOME || (0, node_os_1.homedir)(),
+                tmpdir: '/tmp',
+                platform: process.platform,
+                fs: { readFile: () => null, realpath: (path) => path },
+                git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
+            });
+            dumps = decision.hits.some((hit) => (hit.category === 'S4' && reasons.has(hit.reason)) || (MAPPER_UNSURE.test(hit.reason) && ENV_DUMP_WORDS.test(command)));
+        }
+    }
+    catch {
+        dumps = ENV_DUMP_WORDS.test(command);
+    }
+    lastEnvDumpAnswer = { command, dumps };
+    return dumps;
+}
+/** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
+function classifyAsNamed(event, options) {
     const tool = String(event.tool_name || 'tool').slice(0, 64);
     const normalizedTool = (0, hook_tool_policy_1.normalizeHookToolName)(tool);
     // Editing and task tools are judged by their target; shell-like words in the
@@ -524,8 +702,10 @@ function classifyTool(event, options = {}) {
     const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
     const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
     // A look-alike of Marrow's own tool is never read-only, whatever its verb.
-    const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEvent)(event);
-    const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccess)(event);
+    // The PostToolUse path passes no check (options.postTool): the mapper is never loaded for it.
+    const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment;
+    const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEventAsNamed)(event, printsEnvironment);
+    const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccessAsNamed)(event, printsEnvironment);
     const protectedShellCommand = shellGoverned && (0, hook_tool_policy_1.isProtectedShellMutation)(command);
     const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
         && protectedShellCommand;
@@ -555,6 +735,11 @@ function classifyTool(event, options = {}) {
         || protectedShellCommand
         || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && (options.ownUnproven === true || !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name)))
         || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
+    return { tool, type, surfaces, readOnly, protected: protectedAction };
+}
+function classificationFrom(parts) {
+    const { tool, type, surfaces, readOnly } = parts;
+    const protectedAction = parts.protected;
     const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
     const target = surfaces.includes('npm') ? `npm:${type}`
         : surfaces.includes('github') ? `github:${type}`
@@ -585,7 +770,8 @@ function cursorPreActionHookOutput(result) {
         return { permission: 'deny', user_message: denial, agent_message: denial };
     }
     if (protectedRisk && (!runtime || !permit?.verified)) {
-        const denial = boundedText(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.', 500);
+        // Room for the code at the end only for the fixed keyless texts; every other text (it can carry a server error, an agent id) keeps the base bound.
+        const denial = boundedText(result.enforcementError || 'Marrow could not verify the required action permit. Retry after governance is available.', isKeylessHoldText(result.enforcementError) ? STOP_TEXT_LIMIT : CURSOR_ENFORCEMENT_LIMIT);
         return {
             permission: 'deny',
             user_message: denial,
@@ -608,12 +794,10 @@ function clinePreActionHookOutput(result) {
         };
     }
     if (result.protectedRisk && (!result.runtime || !result.permit?.verified)) {
-        const credentialsUnavailable = result.enforcementError === exports.NO_KEY_TEXT || result.enforcementError === exports.CLAIMED_NO_KEY_TEXT
-            || result.enforcementError === exports.SETUP_UNCONFIRMED_TEXT;
         return {
             cancel: true,
-            errorMessage: credentialsUnavailable
-                ? result.enforcementError
+            errorMessage: result.credentialsUnavailable === true
+                ? fitHookText(result.enforcementError, CLINE_ERROR_LIMIT)
                 : result.failure === 'credential_scope'
                     ? 'This Marrow API key is not authorized to obtain action permits for this agent. Use the API key issued to this agent and retry.'
                     : result.failure === 'unavailable'
@@ -890,6 +1074,18 @@ function installPreActionHook(startDir = process.cwd()) {
     return { settingsPath: path, installed: reconciled.changed };
 }
 /**
+ * `marrow-mcp seatbelt-status`: exactly one line of JSON, exit 0. Read-only. On any error the unknown line.
+ * The installer's doctor reads it; it is not a user feature.
+ */
+function runSeatbeltStatusCommand() {
+    let status = { mode: 'unknown', reasons: [] };
+    try {
+        status = require('./seatbelt/hook').seatbeltStatus();
+    }
+    catch { /* the unknown line */ }
+    process.stdout.write(`${JSON.stringify({ mode: status.mode, reasons: status.reasons })}\n`);
+}
+/**
  * I3: whether a real outage (the gate never answered) holds this action. Never looser than master,
  * which allowed every action in an outage. A shell command is read by the seatbelt mapper: held for an
  * S0-S5/S-x hit or a program on the outage list (git push, publish, deploy, remote delete), allowed
@@ -907,6 +1103,37 @@ function outageHolds(classifiedHighRisk, read) {
     if (reading.shell && reading.risk === 'not_high')
         return false;
     return classifiedHighRisk;
+}
+/**
+ * The hold text of the keyless fallback, naming its reason. The words live in the seatbelt module (a lazy
+ * require, like the rest of the keyless path); if it cannot load the generic wording stands.
+ */
+function setupUnconfirmedHold(modeReason) {
+    try {
+        return require('./seatbelt/fallback-copy').setupUnconfirmedText(modeReason);
+    }
+    catch {
+        return exports.SETUP_UNCONFIRMED_TEXT;
+    }
+}
+let keylessHoldTexts = null;
+/**
+ * True only for the fixed texts the keyless path sets as enforcementError (NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT, or one
+ * setupUnconfirmedHold text per row of the fallback table). An exact match against that generated set: never a prefix,
+ * a pattern or a flag, so no other text, whatever it starts with, is taken for one of them.
+ */
+function isKeylessHoldText(text) {
+    if (typeof text !== 'string')
+        return false;
+    if (text === exports.NO_KEY_TEXT || text === exports.CLAIMED_NO_KEY_TEXT || text === exports.SETUP_UNCONFIRMED_TEXT)
+        return true;
+    try {
+        keylessHoldTexts ??= new Set(require('./seatbelt/fallback-copy').setupUnconfirmedTexts());
+        return keylessHoldTexts.has(text);
+    }
+    catch {
+        return false;
+    }
 }
 function seatbeltEvent(source, rawEvent) {
     const raw = asRecord(rawEvent) || {};
@@ -1074,6 +1301,8 @@ async function runPreActionHook(input, watch) {
     // The keyless hold text when the seatbelt does not answer: master's no-key text in seatbelt mode (a
     // tool the mapper does not recognise, audit H1), the claimed_no_key texts otherwise.
     let keylessSeatbeltMode = false;
+    // Why the stricter fallback is on (words only, read from the mode resolution; the mode is decided elsewhere).
+    let keylessModeReason = null;
     if (!resolved.apiKey) {
         let keyless;
         try {
@@ -1084,6 +1313,7 @@ async function runPreActionHook(input, watch) {
         }
         keylessAccountLinked = keyless.accountLinked === true;
         keylessSeatbeltMode = keyless.mode === 'seatbelt';
+        keylessModeReason = typeof keyless.modeReason === 'string' ? keyless.modeReason : null;
         if (keyless.stopText) {
             emitLoopGuardDenial(identity.harness, keyless.stopText);
             return;
@@ -1142,7 +1372,8 @@ async function runPreActionHook(input, watch) {
             runtime: null,
             permit: null,
             protectedRisk: enforcementRequired,
-            enforcementError: keylessSeatbeltMode ? exports.NO_KEY_TEXT : keylessAccountLinked ? exports.CLAIMED_NO_KEY_TEXT : exports.SETUP_UNCONFIRMED_TEXT,
+            enforcementError: keylessSeatbeltMode ? exports.NO_KEY_TEXT : keylessAccountLinked ? exports.CLAIMED_NO_KEY_TEXT : setupUnconfirmedHold(keylessModeReason),
+            credentialsUnavailable: true,
         }, identity.harness);
         return;
     }
@@ -1185,7 +1416,9 @@ async function runPreActionHook(input, watch) {
         return;
     }
     if (waited?.kind === 'deny') {
-        emitHeldPlan(identity.harness, { kind: 'deny', agentText: waited.agentText, userText: waited.userText, code: Boolean(waited.hold.code) }, waited.hold.code);
+        // The retry of a hold that waits for an approval nobody can give in chat: the same user-only line again (not for a denial that has another cause: see holdNotice).
+        const userNotice = identity.harness === 'claude-code' ? (0, host_approval_1.holdNotice)(waited.hold, (0, host_approval_1.heldKindLabel)(localApprovalCategories(classified)), waited.waiting === true) : null;
+        emitHeldPlan(identity.harness, { kind: 'deny', agentText: waited.agentText, userText: waited.userText, code: Boolean(waited.hold.code), ...(userNotice ? { userNotice } : {}) }, waited.hold.code);
         await afterAnswer(holdContext, { link: waited.deferredLink ? waited.hold : null });
         return;
     }

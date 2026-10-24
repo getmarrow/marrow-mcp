@@ -16,7 +16,7 @@ import {
   GIT_CONFIG_INCLUDE, GIT_EXEC_CONFIG, GIT_PUSH_LONG, GIT_PUSH_RISKY_LONG, GIT_S4_EXEMPT_SUBS, INERT_PROGRAMS, INTERPRETERS,
   INTERPRETER_EXEC, KEY_EXTENSIONS, KEY_FIXTURE_SEGMENTS, KNOWN_COMMANDS, LIMITS,
   MARROW_OWNER_SUBS, NAME_TRIPWIRE, NON_SCRIPT_NAMES, NPM_ALIASES, NPM_BOOL_FLAGS, NPM_COMMANDS, NPM_VALUE_FLAGS, PACKAGE_BINS,
-  PROD_ENV, S4_EXEMPT_PROGRAMS, SCRIPT_SUFFIX, SECRET_PATTERNS, SECRET_VAR, SEATBELT_RULES_VERSION, SHELL_TOOL_NAMES, SHELLS,
+  PRESENT_SECRET_PATTERNS, PROD_ENV, S4_EXEMPT_PROGRAMS, SCRIPT_SUFFIX, SECRET_PATTERNS, SECRET_VAR, SEATBELT_RULES_VERSION, SHELL_TOOL_NAMES, SHELLS,
   SSH_PUBLIC, TRIPWIRE, interpreterDecodeToken, interpreterTreeDelete, secretSamples,
 } from './tables';
 import { CLASSIFIER_PIN } from './classifier-pin';
@@ -27,6 +27,11 @@ import {
   longValue, takesNextWord, unknownLong, unknownLongAll,
 } from './longopts';
 import { AssignEvent, scanAssignments } from './guards';
+import {
+  ENV_PRINTER_COMMAND, EXEC_WRAPPERS, HELPER_ENV_VARS, PROC_ENVIRON, PROC_PROCESS_DIRECTORY, RECURSIVE_READERS, manPagerPrintsEnvironment, procGlobMatchesEnviron,
+  straceShowsEnvironment, tmuxRunsEnvironmentPrinter, compgenListsVariables, jqFilterReadsEnvironment, jqFilters, packageRunsEnvScript, psLooselyPrintsEnvironment, psPrintsEnvironment, systemctlShowsEnvironment,
+  tmuxShowsEnvironment,
+} from './env-dump';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const shellParse: { parseShell: (src: string, opts?: { depth?: number }) => ParsedShell } = require('../../vendor/classifier/shell-parse.js');
@@ -173,6 +178,8 @@ interface Run {
   // The anchors the operand folder rule reads: those of the operand set (OPERAND_RULE_OMITS left out).
   operandAnchors: string[];
   secretRegexes: RegExp[];
+  /** `<name>.env`: a secret when the file is there to read, or git names it as history. */
+  presentSecretRegexes: RegExp[];
   branchRegexes: RegExp[];
   topSource: string;
   // Budgets (audit F3, F10): every limit stops, none passes.
@@ -347,6 +354,10 @@ function evaluateEvent(event: SeatbeltEvent, env: SeatbeltEnv): SeatbeltDecision
   }
   if (Array.isArray(rawInput)) rawInput = { commands: rawInput.filter((v) => typeof v === 'string'), items: rawInput.filter((v) => v && typeof v === 'object') };
   const input = (rawInput && typeof rawInput === 'object' ? rawInput : {}) as Record<string, unknown>;
+  // A Claude Code built-in that runs a fixed local git command (exact label) is read as that command,
+  // as the keyed hook reads it (hook-tool-policy NATIVE_SHELL_EQUIVALENTS).
+  const nativeShell = NATIVE_SHELL_EQUIVALENTS.get(tool);
+  if (nativeShell !== undefined) rawText = rawText === null ? nativeShell : `${rawText}\n${nativeShell}`;
   // One wall-clock ceiling for the whole event, counted from here (audit N6): the input walks below
   // run before any classification and share it.
   const deadline = deadlineFor(env);
@@ -362,10 +373,15 @@ function evaluateEvent(event: SeatbeltEvent, env: SeatbeltEnv): SeatbeltDecision
   }
   const evName = mcp ? mcp.name : name;
   const evInput = mcp ? mcp.args : input;
+  // Claude Code's Workflow (exact host label) runs its `script` as JavaScript that only starts
+  // sub-agents, whose own tools reach the hook: that one field is not shell text (as the keyed hook
+  // reads it, hook-tool-policy NON_SHELL_COMMAND_TOOLS). Every other field is read as for any tool.
+  const shellInput = !mcp && tool === 'Workflow' && typeof evInput.script === 'string'
+    ? Object.fromEntries(Object.entries(evInput).filter(([key]) => key !== 'script')) : evInput;
 
   // A tool that runs a shell command (audit F11): a known shell tool, or any tool whose input names a
   // command, script or argv field, at any depth.
-  const invocation = shellInvocations(evName, evInput, deadline, rawText);
+  const invocation = shellInvocations(evName, shellInput, deadline, rawText);
   if (invocation) {
     const run = newRun(env, invocation.shell.join('\n'), deadline);
     run.shell = true;
@@ -495,6 +511,12 @@ function mcpPathChecks(label: string, input: Record<string, unknown>, ctx: Ctx, 
     if (writes) checkProtectedWrite(litArg(p), ctx, run, 'mcp_write', false);
   }
 }
+
+// Claude Code built-ins that run a fixed local git command (exact host label).
+const NATIVE_SHELL_EQUIVALENTS: ReadonlyMap<string, string> = new Map([
+  ['EnterWorktree', 'git worktree add'],
+  ['ExitWorktree', 'git worktree remove'],
+]);
 
 // Tools that never run what their `command`/`script` field says (it names a skill, a slash command,
 // a sub-agent task), plus Marrow's own tools.
@@ -937,6 +959,7 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     protectedAnchors: anchors.map((a) => (fold ? a.toLowerCase() : a)),
     operandAnchors: operandAnchors.map((a) => (fold ? a.toLowerCase() : a)),
     secretRegexes: SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
+    presentSecretRegexes: PRESENT_SECRET_PATTERNS.map((p) => classifierModule.globToRegex(p, home)),
     branchRegexes: baseline.BASELINE_POLICY.protected_branches.map((p) => classifierModule.globToRegex(p, '/nonexistent-home')),
     topSource: source,
     work: 0,
@@ -2419,6 +2442,8 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
 
   // Generic operand checks apply to every program (S4 reads, S0 writes by write-programs).
   genericOperandChecks(prog, args, ctx, run, x.info.subs);
+  // Every command that prints the environment (a word-level table shared with the keyed hook).
+  envDumpChecks(prog, rest, ctx, run, x);
   // NEW-2: a protected path as an operand of a program that is not a known reader.
   protectedOperandCheck(prog, rest, ctx, run);
   // Patch round 4: the command zip runs to test its archive (-TT, --unzip-command) is command text.
@@ -2462,6 +2487,8 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
     case 'trap': return trapBuiltin(rest, ctx, run, x);
     case 'script': return scriptSession(rest, ctx, run, x);
     case 'awk': case 'gawk': case 'mawk': return awkProgram(rest, ctx, run, x);
+    // nawk was read as an unknown program before: it keeps that argv scan (the break falls through to unknownProgram) besides the awk reading.
+    case 'nawk': awkProgram(rest, ctx, run, x); break;
     case 'sed': case 'gsed': return sedProgram(rest, ctx, run);
     case 'ps': return psProgram(rest, run);
     case 'tar': case 'gtar': case 'bsdtar': return tarProgram(rest, ctx, run, x);
@@ -2686,7 +2713,7 @@ const NESTED_NOT_PROGRAMS = new Set(['set', 'export', 'declare', 'typeset', 'rea
 // Every command hidden in the argv of a program the mapper has no handler for (`strace -f npm
 // publish`, `cross-env NODE_ENV=production vercel --prod`, `tmux new -d 'npm publish'`). Used for
 // unknown programs and for known wrappers with open grammars (docker run IMAGE CMD…).
-function scanArgvForCommands(rest: Arg[], ctx: Ctx, run: Run, x: Exec, remote = false): void {
+function scanArgvForCommands(rest: Arg[], ctx: Ctx, run: Run, x: Exec, remote = false, execWrapper = false): void {
   const fed = withFeed(ctx, x, run).stdinFeed;
   const base: Ctx = remote ? childCtx(ctx, { cwds: [null], remote: true, vars: new Map(), aliases: new Map(), backstop: true, stdinFeed: fed }) : { ...ctx, backstop: true };
   const env = new Map(x.env);
@@ -2709,7 +2736,7 @@ function scanArgvForCommands(rest: Arg[], ctx: Ctx, run: Run, x: Exec, remote = 
     if (!isCommandWord(w, run)) continue;
     const tail = rest.slice(k);
     const b = progName(w, run);
-    if ((b === 'env' || b === 'printenv') && tail.length === 1) continue;
+    if ((b === 'env' || b === 'printenv') && tail.length === 1 && !execWrapper) continue;
     trials += 1;
     if (trials > LIMITS.maxTailTrials) { exhaust(run, 'budget_argv_scan'); return; }
     dispatch(tail, base, run, { ...x, env: new Map(env) });
@@ -2865,7 +2892,7 @@ function unknownProgram(prog: string, args: Arg[], ctx: Ctx, run: Run, x: Exec):
   if (!INERT_PROGRAMS.has(prog) && !BUILD_TOOLS.has(prog)) run.headMayChange = true;
   if (INERT_PROGRAMS.has(prog) || ctx.backstop) return;
   const rest = args.slice(1);
-  scanArgvForCommands(rest, ctx, run, x);
+  scanArgvForCommands(rest, ctx, run, x, false, EXEC_WRAPPERS.has(prog));
   // stdin text: `echo 'npm publish' | at now`, `at now <<< 'npm publish'`, `batch <<EOF …`.
   const src = stdinSource(x, ctx, run);
   // Decoded text piped into a program that runs what it reads (at, batch, crontab, a function) or
@@ -3143,7 +3170,10 @@ function interpreterEnvDump(code: string): boolean {
   }
   if (rest.includes('\u0004SECRETENV\u0004')) return true;
   // What is left: any other mention of the environment object is a dump or a computed lookup.
-  return /\bos\.environ\b|\bprocess\.env\b|%ENV\b|\bENV\b(?!\s*(?:=|==)\s*['"])|\bENVIRON\b|\benviron\b\s*(?:[.)\],;:|]|$)|\$_ENV|\$_SERVER|\bSystem\.getenv\s*\(\s*\)|\bgetenv\s*\(\s*\)|\benvironment\.get_environment_variables|\bGet-ChildItem\s+env:/i.test(rest);
+  if (/\bos\.environb?\b|\bprocess\.env\b|%ENV\b|\bENV\b(?!\s*(?:=|==)\s*['"])|\bENVIRON\b|\benvironb?\b\s*(?:[.)\],;:|]|$)|\$_ENV|\$_SERVER|\bSystem\.getenv\s*\(\s*\)|\bSystem\.get_env\s*\(\s*\)|\bgetenv\s*\(\s*(?:null)?\s*\)|\bphpinfo\s*\(|\benvironment\.get_environment_variables|\bGet-ChildItem\s+env:/i.test(rest)) return true;
+  // JavaScript reaches the environment object without spelling it out: `const { env } = process`, `process['en' + 'v']`, `with (process) env`, `Reflect.get(process, 'env')`.
+  return (/\bprocess\b/.test(rest) && (/\benv\b/.test(rest) || /\bprocess\s*(?:\?\.)?\s*\[(?!\s*(['"])[A-Za-z_]\w*\1\s*\])/.test(rest)))
+    || /\b(?:globalThis|global)\s*(?:\?\.)?\s*\[(?!\s*(['"])[A-Za-z_]\w*\1\s*\])/.test(rest);
 }
 
 function scanInterpreterCode(code: string, run: Run): void {
@@ -3392,7 +3422,9 @@ function longestRealpath(abs: string, run: Run): string | null {
   return null;
 }
 
-function isSecretPath(abs: string, run: Run): boolean {
+// `mustExist`: a `<name>.env` path (PRESENT_SECRET_PATTERNS) counts only when it is there to read; samples, git
+// pathspecs and git objects (history) leave it false.
+function isSecretPath(abs: string, run: Run, mustExist = false): boolean {
   const p = run.fold ? abs.toLowerCase() : abs;
   const base = path.posix.basename(p);
   if (/^\.env(?:\.|$)/.test(base) && ENV_TEMPLATE_SUFFIX.test(base)) return false;
@@ -3401,7 +3433,10 @@ function isSecretPath(abs: string, run: Run): boolean {
     if (!segs.some((s) => KEY_FIXTURE_SEGMENTS.has(s))) return true;
   }
   const hits = run.secretRegexes.some((re) => re.test(p) || (run.fold && re.test(abs)));
-  if (!hits) return false;
+  if (!hits) {
+    if (!run.presentSecretRegexes.some((re) => re.test(p) || (run.fold && re.test(abs)))) return false;
+    return !mustExist || safeRealpath(run.env, abs) !== null;
+  }
   if (/\/\.ssh\//.test(p) && SSH_PUBLIC.test(base)) return false;
   return true;
 }
@@ -3516,19 +3551,29 @@ function sampleMatch(a: Arg, ctx: Ctx, run: Run, samples: string[]): boolean {
 function cwdsList(ctx: Ctx): string[] { return ctx.cwds.map((c) => c || '/__unknown_cwd__'); }
 
 // S4: a secret path as an operand. Returns true on a stop.
-function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string): boolean {
+// `history`: git reads the path from its object store (a pathspec after `--`, a `REV:path` object), so it
+// need not exist in the work tree.
+// `pattern`: the pattern of a search (the word in `grep -rn <word> src`), which names no file to read.
+function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string, history = false, pattern = false): boolean {
   if (a.text === null && a.alts && a.alts.length) {
-    for (const v of a.alts) if (checkSecretOperand({ ...litArg(v), glob: a.glob, word: a.word }, ctx, run, reason)) return true;
+    for (const v of a.alts) if (checkSecretOperand({ ...litArg(v), glob: a.glob, word: a.word }, ctx, run, reason, history, pattern)) return true;
     return false;
   }
   for (const text of operandPaths(a)) {
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) continue;
+    // A name under an unknown working folder (the event gave no absolute cwd): a relative operand, `..` included,
+    // or one under /proc/<pid>/cwd. It may be there to read, so a `<name>.env` operand counts as present and a
+    // glob that can expand to a `*.env` name stops (fail closed). The pattern of a search names no file.
+    const underUnknown = !pattern && ctx.cwds.some((c) => c === null) && (() => {
+      const t = expandTilde(text, run);
+      return t !== null && (!path.posix.isAbsolute(t) || /^\/proc\/[^/]+\/cwd(?:\/|$)/.test(t));
+    })();
     // A glob is also listed (through links and names made in this command) and each match judged.
     if (a.text !== null && a.glob && /[*?[]/.test(text) && !a.nonAscii && run.env.fs.readdir) {
       const matches = expandGlob(text, ctx, run);
       if (matches !== null) {
-        for (const mm of matches.slice(0, LIMITS.maxGlobMatches)) if (checkSecretOperand({ ...litArg(mm), glob: false }, ctx, run, reason)) return true;
-        for (const k of linkNamesMatching(text, ctx, run)) if (checkSecretOperand({ ...litArg(k), glob: false }, ctx, run, reason)) return true;
+        for (const mm of matches.slice(0, LIMITS.maxGlobMatches)) if (checkSecretOperand({ ...litArg(mm), glob: false }, ctx, run, reason, history, pattern)) return true;
+        for (const k of linkNamesMatching(text, ctx, run)) if (checkSecretOperand({ ...litArg(k), glob: false }, ctx, run, reason, history, pattern)) return true;
       }
     }
     if (a.text === null || a.glob || a.nonAscii) {
@@ -3536,6 +3581,7 @@ function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string): boolean
       if (/[A-Za-z0-9._~/-]/.test(probe.pattern.replace(new RegExp(DYN, 'g'), '')) && sampleMatch(probe, ctx, run, secretSamples(run.home, cwdsList(ctx)))) {
         return hit(run, 'S4', `${reason}_secret_pattern`);
       }
+      if (underUnknown && a.text !== null && a.glob && /[*?[]/.test(text) && globMayEndWith(text, '.env', run.fold)) return hit(run, 'S4', `${reason}_secret_pattern`);
       if (a.text === null) continue;
     }
     const abs = absCandidates(text, ctx, run);
@@ -3543,11 +3589,89 @@ function checkSecretOperand(a: Arg, ctx: Ctx, run: Run, reason: string): boolean
     for (const p of abs) {
       // A path through a link whose target the mapper cannot follow (audit N3).
       if (run.links.size > 0 && applyLinks(p, run) === '/__unknown_link__') return hit(run, 'S4', `${reason}_unknown_link`);
-      for (const r of realCandidates(p, run, true)) if (isSecretPath(r, run)) return hit(run, 'S4', `${reason}_secret_path`);
+      const mustExist = !history && !(underUnknown || (!pattern && p.startsWith('/__unknown_cwd__/')));
+      for (const r of realCandidates(p, run, true)) if (isSecretPath(r, run, mustExist)) return hit(run, 'S4', `${reason}_secret_path`);
     }
   }
   return false;
 }
+
+// Whether some name the glob matches (shell rules: `*` and `?` stay inside one path segment) ends with `suffix`:
+// a walk over (glob position, how much of the suffix the name ends with so far), trying the suffix characters
+// and a few others for every wildcard.
+function globMayEndWith(glob: string, suffix: string, ci: boolean): boolean {
+  type Tok = { k: 'lit'; c: string } | { k: 'any1' } | { k: 'star' } | { k: 'cls'; neg: boolean; chars: string[]; ranges: Array<[string, string]> };
+  const fold = (c: string) => (ci ? c.toLowerCase() : c);
+  const toks: Tok[] = [];
+  for (let i = 0; i < glob.length; i += 1) {
+    const ch = glob[i];
+    if (ch === '*') { if (toks[toks.length - 1]?.k !== 'star') toks.push({ k: 'star' }); continue; }
+    if (ch === '?') { toks.push({ k: 'any1' }); continue; }
+    if (ch === '[') {
+      const end = glob.indexOf(']', i + 2);
+      if (end > 0) {
+        let body = glob.slice(i + 1, end);
+        const neg = body.startsWith('!') || body.startsWith('^');
+        if (neg) body = body.slice(1);
+        const tok: Tok = { k: 'cls', neg, chars: [], ranges: [] };
+        for (let q = 0; q < body.length; q += 1) {
+          if (body[q + 1] === '-' && q + 2 < body.length) { tok.ranges.push([fold(body[q]), fold(body[q + 2])]); q += 2; } else tok.chars.push(fold(body[q]));
+        }
+        toks.push(tok);
+        i = end;
+        continue;
+      }
+    }
+    toks.push({ k: 'lit', c: fold(ch) });
+  }
+  const want = fold(suffix);
+  const tries = [...new Set([...want, 'x', 'A', '0', '_', '-', ...toks.flatMap((t) => (t.k === 'cls' ? [...t.chars, ...t.ranges.flat()] : []))])].filter((c) => c !== '/');
+  const step = (k: number, c: string): number => {
+    const s = want.slice(0, k) + c;
+    for (let n = Math.min(s.length, want.length); n > 0; n -= 1) if (s.endsWith(want.slice(0, n))) return n;
+    return 0;
+  };
+  const accepts = (t: Tok, c: string): boolean => {
+    if (t.k === 'lit') return t.c === c;
+    if (t.k === 'any1' || t.k === 'star') return c !== '/';
+    const inSet = t.chars.includes(c) || t.ranges.some(([lo, hi]) => c >= lo && c <= hi);
+    return t.neg ? !inSet && c !== '/' : inSet;
+  };
+  const seen = new Set<string>();
+  const queue: Array<[number, number]> = [[0, 0]];
+  while (queue.length) {
+    const [i, k] = queue.pop() as [number, number];
+    const key = `${i}:${k}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (i === toks.length) { if (k === want.length) return true; continue; }
+    const t = toks[i];
+    const chars = t.k === 'lit' ? [t.c] : tries;
+    if (t.k === 'star') queue.push([i + 1, k]);
+    for (const c of chars) if (accepts(t, c)) queue.push([t.k === 'star' ? i : i + 1, step(k, c)]);
+  }
+  return false;
+}
+
+// The words a search reads as its pattern, not as a file: the value of -e/--regexp (also attached), and the
+// first operand when no -e/-f gave one. A form not listed here is read as a file (the strict reading).
+function searchPatternArgs(rest: Arg[], end: number = rest.length): Set<Arg> {
+  const out = new Set<Arg>();
+  let given = false;
+  let first: Arg | null = null;
+  for (let i = 0; i < end; i += 1) {
+    const t = rest[i].text;
+    if (t === null) { if (first === null) first = rest[i]; continue; }
+    if (t === '--') break;
+    if (t === '-e' || t === '--regexp') { given = true; if (rest[i + 1]) out.add(rest[i + 1]); i += 1; continue; }
+    if (/^(?:--regexp=|-e.)/.test(t)) { given = true; out.add(rest[i]); continue; }
+    if (t === '-f' || t === '--file' || /^(?:--file=|-f.)/.test(t)) { given = true; if (t === '-f' || t === '--file') i += 1; continue; }
+    if (first === null && !t.startsWith('-')) first = rest[i];
+  }
+  if (!given && first !== null) out.add(first);
+  return out;
+}
+const SEARCH_PROGRAMS = new Set(['grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'ack']);
 
 // Path-ish parts of an operand: the value after `--opt=`, after `@` (curl -d @file) and after `:`
 // for git object paths (HEAD:.env).
@@ -3803,13 +3927,14 @@ function genericOperandChecks(prog: string, args: Arg[], ctx: Ctx, run: Run, sub
   recursiveSecretDirRead(prog, rest, ctx, run);
   if (!S4_EXEMPT_PROGRAMS.has(prog) && prog !== 'git') {
     let skipNext = false;
+    const patterns = SEARCH_PROGRAMS.has(prog) ? searchPatternArgs(rest) : null;
     for (let i = 0; i < rest.length; i += 1) {
       const a = rest[i];
       if (skipNext) { skipNext = false; continue; }
       // ssh-style identity flags use the key without printing it.
       if (['scp', 'rsync', 'ssh-copy-id', 'sshfs'].includes(prog) && a.text === '-i') { skipNext = true; continue; }
       if (clock(run)) return;
-      checkSecretOperand(a, ctx, run, 'operand');
+      checkSecretOperand(a, ctx, run, 'operand', false, patterns !== null && patterns.has(a));
     }
   }
   // Copying or archiving a directory that holds credential files (cp -r ~/.ssh, tar ~) is a read too.
@@ -5151,6 +5276,7 @@ function xargsWrapper(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): v
     const sep = inner.findIndex((a) => a.text !== null && /^::::?\+?$/.test(a.text));
     const inputs = sep >= 0 ? inner.slice(sep + 1) : [];
     inner = sep >= 0 ? inner.slice(0, sep) : inner;
+    xargsRunsBareEnv(inner, run);
     if (inner.length === 0) {
       // `parallel ::: 'cmd1' 'cmd2'` and `… | parallel`: every input line is a command line.
       if (sep >= 0) {
@@ -5167,6 +5293,7 @@ function xargsWrapper(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): v
     evalShell(/\{(?:[.\/#%]|\/\.|\d+)?\}/.test(inner.map((a) => a.text || '').join(' ')) ? text : `${text} ${marker}`, childCtx(ctx), run);
     return;
   }
+  xargsRunsBareEnv(inner, run);
   if (inner.length === 0) inner = [litArg('echo')];
   // Input lines become extra operands: unknown targets (spec A6). The -I replacement string stands
   // for one input line wherever it appears.
@@ -5311,12 +5438,13 @@ function handleShell(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): vo
 
 function handleInterpreter(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   const codeFlags: Record<string, RegExp> = {
-    node: /^(?:-e|--eval|-p|--print|-pe)$/, nodejs: /^(?:-e|--eval|-p|--print)$/, bun: /^(?:-e|--eval|-p|--print)$/,
+    node: /^(?:-e|--eval|-p|--print|-pe|-ep)$/, 'ts-node': /^(?:-e|--eval|-p|--print)$/, tsx: /^(?:-e|--eval|-p|--print)$/, nodejs: /^(?:-e|--eval|-p|--print)$/, bun: /^(?:-e|--eval|-p|--print)$/,
     deno: /^(?:eval)$/, php: /^-r$/, ruby: /^-[a-zA-Z]*e$/, perl: /^-[a-zA-Z]*[eE]$/, lua: /^-e$/, irb: /^-e$/,
     pwsh: /^-(?:c|command|e|ec|enc|encodedcommand)$/i, powershell: /^-(?:c|command|e|ec|enc|encodedcommand)$/i,
   };
-  const isPython = /^(?:python[23]?(?:\.\d+)?|ipython)$/.test(prog);
-  const codeRe = isPython ? /^-[a-zA-Z]*c$/ : (codeFlags[prog] || /^-e$/);
+  const isPython = /^(?:python[23]?(?:\.\d+)?|ipython|pypy3?(?:\.\d+)?)$/.test(prog);
+  // pypy keeps the `-e` it was read with before it was read as Python (a stop, never a pass), besides Python's `-c`.
+  const codeRe = isPython ? (prog.startsWith('pypy') ? /^(?:-[a-zA-Z]*c|-e)$/ : /^-[a-zA-Z]*c$/) : (codeFlags[prog] || /^-e$/);
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
     const t = a.text;
@@ -5329,6 +5457,11 @@ function handleInterpreter(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exe
       if (rest.slice(0, i).some((b) => b.text !== null && (codeRe.test(b.text) || b.text === 'eval'))) hit(run, 'Sx', 'dynamic_interpreter_code');
       return;
     }
+    // The code attached to its flag: `node --eval=CODE`, `perl -e'CODE'`, `ruby -e'CODE'`, `php -r'CODE'`, `python3 -c'CODE'`.
+    const attachedCode = /^(?:node|nodejs|bun)$/.test(prog) ? /^--(?:eval|print)=([\s\S]+)$/.exec(t)
+      : isPython ? /^-[a-zA-Z]*c([\s\S]+)$/.exec(t) : prog === 'perl' ? /^-[a-zA-Z]*[eE]([\s\S]+)$/.exec(t) : prog === 'ruby' ? /^-[a-zA-Z]*e([\s\S]+)$/.exec(t)
+        : prog === 'php' ? /^-r([\s\S]+)$/.exec(t) : null;
+    if (attachedCode) scanInterpreterCode(attachedCode[1], run);
     if (codeRe.test(t) || (prog === 'deno' && t === 'eval')) {
       const code = rest[i + 1];
       if (!code) return;
@@ -5407,10 +5540,43 @@ function stdinInterpreter(prog: string, x: Exec, ctx: Ctx, run: Run): void {
 
 // BSD `ps e`, `ps auxe`, `ps eww` print every process's environment.
 function psProgram(rest: Arg[], run: Run): void {
-  for (const a of rest) {
-    if (a.text === null) continue;
-    if (/^[a-zA-Z]*e[a-zA-Z]*$/.test(a.text) && !a.text.startsWith('-') && !/^\d+$/.test(a.text)) { hit(run, 'S4', 'ps_environment'); return; }
+  const words = rest.map((a) => a.text);
+  if (psPrintsEnvironment(words)) hit(run, 'S4', 'ps_environment');
+  // What 3.9.103 stopped and no later version loosens: the keyed hook leaves this reading out.
+  else if (psLooselyPrintsEnvironment(words)) hit(run, 'S4', 'ps_environment_loose');
+}
+
+// Commands that print many or all environment variables, found by their words alone (never by file contents):
+// `compgen -e`, `tmux show-environment`, `systemctl show-environment`, `php -i`, a jq filter that reads `env`,
+// `npm run env`, and any program given /proc/<pid>/environ.
+function envDumpChecks(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  const words = rest.map((a) => a.text);
+  if (prog === 'compgen' && compgenListsVariables(words)) hit(run, 'S4', 'env_dump_compgen');
+  else if (prog === 'tmux' && (tmuxShowsEnvironment(words) || tmuxRunsEnvironmentPrinter(words))) hit(run, 'S4', 'env_dump_tmux');
+  else if (prog === 'strace' && straceShowsEnvironment(words)) hit(run, 'S4', 'env_dump_strace');
+  else if (prog === 'man' && manPagerPrintsEnvironment(words)) hit(run, 'S4', 'env_dump_env');
+  else if (prog === 'systemctl' && systemctlShowsEnvironment(words)) hit(run, 'S4', 'env_dump_systemctl');
+  else if (prog === 'php' && words.some((w) => w === '-i' || w === '--info')) hit(run, 'S4', 'env_dump_php_info');
+  else if (prog === 'jq' && (jqFilters(words).some(jqFilterReadsEnvironment) || (x.cmd.heredoc !== null && words.some((w) => w !== null && STDIN_PATHS.has(w)) && jqFilterReadsEnvironment(x.cmd.heredoc)))) hit(run, 'S4', 'env_dump_jq');
+  else if ((prog === 'npm' || prog === 'pnpm' || prog === 'yarn' || prog === 'bun') && packageRunsEnvScript(words)) hit(run, 'S4', 'env_dump_npm_run_env');
+  for (const [name, values] of x.env) {
+    if (HELPER_ENV_VARS.has(name) && values !== null && values.some((v) => ENV_PRINTER_COMMAND.test(v))) { hit(run, 'S4', 'env_dump_env'); break; }
   }
+  for (const a of rest) {
+    // A dynamic part of the path (`/proc/$(pgrep node)/environ`) stands for any pid.
+    const text = a.text !== null ? a.text : a.pattern.split(DYN).join('x');
+    if (!text.startsWith('/') && !text.includes('proc')) continue;
+    const candidates = (a.text !== null ? absCandidates(a.text, ctx, run) || [] : [text]).map((p) => (p.length > 1 ? p.replace(/\/+$/, '') : p));
+    if (candidates.some((p) => PROC_ENVIRON.test(p) || procGlobMatchesEnviron(p) || (RECURSIVE_READERS.has(prog) && PROC_PROCESS_DIRECTORY.test(p)))) { hit(run, 'S4', 'proc_environ'); return; }
+  }
+}
+
+// `xargs env`, `parallel env ::: x`: the command is `env` or `printenv` with only options and assignments, so it prints the environment.
+function xargsRunsBareEnv(words: Arg[], run: Run): void {
+  const b = words[0] && words[0].text !== null ? progName(words[0], run) : null;
+  if (b !== 'env' && b !== 'printenv') return;
+  const bare = words.slice(1).every((a) => a.text !== null && (a.text.startsWith('-') || (b === 'env' && (/^[A-Za-z_]\w*=/.test(a.text) || /^\{[^}]*\}$/.test(a.text)))));
+  if (bare) hit(run, 'S4', b === 'env' ? 'env_dump_env' : 'env_dump_printenv');
 }
 
 // trap 'cmd' SIGNAL…: the command runs when the signal arrives.
@@ -5438,6 +5604,11 @@ function trapBuiltin(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
 
 // awk programs run commands through system() and pipes.
 const AWK_EXEC = /\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b|\bENVIRON\b|\bPROCINFO\b/;
+// A program that can start a command and names its own arguments (`system(ARGV[1])`, `for (i = 1; i < ARGC; i++) s = s ARGV[i]`) may run them: they are command text.
+const AWK_RUNS_ARGV = /\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b/;
+function awkArgvCommands(text: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  if (AWK_RUNS_ARGV.test(text) && /\b(?:ARGV|ARGC)\b/.test(text) && !ctx.backstop) scanArgvForCommands(rest, ctx, run, x);
+}
 function awkProgram(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   const vf = new Set(['-F', '-v', '-W', '--field-separator', '--assign', '-i', '-l', '--include', '--load']);
   let program: Arg | null = null;
@@ -5448,7 +5619,7 @@ function awkProgram(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
       // `awk -f -`: the program arrives on stdin.
       if (f && f.text !== null && (f.text === '-' || STDIN_PATHS.has(f.text))) {
         const src = stdinSource(x, ctx, run);
-        for (const text of src.texts) if (AWK_EXEC.test(text)) scanInterpreterCode(text, run);
+        for (const text of src.texts) if (AWK_EXEC.test(text)) { scanInterpreterCode(text, run); awkArgvCommands(text, rest, ctx, run, x); }
         if (src.unknown || (src.texts.length === 0 && src.files.length === 0)) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_stdin_code'); }
         i += 1;
         continue;
@@ -5456,7 +5627,7 @@ function awkProgram(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
       if (f && f.text !== null) {
         for (const abs of absCandidates(f.text, ctx, run) || []) {
           const content = safeRead(run.env, abs, LIMITS.maxScriptBytes);
-          if (content !== null && AWK_EXEC.test(content)) scanInterpreterCode(content, run);
+          if (content !== null && AWK_EXEC.test(content)) { scanInterpreterCode(content, run); awkArgvCommands(content, rest, ctx, run, x); }
         }
       }
       i += 1;
@@ -5471,6 +5642,7 @@ function awkProgram(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   const code = program.text !== null ? program.text : argText(program);
   if (AWK_EXEC.test(code)) {
     scanInterpreterCode(code, run);
+    awkArgvCommands(code, rest, ctx, run, x);
     // `awk '{system($0)}'` runs the lines it reads: the input is a command text (audit N1).
     if (/\bsystem\s*\(|\|\s*&?\s*["'$a-zA-Z(]|\bgetline\b/.test(code)) stdinExec('sh', [], x, ctx, run);
   }
@@ -6249,15 +6421,93 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
   // `git credential fill` prints the stored password for a host.
   if (sub === 'credential' && args.some((a) => a.text === null || a.text === 'fill' || a.text === 'get')) { hit(run, 'S4', 'git_credential_fill'); return; }
   if (/^credential-/.test(sub) && args.some((a) => a.text === null || a.text === 'get')) { hit(run, 'S4', 'git_credential_get'); return; }
-  if (!GIT_S4_EXEMPT_SUBS.has(sub)) {
-    // Commit messages are prose, never paths.
+  // `git log` prints names and messages, but with patch output it prints the content of the files it
+  // names, as `git show` does: then its operands are read like those of `git show`.
+  if (!GIT_S4_EXEMPT_SUBS.has(sub) || (sub === 'log' && gitLogPrintsPatch(args))) {
+    // Commit messages are prose, never paths. A pathspec after `--` or a `REV:path` object is read from history.
+    // log, whatchanged and format-patch take no message: their -m and -F are flags, and the next word is read.
+    const prose = !GIT_PATCH_LOG_SUBS.has(sub);
+    const dashDash = args.findIndex((a) => a.text === '--');
+    const patterns = sub === 'grep' ? searchPatternArgs(args, dashDash >= 0 ? dashDash : args.length) : null;
     for (let k = 0; k < args.length; k += 1) {
       const t = args[k].text;
-      if (t === '-m' || t === '--message' || t === '-F' || t === '--file' || (t !== null && /^-[a-zA-Z]*m$/.test(t))) { k += 1; continue; }
-      if (t !== null && /^(?:--message=|-m.)/.test(t)) continue;
-      checkSecretOperand(args[k], gctx, run, 'git_operand');
+      if (prose && (t === '-m' || t === '--message' || t === '-F' || t === '--file' || (t !== null && /^-[a-zA-Z]*m$/.test(t)))) { k += 1; continue; }
+      if (prose && t !== null && /^(?:--message=|-m.)/.test(t)) continue;
+      const history = (dashDash >= 0 && k > dashDash) || t === null || /^[^/:]+:/.test(t);
+      checkSecretOperand(args[k], gctx, run, 'git_operand', history, patterns !== null && patterns.has(args[k]));
+      // `-L<range>:<file>` (or `-L <range>:<file>`) prints the history of <file>: every part after a colon is read.
+      if (!prose && t !== null && /^-L/.test(t) && (dashDash < 0 || k < dashDash)) {
+        const value = t === '-L' ? (args[k + 1] ? args[k + 1].text : null) : t.slice(2);
+        if (value !== null) {
+          for (let c = value.indexOf(':'); c >= 0; c = value.indexOf(':', c + 1)) {
+            if (c + 1 < value.length) checkSecretOperand(litArg(value.slice(c + 1)), gctx, run, 'git_operand', true);
+          }
+        }
+      }
     }
   }
+}
+
+// Subcommands whose output can be the patches of the files they name; none takes a commit message.
+const GIT_PATCH_LOG_SUBS = new Set(['log', 'whatchanged', 'format-patch']);
+// Long options of `git log` that print patches (each implies --patch, or prints changed lines: --check).
+const GIT_LOG_PATCH_LONG = new Set(['--patch', '--patch-with-stat', '--patch-with-raw', '--unified', '--binary', '--check', '--cc', '--dd',
+  '--remerge-diff', '--combined']);
+// Words that never take the next word as their value (so a `-s` after one of them is an option).
+const GIT_LOG_FLAG_WORDS = new Set([...GIT_LOG_PATCH_LONG, '-p', '-u', '-s', '-c', '-m', '--no-patch', '--oneline', '--stat', '--all', '--follow',
+  '--graph', '--reverse', '--first-parent', '--no-merges', '--merges', '--name-only', '--name-status', '--raw', '--numstat', '--shortstat',
+  '--summary', '--decorate', '--full-diff', '--color', '--no-color', '--abbrev-commit', '--no-abbrev-commit', '--topo-order', '--date-order',
+  '--no-renames', '--no-ext-diff', '--no-textconv', '--no-diff-merges']);
+
+// Whether `git log <args>` prints patches. On: -p, -u, --patch, -U<n>, --unified, -L, --binary, --check, -c,
+// --cc, --dd, --remerge-diff, --diff-merges=<format> other than off/none, --patch-with-stat/raw, a short cluster
+// with p, u, U or L (`-sp`), a word the mapper cannot read, and any long option not on the read list (git takes
+// no abbreviation here, so it cannot be a known one). Off: -s or --no-patch after the last of them, only where the
+// word cannot be the value of the word before it (`--author -s`) and only before --end-of-options. A word after
+// `--` is a pathspec (`git log -- -p`).
+function gitLogPrintsPatch(args: Arg[]): boolean {
+  let on = false;
+  let offs = true;
+  // A word that is not an option itself or holds its value (`--author=x`, `-n5`, `-Sx`) takes no next word.
+  const mayTakeNext = (k: number): boolean => {
+    if (k < 0) return false;
+    const p = args[k].text;
+    if (p === null) return true;
+    if (!p.startsWith('-') || p === '-' || p.includes('=') || GIT_LOG_FLAG_WORDS.has(p)) return false;
+    if (p.startsWith('--')) return true;
+    const m = p.slice(1).match(/[SGOIlLnU]/);
+    return m !== null && m.index === p.length - 2;
+  };
+  for (let k = 0; k < args.length; k += 1) {
+    const t = args[k].text;
+    if (t === '--') break;
+    if (t === null) { on = true; continue; }
+    if (t === '--end-of-options') { offs = false; continue; }
+    const off = offs && !mayTakeNext(k - 1);
+    if (t === '-c' || t === '--no-patch') {
+      if (t === '-c') on = true;
+      else if (off) on = false;
+      continue;
+    }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=');
+      const name = eq === -1 ? t : t.slice(0, eq);
+      if (GIT_LOG_PATCH_LONG.has(name)) on = true;
+      else if (name === '--diff-merges') { if (!/^--diff-merges=(?:off|none)$/.test(t)) on = true; }
+      else if (t.length > 2 && unknownLong([args[k]], GIT_READ_LONG, 2, false) !== -1) on = true;
+      continue;
+    }
+    // A short word or cluster, left to right: p, u, U<n> and L<range> print patches, s stops them; a letter
+    // that takes a value ends the word (`-Sfoo`, `-n5`).
+    if (/^-[A-Za-z]/.test(t)) {
+      for (const ch of t.slice(1)) {
+        if (ch === 'p' || ch === 'u' || ch === 'U' || ch === 'L') on = true;
+        else if (ch === 's') { if (off) on = false; }
+        if (/[^A-Za-z]|[SGOIlLnUMCBX]/.test(ch)) break;
+      }
+    }
+  }
+  return on;
 }
 
 // Options that hand git a command to run: rebase --exec, filter-branch filters, bisect run, submodule

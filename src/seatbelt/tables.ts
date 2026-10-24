@@ -35,18 +35,8 @@ export const LIMITS = Object.freeze({
   maxParseCost: 24_000_000,
 });
 
-// S4 secret paths. Home-anchored entries in the spec are matched home-agnostic ("**/"), which is
-// stricter: another user's or root's credential file is just as secret.
-export const SECRET_PATTERNS: readonly string[] = [
-  '**/.ssh/id_*', '**/.ssh/*_key', '**/.aws/credentials', '**/.aws/sso/cache/**',
-  '**/.config/gcloud/**/*credentials*', '**/.config/gcloud/**/access_tokens.db', '**/.azure/**',
-  '**/.kube/config', '**/.docker/config.json', '**/.npmrc', '**/.pypirc', '**/.netrc', '**/.git-credentials',
-  '**/.config/gh/hosts.yml', '**/.config/op/**', '**/.gnupg/private-keys*', '**/.gnupg/private-keys*/**',
-  '**/.marrow/env*', '**/.claude.json', '**/.claude/settings.local.json', '/proc/*/environ',
-  '**/.env', '**/.env.*', '**/.dev.vars',
-  // The receipts' device salt (U6): with it an agent could compute receipt keys. Writes there are S0.
-  '**/.marrow/seatbelt/salt',
-];
+// S4 secret paths: one table with the keyed policy (src/secret-paths.ts).
+export { PRESENT_SECRET_PATTERNS, SECRET_PATTERNS } from '../secret-paths';
 // Key material by extension, except under node_modules or test fixture folders.
 export const KEY_EXTENSIONS = /\.(?:pem|key|p12|pfx)$/;
 export const KEY_FIXTURE_SEGMENTS = new Set(['node_modules', 'fixtures', '__fixtures__', 'testdata', 'test', 'tests', '__tests__']);
@@ -67,10 +57,11 @@ export function secretSamples(home: string, cwds: string[]): string[] {
     `${h}/.config/gh/hosts.yml`, `${h}/.config/op/config`, `${h}/.gnupg/private-keys-v1.d/k.key`, `${h}/.marrow/env`,
     `${h}/.marrow/env.local`, `${h}/.claude.json`, `${h}/.claude/settings.local.json`, '/proc/self/environ', '/proc/1/environ',
     `${h}/.env`, '/root/.ssh/id_rsa', '/root/.aws/credentials', `${h}/.marrow/seatbelt/salt`,
+    `${h}/.marrow/fleet.env`, `${h}/.marrow/credentials/k`,
   ];
   for (const c of cwds) {
     const d = c.replace(/\/$/, '');
-    out.push(`${d}/.env`, `${d}/.env.local`, `${d}/.env.production`, `${d}/app/.env`, `${d}/.dev.vars`, `${d}/server.pem`,
+    out.push(`${d}/.env`, `${d}/.env.local`, `${d}/.env.production`, `${d}/app/.env`, `${d}/app.env`, `${d}/.dev.vars`, `${d}/server.pem`,
       `${d}/tls.key`, `${d}/cert.p12`, `${d}/cert.pfx`, `${d}/.claude/settings.local.json`, `${d}/.npmrc`);
   }
   return out;
@@ -206,7 +197,7 @@ export const KNOWN_COMMANDS = new Set([
   // shells and interpreters
   'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh', 'yash', 'rbash', 'csh', 'tcsh',
   'python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh',
-  'irb', 'ipython', 'awk', 'gawk', 'mawk', 'sed', 'gsed', 'tar', 'gtar', 'bsdtar', 'ps',
+  'irb', 'ipython', 'awk', 'gawk', 'mawk', 'nawk', 'sed', 'gsed', 'tar', 'gtar', 'bsdtar', 'ps',
 ]);
 
 // Programs whose arguments are text, patterns or paths and are never run. Their argv is not scanned

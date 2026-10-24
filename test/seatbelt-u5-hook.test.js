@@ -18,12 +18,14 @@ const PRELOAD = path.join(__dirname, 'support', 'seatbelt-hook-preload.cjs');
 const MOCK = path.join(__dirname, 'support', 'host-approval-fetch-mock.cjs');
 const ENTRY = { claude: 'claude-pre-action-hook', codex: 'codex-pre-action-hook', cursor: 'cursor-pre-action-hook' };
 const HARNESSES = Object.keys(ENTRY);
-const SEATBELT_TAIL = 'This needs the machine owner. Do not retry it another way or edit Marrow settings. Tell the owner: run it yourself in your own terminal, or link a Marrow account with "npx -y @getmarrow/install@latest activate" (it needs MARROW_API_KEY set first) so these become approval prompts.';
+const SEATBELT_ADVICE = 'For approval prompts instead of stops, add a Marrow key: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins).';
+// The text ends with its code: "Code: <rule>/<reason>."
+const endsWithCode = (text, before, rulePrefix = '') => new RegExp(`${before.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} Code: ${rulePrefix.replace('.', '\\.')}[A-Za-z0-9_.:-]*\\/[A-Za-z0-9_.:-]+(?:; mode: [a-z_]+)?\\.$`).test(text);
 const CLAIMED_TEXT = 'Marrow is linked to an account but has no working key; owner: run `npx -y @getmarrow/install@latest doctor`.';
 // A seatbelt pass of an action 3.9.103 held reaches Cursor as "ask" (Cursor's own prompt), never an explicit allow.
 const CURSOR_SEATBELT_ASK = require(path.join(ROOT, 'dist', 'hook-pre-action.js')).SEATBELT_CURSOR_ASK_AGENT_TEXT;
 // claimed_no_key without account evidence (strict, a HOME that is not the passwd home): F1 text.
-const SETUP_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
+const setupText = (reason) => require(path.join(ROOT, 'dist', 'seatbelt', 'fallback-copy.js')).fallbackSentence(reason);
 
 function sandbox() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-u5-hook-')));
@@ -91,7 +93,7 @@ function assertSeatbeltStop(out, label) {
   assert.equal(out.decision, 'stop', `${label}: ${out.stdout}`);
   assert.equal(out.status, 0, label);
   assert.notEqual(out.permission, 'ask', label);
-  assert.match(out.text, /^MARROW SEATBELT stopped this action: [A-Za-z ,-]+ \((S[0-5x]\.[a-z_]+|U5\.fail_closed), [A-Za-z0-9_.:-]+\)\. /, label);
+  assert.match(out.text, /^MARROW SEATBELT stopped this action: .+\. If you \(the person at this machine\) meant it, run it yourself in your own terminal\. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped\. .*Code: (S[0-5x]\.[a-z_]+|U5\.fail_closed)\/[A-Za-z0-9_.:-]+(?:; mode: [a-z_]+)?\.$/, label);
 }
 
 // --------------------------------------------------------------------------------------- keyless
@@ -120,8 +122,8 @@ test('U5 keyless seatbelt: S0-S5 and S-x stop with the deny shape and the spec t
       for (const [cat, command] of STOPS) {
         const out = sh(sb, harness, command);
         assertSeatbeltStop(out, `${harness} ${command}`);
-        assert.ok(out.text.includes(`(${cat}.`), `${harness} ${command} is ${cat}: ${out.text}`);
-        assert.ok(out.text.endsWith(SEATBELT_TAIL), `${harness} ${command}`);
+        assert.ok(out.text.includes(`Code: ${cat}.`), `${harness} ${command} is ${cat}: ${out.text}`);
+        assert.ok(endsWithCode(out.text, SEATBELT_ADVICE, cat), `${harness} ${command}`);
         if (command.includes(' ')) assert.ok(!out.text.includes(command), 'the command is never echoed');
       }
       for (const command of PASSES) {
@@ -170,7 +172,7 @@ test('U5 keyless seatbelt: production is never looser through chains, wrappers, 
       for (const command of [`ln -s /usr/bin/npm ${path.join(sb.home, '.local', 'bin')}/ｎｐｍ`, 'ln -s /bin/true ~/.local/bin/npx', 'cp -r /tmp/x ~/.marrow/control.json']) {
         const out = sh(sb, harness, command);
         assertSeatbeltStop(out, `${harness} ${command}`);
-        assert.ok(out.text.includes('(S0.'), `${harness} ${command}: ${out.text}`);
+        assert.ok(out.text.includes('Code: S0.'), `${harness} ${command}: ${out.text}`);
       }
     }
     assert.equal(network(sb), '');
@@ -224,7 +226,7 @@ function assertClaimed(sb, harness, options, label, text = CLAIMED_TEXT) {
   // An S action stops at the floor with the claimed wording.
   const floor = sh(sb, harness, 'npm publish', options);
   assertSeatbeltStop(floor, label);
-  assert.ok(floor.text.endsWith(text), label);
+  assert.ok(endsWithCode(floor.text, text), label);
 }
 
 test('U5 mode: each account-evidence item alone gives claimed_no_key, never seatbelt (Claude, Codex, Cursor)', () => {
@@ -269,11 +271,11 @@ test('U5 mode: MARROW_* env cannot select seatbelt, an agent HOME is not the hom
     for (const harness of HARNESSES) assertClaimed(sb, harness, { env: select }, `env select ${harness}`);
     fs.rmSync(path.join(sb.home, '.marrow'), { recursive: true, force: true });
     // The strict switch can only tighten.
-    for (const harness of HARNESSES) assertClaimed(sb, harness, { env: { MARROW_SEATBELT_STRICT: '1' } }, `strict ${harness}`, SETUP_TEXT);
+    for (const harness of HARNESSES) assertClaimed(sb, harness, { env: { MARROW_SEATBELT_STRICT: '1' } }, `strict ${harness}`, setupText('strict'));
     // The agent's HOME is not the trusted home: not seatbelt, and the floor still uses the passwd home.
     const agentHome = fs.mkdtempSync(path.join(sb.root, 'x-'));
     for (const harness of HARNESSES) {
-      assertClaimed(sb, harness, { home: agentHome }, `HOME=/tmp/x ${harness}`, SETUP_TEXT);
+      assertClaimed(sb, harness, { home: agentHome }, `HOME=/tmp/x ${harness}`, setupText('home_mismatch'));
       assertSeatbeltStop(sh(sb, harness, `cat ${path.join(sb.home, '.ssh', 'id_ed25519')}`, { home: agentHome }), `passwd-home key ${harness}`);
     }
     // A cloned repo plants a key, a server and Marrow env files (A18): ignored; still seatbelt, still no network.
@@ -297,7 +299,7 @@ test('U5 fail closed: a mapper crash, a mode crash, a module that fails to load 
       for (const [env, reason] of [[{ SBT_THROW: 'mapper' }, 'hook_error'], [{ SBT_THROW: 'mode' }, 'hook_error'], [{ SBT_THROW: 'load' }, 'hook_error'], [{ SBT_SLOW_MS: '400' }, 'hook_budget']]) {
         const out = sh(sb, harness, 'ls -la', { env });
         assertSeatbeltStop(out, `${harness} ${JSON.stringify(env)}`);
-        assert.ok(out.text.includes(`(U5.fail_closed, ${reason})`), `${harness} ${JSON.stringify(env)}: ${out.text}`);
+        assert.ok(out.text.includes(`Code: U5.fail_closed/${reason}`), `${harness} ${JSON.stringify(env)}: ${out.text}`);
       }
       // A record hook that throws changes nothing.
       assert.equal(sh(sb, harness, 'ls -la', { env: { SBT_THROW: 'record' } }).decision, 'pass');
@@ -313,7 +315,7 @@ test('U5 fail closed: a mapper crash, a mode crash, a module that fails to load 
       env: { PATH: process.env.PATH, HOME: sb.home, SBT_PASSWD_HOME: sb.home, SBT_THROW: 'mapper' },
     });
     assert.equal(windsurf.status, 2);
-    assert.match(windsurf.stderr, /^MARROW SEATBELT stopped this action: .*U5\.fail_closed, hook_error/);
+    assert.match(windsurf.stderr, /^MARROW SEATBELT stopped this action: .* Code: U5\.fail_closed\/hook_error\./);
     // Input the harness adapter cut is not known in full: a stop. Windsurf cuts a command over 8 KiB and
     // never sends the content of a code write.
     for (const event of [
@@ -325,7 +327,7 @@ test('U5 fail closed: a mapper crash, a mode crash, a module that fails to load 
         env: { PATH: process.env.PATH, HOME: sb.home, SBT_PASSWD_HOME: sb.home },
       });
       assert.equal(cut.status, 2, event.agent_action_name);
-      assert.match(cut.stderr, /^MARROW SEATBELT stopped this action: .*U5\.fail_closed, input_truncated/, event.agent_action_name);
+      assert.match(cut.stderr, /^MARROW SEATBELT stopped this action: .* Code: U5\.fail_closed\/input_truncated\./, event.agent_action_name);
     }
   } finally { sb.cleanup(); }
 });
@@ -506,7 +508,7 @@ test('U5 keyless seatbelt on Gemini, Grok, Cline and Windsurf: the deny shape ea
       const pass = cli(entry, shape('git push origin main'));
       if (harness === 'windsurf') {
         assert.equal(stop.status, 2, `${harness} stop`);
-        assert.match(stop.stderr, /^MARROW SEATBELT stopped this action: package publish \(S3\.[a-z_]+, [a-z_]+\)\./);
+        assert.match(stop.stderr, /^MARROW SEATBELT stopped this action: package publish\. .* Code: S3\.[a-z_]+\/[a-z_]+\./);
         assert.equal(stop.stdout, '');
         assert.equal(pass.status, 0, `${harness} pass: ${pass.stderr}`);
         assert.equal(pass.stdout + pass.stderr, '');
@@ -519,7 +521,7 @@ test('U5 keyless seatbelt on Gemini, Grok, Cline and Windsurf: the deny shape ea
       else assert.equal(denied.decision, 'deny');
       // Grok: the installed guard passes only an allow or the fixed denial (audit M1), so a stop is that denial.
       if (harness === 'grok') assert.equal(text, 'Marrow blocked this protected action.');
-      else assert.match(text, /^MARROW SEATBELT stopped this action: package publish \(S3\.[a-z_]+, [a-z_]+\)\. .*install@latest activate/);
+      else assert.match(text, /^MARROW SEATBELT stopped this action: package publish\. .*getmarrow\.ai\/docs#start-here.* Code: S3\.[a-z_]+\/[a-z_]+\.$/);
       assert.equal(pass.status, 0, harness);
       // `git push origin main` was held by 3.9.103 on every host: Cline's neutral answer, Gemini's allow (its guard's
       // only non-blocking answer; Gemini still applies its own confirmation), Grok held as before (no neutral answer).

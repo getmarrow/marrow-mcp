@@ -6,6 +6,7 @@
 import type { SeatbeltDecision, SeatbeltEnv, SeatbeltFs as MapperFs, SeatbeltGit } from './mapper';
 import type { SeatbeltFs } from '../seatbelt-fs';
 import type { SeatbeltRecord, SeatbeltRecordContext } from './record';
+import { FALLBACK_OTHER, fallbackCode, fallbackSentence, pickFallbackReason, setupUnconfirmedText } from './fallback-copy';
 
 /**
  * Compiled-in rollout table. Not env, not a file: changing a value is a one-line, reviewed code
@@ -25,15 +26,16 @@ export const CLAIMED_NO_KEY_TEXT = 'Marrow is linked to an account but has no wo
  * `claimed_no_key` with no account evidence and no rejected key: a fallback because the machine's
  * setup could not be confirmed (an evidence dir others can write, an unreadable probe, a home
  * mismatch, strict mode). Same holds as CLAIMED_NO_KEY_TEXT, but it never claims an account exists.
+ * This constant is the generic wording; a hold names its reason (setupUnconfirmedText, fallback-copy.ts).
  */
-export const SETUP_UNCONFIRMED_TEXT = 'Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.';
+export const SETUP_UNCONFIRMED_TEXT = setupUnconfirmedText(FALLBACK_OTHER);
 
 const LABELS: Record<string, string> = {
   S0: 'a change to Marrow seatbelt settings or an owner-only command',
   S1: 'force-push or delete of a protected branch',
   S2: 'production deploy',
   S3: 'package publish',
-  S4: 'credential or secret access',
+  S4: 'reading, copying or writing secrets (like .env files or private keys)',
   S5: 'recursive delete outside the workspace',
   Sx: 'obfuscated execution',
   hook: 'a safety check that could not finish',
@@ -45,13 +47,26 @@ function codes(list: unknown): string[] {
   return Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string' && CODE.test(item)).slice(0, 16) : [];
 }
 
-export function seatbeltStopText(category: string, rule: string, reason: string, mode: 'seatbelt' | 'claimed_no_key' | 'account', accountLinked = true): string {
+/** What the agent and the person read after the label, in every stop. */
+const STOP_ADVICE = 'If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was stopped.';
+/** Keyless (no account): the way to approval prompts. The plugin path is the one the plugin's own docs give. */
+const KEYLESS_KEY_ADVICE = 'For approval prompts instead of stops, add a Marrow key: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins).';
+
+/** The label of a stop. A script Marrow could not read is named as such: it is not known to be what its name says. */
+function stopLabel(category: string, reason: string): string {
   const label = LABELS[category] || LABELS.hook;
-  const head = `MARROW SEATBELT stopped this action: ${label} (${CODE.test(rule) ? rule : 'unknown'}, ${CODE.test(reason) ? reason : 'unknown'}). This needs the machine owner. Do not retry it another way or edit Marrow settings.`;
-  if (mode === 'account') return `${head} Tell the owner: run it yourself in your own terminal.`;
-  return mode === 'seatbelt'
-    ? `${head} Tell the owner: run it yourself in your own terminal, or link a Marrow account with "npx -y @getmarrow/install@latest activate" (it needs MARROW_API_KEY set first) so these become approval prompts.`
-    : `${head} ${accountLinked ? CLAIMED_NO_KEY_TEXT : SETUP_UNCONFIRMED_TEXT}`;
+  return reason === 'script_unreadable' ? `a script Marrow could not read (treated as ${label})` : label;
+}
+
+/** `modeReason`: the fixed code that explains a fallback (pickFallbackReason); only read when the machine is not account-linked. */
+export function seatbeltStopText(category: string, rule: string, reason: string, mode: 'seatbelt' | 'claimed_no_key' | 'account', accountLinked = true, modeReason?: string): string {
+  const head = `MARROW SEATBELT stopped this action: ${stopLabel(category, reason)}. ${STOP_ADVICE}`;
+  const code = `Code: ${CODE.test(rule) ? rule : 'unknown'}/${CODE.test(reason) ? reason : 'unknown'}`;
+  if (mode === 'account') return `${head} ${code}.`;
+  if (mode === 'seatbelt') return `${head} ${KEYLESS_KEY_ADVICE} ${code}.`;
+  return accountLinked
+    ? `${head} ${CLAIMED_NO_KEY_TEXT} ${code}.`
+    : `${head} ${fallbackSentence(modeReason)} ${code}; mode: ${fallbackCode(modeReason)}.`;
 }
 
 /** §4.2: an S0-S5 floor stop is lifted only by an enforced server allow (a verified permit); an advisory allow never lifts it. */
@@ -265,6 +280,11 @@ export interface KeylessOutcome {
    * the hook gives master's answer for that host instead of the seatbelt pass.
    */
   recognized: boolean;
+  /**
+   * Why the machine is in the stricter fallback: one fixed code from the resolver's reasons, or
+   * `setup_unconfirmed`. Words only: it never changes the mode or a decision.
+   */
+  modeReason: string;
 }
 
 /** The keyless branch of the hook: mode (U4), then the mapper (U2) with the U3 resolvers. Never throws. */
@@ -272,16 +292,19 @@ export function keylessSeatbelt(harness: string, event: SeatbeltHookEvent): Keyl
   const started = Date.now();
   let mode: KeylessOutcome['mode'] = 'claimed_no_key';
   let accountLinked = false;
+  // A resolution that fails or has no reason keeps the generic code.
+  let modeReason: string = FALLBACK_OTHER;
   let trustedHome: string | undefined;
   const stop = (reason: string): KeylessOutcome => {
     record({ v: 1, mode, enforcement: 'enforce', harness, decision: 'stop', category: 'hook', rule: 'U5.fail_closed', reasons: [reason], flags: [], parse: 'unparsed', latency_ms: Date.now() - started }, event, trustedHome);
-    return { mode, accountLinked, recognized: true, stopText: seatbeltStopText('hook', 'U5.fail_closed', reason, mode, accountLinked) };
+    return { mode, accountLinked, recognized: true, modeReason, stopText: seatbeltStopText('hook', 'U5.fail_closed', reason, mode, accountLinked, modeReason) };
   };
   try {
     const { resolveSeatbeltModeOnHost } = require('../seatbelt-mode') as typeof import('../seatbelt-mode');
     const resolution = resolveSeatbeltModeOnHost();
     mode = resolution.mode === 'seatbelt' && SEATBELT_ROLLOUT.keyless === 'on' ? 'seatbelt' : 'claimed_no_key';
     accountLinked = resolution.reasons.includes('account_evidence') || resolution.reasons.includes('key_rejected');
+    modeReason = pickFallbackReason(resolution.reasons);
     if (event.truncated) return stop('input_truncated');
     const home = resolution.homes[0] || passwdHome() || '/nonexistent-home';
     trustedHome = home;
@@ -293,11 +316,34 @@ export function keylessSeatbelt(harness: string, event: SeatbeltHookEvent): Keyl
       category: CODE.test(decision.category) ? decision.category : 'unknown', rule: CODE.test(decision.rule) ? decision.rule : 'unknown',
       reasons, flags: codes(decision.flags), parse: CODE.test(decision.parse) ? decision.parse : 'unknown', latency_ms: Date.now() - started,
     }, event, home);
-    if (decision.decision === 'pass') return { mode, accountLinked, recognized: decision.recognized === true, stopText: null };
-    return { mode, accountLinked, recognized: true, stopText: seatbeltStopText(decision.category, decision.rule, reasons[0] || 'unspecified', mode, accountLinked) };
+    if (decision.decision === 'pass') return { mode, accountLinked, recognized: decision.recognized === true, modeReason, stopText: null };
+    return { mode, accountLinked, recognized: true, modeReason, stopText: seatbeltStopText(decision.category, decision.rule, reasons[0] || 'unspecified', mode, accountLinked, modeReason) };
   } catch {
     return stop('hook_error');
   }
+}
+
+/** The reason codes mode resolution can emit (src/seatbelt-mode.ts), the only ones the status line may print. */
+const STATUS_REASONS: readonly string[] = ['strict', 'key_rejected', 'home_unknown', 'home_unusable', 'env_home_unusable', 'home_mismatch', 'account_evidence', 'evidence_unknown'];
+
+export interface SeatbeltStatus {
+  mode: 'seatbelt' | 'claimed_no_key' | 'account';
+  reasons: string[];
+}
+
+/**
+ * What `marrow-mcp seatbelt-status` prints (the installer's doctor reads it): the mode this machine's
+ * hook would be in right now, from the same resolution the keyless hook runs (same key lookup, same
+ * rollout table), and the resolver's reason codes that are on a closed list. Reads only; writes no file
+ * or state, opens no connection, and names no key, path, user or environment value. Throws when the
+ * resolution does (the caller prints the unknown line).
+ */
+export function seatbeltStatus(): SeatbeltStatus {
+  const { resolveSeatbeltModeOnHost } = require('../seatbelt-mode') as typeof import('../seatbelt-mode');
+  const resolution = resolveSeatbeltModeOnHost({ argv: [] });
+  const mode = resolution.mode === 'seatbelt' && SEATBELT_ROLLOUT.keyless !== 'on' ? 'claimed_no_key' : resolution.mode;
+  const reasons = STATUS_REASONS.filter((code) => resolution.reasons.includes(code));
+  return { mode, reasons };
 }
 
 /**

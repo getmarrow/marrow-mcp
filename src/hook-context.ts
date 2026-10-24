@@ -42,6 +42,8 @@ import {
   type HoldContext,
 } from './host-approval';
 import { localInteractiveSession } from './host-session';
+import { looksLikeApprovalReply } from './approval-reply';
+import { hasOpenChatOnlyHold } from './host-approval-state';
 
 /** Held actions waiting for the person, shown once at an interactive session's first prompt. */
 async function interactiveHeldActionsNotice(context: HoldContext): Promise<string | null> {
@@ -51,6 +53,26 @@ async function interactiveHeldActionsNotice(context: HoldContext): Promise<strin
     : false;
   if (!interactive) return null;
   return heldActionsNotice(context).catch(() => null);
+}
+
+/** Shown to the user (never the agent) when they answer a held action in chat: only a dialog, the typed code on hosts that have one, or the owner's link approves. */
+const CHAT_APPROVAL_NOTICE = 'Marrow did not record that as an approval: a chat reply cannot approve a held action. To approve it, put Claude Code in default mode (Shift+Tab), then ask the agent to retry; Claude Code will ask you.';
+
+/**
+ * Tier A3, Claude Code only: the prompt looks like an approval ("yes") and this session has an open hold
+ * that was denied for later or is waiting quietly (never one that got a real dialog). Read-only: it writes
+ * no state, sends nothing, changes no hold, and keeps no copy of the prompt (the matcher answers yes or
+ * no). A state that cannot be read, a missing session id or any error shows nothing.
+ */
+function chatApprovalNotice(context: HoldContext, event: UserPromptSubmitEvent): string | null {
+  try {
+    if (context.host !== 'claude-code' || !looksLikeApprovalReply(event.prompt)) return null;
+    const sessionId = asString(event.session_id)?.trim();
+    if (!sessionId || sessionId !== context.hostSessionId) return null;
+    return hasOpenChatOnlyHold({ apiKey: context.apiKey, baseUrl: context.baseUrl, agentId: context.agentId || null }, context.hostSessionId, context.home) ? CHAT_APPROVAL_NOTICE : null;
+  } catch {
+    return null;
+  }
 }
 
 export const CONTEXT_HOOK_COMMAND = CONTRACT_CONTEXT_HOOK_COMMAND;
@@ -169,6 +191,7 @@ async function settleHeldCallsAtPrompt(event: UserPromptSubmitEvent): Promise<vo
     }
   }
   if (!heldReplyUserText) heldReplyUserText = await interactiveHeldActionsNotice(context);
+  if (!heldReplyUserText) heldReplyUserText = chatApprovalNotice(context, event);
   await flushHoldOutbox(context, 2, 2_000).catch(() => undefined);
 }
 

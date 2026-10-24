@@ -72,17 +72,20 @@ test('M1: the native matcher is generated from the registered names and matches 
   assert.equal(OWN.length, 58);
   assert.deepEqual(OWN, [...MARROW_OWN_TOOL_NAMES].sort(), 'the fixture is the registry in sorted (file) order');
   const joined = OWN.join('|');
-  // r3: the shared string marrow-install writes (byte-identical): start-anchored, `[\\s\\S]*` in every consuming part.
-  const expected = `Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|^(?!mcp__marrow__(?:${joined})$)[\\s\\S]*(?:functions\\.|mcp__)[\\s\\S]*`;
+  // PKG-H2: the shared string marrow-install writes (byte-identical): every label except exactly
+  // `mcp__marrow__<own>` and the two read-only labels no released matcher hooked; `[\\s\\S]*` consumes.
+  const expected = `^(?!(?:mcp__marrow__(?:${joined})|LS|ListMcpResourcesTool)$)[\\s\\S]*`;
+  // r3 (3.9.102 and 3.9.103): a fixed list of built-ins, so Monitor, PowerShell, WebFetch and Agent were skipped.
+  const list = `Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|^(?!mcp__marrow__(?:${joined})$)[\\s\\S]*(?:functions\\.|mcp__)[\\s\\S]*`;
   const r2 = `Bash|Edit|Write|MultiEdit|Read|Glob|Grep|Search|WebSearch|Task|functions\\.(?!mcp__marrow__(?:${joined})$).*|mcp__(?!marrow__(?:${joined})$).*`;
   assert.equal(NATIVE_HOOK_MATCHER, expected);
   assert.equal(nativeHookMatcher(), expected);
   assert.equal(nativeHookMatcher([...OWN].reverse()), expected, 'order of the input never changes the string');
   assert.equal(require('../dist/hook.js').AUTO_HOOK_MATCHER, expected);
-  // The r2 string with `.*` (never released) is legacy too, so a hook written with it is repaired.
-  assert.deepEqual(LEGACY_NATIVE_HOOK_MATCHERS, [LEGACY, r2]);
+  // The r2 string with `.*` (never released) and the released r3 list are legacy too, so a hook written with either is repaired.
+  assert.deepEqual(LEGACY_NATIVE_HOOK_MATCHERS, [LEGACY, r2, list]);
   // A regex character in a name is escaped, never interpreted.
-  assert.match(nativeHookMatcher(['a.b|c']), /\(\?:a\\\.b\\\|c\)\$/);
+  assert.match(nativeHookMatcher(['a.b|c']), /\(\?:a\\\.b\\\|c\)\|LS\|ListMcpResourcesTool\)\$/);
 });
 
 test('M1: the matcher skips exactly the 58 own names on server marrow and nothing else', () => {

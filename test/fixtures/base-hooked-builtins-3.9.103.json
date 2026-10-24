@@ -1,0 +1,522 @@
+{
+  "source": "@getmarrow/mcp 3.9.103 dist (868a9c18530a75fcee5052441d0d3d2383511df4)",
+  "salt": "Buffer.alloc(32, 7)",
+  "session_id": "s",
+  "rows": [
+    {
+      "tool": "BashOutput",
+      "input": {
+        "bash_id": "shell_1",
+        "filter": "deploy|production|secret"
+      },
+      "classification": {
+        "action": "classified BashOutput action: deploy on production, secrets",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "secrets"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "readOnly": false,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "BashOutput",
+        "programs": [],
+        "tool_input": {
+          "command_sha256": "9a78a7f1df2e9ee65d45bfab45ff402195d290e057d406083e6c7cf2e426bb39"
+        }
+      },
+      "correlation": "12d2a018976736a6833bc37d7d81b4f7",
+      "target": "0832fe2a71231472582f901e42890f58852335af6f414307e673e482bb3db716"
+    },
+    {
+      "tool": "DesignSync",
+      "input": {
+        "method": "list_projects"
+      },
+      "classification": {
+        "action": "classified DesignSync action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      },
+      "readOnly": false,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "DesignSync",
+        "programs": [],
+        "tool_input": {
+          "command_sha256": "ce6f80a1494326d9dd5509d1dfa0f65a705960e79f4e86229647edf45fdb28a5"
+        }
+      },
+      "correlation": "97a26073b4611b5b56cd53a123c6dd1b",
+      "target": "0b642c695a325bcb61bb08a2329cbdcb72dea4f0be78b439fa3dae6fe21a5651"
+    },
+    {
+      "tool": "ListMcpResourcesTool",
+      "input": {
+        "server": "github"
+      },
+      "classification": {
+        "action": "classified ListMcpResourcesTool action: process on github",
+        "target": "github:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      },
+      "readOnly": false,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "ListMcpResourcesTool",
+        "programs": [],
+        "tool_input": {
+          "command_sha256": "f48745cc4f92884d92b32d14adad797cd6c4e4729bc9dcef7902d44cb373cee5"
+        }
+      },
+      "correlation": "6cea5f33ddfdf8af7c5c8b7d667d9a59",
+      "target": "7a65480feba08a4bfa08fb260645092bd1f5767e887cad12540969017e31411a"
+    },
+    {
+      "tool": "LS",
+      "input": {
+        "path": "/repo/deploy"
+      },
+      "classification": {
+        "action": "classified LS action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "readOnly": true,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "LS",
+        "programs": [
+          "deploy"
+        ],
+        "tool_input": {
+          "command_sha256": "dd46c2784f80bdc433d35736d30c078770e740a56af9567abc265a5902d111ff"
+        }
+      },
+      "correlation": "0bcf8c7135c22346a63ecb044d8a6165",
+      "target": "b4813a82b9e3a86ce59e39d2a59ef90c8ea384de740e3b931fc371e291d7a4ce"
+    },
+    {
+      "tool": "NotebookRead",
+      "input": {
+        "notebook_path": "/repo/notes/release.ipynb"
+      },
+      "classification": {
+        "action": "classified NotebookRead action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "readOnly": true,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "NotebookRead",
+        "programs": [],
+        "tool_input": {
+          "command_sha256": "ada21eb6ac709c14d6f62084db33fa2c273aab6f09a51b99d485373d4accb087"
+        }
+      },
+      "correlation": "9f8f166c8ea5f93cfd5e6d02563e2959",
+      "target": "009fe991119c67771cd3950e47c69fdcc47fcf4f262e3b2eb0b905166bf02c0c"
+    },
+    {
+      "tool": "ReadMcpResourceTool",
+      "input": {
+        "server": "docs",
+        "uri": "docs://release/production"
+      },
+      "classification": {
+        "action": "classified ReadMcpResourceTool action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "readOnly": false,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "ReadMcpResourceTool",
+        "programs": [],
+        "tool_input": {
+          "command_sha256": "80e7e62b19dfbef1203f1d013150bc23da898aba12a8fb7ee528c308552fae68"
+        }
+      },
+      "correlation": "9b52a38a7e819f4a5c58783a8d8426a1",
+      "target": "334ef25fb9ff2ceb8fa8bd4b5e77c161ec89171c56fe6f287f147c4070d65379"
+    },
+    {
+      "tool": "RemoteTrigger",
+      "input": {
+        "action": "list"
+      },
+      "classification": {
+        "action": "classified RemoteTrigger action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      },
+      "readOnly": false,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "RemoteTrigger",
+        "programs": [],
+        "tool_input": {
+          "command_sha256": "eb240a019e97e7e01596866cee0b428d2d67b6ebd3d439130e1f558da594eeda"
+        }
+      },
+      "correlation": "0ee8d0ada001b84bf8466367c81609df",
+      "target": "54f3e88160b92cd25423cd7cb8a3749d953286b4d6aa4085b05a666a024bb0da"
+    },
+    {
+      "tool": "TaskCreate",
+      "input": {
+        "subject": "Deploy to production",
+        "description": "deploy to production, publish the release, migrate the database, rotate and revoke the secret credential token, payment, cat .env"
+      },
+      "classification": {
+        "action": "classified TaskCreate action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "readOnly": true,
+      "normalized": {
+        "tool_kind": "other",
+        "tool_name": "TaskCreate",
+        "tool_input": {
+          "input_sha256": "a19d9b05934ade94bbc9f971dcf4c5e3e9f0bcc6636de263c835dba27ed03629"
+        }
+      },
+      "correlation": "3ba6f9b15872d25d749952f978d929a6",
+      "target": "e625d7412d43bd45e9a15b7d9906e5d02bf7ab60bcf3d39ac8592d2f4b41338d"
+    },
+    {
+      "tool": "TaskGet",
+      "input": {
+        "taskId": "1"
+      },
+      "classification": {
+        "action": "classified TaskGet action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "readOnly": true,
+      "normalized": {
+        "tool_kind": "other",
+        "tool_name": "TaskGet",
+        "tool_input": {
+          "input_sha256": "d6927a30cb727bc4ac506d7ee5bd9b7458044ab42db58201777f17705ff6416f"
+        }
+      },
+      "correlation": "d614261942cf84c70d5b2534c889f826",
+      "target": "220dc0ccab7f6fbe680a6648cbc331ce8a20c9f4ee1ce3197d405631c63067a5"
+    },
+    {
+      "tool": "TaskList",
+      "input": {},
+      "classification": {
+        "action": "classified TaskList action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "readOnly": true,
+      "normalized": {
+        "tool_kind": "other",
+        "tool_name": "TaskList",
+        "tool_input": {
+          "input_sha256": "a48a1a21550d44a14f0634e94b1f28ca1dc0f96276a81aeb42cf47cb93ded4db"
+        }
+      },
+      "correlation": "3989090e8e4fb4ad4fb114fe1053f25b",
+      "target": "5419b0eb641fe7dde7a8b690d891d8d5b2db3362dd608437b0f75e5a6a0b2597"
+    },
+    {
+      "tool": "TaskOutput",
+      "input": {
+        "task_id": "t1",
+        "block": true
+      },
+      "classification": {
+        "action": "classified TaskOutput action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "readOnly": true,
+      "normalized": {
+        "tool_kind": "other",
+        "tool_name": "TaskOutput",
+        "tool_input": {
+          "input_sha256": "2c8fc91d970593b2975a1217f9fb65295946578d11748f75f2bd2c615030b048"
+        }
+      },
+      "correlation": "e8578e7729db6b3b61f57d377b7d3399",
+      "target": "932feadee57c2df9c0211af7ca1c1c34671046019853416bdac703e2bca3e0c9"
+    },
+    {
+      "tool": "TaskStop",
+      "input": {
+        "task_id": "t1"
+      },
+      "classification": {
+        "action": "classified TaskStop action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      },
+      "readOnly": false,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "TaskStop",
+        "programs": [],
+        "tool_input": {
+          "command_sha256": "ade20f96f9295b32e25fba2c6557d6947074b9c92f2e832b455f616f7017c5a3"
+        }
+      },
+      "correlation": "55f9c18db4b7305f9f6cde1e5a105faa",
+      "target": "11d622edb2a254a469df4ac6177d89f95ebe756b6a851d24c28394b08d023f01"
+    },
+    {
+      "tool": "TaskUpdate",
+      "input": {
+        "taskId": "1",
+        "status": "completed",
+        "description": "deploy to production, publish the release, migrate the database, rotate and revoke the secret credential token, payment, cat .env"
+      },
+      "classification": {
+        "action": "classified TaskUpdate action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "readOnly": true,
+      "normalized": {
+        "tool_kind": "other",
+        "tool_name": "TaskUpdate",
+        "tool_input": {
+          "input_sha256": "91af546f3adf24b409c37f7d4e345294c176443a0d33e7988d873cd4cc32189a"
+        }
+      },
+      "correlation": "ea436be5253c1038f488e254733a1b56",
+      "target": "a82f16c4d78c85fe78ee453fafea8b755e0c5954218a38bb5ee278ebc6885d35"
+    },
+    {
+      "tool": "TodoWrite",
+      "input": {
+        "todos": [
+          {
+            "content": "deploy to production, publish the release, migrate the database, rotate and revoke the secret credential token, payment, cat .env",
+            "status": "pending",
+            "activeForm": "Deploying"
+          }
+        ]
+      },
+      "classification": {
+        "action": "classified TodoWrite action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "readOnly": true,
+      "normalized": {
+        "tool_kind": "other",
+        "tool_name": "TodoWrite",
+        "tool_input": {
+          "input_sha256": "48db9f5cea95aba5d7a649c9d49cd25d9ab5f72076b59c1750915b1330a255e1"
+        }
+      },
+      "correlation": "e4271c8ba162542b7778e4f2919b0b15",
+      "target": "dcb16182b231e60cd3cafff2c19f43206a3dda95fa844b069e70e7156965c26d"
+    },
+    {
+      "tool": "ToolSearch",
+      "input": {
+        "query": "deploy production secret credential",
+        "max_results": 5
+      },
+      "classification": {
+        "action": "classified ToolSearch action: deploy on production, secrets",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "secrets"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "readOnly": false,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "ToolSearch",
+        "programs": [
+          "deploy"
+        ],
+        "tool_input": {
+          "command_sha256": "2561ad80e182066b0d5002fb8be656891b3d5640634ca6e44b688c06e2015199"
+        }
+      },
+      "correlation": "0dc53e191420d78feeda4727a05e38c7",
+      "target": "f62fa8ed4b4d4041c88072d068d9a9aa4ffdb8c5234ea89f8df9ff22751d8e56"
+    },
+    {
+      "tool": "Task",
+      "input": {
+        "description": "Release check",
+        "prompt": "deploy to production, publish the release, migrate the database, rotate and revoke the secret credential token, payment, cat .env",
+        "subagent_type": "general-purpose"
+      },
+      "classification": {
+        "action": "classified Task action: publish on production, npm, secrets, database, financial",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "npm",
+          "secrets",
+          "database",
+          "financial"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "readOnly": false,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "Task",
+        "programs": [
+          "release"
+        ],
+        "tool_input": {
+          "command_sha256": "315f98107b364b2f9d50cd6a8a00e8108d7f7f3a44eb217706ffef644926628f"
+        }
+      },
+      "correlation": "396bcab9be250b3bec73f55ad563eb9c",
+      "target": "71a5491039d135e46e24405c377366d0ec5b1b9ead45f9ce9b413805594be387"
+    },
+    {
+      "tool": "WebSearch",
+      "input": {
+        "query": "how to deploy to production and rotate a secret credential token"
+      },
+      "classification": {
+        "action": "classified WebSearch action: deploy on production, secrets",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "secrets"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "readOnly": false,
+      "normalized": {
+        "tool_kind": "shell",
+        "tool_name": "WebSearch",
+        "programs": [
+          "how"
+        ],
+        "tool_input": {
+          "command_sha256": "9b9e558afd1e60a1066a866f415e7612e4a077603ddee1ccc128b04243c1ead6"
+        }
+      },
+      "correlation": "a05ec42668cc95230c67eac11a384e4d",
+      "target": "fbf9b50eb6bc70375d10e2983a98f42c880f31f4d3631bd79703cc6bfc9b1165"
+    }
+  ]
+}

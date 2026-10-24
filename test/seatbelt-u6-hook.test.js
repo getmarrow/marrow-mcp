@@ -91,7 +91,7 @@ test('U6 hook: every keyless decision leaves exactly one readable receipt; stops
         const r = all.at(-1).receipt;
         assert.deepEqual(validateReceipt(r), []);
         assert.deepEqual([r.mode, r.enforcement, r.decision, r.category, r.harness], ['seatbelt', 'enforce', 'stop', category, HARNESS_ENUM[harness]], `${harness} ${command}`);
-        assert.ok(out.text.includes(`(${r.rule},`), `the receipt rule is the rule in the stop text: ${r.rule} / ${out.text}`);
+        assert.ok(out.text.includes(` Code: ${r.rule}/`), `the receipt rule is the rule in the stop text: ${r.rule} / ${out.text}`);
         assert.ok(r.programs.includes(program), `${command}: ${r.programs.join()}`);
         assert.equal(r.subcommand, subcommand, command);
         assert.ok(r.reasons.length > 0);
@@ -160,7 +160,7 @@ test('U6 hook: the agent cannot edit its own receipts (S0), and the stop itself 
     for (const command of [`echo '{}' >> ${day}`, 'rm -rf ~/.marrow/seatbelt', `sed -i s/pass/stop/ ${day}`, 'truncate -s0 ~/.marrow/seatbelt/receipts/x.jsonl', 'chmod 777 ~/.marrow/seatbelt']) {
       const out = sh(sb, 'claude', command);
       assert.equal(out.decision, 'stop', command);
-      assert.match(out.text, /\(S0\./, command);
+      assert.match(out.text, / Code: S0\./, command);
     }
     const after = fs.readFileSync(day, 'utf8').split('\n').filter(Boolean);
     assert.equal(after.length, 1 + 5);

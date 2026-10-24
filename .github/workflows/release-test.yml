@@ -1,0 +1,64 @@
+# Tests for @getmarrow/mcp on a release branch.
+#
+# The tag-time workflow npm-publish.yml no longer runs the tests. It requires a
+# successful push run of this workflow, first attempt, for exactly the tagged
+# commit (and the job named below, which that workflow looks up by name). The
+# release branch must therefore be fast-forwarded into master: the tagged commit
+# is the tested commit, not a merge or squash of it.
+#
+# This workflow holds no secrets, no OIDC token and no environment, and its token
+# can only read the repository.
+name: release test
+
+on:
+  push:
+    branches:
+      - 'release/**'
+
+permissions:
+  contents: read
+
+env:
+  # Same pins as npm-publish.yml.
+  NODE_PIN: v22.23.3
+  PACK_NPM_VERSION: 10.9.9
+
+jobs:
+  test:
+    # npm-publish.yml requires this exact job name; change both files together.
+    name: Release branch tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the pinned Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+
+      - name: Check the pinned toolchain
+        run: |
+          set -euo pipefail
+          [ "$(node --version)" = "$NODE_PIN" ] || { echo '::error::Unexpected Node version.'; exit 1; }
+          [ "$(npm --version)" = "$PACK_NPM_VERSION" ] || { echo '::error::Unexpected npm version.'; exit 1; }
+
+      - name: Install dependencies without install scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Check the build and the tests left the checkout unchanged
+        run: |
+          set -euo pipefail
+          [ -z "$(git status --porcelain=v1 --untracked-files=all)" ] || { echo '::error::Build or tests changed the checkout.'; exit 1; }

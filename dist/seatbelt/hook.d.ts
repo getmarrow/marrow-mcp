@@ -16,9 +16,11 @@ export declare const CLAIMED_NO_KEY_TEXT = "Marrow is linked to an account but h
  * `claimed_no_key` with no account evidence and no rejected key: a fallback because the machine's
  * setup could not be confirmed (an evidence dir others can write, an unreadable probe, a home
  * mismatch, strict mode). Same holds as CLAIMED_NO_KEY_TEXT, but it never claims an account exists.
+ * This constant is the generic wording; a hold names its reason (setupUnconfirmedText, fallback-copy.ts).
  */
-export declare const SETUP_UNCONFIRMED_TEXT = "Marrow has no working key on this machine and its keyless mode is off here (strict mode, or a home folder it cannot trust); owner: run `npx -y @getmarrow/install@latest doctor`.";
-export declare function seatbeltStopText(category: string, rule: string, reason: string, mode: 'seatbelt' | 'claimed_no_key' | 'account', accountLinked?: boolean): string;
+export declare const SETUP_UNCONFIRMED_TEXT: string;
+/** `modeReason`: the fixed code that explains a fallback (pickFallbackReason); only read when the machine is not account-linked. */
+export declare function seatbeltStopText(category: string, rule: string, reason: string, mode: 'seatbelt' | 'claimed_no_key' | 'account', accountLinked?: boolean, modeReason?: string): string;
 /** §4.2: an S0-S5 floor stop is lifted only by an enforced server allow (a verified permit); an advisory allow never lifts it. */
 export declare function accountFloorStops(rollout: 'watch' | 'on', floor: Pick<SeatbeltDecision, 'decision'> | null, server: 'enforced_allow' | 'advisory_allow' | 'deny' | 'none'): boolean;
 /** The mapper's file view over the host. Missing: null. A failure the mapper must not guess about throws (it stops on fs_error). */
@@ -49,9 +51,26 @@ export interface KeylessOutcome {
      * the hook gives master's answer for that host instead of the seatbelt pass.
      */
     recognized: boolean;
+    /**
+     * Why the machine is in the stricter fallback: one fixed code from the resolver's reasons, or
+     * `setup_unconfirmed`. Words only: it never changes the mode or a decision.
+     */
+    modeReason: string;
 }
 /** The keyless branch of the hook: mode (U4), then the mapper (U2) with the U3 resolvers. Never throws. */
 export declare function keylessSeatbelt(harness: string, event: SeatbeltHookEvent): KeylessOutcome;
+export interface SeatbeltStatus {
+    mode: 'seatbelt' | 'claimed_no_key' | 'account';
+    reasons: string[];
+}
+/**
+ * What `marrow-mcp seatbelt-status` prints (the installer's doctor reads it): the mode this machine's
+ * hook would be in right now, from the same resolution the keyless hook runs (same key lookup, same
+ * rollout table), and the resolver's reason codes that are on a closed list. Reads only; writes no file
+ * or state, opens no connection, and names no key, path, user or environment value. Throws when the
+ * resolution does (the caller prints the unknown line).
+ */
+export declare function seatbeltStatus(): SeatbeltStatus;
 /**
  * The account floor. `watch`: computed after the answer, for the record only; it never throws and
  * never writes output. `on` (not active): run before the server flow; a returned text is a stop.

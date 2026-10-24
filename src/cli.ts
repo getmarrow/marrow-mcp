@@ -71,9 +71,10 @@ import { deliverQueuedForReceipt, holdSessionForReceipt, proofFieldsForReceipt, 
 import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
-import { installPreActionHook, runPreActionHookCommand } from './hook-pre-action';
+import { installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
 import { spawn } from 'node:child_process';
-import { nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
+import { emitBaseUrlNotice, nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
+import { KEYLESS_NOTICE, keylessInstructions, keylessStart, serveKeylessMcp } from './keyless-server';
 import {
   BACKGROUND_NUDGE_MAX_LIFETIME_MS,
   backgroundNudgeEnabled,
@@ -218,6 +219,7 @@ async function runPingCommand(): Promise<void> {
     return;
   }
   const resolved = resolveMarrowEnv({ trustedOnly: true });
+  emitBaseUrlNotice(resolved);
   if (!resolved.apiKey) {
     process.stdout.write(JSON.stringify({ ok: false, error: 'missing_key', exact_fix: resolved.exactFix }) + '\n');
     process.exitCode = 1;
@@ -270,9 +272,10 @@ async function runSpoolCommand(drain: boolean): Promise<void> {
     return;
   }
   const resolved = resolveMarrowEnv({ trustedOnly: true });
+  emitBaseUrlNotice(resolved);
   const apiKey = resolved.apiKey || '';
   if (!apiKey) {
-    process.stderr.write(`Error: MARROW_API_KEY required. ${resolved.exactFix}\n`);
+    process.stderr.write(`${keylessKeyError(resolved.exactFix)}\n`);
     process.exitCode = 1;
     return;
   }
@@ -290,6 +293,28 @@ async function runSpoolCommand(drain: boolean): Promise<void> {
 
 const GET_A_KEY_URL = 'https://getmarrow.ai/signup';
 const ACTIVATE_COMMAND = 'npx -y @getmarrow/install@latest activate';
+
+/**
+ * The Claude Code plugin sets CLAUDE_PLUGIN_ROOT for the processes it starts (its launcher runs this
+ * server in-process, so the variable is the plugin's own marker). Plugin users add the key to
+ * ~/.marrow/env and reload; setup and activate would write a second copy of the hooks. Only its
+ * presence is read, never its value.
+ */
+function runningAsPlugin(): boolean {
+  const root = process.env.CLAUDE_PLUGIN_ROOT;
+  return typeof root === 'string' && root.trim() !== '';
+}
+const PLUGIN_KEY_STEPS = 'Marrow plugin: put MARROW_API_KEY in ~/.marrow/env, run chmod 600 ~/.marrow/env, then /reload-plugins. The seatbelt hooks keep working without a key. Do not run marrow-mcp setup or activate for the plugin.';
+const PLUGIN_KEY_ERROR = `Error: MARROW_API_KEY required. ${PLUGIN_KEY_STEPS}`;
+const GET_A_KEY_LINE = `Get a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help`;
+// The server's no-key refusal, whole: written before exit 1, and by the keyless server when its first frame shows it was not started by an MCP host.
+function serverKeyRequiredText(exactFix: string): string {
+  const fix = runningAsPlugin() ? PLUGIN_KEY_ERROR : `Error: MARROW_API_KEY environment variable is required\n${exactFix}`;
+  return `${fix}\n${GET_A_KEY_LINE}\n`;
+}
+function keylessKeyError(exactFix: string): string {
+  return runningAsPlugin() ? PLUGIN_KEY_ERROR : `Error: MARROW_API_KEY required. ${exactFix}`;
+}
 const ENFORCEMENT_SENTENCE = 'On the 30-day evaluation and Business, deploys and publishes are held in hooks and the governed runner. Team and Free warn. If Marrow is unreachable, hooks hold high-risk actions and let routine actions run with a warning, and the governed runner stops protected actions it cannot verify. Over MCP, the agent gets the decision and is expected to follow it.';
 
 const HELP_TEXT = `Marrow MCP server and hook commands (@getmarrow/mcp)
@@ -456,6 +481,12 @@ ${MARROW_BLOCK_END}`;
 
 const cliArgs = parseArgs();
 
+// `seatbelt-status`: one line of JSON for the installer's doctor. Read-only; it starts no server, hook or nudge.
+if (process.argv[2] === 'seatbelt-status') {
+  runSeatbeltStatusCommand();
+  process.exit(0);
+}
+
 // Never for a hook entrypoint: a hook that sees -h must still run its check.
 if (cliArgs.help && !(cliArgs.hook || cliArgs.contextHook || cliArgs.preActionHook || cliArgs.sessionHook || cliArgs.permissionRequestHook || cliArgs.backgroundNudge)) {
   process.stdout.write(HELP_TEXT);
@@ -470,9 +501,10 @@ function formatKeyMaterialWarning(): string {
 if (process.argv[2] === 'keys') {
   const cmd = process.argv[3];
   const resolvedEnv = resolveMarrowEnv();
+  emitBaseUrlNotice(resolvedEnv);
   const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
   if (!API_KEY) {
-    process.stderr.write(`Error: MARROW_API_KEY required. ${resolvedEnv.exactFix}\n`);
+    process.stderr.write(`${keylessKeyError(resolvedEnv.exactFix)}\n`);
     process.exit(1);
   }
 
@@ -598,6 +630,17 @@ if (cliArgs.hook) {
   runSetup();
 } else {
 const resolvedEnv = resolveMarrowEnv();
+if (keylessStart(resolvedEnv, process.argv.slice(2), process.env)) {
+  // No Marrow key anywhere this server reads one: zero tools and get-a-key instructions instead of exit 1.
+  // Plugin or not, the key steps come from the same constants as the exit-1 text below.
+  const pluginSteps = runningAsPlugin() ? PLUGIN_KEY_STEPS : undefined;
+  serveKeylessMcp(MCP_ADAPTER_VERSION, {
+    instructions: keylessInstructions({ getKeyUrl: GET_A_KEY_URL, activateCommand: ACTIVATE_COMMAND, pluginSteps }),
+    notice: `${KEYLESS_NOTICE}\n${pluginSteps ?? resolvedEnv.exactFix}\n${GET_A_KEY_LINE}\n`,
+    refusal: serverKeyRequiredText(resolvedEnv.exactFix),
+  });
+} else {
+emitBaseUrlNotice(resolvedEnv);
 const API_KEY = cliArgs.apiKey || resolvedEnv.apiKey || '';
 
 // [SECURITY #3] Validate BASE_URL — require HTTPS to prevent SSRF / credential leakage
@@ -615,9 +658,7 @@ const FLEET_AGENT_ID = resolvedEnv.agentId || undefined;
 const AUTO_ENROLL = process.env.MARROW_AUTO_ENROLL !== 'false'; // on by default
 
 if (!API_KEY) {
-  process.stderr.write('Error: MARROW_API_KEY environment variable is required\n');
-  process.stderr.write(`${resolvedEnv.exactFix}\n`);
-  process.stderr.write(`Get a key: ${GET_A_KEY_URL}. Day-one steps and commands: npx @getmarrow/mcp --help\n`);
+  process.stderr.write(serverKeyRequiredText(resolvedEnv.exactFix));
   process.exit(1);
 }
 
@@ -2732,5 +2773,6 @@ process.stdin.on('error', (err) => {
   process.stderr.write(`[marrow] stdin error: ${err}\n`);
   process.exit(1);
 });
+} // Close the keyless-start else
 } // Close the if (process.argv[2] !== 'keys') block
 }

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { writeOfficialHostConfigs } = require('./support/official-host-config.cjs');
 writeOfficialHostConfigs();
+const { projectCwd } = require('./support/hermetic-project.cjs');
 const { spawn, spawnSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
@@ -90,6 +91,8 @@ function harness() {
   const run = (entrypoint, payload, env = {}) => {
     const result = spawnSync(process.execPath, entrypoint === 'marrow-mcp-server-placeholder' ? [CLI] : [CLI, entrypoint], {
       input: typeof payload === 'string' ? payload : JSON.stringify(payload),
+      // The hook runs in a fresh empty project folder: the own-server identity walk starts at its cwd.
+      cwd: projectCwd(),
       env: {
         PATH: process.env.PATH, HOME: home, MARROW_API_KEY: apiKey, MARROW_BASE_URL: 'https://api.example.test',
         MARROW_AGENT_ID: 'agent-one', MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false',
@@ -108,6 +111,7 @@ function harness() {
   // The same as run, without blocking: for calls a host makes at the same time.
   const runAsync = (entrypoint, payload, env = {}) => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI, entrypoint], {
+      cwd: projectCwd(),
       env: {
         PATH: process.env.PATH, HOME: home, MARROW_API_KEY: apiKey, MARROW_BASE_URL: 'https://api.example.test',
         MARROW_AGENT_ID: 'agent-one', MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false',
@@ -415,7 +419,7 @@ test('Claude Code auto mode asks only when the input proves a version whose hook
       const out = h.run('claude-pre-action-hook', payload);
       assert.equal(out.json.hookSpecificOutput.permissionDecision, expected, label);
       if (expected === 'deny') {
-        assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /To approve it here, switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you\./, label);
+        assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode \(Shift\+Tab\) and ask you to retry this exact action, and Claude Code then asks them\. Do not treat a chat reply as approval\./, label);
         assert.doesNotMatch(out.stdout, /dashboard/i, `${label}: the dashboard is never the step to take`);
         assert.deepEqual(commits(h), [], `${label}: a waiting hold is never closed by the hook`);
       }
@@ -700,7 +704,7 @@ test('Claude Code without a dialog: switching to the default mode asks on the sa
     h.setConfig({ runtime: withLink('gate-held'), status: { 'gate-held': 'pending' } });
     const bypass = { ...fixture('claude-pre-tool-use.json'), permission_mode: 'bypassPermissions' };
     const first = h.run('claude-pre-action-hook', bypass);
-    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /switch Claude Code to its default permission mode and retry this exact action; Claude Code then asks you\. Until then carry on with other work\./);
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /they switch Claude Code to default mode \(Shift\+Tab\) and ask you to retry this exact action, and Claude Code then asks them\. Do not treat a chat reply as approval\. Until then carry on with other work\. Do not report or claim an approval yourself\.$/);
     assert.doesNotMatch(first.stdout, /account owner|link/);
     const again = h.run('claude-pre-action-hook', { ...bypass, tool_use_id: 'toolu_same_mode' });
     assert.equal(again.json.hookSpecificOutput.permissionDecision, 'deny');
@@ -734,7 +738,7 @@ test('unattended runs (codex exec) hold quietly and email nobody; with the owner
     assert.equal(linkRequests(p).length, 1);
     // The same pings setting in an attended session sends nothing: a person can be asked there.
     const attended = p.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'bypassPermissions' });
-    assert.match(attended.json.hookSpecificOutput.permissionDecisionReason, /switch Claude Code to its default permission mode/);
+    assert.match(attended.json.hookSpecificOutput.permissionDecisionReason, /they switch Claude Code to default mode \(Shift\+Tab\)/);
     assert.equal(linkRequests(p).length, 1);
   } finally { p.cleanup(); }
   const q = harness();
@@ -2292,8 +2296,9 @@ test('HIGH-R7-1: with the host\'s own prompt off (Codex yolo/full-auto/never/con
 test('No key: a protected action names the one fix; a key in an owner-only ~/.marrow/env is used, a readable-by-others one is not', () => {
   const { chmodSync } = require('node:fs');
   // U5: the test HOME is not the passwd home, so the seatbelt mode is claimed_no_key and its text is shown.
-  const { NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT, SETUP_UNCONFIRMED_TEXT } = require('../dist/hook-pre-action.js');
-  assert.equal(NO_KEY_TEXT, 'Marrow has no API key on this machine. Owner: create one at getmarrow.ai/signup, then run the installer activate command in a terminal. Do not retry this action.');
+  const { NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT } = require('../dist/hook-pre-action.js');
+  const { fallbackSentence } = require('../dist/seatbelt/fallback-copy.js');
+  assert.equal(NO_KEY_TEXT, 'Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.');
   const deploy = { ...fixture('claude-pre-tool-use.json'), tool_input: { command: 'wrangler deploy --env production', description: 'x' } };
   const run = (mode) => {
     const h = harness();
@@ -2314,7 +2319,8 @@ test('No key: a protected action names the one fix; a key in an owner-only ~/.ma
   assert.equal(none.runtimeCalls, 0);
   assert.equal(none.out.json.hookSpecificOutput.permissionDecision, 'deny');
   // No key file and no other account evidence: a mode fallback, never an account claim (F1 text).
-  assert.equal(none.out.json.hookSpecificOutput.permissionDecisionReason.includes(SETUP_UNCONFIRMED_TEXT), true);
+  // The test HOME is not the passwd home: the hold names that reason.
+  assert.equal(none.out.json.hookSpecificOutput.permissionDecisionReason.includes(fallbackSentence('home_mismatch')), true);
   const owner = run(0o600);
   assert.ok(owner.runtimeCalls > 0, 'the owner-only key file is read');
   assert.notEqual(owner.out.json?.hookSpecificOutput?.permissionDecisionReason || '', CLAIMED_NO_KEY_TEXT);

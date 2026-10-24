@@ -276,7 +276,10 @@ function operationKind(operation: LoopGuardOperation): LoopKind {
   if (!operation.readOnly) return 'mutation';
   const tool = normalizeHookToolName(operation.toolName);
   const command = hookToolCommand({ tool_name: operation.toolName, tool_input: operation.toolInput }).toLowerCase();
-  if (/(?:^|[_:.-])(?:status|poll|wait|watch|health)(?:$|[_:.-])/.test(tool)
+  // Claude Code's Monitor is a watch by definition and is re-armed when it expires: a repeat is
+  // refused only after it came back unchanged twice, never on the first re-arm.
+  if (tool === 'monitor'
+    || /(?:^|[_:.-])(?:status|poll|wait|watch|health)(?:$|[_:.-])/.test(tool)
     || /\b(?:status|poll|health|wait|watch)\b/.test(command)) return 'poll';
   if (/(?:^|[_:.-])(?:test|check|audit|verify|lint|typecheck)(?:$|[_:.-])/.test(tool)
     || /\b(?:test|check|audit|verify|lint|typecheck)\b/.test(command)) return 'verification';
@@ -295,9 +298,18 @@ function operationIdentity(state: GuardState, session: SessionState, operation: 
   ]);
 }
 
-function denial(entry: LoopEntry): string {
-  const result = entry.outcome === 'success' ? 'passed' : 'failed';
-  return `Marrow local loop guard: this operation already ${result} with an unchanged result. Reuse the recorded result instead of repeating it. Receipt: ${entry.receipt}.`;
+const SAFE_TOOL_LABEL = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/** The tool name only, never its input. Anything that is not a plain name reads as "call". */
+function toolLabel(toolName: unknown): string {
+  return typeof toolName === 'string' && SAFE_TOOL_LABEL.test(toolName) ? `${toolName} call` : 'call';
+}
+
+function denial(entry: LoopEntry, toolName: unknown): string {
+  const call = toolLabel(toolName);
+  return entry.outcome === 'success'
+    ? `Marrow loop guard: you already ran this exact ${call} in this session and nothing has changed since, so it was not run again. Use the earlier result. If an edit just failed, re-read only the lines you need (Read with offset and limit). Receipt: ${entry.receipt}.`
+    : `Marrow loop guard: this exact ${call} already failed in this session and nothing has changed since, so it was not run again. Change something before you try again. Receipt: ${entry.receipt}.`;
 }
 
 export function consultSessionLoopGuard(operation: LoopGuardOperation, options: { home?: string; now?: number } = {}): LoopGuardDecision {
@@ -311,7 +323,7 @@ export function consultSessionLoopGuard(operation: LoopGuardOperation, options: 
     if (existing) {
       const threshold = existing.kind === 'poll' || existing.outcome === 'failure' ? 2 : 1;
       if (existing.outcome && existing.unchanged_count >= threshold) {
-        return { allow: false, receipt: existing.receipt, reason: denial(existing), fingerprint };
+        return { allow: false, receipt: existing.receipt, reason: denial(existing, operation.toolName), fingerprint };
       }
       existing.attempts += 1;
       existing.updated_at = now;

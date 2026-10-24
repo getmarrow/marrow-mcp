@@ -427,9 +427,12 @@ test('identical owner state with different planted repository files resolves ide
 
 // ── end to end through the CLI ───────────────────────────────────────────
 
-function runCli(args, { cwd, env }) {
+function runCli(args, { cwd, env, endStdin = false, input = '' }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...args], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdin.on('error', () => {});
+    if (input) child.stdin.write(input);
+    if (endStdin) child.stdin.end();
     let stderr = '';
     let stdout = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
@@ -455,9 +458,24 @@ test('MCP server refuses a planted repository key (0644 and 0600) and shows the 
     const file = path.join(cwd, '.env');
     write(file, PLANTED_LINES(key), mode);
     const home = emptyHome(root);
-    for (const args of [[], ['keys', 'list']]) {
-      const result = await runCli(args, { cwd, env: cliEnv(home) });
-      assert.equal(result.code, 1, args.join(' '));
+    // A repository key never counts: the MCP server starts keyless (initialize answered, no tools, exit 0 when stdin ends
+    // after the initialize); `keys` still exits 1.
+    for (const [args, code] of [[[], 0], [['keys', 'list'], 1]]) {
+      const input = args.length === 0
+        ? `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {} } })}\n${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`
+        : '';
+      const result = await runCli(args, { cwd, env: cliEnv(home), endStdin: true, input });
+      assert.equal(result.code, code, args.join(' '));
+      if (args.length === 0) {
+        const answers = result.stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        assert.equal(answers.length, 2, 'initialize and tools/list are answered');
+        assert.match(answers[0].result.instructions, /started without a Marrow key on this machine, so it has no tools/, 'the keyless server answered, not a real one');
+        assert.deepEqual(answers[1].result, { tools: [] }, 'zero tools');
+        assert.match(result.stderr, /started with no tools/);
+      } else {
+        assert.equal(result.stdout, '', 'keys list prints no MCP answer');
+        assert.match(result.stderr, /MARROW_API_KEY required/);
+      }
       assert.equal(result.stderr.split(`Marrow key in ${file} ${NOTICE}`).length, 2, 'notice appears exactly once');
       assert.equal(`${result.stderr}${result.stdout}`.includes(key), false);
       assert.doesNotMatch(result.stderr, /attacker/);

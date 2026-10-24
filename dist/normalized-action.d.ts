@@ -129,6 +129,8 @@ export declare function normalizeShellCommand(command: string, deadline?: number
  * word ever leaves the machine.
  */
 export declare function deployCommandText(command: string): string | null;
+/** runOptionsKey as a standalone identity (no deadline), for the exact target of a call (hook-contract exactHookTarget). */
+export declare function shellToolRunOptionsKey(event: ToolEvent): string | null;
 /**
  * The normalized action of a hook event. `deadlineAt` bounds the time it may
  * take (default one second from now): past it, or past the size limits, the

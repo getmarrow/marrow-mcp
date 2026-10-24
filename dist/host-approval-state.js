@@ -11,6 +11,7 @@ exports.protectedCategoriesAmong = protectedCategoriesAmong;
 exports.markDialogShown = markDialogShown;
 exports.setSessionMarker = setSessionMarker;
 exports.sessionMarker = sessionMarker;
+exports.hasOpenChatOnlyHold = hasOpenChatOnlyHold;
 exports.hasPendingHolds = hasPendingHolds;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
@@ -500,6 +501,20 @@ function sessionMarker(kind, scope, hostSessionId, home) {
     const state = peekState(home);
     const marker = state[kind][keyed(state.secret, [kind, keyRef(state, scope), hostSessionId])];
     return marker ? marker.value : null;
+}
+/**
+ * Read-only: this host session has an open hold that waits for an approval a chat reply cannot give,
+ * because no dialog was shown (denied for later) or nobody was in the run (quiet, unattended). An
+ * unexpired, unspent hold that was asked in a real dialog is never this. Writes nothing and, with an
+ * unreadable or unsafe state, throws (the caller shows nothing).
+ */
+function hasOpenChatOnlyHold(scope, hostSessionId, home, now = Date.now()) {
+    return findHolds(scope, { hostSessionId, mode: 'wait', states: ['open'] }, home).some((hold) => {
+        const expiry = hold.expires_at ? Date.parse(hold.expires_at) : NaN;
+        if (Number.isFinite(expiry) && expiry <= now)
+            return false;
+        return hold.dialog_later === true || (hold.quiet === 'unattended' && !hold.arbitration_receipt_id);
+    });
 }
 /** True when this key has any hold that still needs work (cheap check before network). */
 function hasPendingHolds(scope, query = {}, home) {
