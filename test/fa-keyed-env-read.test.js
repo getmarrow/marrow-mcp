@@ -279,6 +279,19 @@ test('LOW-2: with no event folder, or a relative one, the answer is the one the 
   }
 });
 
+test('LOW-2: a relative event folder is never resolved against the hook\'s folder, and a folder with a NUL byte adds nothing (not even a hold)', () => {
+  // The hook runs in the home, the event names `proj` (relative): read as a folder it would be the project and find the link; it must not be read at all.
+  for (const row of ['cat link.txt', '(cat innocent.log)', "bash -c 'cat innocent.log'"]) {
+    assert.equal(from(home, () => classifyTool({ ...bash(row), cwd: 'proj' })).protected, false, `relative folder: ${row}`);
+  }
+  // A NUL byte makes every path of that folder fail with an error that is not "missing": read as a folder it would turn a wrapped link to an ordinary file into a hold.
+  for (const dir of [proj, elsewhere]) {
+    for (const row of ["bash -c 'cat docs-link.md'", "eval 'cat docs-link.md'", '(cat docs-link.md)']) {
+      assert.equal(from(dir, () => classifyTool({ ...bash(row), cwd: `${proj}\0x` })).protected, false, `NUL folder: ${row}`);
+    }
+  }
+});
+
 test('LOW-2: the hook\'s own folder is always read too (an event folder only adds), and one command is answered per folder, never from the last answer', () => {
   // Hook in the project, event folder somewhere else: the link is still found from the hook's own folder, as every earlier build found it.
   for (const row of ['cat link.txt', '(cat innocent.log)', "bash -c 'cat innocent.log'"]) {
