@@ -691,7 +691,7 @@ const MAPPER_UNSURE = /^(?:mapper_error|budget_)/;
 /**
  * False for a command that cannot read the host-approvals state file: the keyed hook then does not load the mapper for it on that account. A command that
  * can spell the folder, or a folder that holds it, holds the word `approvals` or `marrow` (quotes and backslashes split a word without changing it), an
- * ANSI-C quote, a glob in a folder part of a path (`~/.m*\/h*\/state.json`, `cd ~/.marrow; cat h*\/s*`), or a tree walker (grep, rg, find, tar, cp, ...) given
+ * ANSI-C quote, a glob in a folder part of a path that starts at the home (`~/.m*\/h*\/state.json`; `cd ~/.marrow; cat h*\/s*` holds `marrow`), or a tree walker (grep, rg, find, tar, cp, ...) given
  * the home or the root, or given `.`/`..`/`*` while the hook runs in the home or the root. A path that only a computed name spells
  * (`cd ~; cd .m*; cd h*; cat s*`) is read by the keyless mapper but not asked of it here.
  */
@@ -708,11 +708,21 @@ function runsInHomeOrAbove() {
         return false;
     }
 }
+const HOME_PATH_START = /^(?:~|\$HOME|\$\{HOME\}|\.|\/home\/|\/Users\/|\/root\/)/;
+/** A glob in a folder part of a path that starts at the home or in the working folder (the env-dump filter keeps its own glob rule). */
+function homeGlobInFolderPart(words) {
+    for (const word of words.split(WORD_BREAK)) {
+        const slash = word.lastIndexOf('/');
+        if (slash > 0 && GLOB_CHAR.test(word.slice(0, slash)) && HOME_PATH_START.test(word))
+            return true;
+    }
+    return false;
+}
 function mayReadApprovalState(command) {
     if (command.includes("$'") || command.includes('$"'))
         return true;
     const text = command.replace(/['"\\]/g, '').toLowerCase();
-    if (text.includes('approvals') || text.includes('marrow') || globInFolderPart(text))
+    if (text.includes('approvals') || text.includes('marrow') || homeGlobInFolderPart(text))
         return true;
     if (!TREE_WALKERS.test(text))
         return false;
