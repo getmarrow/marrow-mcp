@@ -94,7 +94,16 @@ function withStateLock(home, callback) {
         catch (error) {
             if (error.code !== 'EEXIST')
                 return unsafe();
-            const stat = (0, node_fs_1.lstatSync)(lock);
+            let stat;
+            try {
+                stat = (0, node_fs_1.lstatSync)(lock);
+            }
+            catch (statError) {
+                // The holder released the lock between our EEXIST and this lstat: take the next bounded attempt. Any other error escapes as before.
+                if (statError.code === 'ENOENT')
+                    continue;
+                throw statError;
+            }
             if (!stat.isFile() || !exactPrivate(stat, 0o600))
                 return unsafe();
             if (Date.now() - stat.mtimeMs > 30_000) {
