@@ -2526,7 +2526,7 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
     default: break;
   }
   // An awk by a name the table does not have (`original-awk`, `goawk`, `my-awk`): read as awk, and then as the unknown program it also is (as `nawk` is).
-  if (/awk/i.test(prog)) awkProgram(rest, ctx, run, x);
+  if (prog !== 'nawk' && /awk/i.test(prog)) awkProgram(rest, ctx, run, x);
   if (/^mkfs(?:\.|$)/.test(prog)) { hit(run, 'S5', 'mkfs'); return; }
   if (SHELLS.has(prog)) return handleShell(prog, rest, ctx, run, x);
   if (INTERPRETERS.has(prog) || /^python3\.\d+$/.test(prog)) return handleInterpreter(prog, rest, ctx, run, x);
