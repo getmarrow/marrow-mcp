@@ -93,7 +93,10 @@ test('audit deviations: each documented row has a corrected case that stops, and
 test('audit routine list (339 everyday commands): only the five known stops, nothing new', () => {
   const rows = require('./fixtures/seatbelt/audit/routine.cjs');
   assert.equal(rows.length, 339);
-  const stopped = rows.filter((r) => decide(r).decision === 'stop').map((r) => r.cmd);
+  // WK-5: `patch -p1 < fix.patch` now reads its patch text, so the everyday row gets the everyday file (a benign one).
+  const patchFile = { '/home/u/proj/fix.patch': '--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1 +1 @@\n-one\n+two\n' };
+  const withFile = (r) => ({ ...r, opts: { ...(r.opts || {}), files: { ...((r.opts || {}).files || {}), ...patchFile } } });
+  const stopped = rows.filter((r) => decide(withFile(r)).decision === 'stop').map((r) => r.cmd);
   assert.deepEqual(stopped, [
     'vercel env pull .env.local', // S4: .env.* write (Q3)
     'cp .env.example .env', // S4: write to .env (Q3)
