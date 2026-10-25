@@ -189,6 +189,7 @@ export function parsePatchCall(kind: PatchKind, words: readonly string[]): Patch
   if (words.length === 1 && spec.info.has(words[0])) { call.info = true; return call; }
   const seen = new Set<string>();
   let negated = false;
+  let repeated = false;
   let dryRuns = 0;
   let strips = 0;
   const give = (name: string, value: string): string | null => {
@@ -227,6 +228,7 @@ export function parsePatchCall(kind: PatchKind, words: readonly string[]): Patch
       // `--unified=3`, `--context=3`: a count only.
       if (attached !== null && !((name === 'unified' || name === 'context') && /^\d{1,6}$/.test(attached))) return fail('unknown_option');
       if (name === 'dry-run') dryRuns += 1;
+      if (seen.has(name)) repeated = true;
       seen.add(name);
       continue;
     }
@@ -257,7 +259,7 @@ export function parsePatchCall(kind: PatchKind, words: readonly string[]): Patch
   } else if (kind === 'apply') {
     const reading = ['check', 'stat', 'numstat', 'summary'].some((n) => seen.has(n));
     const writing = ['apply', 'reject', 'index', 'cached', 'intent-to-add', '3way', 'build-fake-ancestor', '-3', '-N'].some((n) => seen.has(n));
-    call.readOnly = reading && !writing && !negated;
+    call.readOnly = reading && !writing && !negated && !repeated;
   }
   return call;
 }

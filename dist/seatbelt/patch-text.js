@@ -210,6 +210,7 @@ function parsePatchCall(kind, words) {
     }
     const seen = new Set();
     let negated = false;
+    let repeated = false;
     let dryRuns = 0;
     let strips = 0;
     const give = (name, value) => {
@@ -280,6 +281,8 @@ function parsePatchCall(kind, words) {
                 return fail('unknown_option');
             if (name === 'dry-run')
                 dryRuns += 1;
+            if (seen.has(name))
+                repeated = true;
             seen.add(name);
             continue;
         }
@@ -319,7 +322,7 @@ function parsePatchCall(kind, words) {
     else if (kind === 'apply') {
         const reading = ['check', 'stat', 'numstat', 'summary'].some((n) => seen.has(n));
         const writing = ['apply', 'reject', 'index', 'cached', 'intent-to-add', '3way', 'build-fake-ancestor', '-3', '-N'].some((n) => seen.has(n));
-        call.readOnly = reading && !writing && !negated;
+        call.readOnly = reading && !writing && !negated && !repeated;
     }
     return call;
 }
