@@ -12,10 +12,12 @@ exports.isSecretPath = isSecretPath;
 exports.isProtectedWriteTarget = isProtectedWriteTarget;
 exports.isSecretVariableName = isSecretVariableName;
 exports.shellSegmentVerdict = shellSegmentVerdict;
+exports.policyReadsAllWords = policyReadsAllWords;
 exports.toolTargetPaths = toolTargetPaths;
 exports.isSecretMaterialAccess = isSecretMaterialAccess;
 exports.isSecretMaterialAccessAsNamed = isSecretMaterialAccessAsNamed;
 exports.toolClassificationText = toolClassificationText;
+exports.isShellTextTool = isShellTextTool;
 exports.isShellGovernedTool = isShellGovernedTool;
 exports.isReadOnlyToolEvent = isReadOnlyToolEvent;
 exports.isReadOnlyToolEventAsNamed = isReadOnlyToolEventAsNamed;
@@ -24,6 +26,7 @@ exports.readEquivalent = readEquivalent;
 exports.shellCommandToolText = shellCommandToolText;
 exports.shellCommandToolRunOptions = shellCommandToolRunOptions;
 exports.isWholeInputNativeTool = isWholeInputNativeTool;
+const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const own_tool_1 = require("./own-tool");
@@ -97,7 +100,9 @@ const SECRET_STORE_DIRECTORY = /^(?:\.ssh|\.gnupg|\.aws|\.azure|\.kube|\.docker|
 // A plainly named secrets/credentials directory holds secret material, but source code may live in one too.
 const NAMED_SECRET_DIRECTORY = /^(?:secrets?|credentials?)$/i;
 const SECRET_FILE = /^(?:\.env(?:\..+)?|.+\.env|\.dev\.vars|\.git-credentials|\.netrc|_netrc|\.npmrc|\.yarnrc\.ya?ml|\.pypirc|\.pgpass|\.my\.cnf|\.htpasswd|\.?credentials\.(?:json|ya?ml|toml|ini|csv|txt|xml)|secrets?\.(?:json|ya?ml|toml|env|txt)|id_(?:rsa|dsa|ecdsa|ed25519)(?:_[A-Za-z0-9]+)?|.+\.(?:pem|key|p12|pfx|jks|keystore|kdbx|ppk))$/i;
-const ENV_TEMPLATE_FILE = /(?:^|\.)env\.(?:example|sample|template|dist|defaults?)$/i;
+// One list with the keyless seatbelt (ENV_TEMPLATE_WORDS, src/secret-paths.ts): a `.env` template is `.example`, `.sample` or `.template` and nothing else, so
+// `.env.dist`, `.env.defaults` and `.env.default` are secret files in both modes. A test keeps this list equal to the keyless table's.
+const ENV_TEMPLATE_FILE = new RegExp(`(?:^|\\.)env\\.(?:${secret_paths_1.ENV_TEMPLATE_WORDS.join('|')})$`, 'i');
 const SECRET_KEYWORD_FILE = /(?:^|[._-])(?:secrets?|credentials?|tokens?|api[_-]?keys?|passwords?|private[_-]?keys?)(?:[._-]|$)/i;
 const SOURCE_OR_DOC_FILE = /\.(?:[cm]?[jt]sx?|md|mdx|rst|py|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|sh|bash|zsh|ps1|sql|html|css|scss|vue|svelte|map|snap|lock)$/i;
 const SECRET_VARIABLE_PART = new Set(['KEY', 'APIKEY', 'TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PAT', 'CREDENTIAL', 'CREDENTIALS', 'AUTH']);
@@ -462,7 +467,7 @@ function secretPath(value, base) {
     // Only the last 4096 characters (PATH_MAX) are read: the patterns end at `$`, and a two-`**`
     // pattern backtracks quadratically, so an unbounded path could stall the hook past its timeout.
     const tail = path.length > SECRET_PATH_TABLE_CHARS ? path.slice(-SECRET_PATH_TABLE_CHARS) : path;
-    if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)))
+    if (SEATBELT_SECRET_PATHS.some((pattern) => pattern.test(tail)) || secret_paths_1.APPROVAL_STATE_TREE.test(tail))
         return true;
     return SECRET_KEYWORD_FILE.test(name) && !SOURCE_OR_DOC_FILE.test(name);
 }
@@ -515,6 +520,37 @@ function globVariants(value) {
 /** True for a path that holds secret or credential material. */
 function isSecretPath(value, base = process.cwd()) {
     return pathCandidates(String(value || '')).flatMap(globVariants).some((candidate) => secretPath(candidate, base));
+}
+/** The host-approvals folder, or ~/.marrow that holds it: a search tool that walks either reads the state file. */
+function isApprovalStateFolder(value, base = process.cwd()) {
+    const folder = node_path_1.posix.join(homeDirectory(), '.marrow', 'host-approvals').toLowerCase();
+    return pathCandidates(String(value || '')).some((candidate) => {
+        const walked = normalizedToolPath(candidate, base).replace(/\/+$/, '').toLowerCase();
+        return walked === folder || walked === node_path_1.posix.dirname(folder);
+    });
+}
+/** A process folder (`/proc`, `/proc/self/task`): a search tool that walks it reads the `environ` of every process under it. */
+function isProcessFolder(value, base = process.cwd()) {
+    return pathCandidates(String(value || '')).some((candidate) => secret_paths_1.PROC_PROCESS_TREE.test(normalizedToolPath(candidate, base)));
+}
+/**
+ * True when a path the tool names is a symbolic link, or goes through one, to a secret file (or, for a write, to a protected one): a read or an edit
+ * through it is of the file it points at, whatever the link is called. Only a path that exists and resolves elsewhere is read; nothing else changes.
+ */
+function secretThroughLink(value, write, base = process.cwd()) {
+    return pathCandidates(String(value || '')).some((candidate) => {
+        let real;
+        try {
+            const lexical = normalizedToolPath(candidate, base);
+            real = (0, node_fs_1.realpathSync)(lexical);
+            if (real === lexical)
+                return false;
+        }
+        catch {
+            return false;
+        }
+        return write ? isProtectedWriteTarget(real) : isSecretPath(real);
+    });
 }
 /** True for a secret file or Marrow's own local control state. */
 function isProtectedWriteTarget(value, base = process.cwd()) {
@@ -719,6 +755,23 @@ function shellAnalysis(command, dialect, parse = dialect) {
     });
     return { segments, verdicts };
 }
+/**
+ * True when the policy's own reading is the whole answer for a shell command: it parses, every simple command in it is a recognised read-only
+ * program (a `cat`, `grep`, `ls`, `jq`, `ps`, never a wrapper such as `bash -c`, `eval`, `sudo`, `ssh`, `xargs` or a program that writes), and no word
+ * holds a glob, a brace or a variable (those can spell a name the text does not hold). Such a command names its files in the words the policy already
+ * judges, so a second reading of it by the mapper could only add the mapper's own over-stops (the pattern or filter operand of `grep .env README.md`).
+ */
+function policyReadsAllWords(command) {
+    try {
+        const analysis = shellAnalysis(command);
+        if (!analysis?.segments.length || !analysis.verdicts.every((verdict) => verdict === 'read'))
+            return false;
+        return analysis.segments.every((segment) => segment.expansions.length === 0 && ![...segment.words, ...segment.inputs, ...segment.outputs].some((word) => /[*?[{]/.test(word)));
+    }
+    catch {
+        return false;
+    }
+}
 function stringLeaves(value, depth = 0, output = []) {
     if (output.length >= 64 || depth > 4)
         return output;
@@ -782,9 +835,9 @@ function isSecretMaterialAccess(event, printsEnvironment) {
 function isSecretMaterialAccessAsNamed(event, printsEnvironment) {
     const tool = normalizeHookToolName(event.tool_name);
     if (CONTENT_READ_TOOLS.has(tool))
-        return toolTargetPaths(event).some((path) => isSecretPath(path));
+        return toolTargetPaths(event).some((path) => isSecretPath(path) || secretThroughLink(path, false) || (tool === 'grep' && (isProcessFolder(path) || isApprovalStateFolder(path))));
     if (FILE_EDIT_TOOLS.has(tool))
-        return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path));
+        return toolTargetPaths(event).some((path) => isProtectedWriteTarget(path) || secretThroughLink(path, true));
     if (!SHELL_TOOLS.has(tool))
         return false;
     const command = shellCommandText(event);
@@ -833,6 +886,17 @@ function toolClassificationText(event) {
         serialized = '';
     }
     return `${tool} ${command} ${serialized}`;
+}
+/**
+ * Whether a tool runs its text as a shell command: Bash and the other terminal tools (Codex exec, Cursor Shell, ...),
+ * Monitor and PowerShell. Every other tool whose text is read as shell words (ToolSearch, a prompt, a path, an unknown
+ * tool's `command`) only borrows the parser, so no word of it is known to be a program.
+ */
+function isShellTextTool(event) {
+    if (isMcpHookTool(event.tool_name))
+        return false;
+    const tool = normalizeHookToolName(event.tool_name);
+    return SHELL_TOOLS.has(tool) || SHELL_COMMAND_TOOLS.has(tool);
 }
 /** Editing and task tools are judged by their target, not by shell-like text in their input. */
 function isShellGovernedTool(event) {

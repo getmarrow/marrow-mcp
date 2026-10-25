@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { emitBaseUrlNotice, resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
-import { normalizedHookAction, shellToolRunOptionsKey } from './normalized-action';
+import { keyedTargetHash, normalizedHookAction, shellToolRunOptionsKey } from './normalized-action';
 import { isMarrowServerLaunchShape } from './own-server-identity';
 import {
   geminiMcpTarget, isGeminiOwnLabel, isMarrowOwnTool, isOfficialMarrowGeminiCall, isOfficialMarrowMcpTool, isOfficialMarrowNestedInput,
@@ -877,14 +877,17 @@ export function exactHookTarget(event: { hook_event_name?: unknown; tool_name?: 
     // A Monitor or PowerShell call's run options (timeout, timeout_ms, run_in_background) bind its approval
     // too; the element is absent for every other call, whose target is unchanged.
     const runOptions = shellToolRunOptionsKey(event);
-    return createHash('sha256').update(JSON.stringify([
-      'marrow-hook-target-v1',
+    // Keyed with the per-install device key (the nested names and run options are tool input, so they may hold a
+    // value the redactor did not see); without a usable key no target can match, so the hold stays held.
+    const keyed = keyedTargetHash([
       typeof event.tool_name === 'string' ? event.tool_name : null,
       ADAPTER_MCP_EVENTS.has(String(event.hook_event_name ?? '')) ? 'adapter-mcp' : 'host-name',
       nested,
       mcp ? [mcp.server_name, mcp.tool_name] : null,
       ...(runOptions === null ? [] : [runOptions]),
-    ])).digest('hex');
+    ]);
+    if (keyed !== null) return keyed;
+    return createHash('sha256').update(`unmatched:${randomUUID()}`).digest('hex');
   } catch {
     // Not serialisable: a target nothing else can match (it stays held).
     return createHash('sha256').update(`unmatched:${randomUUID()}`).digest('hex');

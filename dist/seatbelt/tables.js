@@ -62,9 +62,10 @@ function secretSamples(home, cwds) {
         `${h}/.config/gcloud/credentials.db`, `${h}/.config/gcloud/access_tokens.db`, `${h}/.azure/accessTokens.json`,
         `${h}/.kube/config`, `${h}/.docker/config.json`, `${h}/.npmrc`, `${h}/.pypirc`, `${h}/.netrc`, `${h}/.git-credentials`,
         `${h}/.config/gh/hosts.yml`, `${h}/.config/op/config`, `${h}/.gnupg/private-keys-v1.d/k.key`, `${h}/.marrow/env`,
-        `${h}/.marrow/env.local`, `${h}/.claude.json`, `${h}/.claude/settings.local.json`, '/proc/self/environ', '/proc/1/environ',
+        `${h}/.marrow/env.local`, `${h}/.claude.json`, `${h}/.claude/settings.local.json`, '/proc/self/environ', '/proc/1/environ', '/proc/self/task/1/environ',
         `${h}/.env`, '/root/.ssh/id_rsa', '/root/.aws/credentials', `${h}/.marrow/seatbelt/salt`,
         `${h}/.marrow/fleet.env`, `${h}/.marrow/credentials/k`,
+        `${h}/.marrow/host-approvals/state.json`, `${h}/.marrow/host-approvals/.state-1-aa.tmp`,
     ];
     for (const c of cwds) {
         const d = c.replace(/\/$/, '');
@@ -158,6 +159,8 @@ exports.TRIPWIRE = [
     { re: /publish/, category: 'S3', reason: 'tripwire_publish' },
     { re: /deploy|--prod\b/, category: 'S2', reason: 'tripwire_deploy' },
     { re: /\.ssh\b|id_rsa|id_ed25519|id_ecdsa|\.aws\b|\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.docker\/config|\.kube\/config|gh\/hosts\.yml|\.gnupg|\.claude\.json|settings\.local\.json|\/environ\b|\.dev\.vars|\.pem\b|\.p12\b|\.pfx\b|\.marrow\/env|\.marrow\/seatbelt\/salt/, category: 'S4', reason: 'tripwire_secret_path' },
+    // The host-approvals state file named in code or text the mapper cannot follow; the reason is the one the keyed hook keeps.
+    { re: /\.marrow\/host-approvals\/[^\s\/]/, category: 'S4', reason: 'host_approvals_state' },
     { re: /(?:^|[^a-z0-9_$)\].])\.env(?![a-z0-9_])(?!\.(?:example|sample|template)\b)/, category: 'S4', reason: 'tripwire_env_file' },
     { re: /printenv|export\s+-p|declare\s+-[a-z]*[xp]|(?:^|[;&|({\s])(?:env|set|export)\s*(?:$|[;&|)}])|auth\s+token|print-(?:access|identity)-token|get-session-token|get-access-token|auth:token|find-(?:generic|internet)-password|secret-tool|op\s+read|vault\s+(?:kv|read)|pass\s+show|token\s+list|(?:process\.env|os\.environ|\$env|env\.to_h|system\.getenv\(\))\s*(?:\)|;|$|\||,|\.items|\.keys|\.copy)|(?:environ|\benv)\W{0,3}[a-z_]{0,256}(?:key|token|secret|pass|cred)|\$\{?!?[a-z_]{0,256}(?:key|token|secret|pass|cred)/, category: 'S4', reason: 'tripwire_secret_dumper' },
     { re: /rmtree|rmsync|rmdirsync|rimraf|rm_rf|\brm_r\b|mkfs/, category: 'S5', reason: 'tripwire_recursive_delete' },

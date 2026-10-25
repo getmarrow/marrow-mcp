@@ -4,6 +4,7 @@ import {
   hookToolCommand,
   isMcpHookTool,
   isShellGovernedTool,
+  isShellTextTool,
   isWholeInputNativeTool,
   normalizeHookToolName,
   shellCommandToolRunOptions,
@@ -123,14 +124,16 @@ type ScanBudget = { scanned: number; deadline: number };
  * `truncated`: set when a value that may change what the action does had to be withheld.
  * `exact`: the exact pass (exact_hmac, never sent): only a certain credential is replaced; every value
  * withheld only because it MAY be a secret is kept as it is.
+ * `freeText`: the text is a field of a tool that does not run shell text (a prompt, a query, a path), read as shell
+ * words only for classification: a program word is then listed only when it is a known program (UNLISTED_PROGRAM).
  */
-type Exactness = { truncated: boolean; budget: ScanBudget; exact: boolean; sigs: string[] };
+type Exactness = { truncated: boolean; budget: ScanBudget; exact: boolean; sigs: string[]; freeText: boolean };
 
 /** Thrown when normalization runs out of its budget: the caller sends a truncated placeholder instead. */
 class NormalizationLimit extends Error {}
 
 function newExactness(deadline: number = Date.now() + DEFAULT_NORMALIZE_MS, exact = false): Exactness {
-  return { truncated: false, budget: { scanned: 0, deadline }, exact, sigs: [] };
+  return { truncated: false, budget: { scanned: 0, deadline }, exact, sigs: [], freeText: false };
 }
 
 /**
@@ -156,7 +159,17 @@ function sha256(text: string): string {
 // Key-shaped values
 // ---------------------------------------------------------------------------
 
-const KNOWN_KEY_PREFIX = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}$|^github_pat_[A-Za-z0-9_]{20,}$|^(?:sk|pk|rk)[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{12,}$|^xox[abprs]-[A-Za-z0-9-]{10,}$|^AIza[0-9A-Za-z_-]{30,}$|^glpat-[A-Za-z0-9_-]{16,}$|^npm_[A-Za-z0-9]{20,}$|^mrw_[A-Za-z0-9_-]{8,}$|^cfut_[A-Za-z0-9_-]{12,}$|^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/;
+export const KNOWN_KEY_PREFIX = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}$|^github_pat_[A-Za-z0-9_]{20,}$|^(?:sk|pk|rk)[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9_-]{12,}$|^xox[abprs]-[A-Za-z0-9-]{10,}$|^AIza[0-9A-Za-z_-]{30,}$|^glpat-[A-Za-z0-9_-]{16,}$|^npm_[A-Za-z0-9]{20,}$|^mrw_[A-Za-z0-9_-]{8,}$|^cfut_[A-Za-z0-9_-]{12,}$|^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/;
+/**
+ * KNOWN_KEY_PREFIX as spans inside a longer text (an edit path): the same alternatives with their anchors cut off, so
+ * the two cannot drift apart, plus a hex run of 32 or more characters. A span starts at the start of the text or after
+ * any character that is not a letter or digit (`/`, `\`, `.`, `-`, `=`), and its greedy token class ends it at the first
+ * character the class does not hold (the `.` before an extension, `/`, `\`, `?`, `#`, the end).
+ */
+const PATH_KEY_SPAN = new RegExp(`(?<![A-Za-z0-9])(?:${KNOWN_KEY_PREFIX.source.split('|^').map((alt) => alt.replace(/^\^/, '').replace(/\$$/, '')).join('|')}|[0-9A-Fa-f]{32,})`, 'g');
+/** An edit path is scanned for spans on its first characters only, twice the 512 that are sent: the work stays bounded. */
+const PATH_SCAN_CHARS = 1024;
+
 const PEM = /-----BEGIN [A-Z ]*(?:PRIVATE KEY|CERTIFICATE)-----/;
 /** Known formats that only name a key or are public (AWS key, user, group and role ids; publishable keys): the exact pass keeps them. */
 const PUBLIC_KNOWN_KEY = /^(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{12,}$|^pk[-_]/;
@@ -438,7 +451,7 @@ function dataMarker(text: string, feedsSecrets: boolean, state: Exactness, words
     // The exact pass: only the certain credentials inside the data are replaced and the rest is hashed, also for
     // data a secrets command or file reads (a vault policy, an authorized_keys line, a kubeconfig differ outside
     // any secret), so data that differs outside a certain credential never shares exact material.
-    const probe: Exactness = { truncated: false, budget: state.budget, exact: true, sigs: [] };
+    const probe: Exactness = { truncated: false, budget: state.budget, exact: true, sigs: [], freeText: false };
     return `[data:${sha256(`${HASH_VERSION}\nexact-data\n${redactText(text, probe)}`)}]`;
   }
   if (feedsSecrets) {
@@ -449,7 +462,7 @@ function dataMarker(text: string, feedsSecrets: boolean, state: Exactness, words
   // replaced and the rest is hashed, so data that differs outside a secret gives
   // a different key, data that differs only in a secret the same one. Withheld:
   // the action is truncated and never binds an approval.
-  const probe: Exactness = { truncated: false, budget: state.budget, exact: false, sigs: [] };
+  const probe: Exactness = { truncated: false, budget: state.budget, exact: false, sigs: [], freeText: false };
   const redacted = redactText(text, probe);
   if (redacted !== text) {
     state.truncated = true; // exact: kept (hashed above, certain credentials replaced)
@@ -467,7 +480,7 @@ function dataMarker(text: string, feedsSecrets: boolean, state: Exactness, words
  */
 function printedData(words: string[], feedsSecrets: boolean, state: Exactness): string {
   if (state.exact) {
-    const probe: Exactness = { truncated: false, budget: state.budget, exact: true, sigs: [] };
+    const probe: Exactness = { truncated: false, budget: state.budget, exact: true, sigs: [], freeText: false };
     return `[data:${sha256(`${HASH_VERSION}\nexact-words\n${JSON.stringify(words.map((word) => redactText(word, probe)))}`)}]`;
   }
   return dataMarker(words.join(' '), feedsSecrets, state, words);
@@ -1081,6 +1094,95 @@ function quoteSignature(command: string): string {
   return parts.join('');
 }
 
+/**
+ * The program names a stage that feeds a password program may keep in `programs[]`: the seatbelt's compiled-in
+ * KNOWN_COMMANDS and INERT_PROGRAMS (a copy: this module may not import the seatbelt, see test/seatbelt-vendor.test.js;
+ * test/n5-redact-keyed.test.js fails when the tables gain a name this set lacks) and a few secret-store and
+ * PowerShell feeders. Any other first word of such a stage may be the secret itself (`"pw" | smbpasswd -s`).
+ */
+const KNOWN_FEEDER_PROGRAMS: ReadonlySet<string> = new Set([
+  '.', '[', '[[', 'ack', 'ag', 'alias', 'anaconda', 'apply_patch', 'applypatch', 'ash', 'awk', 'aws', 'az', 'b2sum',
+  'base64', 'basename', 'bash', 'bat', 'bc', 'break', 'bsdtar', 'builtin', 'bun', 'bunx', 'busybox', 'bw', 'bzcat',
+  'bzip2', 'cabal', 'caffeinate', 'cal', 'cargo', 'cat', 'cd', 'cdk', 'changeset', 'changesets', 'chgrp', 'chmod',
+  'chown', 'chrt', 'cksum', 'claude', 'clear', 'cmd', 'cmp', 'colordiff', 'column', 'comm', 'command',
+  'concurrently', 'conda', 'continue', 'convertto-securestring', 'corepack', 'cp', 'cpio', 'csh', 'curl', 'cut',
+  'dart', 'dash', 'date', 'dc', 'dd', 'declare', 'deno', 'df', 'diff', 'diff3', 'dig', 'dirname', 'doas', 'docker',
+  'dotnet', 'du', 'eb', 'echo', 'egrep', 'env', 'eslint', 'eval', 'exa', 'exec', 'exit', 'export', 'expr', 'eza',
+  'false', 'fd', 'fgrep', 'file', 'find', 'firebase', 'fish', 'flit', 'flock', 'flutter', 'fly', 'flyctl', 'fmt',
+  'fold', 'free', 'gawk', 'gcloud', 'gem', 'get-content', 'get-secret', 'getconf', 'getopts', 'gh', 'git', 'git-lfs',
+  'gmake', 'gopass', 'goreleaser', 'gpg', 'gpg2', 'gradle', 'gradlew', 'grep', 'gsed', 'gtar', 'gunzip', 'gzip',
+  'hash', 'hatch', 'head', 'helm', 'help', 'heroku', 'hexdump', 'history', 'host', 'hostname', 'htop', 'http',
+  'https', 'id', 'ifconfig', 'install', 'invoke', 'ionice', 'ip', 'ipython', 'irb', 'jest', 'jobs', 'join', 'jq',
+  'jsr', 'just', 'kill', 'ksh', 'kubectl', 'lein', 'lerna', 'less', 'let', 'ln', 'local', 'locale', 'logger',
+  'lpass', 'ls', 'lsof', 'lua', 'mage', 'make', 'mamba', 'man', 'mapfile', 'marrow', 'marrow-install', 'maturin',
+  'mawk', 'md5sum', 'mix', 'mkdir', 'mksh', 'mktemp', 'mocha', 'more', 'mv', 'mvn', 'mvnw', 'nawk', 'netlify',
+  'netstat', 'nice', 'nl', 'node', 'nodejs', 'nohup', 'notify-send', 'np', 'npm', 'npm-run-all', 'npm-run-all2',
+  'nproc', 'npx', 'nslookup', 'ntl', 'nuget', 'nx', 'od', 'op', 'opam', 'openssl', 'osascript', 'ovsx', 'parallel',
+  'pass', 'paste', 'patch', 'pax', 'pbcopy', 'pbpaste', 'pdm', 'perl', 'pgrep', 'php', 'ping', 'pkexec', 'pnpm',
+  'pod', 'podman', 'poetry', 'popd', 'powershell', 'prettier', 'print', 'printenv', 'printf', 'ps', 'pulumi',
+  'pushd', 'pwd', 'pwgen', 'pwsh', 'python', 'python2', 'python3', 'railway', 'rake', 'rbash', 'read', 'read-host',
+  'readarray', 'readlink', 'readonly', 'realpath', 'rebar3', 'release-it', 'retry', 'return', 'rev', 'rg', 'rimraf',
+  'rm', 'rmdir', 'rsync', 'ruby', 'run-p', 'run-s', 'runas', 'say', 'sbt', 'script', 'secret-tool', 'security',
+  'sed', 'semantic-release', 'seq', 'serverless', 'set', 'setsid', 'sh', 'sha1sum', 'sha256sum', 'sha512sum',
+  'shasum', 'shift', 'shred', 'sleep', 'sls', 'sort', 'source', 'ss', 'ssh', 'ssh-add', 'ssh-keygen', 'ssh-keyscan',
+  'sst', 'stack', 'stat', 'stdbuf', 'strings', 'stty', 'su', 'sudo', 'sync', 'tac', 'tail', 'tar', 'task', 'taskset',
+  'tclsh', 'tcsh', 'tee', 'terraform', 'terragrunt', 'test', 'time', 'timeout', 'tofu', 'top', 'touch', 'toybox',
+  'tput', 'tr', 'trap', 'tree', 'true', 'truncate', 'tsc', 'turbo', 'twine', 'type', 'typeset', 'ulimit', 'umask',
+  'uname', 'unbuffer', 'uniq', 'unlink', 'unset', 'unzip', 'uptime', 'uv', 'vault', 'vercel', 'vitest', 'vsce',
+  'wait', 'watch', 'wc', 'wget', 'whereis', 'which', 'whoami', 'wl-copy', 'wrangler', 'write-host', 'write-output',
+  'xargs', 'xclip', 'xxd', 'xz', 'xzcat', 'yarn', 'yash', 'yes', 'yq', 'zcat', 'zip', 'zsh', 'zstd',
+]);
+/**
+ * Program names the vendored classifier's policy table knows and the set above lacks (psql, mysql, crontab, iptables,
+ * systemctl, ...): a name the classifier judges stays a name in `programs[]`, so withholding unknown words never drops one
+ * (test/n5-full-scope.test.js fails when the table gains a name neither set has).
+ */
+const CLASSIFIER_PROGRAMS: ReadonlySet<string> = new Set([
+  '7z', 'actionlint', 'ansible', 'ansible-playbook', 'astro', 'base32', 'biome', 'black', 'chpasswd', 'clang-format',
+  'clang_format', 'clickhouse-client', 'cloc', 'code', 'cqlsh', 'createdb', 'crontab', 'dir', 'doctl', 'dropdb',
+  'eksctl', 'emacs', 'enable', 'esbuild', 'fdisk', 'flake8', 'gatsby', 'go', 'gofmt', 'golangci-lint',
+  'golangci_lint', 'hadolint', 'halt', 'husky', 'init', 'iptables', 'isort', 'killall', 'launchctl', 'll',
+  'marrow-agentd', 'marrow-mcp', 'mkfs', 'mkfs.ext4', 'mkfs.xfs', 'mongo', 'mongosh', 'mosh', 'mount', 'mypy',
+  'mysql', 'nano', 'nc', 'ncat', 'next', 'nft', 'nox', 'nuxi', 'nuxt', 'nvim', 'open', 'parcel', 'parted', 'passwd',
+  'pg_dump', 'pg_restore', 'pip', 'pip3', 'pkill', 'pnpx', 'poweroff', 'psql', 'pylint', 'pytest', 'reboot',
+  'redis-cli', 'remix', 'rollup', 'ruff', 'rustfmt', 'scp', 'service', 'sftp', 'shellcheck', 'shopt', 'shutdown',
+  'socat', 'sqlite3', 'storybook', 'stripe', 'supabase', 'swapoff', 'systemctl', 'telnet', 'tokei', 'tox', 'tsup',
+  'ufw', 'umount', 'unxz', 'useradd', 'userdel', 'usermod', 'vim', 'visudo', 'vite', 'webpack', 'webpack-cli',
+  'wipefs', 'xdg-open', 'xh', 'yamllint',
+]);
+/** A lone word (no argument, no redirection) is a program only when it is one of the stdin producers; a lone password is a lone word. */
+const LONE_FEEDER_PROGRAMS: ReadonlySet<string> = new Set(['cat', 'yes', 'pbpaste']);
+/** Stands in `programs[]` for a withheld first word: constant, derived from nothing about the word. */
+const WITHHELD_FEEDER = 'unlisted-feeder';
+
+/** Stands in `programs[]` for a program word of a tool that does not run shell text, when it is not a known program. */
+const UNLISTED_PROGRAM = 'unlisted-program';
+
+/** Whether a program word names a known program (`git.exe`, `npm.cmd` and `wrangler.ps1` are the program they name). */
+function isKnownProgram(program: string): boolean {
+  const stem = programStem(program).replace(/\.(?:cmd|bat|com)$/, '');
+  return KNOWN_FEEDER_PROGRAMS.has(stem) || CLASSIFIER_PROGRAMS.has(stem);
+}
+
+/**
+ * Whether a word of a tool that does not run shell text may stay in `programs[]`: a known program, or one of the programs
+ * that take credentials (the table `takesSecrets` reads, and the password program of the SEC1 cases). A name the seatbelt or
+ * the classifier reasons about is never replaced by the marker; the feeder rule below stays on the narrower known set.
+ */
+function isListableProgram(program: string): boolean {
+  if (isKnownProgram(program)) return true;
+  const stem = programStem(program).replace(/\.(?:cmd|bat|com)$/, '');
+  return SECRET_PROGRAMS.has(stem) || stem === 'smbpasswd';
+}
+
+/** Whether the program of a stage that feeds a password program is a program name rather than possibly a value. */
+function feederNameKept(program: string, stage: string[]): boolean {
+  if (!isKnownProgram(program)) return false;
+  if (stage.length !== 1) return true;
+  // Alone, only the exact lower-case name of a stdin producer: no path, no other case (`"Cat" | smbpasswd` is a value).
+  return LONE_FEEDER_PROGRAMS.has(program) && stage[0] === program;
+}
+
 function normalizeInner(command: string, state: Exactness, depth: number): { text: string; programs: string[] } {
   if (command.length > MAX_COMMAND_CHARS) throw new NormalizationLimit();
   spend(state, 0);
@@ -1142,9 +1244,22 @@ function normalizeInner(command: string, state: Exactness, depth: number): { tex
         depth,
       });
       words.push(...result.words.map(quoteWord));
-      if (result.program && /^[a-z0-9][a-z0-9._+-]{0,63}$/.test(result.program) && !looksLikeKey(result.program) && !programs.includes(result.program)) {
-        programs.push(result.program);
+      let program = result.program;
+      // The first word of a stage that feeds a password program may itself be the secret (PowerShell's
+      // `"pw" | smbpasswd -s` idiom, which the redactor reads as a program name). It is named only when it is a
+      // known program (and, when it stands alone, one of the stdin producers); any other word is withheld as a
+      // fixed marker and the action is never bound. The word stays in the hashed text (keyed for a truncated
+      // action), so two different feeders never share a key.
+      if (program && sinkAfter[k] && !feederNameKept(program, segment.words)) {
+        program = WITHHELD_FEEDER;
+        state.truncated = true; // exact: n/a (programs are not exact material; the hashed text keeps the word)
       }
+      const listed = !!program && /^[a-z0-9][a-z0-9._+-]{0,63}$/.test(program) && !looksLikeKey(program);
+      // A tool that does not run shell text (ToolSearch's query, a prompt, a path, an unknown tool's `command`) is read
+      // as shell words only for classification: its first word is a value, not a program, unless it names a known one.
+      // Not marked truncated: the text hash is keyed, so binding stays safe (see keyTextHash).
+      if (listed && state.freeText && program !== WITHHELD_FEEDER && !isListableProgram(program!)) program = UNLISTED_PROGRAM;
+      if (listed && !programs.includes(program!)) programs.push(program!);
     }
     const op = segment.op;
     if (op && (op !== ';' || (words.length && words[words.length - 1] !== ';'))) words.push(op);
@@ -1266,6 +1381,18 @@ function withoutUserName(path: string, state: Exactness): string {
   return `${other[1]}/[user]${path.slice(other[0].length)}`;
 }
 
+/**
+ * An edit path with each known-format secret span (PATH_KEY_SPAN) replaced by `[secret]`: only the span, so the
+ * extension, `.env.`, `backup-`, the directories and the Windows, `file://` and `~/` forms stay readable for the
+ * service's path classifier. The caller marks the action truncated when a span was replaced or the path is longer than
+ * the scan window (it never binds). Only the first 512 characters of a path are sent: a path longer than the window is
+ * scanned on the window without its last run of token characters (a token that began there and was cut).
+ */
+function redactPathSpans(path: string): string {
+  if (path.length <= PATH_SCAN_CHARS) return path.replace(PATH_KEY_SPAN, SECRET);
+  return path.slice(0, PATH_SCAN_CHARS).replace(/[A-Za-z0-9_.-]+$/, '').replace(PATH_KEY_SPAN, SECRET);
+}
+
 // ---------------------------------------------------------------------------
 // Deploy command text (the only command text ever sent)
 // ---------------------------------------------------------------------------
@@ -1351,11 +1478,23 @@ function normalizedWords(_toolWords: string[], trimmed: string): string {
   return trimmed.split(/[ \t]+/).join(' ');
 }
 
-function inputHash(input: unknown, state: Exactness): { input_sha256: string } | Record<string, never> {
-  if (input === undefined || input === null) return {};
+/** What `input_sha256` hashes (null: no input). Sets `truncated` when a credential was replaced. */
+function inputPreimage(input: unknown, state: Exactness): string | null {
+  if (input === undefined || input === null) return null;
   const text = JSON.stringify(sortedValue(redactedInput(input, state)));
   if (text.includes(SECRET)) state.truncated = true; // exact: n/a (pass 1 only; exactMaterial is the exact form)
-  return { input_sha256: sha256(`${HASH_VERSION}\ninput\n${text}`) };
+  return `${HASH_VERSION}\ninput\n${text}`;
+}
+
+function inputHash(input: unknown, state: Exactness): { input_sha256: string } | Record<string, never> {
+  const preimage = inputPreimage(input, state);
+  return preimage === null ? {} : { input_sha256: sha256(preimage) };
+}
+
+/** Whether every run option of a Monitor or PowerShell call is a number or a boolean (none: yes). */
+function runOptionsScalar(event: ToolEvent): boolean {
+  const options = shellCommandToolRunOptions(event as Parameters<typeof shellCommandToolRunOptions>[0]);
+  return options === null || Object.values(options).every((value) => typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)));
 }
 
 /**
@@ -1390,10 +1529,14 @@ function withExactness(action: NormalizedHookAction, state: Exactness): Normaliz
 // Exact material for a truncated action (exact_hmac; M2)
 // ---------------------------------------------------------------------------
 
-const EXACT_DOMAIN = 'marrow-exact-action-v1';
+/** The version tag is part of every MAC input: a value made under another version can never equal one made under this. */
+const EXACT_DOMAIN = 'marrow-exact-action-v2';
+const TEXT_KEY_LABEL = 'marrow-text-hmac-key-v2';
+const TEXT_MAC_DOMAIN = 'marrow-text-hmac-v2';
+const TARGET_MAC_DOMAIN = 'marrow-hook-target-v2';
 /** Raw canonical input past this is never keyed: a nonce instead (it matches nothing). */
 const MAX_RAW_EXACT_CHARS = 1_048_576;
-const EXACT_SALT_NOTE = 'Marrow: the private device key for exact action matching is unavailable or unsafe on this machine, so a held action that hides a value is asked again instead of resumed on retry. Owner: run the Marrow installer doctor command in a terminal.';
+const EXACT_SALT_NOTE = 'Marrow: neither the private device key nor the local approval state for exact action matching is usable on this machine, so a held action is asked again instead of resumed on retry. Owner: run the Marrow installer doctor command in a terminal.';
 
 /** Canonical JSON (keys sorted at every depth), or null past 1 MB, past 64 levels, or when it cannot be serialized. */
 function canonicalJson(value: unknown): string | null {
@@ -1528,13 +1671,24 @@ function exactMaterial(event: ToolEvent, kind: NormalizedHookAction['tool_kind']
 
 let saltNoted = false;
 
-/** The device salt (seatbelt store, same checks), or null with one stderr line per process (no path, no value). */
+/**
+ * The device salt (the same checks as the receipts store). Without one, the fallback key of the host-approval state
+ * (nokeyFallbackKey: where a hold can be made, the same hashes stay stable, so an approved action is still reported and
+ * committed). null, with one stderr line per process (no path, no value), only when neither key is usable.
+ */
 function exactSalt(): Buffer | null {
   let salt: Buffer | null = null;
   try {
     salt = (require('./seatbelt/record') as typeof import('./seatbelt/record')).deviceSalt();
   } catch {
     salt = null;
+  }
+  if (!salt) {
+    try {
+      salt = (require('./host-approval-state') as typeof import('./host-approval-state')).nokeyFallbackKey();
+    } catch {
+      salt = null;
+    }
   }
   if (!salt && !saltNoted) {
     saltNoted = true;
@@ -1553,6 +1707,31 @@ function exactHmac(salt: Buffer | null, kind: NormalizedHookAction['tool_kind'],
 }
 
 /**
+ * The hash of the text of an action (`command_sha256`, `input_sha256`; every action but a deploy sent in clear):
+ * HMAC-SHA256 under a sub-key of the device salt, 64 hex (the plain hash had the same shape). The text may hold a
+ * value the redactor did not recognise, so a plain hash of it could be brute-forced offline; the key never leaves
+ * this machine. The kind and the host's tool
+ * name are in the input, as for exact_hmac. Without a usable salt it is a random value that matches nothing (the
+ * action is asked again): never the plain hash, never a fixed value.
+ */
+function keyTextHash(salt: Buffer | null, kind: NormalizedHookAction['tool_kind'], toolName: string, preimage: string): string {
+  if (!salt || salt.length < 16) return randomBytes(32).toString('hex');
+  const key = createHmac('sha256', salt).update(TEXT_KEY_LABEL).digest();
+  return createHmac('sha256', key).update(`${TEXT_MAC_DOMAIN}\n${kind}\n${JSON.stringify(toolName)}\n`).update(preimage).digest('hex');
+}
+
+/**
+ * The keyed hash of a hold's exact target (hook-contract exactHookTarget): the same sub-key as keyTextHash, its own
+ * domain. null without a usable device key (the caller then makes a target nothing can match).
+ */
+export function keyedTargetHash(parts: unknown): string | null {
+  const salt = exactSalt();
+  if (!salt || salt.length < 16) return null;
+  const key = createHmac('sha256', salt).update(TEXT_KEY_LABEL).digest();
+  return createHmac('sha256', key).update(`${TARGET_MAC_DOMAIN}\n`).update(JSON.stringify(parts)).digest('hex');
+}
+
+/**
  * The normalized action of a hook event. `deadlineAt` bounds the time it may
  * take (default one second from now): past it, or past the size limits, the
  * action is a truncated placeholder (kind and tool name only), which the
@@ -1565,9 +1744,9 @@ function exactHmac(salt: Buffer | null, kind: NormalizedHookAction['tool_kind'],
  * credentials replaced, so two actions that differ anywhere else never share a
  * correlation, hold or key, and a retry that differs only in a certain
  * credential (an OTP) still does. A placeholder keys the raw input (up to
- * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a missing or
- * unsafe salt give a random nonce: the action matches nothing (it is asked
- * again). `salt` is a test seam (undefined: the device salt).
+ * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a machine with neither a
+ * device salt nor a usable host-approval state (exactSalt) give a random nonce: the action matches
+ * nothing (it is asked again). `salt` is a test seam (undefined: the device salt).
  */
 export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: number; salt?: Buffer | null } = {}): NormalizedHookAction {
   const deadline = options.deadlineAt ?? Date.now() + DEFAULT_NORMALIZE_MS;
@@ -1589,27 +1768,54 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
   const inputCut = (event as { input_truncated?: unknown }).input_truncated === true;
   if (inputCut) state.truncated = true; // exact: nonce (the cut or dropped input is all that is left)
   let action: NormalizedHookAction;
+  let preimage: string | null = null;
+  let hashField: BuiltAction['hashField'] = 'input_sha256';
+  let plain = false;
   let placeholder = false;
   try {
-    action = normalizedOfKind(event, kind, hostToolName, state);
+    ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state));
   } catch (error) {
     if (!(error instanceof NormalizationLimit)) throw error;
     action = { tool_kind: kind, tool_name: hostToolName, tool_input: {}, truncated: true };
     placeholder = true;
   }
-  if (action.truncated !== true) return action;
-  const material = inputCut ? null : placeholder ? rawExactMaterial(event, kind) : exactMaterial(event, kind, deadline);
-  const salt = options.salt !== undefined ? options.salt : material === null ? null : exactSalt();
-  return { ...action, tool_input: { ...action.tool_input, exact_hmac: exactHmac(salt, kind, rawToolName, material) } } as NormalizedHookAction;
+  const cut = action.truncated === true;
+  // Nothing to key: the deploy text sent in clear (plain hash, see BuiltAction), or an action with no text hash.
+  if (!cut && (plain || preimage === null)) return action;
+  const material = !cut || inputCut ? null : placeholder ? rawExactMaterial(event, kind) : exactMaterial(event, kind, deadline);
+  const salt = options.salt !== undefined ? options.salt : cut && material === null && preimage === null ? null : exactSalt();
+  // EVERY text hash is keyed, bound or not: the text of any tool field may hold a value the redactor did not see
+  // (a prompt, a message, a plan, a query, a filter, an id, an unknown tool's `command`), and a plain hash of it could be
+  // guessed offline. The key is per install and stable, so the same call on the same install still binds and resumes.
+  const keyed = preimage === null ? {} : { [hashField]: keyTextHash(salt, kind, rawToolName, preimage) };
+  if (!cut) return { ...action, tool_input: { ...action.tool_input, ...keyed } } as NormalizedHookAction;
+  return { ...action, tool_input: { ...action.tool_input, ...keyed, exact_hmac: exactHmac(salt, kind, rawToolName, material) } } as NormalizedHookAction;
 }
 
-function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], hostToolName: string, state: Exactness): NormalizedHookAction {
+/** A normalized action with the text its one hash field was computed over (see keyTextHash). */
+type BuiltAction = {
+  action: NormalizedHookAction;
+  hashField: 'command_sha256' | 'input_sha256';
+  preimage: string | null;
+  /** The hash stays the plain hash: the text it covers is itself sent in clear (the deploy `command`). */
+  plain: boolean;
+};
+
+/** An action whose tool input is hashed whole (mcp, edit, other). */
+function inputAction(base: Omit<NormalizedHookAction, 'tool_input'>, input: unknown, state: Exactness): BuiltAction {
+  const preimage = inputPreimage(input, state);
+  const action = { ...base, tool_input: preimage === null ? {} : { input_sha256: sha256(preimage) } } as NormalizedHookAction;
+  return { action: withExactness(action, state), hashField: 'input_sha256', preimage, plain: false };
+}
+
+function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], hostToolName: string, state: Exactness): BuiltAction {
   if (kind === 'mcp') {
-    return withExactness({ tool_kind: 'mcp', tool_name: hostToolName, tool_input: inputHash(event.tool_input, state) }, state);
+    return inputAction({ tool_kind: 'mcp', tool_name: hostToolName }, event.tool_input, state);
   }
   if (kind === 'shell') {
     const raw = shellCommand(event);
     if (untrimmedShellText(event, raw) !== null) state.truncated = true; // exact: raw (the host's untrimmed text)
+    state.freeText = !isShellTextTool(event as Parameters<typeof isShellTextTool>[0]);
     const { text, programs } = normalizeInner(raw, state, 0);
     // A secret was replaced: the action is never bound or reused (it asks each time).
     if (text.includes(SECRET)) state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
@@ -1628,26 +1834,34 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     const domain = !plainShellTool ? 'shell'
       : runOptions === null ? `shell-tool\n${JSON.stringify(hostToolName)}`
       : `shell-tool+run\n${JSON.stringify(hostToolName)}\n${runOptions}`;
-    return withExactness({
-      tool_kind: 'shell',
-      tool_name: hostToolName,
-      programs,
-      tool_input: {
-        // An exact action also hashes its quoting (never for a truncated one: a secret's characters stay out of it).
-        command_sha256: sha256(`${HASH_VERSION}\n${domain}\n${state.truncated || !state.sigs.length ? text : `${text}\n${JSON.stringify(state.sigs)}`}`),
-        ...(deployText !== null && deployText === text ? { command: deployText } : {}),
-      },
-    }, state);
+    // An exact action also hashes its quoting (never for a truncated one: a secret's characters stay out of it).
+    const preimage = `${HASH_VERSION}\n${domain}\n${state.truncated || !state.sigs.length ? text : `${text}\n${JSON.stringify(state.sigs)}`}`;
+    return {
+      action: withExactness({
+        tool_kind: 'shell',
+        tool_name: hostToolName,
+        programs,
+        tool_input: {
+          command_sha256: sha256(preimage),
+          ...(deployText !== null && deployText === text ? { command: deployText } : {}),
+        },
+      }, state),
+      hashField: 'command_sha256',
+      preimage,
+      // Only the grammar-bound deploy text is sent in clear, so only its hash may stay plain (the service binds a deploy
+      // word for word). The run options in the preimage must be numbers or booleans: any other value takes the keyed form.
+      plain: deployText !== null && deployText === text && !state.truncated && runOptionsScalar(event),
+    };
   }
   if (kind === 'edit') {
     const targets = toolTargetPaths(event as Parameters<typeof toolTargetPaths>[0]);
     if (targets.length > 64) state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
     const paths = targets.slice(0, 64).map((path) => {
-      const redacted = redactText(withoutUserName(path, state), state);
-      if (redacted.length > 512 || redacted.includes(SECRET)) state.truncated = true; // exact: n/a (as above)
+      const redacted = redactPathSpans(redactText(withoutUserName(path, state), state));
+      if (redacted.length > 512 || redacted.includes(SECRET) || path.length > PATH_SCAN_CHARS) state.truncated = true; // exact: n/a (as above)
       return redacted.slice(0, 512);
     });
-    return withExactness({ tool_kind: 'edit', tool_name: hostToolName, paths, tool_input: inputHash(event.tool_input, state) }, state);
+    return inputAction({ tool_kind: 'edit', tool_name: hostToolName, paths }, event.tool_input, state);
   }
-  return withExactness({ tool_kind: 'other', tool_name: hostToolName, tool_input: inputHash(event.tool_input, state) }, state);
+  return inputAction({ tool_kind: 'other', tool_name: hostToolName }, event.tool_input, state);
 }

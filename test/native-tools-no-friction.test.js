@@ -139,16 +139,27 @@ test('negative controls: unknown labels keep the keyword rule; a command on Work
   }
 });
 
-test('built-ins a released matcher hooked keep the 3.9.103 classification and keys byte for byte (Task and WebSearch included)', () => {
+test('built-ins a released matcher hooked keep the 3.9.103 classification byte for byte; their keys differ only by the keyed hash and the unlisted-program marker (Task and WebSearch included)', () => {
   const salt = Buffer.alloc(32, 7);
   assert.equal(BASE.rows.length, 17);
   for (const row of BASE.rows) {
     const event = { tool_name: row.tool, tool_input: row.input };
     assert.deepEqual(classifyTool(event), row.classification, row.tool);
     assert.equal(isReadOnlyToolEvent(event), row.readOnly, row.tool);
-    assert.deepEqual(normalizedHookAction(event, { salt, deadlineAt: Date.now() + 10_000 }), row.normalized, row.tool);
-    assert.equal(stableToolCorrelation({ session_id: BASE.session_id, ...event }), row.correlation, row.tool);
-    assert.equal(exactHookTarget(event), row.target, row.tool);
+    const action = normalizedHookAction(event, { salt, deadlineAt: Date.now() + 10_000 });
+    // Same kind, tool name, truncation and field names as 3.9.103; the text hash is the per-install keyed one (never the
+    // plain value 3.9.103 sent); a program word that is not a known program is the fixed marker.
+    assert.equal(action.tool_kind, row.normalized.tool_kind, row.tool);
+    assert.equal(action.tool_name, row.normalized.tool_name, row.tool);
+    assert.equal(action.truncated, row.normalized.truncated, row.tool);
+    assert.deepEqual(Object.keys(action.tool_input), Object.keys(row.normalized.tool_input), row.tool);
+    for (const [field, value] of Object.entries(action.tool_input)) {
+      assert.match(value, /^[0-9a-f]{64}$/, `${row.tool}.${field}`);
+      assert.notEqual(value, row.normalized.tool_input[field], `${row.tool}.${field}: not the plain hash`);
+    }
+    assert.deepEqual(action.programs, row.normalized.programs && [...new Set(row.normalized.programs.map(() => 'unlisted-program'))], `${row.tool}: programs`);
+    assert.notEqual(stableToolCorrelation({ session_id: BASE.session_id, ...event }), row.correlation, `${row.tool}: correlation inherits the keyed hash`);
+    assert.notEqual(exactHookTarget(event), row.target, `${row.tool}: the hold target is keyed`);
   }
   for (const tool of ['Task', 'WebSearch', 'TodoWrite', 'ToolSearch', 'BashOutput', 'TaskStop']) assert.ok(BASE.rows.some((row) => row.tool === tool), tool);
 });

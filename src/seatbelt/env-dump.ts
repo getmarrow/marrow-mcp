@@ -1,4 +1,4 @@
-// Env-dump forms: every command an agent can type that prints many or all environment variables.
+// Env-dump forms: the command shapes this table knows that print many or all environment variables (a known list, not every command a shell can run).
 // One table for both modes: the keyless seatbelt mapper stops them (S4) and the keyed hook policy
 // holds them (hook-tool-policy.ts asks the mapper and keeps only the reasons named here). Pure
 // word-level predicates over literal arguments; no file contents are read.
@@ -129,7 +129,7 @@ export function packageRunsEnvScript(args: ReadonlyArray<string | null>): boolea
   return false;
 }
 
-export { PROC_ENVIRON } from '../secret-paths';
+export { PROC_ENVIRON, PROC_PROCESS_TREE } from '../secret-paths';
 
 /** A glob that can name `environ`: `/proc/self/env*`, `/proc/1/*`, `/proc/self/task/1/e[n]viron`. */
 export function procGlobMatchesEnviron(path: string): boolean {
@@ -156,6 +156,34 @@ export const PROC_PROCESS_DIRECTORY = /^\/proc(?:\/[^/]+(?:\/task(?:\/[^/]+)?)?)
 
 /** Programs that read or copy every file under a folder named to them. */
 export const RECURSIVE_READERS: ReadonlySet<string> = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'tar', 'gtar', 'bsdtar', 'cp', 'rsync', 'zip', 'scp']);
+
+/**
+ * Inline interpreter code that can start a command (`system`, `exec*`, `popen`, `spawn*`, `passthru`, `proc_open`, `shell_exec`, Lua's `os.execute`,
+ * Perl `qx`, backticks, Node's `child_process`, Python's `subprocess`). Used only to decide that a bare `env` / `printenv` operand of the same command
+ * line is the command it starts (`perl -e 'system(shift)' env`); code that cannot start a command leaves the operand a plain name.
+ */
+export const CODE_STARTS_COMMAND = /\b(?:system|exec(?:l[pe]?|v[pe]{0,2}|ute|File(?:Sync)?|Sync)?|fork|qx|Open3|passthru|shell_exec)\b|spawn(?:Sync|[lv][pe]{0,2})?\b|popen|proc_open|child_process|subprocess|`/;
+
+/** awk code that can start a command: `system(` or a pipe to or from one (not `||`). A bare `getline` reads a file. */
+export const AWK_STARTS_COMMAND = /\bsystem\s*\(|(?<!\|)\|&?\s*["'$a-zA-Z(]/;
+
+/**
+ * Shell code whose command word is an expansion (`"$@"`, `$1`, `$0`, `exec "$@"`, `eval "$1"`, `then $x`): the words after the script text are
+ * its positional parameters, and it runs one of them as a command. The captured character names the expansion (`@` or `*` all of them, a digit one
+ * of them, a letter a variable that may hold one).
+ */
+export const SHELL_RUNS_EXPANSION = /(?:^|[;&|({\n]|\b(?:exec|eval|command|builtin|nohup|time|sudo|env|xargs|nice|timeout|setsid|then|else|do))\s*["']?\$\{?([@*0-9A-Za-z_#!])/;
+
+/** Interpreter code that reads its environment (`ENVIRON["X"]`, `$ENV{X}`, `os.environ`, `process.env`, `getenv`, `ENV["X"]`). */
+export const CODE_READS_ENVIRONMENT = /\bENVIRON\b|\bENV\b|\benviron\b|getenv|process\.env|\$_ENV|\$_SERVER/;
+
+/**
+ * A word a command-running helper may run: the environment printer itself (`env`, `/usr/bin/printenv -0`) or a command line that holds one
+ * (`sh -c env`, `command printenv`). A one-word operand that only mentions `env` (`echo`'s argument) is not one unless it starts with it.
+ */
+export function mayRunEnvPrinter(word: string): boolean {
+  return ENV_PRINTER_COMMAND.test(word) || (/\s/.test(word) && /\b(?:env|printenv)\b/.test(word));
+}
 
 /** Variables whose value runs as a command: a pager, editor, askpass or diff helper set to `env` prints the environment. */
 export const HELPER_ENV_VARS: ReadonlySet<string> = new Set(['PAGER', 'GIT_PAGER', 'MANPAGER', 'EDITOR', 'VISUAL', 'GIT_EDITOR', 'GIT_SEQUENCE_EDITOR', 'GIT_EXTERNAL_DIFF',

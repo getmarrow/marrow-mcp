@@ -109,8 +109,12 @@ test('PKG-M1 one table: every keyless S4 secret path is a keyed secret too (the 
     assert.equal(isSecretMaterialAccess({ tool_name: 'Read', tool_input: { file_path: sample } }), true, `Read ${sample}`);
   }
   // Keyed templates and ordinary files are unchanged.
-  for (const command of ['cat .env.example', 'cat .env.dist', 'cat app.env.example', 'cat src/env.ts', 'cat environment.md', 'cat README.md', 'ls ~/.marrow']) {
+  for (const command of ['cat .env.example', 'cat app.env.example', 'cat src/env.ts', 'cat environment.md', 'cat README.md', 'ls ~/.marrow']) {
     assert.equal(isSecretMaterialAccess({ tool_name: 'Bash', tool_input: { command } }), false, command);
+  }
+  // `.env.dist` and `.env.defaults` are secret files in keyed mode too, as keyless stops them (owner decision, 24 Oct: fa-keyed-env LOW-3).
+  for (const command of ['cat .env.dist', 'cat .env.defaults']) {
+    assert.equal(isSecretMaterialAccess({ tool_name: 'Bash', tool_input: { command } }), true, command);
   }
 });
 

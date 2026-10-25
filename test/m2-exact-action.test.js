@@ -461,10 +461,14 @@ test('A4 (unit) + mutants: without a salt exact_hmac is a fresh nonce every time
   assert.equal(norm(bash('wrangler deploy --env production')).tool_input.exact_hmac, undefined);
 });
 
-test('A4 (process): a broken salt store gives a nonce, one stderr note without paths or values, and no crash', () => {
+test('A4 (process): a broken salt store AND an unusable approval state give a nonce, one stderr note without paths or values, and no crash', () => {
   const base = mkdtempSync(join(tmpdir(), 'm2-salt-proc-'));
   try {
     const home = join(base, 'passwd-home');
+    // The approval state of this process's HOME cannot be used either (`.marrow` is a file): no fallback key (P1 F2).
+    const blocked = join(base, 'blocked-home');
+    mkdirSync(blocked, { mode: 0o700 });
+    writeFileSync(join(blocked, '.marrow'), 'x', { mode: 0o600 });
     mkdirSync(join(home, '.marrow', 'seatbelt'), { recursive: true, mode: 0o700 });
     chmodSync(join(home, '.marrow'), 0o700);
     const salt = join(home, '.marrow', 'seatbelt', 'salt');
@@ -474,7 +478,7 @@ test('A4 (process): a broken salt store gives a nonce, one stderr note without p
       const e = { tool_name: 'Bash', tool_input: { command: 'kubectl delete deployment PaymentsServiceBlueGreenA1' } };
       const a = na.normalizedHookAction(e).tool_input.exact_hmac; const b = na.normalizedHookAction(e).tool_input.exact_hmac;
       process.stdout.write(JSON.stringify({ a, b }));`;
-    const run = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, SBT_PASSWD_HOME: home }, encoding: 'utf8', timeout: 20_000 });
+    const run = spawnSync(process.execPath, ['-e', script], { env: { ...process.env, SBT_PASSWD_HOME: home, HOME: blocked }, encoding: 'utf8', timeout: 20_000 });
     assert.equal(run.status, 0, 'no crash');
     const out = JSON.parse(run.stdout);
     assert.match(out.a, /^[0-9a-f]{32}$/);
@@ -513,8 +517,9 @@ test('every truncation site has an exact-pass decision (grep count against the l
   const sites = lines.filter((line) => line.includes('state.truncated = true'));
   const unmarked = sites.filter((line) => !/\/\/ exact: (?:kept|raw|certain|nonce|n\/a)\b/.test(line));
   assert.deepEqual(unmarked, [], 'every `state.truncated = true` names its exact-pass decision');
-  // The list: 17 marked sites, and every `withheld(` call keeps the original in the exact pass.
-  assert.equal(sites.length, 17, `truncation sites: ${sites.length}`);
+  // The list: 18 marked sites, and every `withheld(` call keeps the original in the exact pass.
+  // 18 with the n5 hotfix: the first word of a stage that feeds a password program, withheld as a fixed marker.
+  assert.equal(sites.length, 18, `truncation sites: ${sites.length}`);
   // 18 with M2-R1: a URL userinfo span holding `#` or `?` (hidden, kept by the exact pass).
   const withheldCalls = (source.match(/\bwithheld\(state,/g) || []).length;
   assert.equal(withheldCalls, 18, `withheld() sites: ${withheldCalls}`);
@@ -525,7 +530,9 @@ test('V1 (unit): v3 keys never equal the v2 keys of the same text', () => {
   const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
   for (const command of ['wrangler deploy --env production', 'git push origin main', 'kubectl delete namespace prod']) {
     const v3 = norm(bash(command)).tool_input.command_sha256;
-    assert.equal(v3, sha(`marrow-normalized-action-v3\nshell\n${normalizeShellCommand(command).text}`));
+    const keyed = require('./support/keyed-text-hash.cjs');
+    assert.equal(v3, keyed.shellMac(keyed.deviceSalt(), 'Bash', normalizeShellCommand(command).text));
+    assert.notEqual(v3, sha(`marrow-normalized-action-v3\nshell\n${normalizeShellCommand(command).text}`), 'never the plain hash');
     assert.notEqual(v3, sha(`marrow-normalized-action-v2\nshell\n${normalizeShellCommand(command).text}`));
   }
 });

@@ -99,6 +99,7 @@ type ToolEvent = {
     tool_name?: unknown;
     tool_input?: unknown;
 };
+export declare const KNOWN_KEY_PREFIX: RegExp;
 /** A value shaped like a key, token or password hash (mixed-case random text, long hex, known prefixes). */
 export declare function looksLikeKey(value: string): boolean;
 type NameClass = 'credential' | 'ambiguous' | 'reference' | 'plain';
@@ -132,6 +133,11 @@ export declare function deployCommandText(command: string): string | null;
 /** runOptionsKey as a standalone identity (no deadline), for the exact target of a call (hook-contract exactHookTarget). */
 export declare function shellToolRunOptionsKey(event: ToolEvent): string | null;
 /**
+ * The keyed hash of a hold's exact target (hook-contract exactHookTarget): the same sub-key as keyTextHash, its own
+ * domain. null without a usable device key (the caller then makes a target nothing can match).
+ */
+export declare function keyedTargetHash(parts: unknown): string | null;
+/**
  * The normalized action of a hook event. `deadlineAt` bounds the time it may
  * take (default one second from now): past it, or past the size limits, the
  * action is a truncated placeholder (kind and tool name only), which the
@@ -144,9 +150,9 @@ export declare function shellToolRunOptionsKey(event: ToolEvent): string | null;
  * credentials replaced, so two actions that differ anywhere else never share a
  * correlation, hold or key, and a retry that differs only in a certain
  * credential (an OTP) still does. A placeholder keys the raw input (up to
- * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a missing or
- * unsafe salt give a random nonce: the action matches nothing (it is asked
- * again). `salt` is a test seam (undefined: the device salt).
+ * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a machine with neither a
+ * device salt nor a usable host-approval state (exactSalt) give a random nonce: the action matches
+ * nothing (it is asked again). `salt` is a test seam (undefined: the device salt).
  */
 export declare function normalizedHookAction(event: ToolEvent, options?: {
     deadlineAt?: number;

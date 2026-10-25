@@ -53,6 +53,13 @@ export type EnvironmentPrintCheck = (command: string) => boolean;
  * file a command may read.
  */
 export declare function shellSegmentVerdict(segment: ShellSegment, cwd?: string | null, dialect?: ShellDialect): ShellSegmentVerdict;
+/**
+ * True when the policy's own reading is the whole answer for a shell command: it parses, every simple command in it is a recognised read-only
+ * program (a `cat`, `grep`, `ls`, `jq`, `ps`, never a wrapper such as `bash -c`, `eval`, `sudo`, `ssh`, `xargs` or a program that writes), and no word
+ * holds a glob, a brace or a variable (those can spell a name the text does not hold). Such a command names its files in the words the policy already
+ * judges, so a second reading of it by the mapper could only add the mapper's own over-stops (the pattern or filter operand of `grep .env README.md`).
+ */
+export declare function policyReadsAllWords(command: string): boolean;
 /** Files a file-reading or file-editing tool targets, including apply_patch file headers. */
 export declare function toolTargetPaths(event: ToolPolicyEvent): string[];
 /**
@@ -71,6 +78,12 @@ export declare function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, pr
  * editing tool writes are excluded: naming a word is not performing it.
  */
 export declare function toolClassificationText(event: ToolPolicyEvent): string;
+/**
+ * Whether a tool runs its text as a shell command: Bash and the other terminal tools (Codex exec, Cursor Shell, ...),
+ * Monitor and PowerShell. Every other tool whose text is read as shell words (ToolSearch, a prompt, a path, an unknown
+ * tool's `command`) only borrows the parser, so no word of it is known to be a program.
+ */
+export declare function isShellTextTool(event: ToolPolicyEvent): boolean;
 /** Editing and task tools are judged by their target, not by shell-like text in their input. */
 export declare function isShellGovernedTool(event: ToolPolicyEvent): boolean;
 /**

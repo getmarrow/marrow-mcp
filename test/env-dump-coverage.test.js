@@ -1,8 +1,9 @@
 'use strict';
 
-// Every form an agent can type that prints many or all environment variables must stop, keyless (seatbelt S4)
-// and keyed (a protected action). The rows are STRINGS fed to the checkers: nothing here runs a command or reads
-// an environment. Friction rows must stay as they were, script files are out of reach by design, and each new
+// Every form in the fixture table that prints many or all environment variables must stop, keyless (seatbelt S4)
+// and keyed (a protected action).
+// The table is a known list of forms, not every command a shell can run. The rows are STRINGS fed to the checkers: nothing here runs a command or
+// reads an environment. Friction rows must stay as they were, script files are out of reach by design, and each new
 // rule has a mutant that a row kills.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -237,9 +238,9 @@ const MUTANTS = [
   { id: 'npm run env', file: 'seatbelt/env-dump.js', edit: off('packageRunsEnvScript'), killers: ['npm run env', 'pnpm run env'] },
   { id: 'strace verbose', file: 'seatbelt/env-dump.js', edit: off('straceShowsEnvironment'), killers: ['strace -v -e execve true', 'strace --no-abbrev true'] },
   { id: 'man pager', file: 'seatbelt/env-dump.js', edit: off('manPagerPrintsEnvironment'), killers: ['man -P env ls'] },
-  { id: 'proc glob', file: 'seatbelt/env-dump.js', edit: off('procGlobMatchesEnviron'), killers: ['cat /proc/self/env*', 'cat /proc/self/envi?on'] },
-  { id: 'proc task path', file: 'secret-paths.js', edit: text('task\\/[^/]+\\/)?environ$/', 'task\\/[^/]+\\/)?environZ$/'), killers: ['cat /proc/self/task/1/environ'] },
-  { id: 'proc recursive folder', file: 'seatbelt/mapper.js', edit: text('PROC_PROCESS_DIRECTORY.test(p)', 'false'), killers: ['grep -ra . /proc/self/', 'cp -r /proc/self /tmp/x'] },
+  { id: 'proc glob', file: 'seatbelt/env-dump.js', edit: off('procGlobMatchesEnviron'), killers: ['cat /proc/12345/env*', 'cat /proc/12345/task/678/envi?on'] },
+  { id: 'proc task path', file: 'secret-paths.js', edit: { from: /task\\\/\[\^\/\]\+\\\/\)\?environ\$\/|'\/proc\/\*\/task\/\*\/environ'/g, to: (m) => (m.startsWith("'") ? "'/proc/*/task/*/environZ'" : 'task\\/[^/]+\\/)?environZ$/') }, killers: ['cat /proc/self/task/1/environ', 'cat < /proc/self/task/1/environ'] },
+  { id: 'proc recursive folder', file: 'seatbelt/mapper.js', edit: text('(folder !== null && folder.test(p))', 'false'), killers: ['grep -ra . /proc/self/', 'cp -r /proc/self /tmp/x'] },
   { id: 'exec wrapper tail', file: 'seatbelt/mapper.js', edit: text('EXEC_WRAPPERS.has(prog)', 'false'), killers: ['setpriv --reuid=1000 env', 'unshare -r env'] },
   { id: 'helper variable', file: 'seatbelt/mapper.js', edit: text('HELPER_ENV_VARS.has(name)', 'false'), killers: ['PAGER=env man ls'] },
   { id: 'xargs bare env', file: 'seatbelt/mapper.js', edit: off('xargsRunsBareEnv'), killers: ['echo x | xargs -I{} env', 'parallel env ::: x'] },
@@ -255,6 +256,21 @@ const MUTANTS = [
   { id: 'nawk keeps the unknown-program scan', file: 'seatbelt/mapper.js', edit: { from: /case 'nawk':\s*awkProgram\(rest, ctx, run, x\);\s*break;/, to: () => "case 'nawk': return awkProgram(rest, ctx, run, x);" }, killers: ["nawk '{print}' npm publish", "nawk '{print}' wrangler deploy --prod"] },
   { id: 'awk program that runs its arguments', file: 'seatbelt/mapper.js', edit: text('AWK_RUNS_ARGV.test(text) &&', 'false &&'), killers: ["gawk 'BEGIN{system(ARGV[1] \" \" ARGV[2])}' npm publish", "mawk 'BEGIN{system(ARGV[1])}' 'git push --force origin main'"] },
   { id: 'pypy -e is still code', file: 'seatbelt/mapper.js', edit: text('(?:-[a-zA-Z]*c|-e)', '(?:-[a-zA-Z]*c)'), killers: ["pypy3 -e 'import os; os.system(\"npm publish\")'"] },
+  // Part B (audit LOWs L1 and L3 of Part A). Several rules guard the same class on purpose (the shared table, the env-dump reason, the glob scan), so a
+  // mutant that switches one off keeps another standing: where that is so the killer rows are the ones only that rule reaches.
+  { id: 'part B: redirect to a known path carries the env-dump reason', file: 'seatbelt/mapper.js', edit: { from: /if \(env_dump_1\.PROC_ENVIRON\.test\(r\)\)\s*hit\(run, 'S4', 'proc_environ'\);/, to: () => '' }, killers: ['P=/proc/self/task/1; cat < $P/environ', 'f=environ; cat < /proc/self/task/1/$f'], keyedOnly: true },
+  { id: 'part B: glob or dynamic redirect target carries the env-dump reason', file: 'seatbelt/mapper.js', edit: { from: /if \(sampleMatch\(probe, ctx, run, samples\.filter\(\(s\) => env_dump_1\.PROC_ENVIRON\.test\(s\)\)\)\)\s*hit\(run, 'S4', 'proc_environ'\);/, to: () => '' }, killers: ['cat < /proc/self/task/1/e*', 'cat < /p[r]oc/self/en[v]iron', 'cat < /proc/self/$(echo task/1)/environ'], keyedOnly: true },
+  { id: 'part B: glob in a folder reaches the mapper (keyed)', file: 'hook-pre-action.js', edit: { from: /if \(globInFolderPart\(words\)\)\s*return true;/, to: () => '' }, killers: ['cat /???c/self/task/1/e*', 'cat < /p*/self/e*', 'cd / && cat p?oc/self/e?viron'], keyedOnly: true },
+  { id: 'part B: parent segments in a glob', file: 'seatbelt/mapper.js', edit: text("collapseParents(cand.replace(/\\/\\.\\//g, '/'))", "cand.replace(/\\/\\.\\//g, '/')"), killers: ['cat < /tmp/../p*/self/e*', 'cat < $HOME/../../p*/self/e*'] },
+  { id: 'part B: parameter default word', file: 'seatbelt/mapper.js', edit: text('function parameterDefaultReading(a) {', 'function parameterDefaultReading(a) { return null;'), killers: ['cat < ${P:-/proc/self/task/1/environ}', 'cat ${P:=/proc/self/environ}'] },
+  { id: 'part B: cd into a process folder by a dynamic id', file: 'seatbelt/mapper.js', edit: text('...procFolderGuesses(target, ctx), null', 'null'), killers: ['cd /proc/$$ && cat < environ', 'cd /proc/$(pgrep -o node)/task/1 && cat environ'] },
+  { id: 'part B: find exec under /proc', file: 'seatbelt/mapper.js', edit: text('named.some((smp) => env_dump_1.PROC_ENVIRON.test(smp))', 'false'), killers: ['find /proc/self/task -name environ -exec cat {} +'], keyedOnly: true },
+  { id: 'part B: awk program that starts a command', file: 'seatbelt/mapper.js', edit: text('if (env_dump_1.AWK_STARTS_COMMAND.test(text)) {', 'if (false) {'), killers: ["awk 'BEGIN{system(ARGV[1])}' env", "awk -v c=printenv 'BEGIN{system(c)}'"] },
+  { id: 'part B: code that starts a command takes its operand', file: 'seatbelt/mapper.js', edit: text('else if (env_dump_1.CODE_STARTS_COMMAND.test(codeText)) {', 'else if (false) {'), killers: ["perl -e 'system(shift)' env", "lua -e 'os.execute(arg[1])' env", "php -r 'passthru($argv[1]);' printenv"] },
+  { id: 'part B: repeated code flag', file: 'seatbelt/mapper.js', edit: text('for (let j = i + 2; j < rest.length; j += 1) {', 'for (let j = rest.length; j < rest.length; j += 1) {'), killers: ["perl -e 'print 1' -e 'system(shift)' env"] },
+  { id: 'part B: value set on the command line reaches env-reading code', file: 'seatbelt/mapper.js', edit: off('assignedEnvPrinters'), killers: ["X=env awk 'BEGIN{system(ENVIRON[\"X\"])}'", "C=env perl -e 'system $ENV{C}'"] },
+  { id: 'part B: operand that is a command line holding env', file: 'seatbelt/env-dump.js', edit: text('(/\\s/.test(word) && /\\b(?:env|printenv)\\b/.test(word))', 'false'), killers: ["perl -e 'system(shift)' 'sh -c env'"] },
+  { id: 'part B: positional parameters of sh -c', file: 'seatbelt/mapper.js', edit: off('positionalCommands'), killers: ["sh -c '\"$@\"' _ env", "bash -c 'exec \"$@\"' x printenv", "bash -c 'for c; do \"$c\"; done' _ env"], keyedOnly: true },
   { id: 'filter: bare set', file: 'hook-pre-action.js', edit: text('|\\bset\\b(?=', '|\\bsetX\\b(?='), killers: ['set', 'true; set | sort'], keyedOnly: true },
   { id: 'filter: ps with e', file: 'hook-pre-action.js', edit: text('/[eE]/.test(words.slice(ps.index + 2))', 'false'), killers: ['ps e', 'ps -E'], keyedOnly: true },
   { id: 'filter: /proc folder', file: 'hook-pre-action.js', edit: text('|\\bproc\\b|', '|\\bprocX\\b|'), killers: ['grep -ra . /proc/self/'], keyedOnly: true },
@@ -318,3 +334,85 @@ for (const mutant of POST_PATH_MUTANTS) {
     }
   });
 }
+
+
+// ---- Part B (audit LOWs L1 and L3 of Part A): tool events, outage, hashes, the filter's glob rule, and friction ----
+const { classifyTool: classifyEvent } = require('../dist/hook-pre-action.js');
+const toolStops = (tool, input) => evaluateSeatbeltEvent({ tool_name: tool, tool_input: input }, makeEnv({ classifierClass: 'routine' })).decision === 'stop';
+const toolKeyed = (tool, input) => { const c = classifyEvent({ tool_name: tool, tool_input: input }); return c.protected === true && c.readOnly === false; };
+const { evaluateSeatbelt: evaluateSeatbeltEvent } = require('../dist/seatbelt/mapper.js');
+
+test('part B: the Read and Grep tools on a process environ file or a process folder stop keyless and keyed; other /proc files and ordinary folders do not', () => {
+  const stops = [
+    ['Read', { file_path: '/proc/self/task/1/environ' }], ['Read', { file_path: '/proc/1234/task/1234/environ' }], ['Read', { file_path: '/proc/thread-self/environ' }],
+    ['Read', { file_path: '/proc/self/task/1/../1/environ' }], ['Grep', { pattern: 'x', path: '/proc/self/task/1/environ' }], ['Grep', { pattern: 'x', path: '/proc/self/task' }],
+    ['Grep', { pattern: 'x', path: '/proc' }], ['Grep', { pattern: 'x', path: '/proc/self/task/1/' }], ['Grep', { pattern: 'x', path: '/proc/1234' }],
+  ];
+  for (const [tool, input] of stops) {
+    assert.equal(toolStops(tool, input), true, `${tool} ${JSON.stringify(input)} keyless`);
+    assert.equal(toolKeyed(tool, input), true, `${tool} ${JSON.stringify(input)} keyed`);
+  }
+  const passes = [
+    ['Read', { file_path: '/proc/self/task/1/status' }], ['Read', { file_path: '/home/u/proj/src/environ.ts' }], ['Grep', { pattern: 'x', path: '/proc/cpuinfo' }],
+    ['Grep', { pattern: 'x', path: '/proc/sys/kernel' }], ['Grep', { pattern: 'x', path: '/home/u/proj/src' }],
+  ];
+  for (const [tool, input] of passes) {
+    assert.equal(toolStops(tool, input), false, `${tool} ${JSON.stringify(input)} keyless`);
+    assert.equal(toolKeyed(tool, input), false, `${tool} ${JSON.stringify(input)} keyed`);
+  }
+});
+
+test('part B: the normalized action (the approval key input) is the command text only, so a row hashes equal to itself and differs from every other row', () => {
+  const { normalizedHookAction } = require('../dist/normalized-action.js');
+  // The text hash is keyed per install (a null salt gives a random value that matches nothing), so the rows are hashed under a dummy key made now.
+  const salt = require('node:crypto').randomBytes(32);
+  const hash = (command) => JSON.stringify(normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }, { salt }).tool_input);
+  const a = hash('cat < /proc/self/task/1/environ');
+  assert.equal(a, hash('cat < /proc/self/task/1/environ'));
+  for (const other of ['cat < /proc/self/task/2/environ', 'cat < /proc/self/task/1/environ; true', 'cat < /proc/self/task/1/status', 'cat 0< /proc/self/task/1/environ']) {
+    assert.notEqual(a, hash(other), other);
+  }
+  // Text after a redacted span still counts: only the secret VALUE may be ignored, never what follows it.
+  const dummy = `${'x'.repeat(24)}`;
+  assert.notEqual(hash(`awk 'BEGIN{system(ARGV[1])}' env TOKEN=${dummy}`), hash(`awk 'BEGIN{system(ARGV[1])}' printenv TOKEN=${dummy}`));
+  assert.notEqual(hash(`perl -e 'system(shift)' env --token=${dummy} one`), hash(`perl -e 'system(shift)' env --token=${dummy} two`));
+});
+
+test('part B: an outage still holds every form that now carries an S4 hit, and the outage code is unchanged', () => {
+  const { outageRisk } = require('../dist/seatbelt/hook.js');
+  const risk = (command) => outageRisk({ tool_name: 'Bash', tool_input: { command } }, Date.now() + 5000).risk;
+  for (const cmd of ['cat /proc/self/environ', 'cat < /proc/self/task/1/environ', "awk 'BEGIN{system(ARGV[1])}' env", "perl -e 'system(shift)' printenv", 'cd /proc/$$ && cat < environ']) {
+    assert.equal(risk(cmd), 'high', `held in an outage: ${cmd}`);
+  }
+  assert.equal(risk('ls -la'), 'not_high');
+});
+
+test('part B: the keyed prefilter reads a glob in a folder of a path, after a cd, or from the filesystem root, and stays off for ordinary globs', () => {
+  for (const cmd of ['cat /???c/self/task/1/e*', 'cat < /p*/self/e*', 'cat /p[r]oc/self/en[v]iron', 'cat ~/../../p*/self/e*', 'cat $HOME/../../p?oc/self/e?', 'cd / && cat p*/self/e*', 'pushd / ; cat p?oc/s*/e*']) assert.equal(mayPrintEnvironment(cmd), true, cmd);
+  for (const cmd of ['ls src/*/index.ts', 'cat < src/*/x.txt', 'node --test test/**/*.test.js', 'ls dist/*/', 'rm -rf build/*', 'git add src/*.ts', 'ls /tmp/*.log', 'cat /var/log/*.log', 'cd src && ls *.ts']) assert.equal(mayPrintEnvironment(cmd), false, cmd);
+  // The hook may itself run in `/` (a container): a relative glob folder is then read too. A child process keeps this test's own cwd alone.
+  const probe = "const { mayPrintEnvironment } = require(process.argv[1]); process.stdout.write(JSON.stringify(['cat p*/self/e*', 'ls src/*/index.ts'].map(mayPrintEnvironment)));";
+  const out = spawnSync(process.execPath, ['-e', probe, path.join(ROOT, 'dist', 'hook-pre-action.js')], { cwd: '/', encoding: 'utf8' });
+  assert.equal(out.status, 0, out.stderr.slice(0, 300));
+  assert.deepEqual(JSON.parse(out.stdout), [true, true]);
+});
+
+test('part B: the glob rule of the filter is linear on hostile text', () => {
+  for (const text of [`/${'a/'.repeat(60000)}x`, `cat ${'/p*'.repeat(30000)}`, `${'~/'.repeat(50000)}`, `${'. '.repeat(50000)}*`]) {
+    const started = process.hrtime.bigint();
+    mayPrintEnvironment(text);
+    assert.ok(Number(process.hrtime.bigint() - started) / 1e6 < 2000, 'the filter took over two seconds');
+  }
+});
+
+test('part B: friction rows that must stay allowed in both modes, and rows whose answer must not move from the base', () => {
+  // Over-blocking only where fail-closed requires it: a word, a message or a file that merely says environ, an interpreter whose code cannot start a command,
+  // and a here-string that prints a path as text (the keyless pass is the base answer; the keyed hold is the base answer too: owner decision OD3).
+  for (const cmd of ['cat < environment.ts', 'cat < src/environ.ts', 'cat < /proc/self/status', 'cat < /proc/self/task/1/stat', 'cat < /proc/self/cmdline', 'echo "see /proc/self/task/1/environ docs"',
+    "python3 -m venv env", 'source env/bin/activate', 'conda activate env', "perl -e 'print shift' env", "node -e 'console.log(process.argv[1])' env", "sh -c 'echo \"$@\"' _ env",
+    "awk 'BEGIN{print ARGV[1]}' env", "awk '/x/{print}' env", "perl -e 'print 1' -e 'print 2'", "C=ls perl -e 'system $ENV{C}'", "C=env node -e 'console.log(process.env.C)'"]) {
+    assert.equal(keylessStops(live, cmd), false, `keyless ${cmd}`);
+    assert.equal(live.keyed(cmd), false, `keyed ${cmd}`);
+  }
+  assert.equal(keylessStops(live, 'cat <<< /proc/self/task/1/environ'), false);
+});

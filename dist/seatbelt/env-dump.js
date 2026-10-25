@@ -1,10 +1,10 @@
 "use strict";
-// Env-dump forms: every command an agent can type that prints many or all environment variables.
+// Env-dump forms: the command shapes this table knows that print many or all environment variables (a known list, not every command a shell can run).
 // One table for both modes: the keyless seatbelt mapper stops them (S4) and the keyed hook policy
 // holds them (hook-tool-policy.ts asks the mapper and keeps only the reasons named here). Pure
 // word-level predicates over literal arguments; no file contents are read.
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ENV_PRINTER_COMMAND = exports.HELPER_ENV_VARS = exports.RECURSIVE_READERS = exports.PROC_PROCESS_DIRECTORY = exports.PROC_ENVIRON = exports.EXEC_WRAPPERS = exports.ENV_DUMP_REASONS = void 0;
+exports.ENV_PRINTER_COMMAND = exports.HELPER_ENV_VARS = exports.CODE_READS_ENVIRONMENT = exports.SHELL_RUNS_EXPANSION = exports.AWK_STARTS_COMMAND = exports.CODE_STARTS_COMMAND = exports.RECURSIVE_READERS = exports.PROC_PROCESS_DIRECTORY = exports.PROC_PROCESS_TREE = exports.PROC_ENVIRON = exports.EXEC_WRAPPERS = exports.ENV_DUMP_REASONS = void 0;
 exports.compgenListsVariables = compgenListsVariables;
 exports.tmuxShowsEnvironment = tmuxShowsEnvironment;
 exports.systemctlShowsEnvironment = systemctlShowsEnvironment;
@@ -14,6 +14,7 @@ exports.jqFilterReadsEnvironment = jqFilterReadsEnvironment;
 exports.jqFilters = jqFilters;
 exports.packageRunsEnvScript = packageRunsEnvScript;
 exports.procGlobMatchesEnviron = procGlobMatchesEnviron;
+exports.mayRunEnvPrinter = mayRunEnvPrinter;
 exports.manPagerPrintsEnvironment = manPagerPrintsEnvironment;
 exports.straceShowsEnvironment = straceShowsEnvironment;
 exports.tmuxRunsEnvironmentPrinter = tmuxRunsEnvironmentPrinter;
@@ -183,6 +184,7 @@ function packageRunsEnvScript(args) {
 }
 var secret_paths_1 = require("../secret-paths");
 Object.defineProperty(exports, "PROC_ENVIRON", { enumerable: true, get: function () { return secret_paths_1.PROC_ENVIRON; } });
+Object.defineProperty(exports, "PROC_PROCESS_TREE", { enumerable: true, get: function () { return secret_paths_1.PROC_PROCESS_TREE; } });
 /** A glob that can name `environ`: `/proc/self/env*`, `/proc/1/*`, `/proc/self/task/1/e[n]viron`. */
 function procGlobMatchesEnviron(path) {
     const m = /^\/proc\/[^/]+\/(?:task\/[^/]+\/)?([^/]*[*?[][^/]*)$/.exec(path);
@@ -217,6 +219,29 @@ function procGlobMatchesEnviron(path) {
 exports.PROC_PROCESS_DIRECTORY = /^\/proc(?:\/[^/]+(?:\/task(?:\/[^/]+)?)?)?\/?$/;
 /** Programs that read or copy every file under a folder named to them. */
 exports.RECURSIVE_READERS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'tar', 'gtar', 'bsdtar', 'cp', 'rsync', 'zip', 'scp']);
+/**
+ * Inline interpreter code that can start a command (`system`, `exec*`, `popen`, `spawn*`, `passthru`, `proc_open`, `shell_exec`, Lua's `os.execute`,
+ * Perl `qx`, backticks, Node's `child_process`, Python's `subprocess`). Used only to decide that a bare `env` / `printenv` operand of the same command
+ * line is the command it starts (`perl -e 'system(shift)' env`); code that cannot start a command leaves the operand a plain name.
+ */
+exports.CODE_STARTS_COMMAND = /\b(?:system|exec(?:l[pe]?|v[pe]{0,2}|ute|File(?:Sync)?|Sync)?|fork|qx|Open3|passthru|shell_exec)\b|spawn(?:Sync|[lv][pe]{0,2})?\b|popen|proc_open|child_process|subprocess|`/;
+/** awk code that can start a command: `system(` or a pipe to or from one (not `||`). A bare `getline` reads a file. */
+exports.AWK_STARTS_COMMAND = /\bsystem\s*\(|(?<!\|)\|&?\s*["'$a-zA-Z(]/;
+/**
+ * Shell code whose command word is an expansion (`"$@"`, `$1`, `$0`, `exec "$@"`, `eval "$1"`, `then $x`): the words after the script text are
+ * its positional parameters, and it runs one of them as a command. The captured character names the expansion (`@` or `*` all of them, a digit one
+ * of them, a letter a variable that may hold one).
+ */
+exports.SHELL_RUNS_EXPANSION = /(?:^|[;&|({\n]|\b(?:exec|eval|command|builtin|nohup|time|sudo|env|xargs|nice|timeout|setsid|then|else|do))\s*["']?\$\{?([@*0-9A-Za-z_#!])/;
+/** Interpreter code that reads its environment (`ENVIRON["X"]`, `$ENV{X}`, `os.environ`, `process.env`, `getenv`, `ENV["X"]`). */
+exports.CODE_READS_ENVIRONMENT = /\bENVIRON\b|\bENV\b|\benviron\b|getenv|process\.env|\$_ENV|\$_SERVER/;
+/**
+ * A word a command-running helper may run: the environment printer itself (`env`, `/usr/bin/printenv -0`) or a command line that holds one
+ * (`sh -c env`, `command printenv`). A one-word operand that only mentions `env` (`echo`'s argument) is not one unless it starts with it.
+ */
+function mayRunEnvPrinter(word) {
+    return exports.ENV_PRINTER_COMMAND.test(word) || (/\s/.test(word) && /\b(?:env|printenv)\b/.test(word));
+}
 /** Variables whose value runs as a command: a pager, editor, askpass or diff helper set to `env` prints the environment. */
 exports.HELPER_ENV_VARS = new Set(['PAGER', 'GIT_PAGER', 'MANPAGER', 'EDITOR', 'VISUAL', 'GIT_EDITOR', 'GIT_SEQUENCE_EDITOR', 'GIT_EXTERNAL_DIFF',
     'GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_ASKPASS', 'SSH_ASKPASS', 'BROWSER', 'LESSOPEN', 'GIT_PROXY_COMMAND', 'PROMPT_COMMAND']);

@@ -373,10 +373,16 @@ export function parseToml(text: string): TomlTable {
 
 const PACKAGE_SPEC = /^@getmarrow\/mcp(?:@(?:latest|\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.]{1,32})?))?$/;
 const PINNED_SPEC = /^--package=@getmarrow\/mcp@(\d{1,4}\.\d{1,4}\.\d{1,4})$/;
-// The installer's runtime core (src/runtime-core.js, identical in @getmarrow/install 0.1.70
-// 60535d61 and feat/install-train-2 03a85d36): SHA-256 of the trimmed source its loader embeds.
-// A new installer core must be added here before its local-runtime server counts as official.
-const INSTALLER_RUNTIME_CORE_SHA256 = new Set(['73ea57796c017abfd144b43f3b91c9c935314c156ba523cbca525ebc1f977cb0']);
+// The installer's runtime cores (src/runtime-core.js): SHA-256 of the trimmed source its loader embeds.
+// 73ea5779: identical in @getmarrow/install 0.1.70 60535d61 through 0.1.74 080a82dc and
+// feat/install-train-2 03a85d36. 7c363a3e: the Q5 core (the stage sits under the real path of
+// ~/.marrow/runtime/mcp, so a HOME behind a symlinked parent installs). A new installer core must be
+// added here before its local-runtime server counts as official; an older one stays while hooks
+// written by it can still run.
+const INSTALLER_RUNTIME_CORE_SHA256 = new Set([
+  '73ea57796c017abfd144b43f3b91c9c935314c156ba523cbca525ebc1f977cb0',
+  '7c363a3e1d08561f8c31990df306b3ecdcbb9786929a46f2008b15658f84703a',
+]);
 const INSTALLER_UNAVAILABLE_TEXT = 'Marrow could not start its verified local runtime. The owner can repair it by running npx -y @getmarrow/install@latest --repair --cwd <project folder> from a terminal outside the project.';
 const LOADER_RE = /^eval\(global\.MARROW_L=require\(\/node:zlib\/\.source\)\.brotliDecompressSync\(Buffer\.from\(\/([A-Za-z0-9_-]{16,16000})\/\.source,\/base64url\/\.source\)\)\+\[\]\)$/;
 const LOADER_HEAD = "'use strict';\nconst CFG = ";
