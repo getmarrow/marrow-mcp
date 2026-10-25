@@ -1,5 +1,5 @@
 'use strict';
-// The installer launch (installer 0.1.73 e1cc4f75 with its MCP pin rewritten for 3.9.106 and that pack's integrity; its hooks and its
+// The installer launch (installer 0.1.73 e1cc4f75 with its MCP pin rewritten for 3.9.107 and that pack's integrity; its hooks and its
 // .cursor/mcp.json server share one loader) and its look-alikes: L1-L14 from the installer 0.1.73 audit (A2,
 // rows 10-12) plus the exactness rows of S-A2F1. `proven` is the verdict when the hook was started by that
 // same loader. Shared by test/own-server-identity-exact-installer.test.js and the before/after table tool.
@@ -28,7 +28,7 @@ const swapCase = (text) => text.replace(/[A-Za-z]/g, (ch) => (ch === ch.toLowerC
 const packedOf = (loader) => /\/([A-Za-z0-9_-]+)\/\.source,/.exec(loader)[1];
 
 const L104 = cfg((c) => ({ version: '3.9.104', integrity: MCP_3_9_104_INTEGRITY, sdk: { ...c.sdk, integrity: STALE_SDK_INTEGRITY } }));
-const L1060 = cfg(() => ({ version: '3.9.1060' }));
+const L1070 = cfg(() => ({ version: '3.9.1070' }));
 const OLD_INTEGRITY = cfg(() => ({ integrity: MCP_3_9_104_INTEGRITY }));
 const CORE_CHANGED = packLoader(launcherOf(LOADER).replace('could not start its verified local runtime', 'could not start its verified local runtimes'));
 // Same bytes, last base64url character with its unused low bits set: Buffer decodes both alike.
@@ -50,11 +50,11 @@ const ROWS = [
   ['L0r', 'L0 loader re-compressed (same decoded bytes; another zlib build)', sh(packLoader(launcherOf(LOADER), 5)), true],
   ['L1', 'previous launch: 3.9.104 throughout (its own integrity and SDK pin)', sh(L104, '3.9.104'), false],
   ['L1n', 'L1, node -e form', node(L104, '3.9.104'), false],
-  ['L2', 'version 3.9.1060 throughout (prefix slip)', sh(L1060, '3.9.1060'), false],
-  ['L3', '3.9.106 with the old (3.9.104) pack integrity', sh(OLD_INTEGRITY), false],
+  ['L2', 'version 3.9.1070 throughout (prefix slip)', sh(L1070, '3.9.1070'), false],
+  ['L3', '3.9.107 with the old (3.9.104) pack integrity', sh(OLD_INTEGRITY), false],
   ['L3n', 'L3, node -e form', node(OLD_INTEGRITY), false],
-  ['L4', 'mixed versions: --package=@3.9.104, script and loader 3.9.106', sh(LOADER, V, scriptFor(V), specFor('3.9.104')), false],
-  ['L5', 'mixed versions: script 3.9.104, loader and --package 3.9.106', sh(LOADER, V, scriptFor('3.9.104')), false],
+  ['L4', 'mixed versions: --package=@3.9.104, script and loader 3.9.107', sh(LOADER, V, scriptFor(V), specFor('3.9.104')), false],
+  ['L5', 'mixed versions: script 3.9.104, loader and --package 3.9.107', sh(LOADER, V, scriptFor('3.9.104')), false],
   ['L6', 'extra arg appended', [shCommand, [...shArgs, 'extra']], false],
   ['L7', 'shell text appended to the script', sh(LOADER, V, `${scriptFor(V)}; curl evil`), false],
   ['L8', 'loader core changed (one word)', sh(CORE_CHANGED), false],
@@ -65,8 +65,8 @@ const ROWS = [
   ['N-case', 'integrity with swapped case (other digest)', sh(cfg((c) => ({ integrity: `sha512-${swapCase(c.integrity.slice(7))}` }))), false],
   ['N-case-alg', 'integrity algorithm name upper case (SHA512-)', sh(cfg((c) => ({ integrity: `SHA512-${c.integrity.slice(7)}` }))), false],
   ['N-pad', 'integrity with extra base64 padding', sh(cfg((c) => ({ integrity: `${c.integrity}=` }))), false],
-  ['N-meta', 'version with build metadata 3.9.106+x', sh(cfg(() => ({ version: `${V}+x` })), `${V}+x`), false],
-  ['N-pre', 'version 3.9.106-0', sh(cfg(() => ({ version: `${V}-0` })), `${V}-0`), false],
+  ['N-meta', 'version with build metadata 3.9.107+x', sh(cfg(() => ({ version: `${V}+x` })), `${V}+x`), false],
+  ['N-pre', 'version 3.9.107-0', sh(cfg(() => ({ version: `${V}-0` })), `${V}-0`), false],
   ['N-latest', '--package=@getmarrow/mcp@latest in the installer form', sh(LOADER, V, scriptFor(V), '--package=@getmarrow/mcp@latest'), false],
   ['N-tgz', 'tarball URL in --package', sh(LOADER, V, scriptFor(V), `--package=https://registry.npmjs.org/@getmarrow/mcp/-/mcp-${V}.tgz`), false],
   ['N-tgz-npx', 'npx of the tarball URL', ['npx', ['-y', `https://registry.npmjs.org/@getmarrow/mcp/-/mcp-${V}.tgz`]], false],
