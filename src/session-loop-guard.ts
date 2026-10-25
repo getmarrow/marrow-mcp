@@ -142,7 +142,14 @@ function withStateLock<T>(home: string | undefined, callback: () => T): T {
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return unsafe();
-      const stat = lstatSync(lock);
+      let stat: Stats;
+      try {
+        stat = lstatSync(lock);
+      } catch (statError) {
+        // The holder released the lock between our EEXIST and this lstat: take the next bounded attempt. Any other error escapes as before.
+        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw statError;
+      }
       if (!stat.isFile() || !exactPrivate(stat, 0o600)) return unsafe();
       if (Date.now() - stat.mtimeMs > 30_000) {
         unlinkSync(lock);
