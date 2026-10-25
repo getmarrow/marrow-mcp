@@ -841,3 +841,310 @@ test('patch-text: option parsing is exact (no abbreviations, no repeats, no clus
   assert.equal(p('am', 'm').readOnly, false);
   assert.equal(p('am', '--help').info, true);
 });
+
+// ---- patch round 1 (audit r2: MEDIUM-1 header spellings, LOW-1 checkout then patch, LOW-2 the cd rows)
+// GNU patch 2.7.6 skips any run of spaces, tabs and `X` before it tests a line for a header, reads `Index:` with no
+// space, and git reads `rename old|new` as well as `rename from|to`. A second diff in such a spelling, after a benign
+// first diff, used to pass; the rows below were checked against the real binaries in a scratch folder.
+const FIRST = uni('a/src/index.ts', 'b/src/index.ts');
+const NORMAL = '1c1\n< one\n---\n> two\n';
+const MCP_P1 = uni('a/.mcp.json', 'b/.mcp.json');
+const indent = (prefix, t) => t.split('\n').map((l) => (l === '' ? l : prefix + l)).join('\n');
+const moved = (verb, a, b, to) => `diff --git a/x.txt b/${to}\nsimilarity index 100%\n${verb} ${a} x.txt\n${verb} ${b} ${to}\n`;
+const PROTECTED = [['settings', '.claude/settings.json', SETTINGS_P1], ['mcp', '.mcp.json', MCP_P1]];
+const LABEL = { patch: 'patch_write', apply: 'git_apply_write', am: 'git_am_write' };
+const callsFor = (f) => [['patch', `patch -p1 < ${f}`], ['apply', `git apply ${f}`], ['patch', `patch -p1 -i ${f}`]];
+// A row must stop on the protected path itself (not on a generic hold), under the label of its program.
+const stopsProtected = (kind, command, files) => {
+  const d = sh(command, files);
+  want(d.decision === 'stop' && d.category === 'S0' && d.reasons.includes(`${LABEL[kind]}_protected_path`), `${command}: want ${LABEL[kind]}_protected_path, got ${d.decision}/${d.category} [${d.reasons}]`);
+};
+const stopsUnknown = (kind, command, why, files) => {
+  const d = sh(command, files);
+  want(d.decision === 'stop' && d.category === 'S0' && d.reasons.includes(`${LABEL[kind]}_unknown_${why}`), `${command}: want ${LABEL[kind]}_unknown_${why}, got ${d.decision}/${d.category} [${d.reasons}]`);
+};
+
+test('WK-5 patch 1 (MEDIUM-1 a): a header indented by spaces, a tab or X is read: a second diff after a benign one stops on the protected path', () => {
+  const files = {};
+  const rows = [];
+  for (const [pi, prefix] of [' ', '    ', '\t', 'X', ' X\t X', 'XX', '\t\t ', ' '.repeat(1000)].entries()) {
+    for (const [pn, , diff] of PROTECTED) {
+      for (const [shape, text] of [['second', FIRST + indent(prefix, diff)], ['only', indent(prefix, diff)]]) {
+        const f = `/home/u/proj/ind-${pi}-${pn}-${shape}.diff`;
+        files[f] = text;
+        for (const [kind, command] of callsFor(`ind-${pi}-${pn}-${shape}.diff`)) rows.push([kind, command]);
+      }
+    }
+  }
+  for (const [kind, command] of rows) stopsProtected(kind, command, files);
+  // the other header kinds, indented: context diff, git header, perforce-free `Index:` plus unified, CRLF
+  const more = {
+    '/home/u/proj/i-ctx.diff': FIRST + indent('  ', '*** a/.claude/settings.json\t2020-01-01\n--- b/.claude/settings.json\t2020-01-02\n***************\n*** 1 ****\n! one\n--- 1 ----\n! two\n'),
+    '/home/u/proj/i-git.diff': FIRST + indent(' ', MCP_GIT),
+    '/home/u/proj/i-crlf.diff': (FIRST + indent(' ', SETTINGS_P1)).replace(/\n/g, '\r\n'),
+    '/home/u/proj/i-mix.diff': FIRST + indent('X \t', SETTINGS_P1),
+    '/home/u/proj/i-ren.diff': FIRST + indent(' ', 'diff --git a/x.txt b/.claude/settings.json\nrename from x.txt\nrename to .claude/settings.json\n'),
+  };
+  for (const f of Object.keys(more)) { const name = path.posix.basename(f); stopsProtected('patch', `patch -p1 < ${name}`, more); stopsProtected('apply', `git apply ${name}`, more); }
+  // every call form of the audit still reaches the indented file
+  for (const command of ["bash -c 'patch -p1 < i-mix.diff'", 'cd . && patch -p1 < i-mix.diff', '(patch -p1 < i-mix.diff)', 'true; git apply i-mix.diff', 'X=1 patch -p1 -i i-mix.diff', 'git apply -p1 --3way i-mix.diff']) {
+    const d = sh(command, more);
+    want(d.decision === 'stop' && d.category === 'S0' && d.reasons.some((r) => /_write_protected_path$/.test(r)), `${command}: ${d.decision}/${d.category} [${d.reasons}]`);
+  }
+  // git am reads the mailbox body with the same reader
+  const am = { '/home/u/proj/i.mbox': `From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] x\n\n---\n x | 2 +-\n\n${FIRST}${indent(' ', MCP_GIT)}` };
+  stopsProtected('am', 'git am i.mbox', am);
+});
+
+test('WK-5 patch 1 (MEDIUM-1 b): `Index:` with no space, a tab or several spaces names the file, with a normal-format hunk too', () => {
+  const files = {};
+  const rows = [];
+  for (const [id, head] of [['nospace', 'Index:'], ['tab', 'Index:\t'], ['one', 'Index: '], ['three', 'Index:   '], ['tabsp', 'Index:\t '], ['indent', '  Index:'], ['x', 'XIndex:'], ['tabindent', '\tIndex:\t']]) {
+    for (const [pn, name] of PROTECTED) {
+      for (const [shape, text] of [['second', `${FIRST}${head}${name}\n${NORMAL}`], ['only', `${head}${name}\n${NORMAL}`], ['uni', `${FIRST}${head}${name}\n${uni('src/other.ts')}`]]) {
+        const f = `idx-${id}-${pn}-${shape}.diff`;
+        files[`/home/u/proj/${f}`] = text;
+        for (const [kind, command] of callsFor(f)) rows.push([kind, command]);
+      }
+    }
+  }
+  for (const [kind, command] of rows) stopsProtected(kind, command, files);
+  // a timestamp after the name does not hide it
+  const stamp = { '/home/u/proj/idx-ts.diff': `${FIRST}Index:.claude/settings.json\t2020-01-01\n${NORMAL}` };
+  stopsProtected('patch', 'patch -p1 < idx-ts.diff', stamp);
+  stopsProtected('apply', 'git apply idx-ts.diff', stamp);
+});
+
+test('WK-5 patch 1 (MEDIUM-1 c): `rename old|new` and `copy old|new` name the new file, like from|to, in every pairing', () => {
+  const files = {};
+  const rows = [];
+  for (const verb of ['rename', 'copy']) {
+    for (const [a, b] of [['old', 'new'], ['from', 'new'], ['old', 'to'], ['from', 'to'], ['new', 'old']]) {
+      for (const [pn, name] of PROTECTED) {
+        const f = `mv-${verb}-${a}-${b}-${pn}.diff`;
+        files[`/home/u/proj/${f}`] = moved(verb, a, b, name);
+        files[`/home/u/proj/after-${f}`] = FIRST + moved(verb, a, b, name);
+        files[`/home/u/proj/ind-${f}`] = FIRST + indent(' ', moved(verb, a, b, name));
+        for (const g of [f, `after-${f}`, `ind-${f}`]) for (const [kind, command] of callsFor(g)) rows.push([kind, command]);
+      }
+    }
+  }
+  for (const [kind, command] of rows) stopsProtected(kind, command, files);
+  const am = { '/home/u/proj/mv.mbox': `From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\nSubject: [PATCH] x\n\n---\n x | 2 +-\n\n${moved('rename', 'old', 'new', '.claude/settings.json')}` };
+  stopsProtected('am', 'git am mv.mbox', am);
+});
+
+test('WK-5 patch 1 (spec 1, 3): a line that opens like a move or an Index with no readable name is a doubt (an unknown write), never a pass', () => {
+  const files = {};
+  const lines = {
+    'rename-2sp': 'rename  from x.txt', 'rename-tab': 'rename\tfrom x.txt', 'rename-bare': 'rename x.txt', 'rename-sp': 'rename ', 'rename-other': 'rename of x.txt',
+    'copy-of': 'copy of x.txt', 'copy-tab': 'copy\tto x.txt', 'copy-sp': 'copy ', 'rename-ind': ' rename the thing', 'copy-ind': '\tcopy x y', 'copy-X': 'Xcopy a b',
+  };
+  for (const [id, line] of Object.entries(lines)) files[`/home/u/proj/odd-${id}.diff`] = `${FIRST}${line}\n`;
+  for (const id of Object.keys(lines)) {
+    stopsUnknown('patch', `patch -p1 < odd-${id}.diff`, 'header_odd_move_header', files);
+    stopsUnknown('apply', `git apply odd-${id}.diff`, 'header_odd_move_header', files);
+  }
+  // `Index:` with nothing after it has no name to read
+  const empty = { '/home/u/proj/e1.diff': `${FIRST}Index:\n${NORMAL}`, '/home/u/proj/e2.diff': `${FIRST}Index:\t \n${NORMAL}`, '/home/u/proj/e3.diff': `${FIRST} Index:\n` };
+  for (const f of ['e1.diff', 'e2.diff', 'e3.diff']) { stopsUnknown('patch', `patch -p1 < ${f}`, 'header_empty_name', empty); stopsUnknown('apply', `git apply ${f}`, 'header_empty_name', empty); }
+  // an indented header whose name cannot be read is a doubt too (quoted, backslash, control byte, dotdot, long)
+  const odd = {
+    '/home/u/proj/o1.diff': `${FIRST}  --- "a/x"\n`, '/home/u/proj/o2.diff': `${FIRST}\t+++ a\\b\n`, '/home/u/proj/o3.diff': `${FIRST}X--- a\u0001b\n`,
+    '/home/u/proj/o4.diff': `${FIRST} Index:../x\n`, '/home/u/proj/o5.diff': `${FIRST}  --- ${'a'.repeat(5000)}\n`, '/home/u/proj/o6.diff': `${FIRST}  --- \n`,
+  };
+  const expect = { 'o1.diff': 'odd_name', 'o2.diff': 'odd_name', 'o3.diff': 'odd_name', 'o4.diff': 'dotdot', 'o5.diff': 'long_header', 'o6.diff': 'empty_name' };
+  for (const [f, why] of Object.entries(expect)) { stopsUnknown('patch', `patch -p1 < ${f}`, `header_${why}`, odd); stopsUnknown('apply', `git apply ${f}`, `header_${why}`, odd); }
+});
+
+test('WK-5 patch 1 (controls): benign indented, Index: and rename diffs that name only ordinary files still pass; plain column-0 headers still stop', () => {
+  const files = {};
+  const benign = [];
+  let n = 0;
+  for (const prefix of [' ', '    ', '\t', 'X', ' X\t X', 'XX']) {
+    files[`/home/u/proj/b${n}.diff`] = FIRST + indent(prefix, uni('a/src/other.ts', 'b/src/other.ts'));
+    benign.push(`b${n}.diff`); n += 1;
+  }
+  files['/home/u/proj/bi1.diff'] = `${FIRST}Index:src/other.ts\n${NORMAL}`;
+  files['/home/u/proj/bi2.diff'] = `${FIRST}Index:\tsrc/other.ts\n${NORMAL}`;
+  files['/home/u/proj/bi3.diff'] = `${FIRST}  Index: src/other.ts\n${NORMAL}`;
+  files['/home/u/proj/bm1.diff'] = moved('rename', 'old', 'new', 'src/moved.ts');
+  files['/home/u/proj/bm2.diff'] = moved('rename', 'from', 'to', 'src/moved.ts');
+  files['/home/u/proj/bm3.diff'] = moved('copy', 'from', 'to', 'src/copied.ts');
+  files['/home/u/proj/bm4.diff'] = FIRST + indent(' ', moved('rename', 'old', 'new', 'src/moved.ts'));
+  // a context line that only looks like prose is not a header: lower-case index:, a lone `---` rule, `diff --git` text, a star line
+  files['/home/u/proj/bc.diff'] = FIRST.replace('@@ -1 +1 @@\n', '@@ -1,5 +1,5 @@\n index:.claude/settings.json\n ---\n *** Warning: "x"\n diff --git a/x b/y\n ---name\n');
+  benign.push('bi1.diff', 'bi2.diff', 'bi3.diff', 'bm1.diff', 'bm2.diff', 'bm3.diff', 'bm4.diff', 'bc.diff');
+  for (const f of benign) { passes(`patch -p1 < ${f}`, files); passes(`git apply ${f}`, files); passes(`patch -p1 -i ${f}`, files); }
+  // plain column-0 headers, as before
+  for (const command of ['patch -p1 < d', 'git apply mcp.diff', 'git apply rename.diff', 'git apply copy.diff', 'patch -p1 < index.diff', 'patch -p0 < ctx.diff']) stopsS0(command, null);
+  // the reader itself: the benign indented diff gives only ordinary names
+  assert.deepEqual(text.readPatchNames(files['/home/u/proj/b0.diff'], false).names.sort(), ['a/src/index.ts', 'a/src/other.ts', 'b/src/index.ts', 'b/src/other.ts']);
+});
+
+test('WK-5 patch 1 (LOW-2): the cd rows: only the working folder plus -p reach a bare settings.json', () => {
+  const files = { '/home/u/.claude/x.diff': uni('a/b/c/settings.json'), '/home/u/proj/x.diff': uni('a/b/c/settings.json'), '/home/u/.claude/y.diff': uni('a/b/c/d/settings.json') };
+  stopsProtected('apply', 'cd ~/.claude && git apply -p3 x.diff', files);
+  stopsProtected('patch', 'cd ~/.claude && patch -p3 < x.diff', files);
+  stopsProtected('patch', 'cd ~/.claude && patch -p3 -i x.diff', files);
+  stopsProtected('apply', '(cd ~/.claude && git apply -p3 x.diff)', files);
+  stopsProtected('patch', "bash -c 'cd ~/.claude && patch -p3 < x.diff'", files);
+  stopsProtected('apply', 'cd /home/u/.claude && git apply -p3 x.diff', files);
+  stopsProtected('patch', 'cd ~ && cd .claude && patch -p3 < x.diff', files);
+  stopsProtected('apply', 'git -C ~/.claude apply -p3 x.diff', files);
+  stopsProtected('patch', 'cd ~/.claude && patch -p4 < y.diff', files);
+  // the same diff from the workspace, or with a different strip count, does not reach the protected file
+  passes('cd ~/proj && git apply -p3 x.diff', files);
+  passes('cd ~/proj && patch -p3 < x.diff', files);
+});
+
+test('WK-5 patch 1 (LOW-1): a patch file that git checkout or git restore rewrites on the same line is not the file the mapper read', () => {
+  const files = { '/home/u/proj/sub/in.diff': OK_P1, '/home/u/proj/ok.mbox': FILES['/home/u/proj/ok.mbox'] };
+  for (const [kind, command] of [
+    ['patch', 'git checkout HEAD -- ok.diff && patch -p1 < ok.diff'],
+    ['apply', 'git checkout HEAD -- ok.diff && git apply ok.diff'],
+    ['apply', 'git checkout main -- ok.diff; git apply ok.diff'],
+    ['patch', 'git checkout -- ok.diff && patch -p1 -i ok.diff'],
+    ['apply', 'git restore --source=HEAD~1 ok.diff && git apply ok.diff'],
+    ['patch', 'git restore ok.diff && patch -p1 -i ok.diff'],
+    ['am', 'git checkout HEAD -- ok.mbox && git am ok.mbox'],
+    ['apply', 'git checkout HEAD -- ok.diff || true; git apply ok.diff'],
+    ['apply', '(git checkout HEAD -- ok.diff) && git apply ok.diff'],
+    ['apply', 'git checkout HEAD -- ok.diff && git apply /home/u/proj/ok.diff'],
+    ['patch', 'cd sub && git checkout HEAD -- in.diff && patch -p1 < in.diff'],
+    ['apply', 'git -C sub checkout HEAD -- in.diff && git apply sub/in.diff'],
+  ]) stopsUnknown(kind, command, 'written_here', files);
+  // a different file is not the patch file; nothing else about checkout and restore changes
+  passes('git checkout HEAD -- other.txt && git apply ok.diff', files);
+  passes('git restore other.txt && patch -p1 < ok.diff', files);
+  passes('git checkout feat/x && git apply ok.diff', files);
+  passes('git checkout -- src/index.ts', files);
+  // the script and package readers keep their answers: only the patch readers look at the checked-out names
+  const keep = { '/home/u/proj/build.sh': 'echo hi\n', '/home/u/proj/package.json': '{"scripts":{"test":"echo hi"}}\n' };
+  for (const [withCheckout, without] of [['git checkout HEAD -- build.sh && bash build.sh', 'true && bash build.sh'], ['git checkout -- package.json && npm test', 'true && npm test'],
+    ['git restore build.sh && ./build.sh', 'true && ./build.sh']]) {
+    const a = sh(withCheckout, keep);
+    const b = sh(without, keep);
+    want(a.decision === b.decision && a.category === b.category && a.reasons.join() === b.reasons.join(), `${withCheckout}: [${a.decision} ${a.reasons}] differs from [${b.decision} ${b.reasons}]`);
+  }
+});
+
+test('WK-5 patch 1 (consumers, mapper level): the keyed floor, the outage reading and the held-call keys see the new header forms; keys come from the command text only', () => {
+  const { outageRisk, accountFloor, accountFloorStops } = require('../dist/seatbelt/hook.js');
+  const { stableToolCorrelation, exactHookTarget } = require('../dist/hook-contract.js');
+  const sb = sandbox();
+  try {
+    const put = (rel, body) => fs.writeFileSync(path.join(sb.proj, rel), body);
+    put('ind.diff', FIRST + indent(' ', MCP_P1));
+    put('idx.diff', `${FIRST}Index:.mcp.json\n${NORMAL}`);
+    put('ren.diff', moved('rename', 'old', 'new', '.mcp.json'));
+    put('ok2.diff', FIRST + indent(' ', uni('a/src/other.ts', 'b/src/other.ts')));
+    // the outage reading is high for the forms that used to read not_high, and still not high for the benign one
+    for (const command of ['git apply ind.diff', 'patch -p1 < ind.diff', 'git apply idx.diff', 'patch -p1 < idx.diff', 'git apply ren.diff', 'patch -p1 -i ren.diff']) {
+      const r = outageRisk({ tool_name: 'Bash', tool_input: { command }, cwd: sb.proj, truncated: false }, Date.now() + 60_000);
+      want(r.risk === 'high', `${command}: outage reading ${r.risk}`);
+    }
+    const benignOutage = outageRisk({ tool_name: 'Bash', tool_input: { command: 'patch -p1 < ok2.diff' }, cwd: sb.proj, truncated: false }, Date.now() + 60_000);
+    want(benignOutage.risk !== 'high', `benign indented patch: outage reading ${benignOutage.risk}`);
+    // the keyed (account) floor computes the same decision: watch returns null, and an advisory allow never lifts an enforced stop
+    for (const command of ['git apply ind.diff', 'git apply idx.diff', 'git apply ren.diff']) {
+      assert.equal(accountFloor('claude', { tool_name: 'Bash', tool_input: { command }, cwd: sb.proj, truncated: false }, Date.now() + 60_000), null, command);
+    }
+    const floor = sh('git apply ind.diff', { '/home/u/proj/ind.diff': FIRST + indent(' ', MCP_P1) });
+    assert.equal(floor.decision, 'stop');
+    assert.equal(accountFloorStops('on', floor, 'advisory_allow'), true);
+    assert.equal(accountFloorStops('on', floor, 'enforced_allow'), false);
+  } finally { sb.cleanup(); }
+  // Keys: the command text only. Same text, two files that differ only in one indented header line: the same key and target, two decisions.
+  const key = (command) => stableToolCorrelation({ session_id: 's1', tool_use_id: 't', tool_name: 'Bash', tool_input: { command } });
+  const target = (command) => exactHookTarget({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+  const okFile = FIRST + indent(' ', uni('a/src/x.ts', 'b/src/x.ts'));
+  const badFile = FIRST + indent(' ', uni('a/.mcp.json', 'b/.mcp.json'));
+  const fa = sh('git apply d.diff', { '/home/u/proj/d.diff': okFile });
+  const fb = sh('git apply d.diff', { '/home/u/proj/d.diff': badFile });
+  assert.equal(fa.decision, 'pass');
+  assert.equal(fb.decision, 'stop');
+  assert.equal(key('git apply d.diff'), key('git apply d.diff'));
+  assert.equal(target('git apply d.diff'), target('git apply d.diff'));
+  // a different file name or flag is a different key (as before), and neither key holds patch text
+  for (const [x, y] of [['git apply d.diff', 'git apply e.diff'], ['git apply d.diff', 'git apply -p1 d.diff'], ['patch -p1 < d.diff', 'patch -p1 < e.diff'], ['git apply d.diff', 'cd .claude && git apply d.diff']]) {
+    assert.notEqual(key(x), key(y), `${x} / ${y}`);
+    assert.notEqual(target(x) + key(x), target(y) + key(y), `${x} / ${y}`);
+  }
+  for (const k of [key('git apply d.diff'), target('git apply d.diff')]) assert.ok(!String(k).includes('mcp.json') && !String(k).includes('src/x.ts'));
+  // a secret in the text: text after the redacted span still differs; no secret reaches a reason code (dummy value generated here)
+  const dummy = crypto.randomBytes(16).toString('hex');
+  assert.notEqual(key(`API_KEY=${dummy} git apply d.diff`), key(`API_KEY=${dummy} git apply e.diff`));
+  const withSecret = sh(`API_KEY=${dummy} git apply d.diff`, { '/home/u/proj/d.diff': badFile });
+  assert.equal(withSecret.decision, 'stop');
+  assert.ok(!JSON.stringify(withSecret).includes(dummy));
+  // every reason of the new rows is a receipt-safe code
+  const reasons = new Set([...fb.reasons, ...withSecret.reasons, ...sh('git apply odd.diff', { '/home/u/proj/odd.diff': `${FIRST}rename of x\n` }).reasons,
+    ...sh('git apply odd.diff', { '/home/u/proj/odd.diff': `${FIRST}Index:\n` }).reasons]);
+  assert.ok(reasons.size >= 3);
+  for (const r of reasons) { assert.match(r, /^[a-z0-9_]{1,64}$/, r); assert.doesNotMatch(r, /settings|mcp|bashrc|claude|home|proj/); }
+});
+
+test('WK-5 patch 1 (consumers, real keyless hook): the new header forms stop S0 through the real hook CLI, Bash and Monitor; benign indented diffs pass; no network', () => {
+  const sb = sandbox();
+  try {
+    const put = (rel, body) => fs.writeFileSync(path.join(sb.proj, rel), body);
+    put('ind.diff', FIRST + indent(' ', MCP_P1));
+    put('tab.diff', FIRST + indent('\t', SETTINGS_P1));
+    put('x.diff', FIRST + indent('X', MCP_P1));
+    put('idx.diff', `${FIRST}Index:.mcp.json\n${NORMAL}`);
+    put('idxtab.diff', `${FIRST}Index:\t.claude/settings.json\n${NORMAL}`);
+    put('ren.diff', moved('rename', 'old', 'new', '.mcp.json'));
+    put('rens.diff', moved('rename', 'old', 'new', '.claude/settings.json'));
+    put('ok2.diff', FIRST + indent(' ', uni('a/src/other.ts', 'b/src/other.ts')));
+    put('okidx.diff', `${FIRST}Index:src/other.ts\n${NORMAL}`);
+    for (const tool of ['Bash', 'Monitor']) {
+      for (const command of ['patch -p1 < ind.diff', 'git apply ind.diff', 'patch -p1 < tab.diff', 'git apply x.diff', 'patch -p1 < idx.diff', 'git apply idxtab.diff', 'git apply ren.diff', 'patch -p1 -i rens.diff',
+        'cd ~/proj && git apply ren.diff']) {
+        const r = hook(sb, event(sb, tool, command));
+        assert.equal(r.v, 'STOP_S0', `${tool}: ${command}: ${r.body || ''}`);
+      }
+      for (const command of ['patch -p1 < ok2.diff', 'git apply ok2.diff', 'patch -p1 < okidx.diff', 'git apply okidx.diff']) assert.equal(hook(sb, event(sb, tool, command)).v, 'pass', `${tool}: ${command}`);
+    }
+    assert.equal(fs.existsSync(sb.netspy) ? fs.readFileSync(sb.netspy, 'utf8') : '', '');
+    const r = hook(sb, event(sb, 'Bash', 'git apply ren.diff'));
+    assert.match(r.body, /Code: S0\.self_protection\/git_apply_write_protected_path/);
+    assert.doesNotMatch(r.body, /mcp\.json|\.claude\/settings/);
+  } finally { sb.cleanup(); }
+});
+
+test('patch-text (patch 1): the indent run, Index: and rename old|new in the pure reader', () => {
+  const names = (t, mail = false) => text.readPatchNames(t, mail);
+  for (const prefix of [' ', '    ', '\t', 'X', ' X\t X', 'XX']) {
+    assert.deepEqual(names(indent(prefix, '--- a/x\n+++ b/x\n')).names, ['a/x', 'b/x'], JSON.stringify(prefix));
+    assert.deepEqual(names(indent(prefix, '*** a/x\n--- b/x\n')).names, ['a/x', 'b/x'], JSON.stringify(prefix));
+    assert.deepEqual(names(`${prefix}Index: x/y\n`).names, ['x/y'], JSON.stringify(prefix));
+    assert.deepEqual(names(`${prefix}diff --git a/x b/y\n`).names.sort(), ['a/x', 'b/y'], JSON.stringify(prefix));
+    assert.deepEqual(names(`${prefix}rename old x\n${prefix}rename new y\n`).names, ['x', 'y'], JSON.stringify(prefix));
+    assert.equal(names(`${prefix}new file mode 120000\n--- a\n`).doubt, 'symlink_patch', JSON.stringify(prefix));
+    assert.equal(names(`${prefix}==== //depot/x#1 ====\n`).doubt, 'perforce_header', JSON.stringify(prefix));
+  }
+  for (const head of ['Index:', 'Index:\t', 'Index: ', 'Index:  \t ']) assert.deepEqual(names(`${head}x/y\n`).names, ['x/y'], JSON.stringify(head));
+  assert.deepEqual(names('rename old a\nrename new b\ncopy old c\ncopy new d\n').names, ['a', 'b', 'c', 'd']);
+  assert.deepEqual(names('rename from a\nrename to b\ncopy from c\ncopy to d\n').names, ['a', 'b', 'c', 'd']);
+  // only a leading run of space, tab and X is skipped: other bytes before a marker keep it from being a header
+  for (const t of ['+--- a/x\n', '>--- a/x\n', '\f--- a/x\n', ' --- a/x\n', '#Index: x\n', '\u0000--- a/x\n', '﻿--- a/x\n']) assert.equal(names(t).doubt, 'no_headers', JSON.stringify(t));
+  // doubts
+  assert.equal(names('rename  from a\n').doubt, 'odd_move_header');
+  assert.equal(names('rename\tfrom a\n').doubt, 'odd_move_header');
+  assert.equal(names('rename x\n').doubt, 'odd_move_header');
+  assert.equal(names(' copy of x\n').doubt, 'odd_move_header');
+  assert.equal(names('Index:\n').doubt, 'empty_name');
+  assert.equal(names('XIndex:  \n').doubt, 'empty_name');
+  assert.equal(names('rename old \n').doubt, 'empty_name');
+  assert.equal(names('  --- "a"\n').doubt, 'odd_name');
+  assert.equal(names('rename_file(a)\n--- a/x\n').doubt, null);
+  assert.equal(names('renamed old a\n--- a/x\n').doubt, null);
+  assert.equal(names('copying from a\n--- a/x\n').doubt, null);
+  // an indented transfer-encoding line of a mail is not a mail header: the mail rule is unchanged
+  assert.equal(names('  Content-Transfer-Encoding: base64\n--- a/x\n', true).doubt, null);
+  assert.equal(names('Content-Transfer-Encoding: base64\n--- a/x\n', true).doubt, 'encoded_mail_body');
+  // long indent is fine, a long header after it is not
+  assert.deepEqual(names(`${' '.repeat(100000)}--- a/x\n`).names, ['a/x']);
+  assert.equal(names(`${' '.repeat(100)}--- ${'a'.repeat(5000)}\n`).doubt, 'long_header');
+});

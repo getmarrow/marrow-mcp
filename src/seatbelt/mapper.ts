@@ -242,6 +242,9 @@ interface Ctx {
   written: Set<string>;
   // Files copied or moved in this command: new path -> the path they came from (for a later run).
   writtenFrom: Map<string, string>;
+  // WK-5: files `git checkout` and `git restore` rewrite in this command. Only the patch readers look at it: a patch file
+  // among them is not the file the mapper can read now (the script and package readers keep their answers).
+  checkedOut: Set<string>;
   depth: number;
   remote: boolean;
   kubeContext: string | null | undefined;
@@ -993,7 +996,7 @@ function newCtx(run: Run): Ctx {
   const cwd = typeof run.env.cwd === 'string' && path.posix.isAbsolute(run.env.cwd) ? path.posix.normalize(run.env.cwd) : null;
   return {
     cwds: [cwd], vars: new Map([['HOME', [run.home]]]), exported: new Set(['HOME']), aliases: new Map(), gitAliases: new Map(),
-    gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
+    gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), checkedOut: new Set(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
     decodedVars: new Set(), candidates: new Map(), fds: new Map(), ifs: undefined, backstop: false, arrays: new Set(),
   };
 }
@@ -3720,9 +3723,9 @@ function checkProtectedWrite(a: Arg, ctx: Ctx, run: Run, reason: string, tree: b
   return false;
 }
 
-function markWritten(a: Arg, ctx: Ctx): void {
+function markWritten(a: Arg, ctx: Ctx, into: Set<string> = ctx.written): void {
   if (a.text === null) return;
-  for (const c of ctx.cwds) ctx.written.add(path.posix.resolve(c || '/__unknown_cwd__', a.text));
+  for (const c of ctx.cwds) into.add(path.posix.resolve(c || '/__unknown_cwd__', a.text));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4873,7 +4876,7 @@ function patchFamilyWrites(kind: PatchKind, args: Arg[], ctx: Ctx, run: Run, x: 
     for (const p of abs) {
       // A file this command line writes first (or a name `ln -s` made) is not the file the mapper can read now.
       const base = path.posix.basename(p);
-      if (ctx.written.has(p) || [...ctx.written].some((w) => path.posix.basename(w) === base)) { unknown('written_here'); return; }
+      if (ctx.written.has(p) || [...ctx.written, ...ctx.checkedOut].some((w) => path.posix.basename(w) === base)) { unknown('written_here'); return; }
       if (run.links.size > 0 && applyLinks(p, run) !== p) { unknown('link'); return; }
       const text = readCached(run, p, LIMITS.maxPatchBytes);
       if (text === null) { unknown('unreadable'); return; }
@@ -6519,6 +6522,8 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
     && unknownLong(args, indexOnlyList, 2, false) === -1;
   if (['checkout', 'restore', 'rm', 'mv'].includes(sub) && !indexOnly) {
     for (const a of args) if (a.text === null || !a.text.startsWith('-')) checkProtectedWrite(a, gctx, run, `git_${sub}`, sub === 'rm' || sub === 'mv');
+    // WK-5: checkout and restore rewrite the files they name (a ref among the words only adds a name nothing reads).
+    if (sub === 'checkout' || sub === 'restore') for (const a of args) if (a.text === null || !a.text.startsWith('-')) markWritten(a, gctx, gctx.checkedOut);
   }
   // WK-5: `git apply` and `git am` write the files their patch text names.
   if (sub === 'apply' || sub === 'am') patchFamilyWrites(sub, args, gctx, run, x, overrides);

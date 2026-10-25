@@ -1027,7 +1027,7 @@ function newCtx(run) {
     const cwd = typeof run.env.cwd === 'string' && path.posix.isAbsolute(run.env.cwd) ? path.posix.normalize(run.env.cwd) : null;
     return {
         cwds: [cwd], vars: new Map([['HOME', [run.home]]]), exported: new Set(['HOME']), aliases: new Map(), gitAliases: new Map(),
-        gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
+        gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), checkedOut: new Set(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
         decodedVars: new Set(), candidates: new Map(), fds: new Map(), ifs: undefined, backstop: false, arrays: new Set(),
     };
 }
@@ -4656,11 +4656,11 @@ function checkProtectedWrite(a, ctx, run, reason, tree) {
     }
     return false;
 }
-function markWritten(a, ctx) {
+function markWritten(a, ctx, into = ctx.written) {
     if (a.text === null)
         return;
     for (const c of ctx.cwds)
-        ctx.written.add(path.posix.resolve(c || '/__unknown_cwd__', a.text));
+        into.add(path.posix.resolve(c || '/__unknown_cwd__', a.text));
 }
 // ---------------------------------------------------------------------------------------------
 // S5 workspace boundary
@@ -6210,7 +6210,7 @@ function patchFamilyWrites(kind, args, ctx, run, x, overrides) {
         for (const p of abs) {
             // A file this command line writes first (or a name `ln -s` made) is not the file the mapper can read now.
             const base = path.posix.basename(p);
-            if (ctx.written.has(p) || [...ctx.written].some((w) => path.posix.basename(w) === base)) {
+            if (ctx.written.has(p) || [...ctx.written, ...ctx.checkedOut].some((w) => path.posix.basename(w) === base)) {
                 unknown('written_here');
                 return;
             }
@@ -8684,6 +8684,11 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
         for (const a of args)
             if (a.text === null || !a.text.startsWith('-'))
                 checkProtectedWrite(a, gctx, run, `git_${sub}`, sub === 'rm' || sub === 'mv');
+        // WK-5: checkout and restore rewrite the files they name (a ref among the words only adds a name nothing reads).
+        if (sub === 'checkout' || sub === 'restore')
+            for (const a of args)
+                if (a.text === null || !a.text.startsWith('-'))
+                    markWritten(a, gctx, gctx.checkedOut);
     }
     // WK-5: `git apply` and `git am` write the files their patch text names.
     if (sub === 'apply' || sub === 'am')

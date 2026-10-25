@@ -3,7 +3,8 @@
 // and mv). This module is text and option parsing only: no file system, no shell, no state.
 //
 // Names are over-collected on purpose. Every `---`, `+++`, `***` and `Index:` line counts, hunk content included (a
-// deleted line `-- x` reads as a header), and a name with a space is read both whole and up to its first space. An
+// deleted line `-- x` reads as a header), after any leading run of spaces, tabs and `X` (GNU patch skips that run
+// too), and a name with a space is read both whole and up to its first space. An
 // extra name only matters when it is protected; a real name is never dropped because it looks like content.
 // Whatever the reader cannot be sure of is `doubt`, and the mapper turns doubt into an unknown write (S0, a stop).
 
@@ -62,9 +63,14 @@ export function readPatchNames(text: string, mail: boolean): PatchNames {
   };
   for (const raw of text.split('\n')) {
     if (doubt !== null) break;
-    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    const whole = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    // GNU patch skips any run of spaces, tabs and `X` before it tests a line for a header, so every test reads the
+    // line after that run (a header may sit anywhere after the first diff, indented or not).
+    let at = 0;
+    while (at < whole.length && (whole[at] === ' ' || whole[at] === '\t' || whole[at] === 'X')) at += 1;
+    const line = whole.slice(at);
     if (/^(?:---|\+\+\+|\*\*\*)[ \t]/.test(line)) header(line.slice(4));
-    else if (line.startsWith('Index: ')) header(line.slice(7));
+    else if (line.startsWith('Index:')) header(line.slice(6));
     else if (line.startsWith('diff ')) {
       const rest = line.slice(5);
       if (rest.startsWith('--git ')) gitHeader(rest.slice(6));
@@ -75,10 +81,13 @@ export function readPatchNames(text: string, mail: boolean): PatchNames {
     // A patch that makes or changes a symlink (mode 120000) can write through it in a later entry.
     else if (/^(?:new file mode|new mode|old mode|deleted file mode) 120000/.test(line)) note('symlink_patch');
     else {
-      const move = /^(?:rename|copy) (?:from|to) (.*)$/.exec(line);
+      // git spells a move `rename from|to` or, in its older form, `rename old|new` (and `copy` alike).
+      const move = /^(?:rename|copy) (?:from|to|old|new) (.*)$/.exec(line);
       if (move) { if (move[1].length > MAX_HEADER_CHARS) note('long_header'); else add(move[1], false); continue; }
+      // Any other line that opens like a move is a spelling this reader does not know.
+      if (/^(?:rename|copy)[ \t]/.test(line)) { note('odd_move_header'); continue; }
       if (mail) {
-        const encoding = /^content-transfer-encoding:[ \t]*([^\s;]*)/i.exec(line);
+        const encoding = /^content-transfer-encoding:[ \t]*([^\s;]*)/i.exec(whole);
         if (encoding && !ENCODINGS_OK.has(encoding[1].toLowerCase())) note('encoded_mail_body');
       }
     }
