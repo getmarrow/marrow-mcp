@@ -9,7 +9,9 @@ export interface PatchNames {
 }
 /**
  * The file names in patch text. `mail` also reads mailbox input (`git am`): a body whose transfer encoding is not
- * plain (quoted-printable, base64) hides the names from this reader, so it is doubt.
+ * plain (quoted-printable, base64) or whose lines are flowed (`format=flowed`) hides the names from this reader,
+ * so it is doubt. So is a Content-Type or Content-Transfer-Encoding header that git could read differently from
+ * the text here (an RFC 2047 encoded word in it).
  */
 export declare function readPatchNames(text: string, mail: boolean): PatchNames;
 /**

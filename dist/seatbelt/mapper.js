@@ -4662,6 +4662,46 @@ function markWritten(a, ctx, into = ctx.written) {
     for (const c of ctx.cwds)
         into.add(path.posix.resolve(c || '/__unknown_cwd__', a.text));
 }
+// WK-5 patch 2: what `git checkout` and `git restore` rewrite on this line, for the patch readers only (the script,
+// package.json and Makefile readers use `ctx.written` and keep their answers). One plain file name adds its path, and
+// the reader tests a patch file by prefix, so a folder named here (`patches`, `.`) covers every file under it. A word
+// that is not one plain name makes the whole line a rewrite of anything (CHECKED_OUT_ANY, never an absolute path): a
+// variable or substitution, a glob (quoted too: git reads a pathspec as a glob), an empty word, pathspec magic (`:/`,
+// `:(glob)…`), a name that cannot be made absolute, or `--pathspec-from-file` (any abbreviation git reads), whose list
+// the mapper does not read.
+const CHECKED_OUT_ANY = '*';
+function markCheckedOut(args, ctx, run) {
+    // After a bare `--` every word is a path, even one that starts with a dash (`git checkout main -- -x.diff`).
+    let paths = false;
+    for (const a of args) {
+        const lead = a.text === null ? a.pattern : a.text;
+        if (!paths && lead === '--') {
+            paths = true;
+            continue;
+        }
+        if (!paths && lead.startsWith('-')) {
+            const long = lead.split('=')[0];
+            if (long.length > 2 && '--pathspec-from-file'.startsWith(long))
+                ctx.checkedOut.add(CHECKED_OUT_ANY);
+            continue;
+        }
+        const abs = a.text === null || a.glob || a.text === '' || a.text.startsWith(':') || /[*?[\\{]/.test(a.text) ? null : absCandidates(a.text, ctx, run);
+        if (abs === null) {
+            ctx.checkedOut.add(CHECKED_OUT_ANY);
+            continue;
+        }
+        markWritten(a, ctx, ctx.checkedOut);
+        for (const p of abs)
+            ctx.checkedOut.add(p);
+    }
+}
+// True when a patch file at `p` may have been rewritten by a `git checkout` or `git restore` earlier on this line.
+function checkedOutCovers(ctx, p) {
+    if (ctx.checkedOut.has(CHECKED_OUT_ANY))
+        return true;
+    const base = path.posix.basename(p);
+    return [...ctx.checkedOut].some((w) => path.posix.basename(w) === base || isAncestorOrSelf(w, p));
+}
 // ---------------------------------------------------------------------------------------------
 // S5 workspace boundary
 function strictChildOf(p, roots) {
@@ -6210,7 +6250,7 @@ function patchFamilyWrites(kind, args, ctx, run, x, overrides) {
         for (const p of abs) {
             // A file this command line writes first (or a name `ln -s` made) is not the file the mapper can read now.
             const base = path.posix.basename(p);
-            if (ctx.written.has(p) || [...ctx.written, ...ctx.checkedOut].some((w) => path.posix.basename(w) === base)) {
+            if (ctx.written.has(p) || [...ctx.written].some((w) => path.posix.basename(w) === base) || checkedOutCovers(ctx, p)) {
                 unknown('written_here');
                 return;
             }
@@ -8686,9 +8726,7 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
                 checkProtectedWrite(a, gctx, run, `git_${sub}`, sub === 'rm' || sub === 'mv');
         // WK-5: checkout and restore rewrite the files they name (a ref among the words only adds a name nothing reads).
         if (sub === 'checkout' || sub === 'restore')
-            for (const a of args)
-                if (a.text === null || !a.text.startsWith('-'))
-                    markWritten(a, gctx, gctx.checkedOut);
+            markCheckedOut(args, gctx, run);
     }
     // WK-5: `git apply` and `git am` write the files their patch text names.
     if (sub === 'apply' || sub === 'am')

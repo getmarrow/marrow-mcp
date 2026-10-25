@@ -1148,3 +1148,356 @@ test('patch-text (patch 1): the indent run, Index: and rename old|new in the pur
   assert.deepEqual(names(`${' '.repeat(100000)}--- a/x\n`).names, ['a/x']);
   assert.equal(names(`${' '.repeat(100)}--- ${'a'.repeat(5000)}\n`).doubt, 'long_header');
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Patch round 2 (WK-5): MEDIUM-1 `git am` honours `format=flowed; delsp=yes` (and two more mail transforms the reader could not
+// see), LOW-1 `git checkout` / `git restore` operands that are not one plain file name, LOW-2 the other readers keep their answers.
+
+const MAIL_HEAD = 'From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\nFrom: A <a@example.invalid>\nDate: Mon, 1 Jan 2024 00:00:00 +0000\nSubject: [PATCH] x\n';
+const CT_FLOWED = 'Content-Type: text/plain; charset=UTF-8; format=flowed; delsp=yes\nContent-Transfer-Encoding: 8bit\n';
+const mailStat = (n) => `---\n ${n} | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n\n`;
+const HUNK = '@@ -1 +1 @@\n-one\n+two\n';
+const SIGN = '-- \n2.43.0\n\n';
+const mailOf = (headers, body) => `${MAIL_HEAD}${headers}\n${body}`;
+const SET_NAME = '.claude/settings.json';
+// Names split over two mail lines: each first line ends in a space, which git joins (and drops) when the mail is flowed with delsp.
+const SPLIT_CLA = `--- a/.cla \nude/settings.json\n+++ b/.cla \nude/settings.json\n${HUNK}`;
+const SPLIT_A = `--- a/ \n${SET_NAME}\n+++ b/ \n${SET_NAME}\n${HUNK}`;
+const SPLIT_GIT = `diff --git a/.cla \nude/settings.json b/${SET_NAME}\n--- a/${SET_NAME}\n+++ b/${SET_NAME}\n${HUNK}`;
+const MBOX = '/home/u/proj/m.mbox';
+const amStops = (text, why, id) => {
+  const d = sh('git am m.mbox', { [MBOX]: text });
+  want(d.decision === 'stop' && d.category === 'S0' && d.reasons.includes(`git_am_write_unknown_header_${why}`), `${id}: want git_am_write_unknown_header_${why}, got ${d.decision}/${d.category} [${d.reasons}]`);
+};
+const amPasses = (text, id) => {
+  const d = sh('git am m.mbox', { [MBOX]: text });
+  want(d.decision === 'pass' && d.category === 'none', `${id}: want pass, got ${d.decision}/${d.category} [${d.reasons}]`);
+};
+
+test('WK-5 patch 2 (MEDIUM-1): a format=flowed mail is an unknown write, in every spelling real git am reads (soft-broken header names are joined by git, not by the reader)', () => {
+  const body = (split) => `${mailStat(SET_NAME)}${split}${SIGN}`;
+  const rows = [
+    ['audit row: traditional ---/+++ split after .cla', mailOf(CT_FLOWED, body(SPLIT_CLA))],
+    ['audit row: split after a/', mailOf(CT_FLOWED, body(SPLIT_A))],
+    ['audit row: lower-case header, FORMAT=Flowed; DelSp=Yes', mailOf('content-type: text/plain; charset=UTF-8; FORMAT=Flowed; DelSp=Yes\ncontent-transfer-encoding: 8bit\n', body(SPLIT_CLA))],
+    ['audit row: diff --git line split', mailOf(CT_FLOWED, `${mailStat(SET_NAME)}${SPLIT_GIT}${SIGN}`)],
+    ['flowed without delsp', mailOf('Content-Type: text/plain; charset=UTF-8; format=flowed\n', body(SPLIT_CLA))],
+    ['folded Content-Type (space)', mailOf('Content-Type: text/plain; charset=UTF-8;\n format=flowed;\n delsp=yes\n', body(SPLIT_CLA))],
+    ['folded Content-Type (tab)', mailOf('Content-Type: text/plain; charset=UTF-8;\n\tformat=flowed;\tdelsp=yes\n', body(SPLIT_CLA))],
+    ['quoted values', mailOf('Content-Type: text/plain; charset="UTF-8"; format="flowed"; delsp="yes"\n', body(SPLIT_CLA))],
+    ['mixed case', mailOf('CONTENT-TYPE: TEXT/PLAIN; FoRmAt=FlOwEd; DeLsP=YeS\n', body(SPLIT_CLA))],
+    ['MIME part header only', mailOf('MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary="BB"\n', `--BB\n${CT_FLOWED}\n${body(SPLIT_CLA)}--BB--\n`)],
+    ['second MIME part', mailOf('MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary="BB"\n', `--BB\nContent-Type: text/plain\n\nhello\n--BB\nContent-Type: text/x-patch; format=flowed; delsp=yes\n\n${body(SPLIT_CLA)}--BB--\n`)],
+    ['second message of the mbox', `${mailOf('', `${mailStat('ok.txt')}${OK_P1}${SIGN}`)}\n${mailOf(CT_FLOWED, body(SPLIT_CLA))}`],
+    ['CRLF mail', mailOf(CT_FLOWED, body(SPLIT_CLA)).replace(/\n/g, '\r\n')],
+    ['space-stuffed and split', mailOf(CT_FLOWED, `${mailStat(SET_NAME)} --- a/.cla \nude/settings.json\n +++ b/.cla \nude/settings.json\n${HUNK}${SIGN}`)],
+    ['names not split at all (the flowed word is enough)', mailOf(CT_FLOWED, `${mailStat(SET_NAME)}${uni(`a/${SET_NAME}`, `b/${SET_NAME}`)}${SIGN}`)],
+    // new friction: a flowed mail that names only ordinary files holds too (git format-patch never writes one)
+    ['NEW FRICTION: flowed mail naming only an ordinary file', mailOf(CT_FLOWED, `${mailStat('src/index.ts')}${OK_P1}${SIGN}`)],
+    // over-hold: the words anywhere in a mail (reason is the same)
+    ['over-hold: the words in the commit message', mailOf('', `see format=flowed here\n${mailStat('src/index.ts')}${OK_P1}${SIGN}`)],
+    ['over-hold: the words in a hunk line', mailOf('', `${mailStat('src/index.ts')}${OK_P1.replace('-one', '-format=flowed')}${SIGN}`)],
+    ['over-hold: blanks around the equals sign', mailOf('Content-Type: text/plain; format = flowed; delsp = yes\n', `${mailStat('src/index.ts')}${OK_P1}${SIGN}`)],
+  ];
+  for (const [id, text] of rows) amStops(text, 'flowed_mail_body', id);
+  // the plain mbox naming a protected file (control) still stops on the protected path itself
+  const plain = mailOf('', `${mailStat(SET_NAME)}${uni(`a/${SET_NAME}`, `b/${SET_NAME}`)}${SIGN}`);
+  const d = sh('git am m.mbox', { [MBOX]: plain });
+  want(d.decision === 'stop' && d.reasons.includes('git_am_write_protected_path'), `plain mbox: ${d.decision} [${d.reasons}]`);
+  // plain mail with the split names and no flowed word: git does not join them, so there is nothing hidden (names read as written)
+  amPasses(mailOf('', body(SPLIT_CLA)), 'split names in a plain mail');
+  // benign mails that git format-patch writes keep passing: plain, 8bit with a charset, encoded words in From / Subject (also folded)
+  const benignBody = `${mailStat('src/index.ts')}${OK_P1}${SIGN}`;
+  amPasses(mailOf('', benignBody), 'plain benign mail');
+  amPasses(mailOf('MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n', benignBody), 'charset + 8bit');
+  amPasses(mailOf('Content-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 7bit\n', benignBody), '7bit');
+  amPasses(mailOf('', benignBody).replace('From: A', 'From: =?UTF-8?q?J=C3=BCrgen?='), 'encoded From');
+  amPasses(mailOf('', benignBody).replace('Subject: [PATCH] x', 'Subject: =?UTF-8?q?[PATCH]_x=C3=A9?=\n =?UTF-8?q?_more=C3=A9?='), 'folded encoded Subject');
+  amPasses(mailOf('Content-Type: text/plain\n', benignBody).replace('Subject: [PATCH] x', 'Subject: s\n =?UTF-8?q?x?='), 'folded encoded Subject, then a plain Content-Type');
+  // the flowed rule belongs to git am only: patch and git apply do not decode mail
+  const flowedFile = { '/home/u/proj/fl.mbox': mailOf(CT_FLOWED, benignBody) };
+  passes('git apply fl.mbox', flowedFile);
+  passes('patch -p1 < fl.mbox', flowedFile);
+  // a second git am on the same line reads its own mailbox, in every shell form
+  const two = { [MBOX]: mailOf(CT_FLOWED, body(SPLIT_CLA)), '/home/u/proj/okm.mbox': mailOf('', benignBody) };
+  for (const command of ['git am okm.mbox && git am m.mbox', 'git am okm.mbox m.mbox', 'git am okm.mbox; git am m.mbox', '(git am okm.mbox; git am m.mbox)', "bash -c 'git am okm.mbox; git am m.mbox'", 'git am okm.mbox || git am m.mbox']) {
+    const d = sh(command, two);
+    want(d.decision === 'stop' && d.category === 'S0' && d.reasons.includes('git_am_write_unknown_header_flowed_mail_body'), `${command}: want the flowed doubt, got ${d.decision} [${d.reasons}]`);
+  }
+  passes('git am okm.mbox && git am okm.mbox', two);
+});
+
+test('WK-5 patch 2 (MEDIUM-1, found by the security pass): git am also decodes RFC 2047 encoded words in Content-Type and finds base64 or quoted-printable anywhere in a Content-Transfer-Encoding value', () => {
+  const split = `${mailStat(SET_NAME)}${SPLIT_CLA}${SIGN}`;
+  const real = Buffer.from(`${mailStat(SET_NAME)}${uni(`a/${SET_NAME}`, `b/${SET_NAME}`)}${SIGN}`).toString('base64').replace(/(.{76})/g, '$1\n') + '\n';
+  const decoy = uni('a/ok.txt', 'b/ok.txt');
+  const q = '=?utf-8?q?text/plain=3B_format=3Dflowed=3B_delsp=3Dyes?=';
+  const rows = [
+    ['Q encoded word is the whole Content-Type', mailOf(`Content-Type: ${q}\n`, split), 'encoded_mail_header'],
+    ['B encoded word is the whole Content-Type', mailOf(`Content-Type: =?utf-8?b?${Buffer.from('text/plain; format=flowed; delsp=yes').toString('base64')}?=\n`, split), 'encoded_mail_header'],
+    ['encoded word holds format=flowed only', mailOf('Content-Type: text/plain; =?utf-8?q?format=3Dflowed?=; delsp=yes\n', split), 'encoded_mail_header'],
+    ['encoded word on a folded line', mailOf('Content-Type: text/plain;\n =?utf-8?q?format=3Dflowed=3B?=\n delsp=yes\n', split), 'encoded_mail_header'],
+    ['value starts on the folded line', mailOf(`Content-Type:\n ${q}\n`, split), 'encoded_mail_header'],
+    ['encoded word in a MIME part header', mailOf('MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary="BB"\n', `--BB\nContent-Type: ${q}\n\n${split}--BB--\n`), 'encoded_mail_header'],
+    ['upper-case header and encoded word', mailOf('CONTENT-TYPE: =?UTF-8?Q?text/plain=3B_FORMAT=3DFlowed=3B_DelSp=3DYes?=\n', split), 'encoded_mail_header'],
+    ['Content-Transfer-Encoding: 7bit base64 (real patch in base64, plain decoy)', mailOf('Content-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 7bit base64\n', `${real}${decoy}`), 'encoded_mail_body'],
+    ['Content-Transfer-Encoding: 7bit; x=base64', mailOf('Content-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 7bit; x=base64\n', `${real}${decoy}`), 'encoded_mail_body'],
+    ['Content-Transfer-Encoding folded: 7bit, then base64', mailOf('Content-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 7bit\n base64\n', `${real}${decoy}`), 'encoded_mail_body'],
+    ['Content-Transfer-Encoding folded: 8bit, then quoted-printable', mailOf('Content-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n quoted-printable\n', `${mailStat(SET_NAME)}--- a/.cla=\nude/settings.json\n+++ b/.cla=\nude/settings.json\n${HUNK}${SIGN}${decoy}`), 'encoded_mail_body'],
+    ['Content-Transfer-Encoding upper case', mailOf('Content-Type: text/plain; charset=UTF-8\nCONTENT-TRANSFER-ENCODING: 7BIT BaSe64\n', `${real}${decoy}`), 'encoded_mail_body'],
+    ['Content-Transfer-Encoding in a MIME part', mailOf('MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary="BB"\n', `--BB\nContent-Type: text/plain\nContent-Transfer-Encoding: 7bit base64\n\n${real}${decoy}--BB--\n`), 'encoded_mail_body'],
+  ];
+  for (const [id, text, why] of rows) amStops(text, why, id);
+  // the encoded word as the transfer encoding and the old rows (first token not plain) are doubts as before
+  const ew = sh('git am m.mbox', { [MBOX]: mailOf('Content-Type: text/plain\nContent-Transfer-Encoding: =?utf-8?q?base64?=\n', `${real}${decoy}`) });
+  want(ew.decision === 'stop' && ew.reasons.some((r) => r.startsWith('git_am_write_unknown_header_encoded_mail_')), `encoded-word transfer encoding: ${ew.decision} [${ew.reasons}]`);
+  for (const enc of ['base64', 'quoted-printable', 'BASE64', 'x-uuencode']) {
+    amStops(mailOf(`Content-Type: text/plain\nContent-Transfer-Encoding: ${enc}\n`, `${real}${decoy}`), 'encoded_mail_body', enc);
+  }
+  // RFC 2231 style parameters and a Content-Type with no encoded word are not decoded by git: no new hold
+  amPasses(mailOf('Content-Type: text/plain; charset=UTF-8; name="a.patch"\n', `${mailStat('src/index.ts')}${OK_P1}${SIGN}`), 'plain Content-Type with parameters');
+});
+
+test('patch-text (patch 2): the mail-only doubts of the pure reader', () => {
+  const names = (t, mail = true) => text.readPatchNames(t, mail);
+  const diff = '--- a/x\n+++ b/x\n';
+  for (const header of ['Content-Type: text/plain; format=flowed', 'Content-Type: text/plain; format=flowed; delsp=yes', 'content-type: text/plain; FORMAT=Flowed; DelSp=Yes',
+    'Content-Type: text/plain; format="flowed"', 'Content-Type: text/plain; format = flowed', 'Content-Type: text/plain;\n format=flowed', 'Content-Type: text/plain;\n\tformat=flowed',
+    'X-Other: 1\n format=flowed', 'format=flowed', 'FORMAT=FLOWED', 'Content-Type: text/plain; format=flowedX']) {
+    assert.equal(names(`${header}\n\n${diff}`).doubt, 'flowed_mail_body', JSON.stringify(header));
+    assert.equal(names(`${header}\n\n${diff}`, false).doubt, null, `${JSON.stringify(header)} without mail mode`);
+  }
+  // CRLF, and the flowed word on a line that also looks like a header
+  assert.equal(names(`Content-Type: text/plain; format=flowed\r\n\r\n${diff}`).doubt, 'flowed_mail_body');
+  assert.equal(names('--- a/x format=flowed\n+++ b/x\n').doubt, 'flowed_mail_body');
+  assert.equal(names(`${diff}+format=flowed\n`).doubt, 'flowed_mail_body');
+  // a flowed word after real names does not drop them (the call is a doubt, so they are not used, but the reader stays total)
+  assert.deepEqual(names(`${diff}Content-Type: text/plain; format=flowed\n`).names.sort(), ['a/x', 'b/x']);
+  // no flowed word: unchanged
+  for (const header of ['Content-Type: text/plain; charset=UTF-8', 'Content-Type: text/plain; format=fixed', 'Content-Type: text/plain; formatted=flowing', 'Content-Type: text/plain; reformat=yes; flow=ed']) {
+    assert.equal(names(`${header}\n\n${diff}`).doubt, null, JSON.stringify(header));
+  }
+  // an encoded word in Content-Type (any line of that header), or base64 / quoted-printable anywhere in a Content-Transfer-Encoding value
+  for (const header of ['Content-Type: =?utf-8?q?text/plain?=', 'content-type: text/plain; =?UTF-8?B?Zm9ybWF0PWZsb3dlZA==?=', 'Content-Type: text/plain;\n =?utf-8?q?format=3Dflowed?=',
+    'Content-Type:\n =?utf-8?q?x?=\n charset=UTF-8']) {
+    assert.equal(names(`${header}\n\n${diff}`).doubt, 'encoded_mail_header', JSON.stringify(header));
+    assert.equal(names(`${header}\n\n${diff}`, false).doubt, null);
+  }
+  for (const header of ['Content-Transfer-Encoding: base64', 'Content-Transfer-Encoding: 7bit base64', 'Content-Transfer-Encoding: 7bit; x=base64', 'Content-Transfer-Encoding: 7bit\n base64',
+    'CONTENT-TRANSFER-ENCODING: 8bit BASE64', 'Content-Transfer-Encoding: 8bit\n\tquoted-printable', 'Content-Transfer-Encoding: quoted-printable']) {
+    assert.equal(names(`${header}\n\n${diff}`).doubt, 'encoded_mail_body', JSON.stringify(header));
+    assert.equal(names(`${header}\n\n${diff}`, false).doubt, null);
+  }
+  assert.equal(names(`Content-Transfer-Encoding: =?utf-8?q?base64?=\n\n${diff}`).doubt, 'encoded_mail_header');
+  assert.equal(names(`Content-Transfer-Encoding: x-uuencode\n\n${diff}`).doubt, 'encoded_mail_body');
+  // headers git format-patch writes keep reading: encoded words in other headers (also folded), charset, 7bit / 8bit
+  for (const t of ['From: =?UTF-8?q?J=C3=BCrgen?= <a@example.invalid>\nSubject: =?UTF-8?q?x?=\n =?UTF-8?q?y?=\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n\n',
+    'Subject: s\n =?UTF-8?q?x?=\nContent-Transfer-Encoding: 7bit\n\n', 'MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8; name="a.patch"\n\n']) {
+    assert.deepEqual(names(`${t}${diff}`), { names: ['a/x', 'b/x'], doubt: null }, JSON.stringify(t));
+  }
+  // an indented hunk line is not a mail header, even when it starts with a header word and holds an encoded-looking text
+  assert.equal(names(`Subject: s\n\n${diff}@@ -1 +1 @@\n Content-Type: x =?a?b?c?=\n`).doubt, null);
+});
+
+// ---- LOW-1: a git checkout / git restore operand that is not one plain file name may rewrite the patch file after it was read
+const LOW1_FILES = {
+  '/home/u/proj/p.diff': OK_P1,
+  '/home/u/proj/q.diff': OK_P1,
+  '/home/u/proj/other.txt': 'x\n',
+  '/home/u/proj/patches/p.diff': OK_P1,
+  '/home/u/proj/sub/p.diff': OK_P1,
+  '/home/u/proj/list': 'p.diff\n',
+  '/home/u/proj/p.mbox': FILES['/home/u/proj/ok.mbox'],
+  '/home/u/q.diff': OK_P1,
+  '/home/u/proj/-x.diff': OK_P1,
+};
+
+test('WK-5 patch 2 (LOW-1): an operand of git checkout / git restore that is a folder, a glob, a variable, a substitution or a pathspec file makes any later patch read on the line an unknown write', () => {
+  for (const [kind, command] of [
+    // the six rows of the brief
+    ['apply', 'git checkout main -- . && git apply p.diff'],
+    ['patch', 'git checkout main -- patches && patch -p1 < patches/p.diff'],
+    ['apply', 'git checkout -- *.diff && git apply p.diff'],
+    ['apply', "git checkout -- '*.diff' && git apply p.diff"],
+    ['apply', 'git checkout --pathspec-from-file=list && git apply p.diff'],
+    ['apply', 'git checkout -- $(cat list) && git apply p.diff'],
+    // folders
+    ['apply', 'git restore . && git apply p.diff'],
+    ['patch', 'git checkout -- patches/ && patch -p1 < patches/p.diff'],
+    ['patch', 'git checkout -- ./patches && patch -p1 < ./patches/../patches/p.diff'],
+    ['apply', 'cd sub && git checkout -- . && cd .. && git apply sub/p.diff'],
+    ['apply', 'git -C sub checkout -- . && git apply sub/p.diff'],
+    ['apply', 'git checkout -- /home/u/proj && git apply p.diff'],
+    ['apply', 'git checkout -- ~/proj && git apply p.diff'],
+    ['apply', 'git checkout -- .. && git apply p.diff'],
+    ['apply', 'git checkout -- / && git apply p.diff'],
+    // globs, quoted globs, brace and class forms, escapes, empty word, pathspec magic
+    ['apply', 'git checkout -- p.di?? && git apply p.diff'],
+    ['apply', 'git checkout -- p.di[f]f && git apply p.diff'],
+    ['apply', "git checkout -- '{p,q}.diff' && git apply p.diff"],
+    ['apply', 'git checkout -- {p,q}.diff && git apply p.diff'],
+    ['apply', "git checkout -- 'p.di\\f' && git apply p.diff"],
+    ['apply', "git checkout -- '' && git apply p.diff"],
+    ['apply', "git checkout -- '' && git apply ../q.diff"],
+    ['apply', "git checkout -- ':/' && git apply p.diff"],
+    ['apply', "git checkout -- ':(glob)**/*.diff' && git apply p.diff"],
+    ['apply', "git checkout -- ':!other.txt' && git apply p.diff"],
+    // after a bare `--` every word is a path, even one that starts with a dash
+    ['apply', 'git checkout main -- -x.diff && git apply -- -x.diff'],
+    ['patch', 'git checkout main -- -x.diff && patch -p1 -i -x.diff'],
+    ['apply', 'git restore -- -x.diff && git apply -- -x.diff'],
+    // the operands come from a pipe, find -exec or a substitution
+    ['apply', 'echo p.diff | xargs git checkout -- && git apply p.diff'],
+    ['apply', "find . -name '*.diff' -exec git checkout -- {} \\; && git apply p.diff"],
+    ['apply', 'git ls-files | xargs git checkout -- && git apply p.diff'],
+    ['apply', 'git checkout -- $(git ls-files) && git apply p.diff'],
+    ['apply', 'for f in p.diff q.diff; do git checkout -- "$f"; done; git apply p.diff'],
+    // variables and substitutions
+    ['apply', 'git checkout -- "$F" && git apply p.diff'],
+    ['apply', 'git checkout -- ${F} && git apply p.diff'],
+    ['apply', 'git checkout -- `cat list` && git apply p.diff'],
+    // the pathspec file, any spelling git reads
+    ['apply', 'git restore --pathspec-from-file list && git apply p.diff'],
+    ['patch', 'git restore --pathspec-from-file=list && patch -p1 < p.diff'],
+    ['apply', 'git restore --pathspec-from=list && git apply p.diff'],
+    ['apply', 'git restore --path=list && git apply p.diff'],
+    ['am', 'git checkout --pathspec-from-file list && git am p.mbox'],
+    // every shell form carries the mark to the later read
+    ['apply', '(git checkout -- .) && git apply p.diff'],
+    ['apply', 'git checkout -- . ; git apply p.diff'],
+    ['apply', 'git checkout -- . || git apply p.diff'],
+    ['apply', 'git checkout -- . | cat; git apply p.diff'],
+    ['apply', "bash -c 'git checkout -- . && git apply p.diff'"],
+    ['apply', "git checkout -- . && bash -c 'git apply p.diff'"],
+    ['apply', 'git checkout -- . && git apply p.diff q.diff'],
+    ['apply', 'git checkout -- . && git apply -p1 --directory=sub p.diff'],
+    ['am', 'git checkout -- . && git am p.mbox'],
+  ]) stopsUnknown(kind, command, 'written_here', LOW1_FILES);
+  // controls: a plain file name that is not the patch file, a ref, a branch switch, an index-only restore, a read-only apply, apply first
+  for (const command of [
+    'git checkout -- other.txt && git apply p.diff',
+    'git checkout HEAD -- other.txt && patch -p1 < p.diff',
+    'git restore other.txt && git apply p.diff',
+    'git checkout feat/x && git apply p.diff',
+    'git checkout main && git apply p.diff',
+    'git checkout -b feat && git apply p.diff',
+    'git checkout -- patches && git apply p.diff',
+    'git checkout -- sub && git apply patches/p.diff',
+    'git checkout -- src/index.ts',
+    'git restore --staged other.txt && git apply p.diff',
+    'git restore --staged --pathspec-from-file=list && git apply p.diff',
+    'git restore --source=HEAD~1 other.txt && git apply p.diff',
+    'git restore --source=$REF other.txt && git apply p.diff',
+    'git -C sub restore . && git apply p.diff',
+    'git checkout -- . && git apply --check p.diff',
+    'git checkout -- . && git apply ../q.diff',
+    'git apply p.diff && git checkout -- .',
+    'git checkout -- other.txt && git apply sub/p.diff',
+  ]) passes(command, LOW1_FILES);
+});
+
+test('WK-5 patch 2 (LOW-1, new friction): a variable or substitution among the words of git checkout / git restore holds a later apply, even a branch name', () => {
+  for (const command of ['git checkout "$BRANCH" && git apply p.diff', 'git checkout -b "$BRANCH" && git apply p.diff', 'git checkout $(git rev-parse HEAD) && git apply p.diff']) {
+    stopsUnknown('apply', command, 'written_here', LOW1_FILES);
+  }
+});
+
+// ---- LOW-2: only the patch readers look at the checked-out names. Putting them into the shared `ctx.written` would loosen these five
+const LOW2_FILES = {
+  '/home/u/proj/bad.sh': 'git push --force origin main\n',
+  '/home/u/proj/good.sh': 'echo hi\n',
+  '/home/u/proj/package.json': JSON.stringify({ scripts: { y: 'git push --force origin main', z: 'echo hi' } }),
+  '/home/u/proj/Makefile': 'bad:\n\tgit push --force origin main\ngood:\n\techo hi\n',
+};
+
+test('WK-5 patch 2 (LOW-2): checkout and restore operands never loosen the script, package.json and Makefile readers (the shared written set is not used)', () => {
+  for (const command of [
+    'git checkout -- bad.sh && bash bad.sh',
+    'git checkout -- package.json && npm run y',
+    'git restore package.json && npm run y',
+    'git checkout -- Makefile && make bad',
+    'git restore Makefile && make bad',
+    // the whole-line mark (a folder, a glob) does not reach them either
+    'git checkout -- . && bash bad.sh',
+    'git checkout -- . && npm run y',
+    'git checkout -- . && make bad',
+    'git checkout -- *.sh && bash bad.sh',
+    'git restore . && ./bad.sh',
+  ]) {
+    const d = sh(command, LOW2_FILES);
+    want(d.decision === 'stop' && d.reasons.includes('git_push_force_protected_branch'), `${command}: want the force-push stop of the script, got ${d.decision} [${d.reasons}]`);
+  }
+  // the same answer with and without the checkout in front, for every reader
+  for (const [withCheckout, without] of [
+    ['git checkout -- bad.sh && bash bad.sh', 'true && bash bad.sh'], ['git checkout -- package.json && npm run y', 'true && npm run y'],
+    ['git restore package.json && npm run y', 'true && npm run y'], ['git checkout -- Makefile && make bad', 'true && make bad'], ['git restore Makefile && make bad', 'true && make bad'],
+    ['git checkout -- good.sh && bash good.sh', 'true && bash good.sh'], ['git checkout -- . && npm run z', 'true && npm run z'], ['git restore Makefile && make good', 'true && make good'],
+    ['git checkout -- *.sh && bash good.sh', 'true && bash good.sh'],
+  ]) {
+    const a = sh(withCheckout, LOW2_FILES);
+    const b = sh(without, LOW2_FILES);
+    want(a.decision === b.decision && a.category === b.category && a.reasons.join() === b.reasons.join(), `${withCheckout}: [${a.decision} ${a.reasons}] differs from [${b.decision} ${b.reasons}]`);
+  }
+  for (const command of ['git checkout -- good.sh && bash good.sh', 'git checkout -- package.json && npm run z', 'git restore Makefile && make good', 'git checkout -- . && bash good.sh', 'git checkout -- . && make good']) passes(command, LOW2_FILES);
+});
+
+test('WK-5 patch 2 (consumers, mapper level): the outage reading is high for the new stops, benign rows stay not high, and held-call keys come from the command text only', () => {
+  const { outageRisk } = require('../dist/seatbelt/hook.js');
+  const { stableToolCorrelation, exactHookTarget } = require('../dist/hook-contract.js');
+  const sb = sandbox();
+  try {
+    const put = (rel, body) => { fs.mkdirSync(path.dirname(path.join(sb.proj, rel)), { recursive: true }); fs.writeFileSync(path.join(sb.proj, rel), body); };
+    put('fl.mbox', mailOf(CT_FLOWED, `${mailStat(SET_NAME)}${SPLIT_CLA}${SIGN}`));
+    put('flok.mbox', mailOf(CT_FLOWED, `${mailStat('src/index.ts')}${OK_P1}${SIGN}`));
+    put('enc.mbox', mailOf('Content-Type: =?utf-8?q?text/plain=3B_format=3Dflowed?=\n', `${mailStat(SET_NAME)}${SPLIT_CLA}${SIGN}`));
+    put('okm.mbox', mailOf('', `${mailStat('src/index.ts')}${OK_P1}${SIGN}`));
+    put('patches/ok.diff', OK_P1);
+    const outage = (command) => outageRisk({ tool_name: 'Bash', tool_input: { command }, cwd: sb.proj, truncated: false }, Date.now() + 60_000).risk;
+    for (const command of ['git am fl.mbox', 'git am flok.mbox', 'git am enc.mbox', 'git checkout main -- . && git apply ok.diff', 'git checkout -- *.diff && git apply ok.diff',
+      'git checkout main -- patches && patch -p1 < patches/ok.diff']) {
+      want(outage(command) === 'high', `${command}: outage reading ${outage(command)}`);
+    }
+    // (a benign git row reads high here for want of a passwd home: the git config cannot be named in this process, as on master; the benign git rows are measured in the evidence run)
+    for (const command of ['patch -p1 < ok.diff', 'patch -p1 < patches/ok.diff']) want(outage(command) !== 'high', `${command}: outage reading ${outage(command)}`);
+  } finally { sb.cleanup(); }
+  const key = (command) => stableToolCorrelation({ session_id: 's1', tool_use_id: 't', tool_name: 'Bash', tool_input: { command } });
+  const target = (command) => exactHookTarget({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+  for (const [x, y] of [['git am a.mbox', 'git am b.mbox'], ['git checkout -- . && git apply p.diff', 'git checkout -- . && git apply q.diff'],
+    ['git checkout -- *.diff && git apply p.diff', 'git checkout -- *.diff && git apply q.diff'], ['git checkout -- . && git apply p.diff', 'git checkout -- patches && git apply p.diff']]) {
+    assert.notEqual(key(x), key(y), `${x} / ${y}`);
+    assert.notEqual(target(x) + key(x), target(y) + key(y), `${x} / ${y}`);
+  }
+  const dummy = crypto.randomBytes(16).toString('hex');
+  assert.notEqual(key(`API_KEY=${dummy} git am a.mbox`), key(`API_KEY=${dummy} git am b.mbox`));
+  const withSecret = sh(`API_KEY=${dummy} git am m.mbox`, { [MBOX]: mailOf(CT_FLOWED, `${mailStat(SET_NAME)}${SPLIT_CLA}${SIGN}`) });
+  assert.equal(withSecret.decision, 'stop');
+  assert.ok(!JSON.stringify(withSecret).includes(dummy));
+  for (const r of new Set([...withSecret.reasons, ...sh('git am m.mbox', { [MBOX]: mailOf('Content-Type: =?utf-8?q?x?=\n', `${mailStat('a')}${OK_P1}`) }).reasons])) {
+    assert.match(r, /^[a-z0-9_]{1,64}$/, r);
+    assert.doesNotMatch(r, /settings|mcp|bashrc|claude|home|proj/);
+  }
+});
+
+test('WK-5 patch 2 (consumers, real keyless hook): a flowed mail and the checkout rows stop S0 through the real hook CLI, Bash and Monitor; benign rows pass; no network', () => {
+  const sb = sandbox();
+  try {
+    const put = (rel, body) => fs.writeFileSync(path.join(sb.proj, rel), body);
+    put('fl.mbox', mailOf(CT_FLOWED, `${mailStat(SET_NAME)}${SPLIT_CLA}${SIGN}`));
+    put('flok.mbox', mailOf(CT_FLOWED, `${mailStat('src/index.ts')}${OK_P1}${SIGN}`));
+    put('enc.mbox', mailOf('Content-Type: =?utf-8?q?text/plain=3B_format=3Dflowed=3B_delsp=3Dyes?=\n', `${mailStat(SET_NAME)}${SPLIT_CLA}${SIGN}`));
+    put('okm.mbox', mailOf('Content-Transfer-Encoding: 8bit\nContent-Type: text/plain; charset=UTF-8\n', `${mailStat('src/index.ts')}${OK_P1}${SIGN}`));
+    for (const tool of ['Bash', 'Monitor']) {
+      for (const command of ['git am fl.mbox', 'git am flok.mbox', 'git am enc.mbox', 'git checkout main -- . && git apply ok.diff', 'git checkout -- *.diff && patch -p1 < ok.diff']) {
+        const r = hook(sb, event(sb, tool, command));
+        assert.equal(r.v, 'STOP_S0', `${tool}: ${command}: ${r.body || ''}`);
+      }
+      for (const command of ['git am okm.mbox', 'git checkout -- other.txt && git apply ok.diff', 'git restore --staged src/index.ts && git apply ok.diff']) assert.equal(hook(sb, event(sb, tool, command)).v, 'pass', `${tool}: ${command}`);
+    }
+    assert.equal(fs.existsSync(sb.netspy) ? fs.readFileSync(sb.netspy, 'utf8') : '', '');
+    const r = hook(sb, event(sb, 'Bash', 'git am fl.mbox'));
+    assert.match(r.body, /Code: S0\.self_protection\/git_am_write_unknown_header_flowed_mail_body/);
+    assert.doesNotMatch(r.body, /\.claude\/settings/);
+    const r2 = hook(sb, event(sb, 'Bash', 'git checkout main -- . && git apply ok.diff'));
+    assert.match(r2.body, /Code: S0\.self_protection\/git_apply_write_unknown_written_here/);
+  } finally { sb.cleanup(); }
+});

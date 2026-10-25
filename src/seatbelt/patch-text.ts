@@ -26,7 +26,9 @@ const ENCODINGS_OK = new Set(['7bit', '8bit', 'binary']);
 
 /**
  * The file names in patch text. `mail` also reads mailbox input (`git am`): a body whose transfer encoding is not
- * plain (quoted-printable, base64) hides the names from this reader, so it is doubt.
+ * plain (quoted-printable, base64) or whose lines are flowed (`format=flowed`) hides the names from this reader,
+ * so it is doubt. So is a Content-Type or Content-Transfer-Encoding header that git could read differently from
+ * the text here (an RFC 2047 encoded word in it).
  */
 export function readPatchNames(text: string, mail: boolean): PatchNames {
   const names = new Set<string>();
@@ -61,9 +63,24 @@ export function readPatchNames(text: string, mail: boolean): PatchNames {
       add(rest.slice(i + 1), false);
     }
   };
+  // The mail header (Content-Type or Content-Transfer-Encoding) the current line belongs to, in mail mode.
+  let mailHeader: 'type' | 'encoding' | null = null;
   for (const raw of text.split('\n')) {
     if (doubt !== null) break;
     const whole = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (mail) {
+      // `git am` un-flows a `format=flowed; delsp=yes` body, the patch part included: a line that ends in a space is
+      // joined to the next one and the space is dropped, so a header name split over two mail lines is one name to
+      // git. This reader does not follow that, so any flowed mail is doubt, whether the word sits in the Content-Type
+      // header, a folded one, a MIME part header (any case) or the body. git format-patch never writes a flowed mail.
+      if (/format\s*=\s*"?flowed/i.test(whole)) { note('flowed_mail_body'); continue; }
+      // git also decodes RFC 2047 encoded words (`=?utf-8?q?format=3Dflowed?=`) in a header value before it reads
+      // the Content-Type, and it looks for `base64` and `quoted-printable` anywhere in a Content-Transfer-Encoding
+      // value. A header is its line at column 0 plus the folded lines under it (they start with a space or a tab).
+      if (whole[0] !== ' ' && whole[0] !== '\t') mailHeader = /^content-type:/i.test(whole) ? 'type' : /^content-transfer-encoding:/i.test(whole) ? 'encoding' : null;
+      if (mailHeader !== null && whole.includes('=?')) { note('encoded_mail_header'); continue; }
+      if (mailHeader === 'encoding' && /base64|quoted-printable/i.test(whole)) { note('encoded_mail_body'); continue; }
+    }
     // GNU patch skips any run of spaces, tabs and `X` before it tests a line for a header, so every test reads the
     // line after that run (a header may sit anywhere after the first diff, indented or not).
     let at = 0;
