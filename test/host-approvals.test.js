@@ -28,6 +28,7 @@ const { PERMISSION_REQUEST_HOOK_COMMAND, ACTION_RESULT_HOOK_COMMAND, NATIVE_HOOK
 // rejection and interruption texts are pinned from the Claude Code 2.1.289 bundle.
 const CLI = join(__dirname, '..', 'dist', 'cli.js');
 const MOCK = join(__dirname, 'support', 'host-approval-fetch-mock.cjs');
+const POST_HOOK_PROBE = join(__dirname, 'support', 'post-hook-probe.cjs');
 const FIXTURES = join(__dirname, 'fixtures', 'host-approvals');
 const fixture = (name) => JSON.parse(readFileSync(join(FIXTURES, name), 'utf8'));
 
@@ -1022,14 +1023,34 @@ test('L-3 and L-N1: headless Claude Code (sdk-*, its GitHub Action) holds quietl
 });
 
 test('L-N2: without the PermissionRequest marker hook, PostToolUse does not wait for a marker', async () => {
-  const h = harness();
+  // The claim is that PostToolUse never enters the marker wait (LATE_MARKER_WAIT_MS, 1.5 s in src/host-approval.ts). The probe
+  // counts that wait's 100 ms ticks, which CPU load cannot change. The wall-clock bound stays below the wait, so it takes the
+  // best of up to three fresh runs: a wait costs every run 1.5 s, one starved run does not.
+  const probeEnv = { NODE_OPTIONS: `--require=${MOCK} --require=${POST_HOOK_PROBE}` };
+  const ticks = (h) => JSON.parse(readFileSync(join(h.dir, 'mock', 'post-hook-probe.json'), 'utf8')).marker_wait_ticks;
+  let best = Infinity;
+  for (let attempt = 0; attempt < 3 && best >= 1_400; attempt += 1) {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime() });
+      assert.equal(h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json')).json.hookSpecificOutput.permissionDecision, 'ask');
+      const post = await h.runAsync('claude-hook', fixture('claude-post-tool-use.json'), probeEnv);
+      assert.equal(ticks(h), 0, 'PostToolUse never entered the marker wait');
+      assert.equal(hostReports(h)[0].body.hook_event, 'PreToolUse', 'labelled an allow rule: no marker hook ran');
+      best = Math.min(best, post.ms);
+    } finally { h.cleanup(); }
+  }
+  assert.ok(best < 1_400, `PostToolUse took ${best} ms at best of 3`);
+  // Positive control: with the marker hook configured and no marker landing, the same probe sees the wait.
+  const c = harness();
   try {
-    h.setConfig({ runtime: hostRuntime() });
-    assert.equal(h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json')).json.hookSpecificOutput.permissionDecision, 'ask');
-    const post = await h.runAsync('claude-hook', fixture('claude-post-tool-use.json'));
-    assert.ok(post.ms < 1_400, `PostToolUse took ${post.ms} ms`);
-    assert.equal(hostReports(h)[0].body.hook_event, 'PreToolUse', 'labelled an allow rule: no marker hook ran');
-  } finally { h.cleanup(); }
+    mkdirSync(join(c.home, '.claude'), { recursive: true });
+    writeFileSync(join(c.home, '.claude', 'settings.json'), JSON.stringify({ hooks: { PermissionRequest: [{ matcher: '*', hooks: [{ type: 'command', command: PERMISSION_REQUEST_HOOK_COMMAND, async: true }] }] } }));
+    c.setConfig({ runtime: hostRuntime() });
+    assert.equal(c.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json')).json.hookSpecificOutput.permissionDecision, 'ask');
+    await c.runAsync('claude-hook', fixture('claude-post-tool-use.json'), probeEnv);
+    assert.ok(ticks(c) >= 1, 'the probe sees the marker wait when the marker hook is configured');
+  } finally { c.cleanup(); }
 });
 
 test('L-4: after a mode switch the dialog still shows the server notice and the reason', () => {
