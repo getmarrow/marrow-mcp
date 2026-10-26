@@ -212,7 +212,13 @@ These behaviors shipped in 3.9.103 and still apply.
 - **Hidden commands are checked:** commands inside an unquoted here-document body, a `${x:-$(...)}` default or an arithmetic expansion are checked like any other command.
 - **`marrow-mcp keys create` reads every flag form:** `--name=`, `--type=` and `--expires=` (and `-n=`, `-t=`) are read like `--name value`; a flag that is present but blank, or a `--scopes` / `--agents` list with no entry, is a usage error (exit 2) and nothing is sent; leaving `--scopes` and `--agents` out sends neither.
 
-## What's New in v3.9.107
+## What's New in v3.9.108
+
+v3.9.108 adds Codex plugin pins on 3.9.107. The full entry is in CHANGELOG.md.
+
+- **Codex plugins `marrow` and `marrow-advisory` 0.1.3 are recognised.** The SHA-256 digests of their six pinned files are now listed next to the 0.1.1 digests. A Codex with 0.1.3 installed and enabled, and those six files unchanged, is recognised as running the official Marrow server, the same as 0.1.1 is; any other change to them is checked like any other server. The digests of the 0.1.2 drafts, which were never released, are removed. Nothing changes for an installed 0.1.1.
+
+These behaviors shipped in 3.9.107 and still apply.
 
 v3.9.107 is a security hotfix on 3.9.106. The full entries are in CHANGELOG.md.
 

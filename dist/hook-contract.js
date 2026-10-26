@@ -29,7 +29,7 @@ const env_1 = require("./env");
 const normalized_action_1 = require("./normalized-action");
 const own_server_identity_1 = require("./own-server-identity");
 const own_tool_1 = require("./own-tool");
-exports.MCP_ADAPTER_VERSION = '3.9.107';
+exports.MCP_ADAPTER_VERSION = '3.9.108';
 exports.NATIVE_HOOK_MATCHER = (0, own_tool_1.nativeHookMatcher)();
 /**
  * Matchers older versions wrote, so a hook carrying one needs repair: the

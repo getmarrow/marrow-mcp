@@ -115,8 +115,8 @@ test('the new core obeys every exactness rule of the old one: another version, i
   const cfg = (edit) => withConfig(NEW, (c) => ({ ...c, ...edit(c) }));
   const swapCase = (text) => text.replace(/[A-Za-z]/g, (ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()));
   const rows = [
-    ['version 3.9.1070 throughout', sh(cfg(() => ({ version: '3.9.1070' })), '3.9.1070')],
-    ['3.9.104 integrity under 3.9.107', sh(cfg(() => ({ integrity: `sha512-${'A'.repeat(86)}==` })))],
+    ['version 3.9.1080 throughout', sh(cfg(() => ({ version: '3.9.1080' })), '3.9.1080')],
+    ['3.9.104 integrity under 3.9.108', sh(cfg(() => ({ integrity: `sha512-${'A'.repeat(86)}==` })))],
     ['integrity case swapped', sh(cfg((c) => ({ integrity: `sha512-${swapCase(c.integrity.slice(7))}` })))],
     ['integrity null', sh(cfg(() => ({ integrity: null })))],
     ['stale SDK pin', sh(cfg((c) => ({ sdk: { ...c.sdk, integrity: `sha512-${'B'.repeat(86)}==` } })))],
