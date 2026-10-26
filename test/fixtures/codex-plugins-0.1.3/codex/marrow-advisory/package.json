@@ -1,0 +1,10 @@
+{
+  "name": "marrow-codex-advisory-plugin",
+  "private": true,
+  "description": "Pins the Marrow MCP package that this plugin's hooks and MCP server run. The launcher installs it from package-lock.json into the plugin data directory with install scripts disabled.",
+  "license": "MIT",
+  "dependencies": {
+    "@getmarrow/mcp": "3.9.107",
+    "@getmarrow/sdk": "3.7.67"
+  }
+}

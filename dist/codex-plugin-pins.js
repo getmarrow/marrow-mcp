@@ -34,23 +34,23 @@ exports.OFFICIAL_CODEX_PLUGIN_PINS = Object.freeze({
         'package.json': '7ebeb726b358874e1ecb69bc9bafcb4ec7d5b6ec1fb703af659eb5655680be55',
         'package-lock.json': '266f078eebff4d54fe78431cc84a8d50b7aae972ef15b81592f377823ea47101',
     }),
-    // getmarrow/plugins: the Codex plugins pinned to @getmarrow/mcp 3.9.103. The 0.1.1 entries above
-    // stay so that installs of the older release are still proven, not turned into new friction.
-    'marrow@0.1.2': Object.freeze({
-        '.codex-plugin/plugin.json': 'd6319939f5548a1708badcf6d11d63221b63ea4b4a3791743e8d0744798e6fe7',
+    // getmarrow/plugins release/codex-0.1.3: the two Codex plugins pinned to @getmarrow/mcp 3.9.107.
+    // The 0.1.1 entries stay so older installs stay proven; the 0.1.2 drafts were never shipped.
+    'marrow@0.1.3': Object.freeze({
+        '.codex-plugin/plugin.json': '6c772bfff5cdc4ce78072cda02de8639ed24e6c82347ee0273545dba329bc77e',
         '.mcp.json': '204c90071832e231d445cf648fbb19e3e157aaa290f1c303b230aeff1d522226',
         'scripts/marrow-launch.cjs': '8362944504f6c4a9f8f5dabb4676e419ee05bdad34ced873fab25454a445dbe4',
-        'scripts/mcp-manifest.json': '66841230e61f22f8d3f55563042c336d88afc15c7adaffdbc34f456abe529f42',
-        'package.json': '6312b147d5401084355d8319fb211319bffd7329c76ac7108c6fb47a44fdeb40',
-        'package-lock.json': 'f2101e3b18d8a46b0c50bcef9f62d51826fce12e8768e81db3e86c6ca54d3dcc',
+        'scripts/mcp-manifest.json': '9580d83df88010a2575e08ce5c59121cb2b1363578baeb2a68bb6abf75de2240',
+        'package.json': '992754b4809addb2f19de3bc81ef87caf77ae97b14f0a8da73669b21b8a7559d',
+        'package-lock.json': '70a87cedeb0b099d32245327492e3a5ba4e73a7af24af68d2ce6053cfd51cb07',
     }),
-    'marrow-advisory@0.1.2': Object.freeze({
-        '.codex-plugin/plugin.json': '611c2b52fc04e7d2decef54def41397ba6793b456caa1bc2f94d96e1e87d257c',
+    'marrow-advisory@0.1.3': Object.freeze({
+        '.codex-plugin/plugin.json': '5464bc5d38a49bfbbe5794aeb2d7248d47695af912c52eb6037cc0f08a780942',
         '.mcp.json': '204c90071832e231d445cf648fbb19e3e157aaa290f1c303b230aeff1d522226',
         'scripts/marrow-launch.cjs': '8362944504f6c4a9f8f5dabb4676e419ee05bdad34ced873fab25454a445dbe4',
-        'scripts/mcp-manifest.json': '66841230e61f22f8d3f55563042c336d88afc15c7adaffdbc34f456abe529f42',
-        'package.json': '57acd62e39d2a78c49df15746bec5fd3ddce52926320fed852f7a3d8e0fc60f1',
-        'package-lock.json': '391392ed09701deae97db4edd7aaa92f884361ba47f5b7e6664ad5b4f87f34bb',
+        'scripts/mcp-manifest.json': '9580d83df88010a2575e08ce5c59121cb2b1363578baeb2a68bb6abf75de2240',
+        'package.json': '968531e5de020e9dd32b1108dd78ee6e05bd93dde9f431087fdd069f47d95175',
+        'package-lock.json': '8c3baacb067c5c6d7a0f2cb64f3de97d8a19e7e746b12c8d8e6625b399415d7f',
     }),
 });
 /** The plugin folders in the getmarrow/plugins repository, by manifest name. */

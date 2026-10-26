@@ -1100,8 +1100,8 @@ test('read-only inspection is not protected by words in paths or arguments; real
   const guarded = { readOnly: false, protected: true };
   const rows = [
     // Denied on 2026-09-29 although they only inspect.
-    ['ls piped to grep -c', bash('ls /home/majinbuu/agents/jarvis/results/hook-permit-3996-20260929/ | grep -c release'), readOnly],
-    ['grep of a release script', bash("grep -n 'package_metadata' /home/majinbuu/scripts/marrow-fast-backend-release.sh"), readOnly],
+    ['ls piped to grep -c', bash('ls /home/u/agents/results/hook-permit-1/ | grep -c release'), readOnly],
+    ['grep of a release script', bash("grep -n 'package_metadata' /home/u/scripts/service-release.sh"), readOnly],
     ['TaskCreate subject', { tool_name: 'TaskCreate', tool_input: { subject: 'publish MCP 3.9.97', description: 'npm publish after owner approval' } }, readOnly],
     ['Edit of notes mentioning credentials', { tool_name: 'Edit', tool_input: { file_path: '/home/u/notes/plan.md', old_string: 'a', new_string: 'rotate credentials, then deploy production' } }, unprotectedWrite],
     // Other read-only inspection.
@@ -1130,7 +1130,7 @@ test('read-only inspection is not protected by words in paths or arguments; real
     ['git push', bash('git push origin fix/hook'), guarded],
     ['gh pr merge', bash('gh pr merge 42 --squash'), guarded],
     ['wrangler deploy', bash('wrangler deploy --env production'), guarded],
-    ['release script', bash('bash /home/majinbuu/scripts/marrow-fast-backend-release.sh --execute'), guarded],
+    ['release script', bash('bash /home/u/scripts/service-release.sh --execute'), guarded],
     ['deploy script', bash('./scripts/deploy.sh'), guarded],
     ['env-wrapped publish', bash('env NPM_CONFIG_PROVENANCE=true npm publish'), guarded],
     // Compound commands take their most dangerous part.
@@ -1233,7 +1233,7 @@ test('a read-only compound command is allowed without reaching Marrow', async ()
     session_id: 'session-one',
     tool_use_id: 'tool-read-only',
     tool_name: 'Bash',
-    tool_input: { command: 'ls /home/majinbuu/agents/jarvis/results/hook-permit-3996-20260929/ | grep -c release' },
+    tool_input: { command: 'ls /home/u/agents/results/hook-permit-1/ | grep -c release' },
   }, 'claude-pre-action-hook');
   assert.deepEqual(calls, []);
   assert.deepEqual(JSON.parse(output), {});
