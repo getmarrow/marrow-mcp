@@ -33,12 +33,15 @@ const OLD_INTEGRITY = cfg(() => ({ integrity: MCP_3_9_104_INTEGRITY }));
 const CORE_CHANGED = packLoader(launcherOf(LOADER).replace('could not start its verified local runtime', 'could not start its verified local runtimes'));
 // Same bytes, last base64url character with its unused low bits set: Buffer decodes both alike.
 const NON_CANONICAL = (() => {
-  const packed = packedOf(LOADER);
+  // A blob whose length is a multiple of 4 has no spare bits: re-pack the same launcher until one has.
+  let loader = LOADER;
+  for (let quality = 11; quality >= 5 && ![2, 3].includes(packedOf(loader).length % 4); quality--) loader = packLoader(launcherOf(LOADER), quality);
+  const packed = packedOf(loader);
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
   const spare = { 2: 4, 3: 2 }[packed.length % 4];
   if (!spare) return null;
   const last = alphabet.indexOf(packed[packed.length - 1]);
-  return LOADER.replace(packed, packed.slice(0, -1) + alphabet[last | ((1 << spare) - 1)]);
+  return loader.replace(packed, packed.slice(0, -1) + alphabet[last | ((1 << spare) - 1)]);
 })();
 const [shCommand, shArgs] = sh();
 
