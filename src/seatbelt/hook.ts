@@ -242,13 +242,16 @@ export interface SeatbeltHookEvent {
   session?: unknown;
 }
 
-function mapperEnv(home: string, cwd: unknown, budgetMs: number): SeatbeltEnv {
+/** `platform` is a parameter only so tests can pass `win32`; production callers use the real one. */
+export function mapperEnv(home: string, cwd: unknown, budgetMs: number, platform: NodeJS.Platform = process.platform): SeatbeltEnv {
   const fs3 = (require('../seatbelt-fs') as typeof import('../seatbelt-fs')).nodeSeatbeltFs();
   return {
-    cwd: typeof cwd === 'string' && cwd.startsWith('/') ? cwd : null,
+    // Windows has no workspace model yet (3.9.106 A4): no event cwd is a workspace there, so a forged
+    // `/`-rooted cwd cannot make the POSIX mapper judge a delete against a made-up workspace.
+    cwd: platform !== 'win32' && typeof cwd === 'string' && cwd.startsWith('/') ? cwd : null,
     home,
     tmpdir: trustedTmpdir(),
-    platform: process.platform,
+    platform,
     fs: hostMapperFs(fs3),
     git: hostSeatbeltGit(fs3, home, process.env),
     budgetMs: Math.max(0, budgetMs),
