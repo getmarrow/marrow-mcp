@@ -61,8 +61,8 @@ test('R1 pins: the shipped pins match the official plugins at b446393 (recompute
   const run = spawnSync(process.execPath, [join(__dirname, '..', 'scripts', 'codex-plugin-pins-check.cjs'), FIXTURE], { encoding: 'utf8' });
   assert.equal(run.status, 0, run.stdout);
   assert.equal((run.stdout.match(/^ok /gm) || []).length, 12);
-  // 0.1.1 stays pinned so installs of the older release are still proven; 0.1.2 is the MCP 3.9.103 release (codex-plugins-0.1.2.test.js).
-  assert.deepEqual(Object.keys(OFFICIAL_CODEX_PLUGIN_PINS).sort(), ['marrow-advisory@0.1.1', 'marrow-advisory@0.1.2', 'marrow@0.1.1', 'marrow@0.1.2']);
+  // 0.1.1 stays pinned so installs of the older release are still proven; 0.1.3 is the current release (codex-plugins-0.1.3.test.js); the 0.1.2 drafts were never shipped.
+  assert.deepEqual(Object.keys(OFFICIAL_CODEX_PLUGIN_PINS).sort(), ['marrow-advisory@0.1.1', 'marrow-advisory@0.1.3', 'marrow@0.1.1', 'marrow@0.1.3']);
   for (const pins of Object.values(OFFICIAL_CODEX_PLUGIN_PINS)) {
     assert.deepEqual(Object.keys(pins).sort(), ['.codex-plugin/plugin.json', '.mcp.json', 'package-lock.json', 'package.json', 'scripts/marrow-launch.cjs', 'scripts/mcp-manifest.json']);
   }
@@ -74,7 +74,7 @@ test('R1 pins: the shipped pins match the official plugins at b446393 (recompute
     writeFileSync(launcher, `${readFileSync(launcher, 'utf8')}\n`);
     assert.equal(spawnSync(process.execPath, [join(__dirname, '..', 'scripts', 'codex-plugin-pins-check.cjs'), dir]).status, 1);
     const manifest = join(dir, 'codex', 'marrow', '.codex-plugin', 'plugin.json');
-    writeFileSync(manifest, readFileSync(manifest, 'utf8').replace('"version": "0.1.1"', '"version": "0.1.3"'));
+    writeFileSync(manifest, readFileSync(manifest, 'utf8').replace('"version": "0.1.1"', '"version": "0.1.9"'));
     assert.match(spawnSync(process.execPath, [join(__dirname, '..', 'scripts', 'codex-plugin-pins-check.cjs'), dir], { encoding: 'utf8' }).stdout, /no pins in @getmarrow\/mcp for this release/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

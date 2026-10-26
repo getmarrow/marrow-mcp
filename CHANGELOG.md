@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Codex: the SHA-256 digests of the six pinned files of the Codex plugins `marrow` and `marrow-advisory` 0.1.3 are now listed next to the 0.1.1 digests. A Codex with 0.1.3 installed and enabled, and those six files unchanged, is recognised as running the official Marrow server, the same as 0.1.1 is; any other change to them is checked like any other server. The digests of the 0.1.2 drafts, which were never released, are removed. Nothing changes for an installed 0.1.1.
+
 ## 3.9.107
 
 Security hotfix on 3.9.106.
