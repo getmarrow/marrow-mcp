@@ -74,6 +74,10 @@ export function readPatchNames(text: string, mail: boolean): PatchNames {
       // git. This reader does not follow that, so any flowed mail is doubt, whether the word sits in the Content-Type
       // header, a folded one, a MIME part header (any case) or the body. git format-patch never writes a flowed mail.
       if (/format\s*=\s*"?flowed/i.test(whole)) { note('flowed_mail_body'); continue; }
+      // `git am` reads a file that starts with `# This series applies on GIT commit` as an StGit series: a list of patch
+      // FILES (one name per line), each applied in turn. The names in this file are not patch text and the files they
+      // name are never read here, so a series is doubt whatever else the text holds (the spacing and case git ignores too).
+      if (/^[ \t]*#[ \t]*this[ \t]+series[ \t]+applies/i.test(whole)) { note('stgit_series'); continue; }
       // git also decodes RFC 2047 encoded words (`=?utf-8?q?format=3Dflowed?=`) in a header value before it reads
       // the Content-Type, and it looks for `base64` and `quoted-printable` anywhere in a Content-Transfer-Encoding
       // value. A header is its line at column 0 plus the folded lines under it (they start with a space or a tab).

@@ -1501,3 +1501,71 @@ test('WK-5 patch 2 (consumers, real keyless hook): a flowed mail and the checkou
     assert.match(r2.body, /Code: S0\.self_protection\/git_apply_write_unknown_written_here/);
   } finally { sb.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Merge job (round 2, last): two ways real git writes a protected file that the candidate's own git am / git apply reading
+// passed. Both are tightening only.
+
+// PM2: `git am` names its files from the top of the work tree, whatever the working folder is, and `git apply` does the
+// same for a git diff run in a sub-folder (it keeps the names under that folder). A home-anchored protected path
+// (`~/.local/bin/**`, `~/bin/**`) was only read under the working folder, so a mail run in `~/.config` passed while git
+// wrote `~/.local/bin/x`.
+test('WK-5 round 2 (PM2): git am and git apply name files from the top of the work tree; a home-anchored protected path is read there too', () => {
+  const TOP = { toplevel: '/home/u', dirs: ['/home/u/.config', '/home/u/.local', '/home/u/.local/bin', '/home/u/bin', '/home/u/proj/sub'] };
+  const mailTo = (name) => mailOf('', `${mailStat(name)}${git(`a/${name}`, `b/${name}`)}${SIGN}`);
+  const stop = (command, cwd, files, why, id) => {
+    const d = sh(command, files, { ...TOP, cwd });
+    want(d.decision === 'stop' && d.category === 'S0' && d.reasons.includes(why), `${id}: ${command} in ${cwd}: want ${why}, got ${d.decision}/${d.category} [${d.reasons}]`);
+  };
+  const pass = (command, cwd, files, id, extra = {}) => {
+    const d = sh(command, files, { ...TOP, cwd, ...extra });
+    want(d.decision === 'pass' && d.category === 'none', `${id}: ${command} in ${cwd}: want pass, got ${d.decision}/${d.category} [${d.reasons}]`);
+  };
+  for (const [name, why] of [['.local/bin/x', 'protected_path'], ['bin/y', 'protected_path']]) {
+    stop('git am m.mbox', '/home/u/.config', { '/home/u/.config/m.mbox': mailTo(name) }, `git_am_write_${why}`, `am from a sub-folder naming ${name}`);
+    stop('git am ../m.mbox', '/home/u/.config', { '/home/u/m.mbox': mailTo(name) }, `git_am_write_${why}`, `am ../m.mbox naming ${name}`);
+    stop('cd .config && git am m.mbox', '/home/u', { '/home/u/.config/m.mbox': mailTo(name) }, `git_am_write_${why}`, `cd then am naming ${name}`);
+    // `-C .config` is already a stop on master (the folder operand is read), under another code
+    const dc = sh('git -C .config am m.mbox', { '/home/u/.config/m.mbox': mailTo(name) }, { ...TOP, cwd: '/home/u' });
+    want(dc.decision === 'stop' && dc.category === 'S0', `-C then am naming ${name}: want an S0 stop, got ${dc.decision}/${dc.category} [${dc.reasons}]`);
+  }
+  // git apply: the names are top-relative and kept only under the working folder; `.local/bin/x` from `~/.local` is `~/.local/bin/x`
+  stop('git apply p.diff', '/home/u/.local', { '/home/u/.local/p.diff': git('a/.local/bin/x', 'b/.local/bin/x') }, 'git_apply_write_protected_path', 'apply in ~/.local (git header)');
+  stop('git apply p.diff', '/home/u/.local', { '/home/u/.local/p.diff': uni('a/.local/bin/x', 'b/.local/bin/x') }, 'git_apply_write_protected_path', 'apply in ~/.local (plain header)');
+  stop('git apply p.diff', '/home/u', { '/home/u/p.diff': git('a/bin/y', 'b/bin/y') }, 'git_apply_write_protected_path', 'apply at the top naming bin/y (control, was already a stop)');
+  stop('git am m.mbox', '/home/u/.local', { '/home/u/.local/m.mbox': mailTo('.local/bin/x') }, 'git_am_write_protected_path', 'am in ~/.local');
+  // controls: ordinary names still pass; patch names files from the working folder (not the top); a project sub-folder is unchanged
+  pass('git am m.mbox', '/home/u/.config', { '/home/u/.config/m.mbox': mailTo('src/index.ts') }, 'am naming an ordinary file from a sub-folder');
+  pass('git apply p.diff', '/home/u/.config', { '/home/u/.config/p.diff': git('a/.config/ok.txt', 'b/.config/ok.txt') }, 'apply naming an ordinary file from a sub-folder');
+  pass('patch -p1 < p.diff', '/home/u/.config', { '/home/u/.config/p.diff': uni('a/.local/bin/x', 'b/.local/bin/x') }, 'patch is relative to the working folder (the file written is ~/.config/.local/bin/x)');
+  pass('git am m.mbox', '/home/u/proj/sub', { '/home/u/proj/sub/m.mbox': mailTo('src/index.ts') }, 'am in a project sub-folder', { toplevel: '/home/u/proj' });
+  stop('git am m.mbox', '/home/u/proj/sub', { '/home/u/proj/sub/m.mbox': mailTo('.mcp.json') }, 'git_am_write_protected_path', 'am in a project sub-folder naming .mcp.json', undefined);
+  // a work tree that cannot be found is an unknown write for git am and git apply, never a pass
+  const env = makeEnv({ files: { ...FILES, '/home/u/.config/m.mbox': mailTo('src/index.ts'), '/home/u/.config/p.diff': OK_GIT }, cwd: '/home/u/.config', dirs: TOP.dirs });
+  env.git.toplevel = () => { throw new Error('git_toplevel_unknown'); };
+  for (const command of ['git am m.mbox', 'git apply p.diff']) {
+    const d = evaluateSeatbeltShell(command, env);
+    want(d.decision === 'stop' && d.category === 'S0' && d.reasons.some((r) => r.endsWith('_unknown_git_toplevel')), `toplevel unknown, ${command}: want *_unknown_git_toplevel, got ${d.decision}/${d.category} [${d.reasons}]`);
+  }
+  const patchD = evaluateSeatbeltShell('patch -p1 < p.diff', Object.assign(env, { cwd: '/home/u/.config' }));
+  want(patchD.decision === 'pass' || !patchD.reasons.some((r) => r.endsWith('_unknown_git_toplevel')), `toplevel unknown does not touch patch: [${patchD.reasons}]`);
+});
+
+// StGit series: `git am series.txt` reads a file that starts with `# This series applies on GIT commit` as a LIST of patch
+// files and applies each one; the file names in it are not patch text, so the reader would see none of the real names (a
+// line `Index: ok.txt` is the name of a file called `Index: ok.txt`). Any such series file is a doubt.
+test('WK-5 round 2 (StGit series): a series file given to git am is an unknown write, never read as patch text', () => {
+  const SER = '# This series applies on GIT commit 1111111111111111111111111111111111111111\n';
+  for (const [id, t] of [['member named like an Index: line', `${SER}Index: ok.txt\n`], ['member named like a --- line', `${SER}--- a/ok.txt\n`], ['member plus a benign diff', `${SER}evil.patch\n${OK_P1}`],
+    ['member named like a diff --git line', `${SER}diff --git a/ok.txt b/ok.txt\n`], ['spacing and case git ignores (over-hold)', `#this series applies on GIT commit x\n${OK_P1}`],
+    ['not the first line (over-hold)', `Subject: x\n\n${SER}${OK_P1}`], ['CRLF', `${SER}Index: ok.txt\n`.replace(/\n/g, '\r\n')]]) amStops(t, 'stgit_series', id);
+  const series = `${SER}Index: ok.txt\n`;
+  want(text.readPatchNames(series, true).doubt === 'stgit_series', 'pure reader: stgit_series in mail mode');
+  want(text.readPatchNames(series, false).doubt === null, 'pure reader: git apply and patch do not take a series file');
+  for (const command of ['git apply s.txt', 'patch -p1 < s.txt']) {
+    const d = sh(command, { '/home/u/proj/s.txt': series });
+    want(d.decision === 'pass', `${command}: a series file is plain text to this program (same answer as before), got ${d.decision} [${d.reasons}]`);
+  }
+  // a plain comment line that is not the series line, and an ordinary mail, are unchanged
+  amPasses(mailOf('', `# This is a note\n${mailStat('src/index.ts')}${OK_GIT}${SIGN}`), 'comment line');
+});

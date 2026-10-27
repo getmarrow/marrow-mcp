@@ -6390,11 +6390,33 @@ function patchFamilyWrites(kind, args, ctx, run, x, overrides) {
         unknown('too_many_targets');
         return;
     }
+    // `git am` always, and `git apply` for a git diff run in a sub-folder, name files from the top of the work tree, not from
+    // the working folder (apply keeps the ones under that folder). A home-anchored protected path (`~/.local/bin/**`) is then
+    // read under the top as well as under the folder, for every folder the call may run in. A top that cannot be found is
+    // an unknown write.
+    const tops = [];
+    if (kind !== 'patch') {
+        for (const c of ctx.cwds) {
+            let top;
+            try {
+                top = run.env.git.toplevel(c);
+            }
+            catch {
+                unknown('git_toplevel');
+                return;
+            }
+            if (top !== null && path.posix.isAbsolute(top) && top !== c && !tops.includes(top))
+                tops.push(top);
+        }
+    }
     for (const w of all) {
         if (clock(run))
             return;
         const arg = litArg(w);
         checkProtectedWrite(arg, ctx, run, label, false);
+        if (!w.startsWith('/') && !w.startsWith('~'))
+            for (const top of tops)
+                checkProtectedWrite(litArg(path.posix.join(top, w)), ctx, run, label, false);
         markWritten(arg, ctx);
     }
 }
