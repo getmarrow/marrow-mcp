@@ -18,6 +18,8 @@ exports.LIMITS = Object.freeze({
     maxSegments: 256,
     maxDepth: 6,
     maxScriptBytes: 64 * 1024,
+    // WK-5: the largest patch file the mapper reads for `patch`, `git apply` and `git am`; a bigger one is an unknown write.
+    maxPatchBytes: 1024 * 1024,
     maxPackageJsonBytes: 256 * 1024,
     maxConfigBytes: 1024 * 1024,
     maxAliasExpansions: 5,
@@ -183,7 +185,7 @@ exports.KNOWN_COMMANDS = new Set([
     'builtin', 'exec', 'stdbuf', 'ionice', 'chrt', 'taskset', 'setsid', 'unbuffer', 'caffeinate', 'retry', 'flock', 'xargs', 'parallel',
     'watch', 'ssh', 'git', 'gh', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'bunx', 'corepack', 'make', 'gmake', 'rm', 'rimraf', 'rmdir', 'find',
     'rsync', 'shred', 'dd', 'docker', 'podman', 'kubectl', 'helm', 'marrow', 'marrow-install', 'claude', 'apply_patch', 'applypatch',
-    'trap', 'script', 'cpio', 'pax', 'read', 'mapfile', 'readarray', 'getopts', 'busybox', 'toybox', 'concurrently', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'railway',
+    'patch', 'git-apply', 'git-am', 'trap', 'script', 'cpio', 'pax', 'read', 'mapfile', 'readarray', 'getopts', 'busybox', 'toybox', 'concurrently', 'npm-run-all', 'npm-run-all2', 'run-s', 'run-p', 'railway',
     // deploy tools
     'wrangler', 'vercel', 'netlify', 'ntl', 'fly', 'flyctl', 'firebase', 'heroku', 'gcloud', 'sst', 'serverless', 'sls', 'cdk', 'terraform',
     'tofu', 'terragrunt', 'pulumi', 'eb', 'aws', 'az',
@@ -212,7 +214,7 @@ exports.INERT_PROGRAMS = new Set([
     'exit', 'break', 'continue', 'shift', 'read', 'getopts', 'hash', 'rev', 'tac', 'sed', 'gsed', 'zip', 'unzip', 'gzip',
     'gunzip', 'bzip2', 'xz', 'zstd', 'tar', 'truncate', 'unlink', 'mktemp', 'install', 'ssh-add', 'ssh-keygen',
     'ssh-keyscan', 'openssl', 'gpg', 'gpg2', 'tree', 'bat', 'fd', 'exa', 'eza', 'lsof', 'netstat', 'ss', 'ip', 'ifconfig', 'top', 'htop',
-    'nproc', 'getconf', 'locale', 'cal', 'bc', 'dc', 'zcat', 'bzcat', 'xzcat', 'diff3', 'patch', 'colordiff',
+    'nproc', 'getconf', 'locale', 'cal', 'bc', 'dc', 'zcat', 'bzcat', 'xzcat', 'diff3', 'colordiff',
     'git-lfs', 'tsc', 'eslint', 'prettier', 'jest', 'vitest', 'mocha',
 ]);
 // Executable-looking argument paths worth reading as a script when an unknown program is given one.

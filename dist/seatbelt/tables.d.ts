@@ -4,6 +4,7 @@ export declare const LIMITS: Readonly<{
     maxSegments: 256;
     maxDepth: 6;
     maxScriptBytes: number;
+    maxPatchBytes: number;
     maxPackageJsonBytes: number;
     maxConfigBytes: number;
     maxAliasExpansions: 5;
