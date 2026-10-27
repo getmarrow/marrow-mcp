@@ -8,6 +8,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { writeOfficialHostConfigs } = require('./support/official-host-config.cjs');
+const { dummySecret } = require('./support/dummy-secret.cjs');
 writeOfficialHostConfigs();
 const { spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -197,7 +198,7 @@ test('A1/A2: on all 7 hosts and Cursor preToolUse, an approval of A never releas
 
 test('A2: a retry that differs only in a certain credential (OTP, URL password, Bearer) is released once on every host', () => {
   const otp = () => String(crypto.randomInt(100000, 999999));
-  const secret = () => crypto.randomBytes(18).toString('base64url');
+  const secret = () => dummySecret(); // not base64url: see test/support/dummy-secret.cjs
   const rows = [
     ['OTP rotated', () => `npm publish --otp ${otp()}`],
     ['URL password', () => `git push -f https://deploy:${secret()}@git.example.test/acme/api.git main`],
