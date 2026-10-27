@@ -164,6 +164,11 @@ test('WK-5: git apply with a protected target stops S0 (.mcp.json, home files, d
   // the same names through the dashed program and a git alias
   stopsS0('git-apply mcp.diff', 'git_apply_write');
   stopsS0('/usr/lib/git-core/git-apply mcp.diff', 'git_apply_write');
+  // the dashed names are no KNOWN_COMMANDS member (n5-full-scope rule P): an unknown wrapper's argv scan still finds them
+  for (const wrapper of ['unknownwrapper ', 'unknownwrapper --opt ', 'xargs ', 'env ', 'nice -n 5 ']) {
+    stopsS0(`${wrapper}git-apply mcp.diff`, 'git_apply_write');
+    stopsS0(`${wrapper}/usr/lib/git-core/git-am m.mbox`, 'git_am_write');
+  }
   stopsS0('git -c alias.ap=apply ap mcp.diff', 'git_apply_write');
   stopsS0("git -c 'alias.ap=!patch -p1 -i' ap d -d ~", null);
 });
@@ -569,7 +574,9 @@ test('WK-5: a bare `patch` word of a version tool is data and keeps its answer; 
 // ---- consumers: the label reaches the keyless stop, the account floor and the outage hold, and downstream cannot undo it
 test('WK-5: the tables say what they control: patch is no inert program, git apply/am only stay in the branch-handling list', () => {
   assert.equal(tables.INERT_PROGRAMS.has('patch'), false);
-  for (const name of ['patch', 'git-apply', 'git-am']) assert.ok(tables.KNOWN_COMMANDS.has(name), name);
+  assert.ok(tables.KNOWN_COMMANDS.has('patch'), 'patch');
+  // The dash spellings are dispatched by the mapper itself; the keyless normalizer keeps its own copy of this table (n5-full-scope rule P).
+  for (const name of ['git-apply', 'git-am']) assert.ok(!tables.KNOWN_COMMANDS.has(name), name);
   // HEAD_SAFE_SUBS (mapper.ts) lists the git subcommands that cannot change which branch is checked out. It is not a
   // write list: `apply` and `am` stay in it, and their writes come from patchFamilyWrites.
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'seatbelt', 'mapper.ts'), 'utf8');

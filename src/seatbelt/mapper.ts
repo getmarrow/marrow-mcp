@@ -2708,12 +2708,16 @@ function isPureSubstitution(a: Arg): boolean {
   return a.text === null && a.pattern === DYN && !!a.word && a.word.slots.length === 1 && a.word.slots[0].type === 'sub';
 }
 
+// The dash spellings of `git apply` and `git am` have a handler (the switch in dispatch) but are not in KNOWN_COMMANDS: the keyless normalizer keeps its own
+// copy of that table (src/normalized-action.ts) and test/n5-full-scope.test.js rule P needs the two to agree, so the names stay out of it. A wrapper's tail still reads them.
+const PATCH_DASH_PROGRAMS = new Set(['git-apply', 'git-am']);
+
 // A word that starts a command the mapper has a handler for (or a script path).
 function isCommandWord(a: Arg, run: Run): boolean {
   if (a.text === null) return false;
   const base = progName(a, run) || '';
   if (NESTED_NOT_PROGRAMS.has(base)) return false;
-  if (KNOWN_COMMANDS.has(base) || /^python3\.\d+$/.test(base) || /^mkfs(?:\.|$)/.test(base)) return true;
+  if (KNOWN_COMMANDS.has(base) || PATCH_DASH_PROGRAMS.has(base) || /^python3\.\d+$/.test(base) || /^mkfs(?:\.|$)/.test(base)) return true;
   if (a.text.includes('/')) {
     const name = base.toLowerCase();
     if (NON_SCRIPT_NAMES.has(name)) return false;
