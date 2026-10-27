@@ -2533,7 +2533,10 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
     }
     // WK-5: the files these write are named inside the patch text.
     case 'patch': return patchFamilyWrites('patch', rest, ctx, run, x);
-    case 'git-apply': case 'git-am': return patchFamilyWrites(prog === 'git-am' ? 'am' : 'apply', rest, ctx, run, x, new Map());
+    case 'git-apply': case 'git-am':
+      patchFamilyWrites(prog === 'git-am' ? 'am' : 'apply', rest, ctx, run, x, new Map());
+      // Unknown programs on master, which read a file redirected into them as a script and marked the head as changeable: that scan still runs.
+      break;
     default: break;
   }
   // An awk by a name the table does not have (`original-awk`, `goawk`, `my-awk`): read as awk, and then as the unknown program it also is (as `nawk` is).

@@ -1576,3 +1576,26 @@ test('WK-5 round 2 (StGit series): a series file given to git am is an unknown w
   // a plain comment line that is not the series line, and an ordinary mail, are unchanged
   amPasses(mailOf('', `# This is a note\n${mailStat('src/index.ts')}${OK_GIT}${SIGN}`), 'comment line');
 });
+
+// ---- round 2 (corpus gate): the dashed names were unknown programs on master, and master read a file redirected into an unknown program as a script. The handler
+// must add its own holds to that, never replace it.
+test('WK-5 round 2: git-apply and git-am keep the stdin scan master gave them as unknown programs (no dry-run option or odd name opens a hole)', () => {
+  const split = `From 1111111111111111111111111111111111111111 Mon Sep 17 00:00:00 2001\nFrom: A <a@example.invalid>\nSubject: [PATCH] t\n\nmsg\n---\n x | 2 +-\n\n--- a/.cla \nude/settings.json\n+++ b/.cla \nude/settings.json\n@@ -1 +1 @@\n-one\n+two\n-- \n2.43.0\n\n`;
+  const files = { '/home/u/proj/split.mbox': split };
+  // master: stop (the redirected file is read as a script and its text names a protected path); the spaced spellings are not unknown programs and pass on master
+  for (const command of [
+    'git-apply --check < mcp.diff', 'git-apply --stat < mcp.diff', 'git-apply --numstat - < mcp.diff', 'git-apply --summary - < mcp.diff',
+    'sudo git-apply --summary < mcp.diff', 'git-am < split.mbox', 'git-am -p0 < split.mbox',
+    'bash -c "git-apply --check < mcp.diff"', 'true && git-apply --stat - < mcp.diff &',
+  ]) {
+    const d = sh(command, files);
+    want(d.decision === 'stop', `${command}: expected a stop (master stops it), got ${d.decision} [${d.reasons}]`);
+  }
+  // the spaced spellings keep their master answers
+  passes('git apply --check < mcp.diff', files);
+  passes('git apply --summary < mcp.diff', files);
+  passes('git am < split.mbox', files);
+  // and an ordinary benign dashed call still passes
+  passes('git-apply ok.diff', files);
+  passes('git-apply --check ok.diff', files);
+});
