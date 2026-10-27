@@ -12,6 +12,11 @@
  * `@`) becomes `[REDACTED_AMBIGUOUS]`, the backend's marker for a value that
  * never binds an approval (backend src/utils/redaction.ts hide()): two actions
  * that differ only inside such a span must never share one.
+ *
+ * A hidden Stripe-style key (`sk_`, `rk_`, `pk_`) keeps its class in the marker (`[REDACTED_LIVE]` / `[REDACTED_TEST]`,
+ * `[REDACTED_TOKEN_LIVE]` / `[REDACTED_TOKEN_TEST]`, `[redacted_live]` / `[redacted_test]`; unknown, malformed and
+ * look-alike prefixes are live, see key-class.ts): redacted text with a test key never equals the same text with a
+ * live key.
  */
 export declare const AMBIGUOUS_REDACTION_MARKER = "[REDACTED_AMBIGUOUS]";
 export declare function redactSensitiveText(value: string): string;

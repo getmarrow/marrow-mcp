@@ -24,6 +24,10 @@
  *   `truncated: true`: Marrow cannot see a replacement inside the hash, and
  *   an approval is never reused for an action that carried a secret (it asks
  *   each time). The verdict, the hold and the prompt do not depend on it.
+ *   A Stripe-style key (`sk_`, `rk_`, `pk_`) keeps its class in the marker it is replaced by: `[secret-live]` or
+ *   `[secret-test]` (key-class.ts decides; an unknown, malformed or look-alike prefix is live), so an approval or hold
+ *   made for an action with a test key never covers the same action with a live key. Any other credential stays
+ *   `[secret]`. The class markers are three constants; the paths sent for an edit stay `[secret]`.
  *   Credentials are:
  *   values of environment assignments, flags, `NAME=value` arguments and
  *   inline `name: value` / `"name": "value"` literals whose name is a

@@ -12,15 +12,61 @@
  * `@`) becomes `[REDACTED_AMBIGUOUS]`, the backend's marker for a value that
  * never binds an approval (backend src/utils/redaction.ts hide()): two actions
  * that differ only inside such a span must never share one.
+ *
+ * A hidden Stripe-style key (`sk_`, `rk_`, `pk_`) keeps its class in the marker (`[REDACTED_LIVE]` / `[REDACTED_TEST]`,
+ * `[REDACTED_TOKEN_LIVE]` / `[REDACTED_TOKEN_TEST]`, `[redacted_live]` / `[redacted_test]`; unknown, malformed and
+ * look-alike prefixes are live, see key-class.ts): redacted text with a test key never equals the same text with a
+ * live key.
  */
+
+import { keyClassOf } from './key-class';
 
 export const AMBIGUOUS_REDACTION_MARKER = '[REDACTED_AMBIGUOUS]';
 const COMMAND_STRUCTURE = /[\s'"`;&|<>()#,?]|\$\(/;
 const UNQUOTED_STRUCTURE = /[&;|<>()`#,?]|\$[({A-Za-z_]/;
+/**
+ * The marker of a hidden Stripe-style key keeps its class (live or test), so an approval keyed on the redacted text of
+ * an action with a test key never covers the same action with a live key. A closed set of constants, never built from
+ * input; a value with no such key keeps its plain marker. See key-class.ts for the fail-closed class rules.
+ */
+const CLASSED_MARKERS: Record<string, { live: string; test: string }> = {
+  '[REDACTED]': { live: '[REDACTED_LIVE]', test: '[REDACTED_TEST]' },
+  '[redacted]': { live: '[redacted_live]', test: '[redacted_test]' },
+  '[REDACTED_TOKEN]': { live: '[REDACTED_TOKEN_LIVE]', test: '[REDACTED_TOKEN_TEST]' },
+};
+/** A class marker for a value this long or longer is read on its first characters only, and a test class becomes live. */
+const CLASS_SCAN_LIMIT = 65_536;
+
+/** The text a hidden structured field is read as for its class: a string as it is, anything else as JSON. */
+function fieldText(item: unknown): string {
+  if (typeof item === 'string') return item;
+  try { return JSON.stringify(item) ?? ''; } catch { return ''; }
+}
+
+/** A class marker an earlier rule already put on a value: a later rule that hides a span holding it keeps the class. */
+const CLASSED_MARKER = /\[(?:REDACTED(?:_TOKEN)?|redacted)_(LIVE|TEST|live|test)\]/g;
+
+/** The class of a value about to be hidden: its own Stripe-style key(s) and any class marker already in it; live wins. */
+function hiddenClass(value: string): 'live' | 'test' | null {
+  const head = value.length > CLASS_SCAN_LIMIT ? value.slice(0, CLASS_SCAN_LIMIT) : value;
+  let found = keyClassOf(head);
+  if (found !== 'live') {
+    for (const marker of head.matchAll(CLASSED_MARKER)) {
+      if (marker[1].toLowerCase() === 'live') { found = 'live'; break; }
+      found = 'test';
+    }
+  }
+  return found === 'test' && value.length > CLASS_SCAN_LIMIT ? 'live' : found;
+}
+
+function classed(plain: string, value: string): string {
+  const keyClass = hiddenClass(value);
+  return keyClass === null ? plain : CLASSED_MARKERS[plain][keyClass];
+}
 
 /** The marker for one hidden value: ambiguous when the value may also hide command text. */
 function hide(value: string, plain = '[REDACTED]', quoted = false): string {
-  return (quoted ? COMMAND_STRUCTURE : UNQUOTED_STRUCTURE).test(value) ? AMBIGUOUS_REDACTION_MARKER : plain;
+  return (quoted ? COMMAND_STRUCTURE : UNQUOTED_STRUCTURE).test(value) ? AMBIGUOUS_REDACTION_MARKER : classed(plain, value);
 }
 
 /** A quoted (`"…"` / `'…'`) or bare value: the marker for its content; an unterminated quote is ambiguous. */
@@ -58,7 +104,7 @@ const AUTH_HEADER = /\b((?:Proxy-)?Authorization)([ \t]{0,8}[:=][ \t]{0,8})(?:(B
 const DIGEST_PARAM = /\b(response|cnonce|nonce)=("[^"\n]{0,1024}(?:"|$)|[^\s,;"]{1,1024})/gi;
 
 /** A value an earlier rule already replaced by a marker: it stays as it is (an ambiguous marker is never made plain). */
-const OWN_MARKER_AHEAD = /^['"]?\[(?:REDACTED(?:_[A-Z_]{1,20})?|redacted)\]/;
+const OWN_MARKER_AHEAD = /^['"]?\[(?:REDACTED(?:_[A-Z_]{1,20})?|redacted(?:_(?:live|test))?)\]/;
 
 function nameValueRedactor(text: string): string {
   // `NAME=value` / `NAME: value`: the name is a whole run of name characters (`-` included, as in
@@ -118,7 +164,9 @@ function queryRedactor(text: string): string {
     if (!SECRET_QUERY_NAME.test(match[2])) { pattern.lastIndex = end; continue; }
     value.lastIndex = end;
     const found = value.exec(text);
-    out += text.slice(copied, end) + hide(found ? found[0] : '', '[redacted]');
+    // An ambiguous marker an earlier rule put here stays ambiguous (it never binds); hiding it again would make it a plain, bindable one.
+    const hidden = found ? found[0] : '';
+    out += text.slice(copied, end) + (hidden === AMBIGUOUS_REDACTION_MARKER ? hidden : hide(hidden, '[redacted]'));
     copied = value.lastIndex;
     pattern.lastIndex = copied > end ? copied : end;
   }
@@ -136,14 +184,14 @@ export function redactSensitiveText(value: string): string {
   let out = value
     .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)=)([^\s"'`]+|"[^"]*(?:"|$)|'[^']*(?:'|$))/gi, (_m, flag: string, v: string) => `${flag}${hideMaybeQuoted(v)}`)
     .replace(/(\B--(?:password|pass|secret|api-key|apikey|token|auth|access-token|client-secret|private-key|key)\s+)([^\s"'`]+|"[^"]*(?:"|$)|'[^']*(?:'|$))/gi, (_m, flag: string, v: string) => `${flag}${hideMaybeQuoted(v)}`)
-    .replace(/\b(Bearer|Token|ApiKey|API_KEY|MARROW_API_KEY|MARROW_KEY)\s+[\w.\-+/=]{12,}\b/gi, '$1 [REDACTED]');
+    .replace(/\b(Bearer|Token|ApiKey|API_KEY|MARROW_API_KEY|MARROW_KEY)(\s+)([\w.\-+/=]{12,})\b/gi, (_m, name: string, _space: string, v: string) => `${name} ${classed('[REDACTED]', v)}`);
   out = nameValueRedactor(out)
     .replace(/\b(mrw_[A-Za-z0-9_\-]{8,})\b/g, '[REDACTED_MARROW_KEY]')
     .replace(/\bmrw_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_[A-Fa-f0-9]{16,}\b/gi, '[REDACTED_MARROW_KEY]')
-    .replace(/\b(?:sk|pk|ghp|github_pat|npm|cfut)_[A-Za-z0-9_\-]{12,}\b/g, '[REDACTED_TOKEN]');
+    .replace(/\b(?:sk|pk|rk|ghp|github_pat|npm|cfut)_[A-Za-z0-9_\-]{12,}\b/g, (key: string) => classed('[REDACTED_TOKEN]', key));
   out = queryRedactor(out)
     .replace(/([?&](?:token|key|secret|password|auth|signature|sig|session)=)([^&#\s]*)/gi, (match, name: string, v: string) => (
-      /^\[(?:redacted|REDACTED_AMBIGUOUS)\]$/.test(v) ? match : `${name}${hide(v, '[redacted]')}`
+      /^\[(?:redacted(?:_(?:live|test))?|REDACTED_AMBIGUOUS)\]$/.test(v) ? match : `${name}${hide(v, '[redacted]')}`
     ));
   out = out
     .replace(QUOTED_NAME_VALUE, (match, quote: string, name: string, sep: string, v: string) => (
@@ -158,7 +206,7 @@ export function redactSensitiveText(value: string): string {
     ))
     // `Basic <base64>` outside a header: base64 of `user:password` (a digit, `+`, `/`, `=` or an inner capital), not a plain word.
     .replace(/\bBasic([ \t]{1,8})([A-Za-z0-9+/]{8,8192}={0,2})(?![A-Za-z0-9+/=])/g, (match, space: string, token: string) => (
-      /[0-9+/=]|.[A-Z]/.test(token) ? `Basic${space}[REDACTED]` : match
+      /[0-9+/=]|.[A-Z]/.test(token) ? `Basic${space}${classed('[REDACTED]', token)}` : match
     ));
 }
 
@@ -171,7 +219,7 @@ export function redactSensitiveValue(value: unknown, depth: number = 0): unknown
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 40)) {
       out[key] = /(?:secret|token|api[_-]?key|password|credential|authorization|private[_-]?key)/i.test(key)
-        ? '[redacted]'
+        ? classed('[redacted]', fieldText(item))
         : redactSensitiveValue(item, depth + 1);
     }
     return out;
@@ -195,7 +243,7 @@ export function redactSensitiveStrings<T>(value: T, depth: number = 0): T {
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
       out[key] = SECRET_FIELD.test(key) && item !== null && (typeof item === 'string' || typeof item === 'object')
-        ? '[redacted]'
+        ? classed('[redacted]', fieldText(item))
         : redactSensitiveStrings(item, depth + 1);
     }
     return out as T;
