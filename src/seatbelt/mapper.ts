@@ -2467,6 +2467,10 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
   // I3: programs that change something outside this machine (held only while Marrow is unreachable).
   outageRiskTags(prog, rest, run);
 
+  // WK-5: the dashed spellings of `git apply` and `git am`. They were unknown programs on master, which read a file redirected into them as a script and marked the head as
+  // changeable: that scan still runs after this. They are no `case` label and no KNOWN_COMMANDS member on purpose: the keyless normalizer keeps its own copy of that table
+  // (src/normalized-action.ts, test/n5-full-scope.test.js rule P) and test/seatbelt-patch-r2.test.js wants every case label in the table.
+  if (prog === 'git-apply' || prog === 'git-am') patchFamilyWrites(prog === 'git-am' ? 'am' : 'apply', rest, ctx, run, x, new Map());
   switch (prog) {
     case 'cd': case 'pushd': return changeDir(rest, ctx, run, x.cmd.subshell);
     case 'popd': ctx.cwds = [...ctx.cwds, null]; return;
@@ -2533,10 +2537,6 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
     }
     // WK-5: the files these write are named inside the patch text.
     case 'patch': return patchFamilyWrites('patch', rest, ctx, run, x);
-    case 'git-apply': case 'git-am':
-      patchFamilyWrites(prog === 'git-am' ? 'am' : 'apply', rest, ctx, run, x, new Map());
-      // Unknown programs on master, which read a file redirected into them as a script and marked the head as changeable: that scan still runs.
-      break;
     default: break;
   }
   // An awk by a name the table does not have (`original-awk`, `goawk`, `my-awk`): read as awk, and then as the unknown program it also is (as `nawk` is).

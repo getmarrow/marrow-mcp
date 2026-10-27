@@ -583,6 +583,9 @@ test('WK-5: the tables say what they control: patch is no inert program, git app
   assert.match(src, /cannot change which branch is checked out/);
   assert.match(src, /if \(sub === 'apply' \|\| sub === 'am'\) patchFamilyWrites\(sub, args, gctx, run, x, overrides\)/);
   assert.match(src, /case 'patch': return patchFamilyWrites\('patch'/);
+  // the dashed spellings are wired by an `if` before the switch: no case label (seatbelt-patch-r2 wants every case label in KNOWN_COMMANDS) and the unknown-program path still runs after it
+  assert.match(src, /if \(prog === 'git-apply' \|\| prog === 'git-am'\) patchFamilyWrites\(prog === 'git-am' \? 'am' : 'apply', rest, ctx, run, x, new Map\(\)\);/);
+  assert.doesNotMatch(src, /case 'git-apply'|case 'git-am'/);
 });
 
 test('WK-5: every new reason is a receipt-safe code (lowercase words, at most 64 characters) and no row leaks a path or a name', () => {
