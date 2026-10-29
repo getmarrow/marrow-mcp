@@ -50,6 +50,7 @@ const secret_paths_1 = require("../secret-paths");
 const tables_1 = require("./tables");
 const classifier_pin_1 = require("./classifier-pin");
 const env_names_1 = require("./env-names");
+const patch_text_1 = require("./patch-text");
 const longopts_1 = require("./longopts");
 const guards_1 = require("./guards");
 const env_dump_1 = require("./env-dump");
@@ -1035,7 +1036,7 @@ function newCtx(run) {
     const cwd = typeof run.env.cwd === 'string' && path.posix.isAbsolute(run.env.cwd) ? path.posix.normalize(run.env.cwd) : null;
     return {
         cwds: [cwd], vars: new Map([['HOME', [run.home]]]), exported: new Set(['HOME']), aliases: new Map(), gitAliases: new Map(),
-        gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
+        gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), checkedOut: new Set(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
         decodedVars: new Set(), candidates: new Map(), fds: new Map(), ifs: undefined, backstop: false, arrays: new Set(),
     };
 }
@@ -2954,6 +2955,11 @@ function dispatchProgram(prog, args, rest, pathLike, ctx, run, x) {
         zipCommandTexts(rest, ctx, run);
     // I3: programs that change something outside this machine (held only while Marrow is unreachable).
     outageRiskTags(prog, rest, run);
+    // WK-5: the dashed spellings of `git apply` and `git am`. They were unknown programs on master, which read a file redirected into them as a script and marked the head as
+    // changeable: that scan still runs after this. They are no `case` label and no KNOWN_COMMANDS member on purpose: the keyless normalizer keeps its own copy of that table
+    // (src/normalized-action.ts, test/n5-full-scope.test.js rule P) and test/seatbelt-patch-r2.test.js wants every case label in the table.
+    if (prog === 'git-apply' || prog === 'git-am')
+        patchFamilyWrites(prog === 'git-am' ? 'am' : 'apply', rest, ctx, run, x, new Map());
     switch (prog) {
         case 'cd':
         case 'pushd': return changeDir(rest, ctx, run, x.cmd.subshell);
@@ -3085,6 +3091,8 @@ function dispatchProgram(prog, args, rest, pathLike, ctx, run, x) {
             }
             return;
         }
+        // WK-5: the files these write are named inside the patch text.
+        case 'patch': return patchFamilyWrites('patch', rest, ctx, run, x);
         default: break;
     }
     // An awk by a name the table does not have (`original-awk`, `goawk`, `my-awk`): read as awk, and then as the unknown program it also is (as `nawk` is).
@@ -3302,6 +3310,9 @@ function dynamicProgram(args, ctx, run, x) {
 function isPureSubstitution(a) {
     return a.text === null && a.pattern === DYN && !!a.word && a.word.slots.length === 1 && a.word.slots[0].type === 'sub';
 }
+// The dash spellings of `git apply` and `git am` have a handler (the switch in dispatch) but are not in KNOWN_COMMANDS: the keyless normalizer keeps its own
+// copy of that table (src/normalized-action.ts) and test/n5-full-scope.test.js rule P needs the two to agree, so the names stay out of it. A wrapper's tail still reads them.
+const PATCH_DASH_PROGRAMS = new Set(['git-apply', 'git-am']);
 // A word that starts a command the mapper has a handler for (or a script path).
 function isCommandWord(a, run) {
     if (a.text === null)
@@ -3309,7 +3320,7 @@ function isCommandWord(a, run) {
     const base = progName(a, run) || '';
     if (NESTED_NOT_PROGRAMS.has(base))
         return false;
-    if (tables_1.KNOWN_COMMANDS.has(base) || /^python3\.\d+$/.test(base) || /^mkfs(?:\.|$)/.test(base))
+    if (tables_1.KNOWN_COMMANDS.has(base) || PATCH_DASH_PROGRAMS.has(base) || /^python3\.\d+$/.test(base) || /^mkfs(?:\.|$)/.test(base))
         return true;
     if (a.text.includes('/')) {
         const name = base.toLowerCase();
@@ -4737,11 +4748,51 @@ function checkProtectedWrite(a, ctx, run, reason, tree) {
     }
     return false;
 }
-function markWritten(a, ctx) {
+function markWritten(a, ctx, into = ctx.written) {
     if (a.text === null)
         return;
     for (const c of ctx.cwds)
-        ctx.written.add(path.posix.resolve(c || '/__unknown_cwd__', a.text));
+        into.add(path.posix.resolve(c || '/__unknown_cwd__', a.text));
+}
+// WK-5 patch 2: what `git checkout` and `git restore` rewrite on this line, for the patch readers only (the script,
+// package.json and Makefile readers use `ctx.written` and keep their answers). One plain file name adds its path, and
+// the reader tests a patch file by prefix, so a folder named here (`patches`, `.`) covers every file under it. A word
+// that is not one plain name makes the whole line a rewrite of anything (CHECKED_OUT_ANY, never an absolute path): a
+// variable or substitution, a glob (quoted too: git reads a pathspec as a glob), an empty word, pathspec magic (`:/`,
+// `:(glob)…`), a name that cannot be made absolute, or `--pathspec-from-file` (any abbreviation git reads), whose list
+// the mapper does not read.
+const CHECKED_OUT_ANY = '*';
+function markCheckedOut(args, ctx, run) {
+    // After a bare `--` every word is a path, even one that starts with a dash (`git checkout main -- -x.diff`).
+    let paths = false;
+    for (const a of args) {
+        const lead = a.text === null ? a.pattern : a.text;
+        if (!paths && lead === '--') {
+            paths = true;
+            continue;
+        }
+        if (!paths && lead.startsWith('-')) {
+            const long = lead.split('=')[0];
+            if (long.length > 2 && '--pathspec-from-file'.startsWith(long))
+                ctx.checkedOut.add(CHECKED_OUT_ANY);
+            continue;
+        }
+        const abs = a.text === null || a.glob || a.text === '' || a.text.startsWith(':') || /[*?[\\{]/.test(a.text) ? null : absCandidates(a.text, ctx, run);
+        if (abs === null) {
+            ctx.checkedOut.add(CHECKED_OUT_ANY);
+            continue;
+        }
+        markWritten(a, ctx, ctx.checkedOut);
+        for (const p of abs)
+            ctx.checkedOut.add(p);
+    }
+}
+// True when a patch file at `p` may have been rewritten by a `git checkout` or `git restore` earlier on this line.
+function checkedOutCovers(ctx, p) {
+    if (ctx.checkedOut.has(CHECKED_OUT_ANY))
+        return true;
+    const base = path.posix.basename(p);
+    return [...ctx.checkedOut].some((w) => path.posix.basename(w) === base || isAncestorOrSelf(w, p));
 }
 // ---------------------------------------------------------------------------------------------
 // S5 workspace boundary
@@ -6183,6 +6234,197 @@ function targetDirFlag(rest) {
             return litArg(t.slice(2));
     }
     return null;
+}
+// ---------------------------------------------------------------------------------------------
+// WK-5: `patch`, `git apply` and `git am` write the files their patch text names.
+//
+// The names are inside the patch file, not in the command, so the mapper reads a literal patch file (the bounded,
+// no-symlink reader the script checks use) and checks every name like the destination of tee, cp and mv. What it
+// cannot know for certain is an unknown write: S0, reason `<label>_unknown_<why>`, never a pass. That covers patch
+// text on stdin (heredoc, here-string, pipe, process substitution, a group or shell that feeds it), a dynamic or glob
+// word, an unreadable, missing, non-regular, oversize (LIMITS.maxPatchBytes) or just-written file, a header the
+// reader doubts, an option the parser does not list, and a working folder or git work tree the mapper cannot name.
+// A dry run (`patch --dry-run`, `git apply --check/--stat/--numstat/--summary`) writes nothing and keeps the old
+// answer, but only when every option is known, none repeats, negates or turns the apply back on, and the call has
+// no extra output file.
+//
+// Residual (same as the script-file reads): a patch file rewritten earlier in the same command line by a program the
+// mapper does not model (an interpreter, an unknown tool) is read as it is on disk now.
+function patchFamilyWrites(kind, args, ctx, run, x, overrides) {
+    // Files on another machine (`ssh host 'patch …'`) are not local files: the answer stays what it was (like protectedOperandCheck).
+    if (ctx.remote)
+        return;
+    const label = kind === 'patch' ? 'patch_write' : kind === 'apply' ? 'git_apply_write' : 'git_am_write';
+    const unknown = (why) => { hit(run, 'S0', `${label}_unknown_${why}`); };
+    const ownStdin = x.cmd.heredoc !== null || x.cmd.redirects.some((r) => r.op.startsWith('<')) || x.info.upstream.length > 0 || Boolean(x.info.lost) || Boolean(ctx.stdinFeed);
+    const readsFile = (text) => (absCandidates(text, ctx, run) || []).some((p) => readCached(run, p, tables_1.LIMITS.maxPatchBytes) !== null);
+    // Reached through the tail-position scan of an unknown wrapper, a bare `patch` word is data (`poetry version patch`,
+    // `semver -i patch 1.2.3`): with no option, no stdin source and no operand that is a file, it is not a patch call.
+    if (kind === 'patch' && ctx.backstop && !ownStdin && args.every((a) => a.text !== null && !a.glob && !a.text.startsWith('-') && !readsFile(a.text)))
+        return;
+    if (args.some((a) => a.text === null || a.glob)) {
+        unknown('dynamic_word');
+        return;
+    }
+    const call = (0, patch_text_1.parsePatchCall)(kind, args.map((a) => a.text));
+    if (!call.ok) {
+        unknown(call.why);
+        return;
+    }
+    if (call.info || call.readOnly)
+        return;
+    if (ctx.cwds.length === 0 || ctx.cwds.some((c) => c === null) || ctx.cwdStrict === true) {
+        unknown('cwd');
+        return;
+    }
+    if (kind !== 'patch') {
+        // Another repository, work tree or configuration (`--work-tree`, GIT_WORK_TREE, core.worktree): the files land elsewhere.
+        const moved = (overrides !== undefined && overrides.has(CONFIG_UNKNOWN))
+            || ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE'].some((name) => envValue(x, ctx, name) !== undefined);
+        if (moved) {
+            unknown('git_repository');
+            return;
+        }
+        for (const c of ctx.cwds) {
+            const configured = gitAll(run, ctx, c, 'core.worktree', overrides);
+            if (configured === null || configured.length) {
+                unknown('git_worktree');
+                return;
+            }
+        }
+    }
+    const dir = call.dirs.length === 1 && call.dirs[0] !== '' ? call.dirs[0] : null;
+    // `..` in the folder is a form the reader does not follow (git apply refuses it; patch writes outside the tree).
+    if (dir !== null && dir.split('/').includes('..')) {
+        unknown('dotdot');
+        return;
+    }
+    // Where the patch comes from. patch: -i FILE, or its second operand, or stdin; its first operand is a file it writes.
+    // git: every operand is a patch file (`-` is stdin), none at all is stdin.
+    let patchFiles = [];
+    let fromStdin = false;
+    let originals = [];
+    if (kind === 'patch') {
+        if (call.inputs.length === 1) {
+            originals = call.operands;
+            if (call.inputs[0] === '-')
+                fromStdin = true;
+            else
+                patchFiles = [call.inputs[0]];
+        }
+        else if (call.operands.length > 2) {
+            unknown('operands');
+            return;
+        }
+        else if (call.operands.length === 2) {
+            originals = [call.operands[0]];
+            if (call.operands[1] === '-')
+                fromStdin = true;
+            else
+                patchFiles = [call.operands[1]];
+        }
+        else {
+            originals = call.operands;
+            fromStdin = true;
+        }
+        // GNU patch changes directory first, then opens -i FILE: which folder a relative file is read from is not certain.
+        if (dir !== null && patchFiles.some((f) => !f.startsWith('/') && !f.startsWith('~'))) {
+            unknown('dir_relative_input');
+            return;
+        }
+    }
+    else {
+        patchFiles = call.operands.filter((o) => o !== '-');
+        fromStdin = call.operands.length === 0 || call.operands.includes('-');
+    }
+    const files = patchFiles.map((f) => litArg(f));
+    if (fromStdin) {
+        // Exactly one plain `< file` on this command, and nothing else feeding stdin.
+        const ins = x.cmd.redirects.filter((r) => r.op.startsWith('<'));
+        const one = ins.length === 1 && ins[0].op === '<' && (ins[0].fd === null || ins[0].fd === '0') && ins[0].target && !ins[0].target.substitution ? ins[0].target : null;
+        const target = one ? resolveWord(one, ctx, run) : null;
+        if (x.cmd.heredoc !== null || x.info.upstream.length > 0 || x.info.lost || ctx.stdinFeed || target === null || target.text === null || target.glob) {
+            unknown('stdin');
+            return;
+        }
+        files.push(litArg(target.text));
+    }
+    const texts = [];
+    for (const f of files) {
+        const abs = absCandidates(f.text, ctx, run);
+        if (!abs || abs.length === 0 || abs.some((p) => p.startsWith('/__unknown_cwd__'))) {
+            unknown('path');
+            return;
+        }
+        for (const p of abs) {
+            // A file this command line writes first (or a name `ln -s` made) is not the file the mapper can read now.
+            const base = path.posix.basename(p);
+            if (ctx.written.has(p) || [...ctx.written].some((w) => path.posix.basename(w) === base) || checkedOutCovers(ctx, p)) {
+                unknown('written_here');
+                return;
+            }
+            if (run.links.size > 0 && applyLinks(p, run) !== p) {
+                unknown('link');
+                return;
+            }
+            const text = readCached(run, p, tables_1.LIMITS.maxPatchBytes);
+            if (text === null) {
+                unknown('unreadable');
+                return;
+            }
+            texts.push(text);
+        }
+    }
+    const writes = new Set([...call.extraWrites, ...originals]);
+    for (const text of texts) {
+        const names = (0, patch_text_1.readPatchNames)(text, kind === 'am');
+        if (names.doubt !== null) {
+            unknown(`header_${names.doubt}`);
+            return;
+        }
+        for (const name of (0, patch_text_1.targetNames)(names.names, kind, call.strip))
+            writes.add(name);
+    }
+    // -d / --directory: the name is also read under that folder.
+    const all = new Set();
+    for (const w of writes) {
+        all.add(w);
+        if (dir !== null)
+            all.add(`${dir}/${w}`);
+    }
+    if (all.size > patch_text_1.MAX_NAMES * 4) {
+        unknown('too_many_targets');
+        return;
+    }
+    // `git am` always, and `git apply` for a git diff run in a sub-folder, name files from the top of the work tree, not from
+    // the working folder (apply keeps the ones under that folder). A home-anchored protected path (`~/.local/bin/**`) is then
+    // read under the top as well as under the folder, for every folder the call may run in. A top that cannot be found is
+    // an unknown write.
+    const tops = [];
+    if (kind !== 'patch') {
+        for (const c of ctx.cwds) {
+            let top;
+            try {
+                top = run.env.git.toplevel(c);
+            }
+            catch {
+                unknown('git_toplevel');
+                return;
+            }
+            if (top !== null && path.posix.isAbsolute(top) && top !== c && !tops.includes(top))
+                tops.push(top);
+        }
+    }
+    for (const w of all) {
+        if (clock(run))
+            return;
+        const arg = litArg(w);
+        checkProtectedWrite(arg, ctx, run, label, false);
+        if (!w.startsWith('/') && !w.startsWith('~'))
+            for (const top of tops)
+                checkProtectedWrite(litArg(path.posix.join(top, w)), ctx, run, label, false);
+        markWritten(arg, ctx);
+    }
 }
 // ---------------------------------------------------------------------------------------------
 // builtins
@@ -9436,7 +9678,13 @@ function handleGit(rest, ctx, run, x, cOverrides, aliasDepth) {
         for (const a of args)
             if (a.text === null || !a.text.startsWith('-'))
                 checkProtectedWrite(a, gctx, run, `git_${sub}`, sub === 'rm' || sub === 'mv');
+        // WK-5: checkout and restore rewrite the files they name (a ref among the words only adds a name nothing reads).
+        if (sub === 'checkout' || sub === 'restore')
+            markCheckedOut(args, gctx, run);
     }
+    // WK-5: `git apply` and `git am` write the files their patch text names.
+    if (sub === 'apply' || sub === 'am')
+        patchFamilyWrites(sub, args, gctx, run, x, overrides);
     // `git mv link y` moves the symlink like `mv` does (audit N3).
     if (sub === 'mv')
         carryLinks('mv', args, gctx, run);
