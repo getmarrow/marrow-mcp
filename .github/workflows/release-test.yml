@@ -62,3 +62,49 @@ jobs:
         run: |
           set -euo pipefail
           [ -z "$(git status --porcelain=v1 --untracked-files=all)" ] || { echo '::error::Build or tests changed the checkout.'; exit 1; }
+
+  windows-rows:
+    # The Windows rows named in the Windows-lane port audit, on a real Windows runner. Only those test files run: no build, no publish,
+    # no secrets, and no network beyond the npm ci above (the rows use loopback only). dist/ is the committed build, which a fresh
+    # build of this commit reproduces byte for byte (the job above checks the checkout stays unchanged).
+    name: Windows rows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the pinned Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+
+      - name: Check the pinned Node
+        run: |
+          set -euo pipefail
+          [ "$(node --version)" = "$NODE_PIN" ] || { echo '::error::Unexpected Node version.'; exit 1; }
+
+      - name: Install dependencies without install scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Windows rows
+        run: |
+          set -euo pipefail
+          node --test --test-concurrency=1 --require ./test/support/isolated-environment.cjs \
+            test/seatbelt-win-bare-star.test.js \
+            test/seatbelt-win-launcher-words.test.js \
+            test/seatbelt-win-odd-paths.test.js \
+            test/seatbelt-win-patch3.test.js \
+            test/seatbelt-win-protected-port.test.js \
+            test/seatbelt-windows-hold.test.js \
+            test/session-loop-guard-win32.test.js \
+            test/win-private-state.test.js \
+            test/seatbelt-ps-lexical-budget.test.js
