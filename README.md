@@ -212,7 +212,25 @@ These behaviors shipped in 3.9.103 and still apply.
 - **Hidden commands are checked:** commands inside an unquoted here-document body, a `${x:-$(...)}` default or an arithmetic expansion are checked like any other command.
 - **`marrow-mcp keys create` reads every flag form:** `--name=`, `--type=` and `--expires=` (and `-n=`, `-t=`) are read like `--name value`; a flag that is present but blank, or a `--scopes` / `--agents` list with no entry, is a usage error (exit 2) and nothing is sent; leaving `--scopes` and `--agents` out sends neither.
 
-## What's New in v3.9.108
+## What's New in v3.9.109
+
+v3.9.109 removes friction from the hooks (friction round 3) and adds several security fixes. The full entry is in CHANGELOG.md.
+
+- **Notes and log writes are not held for the words in them.** A shell command that only writes text to a notes or log file (`echo`, `printf`, `cat` with a here-document, `tee -a`; `.md`, `.txt`, `.log`, `.jsonl`, `.ndjson`, `.csv`, `.tsv` under your home, `/tmp` or `/mnt`) is no longer labelled by a word such as "deploy" in the text. This is one of three changes that are looser than before, all by the owner's decision (the others are your own declared data commands, next, and the Windows session loop guard below); everything outside that strict grammar is classified as before.
+- **Your own data-only scripts can be declared.** In your own terminal, `marrow-mcp data-commands add -- python3 -I /home/me/tools/board.py set` pins that command and the script's hash (type back the code it shows). A command that is exactly that prefix, with plain words after it, is then judged by its effect and not by the words in a note; edit the script and the declaration stops matching. `marrow-mcp data-commands list` shows each entry and whether it is active; `remove <n>` deletes one. On Windows the declaration needs the same access-list proof as the loop guard, and an unreadable `control.json` switches declared commands off until it is repaired. Details and limits are in CHANGELOG.md.
+- **A notes or log file is never run as a program.** `bash notes.md`, `python x.log` and the same through `sudo`, `env`, `xargs` and `-c` are refused.
+- **Turning Marrow control off needs the owner.** With no person at the prompt (`auto`, `bypassPermissions`, `dontAsk`, headless), the installer's `disable` and `uninstall` are refused; elsewhere they are held. While Marrow is off, the first protected action of a session is reported once.
+- **Hook settings, `~/.marrow` and shell start-up files are protected from every tool.** A write by Edit, Write, a redirect, `tee`, `sed -i`, `cp`, `mv`, `crontab` and the like is held.
+- **A keyless hook says so once per Claude Code session.**
+- **A resumed host session under another Marrow agent works.** Each agent has its own Marrow session id (`<host session id>.m<16 hex>`). A hold open under 3.9.108 at the upgrade expires after 30 minutes and the loop guard resets once.
+- **A damaged control file no longer switches the hooks off.** If `~/.marrow/control.json` cannot be read or is invalid, the hooks keep running as if control were on and the prompt hook tells you once per session. Only a valid file that says disabled stops them.
+- **The pre-action hook leaves as soon as it has answered.** An unanswered request can no longer keep it running past the host's time limit. The answer is the same.
+- **Test keys and live keys never share an approval.** The same action with a test key and with a live key is a different approval.
+- **`patch`, `git apply` and `git am` are checked for what they write.** A patch that would write a protected file is held; so are six `git am` forms that used to pass (`--continue`, `--skip`, `--abort`, `--quit`, `--resolved`, `--show-current-patch`).
+- **Windows groundwork.** The seatbelt reads Windows program names and paths, and the session loop guard on Windows checks the access list of its folder. Native Windows is still not supported; use WSL.
+- **IPv4 first.** The pre-action hook tries IPv4 first when it dials Marrow, so a broken IPv6 route cannot stall it.
+
+These behaviors shipped in 3.9.108 and still apply.
 
 v3.9.108 adds Codex plugin pins on 3.9.107. The full entry is in CHANGELOG.md.
 
