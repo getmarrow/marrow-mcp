@@ -170,7 +170,35 @@ const NOT_HELD = [
   ['find without a write action', `find ${home}/.claude -name 'settings*'`],
   ['an unrelated claude folder file', `echo x >> ${home}/.claude/projects/x/notes.md`.replace('.claude/projects', '.claude-notes')],
   ['npm test', 'npm test'],
+  ['prettier --check on a settings file', `prettier --check ${home}/.claude/settings.json`],
+  ['npx prettier --check on a settings file', `npx prettier --check ${home}/.claude/settings.json`],
+  ['npx -y prettier (prints, never writes)', `npx -y prettier ${home}/.bashrc`],
+  ['pnpm exec prettier -l', `pnpm exec prettier -l ${home}/.marrow/control.json`],
+  ['shellcheck on an rc file', `shellcheck ${home}/.bashrc`],
+  ['tree on the marrow folder', `tree ${home}/.marrow`],
 ];
+
+// The reading exemption of prettier and tree ends at their writing flags (and at an unknown runner flag value).
+const WRITING_FORMS = [
+  ['prettier --write', `prettier --write ${home}/.claude/settings.json`, CONTROL],
+  ['prettier -w', `prettier -w ${home}/.bashrc`, PERSIST],
+  ['npx prettier --write', `npx prettier --write ${home}/.bashrc`, PERSIST],
+  ['npx -y prettier --write', `npx -y prettier --write ${home}/.marrow/control.json`, CONTROL],
+  ['pnpm exec prettier -w', `pnpm exec prettier -w ${home}/.claude/settings.json`, CONTROL],
+  ['prettier --cache-location', `prettier --check --cache --cache-location ${home}/.bashrc x.js`, PERSIST],
+  ['tree -o', `tree -o ${home}/.bashrc .`, PERSIST],
+  ['tree -fo', `tree -fo ${home}/.marrow/control.json .`, CONTROL],
+  ['tree --output', `tree --output=${home}/.bashrc .`, PERSIST],
+  ['npx with a flag value naming the file', `npx -p ${home}/.bashrc prettier --check x.js`, PERSIST],
+  ['prettier then a redirect', `prettier x.js > ${home}/.bashrc`, PERSIST],
+  ['prettier --check and a chained write', `prettier --check x.js && echo x >> ${home}/.bashrc`, PERSIST],
+];
+
+for (const [id, command, expected] of WRITING_FORMS) {
+  test(`control-file gap held (reading tool, writing form): ${id}`, () => {
+    assert.equal(bash(command).action, expected, command);
+  });
+}
 
 for (const [id, command] of NOT_HELD) {
   test(`control-file gap not held: ${id}`, () => {

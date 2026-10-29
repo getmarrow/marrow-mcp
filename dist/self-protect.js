@@ -25,8 +25,36 @@ const PERSISTENCE_FILES = [
 // Programs that only read their operands: naming a protected file to one of them is not a write.
 const READING_PROGRAMS = new Set([
     'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ls', 'stat', 'file', 'wc', 'diff', 'cmp', 'du', 'echo', 'printf',
-    'test', '[', 'readlink', 'realpath', 'basename', 'dirname', 'sha256sum', 'sha1sum', 'md5sum', 'which', 'type', 'jq', 'tree', 'source', '.', 'pwd',
+    'test', '[', 'readlink', 'realpath', 'basename', 'dirname', 'sha256sum', 'sha1sum', 'md5sum', 'which', 'type', 'jq', 'shellcheck', 'source', '.', 'pwd',
 ]);
+// Programs that only read or print unless one of their writing flags is given (`prettier --check FILE`, `tree DIR`): naming a protected
+// file to them is not a write. A writing flag, or an arg the table does not know how to read, keeps the word in the scan.
+const READING_UNLESS = {
+    prettier: /^(?:--write|-w|--cache(?:-[a-z]+)?(?:=.*)?)$/,
+    tree: /^(?:-[A-Za-z]*o.*|--output(?:=.*)?)$/,
+};
+const RUNNERS = new Set(['npx', 'pnpx', 'bunx']);
+function innerProgram(program, args) {
+    let name = program;
+    let rest = args;
+    if ((name === 'pnpm' || name === 'npm') && rest[0] === 'exec') {
+        name = 'npx';
+        rest = rest.slice(1);
+    }
+    if (!RUNNERS.has(name))
+        return { program, args };
+    let at = 0;
+    while (at < rest.length && /^-[A-Za-z-]*$/.test(rest[at]))
+        at += 1;
+    return at < rest.length ? { program: baseName(rest[at]), args: rest.slice(at + 1) } : { program, args };
+}
+function readsOnly(program, args) {
+    const inner = innerProgram(program, args);
+    if (READING_PROGRAMS.has(program) || READING_PROGRAMS.has(inner.program))
+        return true;
+    const writing = READING_UNLESS[inner.program];
+    return writing !== undefined && !inner.args.some((arg) => writing.test(arg));
+}
 // A folder a host keeps hooks settings in: moving into it is held, so a later relative write there cannot slip past the path test.
 const HOST_CONFIG_FOLDER = /\.(?:claude|codex|cursor|windsurf|gemini|grok)(?:\/(?:hooks|shell-snapshots))?\/?$/i;
 const FIND_WRITES = /^-(?:delete|exec|execdir|ok|okdir|fprint0?|fprintf|fls)$/;
@@ -113,7 +141,7 @@ function shellKind(command) {
         }
         if ((program === 'cd' || program === 'pushd') && args.some((arg) => HOST_CONFIG_FOLDER.test(arg)))
             return 'marrow-control';
-        if (READING_PROGRAMS.has(program))
+        if (readsOnly(program, args))
             continue;
         if (program === 'find' && !args.some((arg) => FIND_WRITES.test(arg)))
             continue;
