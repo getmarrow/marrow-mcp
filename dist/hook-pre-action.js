@@ -44,6 +44,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
 const host_approval_1 = require("./host-approval");
+const self_protect_1 = require("./self-protect");
 const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
 const own_server_identity_1 = require("./own-server-identity");
@@ -568,7 +569,7 @@ function localControlDisabled() {
     }
 }
 // The order classifyTool picks a type and lists surfaces in; earlier types are the more specific (stricter) ones.
-const CLASSIFICATION_TYPES = ['publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
+const CLASSIFICATION_TYPES = ['security', 'publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
 const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 /**
  * The classification of one tool call. A Monitor command (and a native git
@@ -967,6 +968,10 @@ function classifyAsNamed(event, options) {
     const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment.bind(null, options.cwd);
     const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEventAsNamed)(event, printsEnvironment);
     const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccessAsNamed)(event, printsEnvironment);
+    // T2: a write to Marrow's control files, a host's hooks settings or a file that makes a command run later is a security action, not an audit one.
+    const selfProtected = readOnly ? null : (0, self_protect_1.selfProtectKind)(event, options.cwd);
+    if (selfProtected)
+        return { tool, type: 'security', surfaces: [selfProtected], readOnly: false, protected: true };
     const protectedShellCommand = shellGoverned && (0, hook_tool_policy_1.isProtectedShellMutation)(command);
     const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
         && protectedShellCommand;
@@ -1008,7 +1013,9 @@ function classificationFrom(parts) {
                 : surfaces.includes('database') ? `database:${type}`
                     : surfaces.includes('financial') ? `financial:${type}`
                         : surfaces.includes('secrets') ? `secrets:${type}`
-                            : `workspace:${type}`;
+                            : surfaces.includes('marrow-control') ? `marrow:${type}`
+                                : surfaces.includes('persistence') ? `host:${type}`
+                                    : `workspace:${type}`;
     return {
         action: `classified ${tool} action: ${type} on ${surfaces.join(', ') || 'workspace'}`,
         target,
