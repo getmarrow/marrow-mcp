@@ -13,6 +13,7 @@ const node_crypto_1 = require("node:crypto");
 const tool_catalog_1 = require("./tool-catalog");
 const index_1 = require("./index");
 const control_state_1 = require("./control-state");
+const data_commands_1 = require("./data-commands");
 const hook_1 = require("./hook");
 const host_approval_1 = require("./host-approval");
 const hook_contract_1 = require("./hook-contract");
@@ -434,6 +435,11 @@ ${MARROW_BLOCK_END}`;
     process.stdout.write('Set MARROW_HOOK_DEBUG=true for write-side hook diagnostics, or MARROW_CONTEXT_HOOK_DEBUG=true for prompt-context diagnostics.\n');
     process.stdout.write('Setup completed. MCP tools remain on demand; configured hook activity is client-self-reported and does not certify passive coverage or enforcement.\n');
     process.exit(0);
+}
+// `data-commands list|add|remove`: the owner declares which of their own scripts only handle data (MCP-1b). It runs before parseArgs so that a word of a
+// declared command such as `setup` or `hook` cannot start another mode, and it starts no server, hook or nudge.
+if (process.argv[2] === 'data-commands') {
+    process.exit((0, data_commands_1.runDataCommands)(process.argv.slice(3)));
 }
 const cliArgs = parseArgs();
 // `seatbelt-status`: one line of JSON for the installer's doctor. Read-only; it starts no server, hook or nudge.
@@ -895,6 +901,7 @@ if (process.argv[2] !== 'keys') {
                         || (0, request_reliability_1.localClientUpdate)(),
                     control_path: (0, control_path_state_1.controlPathStats)(toolName),
                     local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)),
+                    data_commands: (0, data_commands_1.dataCommandsEvidence)(),
                     lifecycle_spool: {
                         state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
                         pending: spool.pending,
@@ -1973,7 +1980,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                     ...(contextProjection === undefined ? {} : { primary_tool_availability: contextProjection }),
                                 };
                             }, { cacheAware: false, toolName: 'marrow_agent_status' });
-                            success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus({ ...result, local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)) }), null, 2) }] });
+                            success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus({ ...result, local_control: (0, control_state_1.localControlEvidence)(Boolean(API_KEY)), data_commands: (0, data_commands_1.dataCommandsEvidence)() }), null, 2) }] });
                             return;
                         }
                         if (toolName === 'marrow_runtime_status') {

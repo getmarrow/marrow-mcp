@@ -1,4 +1,5 @@
 import { lstatSync } from 'node:fs';
+import { declaredCommandMatch } from './data-commands';
 import { UNMODELED_SHELL_CHARACTER, parseShellSegments } from './hook-tool-policy';
 
 /**
@@ -16,6 +17,8 @@ export type DataWriteContext = {
   home?: string | null;
   /** The command already ran (PostToolUse): an existing file is then the file the command wrote, so `>` is not refused for it. */
   postTool?: boolean;
+  /** MCP-1b: the home whose `.marrow/data-commands.json` declares owner data commands (default: the process's `$HOME`, as for control.json). */
+  dataCommandsHome?: string;
 };
 
 const MAX_COMMAND_LENGTH = 8192;
@@ -30,8 +33,10 @@ const DATE_ARGUMENT = /^(?:-u|--utc|-R|-I[a-z]*|--iso-8601(?:=[a-z]+)?|\+[^$`'"\
 const DATE_SUBSTITUTION = /^\$\(date((?: [^\s)]+)*)\)/;
 const ECHO_FLAGS = new Set(['-n', '-e', '-E', '-ne', '-en', '-nE', '-En']);
 const DELIMITER_END = new Set([' ', '\t', '\n', ';', '&', '|', '>']);
+// MCP-1b: next to a declared command, a literal assignment may not name a variable an interpreter, a package manager, git or a TLS/proxy client reads.
+const DECLARED_BLOCKED_ASSIGNMENT = /^(?:PYTHON.*|NODE.*|NPM_.*|PERL.*|RUBY.*|GEM_.*|BUN_.*|DENO_.*|JAVA.*|_JAVA.*|CLASSPATH|VIRTUAL_ENV|CONDA.*|UV_.*|PIP.*|POETRY.*|XDG_.*|GIT_.*|SSH_.*|SSL_.*|CURL_.*|REQUESTS_.*|.*_PROXY|ALL_PROXY|NO_PROXY|HTTPS?_.*|ZDOTDIR|EDITOR|VISUAL|PAGER|BROWSER|SHELL.*|TMP.*|TEMP.*|DISPLAY|MALLOC.*|GLIBC.*|OPENSSL.*|.*(?:PATH|DIR|DIRS|HOME|OPT|OPTS|OPTIONS|FLAGS|ENV|RC|CONFIG|CONF|PRELOAD|LIB|LIBS|ROOT|PREFIX|STARTUP|SETTINGS|CERT|CERTS|FILE))$/i;
 
-type Word = { text: string; date: boolean; expands: boolean; assignName: string | null };
+type Word = { text: string; date: boolean; expands: boolean; dollar: boolean; exotic: boolean; tilde: boolean; assignName: string | null };
 type Redirect = { target: Word; append: boolean };
 type Segment = { words: Word[]; redirects: Redirect[]; heredoc: boolean; pipeIn: boolean; pipeOut: boolean };
 
@@ -50,6 +55,10 @@ function scan(command: string, home: string): Segment[] {
   let headOpen = true;
   let date = false;
   let expands = false;
+  let dollar = false;
+  // A backslash, or a `!` / `~` the shell may expand (history expansion, tilde after `=`): never plain data for a declared command.
+  let exotic = false;
+  let tilde = false;
   let pending: { append: boolean } | null = null;
   let heredoc: { delimiter: string; strip: boolean; quoted: boolean } | null = null;
   let heredocSeen = false;
@@ -65,13 +74,13 @@ function scan(command: string, home: string): Segment[] {
   const endWord = (): void => {
     if (!inWord) return;
     const assign = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(head);
-    const word: Word = { text, date, expands, assignName: assign ? assign[1] : null };
+    const word: Word = { text, date, expands, dollar, exotic, tilde, assignName: assign ? assign[1] : null };
     if (pending) {
       if (date) no();
       cur.redirects.push({ target: word, append: pending.append });
       pending = null;
     } else cur.words.push(word);
-    text = ''; inWord = false; head = ''; headOpen = true; date = false; expands = false;
+    text = ''; inWord = false; head = ''; headOpen = true; date = false; expands = false; dollar = false; exotic = false; tilde = false;
   };
   const endSegment = (separator: string): void => {
     endWord();
@@ -106,7 +115,8 @@ function scan(command: string, home: string): Segment[] {
     headOpen = false;
     expands = true;
   };
-  const dollar = (index: number, quoted: boolean): number => {
+  const dollarAt = (index: number, quoted: boolean): number => {
+    dollar = true;
     const rest = command.slice(index);
     const substitution = DATE_SUBSTITUTION.exec(rest);
     if (substitution) {
@@ -147,12 +157,14 @@ function scan(command: string, home: string): Segment[] {
         if (inner === '"') { closed = true; index += 1; break; }
         if (inner === '`') no();
         if (inner === '\\') {
-          const escaped = command[index + 1];
-          if (escaped === undefined || escaped === '\n') no();
-          if ('$`"\\'.includes(escaped)) { text += escaped; index += 2; } else { text += '\\'; index += 1; }
+          exotic = true;
+          const escapedChar = command[index + 1];
+          if (escapedChar === undefined || escapedChar === '\n') no();
+          if ('$`"\\'.includes(escapedChar)) { text += escapedChar; index += 2; } else { text += '\\'; index += 1; }
           continue;
         }
-        if (inner === '$') { index += dollar(index, true); continue; }
+        if (inner === '$') { index += dollarAt(index, true); continue; }
+        if (inner === '!') exotic = true;
         text += inner;
         index += 1;
       }
@@ -161,14 +173,16 @@ function scan(command: string, home: string): Segment[] {
     }
     if (char === '\\') {
       if (next === undefined || next === '\n') no();
+      exotic = true;
       literal(next, true);
       index += 2;
       continue;
     }
     if (char === '`' || char === '(' || char === ')' || char === '{' || char === '}' || char === '*' || char === '?' || char === '[') no();
-    if (char === '$') { index += dollar(index, false); continue; }
+    if (char === '$') { index += dollarAt(index, false); continue; }
     if (char === '~' && (!inWord || (headOpen && /^[A-Za-z_][A-Za-z0-9_]*=$/.test(head) && text === head))) {
       if (next !== undefined && !' \t\n;&|<>/'.includes(next)) no();
+      tilde = true;
       literal(home, true);
       index += 1;
       continue;
@@ -270,6 +284,7 @@ function scan(command: string, home: string): Segment[] {
       while (index < command.length && command[index] !== '\n') index += 1;
       continue;
     }
+    if (char === '!' || char === '~') exotic = true;
     literal(char, false);
     index += 1;
   }
@@ -322,6 +337,7 @@ export function dataWriteOnly(command: string, context: DataWriteContext = {}): 
     const segments = scan(command, home ?? no());
     const roots: Roots = { home };
     let writes = 0;
+    let declared = false;
     for (const segment of segments) {
       const [program, ...args] = segment.words;
       if (program.assignName !== null) continue;
@@ -367,7 +383,12 @@ export function dataWriteOnly(command: string, context: DataWriteContext = {}): 
           break;
         }
         default:
-          return false;
+          // MCP-1b: a segment that is not echo/printf/cat/tee is still data-only when it is exactly an owner-declared command (data-commands.ts):
+          // its words are then data, its redirects are judged below like any other, and it counts as the write it is declared to be.
+          if (segment.heredoc || !declaredCommandMatch(segment.words, { cwd: context.cwd, home: context.dataCommandsHome })) return false;
+          declared = true;
+          writes += 1;
+          payload = [];
       }
       if (program.text !== 'echo' && program.text !== 'printf' && payload.some((word) => word.date)) no();
       if (operands.some((word) => word.date)) no();
@@ -380,6 +401,11 @@ export function dataWriteOnly(command: string, context: DataWriteContext = {}): 
         const device = ['/dev/null', '/dev/stdout', '/dev/stderr'].includes(redirect.target.text);
         if (!writableTarget(redirect.target.text, !redirect.append, context, roots)) return false;
         if (!device) writes += 1;
+      }
+    }
+    if (declared) {
+      for (const segment of segments) {
+        if (segment.words[0].assignName !== null && segment.words.some((word) => DECLARED_BLOCKED_ASSIGNMENT.test(word.assignName as string))) return false;
       }
     }
     return writes > 0;

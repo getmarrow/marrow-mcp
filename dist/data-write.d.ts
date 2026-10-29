@@ -13,6 +13,8 @@ export type DataWriteContext = {
     home?: string | null;
     /** The command already ran (PostToolUse): an existing file is then the file the command wrote, so `>` is not refused for it. */
     postTool?: boolean;
+    /** MCP-1b: the home whose `.marrow/data-commands.json` declares owner data commands (default: the process's `$HOME`, as for control.json). */
+    dataCommandsHome?: string;
 };
 /** Whether `command` writes notes/log files only, using nothing but echo, printf, cat, tee and literal assignments. */
 export declare function dataWriteOnly(command: string, context?: DataWriteContext): boolean;
