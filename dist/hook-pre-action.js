@@ -44,6 +44,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
 const host_approval_1 = require("./host-approval");
+const keyless_notice_1 = require("./keyless-notice");
 const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
 const own_server_identity_1 = require("./own-server-identity");
@@ -1508,6 +1509,9 @@ async function runPreActionHook(input, watch) {
             process.stdout.write(JSON.stringify(allow));
         return;
     }
+    // MCP-5: control is on and no key resolves, so nothing this hook does is recorded: say so once per session.
+    if (!identity.environment.apiKey)
+        (0, keyless_notice_1.armKeylessNotice)(identity.harness, identity.environment.sessionId || source.session_id || source.conversation_id || source.task_id);
     let resolved = identity.environment;
     const enforcementRequired = classified.protected || ['windsurf', 'gemini', 'grok'].includes(identity.harness);
     const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id

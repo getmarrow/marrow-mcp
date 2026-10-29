@@ -5,6 +5,7 @@ import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from '.
 import { backgroundNudgeEnabled, payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
 import { readLocalControlState } from './control-state';
+import { armKeylessNotice } from './keyless-notice';
 import { isOfficialMarrowMcpEvent, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
 import { recordSessionLoopOutcome, type LoopGuardOperation } from './session-loop-guard';
@@ -235,6 +236,8 @@ export async function runHookCommand(input?: unknown): Promise<void> {
     lastHookEventName = event.hook_event_name;
 
     const resolvedEnv = identity.environment;
+    // MCP-5: control is on and no key resolves, so this hook records nothing: say so once per session, whatever the event is.
+    if (!resolvedEnv.apiKey) armKeylessNotice(identity.harness, resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id));
     if (identity.harness === 'codex' && resolvedEnv.apiKey && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
       const context = modelUsageCaptureContextFromEnv();
       const supplied = extractModelUsageFromUnknown(event.tool_response, context)

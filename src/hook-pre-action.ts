@@ -34,6 +34,7 @@ import {
   type HoldPlan,
   type OwnerLinkOutcome,
 } from './host-approval';
+import { armKeylessNotice } from './keyless-notice';
 import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
@@ -1543,6 +1544,8 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     else process.stdout.write(JSON.stringify(allow));
     return;
   }
+  // MCP-5: control is on and no key resolves, so nothing this hook does is recorded: say so once per session.
+  if (!identity.environment.apiKey) armKeylessNotice(identity.harness, identity.environment.sessionId || source.session_id || source.conversation_id || source.task_id);
   let resolved = identity.environment;
   const enforcementRequired = classified.protected || ['windsurf', 'gemini', 'grok'].includes(identity.harness);
   const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id

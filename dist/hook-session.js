@@ -11,6 +11,7 @@ const habit_loop_copy_1 = require("./habit-loop-copy");
 const node_fs_1 = require("node:fs");
 const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
+const keyless_notice_1 = require("./keyless-notice");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
 exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
@@ -133,8 +134,10 @@ async function runSessionHookCommand(input) {
             (0, session_loop_guard_1.clearSessionLoopGuard)({ sessionId, agentId, harness: identity.harness });
         }
         catch { /* session close remains best effort */ }
-        if (!resolved.apiKey)
+        if (!resolved.apiKey) {
+            (0, keyless_notice_1.armKeylessNotice)(identity.harness, resolved.sessionId || (typeof raw.session_id === 'string' ? raw.session_id : undefined));
             return;
+        }
         const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
         const workflowId = (0, hook_contract_1.stableSessionWorkflowId)(sessionId, identity.harness === 'cursor'
             ? [source.conversation_id, source.generation_id, source.tool_use_id]
