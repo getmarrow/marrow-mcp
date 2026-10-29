@@ -24,7 +24,7 @@ const MAX_WORDS = 8;
 export type DataCommandEntry = { argv_prefix: string[]; sha256: string };
 export type DataCommandsFile = { present: boolean; entries: DataCommandEntry[]; ignored: string | null };
 /** One word of a parsed segment, as data-write.ts reads it: the text after quote removal and what the reader had to expand to get it. */
-export type DeclaredWord = { text: string; date: boolean; expands: boolean; dollar: boolean; escaped: boolean; tilde: boolean };
+export type DeclaredWord = { text: string; date: boolean; expands: boolean; dollar: boolean; exotic: boolean; tilde: boolean };
 
 export function dataCommandsPath(home = homedir()): string {
   return join(home, DATA_COMMANDS_DIRECTORY, DATA_COMMANDS_FILENAME);
@@ -186,8 +186,8 @@ function linkFreePath(absolute: string): string | null {
   return current || '/';
 }
 
-// `!` (history expansion in an interactive shell) and `~` anywhere in a word (bash also expands it after `=`) are never plain.
-const plainWord = (word: DeclaredWord): boolean => !word.date && !word.expands && !word.dollar && !word.escaped && !word.tilde && !/[!~]/.test(word.text);
+// `exotic` covers a backslash and a `!` or `~` the shell may expand (history expansion in an interactive shell, tilde after `=`); inside single quotes they are text.
+const plainWord = (word: DeclaredWord): boolean => !word.date && !word.expands && !word.dollar && !word.exotic && !word.tilde;
 
 // A remaining word the script may read as a path is never a way into a hidden folder (~/.marrow, ~/.ssh, .git, an rc file) or a system folder: the
 // command then keeps the 3.9.109 reading, where those paths are judged. A word with a space is prose (a note) and stays data.
@@ -216,7 +216,7 @@ export function declaredCommandMatch(words: readonly DeclaredWord[], options: { 
       for (let at = 0; at < prefix.length && same; at += 1) {
         const word = words[at];
         if (at === scriptAt) {
-          if (word.date || word.expands || word.dollar || word.escaped) { same = false; break; }
+          if (word.date || word.expands || word.dollar || word.exotic) { same = false; break; }
           const absolute = word.text.startsWith('/') ? word.text : options.cwd && options.cwd.startsWith('/') && word.text ? `${options.cwd}/${word.text}` : '';
           same = absolute !== '' && !absolute.includes('\0') && linkFreePath(absolute) === prefix[at];
         } else same = plainWord(word) && word.text === prefix[at];
@@ -366,7 +366,9 @@ export function runDataCommands(args: string[], io: DataCommandsIo = processIo()
     if (file.entries.some((entry) => entry.argv_prefix.join('\0') === prefix.join('\0'))) { io.writeErr('Not declared: this prefix is already declared.\n'); return 1; }
     const pinned = readScript(scriptOf(prefix));
     if ('problem' in pinned) { io.writeErr(`Not declared: ${pinned.problem}.\n`); return 1; }
-    const confirmed = confirmWithCode(io, `Declare as a data-only command: ${prefix.join(' ')}\nScript sha256: ${pinned.sha256}\nAfter this, Marrow treats the words after that prefix as data, not as actions, while the script stays exactly as it is now.`);
+    const isolated = /^python/.test(prefix[0]) && prefix.slice(1, prefix.findIndex((word) => word.includes('/'))).includes('-I');
+    const notice = isolated ? '' : '\nNote: the hash covers only the script. Anything the interpreter loads from next to it (modules or packages in the same folder, unless you use python3 -I) is not covered.';
+    const confirmed = confirmWithCode(io, `Declare as a data-only command: ${prefix.join(' ')}\nScript sha256: ${pinned.sha256}\nAfter this, Marrow treats the words after that prefix as data, not as actions, while the script stays exactly as it is now.${notice}`);
     if (!confirmed) { io.writeErr('Cancelled: the code did not match. Nothing was written.\n'); return 1; }
     // The script is read again after the code was typed: the hash written is the one of the bytes on disk now.
     const again = readScript(scriptOf(prefix));

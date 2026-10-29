@@ -34,7 +34,8 @@ function scan(command, home) {
     let date = false;
     let expands = false;
     let dollar = false;
-    let escaped = false;
+    // A backslash, or a `!` / `~` the shell may expand (history expansion, tilde after `=`): never plain data for a declared command.
+    let exotic = false;
     let tilde = false;
     let pending = null;
     let heredoc = null;
@@ -53,7 +54,7 @@ function scan(command, home) {
         if (!inWord)
             return;
         const assign = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(head);
-        const word = { text, date, expands, dollar, escaped, tilde, assignName: assign ? assign[1] : null };
+        const word = { text, date, expands, dollar, exotic, tilde, assignName: assign ? assign[1] : null };
         if (pending) {
             if (date)
                 no();
@@ -69,7 +70,7 @@ function scan(command, home) {
         date = false;
         expands = false;
         dollar = false;
-        escaped = false;
+        exotic = false;
         tilde = false;
     };
     const endSegment = (separator) => {
@@ -174,7 +175,7 @@ function scan(command, home) {
                 if (inner === '`')
                     no();
                 if (inner === '\\') {
-                    escaped = true;
+                    exotic = true;
                     const escapedChar = command[index + 1];
                     if (escapedChar === undefined || escapedChar === '\n')
                         no();
@@ -192,6 +193,8 @@ function scan(command, home) {
                     index += dollarAt(index, true);
                     continue;
                 }
+                if (inner === '!')
+                    exotic = true;
                 text += inner;
                 index += 1;
             }
@@ -202,7 +205,7 @@ function scan(command, home) {
         if (char === '\\') {
             if (next === undefined || next === '\n')
                 no();
-            escaped = true;
+            exotic = true;
             literal(next, true);
             index += 2;
             continue;
@@ -366,6 +369,8 @@ function scan(command, home) {
                 index += 1;
             continue;
         }
+        if (char === '!' || char === '~')
+            exotic = true;
         literal(char, false);
         index += 1;
     }

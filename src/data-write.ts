@@ -36,7 +36,7 @@ const DELIMITER_END = new Set([' ', '\t', '\n', ';', '&', '|', '>']);
 // MCP-1b: next to a declared command, a literal assignment may not name a variable an interpreter, a package manager, git or a TLS/proxy client reads.
 const DECLARED_BLOCKED_ASSIGNMENT = /^(?:PYTHON.*|NODE.*|NPM_.*|PERL.*|RUBY.*|GEM_.*|BUN_.*|DENO_.*|JAVA.*|_JAVA.*|CLASSPATH|VIRTUAL_ENV|CONDA.*|UV_.*|PIP.*|POETRY.*|XDG_.*|GIT_.*|SSH_.*|SSL_.*|CURL_.*|REQUESTS_.*|.*_PROXY|ALL_PROXY|NO_PROXY|HTTPS?_.*|ZDOTDIR|EDITOR|VISUAL|PAGER|BROWSER|SHELL.*|TMP.*|TEMP.*|DISPLAY|MALLOC.*|GLIBC.*|OPENSSL.*|.*(?:PATH|DIR|DIRS|HOME|OPT|OPTS|OPTIONS|FLAGS|ENV|RC|CONFIG|CONF|PRELOAD|LIB|LIBS|ROOT|PREFIX|STARTUP|SETTINGS|CERT|CERTS|FILE))$/i;
 
-type Word = { text: string; date: boolean; expands: boolean; dollar: boolean; escaped: boolean; tilde: boolean; assignName: string | null };
+type Word = { text: string; date: boolean; expands: boolean; dollar: boolean; exotic: boolean; tilde: boolean; assignName: string | null };
 type Redirect = { target: Word; append: boolean };
 type Segment = { words: Word[]; redirects: Redirect[]; heredoc: boolean; pipeIn: boolean; pipeOut: boolean };
 
@@ -56,7 +56,8 @@ function scan(command: string, home: string): Segment[] {
   let date = false;
   let expands = false;
   let dollar = false;
-  let escaped = false;
+  // A backslash, or a `!` / `~` the shell may expand (history expansion, tilde after `=`): never plain data for a declared command.
+  let exotic = false;
   let tilde = false;
   let pending: { append: boolean } | null = null;
   let heredoc: { delimiter: string; strip: boolean; quoted: boolean } | null = null;
@@ -73,13 +74,13 @@ function scan(command: string, home: string): Segment[] {
   const endWord = (): void => {
     if (!inWord) return;
     const assign = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(head);
-    const word: Word = { text, date, expands, dollar, escaped, tilde, assignName: assign ? assign[1] : null };
+    const word: Word = { text, date, expands, dollar, exotic, tilde, assignName: assign ? assign[1] : null };
     if (pending) {
       if (date) no();
       cur.redirects.push({ target: word, append: pending.append });
       pending = null;
     } else cur.words.push(word);
-    text = ''; inWord = false; head = ''; headOpen = true; date = false; expands = false; dollar = false; escaped = false; tilde = false;
+    text = ''; inWord = false; head = ''; headOpen = true; date = false; expands = false; dollar = false; exotic = false; tilde = false;
   };
   const endSegment = (separator: string): void => {
     endWord();
@@ -156,13 +157,14 @@ function scan(command: string, home: string): Segment[] {
         if (inner === '"') { closed = true; index += 1; break; }
         if (inner === '`') no();
         if (inner === '\\') {
-          escaped = true;
+          exotic = true;
           const escapedChar = command[index + 1];
           if (escapedChar === undefined || escapedChar === '\n') no();
           if ('$`"\\'.includes(escapedChar)) { text += escapedChar; index += 2; } else { text += '\\'; index += 1; }
           continue;
         }
         if (inner === '$') { index += dollarAt(index, true); continue; }
+        if (inner === '!') exotic = true;
         text += inner;
         index += 1;
       }
@@ -171,7 +173,7 @@ function scan(command: string, home: string): Segment[] {
     }
     if (char === '\\') {
       if (next === undefined || next === '\n') no();
-      escaped = true;
+      exotic = true;
       literal(next, true);
       index += 2;
       continue;
@@ -282,6 +284,7 @@ function scan(command: string, home: string): Segment[] {
       while (index < command.length && command[index] !== '\n') index += 1;
       continue;
     }
+    if (char === '!' || char === '~') exotic = true;
     literal(char, false);
     index += 1;
   }

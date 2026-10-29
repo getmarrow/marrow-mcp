@@ -28,7 +28,7 @@ export type DeclaredWord = {
     date: boolean;
     expands: boolean;
     dollar: boolean;
-    escaped: boolean;
+    exotic: boolean;
     tilde: boolean;
 };
 export declare function dataCommandsPath(home?: string): string;

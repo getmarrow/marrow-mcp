@@ -95,6 +95,9 @@ test('B0 positive: DW segments around a declared segment, redirects to /dev/null
   assertDw(cmd(` | tee -a ${ws}/board-log.md`));
   assertDw(`R=${ws}\n${cmd()} >> $R/board-log.md`);
 });
+test('B0 positive: a ! or ~ inside single quotes, and a ~ inside double quotes, is text', () => {
+  assertDw(`python3 -I ${board} set C42 --note 'shipped! wrangler deploy ~5 min' --tag "~x"`);
+});
 test('B0 positive: quoted and flagged remaining words are data', () => {
   assertDw(`python3 -I ${board} set C42 --note 'deploy production wrangler' --tag "a b c" -x 1`);
   assertDw(`"python3" '-I' "${board}" set C42 --note ${NOTE}`);
@@ -118,7 +121,7 @@ test('A39 declared prefix plus "; wrangler deploy" is held', () => {
 });
 
 test('B2 expansions in a remaining word: no match', () => {
-  for (const word of ['"$(wrangler deploy)"', '"`wrangler deploy`"', '$V', '${V}', '"$V"', '*', '?', '[a]', '{a,b}', '~', '~/x', '$\'a\'', '$"a"', 'a\\ b', '"a\\"b"', '<(ls)', '>(ls)', '$(date -u)', 'a~b', '--out=~/x', '!', '!!', '"x!"', "'x!'", '!wrangler']) {
+  for (const word of ['"$(wrangler deploy)"', '"`wrangler deploy`"', '$V', '${V}', '"$V"', '*', '?', '[a]', '{a,b}', '~', '~/x', '$\'a\'', '$"a"', 'a\\ b', '"a\\"b"', '<(ls)', '>(ls)', '$(date -u)', 'a~b', '--out=~/x', '!', '!!', '"x!"', 'x!', '!wrangler', 'a\\!b']) {
     assertNoMatch(`V=x; ${cmd(` ${word}`)}`, undefined, `word ${word}`);
     assertNoMatch(cmd(` ${word}`), undefined, `word ${word}`);
   }
@@ -556,6 +559,14 @@ test('B8 add (typed code right): computes the sha256 itself, writes mode 600 ato
   assert.deepEqual(readdirSync(marrowDir), ['data-commands.json']);
   assert.match(out.join(''), /AB3K7Q/, 'the code is shown on the terminal');
   assertDw(cmd());
+});
+test('B8 add tells the owner what the hash covers: a note unless python runs isolated (-I)', () => {
+  for (const [prefix, noted] of [[['python3', board], true], [['python3', '-I', board, 'set'], false], [['node', board], true], [[board, 'set'], true]]) {
+    undeclare();
+    const { io, out } = memoryIo({ readLine: () => 'AB3K7Q' });
+    assert.equal(dc().runDataCommands(['add', '--', ...prefix], io), 0, JSON.stringify(prefix));
+    assert.equal(/hash covers only the script/.test(out.join('')), noted, JSON.stringify(prefix));
+  }
 });
 test('B8 add: a wrong, empty or missing typed code writes nothing and exits 1', () => {
   for (const typed of ['WRONG1', 'ab3k7q', '', null, 'AB3K7Q extra', ' AB3K7Q ']) {

@@ -248,8 +248,8 @@ function linkFreePath(absolute) {
     }
     return current || '/';
 }
-// `!` (history expansion in an interactive shell) and `~` anywhere in a word (bash also expands it after `=`) are never plain.
-const plainWord = (word) => !word.date && !word.expands && !word.dollar && !word.escaped && !word.tilde && !/[!~]/.test(word.text);
+// `exotic` covers a backslash and a `!` or `~` the shell may expand (history expansion in an interactive shell, tilde after `=`); inside single quotes they are text.
+const plainWord = (word) => !word.date && !word.expands && !word.dollar && !word.exotic && !word.tilde;
 // A remaining word the script may read as a path is never a way into a hidden folder (~/.marrow, ~/.ssh, .git, an rc file) or a system folder: the
 // command then keeps the 3.9.109 reading, where those paths are judged. A word with a space is prose (a note) and stays data.
 const SYSTEM_ROOT = /^\/(?:etc|var|usr|bin|sbin|lib|lib32|lib64|proc|sys|boot|root|run|srv|dev)(?:\/|$)/;
@@ -280,7 +280,7 @@ function declaredCommandMatch(words, options = {}) {
             for (let at = 0; at < prefix.length && same; at += 1) {
                 const word = words[at];
                 if (at === scriptAt) {
-                    if (word.date || word.expands || word.dollar || word.escaped) {
+                    if (word.date || word.expands || word.dollar || word.exotic) {
                         same = false;
                         break;
                     }
@@ -490,7 +490,9 @@ function runDataCommands(args, io = processIo()) {
             io.writeErr(`Not declared: ${pinned.problem}.\n`);
             return 1;
         }
-        const confirmed = confirmWithCode(io, `Declare as a data-only command: ${prefix.join(' ')}\nScript sha256: ${pinned.sha256}\nAfter this, Marrow treats the words after that prefix as data, not as actions, while the script stays exactly as it is now.`);
+        const isolated = /^python/.test(prefix[0]) && prefix.slice(1, prefix.findIndex((word) => word.includes('/'))).includes('-I');
+        const notice = isolated ? '' : '\nNote: the hash covers only the script. Anything the interpreter loads from next to it (modules or packages in the same folder, unless you use python3 -I) is not covered.';
+        const confirmed = confirmWithCode(io, `Declare as a data-only command: ${prefix.join(' ')}\nScript sha256: ${pinned.sha256}\nAfter this, Marrow treats the words after that prefix as data, not as actions, while the script stays exactly as it is now.${notice}`);
         if (!confirmed) {
             io.writeErr('Cancelled: the code did not match. Nothing was written.\n');
             return 1;
