@@ -29,6 +29,10 @@ import {
   stableSessionWorkflowId,
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
+import { recordSessionBypass } from './owner-bypass';
+import { armKeylessNotice } from './keyless-notice';
+import { marrowSessionId } from './session-id';
+import { claimUnreadableControlNotice, unreadableControlNotice } from './control-notice';
 import { advanceSessionInstructionEpoch } from './session-loop-guard';
 import {
   approvalHostFor,
@@ -107,8 +111,8 @@ function promptHoldContext(identity: ReturnType<typeof resolveNativeHookIdentity
   } catch {
     return null;
   }
-  const sessionId = identity.environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
-    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+  const sessionId = marrowSessionId(identity.environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
+    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
   return {
     apiKey,
     baseUrl,
@@ -120,13 +124,24 @@ function promptHoldContext(identity: ReturnType<typeof resolveNativeHookIdentity
   };
 }
 
+function joinNotice(notice: string, existing: unknown): string {
+  return [notice, typeof existing === 'string' ? existing : ''].filter(Boolean).join('\n');
+}
+
+/** The control-file notice for this session's first prompt after the file became unreadable, else null. */
+function unreadableControlNoticeOnce(harness: string, event: UserPromptSubmitEvent): string | null {
+  const session = resolveNativeHookIdentity(process.argv[2]).environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
+    || stableSessionWorkflowId(undefined, [harness, process.cwd()]);
+  return claimUnreadableControlNotice(`${harness}:${session}`) ? unreadableControlNotice() : null;
+}
+
 /**
  * Cursor beforeSubmitPrompt: never adds context (Cursor cannot), only records
  * that the prompt hook runs and handles a typed "marrow approve CODE" in a
  * local interactive session. A failed typed answer blocks that one message so
  * the user sees why; everything else continues unchanged.
  */
-async function runCursorPromptHook(event: UserPromptSubmitEvent): Promise<void> {
+async function runCursorPromptHook(event: UserPromptSubmitEvent, controlNotice: string | null = null): Promise<void> {
   const identity = resolveNativeHookIdentity(process.argv[2]);
   const context = promptHoldContext(identity, event);
   let output: Record<string, unknown> = { continue: true };
@@ -138,6 +153,7 @@ async function runCursorPromptHook(event: UserPromptSubmitEvent): Promise<void> 
       if (notice) output = { continue: true, user_message: notice };
     }
   }
+  if (controlNotice) output = { ...output, user_message: joinNotice(controlNotice, output.user_message) };
   process.stdout.write(JSON.stringify(output));
 }
 
@@ -146,7 +162,7 @@ async function runCursorPromptHook(event: UserPromptSubmitEvent): Promise<void> 
  * "marrow approve CODE" in a local interactive session. The confirmation goes
  * to the user (systemMessage); the agent only learns that it may retry.
  */
-async function runGeminiPromptHook(event: UserPromptSubmitEvent): Promise<void> {
+async function runGeminiPromptHook(event: UserPromptSubmitEvent, controlNotice: string | null = null): Promise<void> {
   const identity = resolveNativeHookIdentity(process.argv[2]);
   const context = promptHoldContext(identity, event);
   let output: Record<string, unknown> = {};
@@ -163,6 +179,7 @@ async function runGeminiPromptHook(event: UserPromptSubmitEvent): Promise<void> 
     }
     await flushHoldOutbox(context, 1, 1_500).catch(() => undefined);
   }
+  if (controlNotice) output = { ...output, systemMessage: joinNotice(controlNotice, output.systemMessage) };
   process.stdout.write(JSON.stringify(output));
 }
 
@@ -752,14 +769,18 @@ function compactAgentContext(context: Record<string, unknown>): string {
 export async function runContextHookCommand(): Promise<void> {
   // Kill switch — same flag as PostToolUse
   if (process.env.MARROW_AUTO_HOOK === 'false') {
+    await recordSessionBypass('hooks_switched_off', resolveNativeHookIdentity(process.argv[2]));
     emitNoContext();
     process.exit(0);
     return;
   }
 
+  // Only a valid file that says "disabled" switches this hook off. A file that cannot be read or is invalid
+  // never does: the hook runs as if control were on and tells the person once per session.
+  let controlUnreadable = false;
   try {
     if (!readLocalControlState().enabled) { emitNoContext(); process.exit(0); return; }
-  } catch { emitNoContext(); process.exit(0); return; }
+  } catch { controlUnreadable = true; }
 
   try {
     const raw = (await readStdin()).trim();
@@ -781,17 +802,19 @@ export async function runContextHookCommand(): Promise<void> {
     }
 
     const promptHarness = resolveNativeHookIdentity(process.argv[2]).harness;
+    const controlNotice = controlUnreadable ? unreadableControlNoticeOnce(promptHarness, event) : null;
     if (promptHarness === 'cursor') {
-      await runCursorPromptHook(event);
+      await runCursorPromptHook(event, controlNotice);
       process.exit(0);
       return;
     }
     if (promptHarness === 'gemini') {
-      await runGeminiPromptHook(event);
+      await runGeminiPromptHook(event, controlNotice);
       process.exit(0);
       return;
     }
     await settleHeldCallsAtPrompt(event).catch(() => undefined);
+    if (controlNotice) heldReplyUserText = joinNotice(controlNotice, heldReplyUserText);
 
     const prompt = asString(event.prompt);
     if (!prompt) {
@@ -803,8 +826,8 @@ export async function runContextHookCommand(): Promise<void> {
 
     const identity = resolveNativeHookIdentity(process.argv[2]);
     const resolvedEnv = identity.environment;
-    const sessionId = resolvedEnv.sessionId || asString(event.session_id)
-      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+    const sessionId = marrowSessionId(resolvedEnv.sessionId || asString(event.session_id)
+      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     const agentId = identity.agent_id;
     try {
       advanceSessionInstructionEpoch({ sessionId, agentId, harness: identity.harness });
@@ -817,6 +840,7 @@ export async function runContextHookCommand(): Promise<void> {
     const apiKey = resolvedEnv.apiKey || '';
     if (!apiKey) {
       debug(`[marrow-context-hook] missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
+      armKeylessNotice(identity.harness, resolvedEnv.sessionId || asString(event.session_id));
       emitNoContext();
       process.exit(0);
       return;

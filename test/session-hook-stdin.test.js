@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { marrowSessionId } = require('../dist/session-id.js');
 const { spawn } = require('node:child_process');
 const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { createServer } = require('node:http');
@@ -65,7 +66,7 @@ test('real Codex session CLI captures supplied stdin usage once and keeps cumula
     usage: { input_tokens: 100, output_tokens: 8, total_tokens: 108, input_tokens_details: { cached_tokens: 20 } } });
   const usage = result.calls.filter(call => call.path === '/v1/agent/model-usage');
   assert.equal(usage.length, 1);
-  assert.equal(usage[0].body.session_id, 'fixture-session');
+  assert.equal(usage[0].body.session_id, marrowSessionId('fixture-session', 'fixture-session-agent'));
   assert.equal(usage[0].body.agent_id, 'fixture-session-agent');
   assert.equal(usage[0].body.input_tokens, 100);
   assert.equal(usage[0].body.output_tokens, 8);

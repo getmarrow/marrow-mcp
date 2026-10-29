@@ -4,8 +4,10 @@ import { homedir, userInfo } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
 import { marrowAgentRuntime, marrowCommit, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { MarrowRequestError } from './request-reliability';
+import { preferIpv4FirstWithHappyEyeballs } from './ipv4-first';
 import { payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
 import { CONTROL_BYPASS_ACTION, readLocalControlState } from './control-state';
+import { unreadableControlSuffix } from './control-notice';
 import { arbitrationApprovalGuidance, ordinaryApprovalGuidance, ownerReceiptRequired, runtimeAuthorizationReceiptId } from './runtime-contract';
 import {
   approvalHostFor,
@@ -34,6 +36,11 @@ import {
   type HoldPlan,
   type OwnerLinkOutcome,
 } from './host-approval';
+import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
+import { recordSessionBypass } from './owner-bypass';
+import { selfProtectKind } from './self-protect';
+import { armKeylessNotice } from './keyless-notice';
+import { marrowSessionId } from './session-id';
 import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
@@ -48,6 +55,7 @@ import {
   isOfficialMarrowMcpTool,
   isProtectedShellMutation,
   isReadOnlyToolEventAsNamed,
+  isShellTextTool,
   isSecretMaterialAccessAsNamed,
   isSecretPath,
   isShellGovernedTool,
@@ -414,6 +422,13 @@ export function ownerApprovalPrompt(
   return { available: true, unavailableReason: '' };
 }
 
+/** Claude Code modes and entrypoints in which an "ask" reaches nobody (auto, bypassPermissions, dontAsk; claude -p and the Agent SDKs). */
+function noPersonAtPrompt(event: Pick<PreToolUseEvent, 'permission_mode'>, env: NodeJS.ProcessEnv = process.env): boolean {
+  const mode = typeof event.permission_mode === 'string' ? event.permission_mode : '';
+  const entrypoint = typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' ? env.CLAUDE_CODE_ENTRYPOINT : '';
+  return mode === 'auto' || mode === 'bypassPermissions' || mode === 'dontAsk' || HEADLESS_CLAUDE_ENTRYPOINTS.has(entrypoint);
+}
+
 type GateVerdict = { kind: 'block' | 'review' | 'arbitration_review' | 'denied'; reason: string };
 
 function boundedText(value: unknown, limit: number): string {
@@ -648,7 +663,7 @@ export type ToolClassification = {
 type ClassificationParts = { tool: string; type: string; surfaces: string[]; readOnly: boolean; protected: boolean };
 
 // The order classifyTool picks a type and lists surfaces in; earlier types are the more specific (stricter) ones.
-const CLASSIFICATION_TYPES = ['publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
+const CLASSIFICATION_TYPES = ['security', 'publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
 const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 
 /** `ownUnproven` and `postTool` are described on classifyTool. `cwd` is the event's working folder (classifyTool fills it from the event when it is an absolute path). */
@@ -984,6 +999,15 @@ function shellPrintsEnvironment(eventCwd: string | undefined, command: string): 
   return dumps;
 }
 
+/** Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts). */
+export function controlRouteCall(event: PreToolUseEvent): boolean {
+  if (!isShellTextTool(event)) return false;
+  const input = asRecord(event.tool_input);
+  const texts = typeof event.tool_input === 'string' ? [event.tool_input]
+    : ['command', 'cmd', 'script'].map((key) => input?.[key]).filter((value): value is string => typeof value === 'string');
+  return texts.some((text) => controlRoute(text));
+}
+
 /** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
 function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): ClassificationParts {
   const tool = String(event.tool_name || 'tool').slice(0, 64);
@@ -991,6 +1015,8 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   // Editing and task tools are judged by their target; shell-like words in the
   // content they write or the subject they record are not actions.
   const shellGoverned = isShellGovernedTool(event);
+  // MCP-10: a way to switch Marrow control off through the installer is a security action on marrow-control, held for the account owner.
+  if (controlRouteCall(event)) return { tool, type: 'security', surfaces: ['marrow-control'], readOnly: false, protected: true };
   const command = shellGoverned ? hookToolCommand(event) : '';
   const input = toolClassificationText(event).toLowerCase();
   // A look-alike of Marrow's own tool is never read-only, whatever its verb.
@@ -998,6 +1024,9 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment.bind(null, options.cwd);
   const readOnly = options.ownUnproven !== true && isReadOnlyToolEventAsNamed(event, printsEnvironment);
   const secretAccess = isSecretMaterialAccessAsNamed(event, printsEnvironment);
+  // T2: a write to Marrow's control files, a host's hooks settings or a file that makes a command run later is a security action, not an audit one.
+  const selfProtected = readOnly ? null : selfProtectKind(event, options.cwd);
+  if (selfProtected) return { tool, type: 'security', surfaces: [selfProtected], readOnly: false, protected: true };
   const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;
@@ -1036,6 +1065,8 @@ function classificationFrom(parts: ClassificationParts): ToolClassification {
     : surfaces.includes('database') ? `database:${type}`
     : surfaces.includes('financial') ? `financial:${type}`
     : surfaces.includes('secrets') ? `secrets:${type}`
+    : surfaces.includes('marrow-control') ? `marrow:${type}`
+    : surfaces.includes('persistence') ? `host:${type}`
     : `workspace:${type}`;
   return {
     action: `classified ${tool} action: ${type} on ${surfaces.join(', ') || 'workspace'}`,
@@ -1449,6 +1480,8 @@ function seatbeltEvent(source: PreToolUseEvent, rawEvent: unknown): SeatbeltEven
 }
 
 export async function runPreActionHookCommand(input?: unknown): Promise<void> {
+  // N1: IPv4 first with happy eyeballs, set once before any request this hook makes.
+  preferIpv4FirstWithHappyEyeballs();
   // Account mode: the S0-S5 floor in watch runs after the answer is written, for the record only.
   const watch: { harness?: string; event?: SeatbeltEventInput } = {};
   try {
@@ -1463,8 +1496,11 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
 }
 
 async function runPreActionHook(input: unknown, watch: { harness?: string; event?: SeatbeltEventInput }): Promise<void> {
-  if (process.env.MARROW_AUTO_HOOK === 'false') return;
   const identity = resolveNativeHookIdentity(process.argv[2]);
+  if (process.env.MARROW_AUTO_HOOK === 'false') {
+    await recordSessionBypass('hooks_switched_off', identity, input);
+    return;
+  }
   let event = input;
   let rawEvent: unknown = input;
   let inputFailure: string | null = null;
@@ -1513,12 +1549,12 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   try {
     localControl = readLocalControlState();
   } catch {
-    emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.' }, identity.harness);
+    emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: `Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.${unreadableControlSuffix()}` }, identity.harness);
     return;
   }
   if (!localControl.enabled) {
     const resolved = identity.environment;
-    const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
+    const sessionId = marrowSessionId(resolved.sessionId || source.session_id || source.conversation_id || source.task_id || '', identity.agent_id) || undefined;
     const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
     if (resolved.apiKey) {
       try {
@@ -1543,10 +1579,17 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     else process.stdout.write(JSON.stringify(allow));
     return;
   }
+  // MCP-5: control is on and no key resolves, so nothing this hook does is recorded: say so once per session.
+  if (!identity.environment.apiKey) armKeylessNotice(identity.harness, identity.environment.sessionId || source.session_id || source.conversation_id || source.task_id);
+  // MCP-10: where no person can answer a prompt (auto, bypass and dontAsk modes, headless runs), turning control off is denied outright.
+  if (classified.type === 'security' && classified.surfaces.includes('marrow-control') && controlRouteCall(source) && noPersonAtPrompt(source)) {
+    emitLoopGuardDenial(identity.harness, CONTROL_ROUTE_DENY_TEXT);
+    return;
+  }
   let resolved = identity.environment;
   const enforcementRequired = classified.protected || ['windsurf', 'gemini', 'grok'].includes(identity.harness);
-  const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
-    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+  const sessionId = marrowSessionId(resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
   const agentId = identity.agent_id;
   // With a resolved key, the no-device-key fallback may make its approval state (nokeyFallbackKey); with none it never does.
   if (resolved.apiKey) allowNokeyFallbackCreate();

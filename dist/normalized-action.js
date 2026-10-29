@@ -11,7 +11,13 @@ exports.normalizedHookAction = normalizedHookAction;
 const node_crypto_1 = require("node:crypto");
 const node_os_1 = require("node:os");
 const hook_tool_policy_1 = require("./hook-tool-policy");
+const key_class_1 = require("./key-class");
 const SECRET = '[secret]';
+/** The marker of a replaced Stripe-style key keeps its class (a closed set: never built from input). */
+const SECRET_LIVE = '[secret-live]';
+const SECRET_TEST = '[secret-test]';
+const SECRET_MARKER = /\[secret(?:-(?:live|test))?\]/;
+const SECRET_MARKER_ALL = /\[secret-(?:live|test)\]/g;
 const HASH_VERSION = 'marrow-normalized-action-v3';
 const EDIT_TOOLS = /^(?:edit|write|multiedit|apply_patch|notebookedit|replace|write_file|edit_file|delete_file|search_replace|delete|create_file)$/i;
 const MAX_DEPTH = 3;
@@ -36,9 +42,35 @@ function newExactness(deadline = Date.now() + DEFAULT_NORMALIZE_MS, exact = fals
  * A value withheld only because it MAY be a secret (it may also be an id, a commit or a name that decides the
  * action): replaced and the action marked truncated; the exact pass keeps it as it is.
  */
-function withheld(state, original, replacement = SECRET) {
+function withheld(state, original, replacement) {
     state.truncated = true; // exact: kept
-    return state.exact ? original : replacement;
+    return state.exact ? original : (replacement ?? secretFor(original));
+}
+/**
+ * The marker for a replaced span: `[secret-live]` / `[secret-test]` when the span holds a Stripe-style key of that class
+ * (key-class.ts: unknown, malformed and look-alike prefixes are live), else `[secret]`. A span past the scan limit is
+ * not read (it is withheld, truncated, and the exact pass keeps it as it is).
+ */
+function secretFor(span) {
+    if (span.length > exports.MAX_SCAN_CHARS)
+        return SECRET;
+    const keyClass = (0, key_class_1.keyClassOf)(span);
+    return keyClass === 'live' ? SECRET_LIVE : keyClass === 'test' ? SECRET_TEST : SECRET;
+}
+/** The marker for a replaced value of any type (a tool input field): an object or array is read as bounded JSON. */
+function secretOfValue(value) {
+    if (typeof value === 'string')
+        return secretFor(value);
+    try {
+        return secretFor((JSON.stringify(value) ?? '').slice(0, exports.MAX_SCAN_CHARS));
+    }
+    catch {
+        return SECRET;
+    }
+}
+/** Whether a text holds a replaced-secret marker (any class). */
+function hasSecretMarker(text) {
+    return SECRET_MARKER.test(text);
 }
 /** Counts text about to be scanned against the shared budget; past it, normalization stops. */
 function spend(state, chars) {
@@ -94,7 +126,7 @@ function redactKeyShapes(text, state) {
     if (whole && !/\s/.test(whole) && looksLikeKey(whole)) {
         if (!exports.KNOWN_KEY_PREFIX.test(whole) && !PEM.test(whole))
             return withheld(state, text);
-        return state.exact && PUBLIC_KNOWN_KEY.test(whole) ? text : SECRET;
+        return state.exact && PUBLIC_KNOWN_KEY.test(whole) ? text : secretFor(whole);
     }
     if (PEM.test(text)) {
         // The exact pass replaces only a private key block; a certificate or a public key block is kept.
@@ -105,7 +137,7 @@ function redactKeyShapes(text, state) {
             return part;
         if (!exports.KNOWN_KEY_PREFIX.test(part))
             return withheld(state, part);
-        return state.exact && PUBLIC_KNOWN_KEY.test(part) ? part : SECRET;
+        return state.exact && PUBLIC_KNOWN_KEY.test(part) ? part : secretFor(part);
     }).join('');
 }
 // ---------------------------------------------------------------------------
@@ -236,10 +268,10 @@ function cutCredential(value, state) {
     if (at >= value.length) {
         if (holdsMoreThanCredential(value))
             return withheld(state, value);
-        return SECRET;
+        return secretFor(value);
     }
     state.truncated = true; // exact: certain (the credential before the field; the rest is scanned in the same pass)
-    return SECRET + redactText(value.slice(at), state);
+    return secretFor(value.slice(0, at)) + redactText(value.slice(at), state);
 }
 /** One-value auth header (`Authorization: Bearer X`, `X-Api-Key: K`): the whole value is the credential. */
 const SINGLE_VALUE_HEADER = /^[^:\s]{1,128}:[ \t]*(?:(?:Bearer|Basic|Token|Bot)[ \t]+)?[^\s;,&]+[ \t]*$/i;
@@ -260,7 +292,7 @@ function redactText(text, state) {
     // goes to host `deploy`), while libpq, mysql and redis clients take the whole span as the password. It is
     // hidden either way, but it is not a certain credential: the action is marked truncated and the exact pass
     // keeps the span, so it never shares a key with `https://deploy:<pw>@host`.
-    let out = text.replace(URL_CREDENTIALS, (_match, scheme, user, password) => (`${scheme}${user}:${/[#?]/.test(password) ? withheld(state, password) : SECRET}@`));
+    let out = text.replace(URL_CREDENTIALS, (_match, scheme, user, password) => (`${scheme}${user}:${/[#?]/.test(password) ? withheld(state, password) : secretFor(password)}@`));
     // The exact pass keeps a `Token`/`Bot` value that is not key-shaped (`git commit -m "Token rotation"`).
     out = replaceValuesAfter(out, AUTH_SCHEME, state.exact ? (scheme, value) => /^(?:Token|Bot)$/.test(scheme) && !looksLikeKey(value) : null);
     // The exact pass keeps a URL `code` value: it may be an OAuth code, but it may as well be a country or product code.
@@ -286,7 +318,7 @@ function replaceValuesAfter(text, pattern, keep) {
             pattern.lastIndex = end;
             continue;
         }
-        out += text.slice(copied, start) + SECRET;
+        out += text.slice(copied, start) + secretFor(text.slice(start, end));
         copied = end;
         pattern.lastIndex = end;
     }
@@ -326,7 +358,7 @@ function redactAssignments(text, state) {
             continue;
         const value = text.slice(start, end);
         if (!value.startsWith('[secret') && !value.startsWith('[data:')) {
-            const replacement = kind === 'ambiguous' || holdsMoreThanCredential(value) ? withheld(state, value) : SECRET;
+            const replacement = kind === 'ambiguous' || holdsMoreThanCredential(value) ? withheld(state, value) : secretFor(value);
             out += text.slice(copied, start) + replacement;
             copied = end;
         }
@@ -349,7 +381,7 @@ function dataMarker(text, feedsSecrets, state, words = null) {
     }
     if (feedsSecrets) {
         state.truncated = true; // exact: kept (hashed above, certain credentials replaced)
-        return SECRET;
+        return secretFor(text);
     }
     // Secret-shaped data (`'{"api_key":"S","env":"production"}'`): the secrets are
     // replaced and the rest is hashed, so data that differs outside a secret gives
@@ -573,7 +605,7 @@ function assignedValue(name, value, state) {
     if (kind === 'credential' || kind === 'ambiguous') {
         if (kind === 'ambiguous' || holdsMoreThanCredential(value))
             return `${name}=${withheld(state, state.exact ? dataMarker(value, false, state) : value)}`;
-        return `${name}=${SECRET}`;
+        return `${name}=${secretFor(value)}`;
     }
     return value ? `${name}=${dataMarker(value, false, state)}` : `${name}=`;
 }
@@ -699,7 +731,7 @@ function redactSegment(words, ctx) {
     const envStore = storeContext(lowered.slice(0, 4));
     const stem = programStem(program);
     const redactAt = (i, ambiguous = false) => {
-        out[i] = ambiguous || holdsMoreThanCredential(out[i]) ? withheld(state, out[i]) : SECRET;
+        out[i] = ambiguous || holdsMoreThanCredential(out[i]) ? withheld(state, out[i]) : secretFor(out[i]);
         handled.add(i);
     };
     // An auth header: a one-value header is the credential; any other (`Cookie: a=1; env=prod`)
@@ -711,7 +743,7 @@ function redactSegment(words, ctx) {
             if (holdsMoreThanCredential(value))
                 return withheld(state, header);
             if (!state.exact)
-                return SECRET;
+                return secretFor(value);
             // The exact pass: the value of a credential header (or a Bearer/Basic value) is certain; any other
             // one-value header (`X-Idempotency-Key: k`) and the header name are kept.
             const name = header.slice(0, colon);
@@ -720,7 +752,7 @@ function redactSegment(words, ctx) {
             // Basic USER:PASSWORD names who acts, as `curl -u` does: only the password is certain.
             const basic = /^[ \t]*Basic[ \t]+([A-Za-z0-9+/]+={0,2})[ \t]*$/i.exec(value);
             const decoded = basic ? Buffer.from(basic[1], 'base64').toString('latin1') : '';
-            return /^[\x20-\x7e]*:/.test(decoded) ? `${name}:Basic ${JSON.stringify(decoded.slice(0, decoded.indexOf(':')))}:${SECRET}` : `${name}:${SECRET}`;
+            return /^[\x20-\x7e]*:/.test(decoded) ? `${name}:Basic ${JSON.stringify(decoded.slice(0, decoded.indexOf(':')))}:${secretFor(decoded.slice(decoded.indexOf(':') + 1))}` : `${name}:${secretFor(value)}`;
         }
         const redacted = redactText(header, state);
         return redacted === header ? withheld(state, header) : redacted;
@@ -739,9 +771,9 @@ function redactSegment(words, ctx) {
         return `${name}=${cutCredential(value, state)}`;
     };
     // The exact pass: `curl -u USER:PASSWORD` names who acts; only the password is certain.
-    const exactUser = (value) => (value.includes(':') ? `${value.slice(0, value.indexOf(':'))}:${SECRET}` : value);
+    const exactUser = (value) => (value.includes(':') ? `${value.slice(0, value.indexOf(':'))}:${secretFor(value.slice(value.indexOf(':') + 1))}` : value);
     // The exact pass: openssl `pass:X` and a bare value are the password; `env:`, `file:`, `fd:` name where it is.
-    const exactOpensslPass = (value) => (/^(?:env|file|fd):/.test(value) ? value : /^pass:/.test(value) ? `pass:${SECRET}` : SECRET);
+    const exactOpensslPass = (value) => (/^(?:env|file|fd):/.test(value) ? value : /^pass:/.test(value) ? `pass:${secretFor(value.slice(5))}` : secretFor(value));
     // A program named for a secret (set-password.sh): its arguments cannot be told apart (the exact pass keeps them).
     if (!SECRET_PROGRAMS.has(stem) && classifySecretName(stem) === 'credential') {
         for (const i of positionals)
@@ -771,7 +803,7 @@ function redactSegment(words, ctx) {
         };
         const attachedOrNext = (prefix) => {
             if (arg.length > prefix.length) {
-                out[i] = `${prefix}${SECRET}`;
+                out[i] = `${prefix}${secretFor(arg.slice(prefix.length))}`;
                 handled.add(i);
             }
             else {
@@ -790,12 +822,12 @@ function redactSegment(words, ctx) {
         if (long) {
             const name = long[1].replace(/^-+/, '');
             if (name === 'from-literal' || name === 'from-env-literal') {
-                const replaced = `${long[1]}=${long[2].replace(/^([^=]*)=.*$/s, `$1=${SECRET}`)}`;
+                const replaced = `${long[1]}=${long[2].replace(/^([^=]*)=(.*)$/s, (_m, literal, secret) => `${literal}=${secretFor(secret)}`)}`;
                 out[i] = holdsMoreThanCredential(long[2].replace(/^[^=]*=/, '')) ? withheld(state, arg, replaced) : replaced;
                 handled.add(i);
             }
             else if (CURL_FAMILY.has(program) && /^(?:u|user|proxy-user)$/.test(name)) {
-                out[i] = `${long[1]}=${state.exact ? exactUser(long[2]) : SECRET}`;
+                out[i] = `${long[1]}=${state.exact ? exactUser(long[2]) : secretFor(long[2])}`;
                 handled.add(i);
             }
             else if (CURL_FAMILY.has(program) && name === 'header' && AUTH_HEADER.test(long[2])) {
@@ -846,7 +878,7 @@ function redactSegment(words, ctx) {
         // Short flags by program; single-dash long names (-password, -token) by name.
         if (/^-[A-Za-z]/.test(arg)) {
             if (MYSQL_FAMILY.has(program) && /^-p.+/.test(arg)) {
-                out[i] = `-p${SECRET}`;
+                out[i] = `-p${secretFor(arg.slice(2))}`;
                 handled.add(i);
             }
             else if (ALWAYS_P.has(program) && /^-p/.test(arg))
@@ -889,7 +921,7 @@ function redactSegment(words, ctx) {
             const [, name, value] = assignment;
             if (secretContext) {
                 // In a secrets command every value is a secret: withheld whole, and truncated if it held more fields.
-                out[i] = /[&#]/.test(value) || holdsMoreThanCredential(value) ? withheld(state, arg, `${name}=${SECRET}`) : `${name}=${SECRET}`;
+                out[i] = /[&#]/.test(value) || holdsMoreThanCredential(value) ? withheld(state, arg, `${name}=${secretFor(value)}`) : `${name}=${secretFor(value)}`;
                 handled.add(i);
             }
             else if (holdsSecret(name)) {
@@ -909,7 +941,7 @@ function redactSegment(words, ctx) {
             continue;
         }
         if (program === 'openssl' && /^(?:pass|env|file|fd):/.test(arg)) {
-            out[i] = state.exact ? exactOpensslPass(arg) : arg.replace(/:.*/s, `:${SECRET}`);
+            out[i] = state.exact ? exactOpensslPass(arg) : arg.replace(/:(.*)$/s, (_m, rest) => `:${secretFor(rest)}`);
             handled.add(i);
             continue;
         }
@@ -1264,7 +1296,7 @@ function redactedInput(value, state, depth = 0) {
         if (state.exact)
             throw new NormalizationLimit();
         state.truncated = true; // exact: raw (canonical input)
-        return SECRET;
+        return secretOfValue(value);
     }
     if (typeof value === 'string')
         return redactText(value, state);
@@ -1289,7 +1321,7 @@ function redactedInput(value, state, depth = 0) {
                 // name (`credentials: {user, role, password}`): only a value itself is certain.
                 if (kind === 'ambiguous')
                     state.truncated = true; // exact: kept (below)
-                out[key] = state.exact && (kind === 'ambiguous' || (item !== null && typeof item === 'object')) ? redactedInput(item, state, depth + 1) : SECRET;
+                out[key] = state.exact && (kind === 'ambiguous' || (item !== null && typeof item === 'object')) ? redactedInput(item, state, depth + 1) : secretOfValue(item);
             }
             else {
                 out[key] = redactedInput(item, state, depth + 1);
@@ -1456,7 +1488,7 @@ function inputPreimage(input, state) {
     if (input === undefined || input === null)
         return null;
     const text = JSON.stringify(sortedValue(redactedInput(input, state)));
-    if (text.includes(SECRET))
+    if (hasSecretMarker(text))
         state.truncated = true; // exact: n/a (pass 1 only; exactMaterial is the exact form)
     return `${HASH_VERSION}\ninput\n${text}`;
 }
@@ -1800,7 +1832,7 @@ function normalizedOfKind(event, kind, hostToolName, state) {
         state.freeText = !(0, hook_tool_policy_1.isShellTextTool)(event);
         const { text, programs } = normalizeInner(raw, state, 0);
         // A secret was replaced: the action is never bound or reused (it asks each time).
-        if (text.includes(SECRET))
+        if (hasSecretMarker(text))
             state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
         // The command text itself only for a deploy the service can judge word for word (see deployCommandText).
         // Judged on the host's exact text (a trimmed non-ASCII space must not slip through).
@@ -1841,7 +1873,8 @@ function normalizedOfKind(event, kind, hostToolName, state) {
         if (targets.length > 64)
             state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
         const paths = targets.slice(0, 64).map((path) => {
-            const redacted = redactPathSpans(redactText(withoutUserName(path, state), state));
+            // The paths go to the service's path classifier as they did before the key class: class-free (the class is in the hashes).
+            const redacted = redactPathSpans(redactText(withoutUserName(path, state), state)).replace(SECRET_MARKER_ALL, SECRET);
             if (redacted.length > 512 || redacted.includes(SECRET) || path.length > PATH_SCAN_CHARS)
                 state.truncated = true; // exact: n/a (as above)
             return redacted.slice(0, 512);

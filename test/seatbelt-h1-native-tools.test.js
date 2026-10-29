@@ -6,6 +6,7 @@
 // real hook CLI in a temporary keyless home (no key anywhere; nothing reaches a server).
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { withoutKeylessNotice } = require('./support/keyless-notice-strip.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -151,7 +152,7 @@ function hook(sb, harness, event) {
     cwd: sb.proj, encoding: 'utf8', timeout: 30_000, input: JSON.stringify(event),
     env: { PATH: process.env.PATH, HOME: sb.home, SBT_PASSWD_HOME: sb.home, SBT_NETSPY: sb.netspy, MARROW_HOOK_BACKGROUND_NUDGE: 'false' },
   });
-  return { status: r.status, out: r.stdout, err: r.stderr };
+  return { status: r.status, out: withoutKeylessNotice(r.stdout), err: r.stderr };
 }
 
 const sid = () => `h1-${crypto.randomBytes(6).toString('hex')}`;

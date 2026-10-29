@@ -83,7 +83,10 @@ test('MARROW_AUTO_HOOK=false does not launch a nudge even with a queued event', 
   } finally { process.env.HOME = previousHome; }
   await runHook(env, write('t2'), { MARROW_AUTO_HOOK: 'false' });
   await new Promise((r) => setTimeout(r, 1500));
-  assert.equal(events.length, 0);
+  // MCP-10: a keyed hook that is switched off tells the backend once (the owner-bypass record, which also delivers what was already queued).
+  // The switched-off hook itself records nothing about this tool call and starts no nudge child.
+  const ids = events.flatMap((body) => (Array.isArray(body.events) ? body.events : [body])).map((event) => String(event.event_id));
+  assert.deepEqual(ids.filter((id) => id !== 'queued-1').map((id) => id.replace(/^(owner-bypass)-.*/, '$1')), ['owner-bypass'], JSON.stringify(ids));
   assert.deepEqual(locks(home), []);
 }));
 

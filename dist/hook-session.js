@@ -11,6 +11,9 @@ const habit_loop_copy_1 = require("./habit-loop-copy");
 const node_fs_1 = require("node:fs");
 const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
+const owner_bypass_1 = require("./owner-bypass");
+const keyless_notice_1 = require("./keyless-notice");
+const session_id_1 = require("./session-id");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
 exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
@@ -92,15 +95,15 @@ function sessionEndAutoCommitOpen(value) {
 async function runSessionHookCommand(input) {
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     try {
-        if (process.env.MARROW_AUTO_HOOK === 'false')
+        if (process.env.MARROW_AUTO_HOOK === 'false') {
+            await (0, owner_bypass_1.recordSessionBypass)('hooks_switched_off', identity, input);
             return;
+        }
         try {
             if (!(0, control_state_1.readLocalControlState)().enabled)
                 return;
         }
-        catch {
-            return;
-        }
+        catch { /* unreadable control state: keep checking */ }
         const resolved = identity.environment;
         const payload = readStopHookInput(input);
         const raw = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
@@ -126,15 +129,17 @@ async function runSessionHookCommand(input) {
             return;
         }
         const source = readStopHookSource(payload);
-        const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
-            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+        const sessionId = (0, session_id_1.marrowSessionId)(resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
         const agentId = identity.agent_id;
         try {
             (0, session_loop_guard_1.clearSessionLoopGuard)({ sessionId, agentId, harness: identity.harness });
         }
         catch { /* session close remains best effort */ }
-        if (!resolved.apiKey)
+        if (!resolved.apiKey) {
+            (0, keyless_notice_1.armKeylessNotice)(identity.harness, resolved.sessionId || (typeof raw.session_id === 'string' ? raw.session_id : undefined));
             return;
+        }
         const baseUrl = (0, index_1.validateBaseUrl)(resolved.baseUrl || 'https://api.getmarrow.ai');
         const workflowId = (0, hook_contract_1.stableSessionWorkflowId)(sessionId, identity.harness === 'cursor'
             ? [source.conversation_id, source.generation_id, source.tool_use_id]

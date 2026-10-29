@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { marrowSessionId } = require('../dist/session-id.js');
 const {
   mkdtempSync,
   readFileSync,
@@ -52,7 +53,7 @@ test('Stop hook retries use deterministic source correlation without an environm
       assert.equal(events.length, 1);
       // The id names its payload; a quick retry reuses the queued record (no second record, no conflict).
       assert.match(events[0].event_id, /^session-stop-[a-f0-9]{32}-[a-f0-9]{12}$/);
-      assert.equal(events[0].session_id, 'claude-source-session');
+      assert.equal(events[0].session_id, marrowSessionId('claude-source-session', 'agent-one'));
     });
   } finally {
     globalThis.fetch = originalFetch;

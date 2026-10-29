@@ -6,6 +6,7 @@
 // real home is never read or written. Keys are dummies generated here.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { withoutKeylessNotice } = require('./support/keyless-notice-strip.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -51,6 +52,7 @@ function childEnv(sb, extra = {}) {
 }
 
 function interpret(result) {
+  result = { ...result, stdout: withoutKeylessNotice(result.stdout) };
   let json = null;
   try { json = result.stdout.trim() ? JSON.parse(result.stdout) : null; } catch { json = null; }
   const permission = json ? (json.permission || json.hookSpecificOutput?.permissionDecision || json.decision || null) : null;

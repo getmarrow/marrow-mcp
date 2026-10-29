@@ -174,6 +174,8 @@ export declare const ENV_FILTER_SECRET_NAME: RegExp;
 export declare function mayPrintEnvironment(command: string): boolean;
 export declare function mayReadApprovalState(command: string): boolean;
 export declare function mayReadSecret(command: string): boolean;
+/** Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts). */
+export declare function controlRouteCall(event: PreToolUseEvent): boolean;
 export declare function cursorPreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function clinePreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function windsurfPreActionDecision(result: PreActionControlResult): {

@@ -16,6 +16,9 @@ const habit_loop_copy_1 = require("./habit-loop-copy");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_pre_action_1 = require("./hook-pre-action");
 const control_state_1 = require("./control-state");
+const owner_bypass_1 = require("./owner-bypass");
+const keyless_notice_1 = require("./keyless-notice");
+const session_id_1 = require("./session-id");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const own_server_identity_1 = require("./own-server-identity");
 const session_loop_guard_1 = require("./session-loop-guard");
@@ -119,8 +122,8 @@ function holdContextFor(identity, event, sessionIdOverride) {
     catch {
         return null;
     }
-    const sessionId = sessionIdOverride || identity.environment.sessionId || getString(event.session_id) || getString(event.conversation_id)
-        || getString(event.task_id) || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+    const sessionId = sessionIdOverride || (0, session_id_1.marrowSessionId)(identity.environment.sessionId || getString(event.session_id) || getString(event.conversation_id)
+        || getString(event.task_id) || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     return {
         apiKey,
         baseUrl,
@@ -152,10 +155,13 @@ async function runHookCommand(input) {
     lastHookEventName = null;
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     if (process.env.MARROW_AUTO_HOOK === 'false') {
+        await (0, owner_bypass_1.recordSessionBypass)('hooks_switched_off', identity, input);
         if (identity.harness === 'gemini')
             process.stdout.write('{}');
         return;
     }
+    // Only a valid file that says "disabled" switches this hook off. A file that cannot be read or is invalid
+    // never does: the hook runs as if control were on (the prompt hook tells the person once).
     try {
         if (!(0, control_state_1.readLocalControlState)().enabled) {
             if (identity.harness === 'gemini')
@@ -163,11 +169,7 @@ async function runHookCommand(input) {
             return;
         }
     }
-    catch {
-        if (identity.harness === 'gemini')
-            process.stdout.write('{}');
-        return;
-    }
+    catch { /* unreadable control state: keep checking */ }
     try {
         let event;
         let rawEvent = input;
@@ -189,6 +191,9 @@ async function runHookCommand(input) {
         }
         lastHookEventName = event.hook_event_name;
         const resolvedEnv = identity.environment;
+        // MCP-5: control is on and no key resolves, so this hook records nothing: say so once per session, whatever the event is.
+        if (!resolvedEnv.apiKey)
+            (0, keyless_notice_1.armKeylessNotice)(identity.harness, resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id));
         if (identity.harness === 'codex' && resolvedEnv.apiKey && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
             const context = (0, habit_loop_copy_1.modelUsageCaptureContextFromEnv)();
             const supplied = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_response, context)
@@ -213,8 +218,8 @@ async function runHookCommand(input) {
         const privateLoopPayload = (0, hook_contract_1.privateHookLoopGuardPayload)(event);
         // Labels and the loop guard's read-only flag only: no mapper on this path (postTool), so it adds ~no latency.
         const classified = (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event), postTool: true });
-        const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
-            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+        const sessionId = (0, session_id_1.marrowSessionId)(resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
+            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
         const agentId = identity.agent_id;
         const outcome = deriveToolOutcome(event);
         const loopOperation = {
@@ -335,16 +340,16 @@ async function runHookCommand(input) {
  */
 async function runPermissionRequestHookCommand(input) {
     try {
-        if (process.env.MARROW_AUTO_HOOK === 'false')
+        const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+        if (process.env.MARROW_AUTO_HOOK === 'false') {
+            await (0, owner_bypass_1.recordSessionBypass)('hooks_switched_off', identity, input);
             return;
+        }
         try {
             if (!(0, control_state_1.readLocalControlState)().enabled)
                 return;
         }
-        catch {
-            return;
-        }
-        const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+        catch { /* unreadable control state: keep checking */ }
         let event;
         if (input === undefined) {
             const raw = (await readStdin()).trim();

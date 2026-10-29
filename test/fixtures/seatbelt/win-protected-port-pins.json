@@ -1,0 +1,1173 @@
+{
+ "s0-edit-hooks-off": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_edit_hook_config_changes_marrow"
+  ]
+ ],
+ "s0-write-hooks-empty": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_edit_hook_config_changes_marrow"
+  ]
+ ],
+ "s0-edit-disable-all": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_edit_hook_config_changes_marrow"
+  ]
+ ],
+ "self-write-node-options": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_edit_hook_config_changes_marrow"
+  ]
+ ],
+ "s0-0": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "s0-1": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "s0-9": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tee_write_protected_path",
+   "protected_path_operand"
+  ]
+ ],
+ "s0-10": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "mv_write_protected_path",
+   "protected_path_operand"
+  ]
+ ],
+ "s0-11": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "cp_write_protected_path",
+   "protected_path_operand"
+  ]
+ ],
+ "s0-24": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "self-truncate": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "truncate_write_protected_path",
+   "protected_path_operand"
+  ]
+ ],
+ "s0-write-control": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "s0-4": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "rm_write_protected_path",
+   "protected_path_operand",
+   "rm_recursive_outside_workspace"
+  ]
+ ],
+ "s0-5": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "rm_write_protected_path",
+   "protected_path_operand"
+  ]
+ ],
+ "s0-12": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "chmod_write_protected_path",
+   "protected_path_operand"
+  ]
+ ],
+ "new1-write-.claude/plugins/installed_plugins.json": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "new1-edit-.claude/plugins/installed_plugins.json": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "new1-delete-.claude/plugins/installed_plugins.json": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_delete_protected_path"
+  ]
+ ],
+ "new1-write-.claude/plugins/cache/getmarrow/marrow/1.2.3/hooks/hooks.json": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "new1-edit-.claude/plugins/cache/getmarrow/marrow/1.2.3/hooks/hooks.json": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "new1-delete-.claude/plugins/cache/getmarrow/marrow/1.2.3/hooks/hooks.json": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_delete_protected_path"
+  ]
+ ],
+ "new1-write-.cursor/plugins/marrow/hooks.json": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "new1-edit-.cursor/plugins/marrow/hooks.json": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "new1-delete-.cursor/plugins/marrow/hooks.json": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_delete_protected_path"
+  ]
+ ],
+ "ab45-npx-write": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "new1-shell-plugin": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "new1-shell-npx": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "new1-rm-plugin": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "rm_write_protected_path",
+   "protected_path_operand",
+   "rm_recursive_outside_workspace"
+  ]
+ ],
+ "s0-23": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "s0-20": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "rc1d-shim-shell": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "s0-write-bashrc": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "s0-6": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "l2-profile": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "l2-profile-path": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "s0-25": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "l2-startup": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "l2-startup-shell": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "l2-run-tasks": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "redirect_write_protected_path"
+  ]
+ ],
+ "l2-env-poison": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_edit_hook_config_changes_marrow"
+  ]
+ ],
+ "s4-path-0-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-0-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-1-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-1-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-1": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-2-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-2-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-3-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-3-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-3": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-4-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-4-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-4": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-5-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-5-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-5": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-6-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-6-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-6": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-7-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-7-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-7": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-8-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-8-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-8": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-9-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-9-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-9": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-10-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-10-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-10": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-11-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-11-2": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "cp_write_protected_path",
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-11": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-12-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-12-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-12": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-13-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-13-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-13": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-14-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-14-2": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "cp_write_protected_path",
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-14": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-15-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-15-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-15": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-16-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-16-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-16": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-17-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-17-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-17": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-18-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-18-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-18": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-19-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-19-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-19": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-20-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-20-2": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "cp_write_protected_path",
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-20": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-21-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-21-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-21": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-24-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-24-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-24": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-25-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-25-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-25": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-26-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-26-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-26": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-27-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-27-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-27": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-28-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-28-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-28": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-29-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-29-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-29": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-30-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-30-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-30": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-path-31-0": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-31-2": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-read-tool-31": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_read_secret_path"
+  ]
+ ],
+ "s4-grep-env": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_grep_secret_path"
+  ]
+ ],
+ "s4-write-env": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "tool_write_secret_path"
+  ]
+ ],
+ "s4-mcp-read": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "mcp_path_secret_path"
+  ]
+ ],
+ "l4a-type-aws": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "l4a-ssh": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "l4b-env-dump": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "env_dump_env"
+  ]
+ ],
+ "l4b-echo-secret": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "echo_secret_var"
+  ]
+ ],
+ "s4-path-0-0-short": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s4-path-4-0-short": [
+  "stop",
+  "S4",
+  "S4.credential_access",
+  [
+   "operand_secret_path"
+  ]
+ ],
+ "s0-write-hooks-empty-short": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_edit_hook_config_changes_marrow"
+  ]
+ ],
+ "s0-write-control-short": [
+  "stop",
+  "S0",
+  "S0.self_protection",
+  [
+   "tool_write_protected_path"
+  ]
+ ],
+ "s0-out-cat-settings": [
+  "pass",
+  "none",
+  "none",
+  []
+ ],
+ "s4-out-2": [
+  "pass",
+  "none",
+  "none",
+  []
+ ],
+ "s4-out-3": [
+  "pass",
+  "none",
+  "none",
+  []
+ ],
+ "s4-out-8": [
+  "pass",
+  "none",
+  "none",
+  []
+ ],
+ "s4-out-read-example": [
+  "pass",
+  "none",
+  "none",
+  []
+ ]
+}
