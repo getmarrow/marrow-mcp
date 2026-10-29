@@ -115,6 +115,31 @@ function launchBackgroundLifecycleNudge() {
     }
     catch { /* the event stays spooled for the next nudge */ }
 }
+// The pre-action hook has written its answer, which is all the host waits for. A request Marrow never
+// answered (the aborted gate call, a lifecycle delivery cut at its cap) can leave a TCP connect pending,
+// and the process would idle on it until the connect times out (about 10 s), past the host's budget.
+// Leave once stdout and stderr are flushed; the exit code stays whatever the hook set. The answer is
+// not changed: only the wait after it.
+function exitOnceAnswered() {
+    const code = Number(process.exitCode ?? 0);
+    let pending = 2;
+    // A reader that is gone must not turn into an uncaught EPIPE here.
+    for (const stream of [process.stdout, process.stderr]) {
+        let settled = false;
+        const settle = () => {
+            if (settled)
+                return;
+            settled = true;
+            pending -= 1;
+            if (pending === 0)
+                process.exit(code);
+        };
+        stream.once('error', settle);
+        stream.write('', settle);
+    }
+    // Writes that never complete (a reader that stopped reading) end the process anyway.
+    setTimeout(() => process.exit(code), 2_000).unref();
+}
 async function runBackgroundNudge() {
     const identity = (0, hook_contract_2.resolveNativeHookIdentity)(undefined);
     const apiKey = identity.environment.apiKey || '';
@@ -563,7 +588,7 @@ if (process.argv[2] !== 'keys') {
         void (0, hook_pre_action_1.runPreActionHookCommand)().catch(() => {
             process.stderr.write('Marrow\'s pre-action check stopped on an internal error, so this action was held. Run `npx -y @getmarrow/install@latest doctor` in this terminal, then retry.\n');
             process.exitCode = 2;
-        });
+        }).finally(exitOnceAnswered);
     }
     else if (cliArgs.sessionHook) {
         void (0, hook_session_1.runSessionHookCommand)();
