@@ -66,6 +66,7 @@ import {
   validateBaseUrl,
 } from './index';
 import { localControlEvidence } from './control-state';
+import { dataCommandsEvidence, runDataCommands } from './data-commands';
 import { hookSpooledLifecycleEvent, installPermissionRequestHook, installPostToolUseHook, runHookCommand, runPermissionRequestHookCommand } from './hook';
 import { deliverQueuedForReceipt, holdSessionForReceipt, proofFieldsForReceipt, type HoldContext } from './host-approval';
 import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
@@ -501,6 +502,12 @@ ${MARROW_BLOCK_END}`;
   process.stdout.write('Set MARROW_HOOK_DEBUG=true for write-side hook diagnostics, or MARROW_CONTEXT_HOOK_DEBUG=true for prompt-context diagnostics.\n');
   process.stdout.write('Setup completed. MCP tools remain on demand; configured hook activity is client-self-reported and does not certify passive coverage or enforcement.\n');
   process.exit(0);
+}
+
+// `data-commands list|add|remove`: the owner declares which of their own scripts only handle data (MCP-1b). It runs before parseArgs so that a word of a
+// declared command such as `setup` or `hook` cannot start another mode, and it starts no server, hook or nudge.
+if (process.argv[2] === 'data-commands') {
+  process.exit(runDataCommands(process.argv.slice(3)));
 }
 
 const cliArgs = parseArgs();
@@ -961,6 +968,7 @@ function clientOperationalPayload(toolName: string, value: unknown): Record<stri
       || localClientUpdate(),
     control_path: controlPathStats(toolName),
     local_control: localControlEvidence(Boolean(API_KEY)),
+    data_commands: dataCommandsEvidence(),
     lifecycle_spool: {
       state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
       pending: spool.pending,
@@ -2237,7 +2245,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           },
           { cacheAware: false, toolName: 'marrow_agent_status' },
         );
-        success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus({ ...result, local_control: localControlEvidence(Boolean(API_KEY)) }), null, 2) }] });
+        success(id, { content: [{ type: 'text', text: JSON.stringify(withMcpToolProfileStatus({ ...result, local_control: localControlEvidence(Boolean(API_KEY)), data_commands: dataCommandsEvidence() }), null, 2) }] });
         return;
       }
 

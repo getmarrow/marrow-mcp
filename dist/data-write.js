@@ -4,6 +4,7 @@ exports.DATA_FILE_RUN_DENY_TEXT = void 0;
 exports.dataWriteOnly = dataWriteOnly;
 exports.runsDataFileAsProgram = runsDataFileAsProgram;
 const node_fs_1 = require("node:fs");
+const data_commands_1 = require("./data-commands");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const MAX_COMMAND_LENGTH = 8192;
 const REJECT = new Error('not a data write');
@@ -16,6 +17,8 @@ const DATE_ARGUMENT = /^(?:-u|--utc|-R|-I[a-z]*|--iso-8601(?:=[a-z]+)?|\+[^$`'"\
 const DATE_SUBSTITUTION = /^\$\(date((?: [^\s)]+)*)\)/;
 const ECHO_FLAGS = new Set(['-n', '-e', '-E', '-ne', '-en', '-nE', '-En']);
 const DELIMITER_END = new Set([' ', '\t', '\n', ';', '&', '|', '>']);
+// MCP-1b: next to a declared command, a literal assignment may not name a variable an interpreter, a package manager, git or a TLS/proxy client reads.
+const DECLARED_BLOCKED_ASSIGNMENT = /^(?:PYTHON.*|NODE.*|NPM_.*|PERL.*|RUBY.*|GEM_.*|BUN_.*|DENO_.*|JAVA.*|_JAVA.*|CLASSPATH|VIRTUAL_ENV|CONDA.*|UV_.*|PIP.*|POETRY.*|XDG_.*|GIT_.*|SSH_.*|SSL_.*|CURL_.*|REQUESTS_.*|.*_PROXY|ALL_PROXY|NO_PROXY|HTTPS?_.*|ZDOTDIR|EDITOR|VISUAL|PAGER|BROWSER|SHELL.*|TMP.*|TEMP.*|DISPLAY|MALLOC.*|GLIBC.*|OPENSSL.*|.*(?:PATH|DIR|DIRS|HOME|OPT|OPTS|OPTIONS|FLAGS|ENV|RC|CONFIG|CONF|PRELOAD|LIB|LIBS|ROOT|PREFIX|STARTUP|SETTINGS|CERT|CERTS|FILE))$/i;
 function newSegment(pipeIn = false) {
     return { words: [], redirects: [], heredoc: false, pipeIn, pipeOut: false };
 }
@@ -30,6 +33,9 @@ function scan(command, home) {
     let headOpen = true;
     let date = false;
     let expands = false;
+    let dollar = false;
+    let escaped = false;
+    let tilde = false;
     let pending = null;
     let heredoc = null;
     let heredocSeen = false;
@@ -47,7 +53,7 @@ function scan(command, home) {
         if (!inWord)
             return;
         const assign = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(head);
-        const word = { text, date, expands, assignName: assign ? assign[1] : null };
+        const word = { text, date, expands, dollar, escaped, tilde, assignName: assign ? assign[1] : null };
         if (pending) {
             if (date)
                 no();
@@ -62,6 +68,9 @@ function scan(command, home) {
         headOpen = true;
         date = false;
         expands = false;
+        dollar = false;
+        escaped = false;
+        tilde = false;
     };
     const endSegment = (separator) => {
         endWord();
@@ -108,7 +117,8 @@ function scan(command, home) {
         headOpen = false;
         expands = true;
     };
-    const dollar = (index, quoted) => {
+    const dollarAt = (index, quoted) => {
+        dollar = true;
         const rest = command.slice(index);
         const substitution = DATE_SUBSTITUTION.exec(rest);
         if (substitution) {
@@ -164,11 +174,12 @@ function scan(command, home) {
                 if (inner === '`')
                     no();
                 if (inner === '\\') {
-                    const escaped = command[index + 1];
-                    if (escaped === undefined || escaped === '\n')
+                    escaped = true;
+                    const escapedChar = command[index + 1];
+                    if (escapedChar === undefined || escapedChar === '\n')
                         no();
-                    if ('$`"\\'.includes(escaped)) {
-                        text += escaped;
+                    if ('$`"\\'.includes(escapedChar)) {
+                        text += escapedChar;
                         index += 2;
                     }
                     else {
@@ -178,7 +189,7 @@ function scan(command, home) {
                     continue;
                 }
                 if (inner === '$') {
-                    index += dollar(index, true);
+                    index += dollarAt(index, true);
                     continue;
                 }
                 text += inner;
@@ -191,6 +202,7 @@ function scan(command, home) {
         if (char === '\\') {
             if (next === undefined || next === '\n')
                 no();
+            escaped = true;
             literal(next, true);
             index += 2;
             continue;
@@ -198,12 +210,13 @@ function scan(command, home) {
         if (char === '`' || char === '(' || char === ')' || char === '{' || char === '}' || char === '*' || char === '?' || char === '[')
             no();
         if (char === '$') {
-            index += dollar(index, false);
+            index += dollarAt(index, false);
             continue;
         }
         if (char === '~' && (!inWord || (headOpen && /^[A-Za-z_][A-Za-z0-9_]*=$/.test(head) && text === head))) {
             if (next !== undefined && !' \t\n;&|<>/'.includes(next))
                 no();
+            tilde = true;
             literal(home, true);
             index += 1;
             continue;
@@ -421,6 +434,7 @@ function dataWriteOnly(command, context = {}) {
         const segments = scan(command, home ?? no());
         const roots = { home };
         let writes = 0;
+        let declared = false;
         for (const segment of segments) {
             const [program, ...args] = segment.words;
             if (program.assignName !== null)
@@ -476,7 +490,13 @@ function dataWriteOnly(command, context = {}) {
                     break;
                 }
                 default:
-                    return false;
+                    // MCP-1b: a segment that is not echo/printf/cat/tee is still data-only when it is exactly an owner-declared command (data-commands.ts):
+                    // its words are then data, its redirects are judged below like any other, and it counts as the write it is declared to be.
+                    if (segment.heredoc || !(0, data_commands_1.declaredCommandMatch)(segment.words, { cwd: context.cwd, home: context.dataCommandsHome }))
+                        return false;
+                    declared = true;
+                    writes += 1;
+                    payload = [];
             }
             if (program.text !== 'echo' && program.text !== 'printf' && payload.some((word) => word.date))
                 no();
@@ -495,6 +515,12 @@ function dataWriteOnly(command, context = {}) {
                     return false;
                 if (!device)
                     writes += 1;
+            }
+        }
+        if (declared) {
+            for (const segment of segments) {
+                if (segment.words[0].assignName !== null && segment.words.some((word) => DECLARED_BLOCKED_ASSIGNMENT.test(word.assignName)))
+                    return false;
             }
         }
         return writes > 0;
