@@ -700,7 +700,7 @@ test('B8 the typed code is random per run: six characters from an unambiguous al
     const out = [];
     const io = { isTTY: [true, true, true], readLine: () => 'x', write: (text) => out.push(text), writeErr: (text) => out.push(text), home: HOME };
     dc().runDataCommands(['add', '--', ...BOARD_PREFIX], io);
-    const shown = /\b([A-Z2-9]{6})\b/.exec(out.join(''));
+    const shown = /type this code[^:]*: ([A-Z2-9]{6})\b/.exec(out.join(''));
     assert.ok(shown, out.join(''));
     codes.add(shown[1]);
   }
