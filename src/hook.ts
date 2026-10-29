@@ -217,8 +217,10 @@ export async function runHookCommand(input?: unknown): Promise<void> {
     return;
   }
 
+  // Only a valid file that says "disabled" switches this hook off. A file that cannot be read or is invalid
+  // never does: the hook runs as if control were on (the prompt hook tells the person once).
   try { if (!readLocalControlState().enabled) { if (identity.harness === 'gemini') process.stdout.write('{}'); return; } }
-  catch { await recordSessionBypass('control_state_unsafe', identity, input); if (identity.harness === 'gemini') process.stdout.write('{}'); return; }
+  catch { /* unreadable control state: keep checking */ }
 
   try {
     let event: HookEvent;
@@ -394,7 +396,7 @@ export async function runPermissionRequestHookCommand(input?: unknown): Promise<
   try {
     const identity = resolveNativeHookIdentity(process.argv[2]);
     if (process.env.MARROW_AUTO_HOOK === 'false') { await recordSessionBypass('hooks_switched_off', identity, input); return; }
-    try { if (!readLocalControlState().enabled) return; } catch { await recordSessionBypass('control_state_unsafe', identity, input); return; }
+    try { if (!readLocalControlState().enabled) return; } catch { /* unreadable control state: keep checking */ }
     let event: HookEvent;
     if (input === undefined) {
       const raw = (await readStdin()).trim();

@@ -28,6 +28,7 @@ const control_state_1 = require("./control-state");
 const owner_bypass_1 = require("./owner-bypass");
 const keyless_notice_1 = require("./keyless-notice");
 const session_id_1 = require("./session-id");
+const control_notice_1 = require("./control-notice");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
 const host_session_1 = require("./host-session");
@@ -96,13 +97,22 @@ function promptHoldContext(identity, event) {
         hostSessionId: (0, host_approval_1.hostSessionIdFor)([event.session_id, event.conversation_id], sessionId),
     };
 }
+function joinNotice(notice, existing) {
+    return [notice, typeof existing === 'string' ? existing : ''].filter(Boolean).join('\n');
+}
+/** The control-file notice for this session's first prompt after the file became unreadable, else null. */
+function unreadableControlNoticeOnce(harness, event) {
+    const session = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]).environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
+        || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [harness, process.cwd()]);
+    return (0, control_notice_1.claimUnreadableControlNotice)(`${harness}:${session}`) ? (0, control_notice_1.unreadableControlNotice)() : null;
+}
 /**
  * Cursor beforeSubmitPrompt: never adds context (Cursor cannot), only records
  * that the prompt hook runs and handles a typed "marrow approve CODE" in a
  * local interactive session. A failed typed answer blocks that one message so
  * the user sees why; everything else continues unchanged.
  */
-async function runCursorPromptHook(event) {
+async function runCursorPromptHook(event, controlNotice = null) {
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     const context = promptHoldContext(identity, event);
     let output = { continue: true };
@@ -116,6 +126,8 @@ async function runCursorPromptHook(event) {
                 output = { continue: true, user_message: notice };
         }
     }
+    if (controlNotice)
+        output = { ...output, user_message: joinNotice(controlNotice, output.user_message) };
     process.stdout.write(JSON.stringify(output));
 }
 /**
@@ -123,7 +135,7 @@ async function runCursorPromptHook(event) {
  * "marrow approve CODE" in a local interactive session. The confirmation goes
  * to the user (systemMessage); the agent only learns that it may retry.
  */
-async function runGeminiPromptHook(event) {
+async function runGeminiPromptHook(event, controlNotice = null) {
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     const context = promptHoldContext(identity, event);
     let output = {};
@@ -141,6 +153,8 @@ async function runGeminiPromptHook(event) {
         }
         await (0, host_approval_1.flushHoldOutbox)(context, 1, 1_500).catch(() => undefined);
     }
+    if (controlNotice)
+        output = { ...output, systemMessage: joinNotice(controlNotice, output.systemMessage) };
     process.stdout.write(JSON.stringify(output));
 }
 /** A typed reply's confirmation (user only) and retry note (agent), added to this hook's output. */
@@ -678,6 +692,9 @@ async function runContextHookCommand() {
         process.exit(0);
         return;
     }
+    // Only a valid file that says "disabled" switches this hook off. A file that cannot be read or is invalid
+    // never does: the hook runs as if control were on and tells the person once per session.
+    let controlUnreadable = false;
     try {
         if (!(0, control_state_1.readLocalControlState)().enabled) {
             emitNoContext();
@@ -686,10 +703,7 @@ async function runContextHookCommand() {
         }
     }
     catch {
-        await (0, owner_bypass_1.recordSessionBypass)('control_state_unsafe', (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]));
-        emitNoContext();
-        process.exit(0);
-        return;
+        controlUnreadable = true;
     }
     try {
         const raw = (await readStdin()).trim();
@@ -710,17 +724,20 @@ async function runContextHookCommand() {
             return;
         }
         const promptHarness = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]).harness;
+        const controlNotice = controlUnreadable ? unreadableControlNoticeOnce(promptHarness, event) : null;
         if (promptHarness === 'cursor') {
-            await runCursorPromptHook(event);
+            await runCursorPromptHook(event, controlNotice);
             process.exit(0);
             return;
         }
         if (promptHarness === 'gemini') {
-            await runGeminiPromptHook(event);
+            await runGeminiPromptHook(event, controlNotice);
             process.exit(0);
             return;
         }
         await settleHeldCallsAtPrompt(event).catch(() => undefined);
+        if (controlNotice)
+            heldReplyUserText = joinNotice(controlNotice, heldReplyUserText);
         const prompt = asString(event.prompt);
         if (!prompt) {
             debug('[marrow-context-hook] no prompt field');

@@ -103,10 +103,7 @@ async function runSessionHookCommand(input) {
             if (!(0, control_state_1.readLocalControlState)().enabled)
                 return;
         }
-        catch {
-            await (0, owner_bypass_1.recordSessionBypass)('control_state_unsafe', identity, input);
-            return;
-        }
+        catch { /* unreadable control state: keep checking */ }
         const resolved = identity.environment;
         const payload = readStopHookInput(input);
         const raw = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};

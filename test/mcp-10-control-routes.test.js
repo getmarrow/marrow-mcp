@@ -9,7 +9,7 @@ const test = require('node:test');
 const { classifyTool, localApprovalCategories } = require('../dist/hook-pre-action.js');
 
 // MCP-10 (spec friction r3 §5, abuse rows C1-C12): while local control is ON the visible control-off routes are held for the owner;
-// while it is OFF (or the hooks are switched off, or the control file is unsafe) the backend is told, once per host session.
+// while it is OFF (or the hooks are switched off) the backend is told, once per host session. (An unsafe control file switches nothing off since the control-state fail-closed fix, so it is not reported.)
 
 const SECURITY_LABEL = 'classified Bash action: security on marrow-control';
 const bash = (command) => classifyTool({ tool_name: 'Bash', tool_input: { command }, cwd: tmpdir() });
@@ -204,17 +204,18 @@ for (const [entry, payload] of HOOKS) {
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
-  test(`MCP-10 visible: ${entry} with an unsafe control.json tells the backend once per session`, () => {
+  // Integrated with the control-state fail-closed fix: an unreadable or invalid control file no longer switches any hook off, so no hook
+  // goes quiet and there is no bypass to report. The hook behaves exactly as with control ON (pinned by test/hook-control-state-failclosed.test.js).
+  test(`MCP-10 visible: ${entry} with an unsafe control.json sends no bypass record (the hook keeps running as if control were on)`, () => {
     const directory = mkdtempSync(join(tmpdir(), 'marrow-m10-'));
     try {
       const home = makeHome(directory, 'unsafe');
       const env = { MARROW_API_KEY: dummyKey() };
       const first = run(entry, directory, home, payload('s-unsafe-1'), env);
       assert.equal(first.result.status, 0, first.result.stderr);
-      assert.equal(first.bypass.length, 1, JSON.stringify(first.lines));
-      assert.match(first.bypass[0].body, /marrow:control-state-unsafe/);
+      assert.equal(first.bypass.length, 0, JSON.stringify(first.lines));
       const again = run(entry, directory, home, payload('s-unsafe-1'), env);
-      assert.equal(again.bypass.length, 1);
+      assert.equal(again.bypass.length, 0);
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
