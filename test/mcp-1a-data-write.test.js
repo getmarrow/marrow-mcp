@@ -203,7 +203,7 @@ test('MCP-1a: an echo of plain words with no file write keeps its 3.9.108 readin
 const RUNS_DATA = [
   'bash notes.md', 'source notes.md', '. ./notes.md', './notes.md', 'python3 notes.txt', 'sh run.log', 'node data.csv', 'perl x.tsv',
   'zsh -x notes.md', 'python3 -I notes.md', 'sudo bash notes.md', 'FOO=1 bash notes.md', "bash -c 'source notes.md'",
-  'xargs bash notes.md', '/usr/bin/python3 notes.jsonl', '/tmp/x/notes.md', 'php a.ndjson',
+  'xargs bash notes.md', '/usr/bin/python3 notes.jsonl', `${root}/x/notes.md`, 'php a.ndjson',
 ];
 const BENIGN_DATA = ['cat notes.md', 'bash script.sh', 'python3 tool.py notes.md', 'node tool.js notes.md', 'grep x notes.md', 'echo notes.md', 'bash -c "echo hi"', 'git add notes.md'];
 
