@@ -44,6 +44,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
 const host_approval_1 = require("./host-approval");
+const data_write_1 = require("./data-write");
 const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
 const own_server_identity_1 = require("./own-server-identity");
@@ -960,6 +961,11 @@ function classifyAsNamed(event, options) {
     // Editing and task tools are judged by their target; shell-like words in the
     // content they write or the subject they record are not actions.
     const shellGoverned = (0, hook_tool_policy_1.isShellGovernedTool)(event);
+    // MCP-1a: a command made only of echo/printf/cat/tee writes to plain notes files is judged by its effect, not by the words it carries.
+    const plain = shellGoverned ? (0, hook_tool_policy_1.plainBashCommand)(event) : null;
+    if (plain !== null && (0, data_write_1.dataWriteOnly)(plain, { cwd: options.cwd, home: passwdHome(), postTool: options.postTool === true })) {
+        return { tool, type: 'process', surfaces: [], readOnly: false, protected: false };
+    }
     const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
     const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
     // A look-alike of Marrow's own tool is never read-only, whatever its verb.
@@ -1506,6 +1512,12 @@ async function runPreActionHook(input, watch) {
             process.exitCode = 0;
         else
             process.stdout.write(JSON.stringify(allow));
+        return;
+    }
+    // T1: a notes or log file is data. It is never handed to an interpreter as a program (local denial, no network call).
+    const bashCommand = (0, hook_tool_policy_1.plainBashCommand)(source);
+    if (bashCommand !== null && (0, data_write_1.runsDataFileAsProgram)(bashCommand)) {
+        emitLoopGuardDenial(identity.harness, data_write_1.DATA_FILE_RUN_DENY_TEXT);
         return;
     }
     let resolved = identity.environment;

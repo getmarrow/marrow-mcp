@@ -99,7 +99,7 @@ const MAX_SHELL_ANALYSIS_BYTES = 8192;
 // treats a lone carriage return, other control characters and Unicode spaces
 // or line separators as word characters, so splitting on them could hide one
 // command inside another; such input takes the conservative whole-command path.
-const UNMODELED_SHELL_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u00a0\u00ad\u061c\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff\ufff9-\ufffb]/;
+export const UNMODELED_SHELL_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u00a0\u00ad\u061c\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff\ufff9-\ufffb]/;
 // PowerShell reads the typographic single and double quotation marks as quotes; Bash does not, so
 // a PowerShell text holding one has quoting the splitter cannot follow.
 const POWERSHELL_QUOTE_CHARACTER = /[\u2018-\u201f]/;
@@ -176,6 +176,21 @@ export function isProtectedShellMutation(command: string): boolean {
   if (raw.length > 8192) return true;
   const bounded = raw.slice(0, 8192);
   return PROTECTED_SHELL_MUTATION_FAMILIES.some((pattern) => pattern.test(bounded));
+}
+
+/**
+ * The command string of a plain Bash-dialect shell tool call (Bash, Codex exec, Cursor Shell, ...), else null: the one string the host runs, with no
+ * second `cmd`/`script` text that could differ from it, and never a PowerShell twin or an MCP tool.
+ */
+export function plainBashCommand(event: ToolPolicyEvent): string | null {
+  if (isMcpHookTool(event.tool_name) || (event as Record<symbol, unknown>)[SHELL_DIALECT] !== undefined) return null;
+  if (!SHELL_TOOLS.has(normalizeHookToolName(event.tool_name))) return null;
+  const input = asRecord(event.tool_input);
+  if (!input || typeof input.command !== 'string' || !input.command.trim()) return null;
+  for (const key of ['cmd', 'script']) {
+    if (typeof input[key] === 'string' && String(input[key]).trim() && input[key] !== input.command) return null;
+  }
+  return input.command;
 }
 
 export function hookToolCommand(event: ToolPolicyEvent): string {
