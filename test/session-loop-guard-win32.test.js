@@ -124,10 +124,11 @@ test('U-LG3: a lock-time check that fails (folder identity changed) is unsafe, l
 test('U-LG3: the hook gives the exact unsafe deny text when the proof fails, and the normal answer when it passes', async () => {
   const home = scratch();
   const originalWrite = process.stdout.write;
-  const previous = { HOME: process.env.HOME, MARROW_API_KEY: process.env.MARROW_API_KEY, MARROW_KEY: process.env.MARROW_KEY };
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, MARROW_API_KEY: process.env.MARROW_API_KEY, MARROW_KEY: process.env.MARROW_KEY };
   let output = '';
   process.stdout.write = (chunk) => { output += String(chunk); return true; };
   process.env.HOME = home;
+  process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on a real Windows host
   delete process.env.MARROW_API_KEY;
   delete process.env.MARROW_KEY;
   try {
@@ -282,7 +283,7 @@ test('RC-3 and AB59: four hook processes at once all allow; none says unsafe', a
   } finally { cleanup(home); }
 });
 
-test('G7 and G3: without getuid a POSIX host refuses, and the win32 branch never calls owned()', () => {
+test('G7 and G3: without getuid a POSIX host refuses, and the win32 branch never calls owned()', { skip: process.platform === 'win32' && 'POSIX-only row: a real Windows host has no getuid or POSIX mode bits; the win32 branch has its own rows' }, () => {
   const home = scratch();
   const descriptor = Object.getOwnPropertyDescriptor(process, 'getuid');
   try {
@@ -295,7 +296,7 @@ test('G7 and G3: without getuid a POSIX host refuses, and the win32 branch never
   }
 });
 
-test('U-G6 and AB1: only the real process.platform picks the branch; env and event fields do nothing', () => {
+test('U-G6 and AB1: only the real process.platform picks the branch; env and event fields do nothing', { skip: process.platform === 'win32' && 'POSIX-only row: a real Windows host has no getuid or POSIX mode bits; the win32 branch has its own rows' }, () => {
   const home = scratch();
   const previous = process.env.OS;
   process.env.OS = 'Windows_NT';
@@ -324,7 +325,7 @@ test('U-G6 and AB1: only the real process.platform picks the branch; env and eve
   assert.equal(base.mode, 0o700, 'the POSIX branch ran');
 });
 
-test('AB38 and U-LG7: POSIX still denies a group- or world-writable ~/.marrow, a loose state dir and a loose state file', () => {
+test('AB38 and U-LG7: POSIX still denies a group- or world-writable ~/.marrow, a loose state dir and a loose state file', { skip: process.platform === 'win32' && 'POSIX-only row: a real Windows host has no getuid or POSIX mode bits; the win32 branch has its own rows' }, () => {
   const cases = [
     ['marrow 0777', (home) => fs.chmodSync(path.join(home, '.marrow'), 0o777)],
     ['marrow 0757', (home) => fs.chmodSync(path.join(home, '.marrow'), 0o757)],
@@ -382,11 +383,12 @@ test('U-COL5: a runtime dummy key is in no output, state file, deny text or fake
   const home = scratch();
   const originalWrite = process.stdout.write;
   const originalFetch = globalThis.fetch;
-  const previous = { HOME: process.env.HOME, MARROW_API_KEY: process.env.MARROW_API_KEY, MARROW_KEY: process.env.MARROW_KEY };
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, MARROW_API_KEY: process.env.MARROW_API_KEY, MARROW_KEY: process.env.MARROW_KEY };
   let output = '';
   process.stdout.write = (chunk) => { output += String(chunk); return true; };
   globalThis.fetch = async () => { throw new Error('network must stay unused'); };
   process.env.HOME = home;
+  process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on a real Windows host
   process.env.MARROW_API_KEY = canary;
   try {
     const event = (id, command) => ({ session_id: 'col5', tool_use_id: id, tool_name: 'functions.exec', tool_input: { cmd: command } });
