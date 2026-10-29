@@ -1,4 +1,4 @@
-import type { SeatbeltDecision, SeatbeltFs as MapperFs, SeatbeltGit } from './mapper';
+import type { SeatbeltDecision, SeatbeltEnv, SeatbeltFs as MapperFs, SeatbeltGit } from './mapper';
 import type { SeatbeltFs } from '../seatbelt-fs';
 /**
  * Compiled-in rollout table. Not env, not a file: changing a value is a one-line, reviewed code
@@ -40,6 +40,8 @@ export interface SeatbeltHookEvent {
     /** The harness session id; used only for the receipt's keyed session_key. */
     session?: unknown;
 }
+/** `platform` is a parameter only so tests can pass `win32`; production callers use the real one. */
+export declare function mapperEnv(home: string, cwd: unknown, budgetMs: number, platform?: NodeJS.Platform): SeatbeltEnv;
 export interface KeylessOutcome {
     mode: 'seatbelt' | 'claimed_no_key';
     /** The agent text of a stop; null when the seatbelt passes the action. */

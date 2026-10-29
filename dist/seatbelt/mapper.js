@@ -120,7 +120,10 @@ function evaluateSeatbeltShell(command, env) {
     try {
         const run = newRun(env, command);
         run.shell = true;
-        evalShell(String(command == null ? '' : command), newCtx(run), run);
+        if (env.platform === 'win32')
+            psTop(String(command == null ? '' : command), run);
+        else
+            evalShell(String(command == null ? '' : command), newCtx(run), run);
         return finish(run);
     }
     catch {
@@ -143,7 +146,16 @@ function failClosedBare() {
 }
 function evaluateSeatbelt(event, env) {
     try {
-        return evaluateEvent(event, env);
+        const startedAt = Date.now();
+        const decision = evaluateEvent(event, env);
+        // RC-1 (3.9.106): on win32 only, the Windows S0/S4 stops are added (src/seatbelt/win-protected.ts). They only
+        // add hits; every other platform returns the decision unchanged. A throw there is the stop below.
+        if (env.platform !== 'win32')
+            return decision;
+        return require('./win-protected').withWindowsProtected(decision, event, env, {
+            shellInvocations, mcpCall, pathInputs, walkPathInputs, patchPaths, protectedExtra: SEATBELT_PROTECTED_EXTRA, operandOmits: OPERAND_RULE_OMITS,
+            tools: { read: READ_TOOLS, grep: GREP_TOOLS, write: WRITE_TOOLS, delete: DELETE_TOOLS, list: LIST_TOOLS, inert: INERT_TOOLS, nonShell: NON_SHELL_TOOLS, nativeShell: NATIVE_SHELL_EQUIVALENTS },
+        }, startedAt);
     }
     catch {
         try {
@@ -223,11 +235,16 @@ function evaluateEvent(event, env) {
             exhaust(run, 'budget_time');
         run.lineSource = [...new Set(invocation.plain)].join('\n');
         const lastGroup = invocation.groups[invocation.groups.length - 1];
+        // A3: PowerShell / cmd text is the PowerShell tool's, and on native Windows every shell tool's (the host shell may be either).
+        const psTopMode = env.platform === 'win32' || evName === 'powershell' || evName === 'cmd';
         invocation.shell.forEach((text, k) => {
             if (clock(run))
                 return;
             run.topLast = invocation.groups[k] === lastGroup;
-            evalShell(text, newCtx(run), run);
+            if (psTopMode)
+                psTop(text, run);
+            else
+                evalShell(text, newCtx(run), run);
         });
         run.topLast = true;
         for (const code of invocation.code) {
@@ -1011,6 +1028,8 @@ function newRun(rawEnv, source, deadline) {
         scriptExpansions: 0,
         deadline: deadline !== undefined ? deadline : deadlineFor(env),
         exhausted: false,
+        psSteps: 0,
+        psOver: false,
         links: new Map(),
         linksUnknown: false,
         headMayChange: false,
@@ -1146,13 +1165,17 @@ function finish(run) {
     if (run.fsState.errored)
         hit(run, 'Sx', 'fs_error');
     const hits = [...run.hits].sort((a, b) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category));
+    // A3: within the first category, the A3 reasons lead, and then the decision's rule is `<category>.<reason>`.
+    const a3 = hits.length ? hits.findIndex((h) => h.category === hits[0].category && tables_1.A3_REASONS.has(h.reason)) : -1;
+    if (a3 > 0)
+        hits.unshift(...hits.splice(a3, 1));
     const category = hits.length ? hits[0].category : 'none';
     if (run.parse !== 'ok')
         run.flags.add(`parse_${run.parse}`);
     return {
         decision: hits.length ? 'stop' : 'pass',
         category,
-        rule: RULE_IDS[category],
+        rule: a3 >= 0 ? `${category}.${hits[0].reason}` : RULE_IDS[category],
         reasons: hits.map((h) => h.reason),
         hits,
         flags: [...run.flags].sort(),
@@ -2199,9 +2222,22 @@ function evalShell(src, ctx, run) {
         tripwire(src.slice(0, tables_1.LIMITS.maxCommandBytes), run);
         return;
     }
+    // A3: shell text that looks like PowerShell with script blocks (`Get-ChildItem | % { ri $_ -r }`): its blocks are statements too.
+    if (ctx.ps === undefined && tables_1.PS_SNIFF.test(src)) {
+        const flat = (0, tables_1.psFlatten)((0, tables_1.psClean)(src));
+        if (flat !== src)
+            psProbe(flat, childCtx(ctx, { ps: 1 }), run);
+        psLexical((0, tables_1.psNormalize)(src), (0, tables_1.psClean)(src), ctx, run, false);
+    }
+    // A3: a .NET / COM delete of a whole tree (the cheap word test first; the text is only scanned when it says "delete").
+    if (/delete|directory\]\s*::/i.test(src) && (0, tables_1.dotNetTreeDelete)((0, tables_1.psClean)(src), ctx.ps !== undefined))
+        hit(run, 'S5', 'windows_shell_delete_unparsed');
     const parsed = safeParse(src, { depth: ctx.depth });
     if (!parsed.ok) {
         run.headMayChange = true;
+        // A3: PowerShell syntax bash cannot read: the delete verb, `iex` or `& $x` in it is still a stop.
+        if (ctx.ps === undefined)
+            psUnparsed(src, run);
         const big = parsed.error === 'too_large' || parsed.error === 'too_many_commands' || parsed.error === 'parse_cost';
         worseParse(run, big ? 'too_large' : 'unparsed');
         tripwire(src.slice(0, tables_1.LIMITS.maxCommandBytes), run);
@@ -2908,6 +2944,13 @@ function dispatch(args, ctx, run, x) {
     const prog = progName(args[0], run);
     if (prog === null)
         return dynamicProgram(args, ctx, run, x);
+    // A3b: on native Windows the program is also read by its Windows name (`C:\Program Files\Git\cmd\git.exe`, `GIT.EXE`):
+    // a second reading next to the unchanged one, so it can only add stops.
+    if (run.env.platform === 'win32' && args[0].text !== null) {
+        const winProg = (0, tables_1.windowsProgramName)(args[0].text);
+        if (winProg !== prog && winProg !== '')
+            dispatchProgram(winProg, args, args.slice(1), false, ctx, run, x);
+    }
     // A glob in the command word names whatever matches it at run time (`/bin/s[h]`, `np[m]`): read each
     // match as the program, and stop when it matches nothing the mapper can list (audit N1).
     if (args[0].glob && args[0].text !== null && args[0].text !== '[' && args[0].text !== '[[' && /[*?[]/.test(args[0].text)) {
@@ -2934,6 +2977,8 @@ function dispatch(args, ctx, run, x) {
     return dispatchProgram(prog, args, rest, pathLike, ctx, run, x);
 }
 function dispatchProgram(prog, args, rest, pathLike, ctx, run, x) {
+    // A3: delete verbs, pwsh / cmd / iex / Start-Process text. Adds hits only; the program is then handled as before.
+    windowsShell(args, rest, ctx, run, x);
     // Task runners and builders run project code the mapper does not read (audit T1/T3).
     if (tables_1.HEAD_RUNNERS.has(prog) || tables_1.HEAD_CHANGERS.has(prog))
         run.headMayChange = true;
@@ -3322,6 +3367,11 @@ function isCommandWord(a, run) {
         return false;
     if (tables_1.KNOWN_COMMANDS.has(base) || PATCH_DASH_PROGRAMS.has(base) || /^python3\.\d+$/.test(base) || /^mkfs(?:\.|$)/.test(base))
         return true;
+    if (run.env.platform === 'win32') {
+        const win = (0, tables_1.windowsProgramName)(a.text);
+        if (win !== base && (tables_1.KNOWN_COMMANDS.has(win) || PATCH_DASH_PROGRAMS.has(win)) && !NESTED_NOT_PROGRAMS.has(win))
+            return true;
+    }
     if (a.text.includes('/')) {
         const name = base.toLowerCase();
         if (tables_1.NON_SCRIPT_NAMES.has(name))
@@ -3594,7 +3644,7 @@ function unknownProgram(prog, args, ctx, run, x) {
     if (tables_1.INERT_PROGRAMS.has(prog) || ctx.backstop)
         return;
     const rest = args.slice(1);
-    scanArgvForCommands(rest, ctx, run, x, false, env_dump_1.EXEC_WRAPPERS.has(prog));
+    scanArgvForCommands(rest, tables_1.PS_OUTPUT_CMDLETS.has(prog.toLowerCase()) || (ctx.ps !== undefined && tables_1.PS_BLOCK_WORDS.has(prog.toLowerCase())) ? { ...ctx, a3Quiet: true } : ctx, run, x, false, env_dump_1.EXEC_WRAPPERS.has(prog));
     // stdin text: `echo 'npm publish' | at now`, `at now <<< 'npm publish'`, `batch <<EOF …`.
     const src = stdinSource(x, ctx, run);
     // Decoded text piped into a program that runs what it reads (at, batch, crontab, a function) or
@@ -3752,12 +3802,15 @@ function fetcherCommand(cmd) {
 // A shell or interpreter that reads its program from stdin: a heredoc, a here-string (audit F7), or a
 // pipeline. The Q4 pass (`curl … | sh`, flag remote_exec) covers exactly a fetcher that is the stage
 // directly upstream of the shell (audit F8). Any other stage is classified by what it emits.
-function stdinExec(prog, rest, x, ctx, run, viaCode = false) {
-    const asShell = tables_1.SHELLS.has(prog) || prog === 'sh';
+function stdinExec(prog, rest, x, ctx, run, viaCode = false, ps = false) {
+    // ps (A3): the program is pwsh / powershell / cmd: its stdin text and script file are PowerShell / cmd text.
+    const asShell = ps || tables_1.SHELLS.has(prog) || prog === 'sh';
     // `viaCode`: interpreter code that reads its own stdin and runs it (`python3 -c 'exec(sys.stdin.read())'`):
     // the text may be shell text for os.system as well as code.
     const code = (text) => {
-        if (asShell)
+        if (ps)
+            psNested(text, ctx, run);
+        else if (asShell)
             evalShell(text, childCtx(ctx), run);
         else {
             scanInterpreterCode(text, run);
@@ -3768,6 +3821,10 @@ function stdinExec(prog, rest, x, ctx, run, viaCode = false) {
     // A file the program reads as its program text (`bash -s < f`, `python3 < f`, or a file that a pipe
     // into a group carries): a shell script is evaluated, interpreter code is scanned.
     const fileCode = (f) => {
+        if (ps) {
+            powershellScript(f, ctx, run);
+            return;
+        }
         if (asShell) {
             scriptFile(f, rest, ctx, run, x);
             return;
@@ -11999,5 +12056,537 @@ function marrowExtract(text) {
         if (k !== 'enabledPlugins' && k !== 'extraKnownMarketplaces' && /plugin|marketplace/i.test(k))
             out[k] = v;
     return JSON.stringify(Object.keys(out).sort().map((k) => [k, out[k]]));
+}
+// ---------------------------------------------------------------------------------------------
+// A3: PowerShell and cmd text (Windows hotfix). Every function here only ADDS hits: the unchanged readings of the
+// same text still run, so no existing stop can go away.
+const DYN_ALL = new RegExp(DYN, 'g');
+const DYN_PLACEHOLDER = '${__marrow_dynamic}';
+/** An argument as text: the literal, or the literal parts with a placeholder for each unknown piece. */
+function dynText(a) { return a.text !== null ? a.text : a.pattern.replace(DYN_ALL, DYN_PLACEHOLDER); }
+/** The event's own shell text on native Windows or from the PowerShell / cmd tool: the usual reading, as PowerShell / cmd text. */
+function psTop(text, run) {
+    const ctx = newCtx(run);
+    ctx.ps = 1;
+    evalShell(text, ctx, run);
+    psExtras(text, ctx, run);
+}
+/** Text a PowerShell or cmd command line runs: pwsh -c, cmd /c, iex, Start-Process, a decoded -EncodedCommand, a script file. */
+function psNested(text, ctx, run) {
+    if (clock(run))
+        return;
+    const level = (ctx.ps || 0) + 1;
+    if (level > tables_1.LIMITS.maxPsDepth) {
+        worseParse(run, 'too_large');
+        run.flags.add('depth_limit');
+        hit(run, 'Sx', 'budget_depth');
+        return;
+    }
+    const c = childCtx(ctx, { ps: level });
+    evalShell(text, c, run);
+    psExtras(text, c, run);
+}
+/** Code text of a pwsh -Command / cmd /c: a command line that is nothing but unknown pieces cannot be read. */
+function psCommandText(text, ctx, run) {
+    if (text.trim() === '')
+        return;
+    if (text.split(DYN_PLACEHOLDER).join('').trim() === '') {
+        worseParse(run, 'dynamic');
+        hit(run, 'Sx', 'dynamic_powershell_code');
+        return;
+    }
+    psNested(text, ctx, run);
+}
+// The other readings of PowerShell / cmd text, next to the one evalShell already did: the text without its escape
+// characters and (on native Windows) with its backslashes kept, both as complete readings; the text with its block braces
+// turned into line breaks as a probe (only the A3 hits count, so `{ $_.Name }` does not become a dynamic command); and the
+// stops for text bash cannot read, for `& $x`, and for tree deletes through .NET.
+function psExtras(text, c, run) {
+    if (run.exhausted || Buffer.byteLength(text) > tables_1.LIMITS.maxCommandBytes)
+        return;
+    const cleaned = (0, tables_1.psClean)(text);
+    const flat = (0, tables_1.psFlatten)(cleaned);
+    // PowerShell keeps a backslash as a plain character, even before a quote: the readings with every backslash doubled show
+    // the text as PowerShell reads it (`"C:\"` is a whole string, `C:\tools\git.exe` one program word).
+    const keep = (t) => t.replace(/\\/g, '\\\\');
+    const faithful = new Set([keep(text), keep(cleaned)]);
+    const full = new Set(faithful);
+    full.add(cleaned);
+    full.delete(text);
+    for (const reading of full) {
+        if (clock(run))
+            return;
+        evalShell(reading, childCtx(c), run);
+    }
+    if (flat !== cleaned && flat !== text)
+        psProbe(flat, c, run);
+    psLexical((0, tables_1.psNormalize)(text), cleaned, c, run, true);
+    if (tables_1.PS_DYNAMIC_CALL.test(cleaned) || (0, tables_1.psDynamicCode)(cleaned)) {
+        worseParse(run, 'dynamic');
+        hit(run, 'Sx', 'dynamic_powershell_code');
+    }
+    if ((0, tables_1.psDefaultParameters)(cleaned) || PS_ALIAS_DRIVE.test(cleaned))
+        hit(run, 'S5', 'windows_shell_delete_unparsed');
+}
+// An alias made through the Alias: drive (`Set-Item Alias:z Remove-Item`, `New-Item -Path Alias:z`, `${alias:z} = ...`) hides a delete verb like Set-Alias does.
+const PS_ALIAS_DRIVE = /(?:\b(?:set-item|new-item|copy-item|rename-item|move-item|set-content|si|ni|cpi|rni|mi|sc)\b[^\n;|]{0,200}\balias:|\$\{alias:)/i;
+// The always-on lexical check of PowerShell / cmd text (rules i to iv and vi), independent of how bash parses it: a PowerShell
+// reading and a cmd reading of the statements, with quotes as data. A delete verb is judged where a command starts (the first
+// word of a statement, or any word of an if / for / foreach / call / start statement). Text the tokenizer does not read at all
+// (an unterminated quote, a here-string, a block comment) stops when it holds a delete verb or `iex` anywhere.
+function psLexical(raw, cleaned, c, run, inPs) {
+    if (run.psOver)
+        return;
+    let readable = true;
+    for (const cmdMode of [false, true]) {
+        if (clock(run))
+            return;
+        // The tokenizer reads the escape characters (backtick, caret) itself, so an escaped quote keeps its meaning.
+        const { statements, ok } = (0, tables_1.psStatements)(raw, cmdMode);
+        if (!ok)
+            readable = false;
+        for (const st of statements) {
+            const w = st.words;
+            // Work is counted per statement and per word, and a statement of more words than one command may have stops like it does.
+            if (psSpend(run, 1 + w.length, w.length > tables_1.LIMITS.maxWords))
+                return;
+            const open = tables_1.PS_KEYWORDS.has(w[0].toLowerCase());
+            // An argument list written as an array (`@('/c', 'rd /s /q x')`) is a statement of its own that starts with the switch.
+            if (w.length > 1 && /^[/-][a-z]/i.test(w[0])) {
+                const launched = /^\//.test(w[0]) ? cmdSwitchText(w.map(litArg)) : ((0, tables_1.psOption)(w[0])?.kind === 'command' ? w.slice(1).join(' ') : null);
+                if (launched !== null && launched.trim() !== '')
+                    psCommandText(launched, c, run);
+            }
+            // Both answers that look at the words after a program word are read from one pass over the statement, not one per word.
+            let deleteStops = null;
+            let switchAt = null;
+            for (let p = 0; p < (open ? w.length : 1); p += 1) {
+                if ((p & 63) === 63 && clock(run))
+                    return;
+                const name = (0, tables_1.windowsProgramName)(w[p]);
+                const prev = p > 0 ? w[p - 1].toLowerCase() : '';
+                // cmd: a command word that is a variable (`%X%`, `!X!`, a loop variable `%a`) can be anything. After if / for ... the
+                // command starts after the condition, so a variable that is followed by an option (`/s`, `-r`) counts too.
+                if (cmdMode && CMD_DYNAMIC_WORD.test(w[p]) && (p === 0 || prev === 'call' || prev === 'do' || prev === 'then' || prev === 'else' || prev === 'start'
+                    || (open && w[p + 1] !== undefined && /^[/-]/.test(w[p + 1])))) {
+                    worseParse(run, 'dynamic');
+                    hit(run, 'Sx', 'dynamic_powershell_code');
+                }
+                if (tables_1.WIN_DELETE_VERBS.has(name) || (inPs && tables_1.WIN_SHELL_DELETE_VERBS.has(name))) {
+                    if (deleteStops === null)
+                        deleteStops = (0, tables_1.windowsDeleteStopsFrom)(w, st.piped);
+                    if (deleteStops(p))
+                        hit(run, 'S5', 'windows_shell_delete_unparsed');
+                }
+                else if (name === 'iex' || name === 'invoke-expression') {
+                    const code = w[p + 1];
+                    if (code === undefined || st.piped || code.includes('$')) {
+                        worseParse(run, 'dynamic');
+                        hit(run, 'Sx', 'dynamic_powershell_code');
+                    }
+                    else
+                        psNested(code, c, run);
+                }
+                else if (name === 'cmd') {
+                    if (switchAt === null)
+                        switchAt = cmdSwitchIndexes(w);
+                    const at = switchAt[p + 1];
+                    // The command line is the rest of the statement from the switch on: its words are work too.
+                    if (at >= 0 && !psSpend(run, w.length - at, false))
+                        cmdLine(cmdSwitchLine(w, at), c, run);
+                    if (run.psOver)
+                        return;
+                }
+            }
+        }
+    }
+    if (!readable && inPs && tables_1.WIN_DELETE_WORDS.test(cleaned))
+        hit(run, 'S5', 'windows_shell_delete_unparsed');
+    if (!readable && inPs && tables_1.PS_EVAL_WORDS.test(cleaned)) {
+        worseParse(run, 'dynamic');
+        hit(run, 'Sx', 'dynamic_powershell_code');
+    }
+}
+// The work budget of psLexical, for the whole run: one step per statement and per word, 64 times the word budget of one
+// command. Over it, or over the word budget in one statement, psLexical stops reading and the run records the same stop
+// as any other word budget (Sx.budget_words). The rest of the evaluation goes on, so the other readings keep their own hits.
+const PS_LEX_STEPS = tables_1.LIMITS.maxWords * 64;
+function psSpend(run, steps, tooWide) {
+    if (run.psOver)
+        return true;
+    run.psSteps += steps;
+    if (!tooWide && run.psSteps <= PS_LEX_STEPS)
+        return false;
+    run.psOver = true;
+    worseParse(run, 'too_large');
+    hit(run, 'Sx', 'budget_words');
+    return true;
+}
+// A reading whose only hits are A3 hits (and the budget stops): everything else it finds is dropped.
+function psProbe(text, c, run) {
+    const saved = { hits: run.hits, parse: run.parse, flags: run.flags, risk: run.risk, head: run.headMayChange };
+    run.hits = [];
+    run.flags = new Set(saved.flags);
+    run.risk = new Set(saved.risk);
+    try {
+        evalShell(text, childCtx(c), run);
+    }
+    finally {
+        const kept = run.hits.filter((h) => tables_1.A3_REASONS.has(h.reason) || h.reason.startsWith('budget_'));
+        run.hits = saved.hits;
+        run.parse = saved.parse;
+        run.flags = saved.flags;
+        run.risk = saved.risk;
+        run.headMayChange = saved.head;
+        if (run.exhausted || run.psOver)
+            worseParse(run, 'too_large');
+        for (const h of kept)
+            hit(run, h.category, h.reason);
+    }
+}
+// Plain shell text bash cannot read, outside PowerShell / cmd text: the cmdlet name, a script block called with `&` / `.`
+// around a delete verb, `iex`, and `& $x` are still stops.
+function psUnparsed(src, run) {
+    const t = (0, tables_1.psClean)(src);
+    if (tables_1.WIN_CMDLET_WORD.test(t) || (tables_1.PS_BLOCK_CALL.test(t) && tables_1.WIN_DELETE_WORDS.test(t)))
+        hit(run, 'S5', 'windows_shell_delete_unparsed');
+    if (tables_1.PS_EVAL_WORDS.test(t) || tables_1.PS_DYNAMIC_AMP.test(t))
+        hit(run, 'Sx', 'dynamic_powershell_code');
+}
+// The arguments of a delete verb as text; `-Confirm:$false` is a literal switch value, not a variable.
+function deleteArgs(rest) {
+    return rest.map((a) => {
+        if (a.text !== null)
+            return a.text;
+        const m = /^(-[A-Za-z]+:)\u0001$/.exec(a.pattern);
+        return m && a.word && a.word.variables.length === 1 && /^(?:true|false)$/i.test(a.word.variables[0]) ? `${m[1]}$${a.word.variables[0]}` : null;
+    });
+}
+// The program of this command by its Windows name: delete verbs, cmd, pwsh / powershell, iex, Start-Process and the rest.
+function windowsShell(args, rest, ctx, run, x) {
+    const first = args[0].text;
+    if (first === null || ctx.a3Quiet === true)
+        return;
+    const name = (0, tables_1.windowsProgramName)(first);
+    const win = run.env.platform === 'win32';
+    if (tables_1.WIN_DELETE_VERBS.has(name) || ((ctx.ps !== undefined || win) && tables_1.WIN_SHELL_DELETE_VERBS.has(name))) {
+        if ((0, tables_1.windowsDeleteStops)(deleteArgs(rest), x.cmd.pipedInput || x.info.upstream.length > 0))
+            hit(run, 'S5', 'windows_shell_delete_unparsed');
+        return;
+    }
+    switch (name) {
+        case 'cmd': return handleCmd(rest, ctx, run, x);
+        case 'pwsh':
+        case 'powershell': return handlePowerShell(rest, ctx, run, x);
+        case 'iex':
+        case 'invoke-expression': return handleInvokeExpression(rest, ctx, run, x);
+        case 'start-process':
+        case 'saps': return handleStartProcess(rest, ctx, run);
+        case 'invoke-command':
+        case 'icm':
+            psCommandText(rest.map(dynText).join(' '), ctx, run);
+            return;
+        case 'set-alias':
+        case 'new-alias':
+        case 'sal':
+        case 'nal':
+        case 'import-alias': {
+            // An alias can hide the verb from every later command (and `Set-Alias z Remove-Item` is the way to do it): any alias in
+            // PowerShell text or on native Windows is a stop, and so is an alias for a delete verb anywhere.
+            let hides = ctx.ps !== undefined || win;
+            for (const a of rest) {
+                const aliased = a.text === null ? '' : (0, tables_1.windowsProgramName)(a.text);
+                if (tables_1.WIN_DELETE_VERBS.has(aliased) || tables_1.WIN_SHELL_DELETE_VERBS.has(aliased))
+                    hides = true;
+            }
+            if (hides)
+                hit(run, 'S5', 'windows_shell_delete_unparsed');
+            return;
+        }
+        // Windows-native destructive commands, each with a POSIX analog that stops (rsync --delete, mkfs, find -delete).
+        case 'robocopy':
+            // `robocopy <empty folder> <target> /mir` empties the target tree; /mov and /move delete what they copy.
+            if (rest.some((a) => a.text !== null && /^\/(?:mir|purge|mov|move)$/i.test(a.text)))
+                hit(run, 'S5', 'windows_shell_delete_unparsed');
+            return;
+        case 'format-volume':
+        case 'clear-disk':
+        case 'initialize-disk':
+        case 'remove-partition':
+        case 'diskpart':
+        case 'clear-recyclebin':
+            hit(run, 'S5', 'windows_shell_delete_unparsed');
+            return;
+        case 'format':
+            if (rest.some((a) => a.text !== null && /^[a-z]:\\?$/i.test(a.text)))
+                hit(run, 'S5', 'windows_shell_delete_unparsed');
+            return;
+        case 'vssadmin':
+            if (rest.some((a) => a.text !== null && /^delete$/i.test(a.text)))
+                hit(run, 'S5', 'windows_shell_delete_unparsed');
+            return;
+        case 'wsl':
+            if (rest.some((a) => a.text !== null && /^--unregister/i.test(a.text)))
+                hit(run, 'S5', 'windows_shell_delete_unparsed');
+            return;
+        case 'wmic':
+            if (rest.some((a) => a.text !== null && /^shadowcopy$/i.test(a.text)) && rest.some((a) => a.text !== null && /^delete$/i.test(a.text)))
+                hit(run, 'S5', 'windows_shell_delete_unparsed');
+            execWrapper(rest, ctx, run);
+            return;
+        // Programs whose argument strings are command lines.
+        case 'invoke-wmimethod':
+        case 'invoke-cimmethod':
+        case 'schtasks':
+        case 'forfiles':
+        case 'conhost':
+        case 'runas':
+        case 'mshta':
+        case 'cscript':
+        case 'wscript':
+        case 'psexec':
+        case 'psexec64':
+            execWrapper(rest, ctx, run);
+            return;
+        case 'start':
+            if (ctx.ps !== undefined || win)
+                execWrapper(rest, ctx, run);
+            return;
+        default: return;
+    }
+}
+// The command line after cmd's /c, /k or /r switch, or null when there is none. Switches may be run together (/d/s/c) and the
+// text may follow the switch without a blank (/c"dir"); the words after it are the command line, joined as cmd joins them.
+function cmdSwitchText(rest) {
+    for (let i = 0; i < rest.length; i += 1) {
+        const attached = cmdSwitchAttached(rest[i].text);
+        if (attached === null)
+            continue;
+        return [attached, ...rest.slice(i + 1).map(dynText)].filter((part) => part !== '').join(' ');
+    }
+    return null;
+}
+// The text a cmd switch word carries after its switch letter (`/c"dir"` gives `"dir"`, `/d/s/c` gives ``), or null when the word is no /c, /k or /r switch.
+function cmdSwitchAttached(t) {
+    if (t === null || t[0] !== '/')
+        return null;
+    const parts = t.slice(1).split('/');
+    const j = parts.findIndex((part) => /^[ckr]/i.test(part));
+    if (j < 0)
+        return null;
+    return parts[j].slice(1) + (j < parts.length - 1 ? `/${parts.slice(j + 1).join('/')}` : '');
+}
+// For every position, the index of the first cmd switch word at or after it (-1 = none; one extra slot past the end): the
+// answer of cmdSwitchText for every word of a statement, from one pass.
+function cmdSwitchIndexes(words) {
+    const next = new Int32Array(words.length + 1);
+    next[words.length] = -1;
+    for (let i = words.length - 1; i >= 0; i -= 1)
+        next[i] = cmdSwitchAttached(words[i]) !== null ? i : next[i + 1];
+    return next;
+}
+// The command line of a statement whose word `at` is a cmd switch: what cmdSwitchText gives for the words from there.
+function cmdSwitchLine(words, at) {
+    return [cmdSwitchAttached(words[at]), ...words.slice(at + 1)].filter((part) => part !== '').join(' ');
+}
+// A cmd command line, read as it is and with one pair of outer quotes taken off.
+function cmdLine(text, ctx, run) {
+    psCommandText(text, ctx, run);
+    if (text.length >= 2 && text.startsWith('"') && text.endsWith('"'))
+        psCommandText(text.slice(1, -1), ctx, run);
+}
+function handleCmd(rest, ctx, run, x) {
+    const line = cmdSwitchText(rest);
+    if (line !== null) {
+        cmdLine(line, ctx, run);
+        return;
+    }
+    // A switch word that is not a literal might be /c; without /c cmd reads its commands from stdin.
+    if (rest.some((a) => a.text === null)) {
+        worseParse(run, 'dynamic');
+        hit(run, 'Sx', 'dynamic_powershell_code');
+        return;
+    }
+    stdinExec('sh', [], x, ctx, run, false, true);
+}
+// Programs whose argument strings are command lines (wmic process call create "cmd /c …", schtasks /tr "…", forfiles /c "…",
+// conhost cmd /c …, start /b "" cmd /c …): each argument with blanks is a command line, and so is the rest of the arguments
+// from any word that names a delete verb, a shell or PowerShell. Brace, `=` and `;` forms (@{CommandLine='…'}) are read too.
+function execWrapper(rest, ctx, run) {
+    const texts = rest.map(dynText);
+    let trials = 0;
+    for (let k = 0; k < rest.length; k += 1) {
+        if (clock(run))
+            return;
+        const w = texts[k];
+        if (/\s/.test(w) && w.length > 2) {
+            psCommandText(w, ctx, run);
+            const flat = w.replace(/[{}=;@]/g, ' ');
+            if (flat !== w)
+                psCommandText(flat, ctx, run);
+        }
+        const t = rest[k].text;
+        const name = t === null ? '' : (0, tables_1.windowsProgramName)(t);
+        if (tables_1.WIN_DELETE_VERBS.has(name) || tables_1.WIN_SHELL_DELETE_VERBS.has(name) || ['cmd', 'pwsh', 'powershell', 'iex', 'invoke-expression', 'start-process', 'saps', 'robocopy'].includes(name)) {
+            trials += 1;
+            if (trials > tables_1.LIMITS.maxTailTrials) {
+                exhaust(run, 'budget_argv_scan');
+                return;
+            }
+            psCommandText(texts.slice(k).join(' '), ctx, run);
+        }
+    }
+}
+const CMD_DYNAMIC_WORD = /%[^%\s]*%|![^!\s]*!|^%{1,2}~?[a-z]$/i;
+const PS_FILE_SUFFIX = /\.(?:ps1|psm1|bat|cmd)$/i;
+// pwsh / powershell: -Command (and its prefixes) takes the rest of the line as code, -EncodedCommand a base64 UTF-16LE
+// text, -File a script, and a first word that is no option is read both as code and as a script path.
+function handlePowerShell(rest, ctx, run, x) {
+    // With no code, file or encoded text, and with `-` (or `-Command -`), PowerShell reads its commands from stdin.
+    const stdin = () => stdinExec('sh', [], x, ctx, run, false, true);
+    let ran = false;
+    for (let i = 0; i < rest.length; i += 1) {
+        const a = rest[i];
+        if (a.text === null) {
+            worseParse(run, 'dynamic');
+            hit(run, 'Sx', 'dynamic_powershell_code');
+            return;
+        }
+        if (a.text === '-') {
+            stdin();
+            return;
+        }
+        const opt = (0, tables_1.psOption)(a.text);
+        if (opt === null) {
+            psCommandText(rest.slice(i).map(dynText).join(' '), ctx, run);
+            if (!/\s/.test(a.text) && (PS_FILE_SUFFIX.test(a.text) || /[\\/]/.test(a.text)))
+                powershellScript(a, ctx, run);
+            return;
+        }
+        const value = opt.attached !== null ? litArg(opt.attached) : rest[i + 1];
+        const eats = opt.attached === null ? 1 : 0;
+        if (opt.kind === 'command') {
+            const tail = (opt.attached !== null ? [litArg(opt.attached)] : []).concat(rest.slice(i + 1));
+            if (tail.length === 0 || (tail.length === 1 && tail[0].text === '-')) {
+                stdin();
+                return;
+            }
+            psCommandText(tail.map(dynText).join(' '), ctx, run);
+            return;
+        }
+        if (opt.kind === 'encoded' || (opt.name === 'ep' && value !== undefined && (value.text === null || !tables_1.PS_EXECUTION_POLICIES.test(value.text)))) {
+            const decoded = value !== undefined && value.text !== null ? (0, tables_1.decodeEncodedCommand)(value.text) : null;
+            if (decoded === null)
+                hit(run, 'Sx', 'encoded_powershell_unreadable');
+            else
+                psNested(decoded, ctx, run);
+            ran = true;
+            i += eats;
+            continue;
+        }
+        if (opt.kind === 'file') {
+            powershellScript(value, ctx, run);
+            return;
+        }
+        if (opt.kind === 'value' && value !== undefined && !(value.text !== null && (0, tables_1.psOption)(value.text) !== null))
+            i += eats;
+    }
+    if (!ran)
+        stdin();
+}
+// A script PowerShell runs (-File, a path as first word). Its text is read as PowerShell text; one that cannot be read
+// (missing, too big, not a literal path, or a Windows path the mapper cannot open) is a stop.
+function powershellScript(a, ctx, run) {
+    if (!a || a.text === null || !expandScript(run)) {
+        if (!run.exhausted)
+            hit(run, 'Sx', 'powershell_script_unreadable');
+        return;
+    }
+    const found = (absCandidates(a.text, ctx, run) || []).filter((p) => !p.startsWith('/__unknown_cwd__')).map((p) => readCached(run, p, tables_1.LIMITS.maxScriptBytes));
+    if (found.length === 0 || found.some((c) => c === null)) {
+        hit(run, 'Sx', 'powershell_script_unreadable');
+        return;
+    }
+    for (const c of found)
+        psNested(c, ctx, run);
+}
+// iex / Invoke-Expression: a literal argument is PowerShell text; anything else (a variable, a pipe, no argument) is code
+// nobody can read.
+function handleInvokeExpression(rest, ctx, run, x) {
+    const args = rest.filter((a) => !(a.text !== null && (0, tables_1.psOption)(a.text)?.kind === 'command'));
+    const code = args[0];
+    if (code === undefined || x.cmd.pipedInput || x.info.upstream.length > 0) {
+        worseParse(run, 'dynamic');
+        hit(run, 'Sx', 'dynamic_powershell_code');
+        return;
+    }
+    if (code.text !== null) {
+        psNested(code.text, ctx, run);
+        return;
+    }
+    if (code.alts) {
+        for (const v of code.alts)
+            psNested(v, ctx, run);
+        return;
+    }
+    worseParse(run, 'dynamic');
+    hit(run, 'Sx', 'dynamic_powershell_code');
+}
+const START_PROCESS_OPTIONS = ['filepath', 'argumentlist', 'workingdirectory', 'loaduserprofile', 'nonewwindow', 'passthru', 'redirectstandarderror',
+    'redirectstandardinput', 'redirectstandardoutput', 'usenewenvironment', 'verb', 'wait', 'windowstyle', 'credential', 'inputobject'];
+const START_PROCESS_VALUE_OPTIONS = new Set(['workingdirectory', 'redirectstandarderror', 'redirectstandardinput', 'redirectstandardoutput', 'verb',
+    'windowstyle', 'credential', 'inputobject']);
+function startOption(word) {
+    const m = /^-([a-z]+)(?::([\s\S]*))?$/i.exec(word);
+    if (!m)
+        return null;
+    const name = m[1].toLowerCase();
+    const full = START_PROCESS_OPTIONS.find((k) => k.startsWith(name));
+    return full ? { name: full, attached: m[2] !== undefined ? m[2] : null } : null;
+}
+// Start-Process / saps / start: `<program> <ArgumentList>` is read as one command line. A program that is not a literal
+// is code nobody can read. Commas of -ArgumentList 'a','b' (which bash joined into one word) read as spaces.
+function handleStartProcess(rest, ctx, run) {
+    let program;
+    const argv = [];
+    let listed = false;
+    for (let i = 0; i < rest.length; i += 1) {
+        const a = rest[i];
+        const opt = a.text !== null ? startOption(a.text) : null;
+        if (opt) {
+            if (opt.name === 'filepath')
+                program = opt.attached !== null ? litArg(opt.attached) : rest[++i];
+            else if (opt.name === 'argumentlist') {
+                listed = true;
+                if (opt.attached !== null)
+                    argv.push(litArg(opt.attached));
+                else if (i + 1 < rest.length)
+                    argv.push(rest[++i]);
+                while (i + 1 < rest.length && !(rest[i + 1].text !== null && startOption(rest[i + 1].text)))
+                    argv.push(rest[++i]);
+            }
+            else if (START_PROCESS_VALUE_OPTIONS.has(opt.name) && opt.attached === null)
+                i += 1;
+            continue;
+        }
+        if (program === undefined)
+            program = a;
+        else if (!listed)
+            argv.push(a);
+    }
+    if (!program)
+        return;
+    if (program.text === null) {
+        worseParse(run, 'dynamic');
+        hit(run, 'Sx', 'dynamic_powershell_code');
+        return;
+    }
+    const name = (0, tables_1.windowsProgramName)(program.text);
+    if ((name === 'cmd' || name === 'pwsh' || name === 'powershell') && argv.some((a) => a.text === null)) {
+        worseParse(run, 'dynamic');
+        hit(run, 'Sx', 'dynamic_powershell_code');
+        return;
+    }
+    psNested(`${shellQuote(program.text)} ${argv.map(dynText).join(' ').replace(/,/g, ' ')}`.trim(), ctx, run);
 }
 //# sourceMappingURL=mapper.js.map

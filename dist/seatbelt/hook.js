@@ -5,6 +5,7 @@ exports.seatbeltStopText = seatbeltStopText;
 exports.accountFloorStops = accountFloorStops;
 exports.hostMapperFs = hostMapperFs;
 exports.hostSeatbeltGit = hostSeatbeltGit;
+exports.mapperEnv = mapperEnv;
 exports.keylessSeatbelt = keylessSeatbelt;
 exports.seatbeltStatus = seatbeltStatus;
 exports.accountFloor = accountFloor;
@@ -245,13 +246,16 @@ function trustedTmpdir() {
         return undefined;
     }
 }
-function mapperEnv(home, cwd, budgetMs) {
+/** `platform` is a parameter only so tests can pass `win32`; production callers use the real one. */
+function mapperEnv(home, cwd, budgetMs, platform = process.platform) {
     const fs3 = require('../seatbelt-fs').nodeSeatbeltFs();
     return {
-        cwd: typeof cwd === 'string' && cwd.startsWith('/') ? cwd : null,
+        // Windows has no workspace model yet (3.9.106 A4): no event cwd is a workspace there, so a forged
+        // `/`-rooted cwd cannot make the POSIX mapper judge a delete against a made-up workspace.
+        cwd: platform !== 'win32' && typeof cwd === 'string' && cwd.startsWith('/') ? cwd : null,
         home,
         tmpdir: trustedTmpdir(),
-        platform: process.platform,
+        platform,
         fs: hostMapperFs(fs3),
         git: hostSeatbeltGit(fs3, home, process.env),
         budgetMs: Math.max(0, budgetMs),

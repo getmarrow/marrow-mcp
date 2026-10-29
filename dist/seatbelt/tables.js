@@ -3,12 +3,24 @@
 // Compiled into the package on purpose: no local file can extend or relax them (spec §2.1.7).
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CWD_KEYS = exports.ENV_KEYS = exports.TERMINAL_TEXT_KEYS = exports.GH_HEAD_SAFE = exports.HEAD_CHANGERS = exports.HEAD_RUNNERS = exports.BUILD_TOOLS = exports.TERMINAL_SEGMENTS = exports.STDIN_KEYS = exports.CODE_KEYS = exports.ARGV_STRICT = exports.ARGV_SEGMENTS = exports.ARGV_KEYS = exports.COMMAND_KEYS = exports.FILE_TOOL_NAMES = exports.SHELL_TOOL_NAMES = exports.GIT_CONFIG_ENV_FILES = exports.GIT_CONFIG_INCLUDE = exports.GIT_EXEC_CONFIG = exports.NPM_BOOL_FLAGS = exports.NPM_VALUE_FLAGS = exports.NPM_ALIASES = exports.NPM_COMMANDS = exports.EVAL_PRODUCERS = exports.NON_SCRIPT_NAMES = exports.SCRIPT_SUFFIX = exports.INERT_PROGRAMS = exports.KNOWN_COMMANDS = exports.NAME_TRIPWIRE = exports.TRIPWIRE = exports.GIT_PUSH_RISKY_LONG = exports.GIT_PUSH_LONG = exports.GIT_BUILTINS = exports.PACKAGE_BINS = exports.MARROW_OWNER_SUBS = exports.INTERPRETER_EXEC = exports.INTERPRETERS = exports.SHELLS = exports.GIT_S4_EXEMPT_SUBS = exports.S4_EXEMPT_PROGRAMS = exports.PROD_ENV = exports.SECRET_VAR = exports.SSH_PUBLIC = exports.ENV_TEMPLATE_SUFFIX = exports.KEY_FIXTURE_SEGMENTS = exports.KEY_EXTENSIONS = exports.SECRET_PATTERNS = exports.PRESENT_SECRET_PATTERNS = exports.LIMITS = exports.SEATBELT_RULES_VERSION = void 0;
-exports.LANGUAGE_KEYS = exports.OPTION_OBJECT_KEYS = void 0;
+exports.PS_BLOCK_WORDS = exports.PS_OUTPUT_CMDLETS = exports.PS_KEYWORDS = exports.PS_EXECUTION_POLICIES = exports.PS_SNIFF = exports.PS_BLOCK_CALL = exports.PS_DYNAMIC_AMP = exports.PS_DYNAMIC_CALL = exports.PS_EVAL_WORDS = exports.WIN_CMDLET_WORD = exports.WIN_DELETE_WORDS = exports.WIN_SHELL_DELETE_VERBS = exports.WIN_DELETE_VERBS = exports.A3_REASONS = exports.LANGUAGE_KEYS = exports.OPTION_OBJECT_KEYS = void 0;
 exports.secretSamples = secretSamples;
 exports.interpreterTreeDelete = interpreterTreeDelete;
 exports.interpreterDecodeToken = interpreterDecodeToken;
 exports.commandLikeKey = commandLikeKey;
 exports.codeLikeKey = codeLikeKey;
+exports.windowsProgramName = windowsProgramName;
+exports.windowsDeleteStops = windowsDeleteStops;
+exports.windowsDeleteStopsFrom = windowsDeleteStopsFrom;
+exports.dotNetTreeDelete = dotNetTreeDelete;
+exports.psOption = psOption;
+exports.decodeEncodedCommand = decodeEncodedCommand;
+exports.psNormalize = psNormalize;
+exports.psClean = psClean;
+exports.psFlatten = psFlatten;
+exports.psDynamicCode = psDynamicCode;
+exports.psDefaultParameters = psDefaultParameters;
+exports.psStatements = psStatements;
 exports.SEATBELT_RULES_VERSION = 'marrow.seatbelt.rules.v1';
 // Budgets. A command that exceeds ANY budget stops (never passes): padding, deep nesting, wide
 // fan-out and slow repositories must not turn into "pass" (audit F3, F10).
@@ -42,6 +54,11 @@ exports.LIMITS = Object.freeze({
     maxWords: 1024,
     maxBraceChars: 1024,
     maxParseCost: 24_000_000,
+    // A3 (Windows hotfix): nested PowerShell / cmd texts (pwsh -c, cmd /c, iex, Start-Process, decoded
+    // -EncodedCommand) stop beyond this many levels, and a base64 -EncodedCommand value longer than this many
+    // characters is not decoded: it stops as unreadable. 32767 is the longest command line Windows can start.
+    maxPsDepth: 4,
+    maxEncodedChars: 32_767,
 });
 // S4 secret paths: one table with the keyed policy (src/secret-paths.ts).
 var secret_paths_1 = require("../secret-paths");
@@ -199,6 +216,8 @@ exports.KNOWN_COMMANDS = new Set([
     'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ash', 'mksh', 'yash', 'rbash', 'csh', 'tcsh',
     'python', 'python2', 'python3', 'node', 'nodejs', 'ruby', 'perl', 'php', 'deno', 'lua', 'pwsh', 'powershell', 'osascript', 'tclsh',
     'irb', 'ipython', 'awk', 'gawk', 'mawk', 'nawk', 'sed', 'gsed', 'tar', 'gtar', 'bsdtar', 'ps',
+    // A3: the Windows command interpreter (its /c text is read as PowerShell / cmd text)
+    'cmd',
 ]);
 // Programs whose arguments are text, patterns or paths and are never run. Their argv is not scanned
 // for a command. A program with an exec-capable flag (find -exec, xargs, tar --to-command) is not
@@ -354,4 +373,447 @@ exports.CWD_KEYS = new Set(['cwd', 'workdir', 'working_dir', 'working_directory'
 exports.OPTION_OBJECT_KEYS = new Set(['options', 'opts', 'context', 'session', 'execution', 'spawn_options', 'exec_options', 'config', 'settings', 'env_options', 'process', 'run_options']);
 // A sibling that names the language of a code field.
 exports.LANGUAGE_KEYS = new Set(['runtime', 'language', 'lang', 'interpreter', 'engine', 'kind', 'type', 'shell', 'mode']);
+// ---------------------------------------------------------------------------------------------
+// A3: Windows shell deletes (PowerShell and cmd). Everything below only ADDS stops.
+// The reasons A3 adds. When one of them is the first hit of the decision's category, the decision's rule is
+// `<category>.<reason>` (S5.windows_shell_delete_unparsed, Sx.encoded_powershell_unreadable,
+// Sx.powershell_script_unreadable, Sx.dynamic_powershell_code); every one matches the hook's CODE pattern.
+exports.A3_REASONS = new Set(['windows_shell_delete_unparsed', 'encoded_powershell_unreadable',
+    'powershell_script_unreadable', 'dynamic_powershell_code']);
+// Delete verbs in every text. rm and rmdir keep their POSIX handlers: they count only in PowerShell / cmd text
+// and on native Windows.
+exports.WIN_DELETE_VERBS = new Set(['remove-item', 'ri', 'del', 'erase', 'rd']);
+exports.WIN_SHELL_DELETE_VERBS = new Set(['rm', 'rmdir']);
+/** A program word as Windows names it: both separators split the path, a .exe/.cmd/.bat/.com suffix goes, case folds. */
+function windowsProgramName(text) {
+    const base = text.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '';
+    return base.replace(/\.(?:exe|cmd|bat|com)$/i, '').toLowerCase();
+}
+// Remove-Item parameters that cannot recurse. A prefix counts only when it names exactly one of them (`-f` is
+// Filter or Force, so it is unknown). `ea` is the ErrorAction alias.
+const PS_DELETE_OPTIONS = ['path', 'literalpath', 'filter', 'include', 'exclude', 'force', 'whatif', 'confirm', 'erroraction', 'verbose', 'debug'];
+function deleteOptionStops(word) {
+    if (word[0] === '/') {
+        // cmd switches, alone or run together (/s/q): /q /f /p /a[:attrs] are fine; /s (recursion) and everything else stops.
+        for (const part of word.slice(1).split('/'))
+            if (!/^(?:[qfp]|a(?::[a-z-]{0,12})?)$/i.test(part))
+                return true;
+        return false;
+    }
+    if (word.startsWith('--'))
+        return true; // GNU long options (--recursive and every other one)
+    const colon = word.indexOf(':');
+    const name = (colon > 0 ? word.slice(1, colon) : word.slice(1)).toLowerCase();
+    const value = colon > 0 ? word.slice(colon + 1) : null;
+    if (name === '' || name.startsWith('r'))
+        return true; // -r, -rec, -Recurse, -Recurse:$true and a typo of them
+    if (name !== 'ea' && PS_DELETE_OPTIONS.filter((k) => k.startsWith(name)).length !== 1)
+        return true;
+    if (value !== null && value.includes('$') && !/^\$(?:true|false)$/i.test(value))
+        return true;
+    return false;
+}
+/**
+ * A3 rules (i) to (iv) for one command whose program is a delete verb. `words` are its arguments (null = not a literal:
+ * a variable, a substitution, several values). True = stop: pipeline input, a recursion marker, an option outside the
+ * known non-recursive set, or an argument that is not a plain literal (a `$` expression, a splat, a backtick, `%VAR%`,
+ * `!VAR!`, a script block).
+ */
+function windowsDeleteStops(words, piped) {
+    if (piped)
+        return true;
+    let targets = 0;
+    for (const raw of words) {
+        const k = deleteWordClass(raw);
+        if (k === DELETE_WORD_STOPS)
+            return true;
+        if (k === DELETE_WORD_TARGET)
+            targets += 1;
+    }
+    // A delete with no target at all gets its target from somewhere the text does not show (a splat, a default parameter value).
+    return targets === 0;
+}
+// How one argument of a delete verb counts: nothing (a blank piece, a safe option), a target, or a stop on its own.
+const DELETE_WORD_SKIP = 0;
+const DELETE_WORD_TARGET = 1;
+const DELETE_WORD_STOPS = 2;
+function deleteWordClass(raw) {
+    if (raw === null)
+        return DELETE_WORD_STOPS;
+    const t = psNormalize(raw);
+    if (t === '' || t === '}')
+        return DELETE_WORD_SKIP; // a lone `}` is the end of a script block that bash read as a word
+    if (/[`%!{}]/.test(t) || t[0] === '@')
+        return DELETE_WORD_STOPS;
+    if (t[0] === '-' || t[0] === '/')
+        return deleteOptionStops(t) ? DELETE_WORD_STOPS : DELETE_WORD_SKIP;
+    if (t.includes('$'))
+        return DELETE_WORD_STOPS;
+    return DELETE_WORD_TARGET;
+}
+/**
+ * `windowsDeleteStops(words.slice(p + 1), piped && p === 0)` for every p, from one pass over `words`. A suffix stops when
+ * it holds a word that stops on its own or no target at all, so the last word of each kind answers every p. The result is
+ * a function of p; each call is constant time.
+ */
+function windowsDeleteStopsFrom(words, pipedFirst) {
+    let lastStop = -1;
+    let lastTarget = -1;
+    for (let i = 0; i < words.length; i += 1) {
+        const k = deleteWordClass(words[i]);
+        if (k === DELETE_WORD_STOPS)
+            lastStop = i;
+        else if (k === DELETE_WORD_TARGET)
+            lastTarget = i;
+    }
+    return (p) => (pipedFirst && p === 0) || lastStop > p || lastTarget <= p;
+}
+// A delete verb anywhere in text bash could not read (rule vi). A verb is a whole word that does not continue a name,
+// a variable or a path component (the text had its backticks and carets removed first).
+exports.WIN_DELETE_WORDS = /(?<![\w.$-])(?:remove-item|ri|rm|rmdir|rd|del|erase)(?![\w-])/i;
+// Outside PowerShell / cmd text only the unambiguous cmdlet name counts, and only as the start of a statement, when bash
+// cannot read the text (a commit message that quotes it is not a command).
+exports.WIN_CMDLET_WORD = /(?:^|[\n;|&(]|&&|\|\|)[ \t]*(?:remove-item)(?![\w-])/i;
+exports.PS_EVAL_WORDS = /(?:^|[\n;|(]|&&|\|\|)[ \t]*(?:iex|invoke-expression)(?![\w-])/i;
+// `& $cmd`, `& (expr)`, `& @args` at the start of a statement (and `. $x` in PowerShell text): code that is not a literal.
+exports.PS_DYNAMIC_CALL = /(?:^|[\n;|(]|&&|\|\|)[ \t]*(?:&[ \t]*(?:[$(@]|"[^"\n]{0,300}\$)|\.[ \t]+(?:[$(@]|"[^"\n]{0,300}\$))/;
+exports.PS_DYNAMIC_AMP = /(?:^|[\n;|(]|&&|\|\|)[ \t]*&[ \t]*(?:[$(@]|"[^"\n]{0,300}\$)/;
+// A script block called with `&` or `.` at the start of a statement: PowerShell, never bash.
+exports.PS_BLOCK_CALL = /(?:^|[\n;|(]|&&|\|\|)[ \t]*[&.][ \t]*\{/;
+// Plain shell text that looks like PowerShell with script blocks: its blocks are read as statements too (a probe).
+exports.PS_SNIFF = /remove-item|foreach-object|where-object|invoke-command|-scriptblock|get-childitem|%[ \t]*\{|(?:^|[\n;&|(])[ \t]*(?:rd|rmdir|del|erase|cmd)[/,;=]|(?:^|[\n;|(]|&&|\|\|)[ \t]*[&.][ \t]*\{/i;
+/**
+ * .NET and COM deletes of a whole tree (rule v). The text is lower-cased with all white space removed, so padding and
+ * spacing change nothing. `strict` (PowerShell / cmd text) also stops `.Delete(<anything but $false/0/false>)`; outside
+ * it only the PowerShell-only forms count, so a C# search for `.Delete(true)` keeps its answer.
+ */
+function dotNetTreeDelete(text, strict) {
+    const t = text.toLowerCase().replace(/\s+/g, '');
+    if (t.includes('directory]::delete') || t.includes('::deletedirectory') || t.includes('deletefolder('))
+        return true;
+    // A member name that is built at run time (`[IO.Directory]::('De'+'lete')`, `[IO.Directory]::$m`).
+    if (t.includes('directory]::(') || t.includes('directory]::$'))
+        return true;
+    if (/\.delete\(\$(?!false)/.test(t))
+        return true;
+    if (!strict)
+        return false;
+    // Any delete call next to a walk of the tree in the same text (the analog of `find -delete`), and FileSystemObject.DeleteFile.
+    if (t.includes('.deletefile(') || t.includes('.deletefile"') || t.includes(".deletefile'") || t.includes('.deletefolder"') || t.includes(".deletefolder'"))
+        return true; // VBScript may leave out the parentheses
+    if ((t.includes('.delete(') || t.includes('::delete(')) && ['get-childitem', 'gci', '-recurse', 'foreach', '|%', '%{', 'while(', 'for('].some((w) => t.includes(w)))
+        return true;
+    if (t.includes('::delete') && t.includes('directory'))
+        return true;
+    if (t.includes('directory') && t.includes('getmethod') && t.includes('delete'))
+        return true;
+    for (const m of t.matchAll(/\.delete\(([^)]{0,16})/g))
+        if (m[1] !== '' && !/^(?:\$false|0|false)$/.test(m[1]))
+            return true;
+    return false;
+}
+const PS_VALUE_OPTIONS = ['windowstyle', 'executionpolicy', 'inputformat', 'outputformat', 'version', 'workingdirectory', 'wd',
+    'configurationname', 'settingsfile', 'custompipename'];
+function psOption(raw) {
+    const word = psNormalize(raw);
+    if (word.length < 2 || (word[0] !== '-' && word[0] !== '/'))
+        return null;
+    const colon = word.indexOf(':');
+    const name = (colon > 0 ? word.slice(1, colon) : word.slice(1)).toLowerCase();
+    const attached = colon > 0 ? word.slice(colon + 1) : null;
+    if (!/^[a-z?]+$/.test(name))
+        return null;
+    let kind = 'flag';
+    // Every -c* parameter carries code (-Command, -CommandWithArgs, -cwa, any prefix); -conf* and -cu* (pipe name) take a value.
+    if (name[0] === 'c' && !name.startsWith('conf') && !name.startsWith('cu'))
+        kind = 'command';
+    else if (name === 'ep')
+        kind = 'value';
+    else if (name[0] === 'e' && !name.startsWith('ex'))
+        kind = 'encoded';
+    else if ('file'.startsWith(name))
+        kind = 'file';
+    else if (PS_VALUE_OPTIONS.some((v) => v.startsWith(name)))
+        kind = 'value';
+    return { kind, name, attached };
+}
+exports.PS_EXECUTION_POLICIES = /^(?:bypass|unrestricted|remotesigned|allsigned|restricted|undefined|default)$/i;
+/** The text of a base64 UTF-16LE -EncodedCommand value, or null when it cannot be read (the caller then stops). */
+function decodeEncodedCommand(value) {
+    const compact = value.replace(/\s+/g, '');
+    if (compact.length === 0 || compact.length > exports.LIMITS.maxEncodedChars)
+        return null;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact) || compact.length % 4 !== 0)
+        return null;
+    let bytes;
+    try {
+        bytes = Buffer.from(compact, 'base64');
+    }
+    catch {
+        return null;
+    }
+    if (bytes.length === 0 || bytes.length % 2 !== 0)
+        return null;
+    const text = bytes.toString('utf16le');
+    // NUL and other control characters (tab, CR and LF are fine), and the replacement character an invalid pair leaves.
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f�￾￿]/.test(text))
+        return null;
+    return text;
+}
+/** PowerShell reads U+2013, U+2014 and U+2015 as the parameter dash and the smart quotes as quotes: the same text with plain ones. */
+function psNormalize(text) {
+    // PowerShell also reads a vertical tab, a form feed, U+00A0, U+0085 and the Unicode space separators as blanks (bash does not), and
+    // U+2028 / U+2029 as line ends: every one of them becomes a plain blank or line break first.
+    return text.replace(/[\u2028\u2029]/g, '\n').replace(/[\u000b\u000c\u00a0\u0085\u1680\u2000-\u200a\u202f\u205f\u3000]/g, ' ').replace(/[\u2013\u2014\u2015]/g, '-').replace(/[\u2018\u2019\u201a\u201b]/g, '\'').replace(/[\u201c\u201d\u201e]/g, '"');
+}
+/** PowerShell / cmd text with its escapes taken out: a backtick (PowerShell) or caret (cmd) before a line break joins the lines, any other one goes; dashes and quotes plain. */
+function psClean(text) {
+    return psNormalize(text.replace(/[`^]\r?\n/g, ' ').replace(/[`^]/g, ''));
+}
+/**
+ * The same PowerShell / cmd text with its block braces turned into line breaks and its call operators dropped, so
+ * `& { ri -r x }`, `Invoke-Command -ScriptBlock { rd /s x }` and `% { rm $_ }` show their bodies as commands. Quotes and
+ * `${name}` are left alone. A reading for the delete checks only; it never replaces the text's own reading.
+ */
+function psFlatten(text) {
+    let out = '';
+    let quote = null;
+    let braced = false;
+    for (let i = 0; i < text.length; i += 1) {
+        const ch = text[i];
+        if (quote !== null) {
+            out += ch;
+            if (ch === quote)
+                quote = null;
+            continue;
+        }
+        if (braced) {
+            out += ch;
+            if (ch === '}')
+                braced = false;
+            continue;
+        }
+        if (ch === '\'' || ch === '"') {
+            quote = ch;
+            out += ch;
+            continue;
+        }
+        if (ch === '$' && text[i + 1] === '{') {
+            braced = true;
+            out += '${';
+            i += 1;
+            continue;
+        }
+        out += ch === '{' || ch === '}' ? '\n' : ch;
+    }
+    return out.replace(/(^|[\n;|(]|&&|\|\|)([ \t]*)(?:&[ \t]*|\.[ \t]+)(?=[^\s&])/g, '$1$2').replace(/(^|[\n;|(]|&&|\|\|)([ \t]*)[&.][ \t]*(?=\n|$)/g, '$1$2');
+}
+// PowerShell text that builds or runs code from pieces, and the settings that change what a plain command does. Only the
+// PowerShell / cmd context looks at it: `$PSDefaultParameterValues['Remove-Item:Recurse']=$true` makes `Remove-Item C:\x`
+// recursive, and `[scriptblock]::Create($s).Invoke()` is code nobody can read.
+function psDynamicCode(text) {
+    const t = text.toLowerCase();
+    const c = t.replace(/\s+/g, '');
+    if (c.includes('[scriptblock]::create') || c.includes('.invoke(') || c.includes('executioncontext.invokecommand') || c.includes('add-type'))
+        return true;
+    // COM objects that start programs (`WScript.Shell`.Run, `Shell.Application`.ShellExecute).
+    if (c.includes('wscript.shell') || c.includes('shell.application') || c.includes('.shellexecute('))
+        return true;
+    if (/(?:^|[\n;|(]|&&|\|\|)[ \t]*(?:invoke-command|icm)(?![\w-])[^\n;|]{0,1024}[ \t]-f[a-z]*(?![\w-])/.test(t))
+        return true;
+    if (/(?:foreach-object|foreach|%)[ \t]+-m[a-z]*(?![\w-])/.test(t) || /\|[ \t]*(?:%|foreach-object|foreach)[ \t]+[a-z]/.test(t))
+        return true;
+    return false;
+}
+function psDefaultParameters(text) { return text.toLowerCase().includes('psdefaultparametervalues'); }
+const CMD_INTERNAL = new Set(['rd', 'rmdir', 'del', 'erase', 'rm', 'cmd', 'call', 'start']);
+exports.PS_KEYWORDS = new Set(['if', 'for', 'foreach', 'while', 'else', 'elseif', 'do', 'then', 'call', 'start', 'switch', 'try', 'catch', 'finally', '%', 'foreach-object']);
+function splitInternal(words) {
+    const first = words[0];
+    const at = first.indexOf('/');
+    if (at <= 0)
+        return words;
+    const head = first.slice(0, at);
+    if (!CMD_INTERNAL.has(head.toLowerCase().replace(/\.(?:exe|cmd|bat|com)$/, '')))
+        return words;
+    return [head, ...first.slice(at).split(/(?=\/)/), ...words.slice(1)];
+}
+function psStatements(text, cmd) {
+    const out = [];
+    let ok = true;
+    const scan = (start, closer, depth) => {
+        let words = [];
+        let cur = '';
+        let has = false;
+        let piped = false;
+        let i = start;
+        const endWord = () => { if (has)
+            words.push(cur); cur = ''; has = false; };
+        const endStmt = (pipe) => {
+            endWord();
+            // cmd: a leading `@` (echo off for this command) is no part of the command name.
+            if (cmd && words.length && /^@+/.test(words[0])) {
+                words[0] = words[0].replace(/^@+/, '');
+                if (words[0] === '')
+                    words.shift();
+            }
+            if (words.length)
+                out.push({ words: cmd ? splitInternal(words) : words, piped });
+            words = [];
+            piped = pipe;
+        };
+        while (i < text.length) {
+            const ch = text[i];
+            if (ch === '"' || (ch === '\'' && !cmd)) {
+                has = true;
+                i += 1;
+                let closed = false;
+                while (i < text.length) {
+                    const c = text[i];
+                    if (c === ch) {
+                        if (text[i + 1] === ch) {
+                            cur += ch;
+                            i += 2;
+                            continue;
+                        }
+                        closed = true;
+                        break;
+                    }
+                    if (c === '`' && ch === '"' && !cmd && i + 1 < text.length) {
+                        cur += text[i + 1];
+                        i += 2;
+                        continue;
+                    } // `" is a quote character inside the string
+                    if (ch === '"' && c === '$' && text[i + 1] === '(') {
+                        cur += '$';
+                        if (depth >= 20) {
+                            ok = false;
+                            return text.length;
+                        }
+                        i = scan(i + 2, true, depth + 1);
+                        continue;
+                    }
+                    cur += c;
+                    i += 1;
+                }
+                if (!closed)
+                    ok = false;
+                i += 1;
+                continue;
+            }
+            if ((ch === '`' && !cmd) || (ch === '^' && cmd)) {
+                // The escape character: a line break after it joins the lines; any other character after it is plain text (a quote or `&` too).
+                const nx = text[i + 1];
+                if (nx === undefined) {
+                    i += 1;
+                    continue;
+                }
+                if (nx === '\n' || nx === '\r') {
+                    endWord();
+                    i += nx === '\r' && text[i + 2] === '\n' ? 3 : 2;
+                    continue;
+                }
+                cur += nx;
+                has = true;
+                i += 2;
+                continue;
+            }
+            if (ch === ' ' || ch === '\t' || ch === ',' || ch === '=') {
+                endWord();
+                i += 1;
+                continue;
+            }
+            if (ch === '\n' || ch === '\r' || ch === '{' || ch === '}') {
+                endStmt(false);
+                i += 1;
+                continue;
+            }
+            if (ch === ';') {
+                if (cmd)
+                    endWord();
+                else
+                    endStmt(false);
+                i += 1;
+                continue;
+            }
+            if (ch === '|') {
+                if (text[i + 1] === '|') {
+                    endStmt(false);
+                    i += 2;
+                }
+                else {
+                    endStmt(true);
+                    i += 1;
+                }
+                continue;
+            }
+            if (ch === '&') {
+                if (text[i + 1] === '&') {
+                    endStmt(false);
+                    i += 2;
+                    continue;
+                }
+                if (words.length === 0 && !has) {
+                    i += 1;
+                    continue;
+                } // the call operator
+                endStmt(false);
+                i += 1;
+                continue;
+            }
+            if (ch === '(') {
+                if (depth >= 20) {
+                    ok = false;
+                    return text.length;
+                }
+                // The group is part of the current word (an expression, not a literal): a `$` in the word says so.
+                if (!cur.endsWith('$'))
+                    cur += '$';
+                has = true;
+                i = scan(i + 1, true, depth + 1);
+                continue;
+            }
+            if (ch === ')') {
+                if (closer) {
+                    endStmt(false);
+                    return i + 1;
+                }
+                endStmt(false);
+                i += 1;
+                continue;
+            }
+            if (ch === '#' && !has && !cmd) {
+                while (i < text.length && text[i] !== '\n')
+                    i += 1;
+                continue;
+            }
+            if (ch === '<' && text[i + 1] === '#') {
+                ok = false;
+                i += 2;
+                continue;
+            }
+            if (ch === '@' && (text[i + 1] === '\'' || text[i + 1] === '"') && !has) {
+                ok = false;
+            }
+            cur += ch;
+            has = true;
+            i += 1;
+        }
+        if (closer)
+            ok = false;
+        endStmt(false);
+        return i;
+    };
+    scan(0, false, 0);
+    return { statements: out, ok };
+}
+// PowerShell cmdlets that print or read text and run none of it. A string argument of one is still read as a command line by
+// the usual unknown-program scan (so `Write-Host "npm publish"` keeps its stop), but a delete verb inside it is no A3 stop.
+exports.PS_OUTPUT_CMDLETS = new Set(['write-host', 'write-output', 'write-verbose', 'write-warning', 'write-error', 'write-debug',
+    'write-information', 'select-string', 'get-content', 'out-string', 'out-host', 'out-null', 'get-help', 'measure-object']);
+// PowerShell statement keywords and block cmdlets: bash reads their script blocks as their arguments. In PowerShell text those
+// arguments are scanned as before, but a delete verb found in them is no A3 stop (the blocks are read as statements by the
+// lexical check and the flattened reading, where each command has its real owner).
+exports.PS_BLOCK_WORDS = new Set(['try', 'catch', 'finally', 'if', 'elseif', 'else', 'foreach', 'for', 'while', 'do', 'switch',
+    'foreach-object', 'where-object', '%', '?']);
 //# sourceMappingURL=tables.js.map
