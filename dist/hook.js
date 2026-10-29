@@ -16,6 +16,7 @@ const habit_loop_copy_1 = require("./habit-loop-copy");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_pre_action_1 = require("./hook-pre-action");
 const control_state_1 = require("./control-state");
+const owner_bypass_1 = require("./owner-bypass");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const own_server_identity_1 = require("./own-server-identity");
 const session_loop_guard_1 = require("./session-loop-guard");
@@ -152,6 +153,7 @@ async function runHookCommand(input) {
     lastHookEventName = null;
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     if (process.env.MARROW_AUTO_HOOK === 'false') {
+        await (0, owner_bypass_1.recordSessionBypass)('hooks_switched_off', identity, input);
         if (identity.harness === 'gemini')
             process.stdout.write('{}');
         return;
@@ -164,6 +166,7 @@ async function runHookCommand(input) {
         }
     }
     catch {
+        await (0, owner_bypass_1.recordSessionBypass)('control_state_unsafe', identity, input);
         if (identity.harness === 'gemini')
             process.stdout.write('{}');
         return;
@@ -335,16 +338,19 @@ async function runHookCommand(input) {
  */
 async function runPermissionRequestHookCommand(input) {
     try {
-        if (process.env.MARROW_AUTO_HOOK === 'false')
+        const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+        if (process.env.MARROW_AUTO_HOOK === 'false') {
+            await (0, owner_bypass_1.recordSessionBypass)('hooks_switched_off', identity, input);
             return;
+        }
         try {
             if (!(0, control_state_1.readLocalControlState)().enabled)
                 return;
         }
         catch {
+            await (0, owner_bypass_1.recordSessionBypass)('control_state_unsafe', identity, input);
             return;
         }
-        const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
         let event;
         if (input === undefined) {
             const raw = (await readStdin()).trim();
