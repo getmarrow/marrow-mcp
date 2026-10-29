@@ -14,6 +14,7 @@ import {
   stableSessionWorkflowId,
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
+import { marrowSessionId } from './session-id';
 import { clearSessionLoopGuard } from './session-loop-guard';
 import { approvalHostFor, flushHoldOutbox, hostSessionIdFor, noteCursorSession, type HoldContext } from './host-approval';
 
@@ -138,8 +139,8 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
       return;
     }
     const source = readStopHookSource(payload);
-    const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
-      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+    const sessionId = marrowSessionId(resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     const agentId = identity.agent_id;
     try { clearSessionLoopGuard({ sessionId, agentId, harness: identity.harness }); } catch { /* session close remains best effort */ }
     if (!resolved.apiKey) return;

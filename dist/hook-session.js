@@ -11,6 +11,7 @@ const habit_loop_copy_1 = require("./habit-loop-copy");
 const node_fs_1 = require("node:fs");
 const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
+const session_id_1 = require("./session-id");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
 exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
@@ -126,8 +127,8 @@ async function runSessionHookCommand(input) {
             return;
         }
         const source = readStopHookSource(payload);
-        const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
-            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+        const sessionId = (0, session_id_1.marrowSessionId)(resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
         const agentId = identity.agent_id;
         try {
             (0, session_loop_guard_1.clearSessionLoopGuard)({ sessionId, agentId, harness: identity.harness });

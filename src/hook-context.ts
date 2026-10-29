@@ -29,6 +29,7 @@ import {
   stableSessionWorkflowId,
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
+import { marrowSessionId } from './session-id';
 import { advanceSessionInstructionEpoch } from './session-loop-guard';
 import {
   approvalHostFor,
@@ -107,8 +108,8 @@ function promptHoldContext(identity: ReturnType<typeof resolveNativeHookIdentity
   } catch {
     return null;
   }
-  const sessionId = identity.environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
-    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+  const sessionId = marrowSessionId(identity.environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
+    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
   return {
     apiKey,
     baseUrl,
@@ -803,8 +804,8 @@ export async function runContextHookCommand(): Promise<void> {
 
     const identity = resolveNativeHookIdentity(process.argv[2]);
     const resolvedEnv = identity.environment;
-    const sessionId = resolvedEnv.sessionId || asString(event.session_id)
-      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+    const sessionId = marrowSessionId(resolvedEnv.sessionId || asString(event.session_id)
+      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     const agentId = identity.agent_id;
     try {
       advanceSessionInstructionEpoch({ sessionId, agentId, harness: identity.harness });

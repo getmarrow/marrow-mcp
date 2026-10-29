@@ -16,6 +16,7 @@ const habit_loop_copy_1 = require("./habit-loop-copy");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_pre_action_1 = require("./hook-pre-action");
 const control_state_1 = require("./control-state");
+const session_id_1 = require("./session-id");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const own_server_identity_1 = require("./own-server-identity");
 const session_loop_guard_1 = require("./session-loop-guard");
@@ -119,8 +120,8 @@ function holdContextFor(identity, event, sessionIdOverride) {
     catch {
         return null;
     }
-    const sessionId = sessionIdOverride || identity.environment.sessionId || getString(event.session_id) || getString(event.conversation_id)
-        || getString(event.task_id) || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+    const sessionId = sessionIdOverride || (0, session_id_1.marrowSessionId)(identity.environment.sessionId || getString(event.session_id) || getString(event.conversation_id)
+        || getString(event.task_id) || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     return {
         apiKey,
         baseUrl,
@@ -213,8 +214,8 @@ async function runHookCommand(input) {
         const privateLoopPayload = (0, hook_contract_1.privateHookLoopGuardPayload)(event);
         // Labels and the loop guard's read-only flag only: no mapper on this path (postTool), so it adds ~no latency.
         const classified = (0, hook_pre_action_1.classifyTool)(event, { ownUnproven: (0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event), postTool: true });
-        const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
-            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+        const sessionId = (0, session_id_1.marrowSessionId)(resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
+            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
         const agentId = identity.agent_id;
         const outcome = deriveToolOutcome(event);
         const loopOperation = {

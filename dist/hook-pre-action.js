@@ -44,6 +44,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
 const runtime_contract_1 = require("./runtime-contract");
 const host_approval_1 = require("./host-approval");
+const session_id_1 = require("./session-id");
 const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
 const own_server_identity_1 = require("./own-server-identity");
@@ -1480,7 +1481,7 @@ async function runPreActionHook(input, watch) {
     }
     if (!localControl.enabled) {
         const resolved = identity.environment;
-        const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
+        const sessionId = (0, session_id_1.marrowSessionId)(resolved.sessionId || source.session_id || source.conversation_id || source.task_id || '', identity.agent_id) || undefined;
         const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
         if (resolved.apiKey) {
             try {
@@ -1510,8 +1511,8 @@ async function runPreActionHook(input, watch) {
     }
     let resolved = identity.environment;
     const enforcementRequired = classified.protected || ['windsurf', 'gemini', 'grok'].includes(identity.harness);
-    const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
-        || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+    const sessionId = (0, session_id_1.marrowSessionId)(resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+        || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     const agentId = identity.agent_id;
     // With a resolved key, the no-device-key fallback may make its approval state (nokeyFallbackKey); with none it never does.
     if (resolved.apiKey)

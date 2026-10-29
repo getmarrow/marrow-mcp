@@ -34,6 +34,7 @@ import {
   type HoldPlan,
   type OwnerLinkOutcome,
 } from './host-approval';
+import { marrowSessionId } from './session-id';
 import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
@@ -1518,7 +1519,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   }
   if (!localControl.enabled) {
     const resolved = identity.environment;
-    const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
+    const sessionId = marrowSessionId(resolved.sessionId || source.session_id || source.conversation_id || source.task_id || '', identity.agent_id) || undefined;
     const correlation = stableToolCorrelation({ ...source, session_id: sessionId });
     if (resolved.apiKey) {
       try {
@@ -1545,8 +1546,8 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   }
   let resolved = identity.environment;
   const enforcementRequired = classified.protected || ['windsurf', 'gemini', 'grok'].includes(identity.harness);
-  const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
-    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+  const sessionId = marrowSessionId(resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+    || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
   const agentId = identity.agent_id;
   // With a resolved key, the no-device-key fallback may make its approval state (nokeyFallbackKey); with none it never does.
   if (resolved.apiKey) allowNokeyFallbackCreate();
