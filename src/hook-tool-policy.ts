@@ -12,7 +12,7 @@ export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
  */
 export const SHELL_DIALECT = Symbol('marrow.shellDialect');
 
-type ToolPolicyEvent = {
+export type ToolPolicyEvent = {
   tool_name?: string;
   tool_input?: unknown;
   [SHELL_DIALECT]?: ShellDialect;

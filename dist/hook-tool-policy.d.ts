@@ -5,7 +5,7 @@ export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
  * so no field of a host event or of a tool input (JSON has no symbols) can set or clear it.
  */
 export declare const SHELL_DIALECT: unique symbol;
-type ToolPolicyEvent = {
+export type ToolPolicyEvent = {
     tool_name?: string;
     tool_input?: unknown;
     [SHELL_DIALECT]?: ShellDialect;

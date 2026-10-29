@@ -37,6 +37,7 @@ import {
 import { DATA_FILE_RUN_DENY_TEXT, dataWriteOnly, runsDataFileAsProgram } from './data-write';
 import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
 import { recordSessionBypass } from './owner-bypass';
+import { selfProtectKind } from './self-protect';
 import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
@@ -1026,6 +1027,9 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment.bind(null, options.cwd);
   const readOnly = options.ownUnproven !== true && isReadOnlyToolEventAsNamed(event, printsEnvironment);
   const secretAccess = isSecretMaterialAccessAsNamed(event, printsEnvironment);
+  // T2: a write to Marrow's control files, a host's hooks settings or a file that makes a command run later is a security action, not an audit one.
+  const selfProtected = readOnly ? null : selfProtectKind(event, options.cwd);
+  if (selfProtected) return { tool, type: 'security', surfaces: [selfProtected], readOnly: false, protected: true };
   const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;
@@ -1065,6 +1069,7 @@ function classificationFrom(parts: ClassificationParts): ToolClassification {
     : surfaces.includes('financial') ? `financial:${type}`
     : surfaces.includes('secrets') ? `secrets:${type}`
     : surfaces.includes('marrow-control') ? `marrow:${type}`
+    : surfaces.includes('persistence') ? `host:${type}`
     : `workspace:${type}`;
   return {
     action: `classified ${tool} action: ${type} on ${surfaces.join(', ') || 'workspace'}`,
