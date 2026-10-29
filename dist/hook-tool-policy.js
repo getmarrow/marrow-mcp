@@ -1,9 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SHELL_DIALECT = exports.isOfficialMarrowMcpTool = exports.isOfficialMarrowMcpEvent = void 0;
+exports.UNMODELED_SHELL_CHARACTER = exports.SHELL_DIALECT = exports.isOfficialMarrowMcpTool = exports.isOfficialMarrowMcpEvent = void 0;
 exports.normalizeHookToolName = normalizeHookToolName;
 exports.isMcpHookTool = isMcpHookTool;
 exports.isProtectedShellMutation = isProtectedShellMutation;
+exports.plainBashCommand = plainBashCommand;
 exports.hookToolCommand = hookToolCommand;
 exports.parseShellSegments = parseShellSegments;
 exports.normalizedToolPath = normalizedToolPath;
@@ -112,7 +113,7 @@ const MAX_SHELL_ANALYSIS_BYTES = 8192;
 // treats a lone carriage return, other control characters and Unicode spaces
 // or line separators as word characters, so splitting on them could hide one
 // command inside another; such input takes the conservative whole-command path.
-const UNMODELED_SHELL_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u00a0\u00ad\u061c\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff\ufff9-\ufffb]/;
+exports.UNMODELED_SHELL_CHARACTER = /[\u0000-\u0008\u000b-\u001f\u007f-\u00a0\u00ad\u061c\u1680\u180e\u2000-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff\ufff9-\ufffb]/;
 // PowerShell reads the typographic single and double quotation marks as quotes; Bash does not, so
 // a PowerShell text holding one has quoting the splitter cannot follow.
 const POWERSHELL_QUOTE_CHARACTER = /[\u2018-\u201f]/;
@@ -184,6 +185,24 @@ function isProtectedShellMutation(command) {
     const bounded = raw.slice(0, 8192);
     return PROTECTED_SHELL_MUTATION_FAMILIES.some((pattern) => pattern.test(bounded));
 }
+/**
+ * The command string of a plain Bash-dialect shell tool call (Bash, Codex exec, Cursor Shell, ...), else null: the one string the host runs, with no
+ * second `cmd`/`script` text that could differ from it, and never a PowerShell twin or an MCP tool.
+ */
+function plainBashCommand(event) {
+    if (isMcpHookTool(event.tool_name) || event[exports.SHELL_DIALECT] !== undefined)
+        return null;
+    if (!SHELL_TOOLS.has(normalizeHookToolName(event.tool_name)))
+        return null;
+    const input = asRecord(event.tool_input);
+    if (!input || typeof input.command !== 'string' || !input.command.trim())
+        return null;
+    for (const key of ['cmd', 'script']) {
+        if (typeof input[key] === 'string' && String(input[key]).trim() && input[key] !== input.command)
+            return null;
+    }
+    return input.command;
+}
 function hookToolCommand(event) {
     if (typeof event.tool_input === 'string')
         return event.tool_input.trim();
@@ -209,7 +228,7 @@ function hookToolCommand(event) {
  * complex parameter expansion); callers then fall back to whole-command rules.
  */
 function parseShellSegments(command, dialect) {
-    if (command.length > MAX_SHELL_ANALYSIS_BYTES || UNMODELED_SHELL_CHARACTER.test(command))
+    if (command.length > MAX_SHELL_ANALYSIS_BYTES || exports.UNMODELED_SHELL_CHARACTER.test(command))
         return null;
     const powershell = dialect === 'powershell';
     if (powershell && POWERSHELL_QUOTE_CHARACTER.test(command))

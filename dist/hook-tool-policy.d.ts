@@ -12,10 +12,16 @@ type ToolPolicyEvent = {
 };
 /** The shell a command text is written in, when it is not Bash's own. */
 export type ShellDialect = 'powershell';
+export declare const UNMODELED_SHELL_CHARACTER: RegExp;
 export declare function normalizeHookToolName(value: unknown): string;
 /** An MCP tool in any host form, including Codex's `functions.` namespace (repeated or padded). */
 export declare function isMcpHookTool(value: unknown): boolean;
 export declare function isProtectedShellMutation(command: string): boolean;
+/**
+ * The command string of a plain Bash-dialect shell tool call (Bash, Codex exec, Cursor Shell, ...), else null: the one string the host runs, with no
+ * second `cmd`/`script` text that could differ from it, and never a PowerShell twin or an MCP tool.
+ */
+export declare function plainBashCommand(event: ToolPolicyEvent): string | null;
 export declare function hookToolCommand(event: ToolPolicyEvent): string;
 export type ShellSegment = {
     words: string[];

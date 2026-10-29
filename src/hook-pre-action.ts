@@ -34,6 +34,7 @@ import {
   type HoldPlan,
   type OwnerLinkOutcome,
 } from './host-approval';
+import { DATA_FILE_RUN_DENY_TEXT, dataWriteOnly, runsDataFileAsProgram } from './data-write';
 import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
@@ -52,6 +53,7 @@ import {
   isSecretPath,
   isShellGovernedTool,
   normalizeHookToolName,
+  plainBashCommand,
   policyReadsAllWords,
   readEquivalent,
   toolClassificationText,
@@ -991,6 +993,11 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   // Editing and task tools are judged by their target; shell-like words in the
   // content they write or the subject they record are not actions.
   const shellGoverned = isShellGovernedTool(event);
+  // MCP-1a: a command made only of echo/printf/cat/tee writes to plain notes files is judged by its effect, not by the words it carries.
+  const plain = shellGoverned ? plainBashCommand(event) : null;
+  if (plain !== null && dataWriteOnly(plain, { cwd: options.cwd, home: passwdHome(), postTool: options.postTool === true })) {
+    return { tool, type: 'process', surfaces: [], readOnly: false, protected: false };
+  }
   const command = shellGoverned ? hookToolCommand(event) : '';
   const input = toolClassificationText(event).toLowerCase();
   // A look-alike of Marrow's own tool is never read-only, whatever its verb.
@@ -1541,6 +1548,12 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     const allow = localControlAllowOutput(identity.harness);
     if (allow === null) process.exitCode = 0;
     else process.stdout.write(JSON.stringify(allow));
+    return;
+  }
+  // T1: a notes or log file is data. It is never handed to an interpreter as a program (local denial, no network call).
+  const bashCommand = plainBashCommand(source);
+  if (bashCommand !== null && runsDataFileAsProgram(bashCommand)) {
+    emitLoopGuardDenial(identity.harness, DATA_FILE_RUN_DENY_TEXT);
     return;
   }
   let resolved = identity.environment;
