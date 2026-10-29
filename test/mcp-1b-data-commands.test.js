@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } = require('node:fs');
-const { createHash } = require('node:crypto');
+const { createHash, randomBytes } = require('node:crypto');
 const { tmpdir, userInfo } = require('node:os');
 const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -390,30 +390,33 @@ test('B7 a script over 1 MB is not declared-matching', () => {
 });
 
 // ─── COLLISION: the label changes, the approval key does not ───
-test('K1b label is fixed text; two declared commands that differ only in a note have the same label and different normalized actions', () => {
-  const { normalizeAction } = (() => { try { return require('../dist/normalized-action.js'); } catch { return {}; } })();
+const keyOf = (command) => JSON.stringify(require('../dist/normalized-action.js').normalizedHookAction({ tool_name: 'Bash', tool_input: { command }, cwd: ws }, { salt: Buffer.alloc(32, 7) }));
+test('K1b two declared commands that differ only in a note have the same label and different approval keys (normalized action)', () => {
+  const second = `python3 -I ${board} set C42 --note "another note"`;
   const a = bash(cmd());
-  const b = bash(`python3 -I ${board} set C42 --note "another note"`);
+  const b = bash(second);
   assert.equal(a.action, b.action);
   assert.equal(a.action, DW_LABEL);
-  if (typeof normalizeAction === 'function') {
-    const one = JSON.stringify(normalizeAction({ tool_name: 'Bash', tool_input: { command: cmd() } }));
-    const two = JSON.stringify(normalizeAction({ tool_name: 'Bash', tool_input: { command: `python3 -I ${board} set C42 --note "another note"` } }));
-    assert.notEqual(one, two);
-  }
+  assert.notEqual(keyOf(cmd()), keyOf(second));
+  assert.notEqual(keyOf(cmd()), keyOf(cmd(' --tag x')));
 });
-test('K1b the declaration does not change the normalized action: the same module output with and without the file', () => {
-  const normalized = require('../dist/normalized-action.js');
-  const names = Object.keys(normalized).filter((name) => /normaliz/i.test(name) && typeof normalized[name] === 'function');
-  assert.ok(names.length > 0, 'normalized-action exports a normalizer');
-  const event = { tool_name: 'Bash', tool_input: { command: cmd() }, cwd: ws };
-  for (const name of names) {
-    let withFile; let without;
-    try { withFile = JSON.stringify(normalized[name](event)); } catch { continue; }
-    undeclare();
-    try { without = JSON.stringify(normalized[name](event)); } finally { declare([goodEntry()]); }
-    assert.equal(withFile, without, name);
-  }
+test('K1b text after a secret-shaped span still changes the key; a different secret value alone may not', () => {
+  // A dummy made at run time: 48 random hex characters, no known key prefix, shaped like a key only because it is long hex.
+  const fake = randomBytes(24).toString('hex');
+  assert.equal(require('../dist/normalized-action.js').looksLikeKey(fake), true);
+  assert.doesNotMatch(fake, /^(?:sk|pk|rk|ghp|xox)/i);
+  const one = `python3 -I ${board} set C42 --note "k=${fake} A"`;
+  const two = `python3 -I ${board} set C42 --note "k=${fake} B"`;
+  assert.notEqual(keyOf(one), keyOf(two));
+  assert.doesNotMatch(keyOf(one), new RegExp(fake));
+  assert.doesNotMatch(JSON.stringify(bash(one)), new RegExp(fake));
+});
+test('K1b the declaration does not change the approval key: same command, with and without the file', () => {
+  const withFile = keyOf(cmd());
+  undeclare();
+  const without = keyOf(cmd());
+  declare([goodEntry()]);
+  assert.equal(withFile, without);
 });
 
 // ─── CONSUMERS: every shell tool name of every harness shares the classifier ───
@@ -488,6 +491,19 @@ test('B8 the real CLI: piped stdin/stdout/stderr (an agent shell) refuses with e
   const none = cliRun(['add', '--', 'python3', '-I', board, 'set'], { stdio: ['ignore', 'ignore', 'ignore'] });
   assert.equal(none.status, 2);
   assert.equal(existsSync(declFile), false);
+});
+test('B8 the real CLI: list runs with no terminal, writes nothing and prints one line when nothing is declared or the file is ignored', () => {
+  undeclare();
+  const none = cliRun(['list']);
+  assert.equal(none.status, 0, none.stderr);
+  assert.equal(none.stdout.trim().split('\n').length, 1);
+  assert.equal(existsSync(marrowDir), false);
+  declare([goodEntry()], { fileMode: 0o644 });
+  const ignored = cliRun(['list']);
+  assert.equal(ignored.status, 0, ignored.stderr);
+  assert.match(ignored.stdout.trim(), /^data-commands\.json ignored: [^\n]+$/);
+  assert.equal(cliRun(['--help']).status, 64);
+  assert.equal(cliRun([]).status, 64);
 });
 test('B8 the real CLI under `script` with stdout piped away: not a terminal on all three descriptors, so refused', { skip: !existsSync('/usr/bin/script') }, () => {
   undeclare();
