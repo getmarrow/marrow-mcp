@@ -6,6 +6,7 @@ import { marrowAgentRuntime, marrowCommit, marrowEnforcement, marrowThink, valid
 import { MarrowRequestError } from './request-reliability';
 import { payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
 import { CONTROL_BYPASS_ACTION, readLocalControlState } from './control-state';
+import { unreadableControlSuffix } from './control-notice';
 import { arbitrationApprovalGuidance, ordinaryApprovalGuidance, ownerReceiptRequired, runtimeAuthorizationReceiptId } from './runtime-contract';
 import {
   approvalHostFor,
@@ -1513,7 +1514,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   try {
     localControl = readLocalControlState();
   } catch {
-    emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.' }, identity.harness);
+    emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: `Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.${unreadableControlSuffix()}` }, identity.harness);
     return;
   }
   if (!localControl.enabled) {

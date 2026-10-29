@@ -42,6 +42,7 @@ const index_1 = require("./index");
 const request_reliability_1 = require("./request-reliability");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
+const control_notice_1 = require("./control-notice");
 const runtime_contract_1 = require("./runtime-contract");
 const host_approval_1 = require("./host-approval");
 const host_approval_state_1 = require("./host-approval-state");
@@ -1475,7 +1476,7 @@ async function runPreActionHook(input, watch) {
         localControl = (0, control_state_1.readLocalControlState)();
     }
     catch {
-        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.' }, identity.harness);
+        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: `Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.${(0, control_notice_1.unreadableControlSuffix)()}` }, identity.harness);
         return;
     }
     if (!localControl.enabled) {

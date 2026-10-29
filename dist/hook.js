@@ -156,6 +156,8 @@ async function runHookCommand(input) {
             process.stdout.write('{}');
         return;
     }
+    // Only a valid file that says "disabled" switches this hook off. A file that cannot be read or is invalid
+    // never does: the hook runs as if control were on (the prompt hook tells the person once).
     try {
         if (!(0, control_state_1.readLocalControlState)().enabled) {
             if (identity.harness === 'gemini')
@@ -163,11 +165,7 @@ async function runHookCommand(input) {
             return;
         }
     }
-    catch {
-        if (identity.harness === 'gemini')
-            process.stdout.write('{}');
-        return;
-    }
+    catch { /* unreadable control state: keep checking */ }
     try {
         let event;
         let rawEvent = input;
@@ -341,9 +339,7 @@ async function runPermissionRequestHookCommand(input) {
             if (!(0, control_state_1.readLocalControlState)().enabled)
                 return;
         }
-        catch {
-            return;
-        }
+        catch { /* unreadable control state: keep checking */ }
         const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
         let event;
         if (input === undefined) {

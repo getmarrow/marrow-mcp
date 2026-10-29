@@ -113,7 +113,7 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
   const identity = resolveNativeHookIdentity(process.argv[2]);
   try {
     if (process.env.MARROW_AUTO_HOOK === 'false') return;
-    try { if (!readLocalControlState().enabled) return; } catch { return; }
+    try { if (!readLocalControlState().enabled) return; } catch { /* unreadable control state: keep checking */ }
     const resolved = identity.environment;
     const payload = readStopHookInput(input);
     const raw = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
