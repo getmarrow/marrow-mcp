@@ -106,7 +106,7 @@ const sessionIds = (lines) => {
 const HOST = 'host-session-28e485ab';
 const EVENTS = [
   ['claude-pre-action-hook', { session_id: HOST, tool_use_id: 't-pre', hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm publish' } }],
-  ['claude-hook', { session_id: HOST, tool_use_id: 't-post', hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'touch /tmp/marrow-m9-x' }, tool_response: { stdout: '' } }],
+  ['claude-hook', { session_id: HOST, tool_use_id: 't-post', hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'touch marrow-m9-x' }, tool_response: { stdout: '' } }],
   ['claude-context-hook', { session_id: HOST, hook_event_name: 'UserPromptSubmit', prompt: 'please deploy the website' }],
   ['claude-session-hook', { session_id: HOST, hook_event_name: 'SessionEnd' }],
 ];
