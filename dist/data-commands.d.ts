@@ -1,3 +1,4 @@
+import { type WinObject, type WinProof } from './win-private-state';
 /**
  * MCP-1b: owner-declared data commands.
  *
@@ -32,6 +33,11 @@ export type DeclaredWord = {
     tilde: boolean;
 };
 export declare function dataCommandsPath(home?: string): string;
+export interface DataCommandsPlatform {
+    platform: NodeJS.Platform;
+    prove(home: string, objects: readonly WinObject[]): WinProof;
+}
+export declare function withDataCommandsPlatform<T>(injected: DataCommandsPlatform, run: () => T): T;
 /**
  * The declaration file, read with the checks control.json gets (control-state.ts): the folder is a real folder of mode 700 and the file a regular file of
  * mode 600, both owned by this user, no link on either, at most 4 KB, exact schema, at most 20 entries. Any failure ignores the whole file and says why in one line.

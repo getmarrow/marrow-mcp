@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DATA_COMMANDS_USAGE = exports.DATA_COMMANDS_MAX_SCRIPT_BYTES = exports.DATA_COMMANDS_MAX_ENTRIES = exports.DATA_COMMANDS_MAX_BYTES = exports.DATA_COMMANDS_FILENAME = exports.DATA_COMMANDS_DIRECTORY = exports.DATA_COMMANDS_VERSION = void 0;
 exports.dataCommandsPath = dataCommandsPath;
+exports.withDataCommandsPlatform = withDataCommandsPlatform;
 exports.readDataCommands = readDataCommands;
 exports.entryProblem = entryProblem;
 exports.declaredCommandMatch = declaredCommandMatch;
@@ -11,6 +12,8 @@ const node_fs_1 = require("node:fs");
 const node_crypto_1 = require("node:crypto");
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
+const control_state_1 = require("./control-state");
+const win_private_state_1 = require("./win-private-state");
 /**
  * MCP-1b: owner-declared data commands.
  *
@@ -40,6 +43,48 @@ function ownedPrivate(stat, mode, uid) {
 function ignoredFile(reason) {
     return { present: true, entries: [], ignored: `data-commands.json ignored: ${reason}` };
 }
+let injectedPlatform = null;
+function withDataCommandsPlatform(injected, run) {
+    const previous = injectedPlatform;
+    injectedPlatform = injected;
+    try {
+        return run();
+    }
+    finally {
+        injectedPlatform = previous;
+    }
+}
+function isWin32() {
+    return (injectedPlatform ? injectedPlatform.platform : process.platform) === 'win32';
+}
+/** True only when the port's proof accepts `~/.marrow` and the declaration file. Never throws; every doubt is false. */
+function windowsAclProof(home) {
+    try {
+        const objects = [
+            { rel: exports.DATA_COMMANDS_DIRECTORY, kind: 'dir', policy: 'no_write_by_others' },
+            { rel: `${exports.DATA_COMMANDS_DIRECTORY}\\${exports.DATA_COMMANDS_FILENAME}`, kind: 'file', policy: 'no_access_by_others' },
+        ];
+        const proof = injectedPlatform ? injectedPlatform.prove(home, objects) : (0, win_private_state_1.proveWindowsPrivate)({ home, objects }, (0, win_private_state_1.realWindowsDeps)());
+        return proof.ok === true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Declared commands are off while the owner's control file is unreadable or invalid (the control-state fail-closed rule: that state is "control ON", never
+ * quiet, and it is not a moment to widen anything). A missing control file, or a valid one, changes nothing here.
+ */
+function controlStateUnsafe(home) {
+    try {
+        (0, control_state_1.readLocalControlState)({ home });
+        return false;
+    }
+    catch {
+        return true;
+    }
+}
+const CONTROL_UNSAFE_REASON = 'data-commands.json ignored: ~/.marrow/control.json cannot be read, so declared commands stay off until it is fixed (npx @getmarrow/install control status)';
 const ABSENT = { present: false, entries: [], ignored: null };
 const SHA256 = /^[a-f0-9]{64}$/;
 function isPlainObject(value) {
@@ -52,6 +97,7 @@ function isPlainObject(value) {
 function readDataCommands(options = {}) {
     const home = options.home || (0, node_os_1.homedir)();
     const uid = options.uid ?? currentUid();
+    const windows = isWin32();
     const directory = (0, node_path_1.join)(home, exports.DATA_COMMANDS_DIRECTORY);
     const target = dataCommandsPath(home);
     let directoryStat;
@@ -70,21 +116,24 @@ function readDataCommands(options = {}) {
     catch (error) {
         return error.code === 'ENOENT' ? ABSENT : ignoredFile('the file cannot be read');
     }
-    if (!ownedPrivate(directoryStat, 0o700, uid))
+    if (!windows && !ownedPrivate(directoryStat, 0o700, uid))
         return ignoredFile('the ~/.marrow folder must be mode 700 with you as its owner');
     if (targetStat.isSymbolicLink())
         return ignoredFile('the file is a symbolic link');
     if (!targetStat.isFile())
         return ignoredFile('the file is not a regular file');
-    if (!ownedPrivate(targetStat, 0o600, uid))
+    if (!windows && !ownedPrivate(targetStat, 0o600, uid))
         return ignoredFile('the file must be mode 600 with you as its owner');
     if (targetStat.size < 2 || targetStat.size > exports.DATA_COMMANDS_MAX_BYTES)
         return ignoredFile(`the file must be 2 to ${exports.DATA_COMMANDS_MAX_BYTES} bytes`);
+    // Windows: the access-list proof is the only proof of "private" (mode bits are not). It starts PowerShell, so it runs once, here, before the file is read.
+    if (windows && !windowsAclProof(home))
+        return ignoredFile('on Windows the ~/.marrow folder and the file need the access-list proof (only you, SYSTEM and Administrators), and it did not pass');
     let fd = -1;
     try {
         fd = (0, node_fs_1.openSync)(target, node_fs_1.constants.O_RDONLY | (node_fs_1.constants.O_NOFOLLOW || 0));
         const opened = (0, node_fs_1.fstatSync)(fd);
-        if (!opened.isFile() || opened.ino !== targetStat.ino || !ownedPrivate(opened, 0o600, uid))
+        if (!opened.isFile() || opened.ino !== targetStat.ino || (!windows && !ownedPrivate(opened, 0o600, uid)))
             return ignoredFile('the file changed while it was read');
         const raw = (0, node_fs_1.readFileSync)(fd, 'utf8');
         if (Buffer.byteLength(raw) > exports.DATA_COMMANDS_MAX_BYTES)
@@ -268,6 +317,8 @@ function unsafePathWord(word) {
  */
 function declaredCommandMatch(words, options = {}) {
     try {
+        if (controlStateUnsafe(options.home))
+            return false;
         const file = readDataCommands({ home: options.home });
         if (!file.entries.length)
             return false;
@@ -310,6 +361,8 @@ function dataCommandsEvidence(options = {}) {
         const file = readDataCommands(options);
         if (!file.present)
             return { state: 'none', entries: 0, usable: 0, reason: null };
+        if (controlStateUnsafe(options.home))
+            return { state: 'ignored', entries: 0, usable: 0, reason: CONTROL_UNSAFE_REASON };
         if (file.ignored)
             return { state: 'ignored', entries: 0, usable: 0, reason: file.ignored };
         return { state: 'active', entries: file.entries.length, usable: file.entries.filter((entry) => checkEntry(entry).ok).length, reason: null };
@@ -443,6 +496,10 @@ function runDataCommands(args, io = processIo()) {
         }
         if (!file.entries.length) {
             io.write('No data commands are declared.\n');
+            return 0;
+        }
+        if (controlStateUnsafe(home)) {
+            io.write(`${CONTROL_UNSAFE_REASON}\n`);
             return 0;
         }
         file.entries.forEach((entry, at) => {
