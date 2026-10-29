@@ -25,6 +25,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const guidance_cache_1 = require("./guidance-cache");
 const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
+const owner_bypass_1 = require("./owner-bypass");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
 const host_session_1 = require("./host-session");
@@ -670,6 +671,7 @@ function compactAgentContext(context) {
 async function runContextHookCommand() {
     // Kill switch — same flag as PostToolUse
     if (process.env.MARROW_AUTO_HOOK === 'false') {
+        await (0, owner_bypass_1.recordSessionBypass)('hooks_switched_off', (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]));
         emitNoContext();
         process.exit(0);
         return;
@@ -682,6 +684,7 @@ async function runContextHookCommand() {
         }
     }
     catch {
+        await (0, owner_bypass_1.recordSessionBypass)('control_state_unsafe', (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]));
         emitNoContext();
         process.exit(0);
         return;

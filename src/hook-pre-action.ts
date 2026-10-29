@@ -35,6 +35,8 @@ import {
   type OwnerLinkOutcome,
 } from './host-approval';
 import { DATA_FILE_RUN_DENY_TEXT, dataWriteOnly, runsDataFileAsProgram } from './data-write';
+import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
+import { recordSessionBypass } from './owner-bypass';
 import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
@@ -49,6 +51,7 @@ import {
   isOfficialMarrowMcpTool,
   isProtectedShellMutation,
   isReadOnlyToolEventAsNamed,
+  isShellTextTool,
   isSecretMaterialAccessAsNamed,
   isSecretPath,
   isShellGovernedTool,
@@ -416,6 +419,13 @@ export function ownerApprovalPrompt(
   return { available: true, unavailableReason: '' };
 }
 
+/** Claude Code modes and entrypoints in which an "ask" reaches nobody (auto, bypassPermissions, dontAsk; claude -p and the Agent SDKs). */
+function noPersonAtPrompt(event: Pick<PreToolUseEvent, 'permission_mode'>, env: NodeJS.ProcessEnv = process.env): boolean {
+  const mode = typeof event.permission_mode === 'string' ? event.permission_mode : '';
+  const entrypoint = typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' ? env.CLAUDE_CODE_ENTRYPOINT : '';
+  return mode === 'auto' || mode === 'bypassPermissions' || mode === 'dontAsk' || HEADLESS_CLAUDE_ENTRYPOINTS.has(entrypoint);
+}
+
 type GateVerdict = { kind: 'block' | 'review' | 'arbitration_review' | 'denied'; reason: string };
 
 function boundedText(value: unknown, limit: number): string {
@@ -650,7 +660,7 @@ export type ToolClassification = {
 type ClassificationParts = { tool: string; type: string; surfaces: string[]; readOnly: boolean; protected: boolean };
 
 // The order classifyTool picks a type and lists surfaces in; earlier types are the more specific (stricter) ones.
-const CLASSIFICATION_TYPES = ['publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
+const CLASSIFICATION_TYPES = ['security', 'publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
 const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 
 /** `ownUnproven` and `postTool` are described on classifyTool. `cwd` is the event's working folder (classifyTool fills it from the event when it is an absolute path). */
@@ -986,6 +996,15 @@ function shellPrintsEnvironment(eventCwd: string | undefined, command: string): 
   return dumps;
 }
 
+/** Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts). */
+export function controlRouteCall(event: PreToolUseEvent): boolean {
+  if (!isShellTextTool(event)) return false;
+  const input = asRecord(event.tool_input);
+  const texts = typeof event.tool_input === 'string' ? [event.tool_input]
+    : ['command', 'cmd', 'script'].map((key) => input?.[key]).filter((value): value is string => typeof value === 'string');
+  return texts.some((text) => controlRoute(text));
+}
+
 /** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
 function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): ClassificationParts {
   const tool = String(event.tool_name || 'tool').slice(0, 64);
@@ -993,6 +1012,8 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   // Editing and task tools are judged by their target; shell-like words in the
   // content they write or the subject they record are not actions.
   const shellGoverned = isShellGovernedTool(event);
+  // MCP-10: a way to switch Marrow control off through the installer is a security action on marrow-control, held for the account owner.
+  if (controlRouteCall(event)) return { tool, type: 'security', surfaces: ['marrow-control'], readOnly: false, protected: true };
   // MCP-1a: a command made only of echo/printf/cat/tee writes to plain notes files is judged by its effect, not by the words it carries.
   const plain = shellGoverned ? plainBashCommand(event) : null;
   if (plain !== null && dataWriteOnly(plain, { cwd: options.cwd, home: passwdHome(), postTool: options.postTool === true })) {
@@ -1043,6 +1064,7 @@ function classificationFrom(parts: ClassificationParts): ToolClassification {
     : surfaces.includes('database') ? `database:${type}`
     : surfaces.includes('financial') ? `financial:${type}`
     : surfaces.includes('secrets') ? `secrets:${type}`
+    : surfaces.includes('marrow-control') ? `marrow:${type}`
     : `workspace:${type}`;
   return {
     action: `classified ${tool} action: ${type} on ${surfaces.join(', ') || 'workspace'}`,
@@ -1470,8 +1492,11 @@ export async function runPreActionHookCommand(input?: unknown): Promise<void> {
 }
 
 async function runPreActionHook(input: unknown, watch: { harness?: string; event?: SeatbeltEventInput }): Promise<void> {
-  if (process.env.MARROW_AUTO_HOOK === 'false') return;
   const identity = resolveNativeHookIdentity(process.argv[2]);
+  if (process.env.MARROW_AUTO_HOOK === 'false') {
+    await recordSessionBypass('hooks_switched_off', identity, input);
+    return;
+  }
   let event = input;
   let rawEvent: unknown = input;
   let inputFailure: string | null = null;
@@ -1520,6 +1545,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   try {
     localControl = readLocalControlState();
   } catch {
+    await recordSessionBypass('control_state_unsafe', identity, rawEvent);
     emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.' }, identity.harness);
     return;
   }
@@ -1554,6 +1580,11 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   const bashCommand = plainBashCommand(source);
   if (bashCommand !== null && runsDataFileAsProgram(bashCommand)) {
     emitLoopGuardDenial(identity.harness, DATA_FILE_RUN_DENY_TEXT);
+    return;
+  }
+  // MCP-10: where no person can answer a prompt (auto, bypass and dontAsk modes, headless runs), turning control off is denied outright.
+  if (classified.type === 'security' && classified.surfaces.includes('marrow-control') && controlRouteCall(source) && noPersonAtPrompt(source)) {
+    emitLoopGuardDenial(identity.harness, CONTROL_ROUTE_DENY_TEXT);
     return;
   }
   let resolved = identity.environment;

@@ -11,6 +11,7 @@ const habit_loop_copy_1 = require("./habit-loop-copy");
 const node_fs_1 = require("node:fs");
 const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
+const owner_bypass_1 = require("./owner-bypass");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
 exports.SESSION_HOOK_COMMAND = hook_contract_1.SESSION_END_HOOK_COMMAND;
@@ -92,13 +93,16 @@ function sessionEndAutoCommitOpen(value) {
 async function runSessionHookCommand(input) {
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
     try {
-        if (process.env.MARROW_AUTO_HOOK === 'false')
+        if (process.env.MARROW_AUTO_HOOK === 'false') {
+            await (0, owner_bypass_1.recordSessionBypass)('hooks_switched_off', identity, input);
             return;
+        }
         try {
             if (!(0, control_state_1.readLocalControlState)().enabled)
                 return;
         }
         catch {
+            await (0, owner_bypass_1.recordSessionBypass)('control_state_unsafe', identity, input);
             return;
         }
         const resolved = identity.environment;

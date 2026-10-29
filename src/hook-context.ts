@@ -29,6 +29,7 @@ import {
   stableSessionWorkflowId,
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
+import { recordSessionBypass } from './owner-bypass';
 import { advanceSessionInstructionEpoch } from './session-loop-guard';
 import {
   approvalHostFor,
@@ -752,6 +753,7 @@ function compactAgentContext(context: Record<string, unknown>): string {
 export async function runContextHookCommand(): Promise<void> {
   // Kill switch — same flag as PostToolUse
   if (process.env.MARROW_AUTO_HOOK === 'false') {
+    await recordSessionBypass('hooks_switched_off', resolveNativeHookIdentity(process.argv[2]));
     emitNoContext();
     process.exit(0);
     return;
@@ -759,7 +761,7 @@ export async function runContextHookCommand(): Promise<void> {
 
   try {
     if (!readLocalControlState().enabled) { emitNoContext(); process.exit(0); return; }
-  } catch { emitNoContext(); process.exit(0); return; }
+  } catch { await recordSessionBypass('control_state_unsafe', resolveNativeHookIdentity(process.argv[2])); emitNoContext(); process.exit(0); return; }
 
   try {
     const raw = (await readStdin()).trim();

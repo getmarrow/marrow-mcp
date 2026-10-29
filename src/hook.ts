@@ -5,6 +5,7 @@ import { extractModelUsageFromUnknown, modelUsageCaptureContextFromEnv } from '.
 import { backgroundNudgeEnabled, payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
 import { classifyTool } from './hook-pre-action';
 import { readLocalControlState } from './control-state';
+import { recordSessionBypass } from './owner-bypass';
 import { isOfficialMarrowMcpEvent, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
 import { recordSessionLoopOutcome, type LoopGuardOperation } from './session-loop-guard';
@@ -209,12 +210,13 @@ export async function runHookCommand(input?: unknown): Promise<void> {
   lastHookEventName = null;
   const identity = resolveNativeHookIdentity(process.argv[2]);
   if (process.env.MARROW_AUTO_HOOK === 'false') {
+    await recordSessionBypass('hooks_switched_off', identity, input);
     if (identity.harness === 'gemini') process.stdout.write('{}');
     return;
   }
 
   try { if (!readLocalControlState().enabled) { if (identity.harness === 'gemini') process.stdout.write('{}'); return; } }
-  catch { if (identity.harness === 'gemini') process.stdout.write('{}'); return; }
+  catch { await recordSessionBypass('control_state_unsafe', identity, input); if (identity.harness === 'gemini') process.stdout.write('{}'); return; }
 
   try {
     let event: HookEvent;
@@ -386,9 +388,9 @@ export async function runHookCommand(input?: unknown): Promise<void> {
  */
 export async function runPermissionRequestHookCommand(input?: unknown): Promise<void> {
   try {
-    if (process.env.MARROW_AUTO_HOOK === 'false') return;
-    try { if (!readLocalControlState().enabled) return; } catch { return; }
     const identity = resolveNativeHookIdentity(process.argv[2]);
+    if (process.env.MARROW_AUTO_HOOK === 'false') { await recordSessionBypass('hooks_switched_off', identity, input); return; }
+    try { if (!readLocalControlState().enabled) return; } catch { await recordSessionBypass('control_state_unsafe', identity, input); return; }
     let event: HookEvent;
     if (input === undefined) {
       const raw = (await readStdin()).trim();
