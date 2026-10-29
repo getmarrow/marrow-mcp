@@ -248,7 +248,8 @@ function linkFreePath(absolute) {
     }
     return current || '/';
 }
-const plainWord = (word) => !word.date && !word.expands && !word.dollar && !word.escaped && !word.tilde;
+// `!` (history expansion in an interactive shell) and `~` anywhere in a word (bash also expands it after `=`) are never plain.
+const plainWord = (word) => !word.date && !word.expands && !word.dollar && !word.escaped && !word.tilde && !/[!~]/.test(word.text);
 // A remaining word the script may read as a path is never a way into a hidden folder (~/.marrow, ~/.ssh, .git, an rc file) or a system folder: the
 // command then keeps the 3.9.109 reading, where those paths are judged. A word with a space is prose (a note) and stays data.
 const SYSTEM_ROOT = /^\/(?:etc|var|usr|bin|sbin|lib|lib32|lib64|proc|sys|boot|root|run|srv|dev)(?:\/|$)/;

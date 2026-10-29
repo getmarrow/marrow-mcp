@@ -118,7 +118,7 @@ test('A39 declared prefix plus "; wrangler deploy" is held', () => {
 });
 
 test('B2 expansions in a remaining word: no match', () => {
-  for (const word of ['"$(wrangler deploy)"', '"`wrangler deploy`"', '$V', '${V}', '"$V"', '*', '?', '[a]', '{a,b}', '~', '~/x', '$\'a\'', '$"a"', 'a\\ b', '"a\\"b"', '<(ls)', '>(ls)', '$(date -u)']) {
+  for (const word of ['"$(wrangler deploy)"', '"`wrangler deploy`"', '$V', '${V}', '"$V"', '*', '?', '[a]', '{a,b}', '~', '~/x', '$\'a\'', '$"a"', 'a\\ b', '"a\\"b"', '<(ls)', '>(ls)', '$(date -u)', 'a~b', '--out=~/x', '!', '!!', '"x!"', "'x!'", '!wrangler']) {
     assertNoMatch(`V=x; ${cmd(` ${word}`)}`, undefined, `word ${word}`);
     assertNoMatch(cmd(` ${word}`), undefined, `word ${word}`);
   }
@@ -208,7 +208,7 @@ test('B12 a remaining word that is a path into a hidden or system folder is neve
     assertNoMatch(cmd(` ${word.replace('~', passwdHome)}`), undefined, word);
   }
   assertDw(cmd(' --note "see /etc/hosts and ~/.bashrc and .env for deploy"'));
-  assertDw(cmd(' https://example.com/a/b 2026/10/29 1.5 /tmp/x.md /dev/null'));
+  assertDw(cmd(` https://example.com/a/b 2026/10/29 1.5 ${ws}/x.md /dev/null`));
 });
 test('B9 a heredoc into a declared command: no match', () => {
   assertNoMatch(`${cmd()} <<'EOF'\ndeploy production\nEOF`);
@@ -232,7 +232,7 @@ test('EFFECT a command whose every segment is DW or declared gets the DW label; 
 });
 test('EFFECT environment variables that change what an interpreter loads are never admitted next to a declared command', () => {
   for (const name of ['PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONHOME', 'NODE_OPTIONS', 'NODE_PATH', 'PERL5LIB', 'PERL5OPT', 'RUBYOPT', 'RUBYLIB', 'LD_PRELOAD', 'BASH_ENV', 'PATH', 'HOME', 'VIRTUAL_ENV', 'GIT_SSH_COMMAND', 'XDG_CONFIG_HOME']) {
-    assertNoMatch(`${name}=/tmp/evil; ${cmd()}`, undefined, name);
+    assertNoMatch(`${name}=${ws}/evil; ${cmd()}`, undefined, name);
   }
   assertDw(`MARROW_NOTE_TEXT_X=1; ${cmd()}`.replace('MARROW_NOTE_TEXT_X', 'NOTE_TEXT'));
 });
