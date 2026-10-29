@@ -27,6 +27,7 @@ const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
 const owner_bypass_1 = require("./owner-bypass");
 const keyless_notice_1 = require("./keyless-notice");
+const session_id_1 = require("./session-id");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
 const host_session_1 = require("./host-session");
@@ -83,8 +84,8 @@ function promptHoldContext(identity, event) {
     catch {
         return null;
     }
-    const sessionId = identity.environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
-        || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+    const sessionId = (0, session_id_1.marrowSessionId)(identity.environment.sessionId || asString(event.session_id) || asString(event.conversation_id)
+        || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     return {
         apiKey,
         baseUrl,
@@ -729,8 +730,8 @@ async function runContextHookCommand() {
         }
         const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
         const resolvedEnv = identity.environment;
-        const sessionId = resolvedEnv.sessionId || asString(event.session_id)
-            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+        const sessionId = (0, session_id_1.marrowSessionId)(resolvedEnv.sessionId || asString(event.session_id)
+            || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
         const agentId = identity.agent_id;
         try {
             (0, session_loop_guard_1.advanceSessionInstructionEpoch)({ sessionId, agentId, harness: identity.harness });

@@ -4,6 +4,7 @@ import { CONTROL_BYPASS_ACTION } from './control-state';
 import { clientReportedHookLifecycleIdentity, normalizeHookEventPayload, stableSessionWorkflowId, type resolveNativeHookIdentity } from './hook-contract';
 import { payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
 import { claimSessionMarker } from './session-marker';
+import { marrowSessionId } from './session-id';
 
 /**
  * MCP-10: a hook that goes quiet on purpose (MARROW_AUTO_HOOK=false, or a control file that cannot be trusted) tells the backend once per
@@ -51,12 +52,14 @@ export async function recordSessionBypass(
     const sessionId = resolved.sessionId || (typeof named === 'string' ? named : '');
     if (!sessionId || !claimSessionMarker(`bypass-${reason.replace(/_/g, '-')}`, sessionId)) return;
     const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
+    // MCP-9: the same per-agent Marrow session id every other hook sends (the marker above stays per host session).
+    const agentSessionId = marrowSessionId(sessionId, identity.agent_id);
     const correlation = createHash('sha256').update(`${reason}\n${sessionId}`).digest('hex').slice(0, 24);
     await recordLifecycleEvent({ apiKey: resolved.apiKey, baseUrl, event: payloadBoundEvent(`owner-bypass-${correlation}`, {
       event_type: 'pre_action_checked',
       ...clientReportedHookLifecycleIdentity(identity),
-      session_id: sessionId,
-      workflow_id: stableSessionWorkflowId(sessionId),
+      session_id: agentSessionId,
+      workflow_id: stableSessionWorkflowId(agentSessionId),
       correlation_id: correlation,
       action: CONTROL_BYPASS_ACTION,
       target: BYPASS_TARGET[reason],

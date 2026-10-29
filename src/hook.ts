@@ -7,6 +7,7 @@ import { classifyTool } from './hook-pre-action';
 import { readLocalControlState } from './control-state';
 import { recordSessionBypass } from './owner-bypass';
 import { armKeylessNotice } from './keyless-notice';
+import { marrowSessionId } from './session-id';
 import { isOfficialMarrowMcpEvent, isReadOnlyToolEvent, normalizeHookToolName } from './hook-tool-policy';
 import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
 import { recordSessionLoopOutcome, type LoopGuardOperation } from './session-loop-guard';
@@ -176,8 +177,8 @@ function holdContextFor(
   } catch {
     return null;
   }
-  const sessionId = sessionIdOverride || identity.environment.sessionId || getString(event.session_id) || getString(event.conversation_id)
-    || getString(event.task_id) || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+  const sessionId = sessionIdOverride || marrowSessionId(identity.environment.sessionId || getString(event.session_id) || getString(event.conversation_id)
+    || getString(event.task_id) || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
   return {
     apiKey,
     baseUrl,
@@ -264,8 +265,8 @@ export async function runHookCommand(input?: unknown): Promise<void> {
     const privateLoopPayload = privateHookLoopGuardPayload(event);
     // Labels and the loop guard's read-only flag only: no mapper on this path (postTool), so it adds ~no latency.
     const classified = classifyTool(event, { ownUnproven: isOfficialMarrowMcpEvent(event), postTool: true });
-    const sessionId = resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
-      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+    const sessionId = marrowSessionId(resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id)
+      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     const agentId = identity.agent_id;
     const outcome = deriveToolOutcome(event);
     const loopOperation: LoopGuardOperation = {

@@ -3,6 +3,7 @@ const test = require('node:test');
 const { writeOfficialHostConfigs } = require('./support/official-host-config.cjs');
 writeOfficialHostConfigs();
 const { projectCwd } = require('./support/hermetic-project.cjs');
+const { marrowSessionId } = require('../dist/session-id.js');
 const { spawn, spawnSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 const { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
@@ -222,7 +223,8 @@ test('Claude Code allow: one click in the host dialog is reported with the Permi
     const preEvents = h.requests().filter((r) => r.path === '/v1/agent/integrations/events' && /^pretool-/.test(r.body?.event_id || ''));
     assert.deepEqual(preEvents.map((r) => r.body.event_id), [report.body.pre_action_event_id], 'the report names the lifecycle record of the attempt that held it');
     assert.ok(Date.parse(report.body.answered_at) >= Date.parse(report.body.asked_at));
-    assert.equal(report.session, '3b1f0c2e-0000-4000-8000-00000000000a');
+    // MCP-9: the Marrow session of a hook is per agent; `host_session_id` above stays the raw host id.
+    assert.equal(report.session, marrowSessionId('3b1f0c2e-0000-4000-8000-00000000000a', 'agent-one'));
     // Proof is required: the hook never commits without it (that would block the trusted close).
     assert.deepEqual(commits(h), []);
     const context = post.json.hookSpecificOutput;
@@ -391,7 +393,7 @@ test('marrow_commit sends a queued host approval for its gate receipt before the
     const reports = hostReports(h);
     assert.deepEqual(reports[1].body, reports[0].body);
     assert.equal(reports[1].body.hook_event, 'PermissionRequest');
-    assert.equal(commits(h)[0].session, '3b1f0c2e-0000-4000-8000-00000000000a', 'the commit uses the session the receipt was issued to');
+    assert.equal(commits(h)[0].session, marrowSessionId('3b1f0c2e-0000-4000-8000-00000000000a', 'agent-one'), 'the commit uses the session the receipt was issued to');
   } finally { h.cleanup(); }
 });
 
