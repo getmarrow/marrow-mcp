@@ -4,6 +4,7 @@ import { homedir, userInfo } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
 import { marrowAgentRuntime, marrowCommit, marrowEnforcement, marrowThink, validateBaseUrl } from './index';
 import { MarrowRequestError } from './request-reliability';
+import { preferIpv4FirstWithHappyEyeballs } from './ipv4-first';
 import { payloadBoundEvent, recordLifecycleEvent } from './lifecycle-spool';
 import { CONTROL_BYPASS_ACTION, readLocalControlState } from './control-state';
 import { unreadableControlSuffix } from './control-notice';
@@ -1486,6 +1487,8 @@ function seatbeltEvent(source: PreToolUseEvent, rawEvent: unknown): SeatbeltEven
 }
 
 export async function runPreActionHookCommand(input?: unknown): Promise<void> {
+  // N1: IPv4 first with happy eyeballs, set once before any request this hook makes.
+  preferIpv4FirstWithHappyEyeballs();
   // Account mode: the S0-S5 floor in watch runs after the answer is written, for the record only.
   const watch: { harness?: string; event?: SeatbeltEventInput } = {};
   try {

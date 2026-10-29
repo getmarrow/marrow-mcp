@@ -41,6 +41,7 @@ const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const index_1 = require("./index");
 const request_reliability_1 = require("./request-reliability");
+const ipv4_first_1 = require("./ipv4-first");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
 const control_notice_1 = require("./control-notice");
@@ -1442,6 +1443,8 @@ function seatbeltEvent(source, rawEvent) {
     };
 }
 async function runPreActionHookCommand(input) {
+    // N1: IPv4 first with happy eyeballs, set once before any request this hook makes.
+    (0, ipv4_first_1.preferIpv4FirstWithHappyEyeballs)();
     // Account mode: the S0-S5 floor in watch runs after the answer is written, for the record only.
     const watch = {};
     try {
