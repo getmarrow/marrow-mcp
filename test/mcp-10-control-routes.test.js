@@ -88,7 +88,7 @@ test('MCP-10: a non-shell tool, a PowerShell dialect text and Monitor carrying t
     const result = classifyTool({ ...event, cwd: tmpdir() });
     assert.equal(result.protected, true, JSON.stringify(event));
   }
-  assert.equal(classifyTool({ tool_name: 'Read', tool_input: { file_path: '/tmp/marrow-install.js' }, cwd: tmpdir() }).protected, false);
+  assert.equal(classifyTool({ tool_name: 'Read', tool_input: { file_path: join(__dirname, 'marrow-install.js') }, cwd: tmpdir() }).protected, false);
 });
 
 // ---- process-level rows -------------------------------------------------------------------------------------------------------------
