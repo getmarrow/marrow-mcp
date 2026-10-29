@@ -17,6 +17,7 @@ const lifecycle_spool_1 = require("./lifecycle-spool");
 const hook_pre_action_1 = require("./hook-pre-action");
 const control_state_1 = require("./control-state");
 const owner_bypass_1 = require("./owner-bypass");
+const keyless_notice_1 = require("./keyless-notice");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const own_server_identity_1 = require("./own-server-identity");
 const session_loop_guard_1 = require("./session-loop-guard");
@@ -192,6 +193,9 @@ async function runHookCommand(input) {
         }
         lastHookEventName = event.hook_event_name;
         const resolvedEnv = identity.environment;
+        // MCP-5: control is on and no key resolves, so this hook records nothing: say so once per session, whatever the event is.
+        if (!resolvedEnv.apiKey)
+            (0, keyless_notice_1.armKeylessNotice)(identity.harness, resolvedEnv.sessionId || getString(event.session_id) || getString(event.conversation_id) || getString(event.task_id));
         if (identity.harness === 'codex' && resolvedEnv.apiKey && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
             const context = (0, habit_loop_copy_1.modelUsageCaptureContextFromEnv)();
             const supplied = (0, habit_loop_copy_1.extractModelUsageFromUnknown)(event.tool_response, context)

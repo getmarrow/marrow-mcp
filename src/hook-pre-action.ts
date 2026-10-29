@@ -38,6 +38,7 @@ import { DATA_FILE_RUN_DENY_TEXT, dataWriteOnly, runsDataFileAsProgram } from '.
 import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
 import { recordSessionBypass } from './owner-bypass';
 import { selfProtectKind } from './self-protect';
+import { armKeylessNotice } from './keyless-notice';
 import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
@@ -1581,6 +1582,8 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     else process.stdout.write(JSON.stringify(allow));
     return;
   }
+  // MCP-5: control is on and no key resolves, so nothing this hook does is recorded: say so once per session.
+  if (!identity.environment.apiKey) armKeylessNotice(identity.harness, identity.environment.sessionId || source.session_id || source.conversation_id || source.task_id);
   // T1: a notes or log file is data. It is never handed to an interpreter as a program (local denial, no network call).
   const bashCommand = plainBashCommand(source);
   if (bashCommand !== null && runsDataFileAsProgram(bashCommand)) {

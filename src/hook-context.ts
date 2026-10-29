@@ -30,6 +30,7 @@ import {
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
 import { recordSessionBypass } from './owner-bypass';
+import { armKeylessNotice } from './keyless-notice';
 import { advanceSessionInstructionEpoch } from './session-loop-guard';
 import {
   approvalHostFor,
@@ -819,6 +820,7 @@ export async function runContextHookCommand(): Promise<void> {
     const apiKey = resolvedEnv.apiKey || '';
     if (!apiKey) {
       debug(`[marrow-context-hook] missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
+      armKeylessNotice(identity.harness, resolvedEnv.sessionId || asString(event.session_id));
       emitNoContext();
       process.exit(0);
       return;

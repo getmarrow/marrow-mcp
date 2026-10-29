@@ -26,6 +26,7 @@ const guidance_cache_1 = require("./guidance-cache");
 const hook_contract_1 = require("./hook-contract");
 const control_state_1 = require("./control-state");
 const owner_bypass_1 = require("./owner-bypass");
+const keyless_notice_1 = require("./keyless-notice");
 const session_loop_guard_1 = require("./session-loop-guard");
 const host_approval_1 = require("./host-approval");
 const host_session_1 = require("./host-session");
@@ -743,6 +744,7 @@ async function runContextHookCommand() {
         const apiKey = resolvedEnv.apiKey || '';
         if (!apiKey) {
             debug(`[marrow-context-hook] missing MARROW_API_KEY. ${resolvedEnv.exactFix}`);
+            (0, keyless_notice_1.armKeylessNotice)(identity.harness, resolvedEnv.sessionId || asString(event.session_id));
             emitNoContext();
             process.exit(0);
             return;

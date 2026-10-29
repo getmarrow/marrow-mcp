@@ -49,6 +49,7 @@ const data_write_1 = require("./data-write");
 const control_routes_1 = require("./control-routes");
 const owner_bypass_1 = require("./owner-bypass");
 const self_protect_1 = require("./self-protect");
+const keyless_notice_1 = require("./keyless-notice");
 const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
 const own_server_identity_1 = require("./own-server-identity");
@@ -1545,6 +1546,9 @@ async function runPreActionHook(input, watch) {
             process.stdout.write(JSON.stringify(allow));
         return;
     }
+    // MCP-5: control is on and no key resolves, so nothing this hook does is recorded: say so once per session.
+    if (!identity.environment.apiKey)
+        (0, keyless_notice_1.armKeylessNotice)(identity.harness, identity.environment.sessionId || source.session_id || source.conversation_id || source.task_id);
     // T1: a notes or log file is data. It is never handed to an interpreter as a program (local denial, no network call).
     const bashCommand = (0, hook_tool_policy_1.plainBashCommand)(source);
     if (bashCommand !== null && (0, data_write_1.runsDataFileAsProgram)(bashCommand)) {
