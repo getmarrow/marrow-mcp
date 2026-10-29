@@ -5,6 +5,7 @@
 // is off here" text, never the seatbelt pass. Keyless temporary home; nothing reaches a server.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { withoutKeylessNotice } = require('./support/keyless-notice-strip.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -30,7 +31,7 @@ function run(rollout, harness, command) {
     if (rollout) env.SBT_ROLLOUT_KEYLESS = rollout;
     const r = spawnSync(process.execPath, ['--require', PRELOAD, CLI, `${harness}-pre-action-hook`], { cwd: proj, encoding: 'utf8', timeout: 30_000, input: JSON.stringify(event), env });
     const net = fs.existsSync(path.join(root, 'net.log')) ? fs.readFileSync(path.join(root, 'net.log'), 'utf8') : '';
-    return { status: r.status, out: r.stdout, err: r.stderr, net };
+    return { status: r.status, out: withoutKeylessNotice(r.stdout), err: r.stderr, net };
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 

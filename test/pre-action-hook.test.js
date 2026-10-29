@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { withoutKeylessNotice } = require('./support/keyless-notice-strip.cjs');
 const { mkdirSync, mkdtempSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
@@ -1285,7 +1286,7 @@ test('a large Write is classified normally instead of failing closed as oversize
     assert.ok(Buffer.byteLength(input) > 64 * 1024);
     const result = runPreActionCli(controlHome(directory), input);
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), {});
+    assert.deepEqual(withoutKeylessNotice(JSON.parse(result.stdout)), {});
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

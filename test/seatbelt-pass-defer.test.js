@@ -10,6 +10,7 @@
 // An action 3.9.103 already passed keeps those exact bytes. Real hook CLI, no key, no network.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { withoutKeylessNotice } = require('./support/keyless-notice-strip.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -108,7 +109,8 @@ function cli(sb, harness, event) {
     env: { PATH: process.env.PATH, HOME: sb.home, SBT_PASSWD_HOME: sb.home, SBT_NETSPY: sb.netspy, MARROW_HOOK_BACKGROUND_NUDGE: 'false' },
   });
   assert.equal(r.error, undefined);
-  return { status: r.status, stdout: r.stdout, stderr: r.stderr, json: r.stdout.trim() ? JSON.parse(r.stdout) : null };
+  const stdout = withoutKeylessNotice(r.stdout);
+  return { status: r.status, stdout, stderr: r.stderr, json: stdout.trim() ? JSON.parse(stdout) : null };
 }
 
 function shell(sb, harness, command) {
