@@ -22,6 +22,7 @@ exports.classifyTool = classifyTool;
 exports.mayPrintEnvironment = mayPrintEnvironment;
 exports.mayReadApprovalState = mayReadApprovalState;
 exports.mayReadSecret = mayReadSecret;
+exports.controlRouteCall = controlRouteCall;
 exports.cursorPreActionHookOutput = cursorPreActionHookOutput;
 exports.clinePreActionHookOutput = clinePreActionHookOutput;
 exports.windsurfPreActionDecision = windsurfPreActionDecision;
@@ -40,10 +41,17 @@ const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const index_1 = require("./index");
 const request_reliability_1 = require("./request-reliability");
+const ipv4_first_1 = require("./ipv4-first");
 const lifecycle_spool_1 = require("./lifecycle-spool");
 const control_state_1 = require("./control-state");
+const control_notice_1 = require("./control-notice");
 const runtime_contract_1 = require("./runtime-contract");
 const host_approval_1 = require("./host-approval");
+const control_routes_1 = require("./control-routes");
+const owner_bypass_1 = require("./owner-bypass");
+const self_protect_1 = require("./self-protect");
+const keyless_notice_1 = require("./keyless-notice");
+const session_id_1 = require("./session-id");
 const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
 const own_server_identity_1 = require("./own-server-identity");
@@ -360,6 +368,12 @@ function ownerApprovalPrompt(harness, event, env = process.env) {
     }
     return { available: true, unavailableReason: '' };
 }
+/** Claude Code modes and entrypoints in which an "ask" reaches nobody (auto, bypassPermissions, dontAsk; claude -p and the Agent SDKs). */
+function noPersonAtPrompt(event, env = process.env) {
+    const mode = typeof event.permission_mode === 'string' ? event.permission_mode : '';
+    const entrypoint = typeof env.CLAUDE_CODE_ENTRYPOINT === 'string' ? env.CLAUDE_CODE_ENTRYPOINT : '';
+    return mode === 'auto' || mode === 'bypassPermissions' || mode === 'dontAsk' || HEADLESS_CLAUDE_ENTRYPOINTS.has(entrypoint);
+}
 function boundedText(value, limit) {
     return String(value ?? '')
         .replace(/[\u0000-\u001f\u007f]/g, ' ')
@@ -568,7 +582,7 @@ function localControlDisabled() {
     }
 }
 // The order classifyTool picks a type and lists surfaces in; earlier types are the more specific (stricter) ones.
-const CLASSIFICATION_TYPES = ['publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
+const CLASSIFICATION_TYPES = ['security', 'publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
 const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 /**
  * The classification of one tool call. A Monitor command (and a native git
@@ -609,23 +623,36 @@ function ownToolLabel(event) {
 function nonActingParts(event) {
     return { tool: ownToolLabel(event), type: 'process', surfaces: [], readOnly: false, protected: false };
 }
-/** `a`, unchanged, when it is at least as strict as `b` on every axis; otherwise the stricter of each. */
+/** The `type on surfaces` text of a classification, as the runtime action carries it. */
+function typeText(parts) {
+    return `${parts.type} on ${parts.surfaces.join(', ') || 'workspace'}`;
+}
+/**
+ * `a`, unchanged, when it is at least as strict as `b` on every axis; otherwise the stricter of each. The strictest type wins, every surface
+ * of both is kept, and a type that `security` displaces stays in `under` (typeText), so a hold never drops what the other part says.
+ */
 function stricterParts(a, b) {
     const rank = (type) => {
         const index = CLASSIFICATION_TYPES.indexOf(type);
         return index < 0 ? CLASSIFICATION_TYPES.length : index;
     };
+    const type = rank(a.type) <= rank(b.type) ? a.type : b.type;
+    const displaced = (parts) => (type === 'security' && parts.type !== type && parts.type !== 'process' ? [typeText(parts)] : []);
+    const keptBy = (parts, texts) => texts.every((text) => (parts.under ?? []).includes(text));
     const covers = (!a.readOnly || b.readOnly) && (a.protected || !b.protected) && rank(a.type) <= rank(b.type)
-        && b.surfaces.every((surface) => a.surfaces.includes(surface));
+        && b.surfaces.every((surface) => a.surfaces.includes(surface))
+        && keptBy(a, [...(b.under ?? []), ...displaced(b)]);
     if (covers)
         return a;
     const surfaces = new Set([...a.surfaces, ...b.surfaces]);
+    const under = [...new Set([...(a.under ?? []), ...(b.under ?? []), ...displaced(a), ...displaced(b)])];
     return {
         tool: a.tool,
-        type: rank(a.type) <= rank(b.type) ? a.type : b.type,
+        type,
         surfaces: [...CLASSIFICATION_SURFACES.filter((surface) => surfaces.has(surface)), ...[...surfaces].filter((surface) => !CLASSIFICATION_SURFACES.includes(surface))],
         readOnly: a.readOnly && b.readOnly,
         protected: a.protected || b.protected,
+        ...(under.length ? { under } : {}),
     };
 }
 let envDumpTools;
@@ -953,6 +980,15 @@ function shellPrintsEnvironment(eventCwd, command) {
     lastEnvDumpAnswer = { command, where, dumps };
     return dumps;
 }
+/** Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts). */
+function controlRouteCall(event) {
+    if (!(0, hook_tool_policy_1.isShellTextTool)(event))
+        return false;
+    const input = asRecord(event.tool_input);
+    const texts = typeof event.tool_input === 'string' ? [event.tool_input]
+        : ['command', 'cmd', 'script'].map((key) => input?.[key]).filter((value) => typeof value === 'string');
+    return texts.some((text) => (0, control_routes_1.controlRoute)(text));
+}
 /** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
 function classifyAsNamed(event, options) {
     const tool = String(event.tool_name || 'tool').slice(0, 64);
@@ -960,6 +996,10 @@ function classifyAsNamed(event, options) {
     // Editing and task tools are judged by their target; shell-like words in the
     // content they write or the subject they record are not actions.
     const shellGoverned = (0, hook_tool_policy_1.isShellGovernedTool)(event);
+    // MCP-10: a way to switch Marrow control off through the installer is a security action on marrow-control, held for the account owner.
+    // A hold is merged with the classification of the whole call below, never returned in its place: the rest of a chain keeps every surface
+    // and every risk category it has without the hold.
+    const controlRoute = controlRouteCall(event);
     const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
     const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
     // A look-alike of Marrow's own tool is never read-only, whatever its verb.
@@ -967,6 +1007,8 @@ function classifyAsNamed(event, options) {
     const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment.bind(null, options.cwd);
     const readOnly = options.ownUnproven !== true && (0, hook_tool_policy_1.isReadOnlyToolEventAsNamed)(event, printsEnvironment);
     const secretAccess = (0, hook_tool_policy_1.isSecretMaterialAccessAsNamed)(event, printsEnvironment);
+    // T2: a write to Marrow's control files, a host's hooks settings or a file that makes a command run later is a security action, not an audit one.
+    const selfProtected = readOnly && !controlRoute ? null : (0, self_protect_1.selfProtectKind)(event, options.cwd);
     const protectedShellCommand = shellGoverned && (0, hook_tool_policy_1.isProtectedShellMutation)(command);
     const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
         && protectedShellCommand;
@@ -996,24 +1038,36 @@ function classifyAsNamed(event, options) {
         || protectedShellCommand
         || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && (options.ownUnproven === true || !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name)))
         || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
-    return { tool, type, surfaces, readOnly, protected: protectedAction };
+    const full = { tool, type, surfaces, readOnly, protected: protectedAction };
+    const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected])].filter((surface) => surface !== null);
+    return held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
+}
+/** The role the runtime call carries: that of the type, or, where `security` displaced a type (ClassificationParts.under), the strictest displaced one, as 3.9.108 sent it. */
+function runtimeRole(parts) {
+    const rank = (type) => { const index = CLASSIFICATION_TYPES.indexOf(type); return index < 0 ? CLASSIFICATION_TYPES.length : index; };
+    const displaced = (parts.under ?? []).map((text) => text.split(' on ')[0]).sort((x, y) => rank(x) - rank(y));
+    const type = parts.type === 'security' && displaced.length ? displaced[0] : parts.type;
+    return type === 'publish' ? 'deploy' : ['deploy', 'review', 'migration', 'audit'].includes(type) ? type : 'general';
 }
 function classificationFrom(parts) {
     const { tool, type, surfaces, readOnly } = parts;
     const protectedAction = parts.protected;
     const risk = readOnly ? 'low' : protectedAction ? 'high' : 'medium';
-    const target = surfaces.includes('npm') ? `npm:${type}`
-        : surfaces.includes('github') ? `github:${type}`
-            : surfaces.includes('production') ? `production:${type}`
-                : surfaces.includes('database') ? `database:${type}`
-                    : surfaces.includes('financial') ? `financial:${type}`
-                        : surfaces.includes('secrets') ? `secrets:${type}`
-                            : `workspace:${type}`;
+    // The hold surfaces come first: a hold merged with a fuller classification keeps the label it has alone.
+    const target = surfaces.includes('marrow-control') ? `marrow:${type}`
+        : surfaces.includes('persistence') ? `host:${type}`
+            : surfaces.includes('npm') ? `npm:${type}`
+                : surfaces.includes('github') ? `github:${type}`
+                    : surfaces.includes('production') ? `production:${type}`
+                        : surfaces.includes('database') ? `database:${type}`
+                            : surfaces.includes('financial') ? `financial:${type}`
+                                : surfaces.includes('secrets') ? `secrets:${type}`
+                                    : `workspace:${type}`;
     return {
-        action: `classified ${tool} action: ${type} on ${surfaces.join(', ') || 'workspace'}`,
+        action: `classified ${tool} action: ${type} on ${surfaces.join(', ') || 'workspace'}${(parts.under ?? []).map((text) => `; classified ${tool} action: ${text}`).join('')}`,
         target,
         type,
-        role: type === 'publish' ? 'deploy' : ['deploy', 'review', 'migration', 'audit'].includes(type) ? type : 'general',
+        role: runtimeRole(parts),
         surfaces: surfaces.length ? surfaces : ['workspace'],
         risk,
         protected: protectedAction,
@@ -1405,6 +1459,8 @@ function seatbeltEvent(source, rawEvent) {
     };
 }
 async function runPreActionHookCommand(input) {
+    // N1: IPv4 first with happy eyeballs, set once before any request this hook makes.
+    (0, ipv4_first_1.preferIpv4FirstWithHappyEyeballs)();
     // Account mode: the S0-S5 floor in watch runs after the answer is written, for the record only.
     const watch = {};
     try {
@@ -1420,9 +1476,11 @@ async function runPreActionHookCommand(input) {
     }
 }
 async function runPreActionHook(input, watch) {
-    if (process.env.MARROW_AUTO_HOOK === 'false')
-        return;
     const identity = (0, hook_contract_1.resolveNativeHookIdentity)(process.argv[2]);
+    if (process.env.MARROW_AUTO_HOOK === 'false') {
+        await (0, owner_bypass_1.recordSessionBypass)('hooks_switched_off', identity, input);
+        return;
+    }
     let event = input;
     let rawEvent = input;
     let inputFailure = null;
@@ -1475,12 +1533,12 @@ async function runPreActionHook(input, watch) {
         localControl = (0, control_state_1.readLocalControlState)();
     }
     catch {
-        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: 'Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.' }, identity.harness);
+        emitDecision({ runtime: null, permit: null, protectedRisk: true, enforcementError: `Marrow local control state is unsafe. Protected actions remain blocked until the owner repairs it.${(0, control_notice_1.unreadableControlSuffix)()}` }, identity.harness);
         return;
     }
     if (!localControl.enabled) {
         const resolved = identity.environment;
-        const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id;
+        const sessionId = (0, session_id_1.marrowSessionId)(resolved.sessionId || source.session_id || source.conversation_id || source.task_id || '', identity.agent_id) || undefined;
         const correlation = (0, hook_contract_1.stableToolCorrelation)({ ...source, session_id: sessionId });
         if (resolved.apiKey) {
             try {
@@ -1508,10 +1566,18 @@ async function runPreActionHook(input, watch) {
             process.stdout.write(JSON.stringify(allow));
         return;
     }
+    // MCP-5: control is on and no key resolves, so nothing this hook does is recorded: say so once per session.
+    if (!identity.environment.apiKey)
+        (0, keyless_notice_1.armKeylessNotice)(identity.harness, identity.environment.sessionId || source.session_id || source.conversation_id || source.task_id);
+    // MCP-10: where no person can answer a prompt (auto, bypass and dontAsk modes, headless runs), turning control off is denied outright.
+    if (classified.type === 'security' && classified.surfaces.includes('marrow-control') && controlRouteCall(source) && noPersonAtPrompt(source)) {
+        emitLoopGuardDenial(identity.harness, control_routes_1.CONTROL_ROUTE_DENY_TEXT);
+        return;
+    }
     let resolved = identity.environment;
     const enforcementRequired = classified.protected || ['windsurf', 'gemini', 'grok'].includes(identity.harness);
-    const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
-        || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]);
+    const sessionId = (0, session_id_1.marrowSessionId)(resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+        || (0, hook_contract_1.stableSessionWorkflowId)(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     const agentId = identity.agent_id;
     // With a resolved key, the no-device-key fallback may make its approval state (nokeyFallbackKey); with none it never does.
     if (resolved.apiKey)

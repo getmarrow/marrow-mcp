@@ -212,7 +212,22 @@ These behaviors shipped in 3.9.103 and still apply.
 - **Hidden commands are checked:** commands inside an unquoted here-document body, a `${x:-$(...)}` default or an arithmetic expansion are checked like any other command.
 - **`marrow-mcp keys create` reads every flag form:** `--name=`, `--type=` and `--expires=` (and `-n=`, `-t=`) are read like `--name value`; a flag that is present but blank, or a `--scopes` / `--agents` list with no entry, is a usage error (exit 2) and nothing is sent; leaving `--scopes` and `--agents` out sends neither.
 
-## What's New in v3.9.108
+## What's New in v3.9.109
+
+v3.9.109 adds several security fixes and hook fixes. The full entry is in CHANGELOG.md.
+
+- **Turning Marrow control off needs the owner.** A shell command that runs the installer to disable or uninstall Marrow is held for the account owner, and refused when no person is at the prompt (`auto`, `bypassPermissions`, `dontAsk`, headless). Held forms: `npx @getmarrow/install control disable` (also `uninstall`, `control off`, `--disable`), `pnpm dlx`, `bunx`, `npm exec`, `node` on the installer, `marrow-install`, chained, on a new line, inside `bash -c`, quoted, with `control`, `disable` or `uninstall` in upper case, or with a zero-width character inside `disable` or `off` after `control`. Not recognised yet: a wrapper with options before the installer (`sudo -u root`, `env -u X`), a package word given by a variable or with an escape, an upper-case `NPX` or package word, a zero-width character inside `--disable`, a full-width, soft-hyphen or look-alike spelling of the package word or of `uninstall`, `eval`, and other package runners. While Marrow is switched off, the bypass record is sent at the first hook call of a session (names only), not at the first protected action.
+- **Hook settings, `~/.marrow` and shell start-up files are protected from every tool.** A write by Edit, Write, a redirect, `tee`, `sed -i`, `cp`, `mv`, `crontab` and the like is held.
+- **A keyless hook says so once per Claude Code session.**
+- **A resumed host session under another Marrow agent works.** Each agent has its own Marrow session id (`<host session id>.m<16 hex>`). A hold open under 3.9.108 at the upgrade is not matched by the 3.9.109 hooks, and the loop guard state starts again for that session.
+- **A damaged control file no longer switches the hooks off.** If `~/.marrow/control.json` cannot be read or is invalid, the hooks keep running as if control were on and the prompt hook tells you once per session. Only a valid file that says disabled stops them.
+- **The pre-action hook leaves as soon as it has answered.** An unanswered request can no longer keep it running past the host's time limit. The answer is the same.
+- **Test keys and live keys never share an approval.** The same action with a test key and with a live key is a different approval.
+- **`patch`, `git apply` and `git am` are checked for what they write.** A patch that would write a protected file is held; so are six `git am` forms that used to pass (`--continue`, `--skip`, `--abort`, `--quit`, `--resolved`, `--show-current-patch`).
+- **Windows groundwork.** The seatbelt reads Windows program names and paths, and the session loop guard on Windows checks the access list of its folder. That last check is the one change that is looser than 3.9.108, on Windows only and by the owner's decision (3.9.108 denied every loop-guarded call there). Native Windows is still not supported; use WSL.
+- **IPv4 first.** The pre-action hook tries IPv4 first when it dials Marrow, so a broken IPv6 route cannot stall it.
+
+These behaviors shipped in 3.9.108 and still apply.
 
 v3.9.108 adds Codex plugin pins on 3.9.107. The full entry is in CHANGELOG.md.
 

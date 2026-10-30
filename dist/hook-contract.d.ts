@@ -1,5 +1,5 @@
 import { resolveMarrowEnv, type ResolvedMarrowEnv } from './env';
-export declare const MCP_ADAPTER_VERSION = "3.9.108";
+export declare const MCP_ADAPTER_VERSION = "3.9.109";
 export declare const NATIVE_HOOK_MATCHER: string;
 /**
  * Matchers older versions wrote, so a hook carrying one needs repair: the
@@ -10,7 +10,7 @@ export declare const NATIVE_HOOK_MATCHER: string;
  */
 export declare const LEGACY_NATIVE_HOOK_MATCHERS: readonly string[];
 export declare const GROK_NATIVE_HOOK_MATCHER = "run_terminal_command|search_replace|write|spawn_subagent|use_tool|workflow|image_gen|image_edit|image_to_video|reference_to_video";
-export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.108";
+export declare const MCP_PACKAGE_SPEC = "@getmarrow/mcp@3.9.109";
 export declare const CONTEXT_HOOK_COMMAND: string;
 export declare const PRE_ACTION_HOOK_COMMAND: string;
 export declare const ACTION_RESULT_HOOK_COMMAND: string;

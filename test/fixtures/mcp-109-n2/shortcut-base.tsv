@@ -1,0 +1,49 @@
+# ret	hold	order	base_type/surfaces	base_backend_categories (BASE 3.9.108 hook body, categories per the backend matcher); from the reaudit shortcut-cats.tsv
+none	secret-path	hold	audit/secrets	
+none	system-path	hold	process/workspace	
+none	prod-deploy	hold	deploy/production	production_deploy
+none	npm-publish	hold	publish/npm	package_publish
+none	wk5-patch	hold	process/github	source_control
+none	wk5-stdin	hold	process/github	source_control
+mcp10-route	secret-path	ret&&hold	audit/secrets	
+mcp10-route	secret-path	hold;ret	audit/secrets	
+mcp10-route	system-path	ret&&hold	process/workspace	
+mcp10-route	system-path	hold;ret	process/workspace	
+mcp10-route	prod-deploy	ret&&hold	deploy/production	production_deploy
+mcp10-route	prod-deploy	hold;ret	deploy/production	production_deploy
+mcp10-route	npm-publish	ret&&hold	publish/npm	package_publish
+mcp10-route	npm-publish	hold;ret	publish/npm	package_publish
+mcp10-route	wk5-patch	ret&&hold	process/github	source_control
+mcp10-route	wk5-patch	hold;ret	process/github	source_control
+mcp10-route	wk5-stdin	ret&&hold	process/github	source_control
+mcp10-route	wk5-stdin	hold;ret	process/github	source_control
+t2-control	secret-path	ret&&hold	audit/secrets	
+t2-control	secret-path	hold;ret	audit/secrets	
+t2-control	system-path	ret&&hold	audit/secrets	
+t2-control	system-path	hold;ret	audit/secrets	
+t2-control	prod-deploy	ret&&hold	deploy/production+secrets	production_deploy
+t2-control	prod-deploy	hold;ret	deploy/production+secrets	production_deploy
+t2-control	npm-publish	ret&&hold	publish/npm+secrets	package_publish
+t2-control	npm-publish	hold;ret	publish/npm+secrets	package_publish
+t2-control	wk5-patch	ret&&hold	audit/github+secrets	source_control
+t2-control	wk5-patch	hold;ret	audit/github+secrets	source_control
+t2-control	wk5-stdin	ret&&hold	audit/github+secrets	source_control
+t2-control	wk5-stdin	hold;ret	audit/github+secrets	source_control
+t2-persist	secret-path	ret&&hold	audit/secrets	
+t2-persist	secret-path	hold;ret	audit/secrets	
+t2-persist	system-path	ret&&hold	process/workspace	
+t2-persist	system-path	hold;ret	process/workspace	
+t2-persist	prod-deploy	ret&&hold	deploy/production	production_deploy
+t2-persist	prod-deploy	hold;ret	deploy/production	production_deploy
+t2-persist	npm-publish	ret&&hold	publish/npm	package_publish
+t2-persist	npm-publish	hold;ret	publish/npm	package_publish
+t2-persist	wk5-patch	ret&&hold	process/github	source_control
+t2-persist	wk5-patch	hold;ret	process/github	source_control
+t2-persist	wk5-stdin	ret&&hold	process/github	source_control
+t2-persist	wk5-stdin	hold;ret	process/github	source_control
+failclosed	secret-path	hold	-	
+failclosed	system-path	hold	-	
+failclosed	prod-deploy	hold	-	
+failclosed	npm-publish	hold	-	
+failclosed	wk5-patch	hold	-	
+failclosed	wk5-stdin	hold	-	

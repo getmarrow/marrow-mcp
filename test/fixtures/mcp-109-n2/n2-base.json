@@ -1,0 +1,237 @@
+[
+ {
+  "command": "wrangler deploy --env production",
+  "type": "deploy",
+  "surfaces": [
+   "production"
+  ],
+  "backend": [
+   "production_deploy"
+  ],
+  "local": [
+   "production_deploy"
+  ]
+ },
+ {
+  "command": "npm publish",
+  "type": "publish",
+  "surfaces": [
+   "npm"
+  ],
+  "backend": [
+   "package_publish?"
+  ],
+  "local": [
+   "package_publish"
+  ]
+ },
+ {
+  "command": "cat .env",
+  "type": "audit",
+  "surfaces": [
+   "secrets"
+  ],
+  "backend": [],
+  "local": []
+ },
+ {
+  "command": "gh pr merge 1",
+  "type": "review",
+  "surfaces": [
+   "github"
+  ],
+  "backend": [
+   "source_control"
+  ],
+  "local": [
+   "source_control"
+  ]
+ },
+ {
+  "command": "echo x >> $H/.bashrc && wrangler deploy --env production",
+  "type": "deploy",
+  "surfaces": [
+   "production"
+  ],
+  "backend": [
+   "production_deploy"
+  ],
+  "local": [
+   "production_deploy"
+  ]
+ },
+ {
+  "command": "wrangler deploy --env production && echo x >> $H/.bashrc",
+  "type": "deploy",
+  "surfaces": [
+   "production"
+  ],
+  "backend": [
+   "production_deploy"
+  ],
+  "local": [
+   "production_deploy"
+  ]
+ },
+ {
+  "command": "echo x >> ~/.bashrc; wrangler deploy --env production",
+  "type": "deploy",
+  "surfaces": [
+   "production"
+  ],
+  "backend": [
+   "production_deploy"
+  ],
+  "local": [
+   "production_deploy"
+  ]
+ },
+ {
+  "command": "echo x >> $H/.bashrc && npm publish",
+  "type": "publish",
+  "surfaces": [
+   "npm"
+  ],
+  "backend": [
+   "package_publish?"
+  ],
+  "local": [
+   "package_publish"
+  ]
+ },
+ {
+  "command": "echo x >> $H/.bashrc && cat .env",
+  "type": "audit",
+  "surfaces": [
+   "secrets"
+  ],
+  "backend": [],
+  "local": []
+ },
+ {
+  "command": "echo x >> $H/.bashrc && cat ~/.aws/credentials",
+  "type": "audit",
+  "surfaces": [
+   "secrets"
+  ],
+  "backend": [],
+  "local": []
+ },
+ {
+  "command": "crontab x.txt && gh pr merge 1",
+  "type": "review",
+  "surfaces": [
+   "github"
+  ],
+  "backend": [
+   "source_control"
+  ],
+  "local": [
+   "source_control"
+  ]
+ },
+ {
+  "command": "echo x >> $H/.bashrc && wrangler d1 migrations apply prod-db",
+  "type": "deploy",
+  "surfaces": [
+   "production",
+   "database"
+  ],
+  "backend": [
+   "production_deploy",
+   "data_migration"
+  ],
+  "local": [
+   "production_deploy",
+   "data_migration"
+  ]
+ },
+ {
+  "command": "echo '{}' > $H/.marrow/control.json && wrangler deploy --env production",
+  "type": "deploy",
+  "surfaces": [
+   "production",
+   "secrets"
+  ],
+  "backend": [
+   "production_deploy"
+  ],
+  "local": [
+   "production_deploy"
+  ]
+ },
+ {
+  "command": "cp x $H/.claude/settings.json && npm publish",
+  "type": "publish",
+  "surfaces": [
+   "npm"
+  ],
+  "backend": [
+   "package_publish?"
+  ],
+  "local": [
+   "package_publish"
+  ]
+ },
+ {
+  "command": "npx @getmarrow/install control disable && wrangler deploy --env production",
+  "type": "deploy",
+  "surfaces": [
+   "production"
+  ],
+  "backend": [
+   "production_deploy"
+  ],
+  "local": [
+   "production_deploy"
+  ]
+ },
+ {
+  "command": "npx @getmarrow/install control disable && npm publish",
+  "type": "publish",
+  "surfaces": [
+   "npm"
+  ],
+  "backend": [
+   "package_publish?"
+  ],
+  "local": [
+   "package_publish"
+  ]
+ },
+ {
+  "command": "npx @getmarrow/install control disable; cat .env",
+  "type": "audit",
+  "surfaces": [
+   "secrets"
+  ],
+  "backend": [],
+  "local": []
+ },
+ {
+  "command": "bash -c 'echo x >> ~/.bashrc && wrangler deploy --env production'",
+  "type": "deploy",
+  "surfaces": [
+   "production"
+  ],
+  "backend": [
+   "production_deploy"
+  ],
+  "local": [
+   "production_deploy"
+  ]
+ },
+ {
+  "command": "echo x | tee -a $H/.bashrc | wrangler deploy --env production",
+  "type": "deploy",
+  "surfaces": [
+   "production"
+  ],
+  "backend": [
+   "production_deploy"
+  ],
+  "local": [
+   "production_deploy"
+  ]
+ }
+]

@@ -19,9 +19,13 @@ import {
   MARROW_OWNER_SUBS, NAME_TRIPWIRE, NON_SCRIPT_NAMES, NPM_ALIASES, NPM_BOOL_FLAGS, NPM_COMMANDS, NPM_VALUE_FLAGS, PACKAGE_BINS,
   PRESENT_SECRET_PATTERNS, PROD_ENV, S4_EXEMPT_PROGRAMS, SCRIPT_SUFFIX, SECRET_PATTERNS, SECRET_VAR, SEATBELT_RULES_VERSION, SHELL_TOOL_NAMES, SHELLS,
   SSH_PUBLIC, TRIPWIRE, interpreterDecodeToken, interpreterTreeDelete, secretSamples,
+  A3_REASONS, PS_BLOCK_WORDS, PS_OUTPUT_CMDLETS, PS_BLOCK_CALL, PS_DYNAMIC_AMP, PS_SNIFF, PS_DYNAMIC_CALL, PS_EVAL_WORDS, PS_EXECUTION_POLICIES, WIN_CMDLET_WORD, WIN_DELETE_VERBS, WIN_DELETE_WORDS,
+  WIN_SHELL_DELETE_VERBS, PS_KEYWORDS, decodeEncodedCommand, dotNetTreeDelete, psClean, psDefaultParameters, psDynamicCode, psFlatten, psNormalize, psOption,
+  psStatements, windowsDeleteStops, windowsDeleteStopsFrom, windowsProgramName,
 } from './tables';
 import { CLASSIFIER_PIN } from './classifier-pin';
 import { ENV_NAME_CORPUS, lastSegment, mountSources, regexMatchesAny, secretEnvBase, volumeHost } from './env-names';
+import { PatchKind, MAX_NAMES, parsePatchCall, readPatchNames, targetNames } from './patch-text';
 import {
   BAT_LONG, CAT_LONG, CHECKSUM_LONG, CMP_LONG, CP_LONG, CURL_LONG, DIFF_LONG, DOAS_LONG, DU_LONG, ENV_LONG, FILE_LONG, FIND_LONG, GIT_GLOBAL_LONG, GIT_READ_LONG,
   GIT_RESET_LONG, GIT_RESTORE_LONG, GIT_RM_LONG, GREP_LONG, HEAD_LONG, INSTALL_LONG, JQ_LONG, LESS_LONG, LN_LONG, LS_LONG, LongList, MORE_LONG, MV_LONG,
@@ -189,6 +193,9 @@ interface Run {
   scriptExpansions: number;
   deadline: number;
   exhausted: boolean;
+  // The PowerShell / cmd lexical check (psLexical): steps taken in the whole run, and whether it ran past its step budget.
+  psSteps: number;
+  psOver: boolean;
   // Symlinks created by the command itself (`ln -s`), link path -> target (null = unknown).
   links: Map<string, string | null>;
   linksUnknown: boolean;
@@ -243,6 +250,10 @@ interface Ctx {
   written: Set<string>;
   // Files copied or moved in this command: new path -> the path they came from (for a later run).
   writtenFrom: Map<string, string>;
+  // WK-5: files `git checkout` and `git restore` rewrite in this command. Only the patch readers look at it: a patch file
+  // among them (or under a folder among them, or any file when a word is not one plain name: CHECKED_OUT_ANY) is not
+  // the file the mapper can read now (the script and package readers keep their answers).
+  checkedOut: Set<string>;
   depth: number;
   remote: boolean;
   kubeContext: string | null | undefined;
@@ -270,6 +281,11 @@ interface Ctx {
   // moved the working folder to somewhere unknown. A relative write destination then counts as a possible write to
   // Marrow's protected files (S0). A plain `cd "$DIR"` does not set this (post-launch).
   cwdStrict?: boolean;
+  // A3: the text is PowerShell or cmd text, this many levels deep (1 = the event's own text on native Windows or from the
+  // PowerShell tool, or the text of the first pwsh -c / cmd /c; more for text nested in it). Absent = plain shell text.
+  ps?: number;
+  // A3: inside the text arguments of a PowerShell cmdlet that only prints or reads text: no delete-verb stop for what is data.
+  a3Quiet?: boolean;
 }
 
 // An argument after variable resolution: `text` is its single literal value, or null when it is
@@ -305,7 +321,8 @@ export function evaluateSeatbeltShell(command: string, env: SeatbeltEnv): Seatbe
   try {
     const run = newRun(env, command);
     run.shell = true;
-    evalShell(String(command == null ? '' : command), newCtx(run), run);
+    if (env.platform === 'win32') psTop(String(command == null ? '' : command), run);
+    else evalShell(String(command == null ? '' : command), newCtx(run), run);
     return finish(run);
   } catch {
     try { return failClosed(env, ''); } catch { return failClosedBare(); }
@@ -324,7 +341,15 @@ function failClosedBare(): SeatbeltDecision {
 
 export function evaluateSeatbelt(event: SeatbeltEvent, env: SeatbeltEnv): SeatbeltDecision {
   try {
-    return evaluateEvent(event, env);
+    const startedAt = Date.now();
+    const decision = evaluateEvent(event, env);
+    // RC-1 (3.9.106): on win32 only, the Windows S0/S4 stops are added (src/seatbelt/win-protected.ts). They only
+    // add hits; every other platform returns the decision unchanged. A throw there is the stop below.
+    if (env.platform !== 'win32') return decision;
+    return (require('./win-protected') as typeof import('./win-protected')).withWindowsProtected(decision, event, env, {
+      shellInvocations, mcpCall, pathInputs, walkPathInputs, patchPaths, protectedExtra: SEATBELT_PROTECTED_EXTRA, operandOmits: OPERAND_RULE_OMITS,
+      tools: { read: READ_TOOLS, grep: GREP_TOOLS, write: WRITE_TOOLS, delete: DELETE_TOOLS, list: LIST_TOOLS, inert: INERT_TOOLS, nonShell: NON_SHELL_TOOLS, nativeShell: NATIVE_SHELL_EQUIVALENTS },
+    }, startedAt);
   } catch {
     try { return failClosed(env, ''); } catch { return failClosedBare(); }
   }
@@ -391,10 +416,13 @@ function evaluateEvent(event: SeatbeltEvent, env: SeatbeltEnv): SeatbeltDecision
     if (invocation.timedOut) exhaust(run, 'budget_time');
     run.lineSource = [...new Set(invocation.plain)].join('\n');
     const lastGroup = invocation.groups[invocation.groups.length - 1];
+    // A3: PowerShell / cmd text is the PowerShell tool's, and on native Windows every shell tool's (the host shell may be either).
+    const psTopMode = env.platform === 'win32' || evName === 'powershell' || evName === 'cmd';
     invocation.shell.forEach((text, k) => {
       if (clock(run)) return;
       run.topLast = invocation.groups[k] === lastGroup;
-      evalShell(text, newCtx(run), run);
+      if (psTopMode) psTop(text, run);
+      else evalShell(text, newCtx(run), run);
     });
     run.topLast = true;
     for (const code of invocation.code) { if (clock(run)) break; scanInterpreterCode(code, run); }
@@ -975,6 +1003,8 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     scriptExpansions: 0,
     deadline: deadline !== undefined ? deadline : deadlineFor(env),
     exhausted: false,
+    psSteps: 0,
+    psOver: false,
     links: new Map(),
     linksUnknown: false,
     headMayChange: false,
@@ -1001,7 +1031,7 @@ function newCtx(run: Run): Ctx {
   const cwd = typeof run.env.cwd === 'string' && path.posix.isAbsolute(run.env.cwd) ? path.posix.normalize(run.env.cwd) : null;
   return {
     cwds: [cwd], vars: new Map([['HOME', [run.home]]]), exported: new Set(['HOME']), aliases: new Map(), gitAliases: new Map(),
-    gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
+    gitConfig: new Map(), written: new Set(), writtenFrom: new Map(), checkedOut: new Set(), depth: 0, remote: false, kubeContext: undefined, tfWorkspace: undefined, pulumiStack: undefined,
     decodedVars: new Set(), candidates: new Map(), fds: new Map(), ifs: undefined, backstop: false, arrays: new Set(),
   };
 }
@@ -1102,12 +1132,15 @@ function finish(run: Run): SeatbeltDecision {
   if (!run.exhausted && Date.now() >= run.deadline) exhaust(run, 'budget_time');
   if (run.fsState.errored) hit(run, 'Sx', 'fs_error');
   const hits = [...run.hits].sort((a, b) => CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category));
+  // A3: within the first category, the A3 reasons lead, and then the decision's rule is `<category>.<reason>`.
+  const a3 = hits.length ? hits.findIndex((h) => h.category === hits[0].category && A3_REASONS.has(h.reason)) : -1;
+  if (a3 > 0) hits.unshift(...hits.splice(a3, 1));
   const category: SeatbeltCategory = hits.length ? hits[0].category : 'none';
   if (run.parse !== 'ok') run.flags.add(`parse_${run.parse}`);
   return {
     decision: hits.length ? 'stop' : 'pass',
     category,
-    rule: RULE_IDS[category],
+    rule: a3 >= 0 ? `${category}.${hits[0].reason}` : RULE_IDS[category],
     reasons: hits.map((h) => h.reason),
     hits,
     flags: [...run.flags].sort(),
@@ -1849,9 +1882,19 @@ function evalShell(src: string, ctx: Ctx, run: Run): void {
   noteArrays(src, ctx, run);
   if (ctx.depth > LIMITS.maxDepth) { worseParse(run, 'too_large'); run.flags.add('depth_limit'); hit(run, 'Sx', 'budget_depth'); tripwire(src, run); return; }
   if (Buffer.byteLength(src) > LIMITS.maxCommandBytes) { worseParse(run, 'too_large'); hit(run, 'Sx', 'budget_size'); tripwire(src.slice(0, LIMITS.maxCommandBytes), run); return; }
+  // A3: shell text that looks like PowerShell with script blocks (`Get-ChildItem | % { ri $_ -r }`): its blocks are statements too.
+  if (ctx.ps === undefined && PS_SNIFF.test(src)) {
+    const flat = psFlatten(psClean(src));
+    if (flat !== src) psProbe(flat, childCtx(ctx, { ps: 1 }), run);
+    psLexical(psNormalize(src), psClean(src), ctx, run, false);
+  }
+  // A3: a .NET / COM delete of a whole tree (the cheap word test first; the text is only scanned when it says "delete").
+  if (/delete|directory\]\s*::/i.test(src) && dotNetTreeDelete(psClean(src), ctx.ps !== undefined)) hit(run, 'S5', 'windows_shell_delete_unparsed');
   const parsed = safeParse(src, { depth: ctx.depth });
   if (!parsed.ok) {
     run.headMayChange = true;
+    // A3: PowerShell syntax bash cannot read: the delete verb, `iex` or `& $x` in it is still a stop.
+    if (ctx.ps === undefined) psUnparsed(src, run);
     const big = parsed.error === 'too_large' || parsed.error === 'too_many_commands' || parsed.error === 'parse_cost';
     worseParse(run, big ? 'too_large' : 'unparsed');
     tripwire(src.slice(0, LIMITS.maxCommandBytes), run);
@@ -2423,6 +2466,12 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   }
   const prog = progName(args[0], run);
   if (prog === null) return dynamicProgram(args, ctx, run, x);
+  // A3b: on native Windows the program is also read by its Windows name (`C:\Program Files\Git\cmd\git.exe`, `GIT.EXE`):
+  // a second reading next to the unchanged one, so it can only add stops.
+  if (run.env.platform === 'win32' && args[0].text !== null) {
+    const winProg = windowsProgramName(args[0].text);
+    if (winProg !== prog && winProg !== '') dispatchProgram(winProg, args, args.slice(1), false, ctx, run, x);
+  }
   // A glob in the command word names whatever matches it at run time (`/bin/s[h]`, `np[m]`): read each
   // match as the program, and stop when it matches nothing the mapper can list (audit N1).
   if (args[0].glob && args[0].text !== null && args[0].text !== '[' && args[0].text !== '[[' && /[*?[]/.test(args[0].text)) {
@@ -2443,6 +2492,8 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
 }
 
 function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boolean, ctx: Ctx, run: Run, x: Exec): void {
+  // A3: delete verbs, pwsh / cmd / iex / Start-Process text. Adds hits only; the program is then handled as before.
+  windowsShell(args, rest, ctx, run, x);
   // Task runners and builders run project code the mapper does not read (audit T1/T3).
   if (HEAD_RUNNERS.has(prog) || HEAD_CHANGERS.has(prog)) run.headMayChange = true;
   // A write to a file that names the checked-out branch (`.git/HEAD`, refs): the branch changed.
@@ -2462,6 +2513,10 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
   // I3: programs that change something outside this machine (held only while Marrow is unreachable).
   outageRiskTags(prog, rest, run);
 
+  // WK-5: the dashed spellings of `git apply` and `git am`. They were unknown programs on master, which read a file redirected into them as a script and marked the head as
+  // changeable: that scan still runs after this. They are no `case` label and no KNOWN_COMMANDS member on purpose: the keyless normalizer keeps its own copy of that table
+  // (src/normalized-action.ts, test/n5-full-scope.test.js rule P) and test/seatbelt-patch-r2.test.js wants every case label in the table.
+  if (prog === 'git-apply' || prog === 'git-am') patchFamilyWrites(prog === 'git-am' ? 'am' : 'apply', rest, ctx, run, x, new Map());
   switch (prog) {
     case 'cd': case 'pushd': return changeDir(rest, ctx, run, x.cmd.subshell);
     case 'popd': ctx.cwds = [...ctx.cwds, null]; return;
@@ -2526,6 +2581,8 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
       }
       return;
     }
+    // WK-5: the files these write are named inside the patch text.
+    case 'patch': return patchFamilyWrites('patch', rest, ctx, run, x);
     default: break;
   }
   // An awk by a name the table does not have (`original-awk`, `goawk`, `my-awk`): read as awk, and then as the unknown program it also is (as `nawk` is).
@@ -2700,12 +2757,20 @@ function isPureSubstitution(a: Arg): boolean {
   return a.text === null && a.pattern === DYN && !!a.word && a.word.slots.length === 1 && a.word.slots[0].type === 'sub';
 }
 
+// The dash spellings of `git apply` and `git am` have a handler (the switch in dispatch) but are not in KNOWN_COMMANDS: the keyless normalizer keeps its own
+// copy of that table (src/normalized-action.ts) and test/n5-full-scope.test.js rule P needs the two to agree, so the names stay out of it. A wrapper's tail still reads them.
+const PATCH_DASH_PROGRAMS = new Set(['git-apply', 'git-am']);
+
 // A word that starts a command the mapper has a handler for (or a script path).
 function isCommandWord(a: Arg, run: Run): boolean {
   if (a.text === null) return false;
   const base = progName(a, run) || '';
   if (NESTED_NOT_PROGRAMS.has(base)) return false;
-  if (KNOWN_COMMANDS.has(base) || /^python3\.\d+$/.test(base) || /^mkfs(?:\.|$)/.test(base)) return true;
+  if (KNOWN_COMMANDS.has(base) || PATCH_DASH_PROGRAMS.has(base) || /^python3\.\d+$/.test(base) || /^mkfs(?:\.|$)/.test(base)) return true;
+  if (run.env.platform === 'win32') {
+    const win = windowsProgramName(a.text);
+    if (win !== base && (KNOWN_COMMANDS.has(win) || PATCH_DASH_PROGRAMS.has(win)) && !NESTED_NOT_PROGRAMS.has(win)) return true;
+  }
   if (a.text.includes('/')) {
     const name = base.toLowerCase();
     if (NON_SCRIPT_NAMES.has(name)) return false;
@@ -2905,7 +2970,7 @@ function unknownProgram(prog: string, args: Arg[], ctx: Ctx, run: Run, x: Exec):
   if (!INERT_PROGRAMS.has(prog) && !BUILD_TOOLS.has(prog)) run.headMayChange = true;
   if (INERT_PROGRAMS.has(prog) || ctx.backstop) return;
   const rest = args.slice(1);
-  scanArgvForCommands(rest, ctx, run, x, false, EXEC_WRAPPERS.has(prog));
+  scanArgvForCommands(rest, PS_OUTPUT_CMDLETS.has(prog.toLowerCase()) || (ctx.ps !== undefined && PS_BLOCK_WORDS.has(prog.toLowerCase())) ? { ...ctx, a3Quiet: true } : ctx, run, x, false, EXEC_WRAPPERS.has(prog));
   // stdin text: `echo 'npm publish' | at now`, `at now <<< 'npm publish'`, `batch <<EOF …`.
   const src = stdinSource(x, ctx, run);
   // Decoded text piped into a program that runs what it reads (at, batch, crontab, a function) or
@@ -3026,17 +3091,20 @@ function fetcherCommand(cmd: ShellCommand): boolean {
 // A shell or interpreter that reads its program from stdin: a heredoc, a here-string (audit F7), or a
 // pipeline. The Q4 pass (`curl … | sh`, flag remote_exec) covers exactly a fetcher that is the stage
 // directly upstream of the shell (audit F8). Any other stage is classified by what it emits.
-function stdinExec(prog: string, rest: Arg[], x: Exec, ctx: Ctx, run: Run, viaCode = false): void {
-  const asShell = SHELLS.has(prog) || prog === 'sh';
+function stdinExec(prog: string, rest: Arg[], x: Exec, ctx: Ctx, run: Run, viaCode = false, ps = false): void {
+  // ps (A3): the program is pwsh / powershell / cmd: its stdin text and script file are PowerShell / cmd text.
+  const asShell = ps || SHELLS.has(prog) || prog === 'sh';
   // `viaCode`: interpreter code that reads its own stdin and runs it (`python3 -c 'exec(sys.stdin.read())'`):
   // the text may be shell text for os.system as well as code.
   const code = (text: string) => {
-    if (asShell) evalShell(text, childCtx(ctx), run);
+    if (ps) psNested(text, ctx, run);
+    else if (asShell) evalShell(text, childCtx(ctx), run);
     else { scanInterpreterCode(text, run); if (viaCode) evalShell(text, childCtx(ctx), run); }
   };
   // A file the program reads as its program text (`bash -s < f`, `python3 < f`, or a file that a pipe
   // into a group carries): a shell script is evaluated, interpreter code is scanned.
   const fileCode = (f: Arg) => {
+    if (ps) { powershellScript(f, ctx, run); return; }
     if (asShell) { scriptFile(f, rest, ctx, run, x); return; }
     const found = (absCandidates(f.text as string, ctx, run) || []).map((p) => safeRead(run.env, p, LIMITS.maxScriptBytes));
     if (found.length === 0 || found.some((c) => c === null)) nameTripwire(path.posix.basename(f.text as string), run, 'script_unreadable');
@@ -3786,9 +3854,42 @@ function checkProtectedWrite(a: Arg, ctx: Ctx, run: Run, reason: string, tree: b
   return false;
 }
 
-function markWritten(a: Arg, ctx: Ctx): void {
+function markWritten(a: Arg, ctx: Ctx, into: Set<string> = ctx.written): void {
   if (a.text === null) return;
-  for (const c of ctx.cwds) ctx.written.add(path.posix.resolve(c || '/__unknown_cwd__', a.text));
+  for (const c of ctx.cwds) into.add(path.posix.resolve(c || '/__unknown_cwd__', a.text));
+}
+
+// WK-5 patch 2: what `git checkout` and `git restore` rewrite on this line, for the patch readers only (the script,
+// package.json and Makefile readers use `ctx.written` and keep their answers). One plain file name adds its path, and
+// the reader tests a patch file by prefix, so a folder named here (`patches`, `.`) covers every file under it. A word
+// that is not one plain name makes the whole line a rewrite of anything (CHECKED_OUT_ANY, never an absolute path): a
+// variable or substitution, a glob (quoted too: git reads a pathspec as a glob), an empty word, pathspec magic (`:/`,
+// `:(glob)…`), a name that cannot be made absolute, or `--pathspec-from-file` (any abbreviation git reads), whose list
+// the mapper does not read.
+const CHECKED_OUT_ANY = '*';
+function markCheckedOut(args: Arg[], ctx: Ctx, run: Run): void {
+  // After a bare `--` every word is a path, even one that starts with a dash (`git checkout main -- -x.diff`).
+  let paths = false;
+  for (const a of args) {
+    const lead = a.text === null ? a.pattern : a.text;
+    if (!paths && lead === '--') { paths = true; continue; }
+    if (!paths && lead.startsWith('-')) {
+      const long = lead.split('=')[0];
+      if (long.length > 2 && '--pathspec-from-file'.startsWith(long)) ctx.checkedOut.add(CHECKED_OUT_ANY);
+      continue;
+    }
+    const abs = a.text === null || a.glob || a.text === '' || a.text.startsWith(':') || /[*?[\\{]/.test(a.text) ? null : absCandidates(a.text, ctx, run);
+    if (abs === null) { ctx.checkedOut.add(CHECKED_OUT_ANY); continue; }
+    markWritten(a, ctx, ctx.checkedOut);
+    for (const p of abs) ctx.checkedOut.add(p);
+  }
+}
+
+// True when a patch file at `p` may have been rewritten by a `git checkout` or `git restore` earlier on this line.
+function checkedOutCovers(ctx: Ctx, p: string): boolean {
+  if (ctx.checkedOut.has(CHECKED_OUT_ANY)) return true;
+  const base = path.posix.basename(p);
+  return [...ctx.checkedOut].some((w) => path.posix.basename(w) === base || isAncestorOrSelf(w, p));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4874,6 +4975,119 @@ function targetDirFlag(rest: Arg[]): Arg | null {
     if (t && t.length > 2 && t.startsWith('-t') && !t.startsWith('--')) return litArg(t.slice(2));
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// WK-5: `patch`, `git apply` and `git am` write the files their patch text names.
+//
+// The names are inside the patch file, not in the command, so the mapper reads a literal patch file (the bounded,
+// no-symlink reader the script checks use) and checks every name like the destination of tee, cp and mv. What it
+// cannot know for certain is an unknown write: S0, reason `<label>_unknown_<why>`, never a pass. That covers patch
+// text on stdin (heredoc, here-string, pipe, process substitution, a group or shell that feeds it), a dynamic or glob
+// word, an unreadable, missing, non-regular, oversize (LIMITS.maxPatchBytes) or just-written file, a header the
+// reader doubts, an option the parser does not list, and a working folder or git work tree the mapper cannot name.
+// A dry run (`patch --dry-run`, `git apply --check/--stat/--numstat/--summary`) writes nothing and keeps the old
+// answer, but only when every option is known, none repeats, negates or turns the apply back on, and the call has
+// no extra output file.
+//
+// Residual (same as the script-file reads): a patch file rewritten earlier in the same command line by a program the
+// mapper does not model (an interpreter, an unknown tool) is read as it is on disk now.
+function patchFamilyWrites(kind: PatchKind, args: Arg[], ctx: Ctx, run: Run, x: Exec, overrides?: Map<string, string[]>): void {
+  // Files on another machine (`ssh host 'patch …'`) are not local files: the answer stays what it was (like protectedOperandCheck).
+  if (ctx.remote) return;
+  const label = kind === 'patch' ? 'patch_write' : kind === 'apply' ? 'git_apply_write' : 'git_am_write';
+  const unknown = (why: string): void => { hit(run, 'S0', `${label}_unknown_${why}`); };
+  const ownStdin = x.cmd.heredoc !== null || x.cmd.redirects.some((r) => r.op.startsWith('<')) || x.info.upstream.length > 0 || Boolean(x.info.lost) || Boolean(ctx.stdinFeed);
+  const readsFile = (text: string): boolean => (absCandidates(text, ctx, run) || []).some((p) => readCached(run, p, LIMITS.maxPatchBytes) !== null);
+  // Reached through the tail-position scan of an unknown wrapper, a bare `patch` word is data (`poetry version patch`,
+  // `semver -i patch 1.2.3`): with no option, no stdin source and no operand that is a file, it is not a patch call.
+  if (kind === 'patch' && ctx.backstop && !ownStdin && args.every((a) => a.text !== null && !a.glob && !a.text.startsWith('-') && !readsFile(a.text))) return;
+  if (args.some((a) => a.text === null || a.glob)) { unknown('dynamic_word'); return; }
+  const call = parsePatchCall(kind, args.map((a) => a.text as string));
+  if (!call.ok) { unknown(call.why); return; }
+  if (call.info || call.readOnly) return;
+  if (ctx.cwds.length === 0 || ctx.cwds.some((c) => c === null) || ctx.cwdStrict === true) { unknown('cwd'); return; }
+  if (kind !== 'patch') {
+    // Another repository, work tree or configuration (`--work-tree`, GIT_WORK_TREE, core.worktree): the files land elsewhere.
+    const moved = (overrides !== undefined && overrides.has(CONFIG_UNKNOWN))
+      || ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE'].some((name) => envValue(x, ctx, name) !== undefined);
+    if (moved) { unknown('git_repository'); return; }
+    for (const c of ctx.cwds) {
+      const configured = gitAll(run, ctx, c, 'core.worktree', overrides);
+      if (configured === null || configured.length) { unknown('git_worktree'); return; }
+    }
+  }
+  const dir = call.dirs.length === 1 && call.dirs[0] !== '' ? call.dirs[0] : null;
+  // `..` in the folder is a form the reader does not follow (git apply refuses it; patch writes outside the tree).
+  if (dir !== null && dir.split('/').includes('..')) { unknown('dotdot'); return; }
+  // Where the patch comes from. patch: -i FILE, or its second operand, or stdin; its first operand is a file it writes.
+  // git: every operand is a patch file (`-` is stdin), none at all is stdin.
+  let patchFiles: string[] = [];
+  let fromStdin = false;
+  let originals: string[] = [];
+  if (kind === 'patch') {
+    if (call.inputs.length === 1) { originals = call.operands; if (call.inputs[0] === '-') fromStdin = true; else patchFiles = [call.inputs[0]]; }
+    else if (call.operands.length > 2) { unknown('operands'); return; }
+    else if (call.operands.length === 2) { originals = [call.operands[0]]; if (call.operands[1] === '-') fromStdin = true; else patchFiles = [call.operands[1]]; }
+    else { originals = call.operands; fromStdin = true; }
+    // GNU patch changes directory first, then opens -i FILE: which folder a relative file is read from is not certain.
+    if (dir !== null && patchFiles.some((f) => !f.startsWith('/') && !f.startsWith('~'))) { unknown('dir_relative_input'); return; }
+  } else {
+    patchFiles = call.operands.filter((o) => o !== '-');
+    fromStdin = call.operands.length === 0 || call.operands.includes('-');
+  }
+  const files: Arg[] = patchFiles.map((f) => litArg(f));
+  if (fromStdin) {
+    // Exactly one plain `< file` on this command, and nothing else feeding stdin.
+    const ins = x.cmd.redirects.filter((r) => r.op.startsWith('<'));
+    const one = ins.length === 1 && ins[0].op === '<' && (ins[0].fd === null || ins[0].fd === '0') && ins[0].target && !ins[0].target.substitution ? ins[0].target : null;
+    const target = one ? resolveWord(one, ctx, run) : null;
+    if (x.cmd.heredoc !== null || x.info.upstream.length > 0 || x.info.lost || ctx.stdinFeed || target === null || target.text === null || target.glob) { unknown('stdin'); return; }
+    files.push(litArg(target.text));
+  }
+  const texts: string[] = [];
+  for (const f of files) {
+    const abs = absCandidates(f.text as string, ctx, run);
+    if (!abs || abs.length === 0 || abs.some((p) => p.startsWith('/__unknown_cwd__'))) { unknown('path'); return; }
+    for (const p of abs) {
+      // A file this command line writes first (or a name `ln -s` made) is not the file the mapper can read now.
+      const base = path.posix.basename(p);
+      if (ctx.written.has(p) || [...ctx.written].some((w) => path.posix.basename(w) === base) || checkedOutCovers(ctx, p)) { unknown('written_here'); return; }
+      if (run.links.size > 0 && applyLinks(p, run) !== p) { unknown('link'); return; }
+      const text = readCached(run, p, LIMITS.maxPatchBytes);
+      if (text === null) { unknown('unreadable'); return; }
+      texts.push(text);
+    }
+  }
+  const writes = new Set<string>([...call.extraWrites, ...originals]);
+  for (const text of texts) {
+    const names = readPatchNames(text, kind === 'am');
+    if (names.doubt !== null) { unknown(`header_${names.doubt}`); return; }
+    for (const name of targetNames(names.names, kind, call.strip)) writes.add(name);
+  }
+  // -d / --directory: the name is also read under that folder.
+  const all = new Set<string>();
+  for (const w of writes) { all.add(w); if (dir !== null) all.add(`${dir}/${w}`); }
+  if (all.size > MAX_NAMES * 4) { unknown('too_many_targets'); return; }
+  // `git am` always, and `git apply` for a git diff run in a sub-folder, name files from the top of the work tree, not from
+  // the working folder (apply keeps the ones under that folder). A home-anchored protected path (`~/.local/bin/**`) is then
+  // read under the top as well as under the folder, for every folder the call may run in. A top that cannot be found is
+  // an unknown write.
+  const tops: string[] = [];
+  if (kind !== 'patch') {
+    for (const c of ctx.cwds) {
+      let top: string | null;
+      try { top = run.env.git.toplevel(c as string); } catch { unknown('git_toplevel'); return; }
+      if (top !== null && path.posix.isAbsolute(top) && top !== c && !tops.includes(top)) tops.push(top);
+    }
+  }
+  for (const w of all) {
+    if (clock(run)) return;
+    const arg = litArg(w);
+    checkProtectedWrite(arg, ctx, run, label, false);
+    if (!w.startsWith('/') && !w.startsWith('~')) for (const top of tops) checkProtectedWrite(litArg(path.posix.join(top, w)), ctx, run, label, false);
+    markWritten(arg, ctx);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -7059,7 +7273,11 @@ function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<str
     && unknownLong(args, indexOnlyList, 2, false) === -1;
   if (['checkout', 'restore', 'rm', 'mv'].includes(sub) && !indexOnly) {
     for (const a of args) if (a.text === null || !a.text.startsWith('-')) checkProtectedWrite(a, gctx, run, `git_${sub}`, sub === 'rm' || sub === 'mv');
+    // WK-5: checkout and restore rewrite the files they name (a ref among the words only adds a name nothing reads).
+    if (sub === 'checkout' || sub === 'restore') markCheckedOut(args, gctx, run);
   }
+  // WK-5: `git apply` and `git am` write the files their patch text names.
+  if (sub === 'apply' || sub === 'am') patchFamilyWrites(sub, args, gctx, run, x, overrides);
   // `git mv link y` moves the symlink like `mv` does (audit N3).
   if (sub === 'mv') carryLinks('mv', args, gctx, run);
   // `git credential fill` prints the stored password for a host.
@@ -8698,4 +8916,400 @@ function marrowExtract(text: string): string | null {
   }
   for (const [k, v] of Object.entries(obj)) if (k !== 'enabledPlugins' && k !== 'extraKnownMarketplaces' && /plugin|marketplace/i.test(k)) out[k] = v;
   return JSON.stringify(Object.keys(out).sort().map((k) => [k, out[k]]));
+}
+
+// ---------------------------------------------------------------------------------------------
+// A3: PowerShell and cmd text (Windows hotfix). Every function here only ADDS hits: the unchanged readings of the
+// same text still run, so no existing stop can go away.
+
+const DYN_ALL = new RegExp(DYN, 'g');
+const DYN_PLACEHOLDER = '${__marrow_dynamic}';
+
+/** An argument as text: the literal, or the literal parts with a placeholder for each unknown piece. */
+function dynText(a: Arg): string { return a.text !== null ? a.text : a.pattern.replace(DYN_ALL, DYN_PLACEHOLDER); }
+
+/** The event's own shell text on native Windows or from the PowerShell / cmd tool: the usual reading, as PowerShell / cmd text. */
+function psTop(text: string, run: Run): void {
+  const ctx = newCtx(run);
+  ctx.ps = 1;
+  evalShell(text, ctx, run);
+  psExtras(text, ctx, run);
+}
+
+/** Text a PowerShell or cmd command line runs: pwsh -c, cmd /c, iex, Start-Process, a decoded -EncodedCommand, a script file. */
+function psNested(text: string, ctx: Ctx, run: Run): void {
+  if (clock(run)) return;
+  const level = (ctx.ps || 0) + 1;
+  if (level > LIMITS.maxPsDepth) { worseParse(run, 'too_large'); run.flags.add('depth_limit'); hit(run, 'Sx', 'budget_depth'); return; }
+  const c = childCtx(ctx, { ps: level });
+  evalShell(text, c, run);
+  psExtras(text, c, run);
+}
+
+/** Code text of a pwsh -Command / cmd /c: a command line that is nothing but unknown pieces cannot be read. */
+function psCommandText(text: string, ctx: Ctx, run: Run): void {
+  if (text.trim() === '') return;
+  if (text.split(DYN_PLACEHOLDER).join('').trim() === '') { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_powershell_code'); return; }
+  psNested(text, ctx, run);
+}
+
+// The other readings of PowerShell / cmd text, next to the one evalShell already did: the text without its escape
+// characters and (on native Windows) with its backslashes kept, both as complete readings; the text with its block braces
+// turned into line breaks as a probe (only the A3 hits count, so `{ $_.Name }` does not become a dynamic command); and the
+// stops for text bash cannot read, for `& $x`, and for tree deletes through .NET.
+function psExtras(text: string, c: Ctx, run: Run): void {
+  if (run.exhausted || Buffer.byteLength(text) > LIMITS.maxCommandBytes) return;
+  const cleaned = psClean(text);
+  const flat = psFlatten(cleaned);
+  // PowerShell keeps a backslash as a plain character, even before a quote: the readings with every backslash doubled show
+  // the text as PowerShell reads it (`"C:\"` is a whole string, `C:\tools\git.exe` one program word).
+  const keep = (t: string): string => t.replace(/\\/g, '\\\\');
+  const faithful = new Set<string>([keep(text), keep(cleaned)]);
+  const full = new Set<string>(faithful);
+  full.add(cleaned);
+  full.delete(text);
+  for (const reading of full) {
+    if (clock(run)) return;
+    evalShell(reading, childCtx(c), run);
+  }
+  if (flat !== cleaned && flat !== text) psProbe(flat, c, run);
+  psLexical(psNormalize(text), cleaned, c, run, true);
+  if (PS_DYNAMIC_CALL.test(cleaned) || psDynamicCode(cleaned)) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_powershell_code'); }
+  if (psDefaultParameters(cleaned) || PS_ALIAS_DRIVE.test(cleaned)) hit(run, 'S5', 'windows_shell_delete_unparsed');
+}
+
+// An alias made through the Alias: drive (`Set-Item Alias:z Remove-Item`, `New-Item -Path Alias:z`, `${alias:z} = ...`) hides a delete verb like Set-Alias does.
+const PS_ALIAS_DRIVE = /(?:\b(?:set-item|new-item|copy-item|rename-item|move-item|set-content|si|ni|cpi|rni|mi|sc)\b[^\n;|]{0,200}\balias:|\$\{alias:)/i;
+
+// The always-on lexical check of PowerShell / cmd text (rules i to iv and vi), independent of how bash parses it: a PowerShell
+// reading and a cmd reading of the statements, with quotes as data. A delete verb is judged where a command starts (the first
+// word of a statement, or any word of an if / for / foreach / call / start statement). Text the tokenizer does not read at all
+// (an unterminated quote, a here-string, a block comment) stops when it holds a delete verb or `iex` anywhere.
+function psLexical(raw: string, cleaned: string, c: Ctx, run: Run, inPs: boolean): void {
+  if (run.psOver) return;
+  let readable = true;
+  for (const cmdMode of [false, true]) {
+    if (clock(run)) return;
+    // The tokenizer reads the escape characters (backtick, caret) itself, so an escaped quote keeps its meaning.
+    const { statements, ok } = psStatements(raw, cmdMode);
+    if (!ok) readable = false;
+    for (const st of statements) {
+      const w = st.words;
+      // Work is counted per statement and per word, and a statement of more words than one command may have stops like it does.
+      if (psSpend(run, 1 + w.length, w.length > LIMITS.maxWords)) return;
+      const open = PS_KEYWORDS.has(w[0].toLowerCase());
+      // An argument list written as an array (`@('/c', 'rd /s /q x')`) is a statement of its own that starts with the switch.
+      if (w.length > 1 && /^[/-][a-z]/i.test(w[0])) {
+        const launched = /^\//.test(w[0]) ? cmdSwitchText(w.map(litArg)) : (psOption(w[0])?.kind === 'command' ? w.slice(1).join(' ') : null);
+        if (launched !== null && launched.trim() !== '') psCommandText(launched, c, run);
+      }
+      // Both answers that look at the words after a program word are read from one pass over the statement, not one per word.
+      let deleteStops: ((p: number) => boolean) | null = null;
+      let switchAt: Int32Array | null = null;
+      for (let p = 0; p < (open ? w.length : 1); p += 1) {
+        if ((p & 63) === 63 && clock(run)) return;
+        const name = windowsProgramName(w[p]);
+        const prev = p > 0 ? w[p - 1].toLowerCase() : '';
+        // cmd: a command word that is a variable (`%X%`, `!X!`, a loop variable `%a`) can be anything. After if / for ... the
+        // command starts after the condition, so a variable that is followed by an option (`/s`, `-r`) counts too.
+        if (cmdMode && CMD_DYNAMIC_WORD.test(w[p]) && (p === 0 || prev === 'call' || prev === 'do' || prev === 'then' || prev === 'else' || prev === 'start'
+          || (open && w[p + 1] !== undefined && /^[/-]/.test(w[p + 1])))) {
+          worseParse(run, 'dynamic');
+          hit(run, 'Sx', 'dynamic_powershell_code');
+        }
+        if (WIN_DELETE_VERBS.has(name) || (inPs && WIN_SHELL_DELETE_VERBS.has(name))) {
+          if (deleteStops === null) deleteStops = windowsDeleteStopsFrom(w, st.piped);
+          if (deleteStops(p)) hit(run, 'S5', 'windows_shell_delete_unparsed');
+        } else if (name === 'iex' || name === 'invoke-expression') {
+          const code = w[p + 1];
+          if (code === undefined || st.piped || code.includes('$')) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_powershell_code'); } else psNested(code, c, run);
+        } else if (name === 'cmd') {
+          if (switchAt === null) switchAt = cmdSwitchIndexes(w);
+          const at = switchAt[p + 1];
+          // The command line is the rest of the statement from the switch on: its words are work too.
+          if (at >= 0 && !psSpend(run, w.length - at, false)) cmdLine(cmdSwitchLine(w, at), c, run);
+          if (run.psOver) return;
+        }
+      }
+    }
+  }
+  if (!readable && inPs && WIN_DELETE_WORDS.test(cleaned)) hit(run, 'S5', 'windows_shell_delete_unparsed');
+  if (!readable && inPs && PS_EVAL_WORDS.test(cleaned)) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_powershell_code'); }
+}
+
+// The work budget of psLexical, for the whole run: one step per statement and per word, 64 times the word budget of one
+// command. Over it, or over the word budget in one statement, psLexical stops reading and the run records the same stop
+// as any other word budget (Sx.budget_words). The rest of the evaluation goes on, so the other readings keep their own hits.
+const PS_LEX_STEPS = LIMITS.maxWords * 64;
+function psSpend(run: Run, steps: number, tooWide: boolean): boolean {
+  if (run.psOver) return true;
+  run.psSteps += steps;
+  if (!tooWide && run.psSteps <= PS_LEX_STEPS) return false;
+  run.psOver = true;
+  worseParse(run, 'too_large');
+  hit(run, 'Sx', 'budget_words');
+  return true;
+}
+
+// A reading whose only hits are A3 hits (and the budget stops): everything else it finds is dropped.
+function psProbe(text: string, c: Ctx, run: Run): void {
+  const saved = { hits: run.hits, parse: run.parse, flags: run.flags, risk: run.risk, head: run.headMayChange };
+  run.hits = [];
+  run.flags = new Set(saved.flags);
+  run.risk = new Set(saved.risk);
+  try {
+    evalShell(text, childCtx(c), run);
+  } finally {
+    const kept = run.hits.filter((h) => A3_REASONS.has(h.reason) || h.reason.startsWith('budget_'));
+    run.hits = saved.hits;
+    run.parse = saved.parse;
+    run.flags = saved.flags;
+    run.risk = saved.risk;
+    run.headMayChange = saved.head;
+    if (run.exhausted || run.psOver) worseParse(run, 'too_large');
+    for (const h of kept) hit(run, h.category, h.reason);
+  }
+}
+
+// Plain shell text bash cannot read, outside PowerShell / cmd text: the cmdlet name, a script block called with `&` / `.`
+// around a delete verb, `iex`, and `& $x` are still stops.
+function psUnparsed(src: string, run: Run): void {
+  const t = psClean(src);
+  if (WIN_CMDLET_WORD.test(t) || (PS_BLOCK_CALL.test(t) && WIN_DELETE_WORDS.test(t))) hit(run, 'S5', 'windows_shell_delete_unparsed');
+  if (PS_EVAL_WORDS.test(t) || PS_DYNAMIC_AMP.test(t)) hit(run, 'Sx', 'dynamic_powershell_code');
+}
+
+// The arguments of a delete verb as text; `-Confirm:$false` is a literal switch value, not a variable.
+function deleteArgs(rest: Arg[]): Array<string | null> {
+  return rest.map((a) => {
+    if (a.text !== null) return a.text;
+    const m = /^(-[A-Za-z]+:)\u0001$/.exec(a.pattern);
+    return m && a.word && a.word.variables.length === 1 && /^(?:true|false)$/i.test(a.word.variables[0]) ? `${m[1]}$${a.word.variables[0]}` : null;
+  });
+}
+
+// The program of this command by its Windows name: delete verbs, cmd, pwsh / powershell, iex, Start-Process and the rest.
+function windowsShell(args: Arg[], rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  const first = args[0].text;
+  if (first === null || ctx.a3Quiet === true) return;
+  const name = windowsProgramName(first);
+  const win = run.env.platform === 'win32';
+  if (WIN_DELETE_VERBS.has(name) || ((ctx.ps !== undefined || win) && WIN_SHELL_DELETE_VERBS.has(name))) {
+    if (windowsDeleteStops(deleteArgs(rest), x.cmd.pipedInput || x.info.upstream.length > 0)) hit(run, 'S5', 'windows_shell_delete_unparsed');
+    return;
+  }
+  switch (name) {
+    case 'cmd': return handleCmd(rest, ctx, run, x);
+    case 'pwsh': case 'powershell': return handlePowerShell(rest, ctx, run, x);
+    case 'iex': case 'invoke-expression': return handleInvokeExpression(rest, ctx, run, x);
+    case 'start-process': case 'saps': return handleStartProcess(rest, ctx, run);
+    case 'invoke-command': case 'icm': psCommandText(rest.map(dynText).join(' '), ctx, run); return;
+    case 'set-alias': case 'new-alias': case 'sal': case 'nal': case 'import-alias': {
+      // An alias can hide the verb from every later command (and `Set-Alias z Remove-Item` is the way to do it): any alias in
+      // PowerShell text or on native Windows is a stop, and so is an alias for a delete verb anywhere.
+      let hides = ctx.ps !== undefined || win;
+      for (const a of rest) {
+        const aliased = a.text === null ? '' : windowsProgramName(a.text);
+        if (WIN_DELETE_VERBS.has(aliased) || WIN_SHELL_DELETE_VERBS.has(aliased)) hides = true;
+      }
+      if (hides) hit(run, 'S5', 'windows_shell_delete_unparsed');
+      return;
+    }
+    // Windows-native destructive commands, each with a POSIX analog that stops (rsync --delete, mkfs, find -delete).
+    case 'robocopy':
+      // `robocopy <empty folder> <target> /mir` empties the target tree; /mov and /move delete what they copy.
+      if (rest.some((a) => a.text !== null && /^\/(?:mir|purge|mov|move)$/i.test(a.text))) hit(run, 'S5', 'windows_shell_delete_unparsed');
+      return;
+    case 'format-volume': case 'clear-disk': case 'initialize-disk': case 'remove-partition': case 'diskpart': case 'clear-recyclebin':
+      hit(run, 'S5', 'windows_shell_delete_unparsed');
+      return;
+    case 'format': if (rest.some((a) => a.text !== null && /^[a-z]:\\?$/i.test(a.text))) hit(run, 'S5', 'windows_shell_delete_unparsed'); return;
+    case 'vssadmin': if (rest.some((a) => a.text !== null && /^delete$/i.test(a.text))) hit(run, 'S5', 'windows_shell_delete_unparsed'); return;
+    case 'wsl': if (rest.some((a) => a.text !== null && /^--unregister/i.test(a.text))) hit(run, 'S5', 'windows_shell_delete_unparsed'); return;
+    case 'wmic':
+      if (rest.some((a) => a.text !== null && /^shadowcopy$/i.test(a.text)) && rest.some((a) => a.text !== null && /^delete$/i.test(a.text))) hit(run, 'S5', 'windows_shell_delete_unparsed');
+      execWrapper(rest, ctx, run);
+      return;
+    // Programs whose argument strings are command lines.
+    case 'invoke-wmimethod': case 'invoke-cimmethod': case 'schtasks': case 'forfiles': case 'conhost': case 'runas': case 'mshta': case 'cscript': case 'wscript':
+    case 'psexec': case 'psexec64': execWrapper(rest, ctx, run); return;
+    case 'start': if (ctx.ps !== undefined || win) execWrapper(rest, ctx, run); return;
+    default: return;
+  }
+}
+
+// The command line after cmd's /c, /k or /r switch, or null when there is none. Switches may be run together (/d/s/c) and the
+// text may follow the switch without a blank (/c"dir"); the words after it are the command line, joined as cmd joins them.
+function cmdSwitchText(rest: Arg[]): string | null {
+  for (let i = 0; i < rest.length; i += 1) {
+    const attached = cmdSwitchAttached(rest[i].text);
+    if (attached === null) continue;
+    return [attached, ...rest.slice(i + 1).map(dynText)].filter((part) => part !== '').join(' ');
+  }
+  return null;
+}
+
+// The text a cmd switch word carries after its switch letter (`/c"dir"` gives `"dir"`, `/d/s/c` gives ``), or null when the word is no /c, /k or /r switch.
+function cmdSwitchAttached(t: string | null): string | null {
+  if (t === null || t[0] !== '/') return null;
+  const parts = t.slice(1).split('/');
+  const j = parts.findIndex((part) => /^[ckr]/i.test(part));
+  if (j < 0) return null;
+  return parts[j].slice(1) + (j < parts.length - 1 ? `/${parts.slice(j + 1).join('/')}` : '');
+}
+
+// For every position, the index of the first cmd switch word at or after it (-1 = none; one extra slot past the end): the
+// answer of cmdSwitchText for every word of a statement, from one pass.
+function cmdSwitchIndexes(words: string[]): Int32Array {
+  const next = new Int32Array(words.length + 1);
+  next[words.length] = -1;
+  for (let i = words.length - 1; i >= 0; i -= 1) next[i] = cmdSwitchAttached(words[i]) !== null ? i : next[i + 1];
+  return next;
+}
+
+// The command line of a statement whose word `at` is a cmd switch: what cmdSwitchText gives for the words from there.
+function cmdSwitchLine(words: string[], at: number): string {
+  return [cmdSwitchAttached(words[at]) as string, ...words.slice(at + 1)].filter((part) => part !== '').join(' ');
+}
+
+// A cmd command line, read as it is and with one pair of outer quotes taken off.
+function cmdLine(text: string, ctx: Ctx, run: Run): void {
+  psCommandText(text, ctx, run);
+  if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) psCommandText(text.slice(1, -1), ctx, run);
+}
+
+function handleCmd(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  const line = cmdSwitchText(rest);
+  if (line !== null) { cmdLine(line, ctx, run); return; }
+  // A switch word that is not a literal might be /c; without /c cmd reads its commands from stdin.
+  if (rest.some((a) => a.text === null)) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_powershell_code'); return; }
+  stdinExec('sh', [], x, ctx, run, false, true);
+}
+
+// Programs whose argument strings are command lines (wmic process call create "cmd /c …", schtasks /tr "…", forfiles /c "…",
+// conhost cmd /c …, start /b "" cmd /c …): each argument with blanks is a command line, and so is the rest of the arguments
+// from any word that names a delete verb, a shell or PowerShell. Brace, `=` and `;` forms (@{CommandLine='…'}) are read too.
+function execWrapper(rest: Arg[], ctx: Ctx, run: Run): void {
+  const texts = rest.map(dynText);
+  let trials = 0;
+  for (let k = 0; k < rest.length; k += 1) {
+    if (clock(run)) return;
+    const w = texts[k];
+    if (/\s/.test(w) && w.length > 2) {
+      psCommandText(w, ctx, run);
+      const flat = w.replace(/[{}=;@]/g, ' ');
+      if (flat !== w) psCommandText(flat, ctx, run);
+    }
+    const t = rest[k].text;
+    const name = t === null ? '' : windowsProgramName(t);
+    if (WIN_DELETE_VERBS.has(name) || WIN_SHELL_DELETE_VERBS.has(name) || ['cmd', 'pwsh', 'powershell', 'iex', 'invoke-expression', 'start-process', 'saps', 'robocopy'].includes(name)) {
+      trials += 1;
+      if (trials > LIMITS.maxTailTrials) { exhaust(run, 'budget_argv_scan'); return; }
+      psCommandText(texts.slice(k).join(' '), ctx, run);
+    }
+  }
+}
+
+const CMD_DYNAMIC_WORD = /%[^%\s]*%|![^!\s]*!|^%{1,2}~?[a-z]$/i;
+const PS_FILE_SUFFIX = /\.(?:ps1|psm1|bat|cmd)$/i;
+
+// pwsh / powershell: -Command (and its prefixes) takes the rest of the line as code, -EncodedCommand a base64 UTF-16LE
+// text, -File a script, and a first word that is no option is read both as code and as a script path.
+function handlePowerShell(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  // With no code, file or encoded text, and with `-` (or `-Command -`), PowerShell reads its commands from stdin.
+  const stdin = () => stdinExec('sh', [], x, ctx, run, false, true);
+  let ran = false;
+  for (let i = 0; i < rest.length; i += 1) {
+    const a = rest[i];
+    if (a.text === null) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_powershell_code'); return; }
+    if (a.text === '-') { stdin(); return; }
+    const opt = psOption(a.text);
+    if (opt === null) {
+      psCommandText(rest.slice(i).map(dynText).join(' '), ctx, run);
+      if (!/\s/.test(a.text) && (PS_FILE_SUFFIX.test(a.text) || /[\\/]/.test(a.text))) powershellScript(a, ctx, run);
+      return;
+    }
+    const value = opt.attached !== null ? litArg(opt.attached) : rest[i + 1];
+    const eats = opt.attached === null ? 1 : 0;
+    if (opt.kind === 'command') {
+      const tail = (opt.attached !== null ? [litArg(opt.attached)] : []).concat(rest.slice(i + 1));
+      if (tail.length === 0 || (tail.length === 1 && tail[0].text === '-')) { stdin(); return; }
+      psCommandText(tail.map(dynText).join(' '), ctx, run);
+      return;
+    }
+    if (opt.kind === 'encoded' || (opt.name === 'ep' && value !== undefined && (value.text === null || !PS_EXECUTION_POLICIES.test(value.text)))) {
+      const decoded = value !== undefined && value.text !== null ? decodeEncodedCommand(value.text) : null;
+      if (decoded === null) hit(run, 'Sx', 'encoded_powershell_unreadable');
+      else psNested(decoded, ctx, run);
+      ran = true;
+      i += eats;
+      continue;
+    }
+    if (opt.kind === 'file') { powershellScript(value, ctx, run); return; }
+    if (opt.kind === 'value' && value !== undefined && !(value.text !== null && psOption(value.text) !== null)) i += eats;
+  }
+  if (!ran) stdin();
+}
+
+// A script PowerShell runs (-File, a path as first word). Its text is read as PowerShell text; one that cannot be read
+// (missing, too big, not a literal path, or a Windows path the mapper cannot open) is a stop.
+function powershellScript(a: Arg | undefined, ctx: Ctx, run: Run): void {
+  if (!a || a.text === null || !expandScript(run)) { if (!run.exhausted) hit(run, 'Sx', 'powershell_script_unreadable'); return; }
+  const found = (absCandidates(a.text, ctx, run) || []).filter((p) => !p.startsWith('/__unknown_cwd__')).map((p) => readCached(run, p, LIMITS.maxScriptBytes));
+  if (found.length === 0 || found.some((c) => c === null)) { hit(run, 'Sx', 'powershell_script_unreadable'); return; }
+  for (const c of found) psNested(c as string, ctx, run);
+}
+
+// iex / Invoke-Expression: a literal argument is PowerShell text; anything else (a variable, a pipe, no argument) is code
+// nobody can read.
+function handleInvokeExpression(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
+  const args = rest.filter((a) => !(a.text !== null && psOption(a.text)?.kind === 'command'));
+  const code = args[0];
+  if (code === undefined || x.cmd.pipedInput || x.info.upstream.length > 0) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_powershell_code'); return; }
+  if (code.text !== null) { psNested(code.text, ctx, run); return; }
+  if (code.alts) { for (const v of code.alts) psNested(v, ctx, run); return; }
+  worseParse(run, 'dynamic');
+  hit(run, 'Sx', 'dynamic_powershell_code');
+}
+
+const START_PROCESS_OPTIONS = ['filepath', 'argumentlist', 'workingdirectory', 'loaduserprofile', 'nonewwindow', 'passthru', 'redirectstandarderror',
+  'redirectstandardinput', 'redirectstandardoutput', 'usenewenvironment', 'verb', 'wait', 'windowstyle', 'credential', 'inputobject'];
+const START_PROCESS_VALUE_OPTIONS = new Set(['workingdirectory', 'redirectstandarderror', 'redirectstandardinput', 'redirectstandardoutput', 'verb',
+  'windowstyle', 'credential', 'inputobject']);
+
+function startOption(word: string): { name: string; attached: string | null } | null {
+  const m = /^-([a-z]+)(?::([\s\S]*))?$/i.exec(word);
+  if (!m) return null;
+  const name = m[1].toLowerCase();
+  const full = START_PROCESS_OPTIONS.find((k) => k.startsWith(name));
+  return full ? { name: full, attached: m[2] !== undefined ? m[2] : null } : null;
+}
+
+// Start-Process / saps / start: `<program> <ArgumentList>` is read as one command line. A program that is not a literal
+// is code nobody can read. Commas of -ArgumentList 'a','b' (which bash joined into one word) read as spaces.
+function handleStartProcess(rest: Arg[], ctx: Ctx, run: Run): void {
+  let program: Arg | undefined;
+  const argv: Arg[] = [];
+  let listed = false;
+  for (let i = 0; i < rest.length; i += 1) {
+    const a = rest[i];
+    const opt = a.text !== null ? startOption(a.text) : null;
+    if (opt) {
+      if (opt.name === 'filepath') program = opt.attached !== null ? litArg(opt.attached) : rest[++i];
+      else if (opt.name === 'argumentlist') {
+        listed = true;
+        if (opt.attached !== null) argv.push(litArg(opt.attached));
+        else if (i + 1 < rest.length) argv.push(rest[++i]);
+        while (i + 1 < rest.length && !(rest[i + 1].text !== null && startOption(rest[i + 1].text as string))) argv.push(rest[++i]);
+      } else if (START_PROCESS_VALUE_OPTIONS.has(opt.name) && opt.attached === null) i += 1;
+      continue;
+    }
+    if (program === undefined) program = a;
+    else if (!listed) argv.push(a);
+  }
+  if (!program) return;
+  if (program.text === null) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_powershell_code'); return; }
+  const name = windowsProgramName(program.text);
+  if ((name === 'cmd' || name === 'pwsh' || name === 'powershell') && argv.some((a) => a.text === null)) { worseParse(run, 'dynamic'); hit(run, 'Sx', 'dynamic_powershell_code'); return; }
+  psNested(`${shellQuote(program.text)} ${argv.map(dynText).join(' ').replace(/,/g, ' ')}`.trim(), ctx, run);
 }

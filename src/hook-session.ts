@@ -14,6 +14,9 @@ import {
   stableSessionWorkflowId,
 } from './hook-contract';
 import { readLocalControlState } from './control-state';
+import { recordSessionBypass } from './owner-bypass';
+import { armKeylessNotice } from './keyless-notice';
+import { marrowSessionId } from './session-id';
 import { clearSessionLoopGuard } from './session-loop-guard';
 import { approvalHostFor, flushHoldOutbox, hostSessionIdFor, noteCursorSession, type HoldContext } from './host-approval';
 
@@ -112,8 +115,8 @@ export function sessionEndAutoCommitOpen(value?: unknown): boolean {
 export async function runSessionHookCommand(input?: unknown): Promise<void> {
   const identity = resolveNativeHookIdentity(process.argv[2]);
   try {
-    if (process.env.MARROW_AUTO_HOOK === 'false') return;
-    try { if (!readLocalControlState().enabled) return; } catch { return; }
+    if (process.env.MARROW_AUTO_HOOK === 'false') { await recordSessionBypass('hooks_switched_off', identity, input); return; }
+    try { if (!readLocalControlState().enabled) return; } catch { /* unreadable control state: keep checking */ }
     const resolved = identity.environment;
     const payload = readStopHookInput(input);
     const raw = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload as Record<string, unknown> : {};
@@ -138,11 +141,14 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
       return;
     }
     const source = readStopHookSource(payload);
-    const sessionId = resolved.sessionId || source.session_id || source.conversation_id || source.task_id
-      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]);
+    const sessionId = marrowSessionId(resolved.sessionId || source.session_id || source.conversation_id || source.task_id
+      || stableSessionWorkflowId(undefined, [identity.harness, process.cwd()]), identity.agent_id);
     const agentId = identity.agent_id;
     try { clearSessionLoopGuard({ sessionId, agentId, harness: identity.harness }); } catch { /* session close remains best effort */ }
-    if (!resolved.apiKey) return;
+    if (!resolved.apiKey) {
+      armKeylessNotice(identity.harness, resolved.sessionId || (typeof raw.session_id === 'string' ? raw.session_id : undefined));
+      return;
+    }
     const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
     const workflowId = stableSessionWorkflowId(
       sessionId,

@@ -115,8 +115,8 @@ test('the new core obeys every exactness rule of the old one: another version, i
   const cfg = (edit) => withConfig(NEW, (c) => ({ ...c, ...edit(c) }));
   const swapCase = (text) => text.replace(/[A-Za-z]/g, (ch) => (ch === ch.toLowerCase() ? ch.toUpperCase() : ch.toLowerCase()));
   const rows = [
-    ['version 3.9.1080 throughout', sh(cfg(() => ({ version: '3.9.1080' })), '3.9.1080')],
-    ['3.9.104 integrity under 3.9.108', sh(cfg(() => ({ integrity: `sha512-${'A'.repeat(86)}==` })))],
+    ['version 3.9.1090 throughout', sh(cfg(() => ({ version: '3.9.1090' })), '3.9.1090')],
+    ['3.9.104 integrity under 3.9.109', sh(cfg(() => ({ integrity: `sha512-${'A'.repeat(86)}==` })))],
     ['integrity case swapped', sh(cfg((c) => ({ integrity: `sha512-${swapCase(c.integrity.slice(7))}` })))],
     ['integrity null', sh(cfg(() => ({ integrity: null })))],
     ['stale SDK pin', sh(cfg((c) => ({ sdk: { ...c.sdk, integrity: `sha512-${'B'.repeat(86)}==` } })))],
@@ -218,9 +218,11 @@ test('gating through a symlinked HOME equals gating through the real HOME and th
     const rows = await pool([...risky, ...safe].map((command) => async () => ({
       command, newReal: await call(NEW, home, command), newLinked: await call(NEW, linked, command), oldReal: await call(OLD, homeOld, command),
     })), 3);
+    // The once-per-session keyless notice (MCP-5) lands on whichever of these parallel runs claims the session marker first; the answer is compared without it.
+    const answer = (result) => { try { const { systemMessage, ...rest } = JSON.parse(result.stdout); return JSON.stringify(rest); } catch { return result.stdout; } };
     for (const row of rows) {
       for (const other of [row.newLinked, row.oldReal]) {
-        assert.equal(other.stdout, row.newReal.stdout, `${row.command}: same answer`);
+        assert.equal(answer(other), answer(row.newReal), `${row.command}: same answer`);
         assert.equal(other.code, row.newReal.code, `${row.command}: same exit`);
       }
       assert.equal(row.newReal.code, 0, row.command);

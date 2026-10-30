@@ -1,3 +1,4 @@
+import { type WinEnsure, type WinEnsureOk } from './win-private-state';
 export type LoopGuardOperation = {
     sessionId?: string;
     agentId?: string;
@@ -16,6 +17,12 @@ export type LoopGuardDecision = {
 export declare class UnsafeLoopGuardStateError extends Error {
     constructor();
 }
+export interface LoopGuardPlatform {
+    platform: NodeJS.Platform;
+    ensure(home: string): WinEnsure;
+    verify(home: string, proof: WinEnsureOk): boolean;
+}
+export declare function withLoopGuardPlatform<T>(injected: LoopGuardPlatform, run: () => T): T;
 export declare function consultSessionLoopGuard(operation: LoopGuardOperation, options?: {
     home?: string;
     now?: number;

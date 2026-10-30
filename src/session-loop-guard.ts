@@ -18,6 +18,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hookToolCommand, normalizeHookToolName } from './hook-tool-policy';
+import { ensureWindowsPrivateState, realWindowsDeps, verifyWindowsPrivateState, type WinEnsure, type WinEnsureOk } from './win-private-state';
 
 const STATE_VERSION = 1;
 const STATE_DIRECTORY = 'session-loop-guard';
@@ -87,7 +88,7 @@ function uid(): number | null {
 
 function owned(stat: Stats): boolean {
   const current = uid();
-  return current == null || stat.uid === current;
+  return current != null && stat.uid === current;
 }
 
 function exactPrivate(stat: Stats, mode: number): boolean {
@@ -119,7 +120,140 @@ function paths(home = homedir()): { marrow: string; directory: string; target: s
   return { marrow, directory, target: join(directory, STATE_FILENAME) };
 }
 
+// ---- Windows (3.9.106 spec, part A2). Chosen only by the real process.platform. ----------------------
+// Mode bits and uid mean nothing on Windows, so the private-state proof is src/win-private-state.ts.
+// The ACL query (it starts PowerShell) runs BEFORE the state lock is taken, never while it is held;
+// inside the lock only the cheap structural half runs. The platform and the proof are one injectable
+// set: production uses process.platform and the real proof; a test passes its own through
+// withLoopGuardPlatform(). There is no env switch.
+export interface LoopGuardPlatform {
+  platform: NodeJS.Platform;
+  ensure(home: string): WinEnsure;
+  verify(home: string, proof: WinEnsureOk): boolean;
+}
+let injectedPlatform: LoopGuardPlatform | null = null;
+
+export function withLoopGuardPlatform<T>(injected: LoopGuardPlatform, run: () => T): T {
+  const previous = injectedPlatform;
+  injectedPlatform = injected;
+  let later = false;
+  try {
+    const result = run();
+    if (result && typeof (result as { then?: unknown }).then === 'function') {
+      later = true;
+      return (result as unknown as Promise<unknown>).finally(() => { injectedPlatform = previous; }) as unknown as T;
+    }
+    return result;
+  } finally {
+    if (!later) injectedPlatform = previous;
+  }
+}
+
+function isWin32(): boolean {
+  return (injectedPlatform ? injectedPlatform.platform : process.platform) === 'win32';
+}
+
+type WindowsProven = { paths: ReturnType<typeof paths>; proof: WinEnsureOk };
+// Set while this process holds the state lock, after the lock-time structural check passed.
+let lockScoped: { home: string; paths: ReturnType<typeof paths> } | null = null;
+
+/** The ACL proof. Refuses to run while the lock is held: no PowerShell spawn inside the lock. */
+function proveWindows(home: string): WindowsProven {
+  if (lockScoped) return unsafe();
+  let result: WinEnsure;
+  try {
+    result = injectedPlatform ? injectedPlatform.ensure(home) : ensureWindowsPrivateState(home, realWindowsDeps());
+  } catch { return unsafe(); }
+  if (!result.ok) return unsafe();
+  return { paths: { marrow: result.marrow, directory: result.directory, target: result.target }, proof: result };
+}
+
+function verifyWindows(home: string, proof: WinEnsureOk): boolean {
+  try {
+    return injectedPlatform ? injectedPlatform.verify(home, proof) : verifyWindowsPrivateState(home, proof, realWindowsDeps());
+  } catch { return false; }
+}
+
+function ensureDirectoriesWindows(home: string): ReturnType<typeof paths> {
+  const held = lockScoped;
+  return held && held.home === home ? held.paths : proveWindows(home).paths;
+}
+
+/** A plain file reached through no link, not hard-linked, and the same object before and after open (no O_NOFOLLOW on Windows). */
+function windowsPlainFile(fd: number | null, path: string): boolean {
+  const byPath = lstatSync(path, { bigint: true });
+  if (!byPath.isFile() || byPath.isSymbolicLink() || byPath.nlink !== 1n) return false;
+  if (fd === null) return true;
+  const opened = fstatSync(fd, { bigint: true });
+  return opened.isFile() && opened.nlink === 1n && opened.dev === byPath.dev && opened.ino === byPath.ino;
+}
+
+function withStateLockWindows<T>(home: string | undefined, callback: () => T): T {
+  const resolved = home ?? homedir();
+  const proven = proveWindows(resolved);
+  const lock = join(proven.paths.directory, '.state.lock');
+  let fd = -1;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+      if (!windowsPlainFile(fd, lock)) { closeSync(fd); fd = -1; return unsafe(); }
+      break;
+    } catch (error) {
+      if (fd >= 0) { try { closeSync(fd); } catch { /* already unsafe */ } fd = -1; }
+      if (error instanceof UnsafeLoopGuardStateError) throw error;
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return unsafe();
+      let stat;
+      try { stat = lstatSync(lock, { bigint: true }); } catch (gone) {
+        if ((gone as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        return unsafe();
+      }
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n) return unsafe();
+      if (Date.now() - Number(stat.mtimeMs) > 30_000) {
+        unlinkSync(lock);
+        continue;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+  if (fd < 0) return unsafe();
+  try {
+    // Holding the lock: only the structural half and the folder identity of the proof above.
+    if (!verifyWindows(resolved, proven.proof)) return unsafe();
+    lockScoped = { home: resolved, paths: proven.paths };
+    return callback();
+  } finally {
+    lockScoped = null;
+    closeSync(fd);
+    try { unlinkSync(lock); } catch { /* a stopped process leaves a bounded stale lock */ }
+  }
+}
+
+function readStateWindows(home: string): { state: GuardState; target: string; directory: string } {
+  const { target, directory } = ensureDirectoriesWindows(home);
+  let stat;
+  try { stat = lstatSync(target, { bigint: true }); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { state: emptyState(), target, directory };
+    return unsafe();
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || stat.size < 2n || stat.size > BigInt(STATE_MAX_BYTES)) return unsafe();
+  let fd = -1;
+  try {
+    fd = openSync(target, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    const opened = fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.nlink !== 1n || opened.dev !== stat.dev || opened.ino !== stat.ino) return unsafe();
+    const raw = readFileSync(fd, 'utf8');
+    if (Buffer.byteLength(raw) > STATE_MAX_BYTES) return unsafe();
+    return { state: validateState(JSON.parse(raw)), target, directory };
+  } catch (error) {
+    if (error instanceof UnsafeLoopGuardStateError) throw error;
+    return unsafe();
+  } finally {
+    if (fd >= 0) closeSync(fd);
+  }
+}
+
 function ensureDirectories(home = homedir()): ReturnType<typeof paths> {
+  if (isWin32()) return ensureDirectoriesWindows(home);
   const result = paths(home);
   if (!existsSync(result.marrow)) mkdirSync(result.marrow, { mode: 0o700 });
   const marrowStat = lstatSync(result.marrow);
@@ -131,6 +265,7 @@ function ensureDirectories(home = homedir()): ReturnType<typeof paths> {
 }
 
 function withStateLock<T>(home: string | undefined, callback: () => T): T {
+  if (isWin32()) return withStateLockWindows(home, callback);
   const { directory } = ensureDirectories(home);
   const lock = join(directory, '.state.lock');
   let fd = -1;
@@ -206,6 +341,7 @@ function validateState(value: unknown): GuardState {
 }
 
 function readState(home = homedir()): { state: GuardState; target: string; directory: string } {
+  if (isWin32()) return readStateWindows(home);
   const { target, directory } = ensureDirectories(home);
   if (!existsSync(target)) return { state: emptyState(), target, directory };
   const stat = lstatSync(target);
@@ -256,6 +392,7 @@ function writeState(state: GuardState, target: string, directory: string): void 
   let fd = -1;
   try {
     fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+    if (isWin32() && !windowsPlainFile(fd, temporary)) unsafe();
     writeFileSync(fd, raw, 'utf8');
     closeSync(fd);
     fd = -1;

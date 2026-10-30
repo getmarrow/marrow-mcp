@@ -36,8 +36,9 @@ const lower = (len) => Array.from({ length: len }, (_, i) => (i % 7 === 6 ? '-' 
 const hex = (len) => Array.from({ length: len }, () => pick(HEX)).join('');
 const word = (len) => Array.from({ length: len }, () => pick(LO)).join('');
 const upperDigits = (len) => shuffle([pick(UP), pick(DI), ...Array.from({ length: len - 2 }, () => pick(UP + DI))]);
-// A leading letter: a value that starts with `-` reads as a flag, a different (and stricter) case.
-const dummySecret = () => `s${crypto.randomBytes(24).toString('base64url')}`;
+// A fixed non-key prefix and hex, checked against key-class.ts on every draw: a random base64url value reads as an
+// unknown `sk_` key (live) about once in 2,000 draws and splits the key of its sibling (test/support/dummy-secret.cjs).
+const { dummySecret } = require('./support/dummy-secret.cjs');
 
 const bash = (command) => ({ tool_name: 'Bash', tool_input: { command } });
 const mcp = (tool, input) => ({ tool_name: tool, tool_input: input });
