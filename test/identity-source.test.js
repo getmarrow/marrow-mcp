@@ -1,7 +1,8 @@
 'use strict';
-// MCP-1 (U7): name the exact SOURCE of the agent id (variable + file) in the credential-scope text and the
-// tool 403, and `marrow-mcp identity --explain --json` (no network, keyless). Rows T1-T7, M1, M2, M4, M5.
-// Only explanatory text and a read-only subcommand are new: no decision, status code or identity changes.
+// MCP-1 (U7), after the cut (cut-mcp1): name the SOURCE of the agent id (variable + origin) in the credential-scope text and the
+// tool 403, and `marrow-mcp identity --explain --json` (no network, keyless). Rows T1-T7, M2, M4, M5. No host config file
+// is read to find it (test/identity-source-no-config-open.test.js traces the opens): `file` is null unless the id came from
+// ~/.marrow/env. Only explanatory text and a read-only subcommand are new: no decision, status code or identity changes.
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -35,10 +36,6 @@ function writeFile(file, text, mode = 0o600) {
 
 const mcpJson = (block, server = 'marrow') => JSON.stringify({ mcpServers: { [server]: { command: 'npx', args: ['-y', '@getmarrow/mcp'], env: block } } });
 
-function codexToml(block) {
-  return `[mcp_servers.marrow]\ncommand = "npx"\nargs = ["-y", "@getmarrow/mcp"]\n\n[mcp_servers.marrow.env]\n${Object.entries(block).map(([k, v]) => `${k} = "${v}"`).join('\n')}\n`;
-}
-
 function fixture(prefix) {
   const home = privateDir(`${prefix}-home`);
   const cwd = privateDir(`${prefix}-cwd`);
@@ -58,7 +55,7 @@ function resolveIn(env, fx) {
 
 function explainIn(env, fx) {
   const resolved = resolveIn(env, fx);
-  return lazy.explain.explainAgentIdSource(resolved, { home: fx.home, cwd: fx.cwd });
+  return lazy.explain.explainAgentIdSource(resolved);
 }
 
 const KEYS = ['agent_id', 'file', 'origin', 'variable'];
@@ -178,13 +175,12 @@ const PROTECTED_EVENT = () => ({
 
 const HEAD = (agent, code = 'MARROW_AGENT_SCOPE_MISMATCH') => `This Marrow API key is not authorized to obtain action permits for agent "${agent}" (HTTP 403 ${code}).`;
 const BASE_NEXT_STEP = 'Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.';
-const sentenceBlock = (variable, file) => `This server took the id from ${variable} in the marrow env block of ${file}, which overrides the host's environment.`;
-const sentenceEnv = (variable, tail = 'no Marrow MCP config file sets it') => `This server took the id from ${variable} in this server's environment (set by the host or its launcher; ${tail}).`;
+const sentenceEnv = (variable) => `This server took the id from ${variable} in this server's environment (set by the host or its launcher).`;
 
 // =====================================================================================================================
-// T1  id from the marrow env block of ~/.mcp.json (same value in process env): variable + file named, exactly the U7 line
+// T1  id from the process env (a host config file holds the same value): variable + origin named, exactly the U7 line, no file
 // =====================================================================================================================
-test('T1 tool 403: the id taken from the marrow env block of ~/.mcp.json names MARROW_FLEET_AGENT_ID and that file', () => {
+test('T1 tool 403: the id from the process env names MARROW_FLEET_AGENT_ID and the environment, never a config file', () => {
   const fx = fixture('t1');
   try {
     const key = dummyKey();
@@ -194,15 +190,15 @@ test('T1 tool 403: the id taken from the marrow env block of ~/.mcp.json names M
     assert.equal(payload.error.status, 403);
     assert.equal(payload.error.code, 'MARROW_AGENT_SCOPE_MISMATCH');
     assert.equal(payload.error.exact_fix, SCOPE_FIX, 'the backend repair text stays byte-equal');
-    assert.ok(payload.error.message.includes(sentenceBlock('MARROW_FLEET_AGENT_ID', '~/.mcp.json')), payload.error.message);
-    assert.ok(!payload.error.message.includes(file) && !payload.error.message.includes(fx.home), 'a label, never the absolute path');
+    assert.ok(payload.error.message.includes(sentenceEnv('MARROW_FLEET_AGENT_ID')), payload.error.message);
+    assert.ok(!payload.error.message.includes(file) && !payload.error.message.includes(fx.home) && !/mcp\.json|config file/.test(payload.error.message), 'no file, label or path');
     assert.deepEqual(Object.keys(payload.agent_id_source).sort(), KEYS);
-    assert.deepEqual(payload.agent_id_source, { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file: '~/.mcp.json' });
+    assert.deepEqual(payload.agent_id_source, { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file: null });
     assert.ok(requests.length >= 1 && requests.every((r) => r.agent === 'agent-alpha'), 'the identity sent is unchanged');
   } finally { fx.cleanup(); }
 });
 
-test('T1 credential-scope text (hook): the same line, the BASE head and BASE next step kept', async () => {
+test('T1 credential-scope text (hook): the same line without a file, the BASE head and BASE next step kept', async () => {
   const fx = fixture('t1h');
   try {
     const key = dummyKey();
@@ -210,8 +206,8 @@ test('T1 credential-scope text (hook): the same line, the BASE head and BASE nex
     const out = await runHookScope(fx, { MARROW_API_KEY: key, MARROW_FLEET_AGENT_ID: 'agent-alpha' }, PROTECTED_EVENT());
     const decision = JSON.parse(out).hookSpecificOutput;
     assert.equal(decision.permissionDecision, 'deny');
-    assert.equal(decision.permissionDecisionReason, `${HEAD('agent-alpha')} ${sentenceBlock('MARROW_FLEET_AGENT_ID', '~/.mcp.json')} ${BASE_NEXT_STEP}`);
-    assert.ok(!decision.permissionDecisionReason.includes(file), 'a label, never the absolute path');
+    assert.equal(decision.permissionDecisionReason, `${HEAD('agent-alpha')} ${sentenceEnv('MARROW_FLEET_AGENT_ID')} ${BASE_NEXT_STEP}`);
+    assert.ok(!decision.permissionDecisionReason.includes(file) && !/mcp\.json|config file/.test(decision.permissionDecisionReason), 'no file, label or path');
   } finally { fx.cleanup(); }
 });
 
@@ -260,9 +256,9 @@ test('T1 credential-scope text for an unsafe id says <unsafe id>, never the valu
 });
 
 // =====================================================================================================================
-// T2  id only in process env, no Marrow MCP config sets it
+// T2  id only in process env: the same line whatever any config file holds
 // =====================================================================================================================
-test('T2 tool 403 and hook text: process env only says no Marrow MCP config file sets it', async () => {
+test('T2 tool 403 and hook text: the process env sentence names no config file, whatever the files at the listed paths hold', async () => {
   const fx = fixture('t2');
   try {
     const key = dummyKey();
@@ -368,7 +364,7 @@ test('T4 / T-SEC: no output, report or new file holds the dummy key; only the ag
       assert.equal(everything.includes(secret), false, 'a dummy key reached an output');
       assert.equal(everything.includes(secret.slice(0, 18)), false, 'a dummy key prefix reached an output');
     }
-    assert.ok(tool.payload.error.message.includes('~/.mcp.json') && !tool.payload.error.message.includes(file), 'the file is named by its label');
+    assert.ok(!tool.payload.error.message.includes('mcp.json') && !tool.payload.error.message.includes(file), 'no config file is named');
     assert.ok(!/MARROW_API_KEY|MARROW_BASE_URL|"env"|mcpServers/.test(tool.payload.error.message + hook), 'no env block or other variable text');
     // 5. every file under the fixture home: only the files the fixture wrote hold the key; no new file does
     for (const p of treeFiles(fx.home)) {
@@ -388,7 +384,7 @@ test('T4 / T-SEC: no output, report or new file holds the dummy key; only the ag
   } finally { fx.cleanup(); }
 });
 
-test('M4 the new line names the variable and file only: no key, env block, or identity-changing command', async () => {
+test('M4 the new line names the variable and origin only: no key, env block, or identity-changing command', async () => {
   const fx = fixture('m4');
   try {
     const key = dummyKey();
@@ -438,7 +434,7 @@ test('T5 identity --explain --json: exactly {agent_id, variable, origin, file}, 
     assert.equal(child.stdout.trim().split('\n').length, 1, 'one line of JSON');
     const out = JSON.parse(child.stdout);
     assert.deepEqual(Object.keys(out).sort(), KEYS);
-    assert.deepEqual(out, { agent_id: 'agent-cursor', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file });
+    assert.deepEqual(out, { agent_id: 'agent-cursor', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file: null });
     // keyless: no key anywhere is fine; and no id at all is origin none
     const none = runExplain(fx, {});
     assert.equal(none.child.status, 0, none.child.stderr);
@@ -448,7 +444,8 @@ test('T5 identity --explain --json: exactly {agent_id, variable, origin, file}, 
     const human = runExplain(fx, { MARROW_FLEET_AGENT_ID: 'agent-cursor' }, ['identity', '--explain']);
     assert.equal(human.child.status, 0);
     assert.match(human.child.stdout, /MARROW_FLEET_AGENT_ID/);
-    assert.ok(human.child.stdout.includes('File: ~/.cursor/mcp.json') && !human.child.stdout.includes(file), 'the text form prints the label; only --json holds the path');
+    assert.ok(!human.child.stdout.includes('File:') && !human.child.stdout.includes(file) && !/mcp\.json|config file/.test(human.child.stdout), 'no file line, label or path in the text form');
+    assert.ok(human.child.stdout.includes(sentenceEnv('MARROW_FLEET_AGENT_ID')), human.child.stdout);
     const usage = runExplain(fx, {}, ['identity']);
     assert.equal(usage.child.status, 2);
     assert.equal(usage.child.stdout, '');
@@ -462,7 +459,7 @@ test('T5 / M2 clean-child: a child with a scratch env gives the same answer as t
   try {
     const key = dummyKey();
     const block = { MARROW_FLEET_AGENT_ID: 'agent-alpha', MARROW_API_KEY: key };
-    const file = writeFile(path.join(fx.home, '.mcp.json'), mcpJson(block));
+    writeFile(path.join(fx.home, '.mcp.json'), mcpJson(block));
     // The runner (this process) carries another agent's id; the child must never see it.
     const runner = 'codex-bob';
     const previous = process.env.MARROW_FLEET_AGENT_ID;
@@ -472,9 +469,9 @@ test('T5 / M2 clean-child: a child with a scratch env gives the same answer as t
       const child = spawnSync(process.execPath, [CLI, 'identity', '--explain', '--json'], { cwd: fx.cwd, encoding: 'utf8', timeout: 20_000, env: fromScratch });
       assert.equal(child.status, 0, child.stderr);
       const inProcess = jsonOf(lazy.explain.explainAgentIdSource(
-        lazy.env.resolveMarrowEnv({ env: fromScratch, home: fx.home, cwd: fx.cwd, trustedOnly: true }), { home: fx.home, cwd: fx.cwd }));
+        lazy.env.resolveMarrowEnv({ env: fromScratch, home: fx.home, cwd: fx.cwd, trustedOnly: true })));
       assert.deepEqual(JSON.parse(child.stdout), inProcess);
-      assert.deepEqual(inProcess, { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file });
+      assert.deepEqual(inProcess, { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file: null });
       assert.equal((child.stdout + child.stderr).includes(runner), false, 'the runner id appears in 0 output bytes');
       assert.equal(child.stdout.includes(key), false);
     } finally {
@@ -484,11 +481,9 @@ test('T5 / M2 clean-child: a child with a scratch env gives the same answer as t
 });
 
 // =====================================================================================================================
-// T6  unsafe config files are not named: symlink, group-writable, > 2 MiB, invalid JSON (and invalid TOML)
+// T6  a symlink, group-writable, > 2 MiB, invalid or non-file config at a listed path changes nothing: it is never looked at
 // =====================================================================================================================
-const SAFE_NOTE = 'a Marrow MCP config file could not be read safely, so none is named';
-
-test('T6 an unsafe ~/.mcp.json is never named as the source: "could not be read safely" instead', async () => {
+test('T6 whatever sits at ~/.mcp.json (symlink, group-writable, over 2 MiB, invalid JSON, a directory) the sentence and JSON are the same, with no "could not be read" note', async () => {
   const unsafeCases = {
     symlink(file) {
       const target = path.join(path.dirname(file), 'real-mcp.json');
@@ -510,42 +505,18 @@ test('T6 an unsafe ~/.mcp.json is never named as the source: "could not be read 
       const lookup = explainIn({ MARROW_API_KEY: key, MARROW_FLEET_AGENT_ID: 'agent-alpha' }, fx);
       assert.equal(lookup.origin, 'process_env', label);
       assert.equal(lookup.file, null, `${label}: not named`);
-      assert.equal(lazy.explain.agentIdSourceSentence(lookup), sentenceEnv('MARROW_FLEET_AGENT_ID', SAFE_NOTE), label);
+      assert.equal(lazy.explain.agentIdSourceSentence(lookup), sentenceEnv('MARROW_FLEET_AGENT_ID'), label);
       assert.deepEqual(jsonOf(lookup), { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file: null }, label);
       const out = await runHookScope(fx, { MARROW_API_KEY: key, MARROW_FLEET_AGENT_ID: 'agent-alpha' }, PROTECTED_EVENT());
       const reason = JSON.parse(out).hookSpecificOutput.permissionDecisionReason;
-      assert.ok(reason.includes('could not be read safely'), `${label}: ${reason}`);
-      assert.ok(!reason.includes(file) && !reason.includes('real-mcp.json'), `${label}: file not named`);
-    } finally { fx.cleanup(); }
-  }
-});
-
-test('T6 an unsafe file next to a safe match: only the safe file is named, and the unsafe one is flagged', () => {
-  const fx = fixture('t6b');
-  try {
-    const safe = writeFile(path.join(fx.home, '.cursor', 'mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: 'agent-alpha' }));
-    writeFile(path.join(fx.home, '.mcp.json'), '{not json', 0o600);
-    const lookup = explainIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: 'agent-alpha' }, fx);
-    assert.equal(lookup.file, safe);
-    assert.equal(lookup.fileLabel, '~/.cursor/mcp.json');
-    assert.equal(lazy.explain.agentIdSourceSentence(lookup), `${sentenceBlock('MARROW_FLEET_AGENT_ID', '~/.cursor/mcp.json')} Another Marrow MCP config file could not be read safely.`);
-  } finally { fx.cleanup(); }
-});
-
-test('T6 an invalid or group-writable ~/.codex/config.toml is not named either', () => {
-  for (const [label, mode, text] of [['invalid TOML', 0o600, '[mcp_servers.marrow.env\nMARROW_FLEET_AGENT_ID = "agent-alpha"\n'], ['group-writable TOML', 0o660, codexToml({ MARROW_FLEET_AGENT_ID: 'agent-alpha' })]]) {
-    const fx = fixture('t6c');
-    try {
-      writeFile(path.join(fx.home, '.codex', 'config.toml'), text, mode);
-      const lookup = explainIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: 'agent-alpha' }, fx);
-      assert.equal(lookup.file, null, label);
-      assert.ok(lazy.explain.agentIdSourceSentence(lookup).includes('could not be read safely'), label);
+      assert.equal(reason, `${HEAD('agent-alpha')} ${sentenceEnv('MARROW_FLEET_AGENT_ID')} ${BASE_NEXT_STEP}`, label);
+      assert.ok(!reason.includes(file) && !reason.includes('real-mcp.json') && !reason.includes('read safely'), `${label}: file not named`);
     } finally { fx.cleanup(); }
   }
 });
 
 // =====================================================================================================================
-// T7 + M1  fleet-key and two-file cases; the fixed file list; the same variable only
+// T7  fleet-key case
 // =====================================================================================================================
 test('T7 fleet_key_match: origin, variable and the key variable NAME (never a value)', () => {
   const fx = fixture('t7');
@@ -557,7 +528,7 @@ test('T7 fleet_key_match: origin, variable and the key variable NAME (never a va
     assert.equal(resolved.apiKey, fleetKey, 'the key choice is BASE behavior');
     assert.equal(resolved.agentId, 'fleet-agent-a');
     assert.deepEqual({ ...resolved.agentIdSource }, { origin: 'fleet_key_match', variable: 'MARROW_FLEET_AGENT_ID', keyVariable: 'MARROW_KEY_ALPHA' });
-    const lookup = lazy.explain.explainAgentIdSource(resolved, { home: fx.home, cwd: fx.cwd });
+    const lookup = lazy.explain.explainAgentIdSource(resolved);
     assert.deepEqual(jsonOf(lookup), { agent_id: 'fleet-agent-a', variable: 'MARROW_FLEET_AGENT_ID', origin: 'fleet_key_match', file: null });
     const sentence = lazy.explain.agentIdSourceSentence(lookup);
     assert.ok(sentence.startsWith(sentenceEnv('MARROW_FLEET_AGENT_ID')), sentence);
@@ -569,78 +540,6 @@ test('T7 fleet_key_match: origin, variable and the key variable NAME (never a va
     // same key as the direct one: BASE answers with the direct branch, so the origin is process_env
     const same = resolveIn({ MARROW_API_KEY: direct, MARROW_FLEET_AGENT_ID: 'fleet-agent-a', MARROW_AGENT_ID_ALPHA: 'fleet-agent-a', MARROW_KEY_ALPHA: direct }, fx);
     assert.equal(same.agentIdSource.origin, 'process_env');
-  } finally { fx.cleanup(); }
-});
-
-test('T7 two files hold the id: "one of: a, b" in the fixed-list order; the file field is one string', () => {
-  const fx = fixture('t7b');
-  try {
-    const a = writeFile(path.join(fx.home, '.mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: 'agent-alpha' }));
-    const b = writeFile(path.join(fx.cwd, '.cursor', 'mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: 'agent-alpha' }));
-    const lookup = explainIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: 'agent-alpha' }, fx);
-    assert.equal(lookup.file, `one of: ${a}, ${b}`);
-    assert.equal(lookup.fileLabel, 'one of: ~/.mcp.json, <cwd>/.cursor/mcp.json');
-    assert.deepEqual(Object.keys(jsonOf(lookup)).sort(), KEYS);
-    assert.equal(lazy.explain.agentIdSourceSentence(lookup), sentenceBlock('MARROW_FLEET_AGENT_ID', 'one of: ~/.mcp.json, <cwd>/.cursor/mcp.json'));
-  } finally { fx.cleanup(); }
-});
-
-test('M1 the fixed list: six config files, the marrow server entry only, the same variable only; never hermes or .env', () => {
-  const fx = fixture('m1');
-  try {
-    const id = 'agent-alpha';
-    const want = {
-      home_mcp: writeFile(path.join(fx.home, '.mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: id })),
-      cwd_mcp: writeFile(path.join(fx.cwd, '.mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: id })),
-      home_cursor: writeFile(path.join(fx.home, '.cursor', 'mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: id })),
-      cwd_cursor: writeFile(path.join(fx.cwd, '.cursor', 'mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: id })),
-      codex: writeFile(path.join(fx.home, '.codex', 'config.toml'), codexToml({ MARROW_FLEET_AGENT_ID: id })),
-      gemini: writeFile(path.join(fx.home, '.gemini', 'settings.json'), mcpJson({ MARROW_FLEET_AGENT_ID: id })),
-    };
-    // Files that must never be named or opened.
-    const hermes = writeFile(path.join(fx.home, '.hermes', 'config.yaml'), `mcp_servers:\n  marrow:\n    env:\n      MARROW_FLEET_AGENT_ID: ${id}\n`);
-    const dotenv = writeFile(path.join(fx.cwd, '.env'), `MARROW_FLEET_AGENT_ID=${id}\n`);
-    const fleetEnv = writeFile(path.join(fx.home, '.marrow', 'fleet.env'), `MARROW_FLEET_AGENT_ID=${id}\n`);
-    const wrongVariable = writeFile(path.join(fx.home, '.cursor', 'other.json'), mcpJson({ MARROW_FLEET_AGENT_ID: id }));
-    const opened = [];
-    const originals = { openSync: fs.openSync, readFileSync: fs.readFileSync };
-    fs.openSync = function (file, ...rest) { opened.push(String(file)); return originals.openSync.call(fs, file, ...rest); };
-    fs.readFileSync = function (file, ...rest) { opened.push(String(file)); return originals.readFileSync.call(fs, file, ...rest); };
-    let lookup;
-    try {
-      lookup = explainIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: id }, fx);
-    } finally { Object.assign(fs, originals); }
-    const order = [want.home_mcp, want.cwd_mcp, want.home_cursor, want.cwd_cursor, want.codex, want.gemini];
-    assert.equal(lookup.file, `one of: ${order.join(', ')}`);
-    for (const never of [hermes, dotenv, fleetEnv, wrongVariable]) {
-      assert.ok(!lookup.file.includes(never), `${never} named`);
-      assert.ok(!opened.some((p) => path.resolve(p) === never), `${never} opened`);
-    }
-    assert.ok(!opened.some((p) => /\.hermes|\.env$|fleet\.env/.test(p)), 'no credential store or .env is opened');
-    // Same variable only: MARROW_AGENT_ID in a file does not match a MARROW_FLEET_AGENT_ID id.
-    const only = fixture('m1b');
-    try {
-      writeFile(path.join(only.home, '.mcp.json'), mcpJson({ MARROW_AGENT_ID: id }));
-      assert.equal(explainIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: id }, only).file, null);
-      assert.equal(explainIn({ MARROW_API_KEY: dummyKey(), MARROW_AGENT_ID: id }, only).file, path.join(only.home, '.mcp.json'));
-    } finally { only.cleanup(); }
-    // cwd == home: one file, not two
-    const same = writeFile(path.join(fx.home, '.mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: id }));
-    const e = lazy.explain.explainAgentIdSource(resolveIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: id }, fx), { home: fx.home, cwd: fx.home });
-    const listed = String(e.file).replace(/^one of: /, '').split(', ');
-    assert.equal(new Set(listed).size, listed.length, 'a file is listed once');
-    assert.ok(listed.includes(same));
-  } finally { fx.cleanup(); }
-});
-
-test('M1 the file name in a path is printable: control and bidi characters become ?', () => {
-  const fx = fixture('m1c');
-  try {
-    const odd = path.join(fx.cwd, 'proj‮evil');
-    writeFile(path.join(odd, '.mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: 'agent-alpha' }));
-    const lookup = lazy.explain.explainAgentIdSource(resolveIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: 'agent-alpha' }, fx), { home: fx.home, cwd: odd });
-    assert.ok(lookup.file && !/[‮\u0000-\u001f]/.test(lookup.file), lookup.file);
-    assert.ok(lookup.file.includes('proj?evil'));
   } finally { fx.cleanup(); }
 });
 
@@ -679,21 +578,21 @@ globalThis.fetch = async () => Response.json({ error: 'plan', details: { code: '
   } finally { fx.cleanup(); }
 });
 
-test('M5 a long explanation (several config files) never costs the BASE next step on a host that cuts the text at 500 characters', () => {
+test('M5 a long explanation never costs the BASE next step on a host that cuts the text at 500 characters', () => {
   const { controlRejectionMessage, cursorPreActionHookOutput } = lazy.hook;
   const { MarrowRequestError } = lazy.req;
   const scope = new MarrowRequestError({ code: 'permission_denied', backendCode: 'MARROW_AGENT_SCOPE_MISMATCH', message: 'x', status: 403, exactFix: 'fix' });
-  const files = ['~/.mcp.json', '<cwd>/.mcp.json', '~/.cursor/mcp.json', '<cwd>/.cursor/mcp.json', '~/.codex/config.toml', '~/.gemini/settings.json'];
-  const lookup = { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file: 'unused', fileLabel: `one of: ${files.join(', ')}`, unsafeConfigFiles: 1 };
+  // The longest sentence is a fleet key match whose key variable name is long (the name is printed, never a value).
+  const lookup = { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'fleet_key_match', file: null, fileLabel: null, keyVariable: `MARROW_KEY_${'A'.repeat(300)}` };
   const text = controlRejectionMessage(scope, 'agent-alpha', undefined, lookup);
   assert.ok(text.length > 500, 'the fixture is long enough to need the guard');
-  assert.ok(text.includes(files[5]) && text.includes('which overrides the host'), 'nothing is dropped for hosts without a cap');
+  assert.ok(text.includes(lookup.keyVariable), 'nothing is dropped for hosts without a cap');
   const cursor = cursorPreActionHookOutput({ protectedRisk: true, permit: null, runtime: null, enforcementError: text, failure: 'credential_scope' });
   const shown = JSON.stringify(cursor);
   assert.ok(shown.includes(BASE_NEXT_STEP), `the BASE next step survives the cap: ${shown}`);
   // A short explanation keeps its place in front of the next step.
-  const short = controlRejectionMessage(scope, 'agent-alpha', undefined, { ...lookup, fileLabel: files[0], unsafeConfigFiles: 0 });
-  assert.equal(short, `${HEAD('agent-alpha')} ${sentenceBlock('MARROW_FLEET_AGENT_ID', files[0])} ${BASE_NEXT_STEP}`);
+  const short = controlRejectionMessage(scope, 'agent-alpha', undefined, { ...lookup, origin: 'process_env', keyVariable: undefined });
+  assert.equal(short, `${HEAD('agent-alpha')} ${sentenceEnv('MARROW_FLEET_AGENT_ID')} ${BASE_NEXT_STEP}`);
 });
 
 test('T1 an id that is a pasted API key is never echoed (JSON, sentence or hook text)', async () => {
@@ -709,34 +608,11 @@ test('T1 an id that is a pasted API key is never echoed (JSON, sentence or hook 
   } finally { fx.cleanup(); }
 });
 
-test('M1 a codex config with the env as an inline table is read too; another server name is not', () => {
-  const fx = fixture('m1t');
-  try {
-    const file = writeFile(path.join(fx.home, '.codex', 'config.toml'),
-      '[mcp_servers.marrow]\ncommand = "npx"\nenv = { MARROW_FLEET_AGENT_ID = "agent-alpha", MARROW_BASE_URL = "https://api.getmarrow.ai" }\n[mcp_servers.other.env]\nMARROW_AGENT_ID = "agent-gamma"\n');
-    assert.equal(explainIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: 'agent-alpha' }, fx).file, file);
-    assert.equal(explainIn({ MARROW_API_KEY: dummyKey(), MARROW_AGENT_ID: 'agent-gamma' }, fx).file, null);
-  } finally { fx.cleanup(); }
-});
-
-test('T6 a hostile 2 MiB config (deep nesting, huge arrays) is bounded and never throws', () => {
-  const fx = fixture('t6h');
-  try {
-    writeFile(path.join(fx.cwd, '.mcp.json'), '['.repeat(1_000_000));
-    writeFile(path.join(fx.home, '.codex', 'config.toml'), `a = ${'['.repeat(500_000)}\n`);
-    const started = Date.now();
-    const lookup = explainIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: 'agent-alpha' }, fx);
-    assert.equal(lookup.file, null);
-    assert.equal(lookup.unsafeConfigFiles, 2);
-    assert.ok(Date.now() - started < 10_000, 'bounded work');
-  } finally { fx.cleanup(); }
-});
-
 test('T5 the command is listed in --help (which works without a key)', () => {
   const fx = fixture('help');
   try {
     const child = spawnSync(process.execPath, [CLI, '--help'], { cwd: fx.cwd, encoding: 'utf8', timeout: 20_000, env: { PATH: process.env.PATH, HOME: fx.home } });
     assert.equal(child.status, 0, child.stderr);
-    assert.match(child.stdout, /identity --explain \[--json\]\s+show which variable and file/);
+    assert.match(child.stdout, /identity --explain \[--json\]\s+show which variable and origin/);
   } finally { fx.cleanup(); }
 });
