@@ -7,8 +7,8 @@ import { parseShellSegments, type ShellSegment } from './hook-tool-policy';
  * `--yes` approves nothing: such a command is labelled `security on marrow-control` and held for the account owner.
  *
  * MCP-0: the same answer inside every shell construct that runs a command: a loop, an if or case arm, eval, a function or alias body, a wrapper
- * (sudo, env -S, timeout, xargs, find -exec, nohup, nice ...), a shell fed text (`-c`, a pipe, a file written in the same chain) and the inline
- * script of an interpreter. The text is also read after the shell takes its quoting off (quotes, backslashes, ANSI-C `$'\x69'`), with Unicode
+ * (sudo, env -S, timeout, xargs, find -exec, nohup, nice ...) and a shell fed text (`-c`, a pipe, a file written in the same chain). The text is also
+ * read after the shell takes its quoting off (quotes, backslashes, ANSI-C `$'\x69'`), with Unicode
  * compatibility forms folded, invisible characters removed and look-alike letters read as the letters they imitate: such a spelling is a hold, never a pass.
  * `controlRouteVerdict` says more than yes or no, so the seatbelt mapper's own hit (hook-pre-action.ts) can be weighed against what the walk could read.
  */
@@ -16,9 +16,6 @@ export const CONTROL_ROUTE_DENY_TEXT = 'Turning Marrow control off needs the acc
 
 const INSTALLER_PACKAGE = /(?:^|=)@getmarrow\/install(?:@[^\s/]*)?$/i;
 const LEGACY_INSTALLER_BIN = /(?:^|\/)marrow-install(?:\.[cm]?js)?$/i;
-// The walk also knows the owner CLI `marrow control ...` / `marrow uninstall` (the seatbelt mapper treats it as the installer's owner commands).
-const INSTALLER_BIN = /(?:^|\/)marrow(?:-install)?(?:\.[cm]?js)?$/i;
-const OWNER_CLI_TEXT = /\bmarrow\s+(?:control|uninstall|claim|unclaim)\b/i;
 const INSTALLER_PATH = /@getmarrow\/install\//i;
 const INSTALLER_TEXT = /@getmarrow\/install|marrow-install/i;
 const LEGACY_WRAPPER = /^(?:sudo|env|nohup|time|exec|command|builtin|nice|ionice|stdbuf|timeout|xargs|setsid)$/;
@@ -38,8 +35,6 @@ const NO_COMMAND_KEYWORD = new Set(['for', 'select', 'case', 'done', 'fi', 'esac
 // The words the unparseable-text rule looks for (3.9.109: `control|disable|uninstall|[$`]`), and the control-off words alone (mapper-failure rule).
 const FALLBACK_WORDS = /control|disable|uninstall|[$`]/i;
 const CONTROL_OFF_WORDS = /\b(?:disable|uninstall)\b|\bcontrol\b\s*(?:off|remove|stop)\b/i;
-// An inline script that builds a word out of parts cannot be read for what it runs.
-const COMPOSED_TEXT = /\+|\$\{|%[sd]|\.format\(|\.join\(|\bf["']|concat|atob|fromCharCode|\bchr\(|\\x|\\u/;
 const MAX_DEPTH = 3;
 const MAX_DECODE_CHARS = 262_144;
 
@@ -173,12 +168,12 @@ function baseName(word: string): string {
   return cut < 0 ? word : word.slice(cut + 1);
 }
 
-function installerArguments(words: string[], bin: RegExp = INSTALLER_BIN): string[] | null {
+function installerArguments(words: string[], bin: RegExp = LEGACY_INSTALLER_BIN): string[] | null {
   const marker = words.findIndex((word) => INSTALLER_PACKAGE.test(word) || bin.test(word) || INSTALLER_PATH.test(word));
   return marker < 0 ? null : words.slice(marker + 1);
 }
 
-const namesInstallerView = (view: string): boolean => INSTALLER_TEXT.test(view) || OWNER_CLI_TEXT.test(view);
+const namesInstallerView = (view: string): boolean => INSTALLER_TEXT.test(view);
 
 function routeArguments(args: string[], segment: ShellSegment): boolean {
   if (segment.expansions.length > 0 || args.some((arg) => /[$`*?[~]/.test(arg))) return true;
@@ -223,14 +218,12 @@ function nested(text: string, st: Walk): void {
 }
 
 /** Words after the wrappers (sudo, env, timeout, nice, xargs ...), the text an `eval` or `env -S` hands to a shell is read at once (null). */
-function unwrap(words: string[], st: Walk): { words: string[]; xargs: boolean } | null {
+function unwrap(words: string[], st: Walk): { words: string[] } | null {
   let at = 0;
-  let xargs = false;
   while (at < words.length && WRAPPER.test(baseName(words[at]))) {
     const wrapper = baseName(words[at]);
     at += 1;
     if (wrapper === 'eval') { nested(words.slice(at).join(' '), st); return null; }
-    if (wrapper === 'xargs') xargs = true;
     const values = VALUE_OPTIONS[wrapper];
     while (at < words.length) {
       const word = words[at];
@@ -246,7 +239,7 @@ function unwrap(words: string[], st: Walk): { words: string[]; xargs: boolean } 
       break;
     }
   }
-  return { words: words.slice(at), xargs };
+  return { words: words.slice(at) };
 }
 
 // `find ... -exec CMD ... ;` runs CMD: each clause is a command of its own.
@@ -259,13 +252,6 @@ function findClauses(words: string[]): string[][] {
     clauses.push(end < 0 ? rest : rest.slice(0, end));
   });
   return clauses;
-}
-
-function inlineCodeRoutes(code: string, others: string[]): boolean {
-  const tokens = code.split(/[^A-Za-z0-9_@/.$-]+/).filter(Boolean);
-  const first = tokens.findIndex((token) => INSTALLER_TEXT.test(token) || token === 'marrow');
-  const args = [...(first < 0 ? tokens : tokens.slice(first + 1)), ...others];
-  return routeArguments(args, { words: [], outputs: [], inputs: [], expansions: [] });
 }
 
 function segmentCheck(segment: ShellSegment, st: Walk): void {
@@ -302,26 +288,13 @@ function segmentCheck(segment: ShellSegment, st: Walk): void {
   }
   if (name === '.' || name === 'source') return;
   if (name === 'find') { for (const clause of findClauses(words)) segmentCheck({ ...here, words: clause }, st); }
-  if (INTERPRETER.test(name)) {
-    words.forEach((word, index) => {
-      if (index === 0 || !namesInstallerView(word) || !/[\s('"`]/.test(word)) return;
-      if (inlineCodeRoutes(word, words.filter((_, other) => other !== index && other !== 0))) st.route = true;
-      else if (COMPOSED_TEXT.test(word)) st.unread = true;
-    });
-  }
-  const runs = RUNNER.test(name) || INSTALLER_BIN.test(program) || INSTALLER_PATH.test(program) || /[$`]/.test(program);
+  const runs = RUNNER.test(name) || LEGACY_INSTALLER_BIN.test(program) || INSTALLER_PATH.test(program) || /[$`]/.test(program);
   if (runs) {
-    for (const word of words.slice(1)) if (/\s/.test(word) && namesInstallerView(word) && !INTERPRETER.test(name)) nested(word, st);
     const args = installerArguments(words);
-    if (args !== null && (unwrapped.xargs || routeArguments(args, here))) st.route = true;
+    if (args !== null && routeArguments(args, here)) st.route = true;
     return;
   }
   if (words.some(namesInstallerView)) {
-    // `!cmd` is a shell alias in a git or gh setting (`git -c alias.x='!cmd' x`): the text after the bang is a command.
-    for (const word of words) {
-      const alias = /^(?:[^=\s]*=)?!([^]+)$/.exec(word);
-      if (alias && namesInstallerView(alias[1])) nested(alias[1], st);
-    }
     if (!DATA_PROGRAM.test(name) && !INTERPRETER.test(name) && name !== 'find') st.unread = true;
   }
 }

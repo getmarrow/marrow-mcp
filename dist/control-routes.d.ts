@@ -5,8 +5,8 @@
  * `--yes` approves nothing: such a command is labelled `security on marrow-control` and held for the account owner.
  *
  * MCP-0: the same answer inside every shell construct that runs a command: a loop, an if or case arm, eval, a function or alias body, a wrapper
- * (sudo, env -S, timeout, xargs, find -exec, nohup, nice ...), a shell fed text (`-c`, a pipe, a file written in the same chain) and the inline
- * script of an interpreter. The text is also read after the shell takes its quoting off (quotes, backslashes, ANSI-C `$'\x69'`), with Unicode
+ * (sudo, env -S, timeout, xargs, find -exec, nohup, nice ...) and a shell fed text (`-c`, a pipe, a file written in the same chain). The text is also
+ * read after the shell takes its quoting off (quotes, backslashes, ANSI-C `$'\x69'`), with Unicode
  * compatibility forms folded, invisible characters removed and look-alike letters read as the letters they imitate: such a spelling is a hold, never a pass.
  * `controlRouteVerdict` says more than yes or no, so the seatbelt mapper's own hit (hook-pre-action.ts) can be weighed against what the walk could read.
  */
