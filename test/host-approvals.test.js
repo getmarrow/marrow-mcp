@@ -17,7 +17,6 @@ const {
   classifyClaudeToolResult,
   parseTypedReply,
 } = require('../dist/host-approval.js');
-const { attendFor } = require('./support/attended.cjs');
 const { ordinaryApprovalGuidance } = require('../dist/runtime-contract.js');
 const { normalizeRuntimeResult } = require('../dist/runtime-contract.js');
 const { installPermissionRequestHook } = require('../dist/hook.js');
@@ -92,11 +91,7 @@ function harness() {
     const path = join(mockDir, 'requests.jsonl');
     return existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
   };
-  // A Claude Code dialog needs attended evidence (see test/support/attended.cjs); a test sets `unattended = true` to run without it.
-  const state_ = { unattended: false };
-  const attend = (payload) => { if (!state_.unattended) attendFor(home, payload); };
   const run = (entrypoint, payload, env = {}) => {
-    attend(payload);
     const result = spawnSync(process.execPath, entrypoint === 'marrow-mcp-server-placeholder' ? [CLI] : [CLI, entrypoint], {
       input: typeof payload === 'string' ? payload : JSON.stringify(payload),
       // The hook runs in a fresh empty project folder: the own-server identity walk starts at its cwd.
@@ -118,7 +113,6 @@ function harness() {
   };
   // The same as run, without blocking: for calls a host makes at the same time.
   const runAsync = (entrypoint, payload, env = {}) => new Promise((resolve, reject) => {
-    attend(payload);
     const child = spawn(process.execPath, [CLI, entrypoint], {
       cwd: projectCwd(),
       env: {
@@ -151,10 +145,7 @@ function harness() {
     const path = join(home, '.marrow', 'host-approvals', 'state.json');
     return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null;
   };
-  return {
-    dir, home, run, runAsync, setConfig, requests, transcript, state, cleanup: () => rmSync(dir, { recursive: true, force: true }),
-    set unattended(value) { state_.unattended = value === true; },
-  };
+  return { dir, home, run, runAsync, setConfig, requests, transcript, state, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 const hostReports = (h) => h.requests().filter((r) => r.path.endsWith('/host-approval'));

@@ -1,5 +1,4 @@
 const assert = require('node:assert/strict');
-const { recordAttendedPrompt } = require('../dist/attended-marker.js');
 const { randomBytes } = require('node:crypto');
 const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } = require('node:fs');
 const { tmpdir } = require('node:os');
@@ -55,8 +54,6 @@ function runCell(ret, hold, order, keyed) {
     if (ret === 'failclosed') writeFileSync(file, '{nope', { mode: 0o600 });
     else writeFileSync(file, JSON.stringify({ version: 1, enabled: true, changed_at: new Date(0).toISOString(), changed_by: CONTROL_CHANGED_BY, change_id: `ctl_${'d'.repeat(32)}` }), { mode: 0o600 });
     mkdirSync(join(home, 'w'));
-    // Attended default mode: the control-off route reaches the backend as on master (without attended evidence it is denied locally).
-    assert.equal(recordAttendedPrompt('sess-n2', { home }), true);
     mkdirSync(join(home, '.aws'));
     writeFileSync(join(home, 'w', 'p.diff'), 'diff --git a/.claude/settings.json b/.claude/settings.json\n--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{"hooks":{}}\n');
     const capture = join(home, 'cap.jsonl');

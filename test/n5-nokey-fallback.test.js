@@ -4,7 +4,6 @@
 // host-approval state, so a held action is still resumed, reported and committed. Neither key: a nonce, asked again.
 // Dummy values are generated at runtime; nothing here prints a key.
 const assert = require('node:assert/strict');
-const { attendFor } = require('./support/attended.cjs');
 const test = require('node:test');
 const crypto = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
@@ -260,7 +259,6 @@ function harness(passwd) {
   const SESSION = '3b1f0c2e-0000-4000-8000-00000000000a';
   const event = (name, tool, command, id) => ({ session_id: SESSION, cwd: '/home/operator/project', permission_mode: 'default', hook_event_name: name, tool_name: tool, tool_input: { command, description: 'x' }, tool_use_id: id });
   const run = (entry, payload) => {
-    attendFor(home, payload);
     const result = spawnSync(process.execPath, [CLI, entry], {
       input: JSON.stringify(payload), encoding: 'utf8', timeout: 30_000, cwd: dir,
       env: {

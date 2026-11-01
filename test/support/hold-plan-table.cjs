@@ -5,11 +5,11 @@
 // prints it as JSON, so the BASE build and a candidate build give two tables to compare (the BASE table is committed in
 // test/fixtures/no-freeze-holds/base-hold-plans.json and pinned by test/no-freeze-holds.test.js).
 //
-// Claude Code rows run the real `ownerApprovalPrompt` (mode, entrypoint and attended evidence decide `claudePrompt`); the
+// Claude Code rows run the real `ownerApprovalPrompt` (mode and entrypoint decide `claudePrompt`); the
 // other hosts' rows run every combination of the inputs that host's branches read, and each (host, hold kind) cell is
 // kept as the sha256 of its plans, so a changed plan names the cell that changed.
 const { createHash } = require('node:crypto');
-const { mkdirSync, mkdtempSync } = require('node:fs');
+const { mkdtempSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 
@@ -30,30 +30,25 @@ function holdRuntimes(hostRuntime) {
   };
 }
 
-// Claude Code: (mode, entrypoint, evidence) -> the event and env `ownerApprovalPrompt` reads.
+// Claude Code: (mode, entrypoint) -> the event and env `ownerApprovalPrompt` reads.
 const CLAUDE_VARIANTS = {
-  'default+attended': { mode: 'default', attended: true },
-  'default+unattended': { mode: 'default', attended: false },
-  'acceptEdits+attended': { mode: 'acceptEdits', attended: true },
-  'acceptEdits+unattended': { mode: 'acceptEdits', attended: false },
-  'auto+scratchpad': { mode: 'auto', scratchpad: true, attended: true },
-  'auto+no-scratchpad': { mode: 'auto', attended: true },
-  'auto+unattended': { mode: 'auto', attended: false },
-  plan: { mode: 'plan', attended: true },
-  dontAsk: { mode: 'dontAsk', attended: true },
-  bypassPermissions: { mode: 'bypassPermissions', attended: true },
-  'mode absent': { mode: undefined, attended: true },
-  'mode unknown value': { mode: 'default; rm', attended: true },
-  'headless (sdk-cli)': { mode: 'default', attended: true, entrypoint: 'sdk-cli' },
-  'headless auto (sdk-ts)': { mode: 'auto', scratchpad: true, attended: true, entrypoint: 'sdk-ts' },
+  default: { mode: 'default' },
+  acceptEdits: { mode: 'acceptEdits' },
+  'auto+scratchpad': { mode: 'auto', scratchpad: true },
+  'auto+no-scratchpad': { mode: 'auto' },
+  plan: { mode: 'plan' },
+  dontAsk: { mode: 'dontAsk' },
+  bypassPermissions: { mode: 'bypassPermissions' },
+  'mode absent': { mode: undefined },
+  'mode unknown value': { mode: 'default; rm' },
+  'headless (sdk-cli)': { mode: 'default', entrypoint: 'sdk-cli' },
+  'headless auto (sdk-ts)': { mode: 'auto', scratchpad: true, entrypoint: 'sdk-ts' },
 };
 
 function buildTable(dist, helpers) {
   const approval = require(join(dist, 'host-approval.js'));
   const hook = require(join(dist, 'hook-pre-action.js'));
   const contract = require(join(dist, 'runtime-contract.js'));
-  let marker = null;
-  try { marker = require(join(dist, 'attended-marker.js')); } catch { marker = null; } // the BASE build has none
   const guidanceOf = Object.fromEntries(Object.entries(holdRuntimes(helpers.hostRuntime)).map(([name, runtime]) => {
     const guidance = contract.ordinaryApprovalGuidance(contract.normalizeRuntimeResult(runtime));
     if (!guidance) throw new Error(`no guidance for ${name}`);
@@ -61,11 +56,9 @@ function buildTable(dist, helpers) {
   }));
   // The scratchpad folder only has to be a non-empty string (the hook never reads it); nothing is ever written under it.
   const scratchpad = join(mkdtempSync(join(tmpdir(), 'marrow-hpt-scratch-')), 'scratchpad');
-  const attendedSession = 'table-session-attended';
-  if (marker) marker.recordAttendedPrompt(attendedSession);
   const claude = {};
   for (const [variant, spec] of Object.entries(CLAUDE_VARIANTS)) {
-    const event = { session_id: spec.attended ? attendedSession : 'table-session-nobody', permission_mode: spec.mode, ...(spec.scratchpad ? { scratchpad_dir: scratchpad } : {}) };
+    const event = { session_id: 'table-session', permission_mode: spec.mode, ...(spec.scratchpad ? { scratchpad_dir: scratchpad } : {}) };
     const prompt = hook.ownerApprovalPrompt('claude-code', event, spec.entrypoint ? { CLAUDE_CODE_ENTRYPOINT: spec.entrypoint } : {});
     for (const [kind, guidance] of Object.entries(guidanceOf)) {
       const plan = approval.planHeldAction({
@@ -93,10 +86,6 @@ function buildTable(dist, helpers) {
 module.exports = { buildTable, CLAUDE_VARIANTS, holdRuntimes };
 
 if (require.main === module) {
-  // A scratch HOME: the attended marker of the table's own session is written there, never in the real one.
-  const home = mkdtempSync(join(tmpdir(), 'marrow-hold-plan-table-'));
-  mkdirSync(join(home, '.marrow'), { mode: 0o700, recursive: true });
-  process.env.HOME = home;
   const dist = require('node:path').resolve(process.argv[2] || join(__dirname, '..', '..', 'dist'));
   process.stdout.write(`${JSON.stringify(buildTable(dist, require('./first-hour-harness.cjs')), null, 1)}\n`);
 }

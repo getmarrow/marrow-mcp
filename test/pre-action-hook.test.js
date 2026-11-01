@@ -27,7 +27,6 @@ const {
   windsurfPreActionDecision,
 } = require('../dist/hook-pre-action.js');
 const { MarrowRequestError } = require('../dist/request-reliability.js');
-const { recordAttendedPrompt } = require('../dist/attended-marker.js');
 const { deriveAction } = require('../dist/hook.js');
 const { normalizeHookEventPayload } = require('../dist/hook-contract.js');
 const { isReadOnlyToolEvent } = require('../dist/hook-tool-policy.js');
@@ -714,8 +713,7 @@ test('a rejected runtime call denies a protected action instead of failing open'
   }
 });
 
-// options.attended: the UserPromptSubmit hook saw the owner type in this session (the evidence a Claude Code dialog now needs).
-async function runHookAgainst(respond, event, entrypoint, options = {}) {
+async function runHookAgainst(respond, event, entrypoint) {
   const originalFetch = globalThis.fetch;
   const originalWrite = process.stdout.write;
   const originalEntrypoint = process.argv[2];
@@ -732,7 +730,6 @@ async function runHookAgainst(respond, event, entrypoint, options = {}) {
   process.env.MARROW_SESSION_ID = 'session-one';
   process.env.MARROW_EVENT_SPOOL_PATH = join(directory, 'spool.json');
   process.env.HOME = directory;
-  if (options.attended) assert.equal(recordAttendedPrompt(event.session_id), true);
   if (entrypoint) process.argv[2] = entrypoint;
   process.stdout.write = (chunk) => {
     output += String(chunk);
@@ -931,34 +928,26 @@ const publishEvent = (extra = {}) => ({
 
 test('owner prompts are offered only where Claude Code shows the prompt to a person', () => {
   const child = { CLAUDE_CODE_CHILD_SESSION: '1' };
-  // The owner typed in this session just now (the UserPromptSubmit hook's marker): default and acceptEdits may ask.
-  assert.equal(recordAttendedPrompt('session-attended'), true);
-  const attended = { session_id: 'session-attended' };
   const cases = [
-    ['claude-code', { ...attended, permission_mode: 'default' }, {}, true],
-    ['claude-code', { ...attended, permission_mode: 'acceptEdits' }, {}, true],
+    ['claude-code', { permission_mode: 'default' }, {}, true],
+    ['claude-code', { permission_mode: 'acceptEdits' }, {}, true],
     // Auto mode never asks (a dialog there has no time limit and freezes the session), version proof or not.
-    ['claude-code', { ...attended, permission_mode: 'auto', scratchpad_dir: '/tmp/claude-1000/project/session/scratchpad' }, {}, false],
-    ['claude-code', { ...attended, permission_mode: 'auto' }, {}, false],
-    ['claude-code', { ...attended, permission_mode: 'plan' }, {}, false],
-    ['claude-code', { ...attended, permission_mode: 'dontAsk' }, {}, false],
-    ['claude-code', { ...attended, permission_mode: 'bypassPermissions' }, {}, false],
-    ['claude-code', { ...attended }, {}, false],
-    ['claude-code', { ...attended, permission_mode: 'default; rm' }, {}, false],
-    ['mcp-client', { ...attended, permission_mode: 'default' }, child, true],
-    ['mcp-client', { ...attended, permission_mode: 'default' }, {}, false],
-    ['mcp-client', { ...attended, permission_mode: 'bypassPermissions' }, child, false],
-    ['codex', { ...attended, permission_mode: 'default' }, child, false],
-    ['cursor', { ...attended, permission_mode: 'default' }, child, false],
-    ['cline', { ...attended, permission_mode: 'default' }, child, false],
-    ['gemini', { ...attended, permission_mode: 'default' }, child, false],
-    ['grok', { ...attended, permission_mode: 'default' }, child, false],
-    ['windsurf', { ...attended, permission_mode: 'default' }, child, false],
-    // Without that evidence default and acceptEdits do not ask either (changed from master, where they asked).
-    ['claude-code', { permission_mode: 'default' }, {}, false],
-    ['claude-code', { session_id: 'session-never-typed', permission_mode: 'default' }, {}, false],
-    ['claude-code', { session_id: 'session-never-typed', permission_mode: 'acceptEdits' }, {}, false],
-    ['mcp-client', { session_id: 'session-never-typed', permission_mode: 'default' }, child, false],
+    ['claude-code', { permission_mode: 'auto', scratchpad_dir: '/tmp/claude-1000/project/session/scratchpad' }, {}, false],
+    ['claude-code', { permission_mode: 'auto' }, {}, false],
+    ['claude-code', { permission_mode: 'plan' }, {}, false],
+    ['claude-code', { permission_mode: 'dontAsk' }, {}, false],
+    ['claude-code', { permission_mode: 'bypassPermissions' }, {}, false],
+    ['claude-code', {}, {}, false],
+    ['claude-code', { permission_mode: 'default; rm' }, {}, false],
+    ['mcp-client', { permission_mode: 'default' }, child, true],
+    ['mcp-client', { permission_mode: 'default' }, {}, false],
+    ['mcp-client', { permission_mode: 'bypassPermissions' }, child, false],
+    ['codex', { permission_mode: 'default' }, child, false],
+    ['cursor', { permission_mode: 'default' }, child, false],
+    ['cline', { permission_mode: 'default' }, child, false],
+    ['gemini', { permission_mode: 'default' }, child, false],
+    ['grok', { permission_mode: 'default' }, child, false],
+    ['windsurf', { permission_mode: 'default' }, child, false],
   ];
   for (const [harness, event, env, available] of cases) {
     const prompt = ownerApprovalPrompt(harness, event, env);
@@ -971,7 +960,7 @@ test('owner prompts are offered only where Claude Code shows the prompt to a per
 
 test('an ordinary review gate asks the operator in an interactive Claude Code session when the server accepts a host approval', async () => {
   const { calls, output, commits } = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()),
-    publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook', { attended: true });
+    publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
   assert.deepEqual(calls.map((entry) => entry.pathname), ['/v1/agent/runtime']);
   const decision = JSON.parse(output).hookSpecificOutput;
   assert.equal(decision.permissionDecision, 'ask');
@@ -982,7 +971,7 @@ test('an ordinary review gate asks the operator in an interactive Claude Code se
 
 test('a review gate from a service that offers no host approval is denied, even in an interactive Claude Code session', async () => {
   const { output, commits } = await runHookAgainst(noControlAfterGate(() => reviewRuntime()),
-    publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook', { attended: true });
+    publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
   const decision = JSON.parse(output).hookSpecificOutput;
   assert.equal(decision.permissionDecision, 'deny');
   assert.match(decision.permissionDecisionReason, /^Marrow requires owner review before this action, and no owner approval prompt is available \(this Marrow service did not offer a chat or terminal approval for this hold\)/);
@@ -993,7 +982,7 @@ test('the installer generic entrypoint asks only when Claude Code spawned the ho
   const previous = process.env.CLAUDE_CODE_CHILD_SESSION;
   try {
     process.env.CLAUDE_CODE_CHILD_SESSION = '1';
-    const spawned = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()), publishEvent({ permission_mode: 'acceptEdits' }), undefined, { attended: true });
+    const spawned = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()), publishEvent({ permission_mode: 'acceptEdits' }));
     assert.equal(JSON.parse(spawned.output).hookSpecificOutput.permissionDecision, 'ask');
     delete process.env.CLAUDE_CODE_CHILD_SESSION;
     const unknownHost = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()), publishEvent({ permission_mode: 'acceptEdits' }));
@@ -1055,7 +1044,6 @@ test('block and arbitration review never ask, even in an interactive session', a
 
 test('an outage stays an allowed warning and a credential failure stays a denial, never an owner prompt', async () => {
   const interactive = publishEvent({ permission_mode: 'default' });
-  assert.equal(recordAttendedPrompt(interactive.session_id), true);
   const prompt = ownerApprovalPrompt('claude-code', interactive, {});
   assert.equal(prompt.available, true);
   const outage = preActionHookOutput({ protectedRisk: true, permit: null, runtime: null, outage: true, enforcementError: MARROW_OUTAGE_WARNING }, 'claude-code', prompt);
@@ -1397,7 +1385,7 @@ test('a free or starter plan advisory gate warns and allows without demanding a 
 });
 
 test('an enforced review asks the owner and an enforced or advisory block denies', async () => {
-  const review = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()), publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook', { attended: true });
+  const review = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()), publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
   assert.equal(JSON.parse(review.output).hookSpecificOutput.permissionDecision, 'ask');
 
   for (const enforced of [true, false]) {
@@ -1468,7 +1456,7 @@ test('a denied action closes its held decision as a failure with the gate receip
 
 test('an owner prompt, an advisory gate and an allowed action never close the decision', async () => {
   const asked = await runHookAgainst(noControlAfterGate(() => hostReviewRuntime()),
-    publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook', { attended: true });
+    publishEvent({ permission_mode: 'default' }), 'claude-pre-action-hook');
   assert.equal(JSON.parse(asked.output).hookSpecificOutput.permissionDecision, 'ask');
   assert.deepEqual(asked.commits, []);
 

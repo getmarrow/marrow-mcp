@@ -1,6 +1,6 @@
 {
  "claude": {
-  "claude-code|default+attended|ordinary": {
+  "claude-code|default|ordinary": {
    "prompt": {
     "available": true,
     "headless": false
@@ -10,7 +10,7 @@
     "promptText": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval."
    }
   },
-  "claude-code|default+attended|ordinary_ping": {
+  "claude-code|default|ordinary_ping": {
    "prompt": {
     "available": true,
     "headless": false
@@ -20,7 +20,7 @@
     "promptText": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval."
    }
   },
-  "claude-code|default+attended|owner_locked": {
+  "claude-code|default|owner_locked": {
    "prompt": {
     "available": true,
     "headless": false
@@ -33,7 +33,7 @@
     "ownerLink": "now"
    }
   },
-  "claude-code|default+attended|owner_declined": {
+  "claude-code|default|owner_declined": {
    "prompt": {
     "available": true,
     "headless": false
@@ -46,7 +46,7 @@
     "ownerLink": "on_request"
    }
   },
-  "claude-code|default+attended|state_unavailable": {
+  "claude-code|default|state_unavailable": {
    "prompt": {
     "available": true,
     "headless": false
@@ -59,7 +59,7 @@
     "retryFresh": true
    }
   },
-  "claude-code|default+attended|legacy_service": {
+  "claude-code|default|legacy_service": {
    "prompt": {
     "available": true,
     "headless": false
@@ -71,7 +71,7 @@
     "code": false
    }
   },
-  "claude-code|default+unattended|ordinary": {
+  "claude-code|acceptEdits|ordinary": {
    "prompt": {
     "available": true,
     "headless": false
@@ -81,7 +81,7 @@
     "promptText": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval."
    }
   },
-  "claude-code|default+unattended|ordinary_ping": {
+  "claude-code|acceptEdits|ordinary_ping": {
    "prompt": {
     "available": true,
     "headless": false
@@ -91,7 +91,7 @@
     "promptText": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval."
    }
   },
-  "claude-code|default+unattended|owner_locked": {
+  "claude-code|acceptEdits|owner_locked": {
    "prompt": {
     "available": true,
     "headless": false
@@ -104,7 +104,7 @@
     "ownerLink": "now"
    }
   },
-  "claude-code|default+unattended|owner_declined": {
+  "claude-code|acceptEdits|owner_declined": {
    "prompt": {
     "available": true,
     "headless": false
@@ -117,7 +117,7 @@
     "ownerLink": "on_request"
    }
   },
-  "claude-code|default+unattended|state_unavailable": {
+  "claude-code|acceptEdits|state_unavailable": {
    "prompt": {
     "available": true,
     "headless": false
@@ -130,149 +130,7 @@
     "retryFresh": true
    }
   },
-  "claude-code|default+unattended|legacy_service": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it. Retry this exact action after the owner approves it; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it. Retry this exact action after the owner approves it; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "code": false
-   }
-  },
-  "claude-code|acceptEdits+attended|ordinary": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "ask",
-    "promptText": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval."
-   }
-  },
-  "claude-code|acceptEdits+attended|ordinary_ping": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "ask",
-    "promptText": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval."
-   }
-  },
-  "claude-code|acceptEdits+attended|owner_locked": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. The account owner approves production_deploy actions personally. [owner-request] Carry on with other work meanwhile. When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. The account owner approves production_deploy actions personally. [owner-request] Carry on with other work meanwhile. When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "code": false,
-    "ownerLink": "now"
-   }
-  },
-  "claude-code|acceptEdits+attended|owner_declined": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. The account owner declined this action earlier. Only the account owner can reverse that. To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link. Retry it only if the operator asks you to; otherwise carry on with other work. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. The account owner declined this action earlier. Only the account owner can reverse that. To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link. Retry it only if the operator asks you to; otherwise carry on with other work. Do not report or claim an approval yourself.",
-    "code": false,
-    "ownerLink": "on_request"
-   }
-  },
-  "claude-code|acceptEdits+attended|state_unavailable": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. Marrow could not check how this hold can be approved right now. Retry this exact action in a moment. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. Marrow could not check how this hold can be approved right now. Retry this exact action in a moment. Do not report or claim an approval yourself.",
-    "code": false,
-    "retryFresh": true
-   }
-  },
-  "claude-code|acceptEdits+attended|legacy_service": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it. Retry this exact action after the owner approves it; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it. Retry this exact action after the owner approves it; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "code": false
-   }
-  },
-  "claude-code|acceptEdits+unattended|ordinary": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "ask",
-    "promptText": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval."
-   }
-  },
-  "claude-code|acceptEdits+unattended|ordinary_ping": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "ask",
-    "promptText": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval."
-   }
-  },
-  "claude-code|acceptEdits+unattended|owner_locked": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. The account owner approves production_deploy actions personally. [owner-request] Carry on with other work meanwhile. When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. The account owner approves production_deploy actions personally. [owner-request] Carry on with other work meanwhile. When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "code": false,
-    "ownerLink": "now"
-   }
-  },
-  "claude-code|acceptEdits+unattended|owner_declined": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. The account owner declined this action earlier. Only the account owner can reverse that. To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link. Retry it only if the operator asks you to; otherwise carry on with other work. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. The account owner declined this action earlier. Only the account owner can reverse that. To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link. Retry it only if the operator asks you to; otherwise carry on with other work. Do not report or claim an approval yourself.",
-    "code": false,
-    "ownerLink": "on_request"
-   }
-  },
-  "claude-code|acceptEdits+unattended|state_unavailable": {
-   "prompt": {
-    "available": true,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. Marrow could not check how this hold can be approved right now. Retry this exact action in a moment. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. Marrow could not check how this hold can be approved right now. Retry this exact action in a moment. Do not report or claim an approval yourself.",
-    "code": false,
-    "retryFresh": true
-   }
-  },
-  "claude-code|acceptEdits+unattended|legacy_service": {
+  "claude-code|acceptEdits|legacy_service": {
    "prompt": {
     "available": true,
     "headless": false
@@ -425,87 +283,6 @@
    }
   },
   "claude-code|auto+no-scratchpad|legacy_service": {
-   "prompt": {
-    "available": false,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it. Retry this exact action after the owner approves it; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it. Retry this exact action after the owner approves it; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "code": false
-   }
-  },
-  "claude-code|auto+unattended|ordinary": {
-   "prompt": {
-    "available": false,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Claude Code shows no approval dialog in this session (this auto-mode session does not prove a Claude Code version whose classifier honors hook prompts). Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode (Shift+Tab) and ask you to retry this exact action, and Claude Code then asks them. Do not treat a chat reply as approval. Until then carry on with other work. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Claude Code shows no approval dialog in this session (this auto-mode session does not prove a Claude Code version whose classifier honors hook prompts). Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode (Shift+Tab) and ask you to retry this exact action, and Claude Code then asks them. Do not treat a chat reply as approval. Until then carry on with other work. Do not report or claim an approval yourself.",
-    "code": false,
-    "dialogLater": true,
-    "laterPrompt": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval.",
-    "userNotice": "Marrow is holding a production deploy for your approval. Approving in chat does not count. Press Shift+Tab until Claude Code is in default mode, then tell the agent to retry; Claude Code will ask you."
-   }
-  },
-  "claude-code|auto+unattended|ordinary_ping": {
-   "prompt": {
-    "available": false,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Claude Code shows no approval dialog in this session (this auto-mode session does not prove a Claude Code version whose classifier honors hook prompts). Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode (Shift+Tab) and ask you to retry this exact action, and Claude Code then asks them. Do not treat a chat reply as approval. Until then carry on with other work. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Claude Code shows no approval dialog in this session (this auto-mode session does not prove a Claude Code version whose classifier honors hook prompts). Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode (Shift+Tab) and ask you to retry this exact action, and Claude Code then asks them. Do not treat a chat reply as approval. Until then carry on with other work. Do not report or claim an approval yourself.",
-    "code": false,
-    "dialogLater": true,
-    "laterPrompt": "Marrow holds this action for your approval. Approve only if you authorize this exact action; Marrow records your answer. Reason: Production deploys need approval.",
-    "userNotice": "Marrow is holding a production deploy for your approval. Approving in chat does not count. Press Shift+Tab until Claude Code is in default mode, then tell the agent to retry; Claude Code will ask you."
-   }
-  },
-  "claude-code|auto+unattended|owner_locked": {
-   "prompt": {
-    "available": false,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. The account owner approves production_deploy actions personally. [owner-request] Carry on with other work meanwhile. When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. The account owner approves production_deploy actions personally. [owner-request] Carry on with other work meanwhile. When it is approved, retry this exact action; Marrow checks the approval then. Do not report or claim an approval yourself.",
-    "code": false,
-    "ownerLink": "now"
-   }
-  },
-  "claude-code|auto+unattended|owner_declined": {
-   "prompt": {
-    "available": false,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. The account owner declined this action earlier. Only the account owner can reverse that. To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link. Retry it only if the operator asks you to; otherwise carry on with other work. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. The account owner declined this action earlier. Only the account owner can reverse that. To ask the account owner, retry this exact action; Marrow then sends the owner a one-tap approval link. Retry it only if the operator asks you to; otherwise carry on with other work. Do not report or claim an approval yourself.",
-    "code": false,
-    "ownerLink": "on_request"
-   }
-  },
-  "claude-code|auto+unattended|state_unavailable": {
-   "prompt": {
-    "available": false,
-    "headless": false
-   },
-   "plan": {
-    "kind": "deny",
-    "agentText": "Marrow is holding this action for approval (gate receipt gate-t), so it did not run. Reason: Production deploys need approval. Marrow could not check how this hold can be approved right now. Retry this exact action in a moment. Do not report or claim an approval yourself.",
-    "userText": "Marrow is holding this action for approval, so it did not run. Reason: Production deploys need approval. Marrow could not check how this hold can be approved right now. Retry this exact action in a moment. Do not report or claim an approval yourself.",
-    "code": false,
-    "retryFresh": true
-   }
-  },
-  "claude-code|auto+unattended|legacy_service": {
    "prompt": {
     "available": false,
     "headless": false
