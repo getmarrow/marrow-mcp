@@ -1063,7 +1063,7 @@ test('an outage stays an allowed warning and a credential failure stays a denial
   const scopeDecision = JSON.parse(scope.output).hookSpecificOutput;
   assert.equal(scopeDecision.permissionDecision, 'deny');
   assert.equal(scopeDecision.permissionDecisionReason,
-    'This Marrow API key is not authorized to obtain action permits for agent "agent-one" (HTTP 403 ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID). This server took the id from MARROW_AGENT_ID in this server\'s environment (set by the host or its launcher). Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.');
+    'This Marrow API key is not authorized to obtain action permits for agent "agent-one" (HTTP 403 ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID). Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.');
   assert.doesNotMatch(scope.output, new RegExp(privateText));
 });
 
