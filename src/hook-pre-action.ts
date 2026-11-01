@@ -39,7 +39,6 @@ import {
 import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
 import { recordSessionBypass } from './owner-bypass';
 import { selfProtectKind } from './self-protect';
-import { attendedWithin } from './attended-marker';
 import { armKeylessNotice } from './keyless-notice';
 import { marrowSessionId } from './session-id';
 import { allowNokeyFallbackCreate } from './host-approval-state';
@@ -386,10 +385,7 @@ export type OwnerApprovalPrompt = {
   available: boolean;
   unavailableReason: string;
   headless?: boolean;
-  /**
-   * Claude Code only: no dialog is opened because nobody is known to be at it (auto mode, or default and acceptEdits
-   * without a prompt typed in this session in the last ATTENDED_WINDOW_MS). The hold is a denial that names its receipt.
-   */
+  /** Claude Code auto mode only: no dialog is opened (it has no time limit and nobody is at it). The hold is a denial that names its receipt. */
   noFreeze?: boolean;
   /** Static, one-sentence README fix for the person; never built from input. */
   fix?: string;
@@ -397,7 +393,6 @@ export type OwnerApprovalPrompt = {
 
 const FIX_DEFAULT_MODE = 'To approve it, switch Claude Code to its default permission mode and retry this exact action.';
 const FIX_HEADLESS = 'To approve it, retry this exact action in an interactive Claude Code session in default permission mode.';
-const FIX_ATTENDED = 'To approve it, type to the agent in this session and have it retry this exact action; Claude Code then asks you.';
 
 /** Claude Code entrypoints with no one at a dialog (claude -p and the Agent SDKs); hooks inherit it. */
 const HEADLESS_CLAUDE_ENTRYPOINTS = HEADLESS_ENTRYPOINTS;
@@ -409,14 +404,12 @@ const NO_OWNER_PROMPT: OwnerApprovalPrompt = { available: false, unavailableReas
  * Only Claude Code asks; the generic entrypoint counts as Claude Code only when
  * Claude Code itself spawned the hook (CLAUDE_CODE_CHILD_SESSION, v2.1.172+).
  * Every "ask" emitter takes its answer from here (a new hold, a retried hold
- * that waited for a dialog, and the legacy service), so the attended check
- * lives here: default and acceptEdits ask only when the UserPromptSubmit hook
- * saw the owner type in this session within ATTENDED_WINDOW_MS (see
- * attended-marker.ts). Any other value of permission_mode is no evidence.
+ * that waited for a dialog, and the legacy service), so auto mode, which never
+ * asks, is decided here once.
  */
 export function ownerApprovalPrompt(
   harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client',
-  event: Pick<PreToolUseEvent, 'permission_mode' | 'scratchpad_dir' | 'session_id'>,
+  event: Pick<PreToolUseEvent, 'permission_mode' | 'scratchpad_dir'>,
   env: NodeJS.ProcessEnv = process.env,
 ): OwnerApprovalPrompt {
   const claudeCode = harness === 'claude-code' || (harness === 'mcp-client' && env.CLAUDE_CODE_CHILD_SESSION === '1');
@@ -437,9 +430,6 @@ export function ownerApprovalPrompt(
       ...(mode === 'auto' ? { noFreeze: true } : {}),
       fix: FIX_DEFAULT_MODE,
     };
-  }
-  if (!attendedWithin(event.session_id)) {
-    return { available: false, unavailableReason: 'nobody has typed in this session in the last 10 minutes', noFreeze: true, fix: FIX_ATTENDED };
   }
   return { available: true, unavailableReason: '' };
 }
@@ -1636,9 +1626,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   // MCP-5: control is on and no key resolves, so nothing this hook does is recorded: say so once per session.
   if (!identity.environment.apiKey) armKeylessNotice(identity.harness, identity.environment.sessionId || source.session_id || source.conversation_id || source.task_id);
   // MCP-10: where no person can answer a prompt (auto, bypass and dontAsk modes, headless runs), turning control off is denied outright.
-  // So is a session nobody has typed in lately (default and acceptEdits without attended evidence): it never reaches a dialog.
-  if (classified.type === 'security' && classified.surfaces.includes('marrow-control') && controlRouteCall(source)
-    && (noPersonAtPrompt(source) || ownerApprovalPrompt(identity.harness, source).noFreeze === true)) {
+  if (classified.type === 'security' && classified.surfaces.includes('marrow-control') && controlRouteCall(source) && noPersonAtPrompt(source)) {
     emitLoopGuardDenial(identity.harness, CONTROL_ROUTE_DENY_TEXT);
     return;
   }
