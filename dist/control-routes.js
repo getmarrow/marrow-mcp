@@ -39,8 +39,6 @@ const RUNNER = /^(?:npx|pnpx|bunx|npm|pnpm|yarn|bun|node|nodejs|deno|corepack)$/
 const INTERPRETER = /^(?:node|nodejs|deno|bun|python[0-9.]*|pypy[0-9]*|perl|ruby|php|lua|osascript|pwsh|powershell|rscript|tclsh)$/;
 // Programs that only print, copy or move the text they are given. (git, gh, sed, awk and find can run a command: they are not here.)
 const DATA_PROGRAM = /^(?:echo|printf|cat|tac|head|tail|less|more|grep|egrep|fgrep|rg|ag|ls|wc|cp|mv|ln|rm|touch|mkdir|rmdir|tee|diff|cmp|sort|uniq|cut|tr|basename|dirname|realpath|readlink|stat|file|du|which|type|whereis|pwd|cd|pushd|popd|test|\[|true|false|date|sleep|jq)$/;
-// A program given by path (a script the chain may have written) that is not a system binary.
-const SCRIPT_PATH = /^(?:\.{1,2}\/|~\/|\/(?!(?:usr\/)?(?:local\/)?s?bin\/))/;
 const SAFE_CONTROL_SUBCOMMAND = new Set(['enable', 'status']);
 // Words that start a command without being one (`do npx ...`, `then ...`) and words that start no command (`for x in ...`, `done`).
 const COMMAND_KEYWORD = new Set(['!', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', '{', 'coproc']);
@@ -341,21 +339,14 @@ function segmentCheck(segment, st) {
     const here = { ...segment, words, expansions };
     const program = words[0];
     const name = baseName(program);
-    // A program the walk cannot name (an expansion, a script by path) runs what an earlier part of the chain wrote or set.
-    if (/[$`]/.test(program) || SCRIPT_PATH.test(program))
-        st.executes = true;
     if (SHELL_PROGRAM.test(name)) {
         const flag = words.findIndex((word, index) => index > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(word));
         if (flag > 0 && words[flag + 1] !== undefined)
             nested(words[flag + 1], st);
-        else
-            st.executes = true;
         return;
     }
-    if (name === '.' || name === 'source') {
-        st.executes = true;
+    if (name === '.' || name === 'source')
         return;
-    }
     if (name === 'find') {
         for (const clause of findClauses(words))
             segmentCheck({ ...here, words: clause }, st);
@@ -381,9 +372,6 @@ function segmentCheck(segment, st) {
         return;
     }
     if (words.some(namesInstallerView)) {
-        // Only a part that writes text (a redirect, echo, printf, cat, tee) can hand it to a shell later in the chain; a part that reads or lists it cannot.
-        if (here.outputs.length > 0 || /^(?:echo|printf|cat|tee)$/.test(name))
-            st.named = true;
         // `!cmd` is a shell alias in a git or gh setting (`git -c alias.x='!cmd' x`): the text after the bang is a command.
         for (const word of words) {
             const alias = /^(?:[^=\s]*=)?!([^]+)$/.exec(word);
@@ -394,16 +382,13 @@ function segmentCheck(segment, st) {
             st.unread = true;
     }
 }
-function walkSegments(segments, views, depth) {
-    const st = { depth, route: false, unread: false, executes: false, named: false, defs: new Map(), aliases: new Map() };
+function walkSegments(segments, depth) {
+    const st = { depth, route: false, unread: false, defs: new Map(), aliases: new Map() };
     for (const segment of segments) {
         segmentCheck({ ...segment, words: segment.words.map(foldWord) }, st);
         if (st.route)
             return 'route';
     }
-    // Text one part of the chain prints or writes and another part hands to a shell (`echo '...' | sh`, `printf ... > f; . f`) is the command it names, when it names control off.
-    if (st.executes && st.named && views.some((view) => CONTROL_OFF_WORDS.test(view)))
-        return 'route';
     return st.unread ? 'unread' : 'cleared';
 }
 /**
@@ -424,7 +409,7 @@ function controlRouteVerdict(command, depth = 0) {
         // A command the parser cannot read that names the installer next to a control word is held, never guessed at.
         if (!segments)
             return views.some((view) => FALLBACK_WORDS.test(view)) ? 'route' : 'unread';
-        return walkSegments(segments, views, depth);
+        return walkSegments(segments, depth);
     }
     catch {
         return 'route';

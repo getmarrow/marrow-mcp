@@ -1019,7 +1019,7 @@ function shellPrintsEnvironment(eventCwd: string | undefined, command: string): 
 
 // MCP-0 (FC5): the seatbelt mapper reads the shell text a second way (variables, aliases, wrappers, inline scripts), and in account mode its S0 hit
 // only went into the record (the floor is `watch`). An S0 hit that is a command turning Marrow off or removing it (S0_CONTROL_OFF: the installer, an owner
-// command, a plugin or MCP removal, and the tripwire the mapper puts on an inline script it cannot clear) is now a control-off route as well, with two
+// command, a plugin or MCP removal) is now a control-off route as well, with two
 // exceptions the walk decides: a call whose installer words the walk read whole and found to be no route (`doctor`, `setup`, `control status`: the mapper
 // stops on every @getmarrow/ package, as the MCP-10 rows know), and a hit on `@getmarrow/mcp` or `@getmarrow/sdk` alone. An S0 hit that only names a
 // protected path stays with self-protect (T2) as it was: it also fires on a read such as `shellcheck ~/.bashrc`, which control-file-gap.test.js holds
@@ -1027,7 +1027,7 @@ function shellPrintsEnvironment(eventCwd: string | undefined, command: string): 
 // held, never passed. The mapper loads, once, only for a text that mentions Marrow or a control word; the PostToolUse path never asks it (classifyTool's postTool option).
 const MAPPER_ASKED = /marrow|\bcontrol\b|\bdisable\b|\buninstall\b/i;
 const MAPPER_UNFINISHED = /^(?:mapper_error|fs_error|budget_)/;
-const S0_CONTROL_OFF = /^(?:npx_marrow_installer|npm_init_marrow_installer|uninstall_marrow_package|marrow_owner_command|claude_plugin_uninstall_marrow|claude_plugin_marketplace_remove_marrow|claude_mcp_remove_marrow|tripwire_self_protection)$/;
+const S0_CONTROL_OFF = /^(?:npx_marrow_installer|npm_init_marrow_installer|uninstall_marrow_package|marrow_owner_command|claude_plugin_uninstall_marrow|claude_plugin_marketplace_remove_marrow|claude_mcp_remove_marrow)$/;
 const OTHER_MARROW_PACKAGE = /@getmarrow\/(?:mcp|sdk)(?:@[^\s'"/;|&)]*)?(?![\w/-])/gi;
 let controlMapper: typeof import('./seatbelt/mapper') | null | undefined;
 let lastControlAnswer: { command: string; where: string; route: boolean } | null = null;
@@ -1062,7 +1062,7 @@ function mapperControlRoute(command: string, eventCwd: string | undefined): bool
           fs: TEXT_ONLY_FS_VIEW,
           git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
         });
-        const stops = decision.hits.some((hit) => hit.category === 'S0' && S0_CONTROL_OFF.test(hit.reason) && (hit.reason !== 'tripwire_self_protection' || namesControlOff(views)) && !(hit.reason === 'npx_marrow_installer' && onlyOtherMarrowPackages(views)));
+        const stops = decision.hits.some((hit) => hit.category === 'S0' && S0_CONTROL_OFF.test(hit.reason) && !(hit.reason === 'npx_marrow_installer' && onlyOtherMarrowPackages(views)));
         const unfinished = decision.hits.some((hit) => MAPPER_UNFINISHED.test(hit.reason));
         if (stops || (unfinished && namesControlOff(views))) { route = true; break; }
       }
