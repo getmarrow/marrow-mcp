@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { recordAttendedPrompt } = require('../dist/attended-marker.js');
 const test = require('node:test');
 const { spawnSync } = require('node:child_process');
 const { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('node:fs');
@@ -184,8 +185,12 @@ test('deny texts are static and bounded: no key, command or path is echoed', () 
   assert.match(prompts[3].fix, /interactive Claude Code session in default permission mode/);
 });
 
+// A default-mode dialog needs attended evidence: the owner typed in this session just now (the UserPromptSubmit hook's marker).
+assert.equal(recordAttendedPrompt('session-day1'), true);
+const ATTENDED = { session_id: 'session-day1' };
+
 test('the hold fix is text only: available prompts and non-Claude hosts keep their old message', () => {
-  const available = ownerApprovalPrompt('claude-code', { permission_mode: 'default' }, {});
+  const available = ownerApprovalPrompt('claude-code', { ...ATTENDED, permission_mode: 'default' }, {});
   assert.equal(available.available, true);
   assert.equal(available.fix, undefined);
   const cursor = ownerApprovalPrompt('cursor', { permission_mode: 'default' }, {});
@@ -211,7 +216,7 @@ const reasonOf = (out) => out.hookSpecificOutput.permissionDecisionReason;
 const PLAN = ownerApprovalPrompt('claude-code', { permission_mode: 'plan' }, {});
 const HEADLESS = ownerApprovalPrompt('claude-code', { permission_mode: 'default' }, { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' });
 const AUTO_UNPROVEN = ownerApprovalPrompt('claude-code', { permission_mode: 'auto' }, {});
-const DEFAULT_MODE = ownerApprovalPrompt('claude-code', { permission_mode: 'default' }, {});
+const DEFAULT_MODE = ownerApprovalPrompt('claude-code', { ...ATTENDED, permission_mode: 'default' }, {});
 
 test('fix sentence per branch: legacy service, prompt unavailable -> default-mode fix is shown (true: default mode asks)', () => {
   const plan = preActionHookOutput(gateResult('review_required'), 'claude-code', PLAN, true);

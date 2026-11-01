@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { recordAttendedPrompt } = require('../dist/attended-marker.js');
 const { randomBytes } = require('node:crypto');
 const { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } = require('node:fs');
 const { tmpdir } = require('node:os');
@@ -30,6 +31,8 @@ function run(rawCommand) {
     chmodSync(control, 0o700);
     writeFileSync(join(control, 'control.json'), JSON.stringify({ version: 1, enabled: true, changed_at: new Date(0).toISOString(), changed_by: CONTROL_CHANGED_BY, change_id: `ctl_${'c'.repeat(32)}` }), { mode: 0o600 });
     mkdirSync(join(home, 'w'));
+    // Attended default mode: the control-off route reaches the backend as on master (without attended evidence it is denied locally).
+    assert.equal(recordAttendedPrompt('sess-n2', { home }), true);
     const capture = join(home, 'cap.jsonl');
     writeFileSync(capture, '');
     const env = { HOME: home, PATH: process.env.PATH, CAPTURE_FILE: capture, FETCH_STATUS: '503', TMPDIR: home, MARROW_API_KEY: KEY };

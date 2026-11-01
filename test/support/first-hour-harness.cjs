@@ -13,6 +13,7 @@ const { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, s
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { writeOfficialHostConfigs } = require('./official-host-config.cjs');
+const { attendFor } = require('./attended.cjs');
 
 const MOCK = join(__dirname, 'host-approval-fetch-mock.cjs');
 const FIXTURES = join(__dirname, '..', 'fixtures', 'host-approvals');
@@ -74,7 +75,11 @@ function keyedHarness(options = {}) {
     const path = join(mockDir, 'requests.jsonl');
     return existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
   };
+  // A Claude Code dialog needs attended evidence (see attended.cjs); `unattended = true` runs without it.
+  const attended = { off: false };
+  const attend = (payload) => { if (!attended.off) attendFor(home, payload); };
   const run = (entrypoint, payload, env = {}) => {
+    attend(payload);
     const result = spawnSync(process.execPath, [cli, entrypoint], {
       input: typeof payload === 'string' ? payload : JSON.stringify(payload),
       env: baseEnv(env),
@@ -90,6 +95,7 @@ function keyedHarness(options = {}) {
   };
   // The same as run, without blocking (tools/fh-diff.cjs runs several machines at once).
   const runAsync = (entrypoint, payload, env = {}) => new Promise((resolve, reject) => {
+    attend(payload);
     const child = spawn(process.execPath, [cli, entrypoint], { env: baseEnv(env), stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
@@ -122,7 +128,10 @@ function keyedHarness(options = {}) {
     }
     return out;
   };
-  return { dir, home, apiKey, run, runAsync, setConfig, requests, state, holds, stateSnapshot, statePath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return {
+    dir, home, apiKey, run, runAsync, setConfig, requests, state, holds, stateSnapshot, statePath, cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    set unattended(value) { attended.off = value === true; },
+  };
 }
 
 module.exports = { fixture, hostRuntime, ownerLockedRuntime, keyedHarness, MOCK, FIXTURES };

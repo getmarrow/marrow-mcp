@@ -17,6 +17,7 @@ const {
   classifyClaudeToolResult,
   parseTypedReply,
 } = require('../dist/host-approval.js');
+const { attendFor } = require('./support/attended.cjs');
 const { ordinaryApprovalGuidance } = require('../dist/runtime-contract.js');
 const { normalizeRuntimeResult } = require('../dist/runtime-contract.js');
 const { installPermissionRequestHook } = require('../dist/hook.js');
@@ -91,7 +92,11 @@ function harness() {
     const path = join(mockDir, 'requests.jsonl');
     return existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
   };
+  // A Claude Code dialog needs attended evidence (see test/support/attended.cjs); a test sets `unattended = true` to run without it.
+  const state_ = { unattended: false };
+  const attend = (payload) => { if (!state_.unattended) attendFor(home, payload); };
   const run = (entrypoint, payload, env = {}) => {
+    attend(payload);
     const result = spawnSync(process.execPath, entrypoint === 'marrow-mcp-server-placeholder' ? [CLI] : [CLI, entrypoint], {
       input: typeof payload === 'string' ? payload : JSON.stringify(payload),
       // The hook runs in a fresh empty project folder: the own-server identity walk starts at its cwd.
@@ -113,6 +118,7 @@ function harness() {
   };
   // The same as run, without blocking: for calls a host makes at the same time.
   const runAsync = (entrypoint, payload, env = {}) => new Promise((resolve, reject) => {
+    attend(payload);
     const child = spawn(process.execPath, [CLI, entrypoint], {
       cwd: projectCwd(),
       env: {
@@ -145,7 +151,10 @@ function harness() {
     const path = join(home, '.marrow', 'host-approvals', 'state.json');
     return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null;
   };
-  return { dir, home, run, runAsync, setConfig, requests, transcript, state, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return {
+    dir, home, run, runAsync, setConfig, requests, transcript, state, cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    set unattended(value) { state_.unattended = value === true; },
+  };
 }
 
 const hostReports = (h) => h.requests().filter((r) => r.path.endsWith('/host-approval'));
@@ -409,9 +418,10 @@ test('Claude Code never accepts a typed approval', () => {
   } finally { h.cleanup(); }
 });
 
-test('Claude Code auto mode asks only when the input proves a version whose hook ask forces the prompt', () => {
+// Changed from master: auto mode never asks, even with scratchpad_dir (a dialog there has no time limit and nobody is at it).
+test('Claude Code auto mode never asks: a hold is a denial that names its receipt, with or without version evidence', () => {
   for (const [label, payload, expected] of [
-    ['auto with scratchpad_dir (v2.1.257+)', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'auto' }, 'ask'],
+    ['auto with scratchpad_dir (v2.1.257+)', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'auto' }, 'deny'],
     ['auto without version evidence', (() => { const p = { ...fixture('claude-pre-tool-use.json'), permission_mode: 'auto' }; delete p.scratchpad_dir; return p; })(), 'deny'],
     ['plan', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'plan' }, 'deny'],
     ['dontAsk', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'dontAsk' }, 'deny'],
@@ -422,7 +432,10 @@ test('Claude Code auto mode asks only when the input proves a version whose hook
       h.setConfig({ runtime: hostRuntime() });
       const out = h.run('claude-pre-action-hook', payload);
       assert.equal(out.json.hookSpecificOutput.permissionDecision, expected, label);
-      if (expected === 'deny') {
+      if (payload.permission_mode === 'auto') {
+        assert.equal(out.json.hookSpecificOutput.permissionDecisionReason, "Held for the owner's approval (receipt gate-held). Continue other work; run this exact action again after the owner approves.", label);
+        assert.deepEqual(commits(h), [], `${label}: a waiting hold is never closed by the hook`);
+      } else if (expected === 'deny') {
         assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode \(Shift\+Tab\) and ask you to retry this exact action, and Claude Code then asks them\. Do not treat a chat reply as approval\./, label);
         assert.doesNotMatch(out.stdout, /dashboard/i, `${label}: the dashboard is never the step to take`);
         assert.deepEqual(commits(h), [], `${label}: a waiting hold is never closed by the hook`);
