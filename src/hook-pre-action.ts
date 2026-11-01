@@ -45,6 +45,7 @@ import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
 import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
+import { agentIdSourceSentence, explainEnvironment, UNSAFE_ID, type AgentIdLookup } from './identity-explain';
 import { normalizedHookAction } from './normalized-action';
 import { APPROVAL_STATE_REASON } from './secret-paths';
 import { consultSessionLoopGuard, type LoopGuardOperation } from './session-loop-guard';
@@ -323,6 +324,17 @@ export function controlFailureKind(error: unknown): PreActionControlResult['fail
   return CONTROL_UNAVAILABLE_CODES.has(error.code) ? 'unavailable' : undefined;
 }
 
+// Read only on a credential-scope failure, from the same process environment the hook resolved (the hook's own copy of the id
+// is already cleared when unsafe); any trouble reading a config file leaves the BASE text.
+function credentialScopeSource(error: unknown): AgentIdLookup | undefined {
+  if (controlFailureKind(error) !== 'credential_scope') return undefined;
+  try {
+    return explainEnvironment();
+  } catch {
+    return undefined;
+  }
+}
+
 const DOCTOR_FIX = 'Run `npx -y @getmarrow/install@latest doctor` in this terminal to check this machine\'s Marrow setup, then retry.';
 
 /**
@@ -352,7 +364,7 @@ function plainControlFix(error: unknown): string {
 
 // Names a reached control failure by HTTP status and stable failure code, with a plain
 // fix (see plainControlFix); private service text is never echoed into the agent transcript.
-export function controlRejectionMessage(error: unknown, agentId?: string, kind: PreActionControlResult['failure'] = controlFailureKind(error)): string {
+export function controlRejectionMessage(error: unknown, agentId?: string, kind: PreActionControlResult['failure'] = controlFailureKind(error), source?: AgentIdLookup): string {
   const detail: string[] = [];
   if (error instanceof MarrowRequestError) {
     if (typeof error.status === 'number' && Number.isInteger(error.status)) detail.push(`HTTP ${error.status}`);
@@ -361,10 +373,20 @@ export function controlRejectionMessage(error: unknown, agentId?: string, kind: 
   }
   const suffix = detail.length ? ` (${detail.join(' ')})` : '';
   if (kind === 'credential_scope') {
-    const agent = agentId && SAFE_AGENT_ID.test(agentId)
+    // `source` (when the caller resolved one) says where the id came from: variable and file, never a key or a command.
+    const sourced = source && source.origin !== 'none' ? source : null;
+    const printable = agentId && SAFE_AGENT_ID.test(agentId) && sourced?.agent_id !== UNSAFE_ID;
+    const agent = printable
       ? `agent "${agentId}"`
+      : sourced
+      ? `agent "${UNSAFE_ID}"`
       : 'this hook\'s agent (no MARROW_FLEET_AGENT_ID or MARROW_AGENT_ID is set)';
-    return `This Marrow API key is not authorized to obtain action permits for ${agent}${suffix}. Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.`;
+    const where = sourced ? agentIdSourceSentence(sourced) : '';
+    const lead = `This Marrow API key is not authorized to obtain action permits for ${agent}${suffix}.`;
+    const next = 'Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.';
+    // Where the id came from reads first. A host that cuts the text at CURSOR_ENFORCEMENT_LIMIT must still end on the BASE next step,
+    // so a long explanation (several config files) moves behind it and is the part that gets cut.
+    return !where || `${lead} ${where} ${next}`.length <= CURSOR_ENFORCEMENT_LIMIT ? `${lead} ${where ? `${where} ` : ''}${next}` : `${lead} ${next} ${where}`;
   }
   if (kind === 'unavailable') {
     return `Marrow is unavailable, so this protected action was denied${suffix}. Retry when Marrow is reachable.`;
@@ -1946,7 +1968,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
           runtime: null,
           permit: null,
           protectedRisk: enforcementRequired,
-          enforcementError: controlRejectionMessage(error, agentId),
+          enforcementError: controlRejectionMessage(error, agentId, undefined, credentialScopeSource(error)),
           ...(controlFailureKind(error) ? { failure: controlFailureKind(error) } : {}),
         }
     )),

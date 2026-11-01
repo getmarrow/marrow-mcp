@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fix (MCP-1, identity source): a refused agent id (HTTP 403 `MARROW_AGENT_SCOPE_MISMATCH` or `ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID`) now says where the id came from. The tool error and the hook's credential-scope text add one sentence naming the variable (`MARROW_FLEET_AGENT_ID` or `MARROW_AGENT_ID`) and the file: the `marrow` env block of a host config file that holds the same id (from `~/.mcp.json`, `<cwd>/.mcp.json`, `~/.cursor/mcp.json`, `<cwd>/.cursor/mcp.json`, `~/.codex/config.toml`, `~/.gemini/settings.json`; `one of: a, b` when several do), `~/.marrow/env`, or "this server's environment (no Marrow MCP config file sets it)". A config file that is a symlink, writable by others, over 2 MiB or not valid JSON/TOML is never named; the text says one "could not be read safely". The tool error also carries `agent_id_source` with the same four fields as the new command. The line names a variable and a path only: never a key, an env block or a command that changes identity. The 403 status, code, repair text, headers, hook decisions and the identity sent are unchanged.
+- New (MCP-1): `marrow-mcp identity --explain [--json]` prints `{agent_id, variable, origin, file}` (origin `fleet_key_match`, `process_env`, `owner_file` or `none`). It reads no key, makes no network call and works without a key. An id with control characters, blank, or over 64 characters prints as `<unsafe id>`.
+
 ## 3.9.109
 
 Hook fixes on 3.9.108: the control-file fail-closed fix, a faster exit of the pre-action hook, the test/live key split, the patch-write holds, the Windows-lane port and an IPv4-first dial, plus tightenings found on the way. One change is looser than 3.9.108, on purpose and by the owner's decision: on Windows only, the session loop guard's ACL proof; the rest hold more or only tell the user more, except MCP-9, which changes only the Marrow session id the hooks send.

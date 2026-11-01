@@ -16,10 +16,26 @@ const ALLOWED_ENV_KEYS = new Set([
 const MAX_ENV_FILE_BYTES = 1024 * 1024;
 const REPO_KEY_FIX = 'run npx @getmarrow/install doctor, or move the line to ~/.marrow/env, then chmod 600 ~/.marrow/env';
 
+/** Where resolveMarrowEnv took the agent id from. `fleet_key_match` is the process-env id that also picked a fleet key. */
+export type AgentIdOrigin = 'fleet_key_match' | 'process_env' | 'owner_file' | 'none';
+export type AgentIdVariable = 'MARROW_FLEET_AGENT_ID' | 'MARROW_AGENT_ID';
+
+/** Names only, never a value: which variable supplied the id and which origin won. Reading a config file is left to identity-explain. */
+export interface AgentIdSource {
+  origin: AgentIdOrigin;
+  variable: AgentIdVariable | null;
+  /** fleet_key_match only: the NAME of the key variable the id selected (MARROW_KEY_<X>). */
+  keyVariable?: string;
+  /** owner_file only: the owner file that supplied the id, as `~/...`. */
+  ownerFile?: string;
+}
+
 export interface ResolvedMarrowEnv {
   apiKey: string;
   baseUrl: string;
   agentId?: string;
+  /** The origin and variable of `agentId`. Explanation only: no decision reads it. */
+  agentIdSource: AgentIdSource;
   sessionId?: string;
   source: string | null;
   missing: boolean;
@@ -54,7 +70,7 @@ const MAX_PRINTED_PATH = 200;
 
 // Paths in notices can be attacker-named: control, line-separator and format
 // (bidi, zero-width) characters become '?', and the length is capped.
-function printablePath(filePath: string): string {
+export function printablePath(filePath: string): string {
   const clean = filePath.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '?');
   const chars = Array.from(clean);
   return chars.length > MAX_PRINTED_PATH ? `${chars.slice(0, MAX_PRINTED_PATH - 3).join('')}...` : clean;
@@ -271,6 +287,18 @@ function pickKey(env: Record<string, string | undefined>): { key: string; source
   return { key: '', source: null };
 }
 
+// The same precedence as `MARROW_FLEET_AGENT_ID || MARROW_AGENT_ID` (an empty value is absent), with the name that won.
+function pickAgentId(values: Record<string, string | undefined>): { variable: AgentIdVariable; value: string } | null {
+  if (values.MARROW_FLEET_AGENT_ID) return { variable: 'MARROW_FLEET_AGENT_ID', value: values.MARROW_FLEET_AGENT_ID };
+  if (values.MARROW_AGENT_ID) return { variable: 'MARROW_AGENT_ID', value: values.MARROW_AGENT_ID };
+  return null;
+}
+
+function envAgentIdSource(env: Record<string, string | undefined>): AgentIdSource {
+  const picked = pickAgentId(env);
+  return picked ? { origin: 'process_env', variable: picked.variable } : { origin: 'none', variable: null };
+}
+
 function matchingFleetIdentity(
   env: Record<string, string | undefined>,
   agentId?: string,
@@ -286,6 +314,12 @@ function matchingFleetIdentity(
     return { key, agentId: want, source: keyName };
   }
   return null;
+}
+
+// Owner files live under the home directory (the trust check requires it): name them as `~/...` the way the docs do.
+function homeRelative(filePath: string, home: string): string {
+  const relative = path.relative(path.resolve(home), path.resolve(filePath));
+  return `~/${printablePath(relative.split(path.sep).join('/'))}`;
 }
 
 export function resolveMarrowEnv(options: {
@@ -305,6 +339,7 @@ export function resolveMarrowEnv(options: {
       apiKey: matchedIdentity.key,
       baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
       agentId: matchedIdentity.agentId,
+      agentIdSource: { origin: 'fleet_key_match', variable: pickAgentId(env)?.variable ?? null, keyVariable: matchedIdentity.source },
       sessionId: env.MARROW_SESSION_ID,
       source: matchedIdentity.source,
       missing: false,
@@ -316,6 +351,7 @@ export function resolveMarrowEnv(options: {
       apiKey: direct.key,
       baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
       agentId: requestedAgentId,
+      agentIdSource: envAgentIdSource(env),
       sessionId: env.MARROW_SESSION_ID,
       source: direct.source,
       missing: false,
@@ -337,7 +373,7 @@ export function resolveMarrowEnv(options: {
     }
     if (read.status !== 'trusted') continue;
     const found = pickKey(read.values);
-    if (found.key) return fromFile(filePath, found, read.values, env);
+    if (found.key) return fromFile(filePath, found, read.values, env, home);
   }
   if (options.trustedOnly === true) return missingKey(env, ignored, ownerFileRefused);
 
@@ -425,13 +461,18 @@ function fromFile(
   found: { key: string; source: string | null },
   parsed: Record<string, string>,
   env: NodeJS.ProcessEnv,
+  home: string,
 ): ResolvedMarrowEnv {
   const target = ownerKeyBaseUrl(filePath, parsed, env);
+  const fileId = pickAgentId(parsed);
   return {
     apiKey: found.key,
     baseUrl: target.baseUrl,
     ...(target.notice ? { baseUrlNotice: target.notice } : {}),
     agentId: parsed.MARROW_FLEET_AGENT_ID || parsed.MARROW_AGENT_ID || env.MARROW_FLEET_AGENT_ID || env.MARROW_AGENT_ID,
+    agentIdSource: fileId
+      ? { origin: 'owner_file', variable: fileId.variable, ownerFile: homeRelative(filePath, home) }
+      : envAgentIdSource(env),
     sessionId: parsed.MARROW_SESSION_ID || env.MARROW_SESSION_ID,
     source: `${filePath}:${found.source}`,
     missing: false,
@@ -444,6 +485,7 @@ function missingKey(env: NodeJS.ProcessEnv, ignored: string | null, ownerFileRef
     apiKey: '',
     baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
     agentId: env.MARROW_FLEET_AGENT_ID || env.MARROW_AGENT_ID,
+    agentIdSource: envAgentIdSource(env),
     sessionId: env.MARROW_SESSION_ID,
     source: null,
     missing: true,
