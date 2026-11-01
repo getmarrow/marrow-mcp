@@ -23,10 +23,6 @@ const bash = (command) => classifyTool({ tool_name: 'Bash', tool_input: { comman
 const isRoute = (c) => c.surfaces.includes('marrow-control');
 const ROUTE_SHAPES = [...GAP1.map((r) => ['GAP1', ...r]), ...COMPOUND.map((r) => ['COMPOUND', ...r]), ...DECODE.map((r) => ['DECODE', ...r])];
 
-// The shapes only the seatbelt mapper (FC5 / M2) can read: the walk cannot see the installer name without running the code or a shell's variable
-// and alias resolution. Every other shape is also a text-layer route, proved on controlRoute alone (the mutants below drop one clause each).
-const MAPPER_ONLY = new Set(['split name over two variables', 'package removed globally (mapper S0 uninstall_marrow_package)']);
-
 // ---- M0-1 / M1 (GAP-1): the label ------------------------------------------------------------------------------------------------------
 
 for (const [group, id, command] of ROUTE_SHAPES) {
@@ -42,7 +38,6 @@ for (const [group, id, command] of ROUTE_SHAPES) {
 }
 
 for (const [group, id, command] of ROUTE_SHAPES) {
-  if (MAPPER_ONLY.has(id)) continue;
   test(`M0-1 text layer (no mapper) sees ${group}: ${id}`, () => {
     assert.equal(controlRoute(command), true, JSON.stringify(command));
   });
@@ -93,21 +88,6 @@ test('M3: a twin never routes a read of a protected file past self-protect (an e
 });
 
 // ---- M0-3 / M2 (FC5, GAP-2): the seatbelt mapper, in account mode ---------------------------------------------------------------------------
-
-// Each is an S0 hit of the mapper with a reason that is not an installer text the walk reads: it is a control-off route all the same.
-const MAPPER_S0 = [
-  ['S0 tripwire: python3 -c subcommand from the environment', `D=disable python3 -c "import os; os.system('npx @getmarrow/install control '+os.environ['D'])"`],
-  ['S0 npx_marrow_installer: name split over two variables', 'A=@getmarrow; npx $A/install control disable --yes'],
-  ['S0 claude_mcp_remove_marrow', 'claude mcp remove marrow'],
-  ['S0 claude_plugin_uninstall_marrow', 'claude plugin uninstall marrow'],
-];
-for (const [id, command] of MAPPER_S0) {
-  test(`M0-3 mapper S0 on a shell call is a control-off route: ${id}`, () => {
-    const result = bash(command);
-    assert.equal(heldLabel(result.action), SECURITY_LABEL, command);
-    assert.equal(result.protected, true);
-  });
-}
 
 test('M0-3: an S0 hit that only names a protected path is not a control-off route: a held write keeps its 3.9.109 label, a read stays open', () => {
   assert.equal(heldLabel(bash("echo 'export MARROW_AUTO_HOOK=false' >> ~/.zshrc").action), 'classified Bash action: security on persistence');

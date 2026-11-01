@@ -9,7 +9,7 @@ const test = require('node:test');
 const { classifyTool } = require('../dist/hook-pre-action.js');
 const { selfProtectKind } = require('../dist/self-protect.js');
 const { heldLabel } = require('./support/mcp-109-n2-categories.cjs');
-const { B1, B2, RES, EXEC, TRIP, CLEAR, INTERP, BASE_HELD, HELD, TRIPWIRE_HELD } = require('./support/mcp0-patch-rows.cjs');
+const { B1, B2, RES, EXEC, TRIP, CLEAR, INTERP, BASE_HELD, HELD, HUNT2, FOLLOWUP } = require('./support/mcp0-patch-rows.cjs');
 const BASE = require('./fixtures-mcp0-patch-base.json');
 
 // MCP-0 round 2 (audit-mcp0 B1, B2, B3). The change adds holds for control-off forms; it must never slow an ordinary command. A command that names no
@@ -26,7 +26,7 @@ const answer = (command) => {
 
 // ---- PN1 (B1), PN2 (B2): the 3.9.109 answer, whole --------------------------------------------------------------------------------------------
 
-for (const [group, rows] of [['B1', B1], ['B2', B2], ['RES', RES], ['EXEC', EXEC], ['TRIP', TRIP], ['CLEAR', CLEAR], ['INTERP', INTERP]]) {
+for (const [group, rows] of [['B1', B1], ['B2', B2], ['RES', RES], ['EXEC', EXEC], ['TRIP', TRIP], ['CLEAR', CLEAR], ['INTERP', INTERP], ['HUNT2', HUNT2], ['FOLLOWUP', FOLLOWUP]]) {
   for (const [id, command] of rows) {
     test(`${group} keeps its 3.9.109 answer (no new refusal): ${id}`, () => {
       assert.ok(BASE[`${group}|${id}`], 'recorded 3.9.109 answer');
@@ -45,7 +45,7 @@ for (const [id, command] of BASE_HELD) {
 
 // ---- the forms the change was made for stay held ---------------------------------------------------------------------------------------------
 
-for (const [group, rows] of [['HELD', HELD], ['TRIPWIRE_HELD', TRIPWIRE_HELD]]) {
+for (const [group, rows] of [['HELD', HELD]]) {
   for (const [id, command] of rows) {
     test(`${group} a control-off word in a form the change reads is held as marrow-control: ${id}`, () => {
       const result = bash(command);
@@ -91,12 +91,12 @@ function hook(directory, home, command, env = {}) {
   return { stdout: result.stdout, stderr: result.stderr, calls: lines.length };
 }
 
-test('B1/B2/RES/EXEC/TRIP in the hook, keyless auto and account auto: no owner-only refusal for the audit rows and their neighbours', () => {
+test('B1/B2/RES/EXEC/TRIP/HUNT2/FOLLOWUP in the hook, keyless auto and account auto: no owner-only refusal for the audit rows and their neighbours', () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-m0p-'));
   try {
     const home = makeHome(directory);
     const key = dummyKey();
-    for (const [id, command] of [...B1, ...B2, ...RES, ...EXEC, ...TRIP]) {
+    for (const [id, command] of [...B1, ...B2, ...RES, ...EXEC, ...TRIP, ...HUNT2, ...FOLLOWUP]) {
       for (const env of [{}, { MARROW_API_KEY: key }]) {
         const { stdout, stderr } = hook(directory, home, command, env);
         assert.equal(stdout.includes(DENY_TEXT), false, id);
@@ -106,11 +106,11 @@ test('B1/B2/RES/EXEC/TRIP in the hook, keyless auto and account auto: no owner-o
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('HELD and TRIPWIRE_HELD in the hook, keyless auto and account auto: the owner-only refusal, with no network call', () => {
+test('HELD in the hook, keyless auto and account auto: the owner-only refusal, with no network call', () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-m0p-'));
   try {
     const home = makeHome(directory);
-    for (const [id, command] of [...HELD, ...TRIPWIRE_HELD]) {
+    for (const [id, command] of [...HELD]) {
       for (const env of [{}, { MARROW_API_KEY: dummyKey() }]) {
         const { stdout, calls } = hook(directory, home, command, env);
         assert.equal(JSON.parse(stdout).hookSpecificOutput.permissionDecisionReason, DENY_TEXT, id);
@@ -133,8 +133,8 @@ process.stdout.write(JSON.stringify(c));`], { env: { PATH: process.env.PATH, HOM
   return JSON.parse(result.stdout);
 }
 
-test('PN3 control: with the mapper working (mode off) the mapper-only shape is a hold', () => {
-  assert.equal(heldLabel(classifyWithMapper('off', MAPPER_ONLY).action), SECURITY_LABEL);
+test('PN3 control: with the mapper working (mode off) the mapper-only shape keeps its 3.9.109 answer', () => {
+  assert.notEqual(heldLabel(classifyWithMapper('off', MAPPER_ONLY).action), SECURITY_LABEL);
 });
 
 for (const [mode, what] of [

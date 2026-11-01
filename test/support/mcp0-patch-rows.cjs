@@ -92,10 +92,75 @@ const HELD = [
   ['cat of a heredoc writes the command, bash runs it', "cat > run.sh <<'EOF'\nnpx @getmarrow/install control disable --yes\nEOF\nbash run.sh"],
 ];
 
-// An inline script that spells a control-off command, or builds it from the environment or a package-folder removal, is still held (the mapper stops it).
-const TRIPWIRE_HELD = [
-  ['python takes the subcommand from the environment', `D=disable python3 -c "import os; os.system('npx @getmarrow/install control '+os.environ['D'])"`],
-  ['node removes the installer package folder', `node -e "require('fs').rmSync('node_modules/@getmarrow/install',{recursive:true}); /* uninstall */"`],
+// Second cut (verify-mcp0cut B1): commands that only name the installer as data (a test filter, a quoted program argument, xargs input, a `!` in text).
+// 3.9.109 lets each through; so does the cut. (Ids are the verify's hunt2 rows.)
+const HUNT2 = [
+  ['I1 node test-name-pattern =', 'node --test --test-name-pattern="marrow-install uninstall" test/a.test.js'],
+  ['I2 node test-name-pattern sep', 'node --test --test-name-pattern "marrow-install uninstall" test/a.test.js'],
+  ['I3 python script quoted arg', 'python3 tools/report.py --title "marrow-install uninstall notes"'],
+  ['I4 pytest -k', 'python3 -m pytest -k "marrow-install uninstall" tests/'],
+  ['I5 node script quoted arg', 'node tools/check.js "marrow-install uninstall"'],
+  ['I6 ruby script quoted arg', 'ruby tools/x.rb "marrow-install uninstall"'],
+  ['I7 python quoted, tilde path', 'python3 tools/x.py "marrow-install notes" ~/notes.md'],
+  ['I8 python quoted, glob', 'python3 tools/x.py "marrow-install notes" docs/*.md'],
+  ['I9 node quoted, variable', 'node tools/check.js "marrow-install notes" "$FILE"'],
+  ['I10 python control panel', 'python3 tools/x.py "marrow-install control panel"'],
+  ['I11 deno test filter', 'deno test --filter "marrow-install uninstall"'],
+  ['I12 bun test -t', 'bun test -t "marrow-install uninstall"'],
+  ['P1 perl capture', "perl -ne 'print $1 if /marrow-install (\\S+)/' README.md"],
+  ['P2 perl variable', `perl -e 'my $x="marrow-install"; print $x'`],
+  ['P3 node template', "node -e \"const x='marrow-install'; console.log(\\`\\${x} ok\\`)\""],
+  ['P4 python control word', `python3 -c "print('marrow-install control panel')"`],
+  ['P5 node inline, tilde arg', `node -e "console.log('marrow-install', process.argv[1])" ~/notes.md`],
+  ['P6 python inline, glob arg', `python3 -c "import sys; print('marrow-install', sys.argv)" docs/*.md`],
+  ['P7 node scripts.control', `node -e "console.log(require('@getmarrow/install/package.json').scripts, 'control')"`],
+  ['P8 php echo', `php -r 'echo "marrow-install status $argc";'`],
+  ['R1 npm test -t', 'npm test -- -t "marrow-install uninstall"'],
+  ['R2 vitest -t', 'npx vitest run -t "marrow-install uninstall"'],
+  ['R3 jest -t', 'npx jest -t "marrow-install uninstall"'],
+  ['R4 pnpm test', 'pnpm test --filter "marrow-install uninstall"'],
+  ['R5 yarn test', 'yarn test -t "marrow-install uninstall"'],
+  ['R6 vitest -t off text', 'npx vitest run -t "npx @getmarrow/install control disable --yes"'],
+  ['R7 npm run echo arg', 'npm run notes -- "marrow-install control panel"'],
+  ['R8 owner CLI in a test name', 'npx vitest run -t "marrow uninstall"'],
+  ['R9 playwright grep', 'npx playwright test --grep "marrow-install uninstall"'],
+  ['U5 xargs eslint', 'ls | xargs npx eslint marrow-install'],
+  ['U6 xargs node', 'git ls-files | xargs node tools/check.js marrow-install'],
+  ['U7 xargs npm', 'ls | xargs npm test marrow-install'],
+  ['B2 grep bang', `grep -n '!marrow-install uninstall' docs/a.md`],
+  ['B3 echo bang', `echo '!npx @getmarrow/install control disable' >> notes.md`],
+  ['W1 timeout node', 'timeout 60 node --test --test-name-pattern="marrow-install uninstall" test/a.test.js'],
+  ['W2 env npm', 'env CI=1 npm test -- -t "marrow-install uninstall"'],
+  ['W3 sh -c node', `sh -c 'node tools/check.js "marrow-install uninstall"'`],
+  ['C1 grep', 'grep -n "marrow-install uninstall" docs/a.md'],
+  ['C2 cargo test', 'cargo test "marrow-install uninstall"'],
+  ['C3 go test', 'go test -run "marrow-install uninstall" ./...'],
+  ['C4 make', 'make test ARGS="marrow-install uninstall"'],
+  ['C5 pytest bare', 'pytest -k "marrow-install uninstall" tests/'],
 ];
 
-module.exports = { B1, B2, RES, EXEC, TRIP, CLEAR, INTERP, BASE_HELD, HELD, TRIPWIRE_HELD };
+// Second cut (verify-mcp0cut B1): control-off commands that only a removed clause held. 3.9.109 lets each through; so does the cut (follow-up set).
+const FOLLOWUP = [
+  ['G7 xargs fed by echo', 'echo control disable --yes | xargs npx @getmarrow/install'],
+  ['G8 node -e execSync', `node -e "require('child_process').execSync('npx @getmarrow/install control disable --yes')"`],
+  ['G9 python3 -c os.system', `python3 -c 'import os; os.system("npx @getmarrow/install control disable --yes")'`],
+  ['perl -e', `perl -e 'system("npx @getmarrow/install control disable --yes")'`],
+  ['ruby -e', `ruby -e 'system("npx @getmarrow/install control disable --yes")'`],
+  ['php -r', `php -r 'system("npx @getmarrow/install control disable --yes");'`],
+  ['node -p', `node -p "require('child_process').execSync('npx @getmarrow/install control disable --yes')"`],
+  ['deno eval', `deno eval 'new Deno.Command("sh",{args:["-c","npx @getmarrow/install control disable --yes"]}).outputSync()'`],
+  ['python -c subprocess list', `python3 -c 'import subprocess; subprocess.run(["npx","@getmarrow/install","control","disable","--yes"])'`],
+  ['npx -c string', `npx -c 'npx @getmarrow/install control disable --yes'`],
+  ['split name over two variables', 'A=@getmarrow; npx $A/install control disable --yes'],
+  ['git alias runs it', `git -c alias.x='!npx @getmarrow/install control disable --yes' x`],
+  ['owner CLI control disable', 'marrow control disable --yes'],
+  ['owner CLI uninstall in a loop', 'for i in 1; do marrow uninstall --yes; done'],
+  ['owner CLI control disable under sudo', 'sudo -u root marrow control disable'],
+  ['package removed globally (mapper S0 uninstall_marrow_package)', 'npm uninstall -g @getmarrow/mcp'],
+  ['python takes the subcommand from the environment', `D=disable python3 -c "import os; os.system('npx @getmarrow/install control '+os.environ['D'])"`],
+  ['node removes the installer package folder', `node -e "require('fs').rmSync('node_modules/@getmarrow/install',{recursive:true}); /* uninstall */"`],
+  ['S0 claude_mcp_remove_marrow', 'claude mcp remove marrow'],
+  ['S0 claude_plugin_uninstall_marrow', 'claude plugin uninstall marrow'],
+];
+
+module.exports = { B1, B2, RES, EXEC, TRIP, CLEAR, INTERP, BASE_HELD, HELD, HUNT2, FOLLOWUP };
