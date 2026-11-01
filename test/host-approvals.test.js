@@ -409,9 +409,10 @@ test('Claude Code never accepts a typed approval', () => {
   } finally { h.cleanup(); }
 });
 
-test('Claude Code auto mode asks only when the input proves a version whose hook ask forces the prompt', () => {
+// Changed from master: auto mode never asks, even with scratchpad_dir (a dialog there has no time limit and nobody is at it).
+test('Claude Code auto mode never asks: a hold is a denial that names its receipt, with or without version evidence', () => {
   for (const [label, payload, expected] of [
-    ['auto with scratchpad_dir (v2.1.257+)', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'auto' }, 'ask'],
+    ['auto with scratchpad_dir (v2.1.257+)', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'auto' }, 'deny'],
     ['auto without version evidence', (() => { const p = { ...fixture('claude-pre-tool-use.json'), permission_mode: 'auto' }; delete p.scratchpad_dir; return p; })(), 'deny'],
     ['plan', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'plan' }, 'deny'],
     ['dontAsk', { ...fixture('claude-pre-tool-use.json'), permission_mode: 'dontAsk' }, 'deny'],
@@ -422,7 +423,10 @@ test('Claude Code auto mode asks only when the input proves a version whose hook
       h.setConfig({ runtime: hostRuntime() });
       const out = h.run('claude-pre-action-hook', payload);
       assert.equal(out.json.hookSpecificOutput.permissionDecision, expected, label);
-      if (expected === 'deny') {
+      if (payload.permission_mode === 'auto') {
+        assert.equal(out.json.hookSpecificOutput.permissionDecisionReason, "Held for the owner's approval (receipt gate-held). Continue other work; run this exact action again after the owner approves.", label);
+        assert.deepEqual(commits(h), [], `${label}: a waiting hold is never closed by the hook`);
+      } else if (expected === 'deny') {
         assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Tell the user once: Marrow is holding a production deploy; a chat approval does not count; to approve it, they switch Claude Code to default mode \(Shift\+Tab\) and ask you to retry this exact action, and Claude Code then asks them\. Do not treat a chat reply as approval\./, label);
         assert.doesNotMatch(out.stdout, /dashboard/i, `${label}: the dashboard is never the step to take`);
         assert.deepEqual(commits(h), [], `${label}: a waiting hold is never closed by the hook`);

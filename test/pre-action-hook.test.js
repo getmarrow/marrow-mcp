@@ -931,7 +931,8 @@ test('owner prompts are offered only where Claude Code shows the prompt to a per
   const cases = [
     ['claude-code', { permission_mode: 'default' }, {}, true],
     ['claude-code', { permission_mode: 'acceptEdits' }, {}, true],
-    ['claude-code', { permission_mode: 'auto', scratchpad_dir: '/tmp/claude-1000/project/session/scratchpad' }, {}, true],
+    // Auto mode never asks (a dialog there has no time limit and freezes the session), version proof or not.
+    ['claude-code', { permission_mode: 'auto', scratchpad_dir: '/tmp/claude-1000/project/session/scratchpad' }, {}, false],
     ['claude-code', { permission_mode: 'auto' }, {}, false],
     ['claude-code', { permission_mode: 'plan' }, {}, false],
     ['claude-code', { permission_mode: 'dontAsk' }, {}, false],
@@ -1002,7 +1003,7 @@ test('a review gate is denied with its reason wherever no person would see the p
     ['claude-pre-action-hook', publishEvent({ permission_mode: 'bypassPermissions' }), /permission mode bypassPermissions cannot guarantee an owner prompt/],
     ['claude-pre-action-hook', publishEvent({ permission_mode: 'dontAsk' }), /permission mode dontAsk/],
     ['claude-pre-action-hook', publishEvent({ permission_mode: 'plan' }), /permission mode plan/],
-    ['claude-pre-action-hook', publishEvent({ permission_mode: 'auto' }), /does not prove a Claude Code version/],
+    ['claude-pre-action-hook', publishEvent({ permission_mode: 'auto' }), /permission mode auto cannot guarantee an owner prompt/],
     ['claude-pre-action-hook', publishEvent(), /permission mode unknown/],
     ['codex-pre-action-hook', publishEvent({ permission_mode: 'default' }), /Codex hooks cannot prompt the owner/],
   ]) {
