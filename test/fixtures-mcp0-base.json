@@ -1,0 +1,1647 @@
+{
+ "GAP1|G1 quote-split": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G2 backslash-split": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G3 variable package": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G4 env -S": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G5 sudo -u root": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G6 timeout -s KILL 30": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G7 xargs fed by echo": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G8 node -e execSync": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G9 python3 -c os.system": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G10 until loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "GAP1|G11 ANSI-C quote": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|A13 for loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|A15 if/then": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|A15 eval": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|A15 function": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|A15 variable program": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|A15 xargs -I": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|A15 find -exec": {
+  "type": "audit",
+  "surfaces": [
+   "secrets"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: audit on secrets",
+  "selfKind": null
+ },
+ "COMPOUND|while loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|while read loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|case arm": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|for over words, uninstall": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|elif branch": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|else branch": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|negated": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|brace group": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|alias then call": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|alias then call (shopt)": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|source a file written in the chain": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|source word a file written in the chain": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|bash on a file written in the chain": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|piped into a shell": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|piped into bash -s": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|heredoc into bash": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|heredoc into sh via cat": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|process substitution": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|sh -c": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|bash -lc": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|command wrapper": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|exec wrapper": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|nohup wrapper": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|nice -n wrapper": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|stdbuf -o0 wrapper": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|setsid wrapper": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|sudo wrapper, uninstall": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|sudo -n -E": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|doas -u": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|timeout --signal=KILL": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|ionice -c3": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|env -i": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|env -u": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|time wrapper": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|nested wrappers": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|perl -e": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|ruby -e": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|php -r": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|node -p": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|deno eval": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|python -c subprocess list": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|npx -c string": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|npm exec package": {
+  "type": "security",
+  "surfaces": [
+   "npm",
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on npm, marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|npm exec --package": {
+  "type": "security",
+  "surfaces": [
+   "npm",
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on npm, marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|pnpm dlx": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|yarn dlx": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|bunx": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|marrow-install on PATH": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|marrow-install on PATH in a loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|variable holds the whole command, run by sh -c": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|variable holds the whole command, eval": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|variable holds the whole command, unquoted": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|braced program variable": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|split name over two variables": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|subcommand from a variable in a loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|command substitution in a loop": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|backticks": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "COMPOUND|git alias runs it": {
+  "type": "process",
+  "surfaces": [
+   "github"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on github",
+  "selfKind": null
+ },
+ "COMPOUND|owner CLI control disable": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|owner CLI uninstall in a loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|owner CLI control disable under sudo": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "COMPOUND|package removed globally (mapper S0 uninstall_marrow_package)": {
+  "type": "process",
+  "surfaces": [
+   "npm"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on npm",
+  "selfKind": null
+ },
+ "DECODE|adjacent double quotes": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|whole word double quoted": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "DECODE|hex escape @": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|octal escape": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|unicode escape": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|ANSI-C in the control word": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "DECODE|ANSI-C in a loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|backslash in marrow-install": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|quote in the bin name": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|fullwidth look-alike": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|Cyrillic a look-alike in install": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|Cyrillic o look-alike in control": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "DECODE|zero-width space in install": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|zero-width joiner in the control word": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "DECODE|soft hyphen in install": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|Cyrillic look-alike in a loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DECODE|line continuation inside the word": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|E1a F1 compound read": {
+  "type": "security",
+  "surfaces": [
+   "github",
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on github, marrow-control",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|E1b heredoc writing the F1 text to a fixture": {
+  "type": "security",
+  "surfaces": [
+   "github",
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on github, marrow-control",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|E1c rev-parse loop over the installer and MCP repo names": {
+  "type": "security",
+  "surfaces": [
+   "github",
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on github, marrow-control",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|E1d echo install gh=$(git rev-parse)": {
+  "type": "security",
+  "surfaces": [
+   "github",
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on github, marrow-control",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|E1e grep naming the installer repo": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|E2 python reads board.json (control, install words in code)": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|E3 log append naming deploy": {
+  "type": "deploy",
+  "surfaces": [
+   "production"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: deploy on production",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|echo that only names it": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|echo of the uninstall line": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|printf to a notes file": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|grep for the installer name": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|grep for uninstall in the installer file": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|cat of an installer doc": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|ls the installer folder": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|path segment": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|git log of the installer folder": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|git -C installer repo": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|commit message": {
+  "type": "process",
+  "surfaces": [
+   "github"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: process on github",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|commit message heredoc-free, two -m": {
+  "type": "process",
+  "surfaces": [
+   "github"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: process on github",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|for over repo names, echo only": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|for over repo names, git log": {
+  "type": "process",
+  "surfaces": [
+   "github"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on github",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|while read from a list": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|if grep then echo": {
+  "type": "process",
+  "surfaces": [
+   "npm"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on npm",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|case on a repo name": {
+  "type": "security",
+  "surfaces": [
+   "marrow-control"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: security on marrow-control",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|wc of the installer name": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|node -e prints the name": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|npm view of the installer": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|npm install -g of the installer": {
+  "type": "process",
+  "surfaces": [
+   "npm"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on npm",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|curl of the registry page": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|control enable": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|control status": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|setup": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|doctor": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|other tool control disable": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|a loop that runs doctor": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|a loop that runs control status": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|sudo doctor": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|eval of a doctor line": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|quoted control enable": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|node -e naming the package version": {
+  "type": "process",
+  "surfaces": [
+   "npm"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on npm",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|unrelated control disable in a loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|echo with control words and a loop": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|owner CLI control status": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|owner CLI control enable": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|owner CLI claim": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|echo of the owner CLI line": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|commit message naming the owner CLI": {
+  "type": "process",
+  "surfaces": [
+   "github"
+  ],
+  "protected": true,
+  "readOnly": false,
+  "risk": "high",
+  "action": "classified Bash action: process on github",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|mcp package doctor": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|mcp package version": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|mcp binary doctor": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": false,
+  "risk": "medium",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|sdk package view": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ },
+ "DATA_MENTIONS|ls with unicode and the installer name": {
+  "type": "process",
+  "surfaces": [
+   "workspace"
+  ],
+  "protected": false,
+  "readOnly": true,
+  "risk": "low",
+  "action": "classified Bash action: process on workspace",
+  "selfKind": null
+ }
+}
