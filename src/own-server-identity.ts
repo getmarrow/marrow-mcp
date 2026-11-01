@@ -534,14 +534,6 @@ const STABLE_NODE_SOURCE = 'const c=require("node:crypto"),f=require("node:fs"),
   + 'process.argv.splice(1,1);eval(global.MARROW_L=b.toString("utf8")+[])';
 const STABLE_SH_SCRIPT = `N=; P="$PATH:/usr/local/bin:/opt/homebrew/bin"; while [ -n "$P" ]; do D="\${P%%:*}"; case "$P" in (*:*) P="\${P#*:}" ;; (*) P= ;; esac; case "$D" in ("$PWD"|"$PWD"/*) ;; (/*) if [ -f "$D/node" ] && [ -x "$D/node" ]; then N="$D/node"; break; fi ;; esac; done; if [ -n "$N" ]; then exec "$N" -e '${STABLE_NODE_SOURCE}' -- "$0" "$@"; fi; printf "%s\\n" "${INSTALLER_UNAVAILABLE_TEXT}" >&2; exit 1`;
 const STABLE_LAUNCHER_FILE = /^([0-9a-f]{64})\.cjs$/;
-// win32: an absolute node.exe (no PATH or cwd lookup) and plain drive paths only: no \\?\, \\.\, UNC, alternate stream, 8.3
-// short name, dot segment or trailing dot or space in any segment.
-const WIN_ABSOLUTE = /^[A-Za-z]:\\(?:[^\\/:*?"<>|\u0000-\u001f]+\\)*[^\\/:*?"<>|\u0000-\u001f]+$/;
-const WIN_NODE = /\\node\.exe$/;
-function winPlain(path: string): boolean {
-  if (!WIN_ABSOLUTE.test(path)) return false;
-  return path.slice(3).split('\\').every((segment) => segment !== '.' && segment !== '..' && !/[. ]$/.test(segment) && !/~\d/.test(segment));
-}
 
 /** The launcher path the stable entry names for `digest` under `home` (the only folder the entry may name). */
 function stableLauncherPath(platform: NodeJS.Platform, home: string, digest: string): string {
@@ -552,7 +544,7 @@ function stableLauncherPath(platform: NodeJS.Platform, home: string, digest: str
  * The stable Marrow entry (command and args) for a launcher digest under `home`, the form the installer writes:
  *   POSIX  /bin/sh -c <stub> <home>/.marrow/runtime/launcher/<sha256>.cjs marrow-mcp
  *   win32  <absolute node.exe> <home>\.marrow\runtime\launcher\<sha256>.cjs marrow-mcp
- * `nodeExe` is required on win32 and ignored elsewhere.
+ * `nodeExe` is required on win32 and ignored elsewhere. Only the POSIX form is recognized: a win32 entry is never official.
  */
 export function stableMarrowServerLaunch(platform: NodeJS.Platform, home: string, digest: string, nodeExe?: string): { command: string; args: string[] } {
   const launcher = stableLauncherPath(platform, home, digest);
@@ -583,17 +575,13 @@ type StableContext = { home: string; platform: NodeJS.Platform; ambiguous: boole
  * bytes, a launcher of a pinned core, nothing appended or reordered. Another digest, folder, node or arg is not it.
  */
 export function isStableMarrowServerLaunch(command: unknown, args: unknown, home: string, platform: NodeJS.Platform = process.platform, ownLoader: unknown = (globalThis as Record<string, unknown>).MARROW_L): boolean {
+  // macOS and Linux only: the win32 form names its launcher but nothing hashes the bytes at launch, so Windows keeps the current entry.
+  if (platform === 'win32') return false;
   if (typeof command !== 'string' || !Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) return false;
   const argv = args as string[];
-  let launcher: string;
-  if (platform === 'win32') {
-    if (argv.length !== 2 || argv[1] !== 'marrow-mcp' || !WIN_NODE.test(command) || !winPlain(command) || !winPlain(argv[0])) return false;
-    launcher = argv[0];
-  } else {
-    if (command !== '/bin/sh' || argv.length !== 4 || argv[0] !== '-c' || argv[1] !== STABLE_SH_SCRIPT || argv[3] !== 'marrow-mcp') return false;
-    launcher = argv[2];
-  }
-  if (typeof home !== 'string' || !(platform === 'win32' ? pathWin32.isAbsolute(home) : pathPosix.isAbsolute(home))) return false;
+  if (command !== '/bin/sh' || argv.length !== 4 || argv[0] !== '-c' || argv[1] !== STABLE_SH_SCRIPT || argv[3] !== 'marrow-mcp') return false;
+  const launcher = argv[2];
+  if (typeof home !== 'string' || !pathPosix.isAbsolute(home)) return false;
   const name = launcher.slice(launcher.length - 68);
   const digest = STABLE_LAUNCHER_FILE.exec(name)?.[1];
   if (!digest || launcher !== stableLauncherPath(platform, home, digest)) return false;
