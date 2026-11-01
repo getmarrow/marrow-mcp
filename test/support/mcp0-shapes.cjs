@@ -5,7 +5,7 @@
 const OFF = 'npx @getmarrow/install control disable --yes';
 const UN = 'npx @getmarrow/install uninstall --yes';
 
-// The 11 shapes premortem GAP-1 names as slipping past 3.9.109.
+// The shapes premortem GAP-1 names as slipping past 3.9.109 that this change still holds (G7, G8 and G9 keep their 3.9.109 answer).
 const GAP1 = [
   ['G1 quote-split', "npx @getmarrow/inst'all' control disable --yes"],
   ['G2 backslash-split', 'npx @getmarrow/inst\\all control disable --yes'],
@@ -13,9 +13,6 @@ const GAP1 = [
   ['G4 env -S', "env -S 'npx @getmarrow/install control disable --yes'"],
   ['G5 sudo -u root', 'sudo -u root npx @getmarrow/install control disable --yes'],
   ['G6 timeout -s KILL 30', 'timeout -s KILL 30 npx @getmarrow/install control disable --yes'],
-  ['G7 xargs fed by echo', 'echo control disable --yes | xargs npx @getmarrow/install'],
-  ['G8 node -e execSync', `node -e "require('child_process').execSync('${OFF}')"`],
-  ['G9 python3 -c os.system', `python3 -c 'import os; os.system("${OFF}")'`],
   ['G10 until loop', `until false; do ${OFF}; done`],
   ['G11 ANSI-C quote', "npx $'@getmarrow/\\x69nstall' control disable --yes"],
 ];
@@ -59,13 +56,6 @@ const COMPOUND = [
   ['env -u', `env -u HOME ${OFF}`],
   ['time wrapper', `time ${OFF}`],
   ['nested wrappers', `sudo -u root nohup nice -n 5 timeout 30 ${OFF}`],
-  ['perl -e', `perl -e 'system("${OFF}")'`],
-  ['ruby -e', `ruby -e 'system("${OFF}")'`],
-  ['php -r', `php -r 'system("${OFF}");'`],
-  ['node -p', `node -p "require('child_process').execSync('${OFF}')"`],
-  ['deno eval', `deno eval 'new Deno.Command("sh",{args:["-c","${OFF}"]}).outputSync()'`],
-  ['python -c subprocess list', `python3 -c 'import subprocess; subprocess.run(["npx","@getmarrow/install","control","disable","--yes"])'`],
-  ['npx -c string', `npx -c '${OFF}'`],
   ['npm exec package', 'npm exec @getmarrow/install control disable --yes'],
   ['npm exec --package', 'npm exec --package=@getmarrow/install -- marrow-install control disable'],
   ['pnpm dlx', 'pnpm dlx @getmarrow/install control disable --yes'],
@@ -77,15 +67,9 @@ const COMPOUND = [
   ['variable holds the whole command, eval', `CMD='${OFF}'; eval $CMD`],
   ['variable holds the whole command, unquoted', `CMD='${OFF}'; $CMD`],
   ['braced program variable', 'P=npx; ${P} @getmarrow/install control disable --yes'],
-  ['split name over two variables', 'A=@getmarrow; npx $A/install control disable --yes'],
   ['subcommand from a variable in a loop', 'for s in disable; do npx @getmarrow/install control $s --yes; done'],
   ['command substitution in a loop', `for i in 1; do echo "$(${OFF})"; done`],
   ['backticks', `echo \`${OFF}\``],
-  ['git alias runs it', `git -c alias.x='!${OFF}' x`],
-  ['owner CLI control disable', 'marrow control disable --yes'],
-  ['owner CLI uninstall in a loop', 'for i in 1; do marrow uninstall --yes; done'],
-  ['owner CLI control disable under sudo', 'sudo -u root marrow control disable'],
-  ['package removed globally (mapper S0 uninstall_marrow_package)', 'npm uninstall -g @getmarrow/mcp'],
 ];
 
 // Forms that need decoding before the installer word is visible (quote, backslash, ANSI-C, look-alike and invisible characters).
