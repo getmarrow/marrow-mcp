@@ -1663,8 +1663,8 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
           refreshOrientWarnings();
         }
 
-        // Inject cached orient warnings into intelligence.insights
-        if (cachedOrientWarnings.length > 0) {
+        // Inject cached orient warnings into intelligence.insights (only when the answer has an intelligence object)
+        if (cachedOrientWarnings.length > 0 && result.intelligence && typeof result.intelligence === 'object' && !Array.isArray(result.intelligence)) {
           const existingInsights = result.intelligence?.insights || [];
           result.intelligence.insights = [
             ...cachedOrientWarnings.map((w) => ({
