@@ -31,16 +31,14 @@ const RUNNER = /^(?:npx|pnpx|bunx|npm|pnpm|yarn|bun|node|nodejs|deno|corepack)$/
 const INTERPRETER = /^(?:node|nodejs|deno|bun|python[0-9.]*|pypy[0-9]*|perl|ruby|php|lua|osascript|pwsh|powershell|rscript|tclsh)$/;
 // Programs that only print, copy or move the text they are given. (git, gh, sed, awk and find can run a command: they are not here.)
 const DATA_PROGRAM = /^(?:echo|printf|cat|tac|head|tail|less|more|grep|egrep|fgrep|rg|ag|ls|wc|cp|mv|ln|rm|touch|mkdir|rmdir|tee|diff|cmp|sort|uniq|cut|tr|basename|dirname|realpath|readlink|stat|file|du|which|type|whereis|pwd|cd|pushd|popd|test|\[|true|false|date|sleep|jq)$/;
-// A program given by path (a script the chain may have written) that is not a system binary, and the flags that hand an interpreter its script inline.
+// A program given by path (a script the chain may have written) that is not a system binary.
 const SCRIPT_PATH = /^(?:\.{1,2}\/|~\/|\/(?!(?:usr\/)?(?:local\/)?s?bin\/))/;
-const INLINE_SCRIPT_FLAG = /^(?:-[A-Za-z]*[ecrpE][A-Za-z]*|--eval|--print|--command|eval)$/;
 const SAFE_CONTROL_SUBCOMMAND = new Set(['enable', 'status']);
 // Words that start a command without being one (`do npx ...`, `then ...`) and words that start no command (`for x in ...`, `done`).
 const COMMAND_KEYWORD = new Set(['!', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', '{', 'coproc']);
 const NO_COMMAND_KEYWORD = new Set(['for', 'select', 'case', 'done', 'fi', 'esac', '}', 'in', 'function']);
 // The words the unparseable-text rule looks for (3.9.109: `control|disable|uninstall|[$`]`), and the control-off words alone (mapper-failure rule).
 const FALLBACK_WORDS = /control|disable|uninstall|[$`]/i;
-const CHAIN_CONTROL_WORDS = /control|disable|uninstall/i;
 const CONTROL_OFF_WORDS = /\b(?:disable|uninstall)\b|\bcontrol\b\s*(?:off|remove|stop)\b/i;
 // An inline script that builds a word out of parts cannot be read for what it runs.
 const COMPOSED_TEXT = /\+|\$\{|%[sd]|\.format\(|\.join\(|\bf["']|concat|atob|fromCharCode|\bchr\(|\\x|\\u/;
@@ -314,8 +312,6 @@ function segmentCheck(segment: ShellSegment, st: Walk): void {
   if (name === '.' || name === 'source') { st.executes = true; return; }
   if (name === 'find') { for (const clause of findClauses(words)) segmentCheck({ ...here, words: clause }, st); }
   if (INTERPRETER.test(name)) {
-    // No inline script flag: it runs a file, a module or its input.
-    if (!words.slice(1).some((word) => INLINE_SCRIPT_FLAG.test(word))) st.executes = true;
     words.forEach((word, index) => {
       if (index === 0 || !namesInstallerView(word) || !/[\s('"`]/.test(word)) return;
       if (inlineCodeRoutes(word, words.filter((_, other) => other !== index && other !== 0))) st.route = true;
@@ -330,7 +326,8 @@ function segmentCheck(segment: ShellSegment, st: Walk): void {
     return;
   }
   if (words.some(namesInstallerView)) {
-    st.named = true;
+    // Only a part that writes text (a redirect, echo, printf, cat, tee) can hand it to a shell later in the chain; a part that reads or lists it cannot.
+    if (here.outputs.length > 0 || /^(?:echo|printf|cat|tee)$/.test(name)) st.named = true;
     // `!cmd` is a shell alias in a git or gh setting (`git -c alias.x='!cmd' x`): the text after the bang is a command.
     for (const word of words) {
       const alias = /^(?:[^=\s]*=)?!([^]+)$/.exec(word);
@@ -346,8 +343,8 @@ function walkSegments(segments: ShellSegment[], views: string[], depth: number):
     segmentCheck({ ...segment, words: segment.words.map(foldWord) }, st);
     if (st.route) return 'route';
   }
-  // Text one part of the chain prints or writes and another part hands to a shell (`echo '...' | sh`, `printf ... > f; . f`) is the command it names.
-  if (st.executes && st.named && views.some((view) => CHAIN_CONTROL_WORDS.test(view))) return 'route';
+  // Text one part of the chain prints or writes and another part hands to a shell (`echo '...' | sh`, `printf ... > f; . f`) is the command it names, when it names control off.
+  if (st.executes && st.named && views.some((view) => CONTROL_OFF_WORDS.test(view))) return 'route';
   return st.unread ? 'unread' : 'cleared';
 }
 

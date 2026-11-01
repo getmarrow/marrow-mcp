@@ -1062,7 +1062,7 @@ function mapperControlRoute(command: string, eventCwd: string | undefined): bool
           fs: TEXT_ONLY_FS_VIEW,
           git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
         });
-        const stops = decision.hits.some((hit) => hit.category === 'S0' && S0_CONTROL_OFF.test(hit.reason) && !(hit.reason === 'npx_marrow_installer' && onlyOtherMarrowPackages(views)));
+        const stops = decision.hits.some((hit) => hit.category === 'S0' && S0_CONTROL_OFF.test(hit.reason) && (hit.reason !== 'tripwire_self_protection' || namesControlOff(views)) && !(hit.reason === 'npx_marrow_installer' && onlyOtherMarrowPackages(views)));
         const unfinished = decision.hits.some((hit) => MAPPER_UNFINISHED.test(hit.reason));
         if (stops || (unfinished && namesControlOff(views))) { route = true; break; }
       }
