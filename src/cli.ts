@@ -72,7 +72,7 @@ import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { controlFailureKind, installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
-import { agentIdSourceSentence, explainAgentIdSource, explanationLabelJson, runIdentityCommand } from './identity-explain';
+import { agentIdSourceSentence, explainAgentIdSource, explanationLabelJson } from './identity-explain';
 import { spawn } from 'node:child_process';
 import { emitBaseUrlNotice, nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
 import { KEYLESS_NOTICE, keylessInstructions, keylessStart, serveKeylessMcp } from './keyless-server';
@@ -360,7 +360,6 @@ Commands:
   spool-status              show the local lifecycle spool
   drain-spool               deliver the local lifecycle spool
   loop-guard-self-test      offline check of the local session loop guard
-  identity --explain [--json]   show which variable and origin this machine's agent id comes from (offline, no key needed)
   keys <create|list|get|rotate|revoke|audit>   manage API keys
   --help, -h                show this text (works without a key)
 
@@ -511,11 +510,6 @@ const cliArgs = parseArgs();
 if (process.argv[2] === 'seatbelt-status') {
   runSeatbeltStatusCommand();
   process.exit(0);
-}
-
-// `identity --explain [--json]`: where this process takes its agent id from. Read-only, keyless, offline; it starts no server or hook.
-if (process.argv[2] === 'identity') {
-  process.exit(runIdentityCommand(process.argv.slice(3)));
 }
 
 // Never for a hook entrypoint: a hook that sees -h must still run its check.
@@ -693,7 +687,7 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-// Where the id came from, read once at start: a config file edited later must not rewrite what this server took.
+// Where the id came from, taken from the resolution made at start (the same one that picked the key and the id).
 const AGENT_ID_SOURCE = (() => {
   try {
     return explainAgentIdSource(resolvedEnv);
@@ -914,7 +908,7 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
   const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_handoff_status', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
   const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
   result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
-  // A refused agent id: say where this server took the id from (variable and file; never a key). The status, code and repair text stay the service's.
+  // A refused agent id: say where this server took the id from (variable and origin; never a key). The status, code and repair text stay the service's.
   if (controlFailureKind(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
     const errorBody = result.error as Record<string, unknown>;
     errorBody.message = `${String(errorBody.message || '').trim()} ${agentIdSourceSentence(AGENT_ID_SOURCE)}`.trim();

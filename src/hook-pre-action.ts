@@ -45,8 +45,6 @@ import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
 import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
-import { SAFE_AGENT_ID } from './env';
-import { agentIdSourceSentence, explainEnvironment, UNSAFE_ID, type AgentIdLookup } from './identity-explain';
 import { normalizedHookAction } from './normalized-action';
 import { APPROVAL_STATE_REASON } from './secret-paths';
 import { consultSessionLoopGuard, type LoopGuardOperation } from './session-loop-guard';
@@ -300,8 +298,6 @@ type PreActionControlResult = {
   permit: Awaited<ReturnType<typeof marrowEnforcement>> | null;
   protectedRisk: boolean;
   enforcementError?: string;
-  /** Set only when `enforcementError` carries the identity-source sentence: the BASE text, the only one the commit outcome (the backend) is built from. */
-  baseEnforcementError?: string;
   /** The hold is because this machine has no usable key (NO_KEY_TEXT, CLAIMED_NO_KEY_TEXT or SETUP_UNCONFIRMED_TEXT); set where those texts are set. */
   credentialsUnavailable?: boolean;
   failure?: 'credential_scope' | 'unavailable';
@@ -315,6 +311,7 @@ export function isMarrowOutage(result: PreActionControlResult): boolean {
 }
 
 const SAFE_FAILURE_CODE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
+const SAFE_AGENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 // The key is valid but not bound to the agent this hook acts as.
 const AGENT_CREDENTIAL_SCOPE_CODES = new Set(['ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID', 'MARROW_AGENT_SCOPE_MISMATCH']);
 // Marrow could not be used at all, as opposed to answering with a policy or credential decision.
@@ -324,24 +321,6 @@ export function controlFailureKind(error: unknown): PreActionControlResult['fail
   if (!(error instanceof MarrowRequestError)) return undefined;
   if (error.status === 403 && AGENT_CREDENTIAL_SCOPE_CODES.has(error.backendCode || '')) return 'credential_scope';
   return CONTROL_UNAVAILABLE_CODES.has(error.code) ? 'unavailable' : undefined;
-}
-
-// Read only on a credential-scope failure, from the same process environment the hook resolved (the hook's own copy of the id
-// is already cleared when unsafe); any trouble leaves the BASE text.
-function credentialScopeSource(error: unknown): AgentIdLookup | undefined {
-  if (controlFailureKind(error) !== 'credential_scope') return undefined;
-  try {
-    return explainEnvironment();
-  } catch {
-    return undefined;
-  }
-}
-
-// The host sees where the id came from; the backend (the commit outcome) gets the BASE text, built without `source`.
-function credentialScopeText(error: unknown, agentId?: string): Pick<PreActionControlResult, 'enforcementError' | 'baseEnforcementError'> {
-  const base = controlRejectionMessage(error, agentId);
-  const host = controlRejectionMessage(error, agentId, undefined, credentialScopeSource(error));
-  return host === base ? { enforcementError: base } : { enforcementError: host, baseEnforcementError: base };
 }
 
 const DOCTOR_FIX = 'Run `npx -y @getmarrow/install@latest doctor` in this terminal to check this machine\'s Marrow setup, then retry.';
@@ -373,7 +352,7 @@ function plainControlFix(error: unknown): string {
 
 // Names a reached control failure by HTTP status and stable failure code, with a plain
 // fix (see plainControlFix); private service text is never echoed into the agent transcript.
-export function controlRejectionMessage(error: unknown, agentId?: string, kind: PreActionControlResult['failure'] = controlFailureKind(error), source?: AgentIdLookup): string {
+export function controlRejectionMessage(error: unknown, agentId?: string, kind: PreActionControlResult['failure'] = controlFailureKind(error)): string {
   const detail: string[] = [];
   if (error instanceof MarrowRequestError) {
     if (typeof error.status === 'number' && Number.isInteger(error.status)) detail.push(`HTTP ${error.status}`);
@@ -382,20 +361,10 @@ export function controlRejectionMessage(error: unknown, agentId?: string, kind: 
   }
   const suffix = detail.length ? ` (${detail.join(' ')})` : '';
   if (kind === 'credential_scope') {
-    // `source` (when the caller resolved one) says where the id came from: variable and file, never a key or a command.
-    const sourced = source && source.origin !== 'none' ? source : null;
-    const printable = agentId && SAFE_AGENT_ID.test(agentId) && sourced?.agent_id !== UNSAFE_ID;
-    const agent = printable
+    const agent = agentId && SAFE_AGENT_ID.test(agentId)
       ? `agent "${agentId}"`
-      : sourced
-      ? `agent "${UNSAFE_ID}"`
       : 'this hook\'s agent (no MARROW_FLEET_AGENT_ID or MARROW_AGENT_ID is set)';
-    const where = sourced ? agentIdSourceSentence(sourced) : '';
-    const lead = `This Marrow API key is not authorized to obtain action permits for ${agent}${suffix}.`;
-    const next = 'Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.';
-    // Where the id came from reads first. A host that cuts the text at CURSOR_ENFORCEMENT_LIMIT must still end on the BASE next step,
-    // so a long explanation (several config files) moves behind it and is the part that gets cut.
-    return !where || `${lead} ${where} ${next}`.length <= CURSOR_ENFORCEMENT_LIMIT ? `${lead} ${where ? `${where} ` : ''}${next}` : `${lead} ${next} ${where}`;
+    return `This Marrow API key is not authorized to obtain action permits for ${agent}${suffix}. Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.`;
   }
   if (kind === 'unavailable') {
     return `Marrow is unavailable, so this protected action was denied${suffix}. Retry when Marrow is reachable.`;
@@ -1316,13 +1285,11 @@ function emitDecision(
   if (result.outage) process.stderr.write(`${MARROW_OUTAGE_WARNING}\n`);
   const output = preActionHookOutput(result, harness, prompt, legacyServiceAsk);
   process.stdout.write(JSON.stringify(output));
-  // `reason` goes to the backend as the commit outcome: it is read from the BASE text, never the one with the identity-source sentence.
-  const recorded = result.baseEnforcementError === undefined ? output : preActionHookOutput({ ...result, enforcementError: result.baseEnforcementError }, harness, prompt, legacyServiceAsk);
-  const specific = asRecord(recorded.hookSpecificOutput);
+  const specific = asRecord(output.hookSpecificOutput);
   if (specific?.permissionDecision === 'deny') return { denied: true, reason: String(specific.permissionDecisionReason || '') };
-  if (recorded.permission === 'deny') return { denied: true, reason: String(recorded.agent_message || '') };
-  if (recorded.cancel === true) return { denied: true, reason: String(recorded.errorMessage || '') };
-  if (recorded.decision === 'deny') return { denied: true, reason: String(recorded.reason || '') };
+  if (output.permission === 'deny') return { denied: true, reason: String(output.agent_message || '') };
+  if (output.cancel === true) return { denied: true, reason: String(output.errorMessage || '') };
+  if (output.decision === 'deny') return { denied: true, reason: String(output.reason || '') };
   return { denied: false, reason: '' };
 }
 
@@ -1979,7 +1946,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
           runtime: null,
           permit: null,
           protectedRisk: enforcementRequired,
-          ...credentialScopeText(error, agentId),
+          enforcementError: controlRejectionMessage(error, agentId),
           ...(controlFailureKind(error) ? { failure: controlFailureKind(error) } : {}),
         }
     )),

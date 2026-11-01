@@ -68,7 +68,7 @@ function normalizeBaseUrl(value: string): string {
 // File paths come from the working directory; keep notices on one printable line.
 const MAX_PRINTED_PATH = 200;
 
-// The one check for an agent id that may be printed into agent-facing text: the hook head and the identity explanation both use it.
+// The check for an agent id that may be printed into agent-facing text (the same pattern as the hook head's own copy): the tool 403 sentence prints an id only if it passes.
 export const SAFE_AGENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 // Paths in notices can be attacker-named: control, line-separator and format
