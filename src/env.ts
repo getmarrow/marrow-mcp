@@ -20,7 +20,7 @@ const REPO_KEY_FIX = 'run npx @getmarrow/install doctor, or move the line to ~/.
 export type AgentIdOrigin = 'fleet_key_match' | 'process_env' | 'owner_file' | 'none';
 export type AgentIdVariable = 'MARROW_FLEET_AGENT_ID' | 'MARROW_AGENT_ID';
 
-/** Names only, never a value: which variable supplied the id and which origin won. Reading a config file is left to identity-explain. */
+/** Names only, never a value: which variable supplied the id and which origin won. */
 export interface AgentIdSource {
   origin: AgentIdOrigin;
   variable: AgentIdVariable | null;
@@ -73,7 +73,7 @@ export const SAFE_AGENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 // Paths in notices can be attacker-named: control, line-separator and format
 // (bidi, zero-width) characters become '?', and the length is capped.
-export function printablePath(filePath: string): string {
+function printablePath(filePath: string): string {
   const clean = filePath.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '?');
   const chars = Array.from(clean);
   return chars.length > MAX_PRINTED_PATH ? `${chars.slice(0, MAX_PRINTED_PATH - 3).join('')}...` : clean;

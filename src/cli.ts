@@ -360,7 +360,7 @@ Commands:
   spool-status              show the local lifecycle spool
   drain-spool               deliver the local lifecycle spool
   loop-guard-self-test      offline check of the local session loop guard
-  identity --explain [--json]   show which variable and file this machine's agent id comes from (offline, no key needed)
+  identity --explain [--json]   show which variable and origin this machine's agent id comes from (offline, no key needed)
   keys <create|list|get|rotate|revoke|audit>   manage API keys
   --help, -h                show this text (works without a key)
 

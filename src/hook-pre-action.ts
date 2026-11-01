@@ -327,7 +327,7 @@ export function controlFailureKind(error: unknown): PreActionControlResult['fail
 }
 
 // Read only on a credential-scope failure, from the same process environment the hook resolved (the hook's own copy of the id
-// is already cleared when unsafe); any trouble reading a config file leaves the BASE text.
+// is already cleared when unsafe); any trouble leaves the BASE text.
 function credentialScopeSource(error: unknown): AgentIdLookup | undefined {
   if (controlFailureKind(error) !== 'credential_scope') return undefined;
   try {
