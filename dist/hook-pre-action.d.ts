@@ -174,8 +174,14 @@ export declare const ENV_FILTER_SECRET_NAME: RegExp;
 export declare function mayPrintEnvironment(command: string): boolean;
 export declare function mayReadApprovalState(command: string): boolean;
 export declare function mayReadSecret(command: string): boolean;
-/** Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts). */
-export declare function controlRouteCall(event: PreToolUseEvent): boolean;
+/**
+ * Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts), or is one the seatbelt
+ * mapper stops as a control-off command (above). `postTool`: the PostToolUse path reads the text alone and never loads the mapper.
+ */
+export declare function controlRouteCall(event: PreToolUseEvent, options?: {
+    cwd?: string;
+    postTool?: boolean;
+}): boolean;
 export declare function cursorPreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function clinePreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function windsurfPreActionDecision(result: PreActionControlResult): {

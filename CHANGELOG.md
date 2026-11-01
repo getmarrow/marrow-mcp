@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+Rides the next batched MCP version.
+
+- Security (MCP-0, tightening only): the control-off route (`npx @getmarrow/install control disable`, `uninstall`, the `marrow` owner CLI) is held for the account owner inside every shell construct that runs a command, not only as a plain command: `for`, `while`, `until`, `if`/`elif`/`else`, `!`, `case` and function bodies, `eval`, aliases and variables set earlier in the same chain, wrappers (`sudo -u`, `doas`, `env -S`, `timeout -s`, `nice -n`, `stdbuf`, `setsid`, `nohup`, `command`, `exec`, `xargs`, `find -exec`), a shell fed text (`sh -c`, `bash <<EOF`, a pipe into `sh`, a file written earlier in the chain and then run), and the inline script of `node -e`, `python3 -c`, `perl -e`, `ruby -e`, `php -r` and `deno eval`. The text is also read after the shell takes its quoting off (quote and backslash splits, ANSI-C `$'\x69'`), with full-width forms folded, invisible characters removed and look-alike letters read as the letters they imitate. A control-off shape is `security` on `marrow-control`, protected, and denied outright (with the owner text) in auto, bypass and headless sessions. Before, 3.9.109 saw only a command that began with the installer.
+- Security (MCP-0): where the keyed hook has an account, the seatbelt mapper's own stop on a command that turns Marrow off (the installer, `claude mcp remove marrow`, `claude plugin uninstall marrow`, `npm uninstall -g @getmarrow/...`, an inline script it cannot clear) is now a control-off route too; it only went into the record before. A mapper that cannot answer (it fails to load, errors or runs out of budget) on a call that names the installer or a control-off word is a hold. The mapper loads only for a text that mentions Marrow or a control word. Doctor, setup, `control status`, `control enable`, `@getmarrow/mcp` and `@getmarrow/sdk` commands, and read-only commands that only mention these words, are not stopped by it.
+
 ## 3.9.109
 
 Hook fixes on 3.9.108: the control-file fail-closed fix, a faster exit of the pre-action hook, the test/live key split, the patch-write holds, the Windows-lane port and an IPv4-first dial, plus tightenings found on the way. One change is looser than 3.9.108, on purpose and by the owner's decision: on Windows only, the session loop guard's ACL proof; the rest hold more or only tell the user more, except MCP-9, which changes only the Marrow session id the hooks send.
