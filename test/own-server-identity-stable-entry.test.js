@@ -1,8 +1,8 @@
 'use strict';
 // MCP-2 (update UX): own-server-identity recognizes the stable, version-free Marrow entry (a digest-pinned launcher under
-// ~/.marrow/runtime/launcher) as the official server, and rejects every look-alike. Rows: T1 (the exact entry, POSIX and win32
-// forms, on Codex config.toml and Cursor mcp.json), T2 (look-alikes), T4 (the old loader form still proves as before), T-SEC
-// (no key anywhere), plus the host entry point both hook callers use. Fixtures: virtual paths and mktemp dirs only; the
+// ~/.marrow/runtime/launcher) as the official server, and rejects every look-alike. Rows: T1 (the exact entry, POSIX forms,
+// on Codex config.toml and Cursor mcp.json), PB1 (the win32 form is never official), T2 (look-alikes), T4 (the old loader form
+// still proves as before), T-SEC (no key anywhere), plus the host entry point both hook callers use. Fixtures: virtual paths and mktemp dirs only; the
 // launcher is the installer 0.1.73 fixture launcher (a known core), digest of its bytes; dummy keys are made at run time.
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
@@ -57,12 +57,9 @@ const T1 = [
   ['T1-posix-env', 'POSIX stub with the env block Marrow writes (base url, agent id, profile, key)', [...S.posixFor(D), {
     MARROW_BASE_URL: 'https://api.getmarrow.ai', MARROW_FLEET_AGENT_ID: 'cliff-agent', MARROW_TOOL_PROFILE: 'primary', MARROW_API_KEY: S.dummyKey(),
   }], KNOWN, {}],
-  ['T1-win32-known-core', 'win32: absolute node.exe, launcher path, marrow-mcp', S.winFor(D), KNOWN, { platform: 'win32', home: WIN_HOME }],
-  ['T1-win32-version-free', 'win32, version-free CFG', S.winFor(S.D_FREE), FREE, { platform: 'win32', home: WIN_HOME }],
-  ['T1-win32-plain-home', 'win32 home without a space', S.winFor(D, 'C:\\Users\\ab'), KNOWN, { platform: 'win32', home: 'C:\\Users\\ab' }],
 ];
 
-test('T1 (A-OSI1): the exact stable entry is official on Cursor mcp.json and Codex config.toml, POSIX and win32', () => {
+test('T1 (A-OSI1): the exact stable entry is official on Cursor mcp.json and Codex config.toml on macOS and Linux', () => {
   for (const [id, label, launch, own, opts] of T1) {
     assert.deepEqual(both(launch, { own, ...opts }), [true, true], `${id}: ${label}`);
   }
@@ -224,16 +221,145 @@ test('T2 (A-OSI2): every look-alike of the stable entry is not official on Curso
   assert.ok(ids.size >= 100, `look-alike rows: ${ids.size}`);
 });
 
-test('T2: the process environment never moves the launcher folder: the folder is the user home, not HOME or a launcher variable', () => {
-  const decoyEnv = { HOME: '/virtual/evil', USERPROFILE: 'C:\\evil', MARROW_LAUNCHER_DIR: '/virtual/evil', MARROW_RUNTIME_DIR: '/virtual/evil', CODEX_HOME };
+// ------------------------------------------------------------------ PB1: the win32 form is never official (macOS and Linux only)
+
+// I4 (the exact win32 entry, three spellings) and I92-I94 (any absolute node.exe in a project, launcher or Temp folder).
+const WIN_PB1 = [
+  ['I4-exact-known-core', S.winFor(D), KNOWN, WIN_HOME],
+  ['I4-exact-version-free', S.winFor(S.D_FREE), FREE, WIN_HOME],
+  ['I4-exact-plain-home', S.winFor(D, 'C:\\Users\\ab'), KNOWN, 'C:\\Users\\ab'],
+  ['I92-node-in-project-folder', S.winLaunch(WL(), `${WIN_HOME}\\project\\node.exe`), KNOWN, WIN_HOME],
+  ['I93-node-in-launcher-folder', S.winLaunch(WL(), `${WIN_HOME}\\.marrow\\runtime\\launcher\\node.exe`), KNOWN, WIN_HOME],
+  ['I94-node-in-temp-folder', S.winLaunch(WL(), `${WIN_HOME}\\AppData\\Local\\Temp\\node.exe`), KNOWN, WIN_HOME],
+];
+
+test('PB1: no win32 stable row is official on Cursor or Codex (recognizer, both parsers, direct call)', () => {
+  const official = [];
+  for (const [id, launch, own, home] of WIN_PB1) {
+    const [cursor, codex] = both(launch, { own, platform: 'win32', home });
+    if (cursor) official.push(`${id}: cursor`);
+    if (codex) official.push(`${id}: codex`);
+    if (osi.isStableMarrowServerLaunch(launch[0], launch[1], home, 'win32', own)) official.push(`${id}: direct call`);
+  }
+  assert.deepEqual(official, [], 'win32 rows that were official');
+  // The platform input decides, not the runner's: the exact POSIX entry read as a win32 host's is not official either.
+  assert.deepEqual(both(S.posixFor(D), { own: KNOWN, platform: 'win32', home: HOME }), [false, false], 'POSIX form, POSIX home, platform win32');
+  assert.equal(osi.isStableMarrowServerLaunch(...S.posixFor(D), HOME, 'win32', KNOWN), false, 'direct call, platform win32');
+  // The early return is the guard, not a side effect of the path join: a POSIX stub whose launcher is spelled with backslashes under a
+  // POSIX-looking home equals the win32 join of that home, and is still not official when the platform input says win32 (and not on linux).
+  const backslashed = S.posixLaunch(`${HOME.replaceAll('/', '\\')}\\.marrow\\runtime\\launcher\\${D}.cjs`);
+  assert.equal(path.win32.join(HOME, '.marrow', 'runtime', 'launcher', `${D}.cjs`), backslashed[1][2], 'the fixture is the win32 join of the home');
+  assert.deepEqual(both(backslashed, { own: KNOWN, platform: 'win32', home: HOME }), [false, false], 'backslash launcher, platform win32');
+  assert.equal(osi.isStableMarrowServerLaunch(backslashed[0], backslashed[1], HOME, 'win32', KNOWN), false, 'direct call, backslash launcher, platform win32');
+  assert.equal(osi.isStableMarrowServerLaunch(backslashed[0], backslashed[1], HOME, 'linux', KNOWN), false, 'direct call, backslash launcher, platform linux');
+  // The same two parsers keep the POSIX answer on every non-win32 platform (never widen win32 instead).
+  for (const platform of ['linux', 'darwin', 'freebsd']) {
+    const home = platform === 'darwin' ? '/Users/me' : HOME;
+    assert.deepEqual(both(S.posixFor(D, home), { own: KNOWN, platform, home }), [true, true], `POSIX form on ${platform}`);
+  }
+});
+
+// A win32 host as the hook callers see it: process.platform is win32, the home is a drive path. On this runner that home is a literal
+// folder name under a mktemp working folder (the check opens `<home>/.cursor/mcp.json` relative to the cwd), the Codex home an absolute folder.
+function withWin32Host(home, callback) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-stable-win-'));
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  const saved = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME, MARROW_L: globalThis.MARROW_L };
+  const previous = process.cwd();
+  try {
+    process.chdir(root);
+    process.env.HOME = home;
+    process.env.CODEX_HOME = path.join(root, 'codex-home');
+    fs.mkdirSync(path.join(root, home, '.cursor'), { recursive: true });
+    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    osi.resetOwnServerIdentityCache();
+    return callback(root);
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+    process.chdir(previous);
+    for (const key of ['HOME', 'CODEX_HOME']) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
+    if (saved.MARROW_L === undefined) delete globalThis.MARROW_L; else globalThis.MARROW_L = saved.MARROW_L;
+    osi.resetOwnServerIdentityCache();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('PB1: through the hook entry point (hook.ts and hook-pre-action.ts) a win32 stable entry never skips the gate on Cursor or Codex', () => {
+  const tool = OWN_TOOLS[0];
+  const cursorEvent = { hook_event_name: 'beforeMCPExecution', mcp_server_name: 'marrow', tool_name: `mcp__marrow__${tool}`, tool_input: {} };
+  const asks = {
+    'codex': () => osi.isOfficialMarrowMcpEventOnHost('codex', { tool_name: `mcp__marrow__${tool}` }),
+    'cursor beforeMCPExecution': () => osi.isOfficialMarrowMcpEventOnHost('cursor', cursorEvent, { ...cursorEvent, workspace_roots: [] }),
+    'cursor preToolUse': () => osi.isOfficialMarrowMcpEventOnHost('cursor', { tool_name: `MCP:${tool}` }, { workspace_roots: [] }),
+  };
+  const ask = (name) => { osi.resetOwnServerIdentityCache(); return asks[name](); };
+  const official = [];
+  const controls = [];
+  for (const [id, launch, own, home] of WIN_PB1) {
+    withWin32Host(home, (root) => {
+      const write = (entry) => {
+        fs.writeFileSync(path.join(root, home, '.cursor', 'mcp.json'), S.cursorJson(entry));
+        fs.writeFileSync(path.join(process.env.CODEX_HOME, 'config.toml'), S.tomlEntry(entry));
+      };
+      assert.equal(process.platform, 'win32', 'the host platform is win32');
+      // Control: the harness reads both configs, so a launch that is official on any platform (the loader form of the launcher that
+      // started the hook) is seen as official here.
+      globalThis.MARROW_L = KNOWN;
+      write(sh());
+      for (const name of Object.keys(asks)) controls.push(`${id}: ${name}: ${ask(name)}`);
+      globalThis.MARROW_L = own;
+      write(launch);
+      for (const name of Object.keys(asks)) if (ask(name)) official.push(`${id}: ${name}`);
+    });
+  }
+  assert.deepEqual(controls.filter((line) => !line.endsWith(': true')), [], 'controls that were not official');
+  assert.equal(controls.length, WIN_PB1.length * 3);
+  assert.deepEqual(official, [], 'win32 rows that were official through the hook entry point');
+});
+
+test('PB1: the other consumers never read the stable form: hook-contract.ts keeps the installer shape check, codex-plugins.ts only reads bytes', () => {
+  for (const [id, launch] of WIN_PB1) {
+    assert.equal(osi.isMarrowServerLaunchShape(launch[0], launch[1]), false, `${id}: installer-hook shape check`);
+    withWin32Host(WIN_HOME, () => assert.equal(osi.isMarrowServerLaunchShape(launch[0], launch[1]), false, `${id}: installer-hook shape check on a win32 host`));
+  }
+  // The one place each caller reaches into own-server-identity: a new consumer of the stable check would have to show up here.
+  const used = (name) => [...new Set([...fs.readFileSync(path.join(__dirname, '..', 'dist', name), 'utf8').matchAll(/own_server_identity_1\.(\w+)/g)].map((m) => m[1]))].sort();
+  assert.deepEqual(used('hook-contract.js'), ['isMarrowServerLaunchShape']);
+  assert.deepEqual(used('codex-plugins.js'), ['readHostConfigBytes']);
+  assert.deepEqual(used('hook.js'), ['isOfficialMarrowMcpEventOnHost']);
+  assert.deepEqual(used('hook-pre-action.js'), ['isOfficialMarrowMcpEventOnHost']);
+});
+
+test('T2 (PB2): the process environment never moves the launcher folder: the folder is the user home, not HOME or a launcher variable', () => {
+  // The folder the variable names is the launcher folder itself, so an entry under it is the one an env override would bless.
+  const LAUNCHER_DIR = '/virtual/evil/.marrow/runtime/launcher';
+  const decoyEnv = { HOME: '/virtual/evil', USERPROFILE: 'C:\\evil', MARROW_LAUNCHER_DIR: LAUNCHER_DIR, MARROW_RUNTIME_DIR: '/virtual/evil', CODEX_HOME };
   const evil = S.posixFor(D, '/virtual/evil');
   const good = S.posixFor(D);
-  const ask = (launch, userHome) => osi.codexOfficialMarrowServer({
-    env: decoyEnv, userHome, read: S.files({ [`${CODEX_HOME}/config.toml`]: S.tomlEntry(launch) }), processArgs: null, processCwd: VIRTUAL_CWD, cwds: [PROJECT], ownLoader: KNOWN,
+  assert.equal(evil[1][2], `${LAUNCHER_DIR}/${D}.cjs`, 'the entry sits in the folder the variable names');
+  const askCodex = (launch, env) => osi.codexOfficialMarrowServer({
+    ...(env ? { env } : {}), userHome: HOME, read: S.files({ [`${CODEX_HOME}/config.toml`]: S.tomlEntry(launch) }), processArgs: null, processCwd: VIRTUAL_CWD, cwds: [PROJECT], ownLoader: KNOWN,
   }).official;
-  assert.equal(ask(evil, HOME), false, 'a launcher folder named by the environment');
-  assert.equal(ask(good, HOME), true, 'the real home, with decoy variables set');
-  assert.equal(osi.isStableMarrowServerLaunch(...evil, HOME, 'linux', KNOWN), false, 'direct call, command and args spread');
+  const askCursor = (launch, env) => osi.cursorOfficialMarrowServer({
+    ...(env ? { env } : {}), home: HOME, cwds: [PROJECT], processCwd: VIRTUAL_CWD, read: S.files({ [`${PROJECT}/.cursor/mcp.json`]: S.cursorJson(launch) }), onlyServer: false, ownLoader: KNOWN,
+  }).official;
+  // The decoys go through the `env` option (as before) and onto process.env itself (what a planted `process.env` read would see).
+  const saved = Object.fromEntries(Object.keys(decoyEnv).map((name) => [name, process.env[name]]));
+  try {
+    Object.assign(process.env, decoyEnv);
+    for (const [how, env] of [['env option', decoyEnv], ['process.env only', undefined]]) {
+      assert.equal(askCodex(evil, env), false, `Codex: a launcher folder named by the environment (${how})`);
+      assert.equal(askCursor(evil, env), false, `Cursor: a launcher folder named by the environment (${how})`);
+      assert.equal(askCodex(good, env), true, `Codex: the real home, with decoy variables set (${how})`);
+      assert.equal(askCursor(good, env), true, `Cursor: the real home, with decoy variables set (${how})`);
+    }
+    assert.equal(osi.isStableMarrowServerLaunch(...evil, HOME, 'linux', KNOWN), false, 'direct call, command and args spread');
+    assert.equal(osi.isStableMarrowServerLaunch(...good, HOME, 'linux', KNOWN), true, 'direct call, the real home');
+  } finally {
+    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  }
+  for (const [name, value] of Object.entries(saved)) assert.equal(process.env[name], value, `${name} restored`);
 });
 
 // Raw-text rows: JSON and TOML as a host reads them (escapes, duplicate keys, homoglyph keys).
