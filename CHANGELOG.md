@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.9.110 (unreleased)
+
+- Fix (no-freeze holds, MCP-2a): a Marrow hold never opens an approval dialog that nobody is there to answer. Claude Code in auto mode no longer gets an `ask` for a hold, with or without version proof: the hook denies with "Held for the owner's approval (receipt <id>). Continue other work; run this exact action again after the owner approves.", and the agent carries on. In default and acceptEdits modes the hook asks only when the owner typed a prompt in that session within the last 10 minutes: the UserPromptSubmit hook writes a marker (`~/.marrow/attended-prompts/<hash of the session id>`, owner-only, a timestamp and nothing else); a missing, unreadable, stale, future-dated, malformed, symlinked, group-readable or other session's marker is no evidence, and the same denial follows. A retry in an attended default session still asks, on the same receipt. Turning control off in a session nobody has typed in lately is denied with the owner-terminal text, as it already was in auto, bypass and dontAsk modes. Every hold that asked before either asks (attended) or is denied; none becomes an allow. Other hosts, other permission modes, slow or unreachable Marrow answer as in 3.9.109. A session whose host does not run the UserPromptSubmit hook has no attended evidence, so its holds are denials until it does.
+
 ## 3.9.109
 
 Hook fixes on 3.9.108: the control-file fail-closed fix, a faster exit of the pre-action hook, the test/live key split, the patch-write holds, the Windows-lane port and an IPv4-first dial, plus tightenings found on the way. One change is looser than 3.9.108, on purpose and by the owner's decision: on Windows only, the session loop guard's ACL proof; the rest hold more or only tell the user more, except MCP-9, which changes only the Marrow session id the hooks send.

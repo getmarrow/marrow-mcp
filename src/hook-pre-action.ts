@@ -39,6 +39,7 @@ import {
 import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
 import { recordSessionBypass } from './owner-bypass';
 import { selfProtectKind } from './self-protect';
+import { attendedWithin } from './attended-marker';
 import { armKeylessNotice } from './keyless-notice';
 import { marrowSessionId } from './session-id';
 import { allowNokeyFallbackCreate } from './host-approval-state';
@@ -372,17 +373,31 @@ export function controlRejectionMessage(error: unknown, agentId?: string, kind: 
   return `Marrow did not allow this protected action${suffix}. ${plainControlFix(error)}`;
 }
 
-// Claude Code permission modes in which a PreToolUse "ask" reaches a person.
+// Claude Code permission modes in which a PreToolUse "ask" can reach a person.
 // bypassPermissions disables prompts, dontAsk auto-denies anything that would
-// prompt, and plan mode with bypass available runs edits without prompting.
+// prompt, plan mode with bypass available runs edits without prompting, and
+// auto mode never asks: a dialog there has no time limit and nobody is at it
+// (a read froze an auto-mode session for 95 minutes), so a hold is a denial.
 // https://code.claude.com/docs/en/hooks#pretooluse-decision-control
 // https://code.claude.com/docs/en/permission-modes
-const OWNER_PROMPT_PERMISSION_MODES = new Set(['default', 'acceptEdits', 'auto']);
+const OWNER_PROMPT_PERMISSION_MODES = new Set(['default', 'acceptEdits']);
 
-export type OwnerApprovalPrompt = { available: boolean; unavailableReason: string; headless?: boolean; /** Static, one-sentence README fix for the person; never built from input. */ fix?: string };
+export type OwnerApprovalPrompt = {
+  available: boolean;
+  unavailableReason: string;
+  headless?: boolean;
+  /**
+   * Claude Code only: no dialog is opened because nobody is known to be at it (auto mode, or default and acceptEdits
+   * without a prompt typed in this session in the last ATTENDED_WINDOW_MS). The hold is a denial that names its receipt.
+   */
+  noFreeze?: boolean;
+  /** Static, one-sentence README fix for the person; never built from input. */
+  fix?: string;
+};
 
 const FIX_DEFAULT_MODE = 'To approve it, switch Claude Code to its default permission mode and retry this exact action.';
 const FIX_HEADLESS = 'To approve it, retry this exact action in an interactive Claude Code session in default permission mode.';
+const FIX_ATTENDED = 'To approve it, type to the agent in this session and have it retry this exact action; Claude Code then asks you.';
 
 /** Claude Code entrypoints with no one at a dialog (claude -p and the Agent SDKs); hooks inherit it. */
 const HEADLESS_CLAUDE_ENTRYPOINTS = HEADLESS_ENTRYPOINTS;
@@ -393,10 +408,15 @@ const NO_OWNER_PROMPT: OwnerApprovalPrompt = { available: false, unavailableReas
  * Whether a PreToolUse "ask" from this hook reaches a person who can approve.
  * Only Claude Code asks; the generic entrypoint counts as Claude Code only when
  * Claude Code itself spawned the hook (CLAUDE_CODE_CHILD_SESSION, v2.1.172+).
+ * Every "ask" emitter takes its answer from here (a new hold, a retried hold
+ * that waited for a dialog, and the legacy service), so the attended check
+ * lives here: default and acceptEdits ask only when the UserPromptSubmit hook
+ * saw the owner type in this session within ATTENDED_WINDOW_MS (see
+ * attended-marker.ts). Any other value of permission_mode is no evidence.
  */
 export function ownerApprovalPrompt(
   harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client',
-  event: Pick<PreToolUseEvent, 'permission_mode' | 'scratchpad_dir'>,
+  event: Pick<PreToolUseEvent, 'permission_mode' | 'scratchpad_dir' | 'session_id'>,
   env: NodeJS.ProcessEnv = process.env,
 ): OwnerApprovalPrompt {
   const claudeCode = harness === 'claude-code' || (harness === 'mcp-client' && env.CLAUDE_CODE_CHILD_SESSION === '1');
@@ -411,13 +431,15 @@ export function ownerApprovalPrompt(
   }
   const mode = typeof event.permission_mode === 'string' && /^[A-Za-z]{1,32}$/.test(event.permission_mode) ? event.permission_mode : '';
   if (!OWNER_PROMPT_PERMISSION_MODES.has(mode)) {
-    return { available: false, unavailableReason: `Claude Code permission mode ${mode || 'unknown'} cannot guarantee an owner prompt`, fix: FIX_DEFAULT_MODE };
+    return {
+      available: false,
+      unavailableReason: `Claude Code permission mode ${mode || 'unknown'} cannot guarantee an owner prompt`,
+      ...(mode === 'auto' ? { noFreeze: true } : {}),
+      fix: FIX_DEFAULT_MODE,
+    };
   }
-  // Before Claude Code v2.1.211 the auto-mode classifier could approve a Bash
-  // command outside the sandbox without the prompt a hook asked for. The hook
-  // input carries scratchpad_dir only from v2.1.257, so it proves a fixed version.
-  if (mode === 'auto' && !(typeof event.scratchpad_dir === 'string' && event.scratchpad_dir.trim())) {
-    return { available: false, unavailableReason: 'this auto-mode session does not prove a Claude Code version whose classifier honors hook prompts', fix: FIX_DEFAULT_MODE };
+  if (!attendedWithin(event.session_id)) {
+    return { available: false, unavailableReason: 'nobody has typed in this session in the last 10 minutes', noFreeze: true, fix: FIX_ATTENDED };
   }
   return { available: true, unavailableReason: '' };
 }
@@ -525,7 +547,8 @@ export function runtimeGateVerdict(runtime: PreActionControlResult['runtime']): 
 }
 
 // Fixed wording leads so a long service reason can never truncate what happened.
-export function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt: OwnerApprovalPrompt = NO_OWNER_PROMPT): string {
+export function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt: OwnerApprovalPrompt = NO_OWNER_PROMPT, receiptId: string | null = null): string {
+  const receipt = receiptId && SAFE_DECISION_ID.test(receiptId) ? ` (receipt ${receiptId})` : '';
   const headline = verdict.kind === 'block'
     ? 'Marrow blocked this action under the current policy.'
     : verdict.kind === 'arbitration_review'
@@ -534,7 +557,7 @@ export function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt: 
     ? 'Marrow did not allow this action.'
     : ask
     ? 'Marrow requires owner review before this action. Approve only if you authorize this exact action.'
-    : `Marrow requires owner review before this action, and no owner approval prompt is available (${prompt.unavailableReason}), so it was denied. Tell the operator it is waiting for the account owner's approval.${prompt.fix ? ` ${prompt.fix}` : ''}`;
+    : `Marrow requires owner review before this action, and no owner approval prompt is available (${prompt.unavailableReason}), so it was denied${prompt.noFreeze ? `${receipt}. Continue other work` : ''}. Tell the operator it is waiting for the account owner's approval.${prompt.fix ? ` ${prompt.fix}` : ''}`;
   return boundedText(verdict.reason ? `${headline} Reason: ${verdict.reason}` : headline, 500);
 }
 
@@ -1221,6 +1244,7 @@ export function preActionHookOutput(
     ].filter(Boolean).join('\n'),
   } : {};
   const verdict = runtimeGateVerdict(runtime);
+  const receiptId = typeof runtime?.gate_receipt_id === 'string' ? runtime.gate_receipt_id : typeof runtime?.runtime_authorization?.id === 'string' ? runtime.runtime_authorization.id : null;
   if (verdict && legacyServiceAsk && verdict.kind === 'review' && prompt.available && harness !== 'codex') {
     return {
       hookSpecificOutput: {
@@ -1243,7 +1267,7 @@ export function preActionHookOutput(
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: gateDecisionMessage(verdict, false, reason),
+        permissionDecisionReason: gateDecisionMessage(verdict, false, reason, receiptId),
         ...context,
       },
     };
@@ -1612,7 +1636,9 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   // MCP-5: control is on and no key resolves, so nothing this hook does is recorded: say so once per session.
   if (!identity.environment.apiKey) armKeylessNotice(identity.harness, identity.environment.sessionId || source.session_id || source.conversation_id || source.task_id);
   // MCP-10: where no person can answer a prompt (auto, bypass and dontAsk modes, headless runs), turning control off is denied outright.
-  if (classified.type === 'security' && classified.surfaces.includes('marrow-control') && controlRouteCall(source) && noPersonAtPrompt(source)) {
+  // So is a session nobody has typed in lately (default and acceptEdits without attended evidence): it never reaches a dialog.
+  if (classified.type === 'security' && classified.surfaces.includes('marrow-control') && controlRouteCall(source)
+    && (noPersonAtPrompt(source) || ownerApprovalPrompt(identity.harness, source).noFreeze === true)) {
     emitLoopGuardDenial(identity.harness, CONTROL_ROUTE_DENY_TEXT);
     return;
   }

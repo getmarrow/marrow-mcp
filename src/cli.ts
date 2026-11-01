@@ -69,6 +69,7 @@ import { localControlEvidence } from './control-state';
 import { hookSpooledLifecycleEvent, installPermissionRequestHook, installPostToolUseHook, runHookCommand, runPermissionRequestHookCommand } from './hook';
 import { deliverQueuedForReceipt, holdSessionForReceipt, proofFieldsForReceipt, type HoldContext } from './host-approval';
 import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
+import { tapAttendedPrompt } from './attended-marker';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
@@ -634,6 +635,8 @@ if (cliArgs.hook) {
   // Pass-through: exits 0 with no output, so it never answers the dialog.
   void runPermissionRequestHookCommand().finally(() => process.exit(0));
 } else if (cliArgs.contextHook) {
+  // A prompt the owner typed is the attended evidence a Claude Code hold dialog needs (see attended-marker.ts).
+  tapAttendedPrompt(resolveNativeHookIdentity(process.argv[2]).harness);
   void runContextHookCommand();
 } else if (cliArgs.preActionHook) {
   void runPreActionHookCommand().catch(() => {

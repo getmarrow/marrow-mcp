@@ -279,6 +279,20 @@ export function dialogLaterNotice(kind: string): string {
   return `Marrow is holding ${kind} for your approval. Approving in chat does not count. Press Shift+Tab until Claude Code is in default mode, then tell the agent to retry; Claude Code will ask you.`;
 }
 
+/**
+ * Claude Code, a hold that opens no dialog because nobody is known to be at one (auto mode, or default and acceptEdits with no
+ * prompt typed in this session lately). The agent's text: the receipt id, the instruction to carry on, and the one way back.
+ * It names no queue and no command.
+ */
+export function heldNoFreezeText(receiptId: string): string {
+  return `Held for the owner's approval (receipt ${receiptId}). Continue other work; run this exact action again after the owner approves.`;
+}
+
+/** Claude Code, the user-only line for a hold that opened no dialog (words only: the kind of action). */
+export function noFreezeNotice(kind: string): string {
+  return `Marrow is holding ${kind} for your approval and opened no dialog, so nothing waits on you. Approving in chat does not count. Type to the agent in default mode and tell it to retry; Claude Code will ask you.`;
+}
+
 /** Claude Code, a hold that waits because nobody is in this run (tier A1, user only). */
 export function unattendedNotice(kind: string): string {
   return `Marrow is holding ${kind} for your approval. Nobody can approve it in this run, and a chat reply does not count. Your next interactive Claude Code session shows it.`;
@@ -346,7 +360,7 @@ export function planHeldAction(input: {
   hookEvent: string;
   reason: string;
   /** Claude Code: whether a hook "ask" reaches a person in this permission mode and version. */
-  claudePrompt?: { available: boolean; unavailableReason: string; headless?: boolean };
+  claudePrompt?: { available: boolean; unavailableReason: string; headless?: boolean; noFreeze?: boolean };
   /** Cursor: true only when sessionStart reported a local, non-background session. */
   cursorInteractive?: boolean | null;
   /** A local interactive session whose typed-reply hook runs (see typedReplyAvailable). */
@@ -428,6 +442,14 @@ export function planHeldAction(input: {
     // The operator is present but this session shows no dialog: switching to a
     // mode with the dialog approves it here (the host's own prompt, one click).
     const kind = heldKindLabel(guidance.approvalCategories);
+    if (input.claudePrompt?.noFreeze === true) {
+      // Auto mode, or nobody typed here lately: no dialog is opened (it would wait with no time limit and freeze the session).
+      // The action does not run and the agent carries on; a retry in an attended session asks, on this same receipt.
+      // The owner's link goes out as it does for an unattended run (the owner's own setting), not for every hold.
+      const pinged = ownerLinkPolicy(guidance, { unattended: true }) === 'now';
+      const agentText = bounded(`${heldNoFreezeText(id)}${pinged ? ` ${OWNER_APPROVAL_REQUEST_TEXT}` : ''}`, 500);
+      return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, dialogLater: true, laterPrompt: claudePrompt, userNotice: noFreezeNotice(kind), ...(pinged ? { ownerLink: 'now' as const } : {}) };
+    }
     const agentText = dialogLaterAgentText(`Marrow is holding this action for approval (gate receipt ${id}), so it did not run.`, input.claudePrompt?.unavailableReason || '', kind);
     return { kind: 'deny', agentText, userText: forPerson(agentText), code: false, dialogLater: true, laterPrompt: claudePrompt, userNotice: dialogLaterNotice(kind) };
   }
