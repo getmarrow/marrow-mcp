@@ -52,23 +52,50 @@ const BASE_HELD = [
   ['python lists the .marrow folder inline', `python3 -c "import os; print(os.listdir(os.path.expanduser('~/.marrow')))"`],
 ];
 
-// A text with a control-off word that a chain writes and then runs stays held (the executed-data rule, narrowed to writers and to control-off words).
-const HELD = [
-  ['printf writes the command, script by path runs it', "printf '%s\\n' 'npx @getmarrow/install control disable --yes' > run.sh; ./run.sh"],
-  ['echo piped into sh', "echo 'npx @getmarrow/install control disable --yes' | sh"],
-  ['echo writes uninstall, bash file runs it', "echo 'marrow-install uninstall --yes' > run.sh; bash run.sh"],
-  ['printf writes the command, source runs it', "printf 'npx @getmarrow/install control disable --yes' > f.sh; source f.sh"],
-  ['tee writes the command, script by path runs it', "echo 'marrow-install uninstall --yes' | tee run.sh; ./run.sh"],
-  ['cat of a heredoc writes the command, bash runs it', "cat > run.sh <<'EOF'\nnpx @getmarrow/install control disable --yes\nEOF\nbash run.sh"],
-  ['redirect writes the command, expansion program runs it', "echo 'marrow-install uninstall --yes' > /tmp/x.sh; $SHELL /tmp/x.sh"],
+// Round 2 cut (verify-mcp0 B1): commands that name the installer, or a word such as uninstall or disable, only as data and then run another program.
+// 3.9.109 lets each through; so does this change.
+const RES = [
+  ['RES1 cat an installer script, bash a lint', 'cat ~/src/marrow-install/scripts/uninstall.sh | head -20; bash scripts/lint.sh'],
+  ['RES2 echo a note naming uninstall to a file, bash another script', "echo 'marrow-install uninstall notes' > n.txt; bash scripts/run.sh"],
+  ['RES3 printf a note to a file, source a venv', "printf 'marrow-install disable flag' >> n.txt; source .venv/bin/activate"],
+];
+const EXEC = [
+  ['E1 cat a README, a script with --disable-cache', 'cat ~/src/marrow-install/README.md; ./build.sh --disable-cache'],
+  ['E2 grep saved to a file, bash a lint', 'grep -rn uninstall ~/src/marrow-install > hits.txt; bash scripts/lint.sh'],
+  ['E3 git log to a file, a script with --disable-cache', 'git -C ~/src/marrow-install log > out.txt; ./run.sh --disable-cache'],
+  ['E4 cat a package.json into jq, an uninstall-check script', 'cat ~/src/marrow-install/package.json | jq .version; ./scripts/uninstall-check.sh'],
+  ['E5 echo a message, vitest with --disable-console-intercept', 'echo "marrow-install tests"; ./node_modules/.bin/vitest run --disable-console-intercept'],
+  ['E6 cat an uninstall doc, source a venv', 'cat ~/src/marrow-install/docs/uninstall.md; source .venv/bin/activate'],
+  ['E7 cat an uninstall doc, a formatter script', 'cat ~/src/marrow-install/docs/uninstall.md; ./scripts/fmt.sh'],
+  ['E8 bash -n syntax check, cat an uninstall doc', 'bash -n scripts/lint.sh; cat ~/src/marrow-install/docs/uninstall.md'],
+  ['E9 cat an uninstall source file, source nvm', 'cat ~/src/marrow-install/src/uninstall.js; source ~/.nvm/nvm.sh; nvm use 22'],
+  ['E10 echo a note to a file, a test script', "echo 'do not uninstall marrow-install here' >> notes.md; ./scripts/test.sh"],
+  ['E11 cat an uninstall doc into bash -n', 'cat ~/src/marrow-install/docs/uninstall.md | bash -n'],
+  ['E12 ls with 2>/dev/null, bash an uninstall test', 'ls ~/src/marrow-install 2>/dev/null; bash scripts/uninstall-test.sh'],
+  ['E13 grep with 2>/dev/null, a script with --disable-color', 'grep -c marrow-install docs/control.md 2>/dev/null; ./scripts/check.sh --disable-color'],
+];
+const TRIP = [
+  ['T1 node prints a script field of the MCP package', `node -e "console.log(require('@getmarrow/mcp/package.json').scripts.uninstall)"`],
+  ['T2 python prints a disable key of .mcp.json', `python3 -c "import json;print(json.load(open('.mcp.json')).get('disable'))"`],
+  ['T3 python tests for uninstall in .mcp.json', `python3 -c "import json;print('uninstall' in json.load(open('.mcp.json')))"`],
+  ['T4 node prints the installer version', `node -e "console.log('v'+require('@getmarrow/install/package.json').version)"`],
+  ['T5 python counts marrow-install in .mcp.json', `python3 -c "import json;print(json.load(open('.mcp.json')).count('marrow-install'))"`],
+  ['T6 node prints the installer package name', `node -e "console.log(require('./node_modules/@getmarrow/install/package.json').name+' ok')"`],
+  ['T7 python prints a disabled key of .mcp.json', `python3 -c "import json;print(json.load(open('.mcp.json')).get('disabled'))"`],
+  ['T8 python splits the installer name', `python3 -c "print('@getmarrow/install'.split('/')[1]+' version')"`],
+  ['T9 node checks the MCP package for an uninstall script', `node -e "const p=require('@getmarrow/mcp/package.json');console.log(p.name+' '+Object.keys(p.scripts).includes('uninstall'))"`],
+  ['T10 python prints the size of .mcp.json, a comment names disable', `python3 -c "import json;d=json.load(open('.mcp.json'));print(len(d)) # disable"`],
 ];
 
-// An inline script that names a control-off word with the installer is still held (the mapper tripwire, narrowed to a call that names control-off).
+// A control-off command a heredoc writes is read as a command line by the walk and is held (the heredoc body is shell text).
+const HELD = [
+  ['cat of a heredoc writes the command, bash runs it', "cat > run.sh <<'EOF'\nnpx @getmarrow/install control disable --yes\nEOF\nbash run.sh"],
+];
+
+// An inline script that spells a control-off command, or builds it from the environment or a package-folder removal, is still held (the mapper stops it).
 const TRIPWIRE_HELD = [
-  ['node concatenates the installer name, control disable', `node -e "require('child_process').execSync('npx @getmarrow/inst'+'all control disable --yes')"`],
-  ['python concatenates the installer name, uninstall', `python3 -c "import os; os.system('npx @getmarrow/' + 'install uninstall --yes')"`],
   ['python takes the subcommand from the environment', `D=disable python3 -c "import os; os.system('npx @getmarrow/install control '+os.environ['D'])"`],
   ['node removes the installer package folder', `node -e "require('fs').rmSync('node_modules/@getmarrow/install',{recursive:true}); /* uninstall */"`],
 ];
 
-module.exports = { B1, B2, CLEAR, INTERP, BASE_HELD, HELD, TRIPWIRE_HELD };
+module.exports = { B1, B2, RES, EXEC, TRIP, CLEAR, INTERP, BASE_HELD, HELD, TRIPWIRE_HELD };

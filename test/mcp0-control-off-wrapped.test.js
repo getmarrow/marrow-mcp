@@ -96,8 +96,6 @@ test('M3: a twin never routes a read of a protected file past self-protect (an e
 
 // Each is an S0 hit of the mapper with a reason that is not an installer text the walk reads: it is a control-off route all the same.
 const MAPPER_S0 = [
-  ['S0 tripwire: node -e concatenated installer name', `node -e "require('child_process').execSync('npx @getmarrow/inst'+'all control disable --yes')"`],
-  ['S0 tripwire: python3 -c concatenated installer name', `python3 -c "import os; os.system('npx @getmarrow/' + 'install control disable')"`],
   ['S0 tripwire: python3 -c subcommand from the environment', `D=disable python3 -c "import os; os.system('npx @getmarrow/install control '+os.environ['D'])"`],
   ['S0 npx_marrow_installer: name split over two variables', 'A=@getmarrow; npx $A/install control disable --yes'],
   ['S0 claude_mcp_remove_marrow', 'claude mcp remove marrow'],

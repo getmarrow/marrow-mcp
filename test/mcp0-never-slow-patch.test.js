@@ -9,12 +9,12 @@ const test = require('node:test');
 const { classifyTool } = require('../dist/hook-pre-action.js');
 const { selfProtectKind } = require('../dist/self-protect.js');
 const { heldLabel } = require('./support/mcp-109-n2-categories.cjs');
-const { B1, B2, CLEAR, INTERP, BASE_HELD, HELD, TRIPWIRE_HELD } = require('./support/mcp0-patch-rows.cjs');
+const { B1, B2, RES, EXEC, TRIP, CLEAR, INTERP, BASE_HELD, HELD, TRIPWIRE_HELD } = require('./support/mcp0-patch-rows.cjs');
 const BASE = require('./fixtures-mcp0-patch-base.json');
 
 // MCP-0 round 2 (audit-mcp0 B1, B2, B3). The change adds holds for control-off forms; it must never slow an ordinary command. A command that names no
-// control-off word gets exactly its 3.9.109 answer (test/fixtures-mcp0-patch-base.json, recorded by running that build). A command that names one, in a
-// form the change reads (text a chain writes and runs, an inline script the mapper stops), is still held.
+// control-off word, or names one only as data, gets exactly its 3.9.109 answer (test/fixtures-mcp0-patch-base.json, recorded by running that build). A command
+// that spells a control-off command in a form the change reads (a heredoc body, an inline script the mapper stops) is still held.
 
 const SECURITY_LABEL = 'classified Bash action: security on marrow-control';
 const DENY_TEXT = 'Turning Marrow control off needs the account owner. Ask them to run it in their own terminal.';
@@ -26,7 +26,7 @@ const answer = (command) => {
 
 // ---- PN1 (B1), PN2 (B2): the 3.9.109 answer, whole --------------------------------------------------------------------------------------------
 
-for (const [group, rows] of [['B1', B1], ['B2', B2], ['CLEAR', CLEAR], ['INTERP', INTERP]]) {
+for (const [group, rows] of [['B1', B1], ['B2', B2], ['RES', RES], ['EXEC', EXEC], ['TRIP', TRIP], ['CLEAR', CLEAR], ['INTERP', INTERP]]) {
   for (const [id, command] of rows) {
     test(`${group} keeps its 3.9.109 answer (no new refusal): ${id}`, () => {
       assert.ok(BASE[`${group}|${id}`], 'recorded 3.9.109 answer');
@@ -91,12 +91,12 @@ function hook(directory, home, command, env = {}) {
   return { stdout: result.stdout, stderr: result.stderr, calls: lines.length };
 }
 
-test('B1/B2 in the hook, keyless auto and account auto: no owner-only refusal for the 11 audit rows', () => {
+test('B1/B2/RES/EXEC/TRIP in the hook, keyless auto and account auto: no owner-only refusal for the audit rows and their neighbours', () => {
   const directory = mkdtempSync(join(tmpdir(), 'marrow-m0p-'));
   try {
     const home = makeHome(directory);
     const key = dummyKey();
-    for (const [id, command] of [...B1, ...B2]) {
+    for (const [id, command] of [...B1, ...B2, ...RES, ...EXEC, ...TRIP]) {
       for (const env of [{}, { MARROW_API_KEY: key }]) {
         const { stdout, stderr } = hook(directory, home, command, env);
         assert.equal(stdout.includes(DENY_TEXT), false, id);
