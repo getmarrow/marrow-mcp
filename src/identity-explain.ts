@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { printablePath, type AgentIdOrigin, type AgentIdVariable, type ResolvedMarrowEnv, resolveMarrowEnv } from './env';
+import { printablePath, SAFE_AGENT_ID, type AgentIdOrigin, type AgentIdVariable, type ResolvedMarrowEnv, resolveMarrowEnv } from './env';
 import { parseToml } from './own-server-identity';
 import { redactSensitiveText } from './redact';
 
@@ -9,6 +9,8 @@ import { redactSensitiveText } from './redact';
 // only); this module adds the config file, by reading the host config files from a fixed list and comparing
 // ONE variable with the id. It prints the agent id, a variable name and a path: never a key, never an env
 // block, and it makes no network call. Nothing here feeds a hook decision, a request header or a key choice.
+// Agent-facing text (the credential-scope sentence, `agent_id_source`, the --explain text) names a config file by its
+// fixed-list LABEL only; the absolute path is data for `identity --explain --json` and never leaves it.
 
 export const UNSAFE_ID = '<unsafe id>';
 const MAX_PRINTED_ID = 64;
@@ -20,12 +22,14 @@ export interface AgentIdExplanation {
   agent_id: string | null;
   variable: AgentIdVariable | null;
   origin: AgentIdOrigin;
-  /** One path, `one of: a, b` when several files hold the id, or null. */
+  /** One absolute path, `one of: a, b` when several files hold the id, or null. Data for `identity --explain --json` only. */
   file: string | null;
 }
 
 /** The explanation plus what only the sentence needs. */
 export interface AgentIdLookup extends AgentIdExplanation {
+  /** `file` as fixed-list labels (`~/.mcp.json`, `<cwd>/.mcp.json`, ...): the only form agent-facing text may carry. */
+  fileLabel: string | null;
   /** fleet_key_match: the NAME of the key variable the id selected. */
   keyVariable?: string;
   /** Config files on the fixed list that exist but could not be read safely (symlink, group-writable, too large, invalid). */
@@ -33,12 +37,13 @@ export interface AgentIdLookup extends AgentIdExplanation {
 }
 
 /**
- * The id as printed: exact, unless it holds control or format characters, is blank, is over 64 characters, or the
- * redactor would hide part of it (an API key pasted into the id variable by mistake is never echoed).
+ * The id as printed: exact, unless it fails the hook head's SAFE_AGENT_ID check (spaces, blank, control, format and
+ * look-alike characters), is over 64 characters, or the redactor would hide part of it (an API key pasted into the
+ * id variable by mistake is never echoed).
  */
 export function printableAgentId(value: string | undefined): string | null {
   if (!value) return null;
-  if (value.trim() === '' || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value) || Array.from(value).length > MAX_PRINTED_ID) return UNSAFE_ID;
+  if (!SAFE_AGENT_ID.test(value) || value.length > MAX_PRINTED_ID) return UNSAFE_ID;
   return redactSensitiveText(value) === value ? value : UNSAFE_ID;
 }
 
@@ -50,16 +55,16 @@ export function explainHome(env: NodeJS.ProcessEnv = process.env): string {
 type ConfigKind = 'json' | 'toml';
 
 /** The fixed list, in print order: no other file (never ~/.hermes/config.yaml, never a .env) is read. */
-export function agentIdConfigFiles(home: string, cwd: string): Array<{ file: string; kind: ConfigKind }> {
+export function agentIdConfigFiles(home: string, cwd: string): Array<{ file: string; label: string; kind: ConfigKind }> {
   const h = path.resolve(home);
   const c = path.resolve(cwd);
-  const all: Array<{ file: string; kind: ConfigKind }> = [
-    { file: path.join(h, '.mcp.json'), kind: 'json' },
-    { file: path.join(c, '.mcp.json'), kind: 'json' },
-    { file: path.join(h, '.cursor', 'mcp.json'), kind: 'json' },
-    { file: path.join(c, '.cursor', 'mcp.json'), kind: 'json' },
-    { file: path.join(h, '.codex', 'config.toml'), kind: 'toml' },
-    { file: path.join(h, '.gemini', 'settings.json'), kind: 'json' },
+  const all: Array<{ file: string; label: string; kind: ConfigKind }> = [
+    { file: path.join(h, '.mcp.json'), label: '~/.mcp.json', kind: 'json' },
+    { file: path.join(c, '.mcp.json'), label: '<cwd>/.mcp.json', kind: 'json' },
+    { file: path.join(h, '.cursor', 'mcp.json'), label: '~/.cursor/mcp.json', kind: 'json' },
+    { file: path.join(c, '.cursor', 'mcp.json'), label: '<cwd>/.cursor/mcp.json', kind: 'json' },
+    { file: path.join(h, '.codex', 'config.toml'), label: '~/.codex/config.toml', kind: 'toml' },
+    { file: path.join(h, '.gemini', 'settings.json'), label: '~/.gemini/settings.json', kind: 'json' },
   ];
   return all.filter((entry, index) => all.findIndex((other) => other.file === entry.file) === index);
 }
@@ -121,21 +126,21 @@ export function explainAgentIdSource(resolved: ResolvedMarrowEnv, context: { hom
   const source = resolved.agentIdSource;
   const id = resolved.agentId;
   if (!source || source.origin === 'none' || !source.variable || !id) {
-    return { agent_id: null, variable: null, origin: 'none', file: null, unsafeConfigFiles: 0 };
+    return { agent_id: null, variable: null, origin: 'none', file: null, fileLabel: null, unsafeConfigFiles: 0 };
   }
   const base = { agent_id: printableAgentId(id), variable: source.variable, origin: source.origin, ...(source.keyVariable ? { keyVariable: source.keyVariable } : {}) };
   if (source.origin === 'owner_file') {
-    return { ...base, file: source.ownerFile ?? null, unsafeConfigFiles: 0 };
+    return { ...base, file: source.ownerFile ?? null, fileLabel: source.ownerFile ?? null, unsafeConfigFiles: 0 };
   }
-  const matches: string[] = [];
+  const matches: Array<{ path: string; label: string }> = [];
   let unsafe = 0;
   for (const entry of agentIdConfigFiles(context.home ?? explainHome(), context.cwd ?? process.cwd())) {
     const read = readMarrowEnvBlock(entry.file, entry.kind);
     if (read.state === 'unsafe') unsafe += 1;
-    else if (read.state === 'ok' && read.env && own(read.env, source.variable) === id) matches.push(printablePath(entry.file));
+    else if (read.state === 'ok' && read.env && own(read.env, source.variable) === id) matches.push({ path: printablePath(entry.file), label: entry.label });
   }
-  const file = matches.length === 0 ? null : matches.length === 1 ? matches[0] : `one of: ${matches.join(', ')}`;
-  return { ...base, file, unsafeConfigFiles: unsafe };
+  const join = (items: string[]) => (items.length === 0 ? null : items.length === 1 ? items[0] : `one of: ${items.join(', ')}`);
+  return { ...base, file: join(matches.map((m) => m.path)), fileLabel: join(matches.map((m) => m.label)), unsafeConfigFiles: unsafe };
 }
 
 /** Resolves `env` (the process environment by default) the way the server and hooks do, then explains the id. */
@@ -144,9 +149,14 @@ export function explainEnvironment(env: NodeJS.ProcessEnv = process.env, cwd: st
   return explainAgentIdSource(resolveMarrowEnv({ env, home, cwd, trustedOnly: true }), { home, cwd });
 }
 
-/** The `identity --explain --json` shape: exactly four keys. */
+/** The `identity --explain --json` shape: exactly four keys, `file` as the absolute path (data for the installer doctor). */
 export function explanationJson(lookup: AgentIdExplanation): AgentIdExplanation {
   return { agent_id: lookup.agent_id, variable: lookup.variable, origin: lookup.origin, file: lookup.file };
+}
+
+/** The same four keys with `file` as the fixed-list label: the form that goes into the tool 403 (`agent_id_source`). */
+export function explanationLabelJson(lookup: AgentIdLookup): AgentIdExplanation {
+  return { agent_id: lookup.agent_id, variable: lookup.variable, origin: lookup.origin, file: lookup.fileLabel };
 }
 
 /**
@@ -155,11 +165,11 @@ export function explanationJson(lookup: AgentIdExplanation): AgentIdExplanation 
  */
 export function agentIdSourceSentence(lookup: AgentIdLookup, subject = 'This server'): string {
   if (lookup.origin === 'none' || !lookup.variable) return '';
-  if (lookup.origin === 'owner_file') return `${subject} took the id from ${lookup.variable} in ${lookup.file ?? '~/.marrow/env'}.`;
-  let text = lookup.file
-    ? `${subject} took the id from ${lookup.variable} in the marrow env block of ${lookup.file}, which overrides the host's environment.`
+  if (lookup.origin === 'owner_file') return `${subject} took the id from ${lookup.variable} in ${lookup.fileLabel ?? '~/.marrow/env'}.`;
+  let text = lookup.fileLabel
+    ? `${subject} took the id from ${lookup.variable} in the marrow env block of ${lookup.fileLabel}, which overrides the host's environment.`
     : `${subject} took the id from ${lookup.variable} in this server's environment (set by the host or its launcher; ${lookup.unsafeConfigFiles > 0 ? UNSAFE_NOTE : 'no Marrow MCP config file sets it'}).`;
-  if (lookup.file && lookup.unsafeConfigFiles > 0) text += ' Another Marrow MCP config file could not be read safely.';
+  if (lookup.fileLabel && lookup.unsafeConfigFiles > 0) text += ' Another Marrow MCP config file could not be read safely.';
   if (lookup.origin === 'fleet_key_match' && lookup.keyVariable && /^MARROW_KEY_[A-Z0-9]+$/.test(lookup.keyVariable)) {
     text += ` The key was picked by that id from ${lookup.keyVariable}.`;
   }
@@ -199,7 +209,7 @@ export function runIdentityCommand(
     `Agent id: ${json.agent_id ?? 'none'}`,
     `Variable: ${json.variable ?? 'none'}`,
     `Origin: ${json.origin}`,
-    `File: ${json.file ?? 'none'}`,
+    `File: ${lookup.fileLabel ?? 'none'}`,
     agentIdSourceSentence(lookup) || NO_ID_LINE,
   ].join('\n') + '\n');
   return 0;

@@ -72,7 +72,7 @@ import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { controlFailureKind, installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
-import { agentIdSourceSentence, explainAgentIdSource, explanationJson, runIdentityCommand } from './identity-explain';
+import { agentIdSourceSentence, explainAgentIdSource, explanationLabelJson, runIdentityCommand } from './identity-explain';
 import { spawn } from 'node:child_process';
 import { emitBaseUrlNotice, nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
 import { KEYLESS_NOTICE, keylessInstructions, keylessStart, serveKeylessMcp } from './keyless-server';
@@ -918,7 +918,7 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
   if (controlFailureKind(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
     const errorBody = result.error as Record<string, unknown>;
     errorBody.message = `${String(errorBody.message || '').trim()} ${agentIdSourceSentence(AGENT_ID_SOURCE)}`.trim();
-    result.agent_id_source = explanationJson(AGENT_ID_SOURCE);
+    result.agent_id_source = explanationLabelJson(AGENT_ID_SOURCE);
   }
   result.control_path = controlPathStats(toolName || 'marrow_control');
   result.lifecycle_spool = {
