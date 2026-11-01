@@ -71,7 +71,8 @@ import { deliverQueuedForReceipt, holdSessionForReceipt, proofFieldsForReceipt, 
 import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
-import { installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
+import { controlFailureKind, installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
+import { agentIdSourceSentence, explainAgentIdSource, explanationLabelJson } from './identity-explain';
 import { spawn } from 'node:child_process';
 import { emitBaseUrlNotice, nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
 import { KEYLESS_NOTICE, keylessInstructions, keylessStart, serveKeylessMcp } from './keyless-server';
@@ -686,6 +687,15 @@ if (!API_KEY) {
   process.exit(1);
 }
 
+// Where the id came from, taken from the resolution made at start (the same one that picked the key and the id).
+const AGENT_ID_SOURCE = (() => {
+  try {
+    return explainAgentIdSource(resolvedEnv);
+  } catch {
+    return null;
+  }
+})();
+
 if (ENDPOINT_HOST) {
   process.stderr.write(`[marrow] Using a non-default Marrow endpoint: ${ENDPOINT_HOST} (MARROW_BASE_URL).\n`);
 }
@@ -898,6 +908,12 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
   const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_handoff_status', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
   const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
   result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
+  // A refused agent id: say where this server took the id from (variable and origin; never a key). The status, code and repair text stay the service's.
+  if (controlFailureKind(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
+    const errorBody = result.error as Record<string, unknown>;
+    errorBody.message = `${String(errorBody.message || '').trim()} ${agentIdSourceSentence(AGENT_ID_SOURCE)}`.trim();
+    result.agent_id_source = explanationLabelJson(AGENT_ID_SOURCE);
+  }
   result.control_path = controlPathStats(toolName || 'marrow_control');
   result.lifecycle_spool = {
     state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
