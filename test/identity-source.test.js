@@ -194,9 +194,10 @@ test('T1 tool 403: the id taken from the marrow env block of ~/.mcp.json names M
     assert.equal(payload.error.status, 403);
     assert.equal(payload.error.code, 'MARROW_AGENT_SCOPE_MISMATCH');
     assert.equal(payload.error.exact_fix, SCOPE_FIX, 'the backend repair text stays byte-equal');
-    assert.ok(payload.error.message.includes(sentenceBlock('MARROW_FLEET_AGENT_ID', file)), payload.error.message);
+    assert.ok(payload.error.message.includes(sentenceBlock('MARROW_FLEET_AGENT_ID', '~/.mcp.json')), payload.error.message);
+    assert.ok(!payload.error.message.includes(file) && !payload.error.message.includes(fx.home), 'a label, never the absolute path');
     assert.deepEqual(Object.keys(payload.agent_id_source).sort(), KEYS);
-    assert.deepEqual(payload.agent_id_source, { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file });
+    assert.deepEqual(payload.agent_id_source, { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file: '~/.mcp.json' });
     assert.ok(requests.length >= 1 && requests.every((r) => r.agent === 'agent-alpha'), 'the identity sent is unchanged');
   } finally { fx.cleanup(); }
 });
@@ -209,7 +210,8 @@ test('T1 credential-scope text (hook): the same line, the BASE head and BASE nex
     const out = await runHookScope(fx, { MARROW_API_KEY: key, MARROW_FLEET_AGENT_ID: 'agent-alpha' }, PROTECTED_EVENT());
     const decision = JSON.parse(out).hookSpecificOutput;
     assert.equal(decision.permissionDecision, 'deny');
-    assert.equal(decision.permissionDecisionReason, `${HEAD('agent-alpha')} ${sentenceBlock('MARROW_FLEET_AGENT_ID', file)} ${BASE_NEXT_STEP}`);
+    assert.equal(decision.permissionDecisionReason, `${HEAD('agent-alpha')} ${sentenceBlock('MARROW_FLEET_AGENT_ID', '~/.mcp.json')} ${BASE_NEXT_STEP}`);
+    assert.ok(!decision.permissionDecisionReason.includes(file), 'a label, never the absolute path');
   } finally { fx.cleanup(); }
 });
 
@@ -366,7 +368,7 @@ test('T4 / T-SEC: no output, report or new file holds the dummy key; only the ag
       assert.equal(everything.includes(secret), false, 'a dummy key reached an output');
       assert.equal(everything.includes(secret.slice(0, 18)), false, 'a dummy key prefix reached an output');
     }
-    assert.ok(tool.payload.error.message.includes(file), 'the file is named');
+    assert.ok(tool.payload.error.message.includes('~/.mcp.json') && !tool.payload.error.message.includes(file), 'the file is named by its label');
     assert.ok(!/MARROW_API_KEY|MARROW_BASE_URL|"env"|mcpServers/.test(tool.payload.error.message + hook), 'no env block or other variable text');
     // 5. every file under the fixture home: only the files the fixture wrote hold the key; no new file does
     for (const p of treeFiles(fx.home)) {
@@ -446,7 +448,7 @@ test('T5 identity --explain --json: exactly {agent_id, variable, origin, file}, 
     const human = runExplain(fx, { MARROW_FLEET_AGENT_ID: 'agent-cursor' }, ['identity', '--explain']);
     assert.equal(human.child.status, 0);
     assert.match(human.child.stdout, /MARROW_FLEET_AGENT_ID/);
-    assert.ok(human.child.stdout.includes(file));
+    assert.ok(human.child.stdout.includes('File: ~/.cursor/mcp.json') && !human.child.stdout.includes(file), 'the text form prints the label; only --json holds the path');
     const usage = runExplain(fx, {}, ['identity']);
     assert.equal(usage.child.status, 2);
     assert.equal(usage.child.stdout, '');
@@ -525,7 +527,8 @@ test('T6 an unsafe file next to a safe match: only the safe file is named, and t
     writeFile(path.join(fx.home, '.mcp.json'), '{not json', 0o600);
     const lookup = explainIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: 'agent-alpha' }, fx);
     assert.equal(lookup.file, safe);
-    assert.equal(lazy.explain.agentIdSourceSentence(lookup), `${sentenceBlock('MARROW_FLEET_AGENT_ID', safe)} Another Marrow MCP config file could not be read safely.`);
+    assert.equal(lookup.fileLabel, '~/.cursor/mcp.json');
+    assert.equal(lazy.explain.agentIdSourceSentence(lookup), `${sentenceBlock('MARROW_FLEET_AGENT_ID', '~/.cursor/mcp.json')} Another Marrow MCP config file could not be read safely.`);
   } finally { fx.cleanup(); }
 });
 
@@ -576,8 +579,9 @@ test('T7 two files hold the id: "one of: a, b" in the fixed-list order; the file
     const b = writeFile(path.join(fx.cwd, '.cursor', 'mcp.json'), mcpJson({ MARROW_FLEET_AGENT_ID: 'agent-alpha' }));
     const lookup = explainIn({ MARROW_API_KEY: dummyKey(), MARROW_FLEET_AGENT_ID: 'agent-alpha' }, fx);
     assert.equal(lookup.file, `one of: ${a}, ${b}`);
+    assert.equal(lookup.fileLabel, 'one of: ~/.mcp.json, <cwd>/.cursor/mcp.json');
     assert.deepEqual(Object.keys(jsonOf(lookup)).sort(), KEYS);
-    assert.equal(lazy.explain.agentIdSourceSentence(lookup), sentenceBlock('MARROW_FLEET_AGENT_ID', `one of: ${a}, ${b}`));
+    assert.equal(lazy.explain.agentIdSourceSentence(lookup), sentenceBlock('MARROW_FLEET_AGENT_ID', 'one of: ~/.mcp.json, <cwd>/.cursor/mcp.json'));
   } finally { fx.cleanup(); }
 });
 
@@ -679,8 +683,8 @@ test('M5 a long explanation (several config files) never costs the BASE next ste
   const { controlRejectionMessage, cursorPreActionHookOutput } = lazy.hook;
   const { MarrowRequestError } = lazy.req;
   const scope = new MarrowRequestError({ code: 'permission_denied', backendCode: 'MARROW_AGENT_SCOPE_MISMATCH', message: 'x', status: 403, exactFix: 'fix' });
-  const files = ['.mcp.json', 'proj/.mcp.json', '.cursor/mcp.json', 'proj/.cursor/mcp.json', '.codex/config.toml', '.gemini/settings.json'].map((f) => `/home/someone/a-long-folder-name/${f}`);
-  const lookup = { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file: `one of: ${files.join(', ')}`, unsafeConfigFiles: 0 };
+  const files = ['~/.mcp.json', '<cwd>/.mcp.json', '~/.cursor/mcp.json', '<cwd>/.cursor/mcp.json', '~/.codex/config.toml', '~/.gemini/settings.json'];
+  const lookup = { agent_id: 'agent-alpha', variable: 'MARROW_FLEET_AGENT_ID', origin: 'process_env', file: 'unused', fileLabel: `one of: ${files.join(', ')}`, unsafeConfigFiles: 1 };
   const text = controlRejectionMessage(scope, 'agent-alpha', undefined, lookup);
   assert.ok(text.length > 500, 'the fixture is long enough to need the guard');
   assert.ok(text.includes(files[5]) && text.includes('which overrides the host'), 'nothing is dropped for hosts without a cap');
@@ -688,7 +692,7 @@ test('M5 a long explanation (several config files) never costs the BASE next ste
   const shown = JSON.stringify(cursor);
   assert.ok(shown.includes(BASE_NEXT_STEP), `the BASE next step survives the cap: ${shown}`);
   // A short explanation keeps its place in front of the next step.
-  const short = controlRejectionMessage(scope, 'agent-alpha', undefined, { ...lookup, file: files[0] });
+  const short = controlRejectionMessage(scope, 'agent-alpha', undefined, { ...lookup, fileLabel: files[0], unsafeConfigFiles: 0 });
   assert.equal(short, `${HEAD('agent-alpha')} ${sentenceBlock('MARROW_FLEET_AGENT_ID', files[0])} ${BASE_NEXT_STEP}`);
 });
 
