@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased (next batched version)
+
+- Security (MCP-2): the stable, version-free Marrow entry is recognized as the official server on Codex (`config.toml`) and Cursor (`mcp.json`), so Marrow's own tools skip the gate when a host has moved to it. The entry is exactly `/bin/sh -c <stub> <home>/.marrow/runtime/launcher/<sha256>.cjs marrow-mcp` (win32: `<absolute node.exe> <home>\.marrow\runtime\launcher\<sha256>.cjs marrow-mcp`), and it is proven only as this process's own launch: the launcher that started the hook must hash to the digest in the entry and be a launcher of a pinned core. Another digest, launcher folder, node, arg, env block key, repeated key, or ASCII written as an escape is not official and goes down the normal gate path. Nothing is read from disk, `current` included. The installer loader forms prove exactly as before. This is the only change that is looser than 3.9.109 (the exact entry, an owner decision); `stableMarrowServerLaunch` is the single builder the installer writes from.
+- Test (MCP-2): writes to `~/.marrow/runtime/current`, `~/.marrow/runtime/launcher/*` and `~/.marrow/identity-record.json` are held as self-protection (S0) and as `marrow-control` through the Write and Edit tools, redirects, `cd ... && mv`, `bash -c`, `$HOME`, `&&`, `;`, `||`, a pipe into `tee` and subshells. They were held already through the `.marrow` rule; these rows pin it. A read-only `cat` of `current` is still not S0. No seatbelt source changed.
+
 ## 3.9.109
 
 Hook fixes on 3.9.108: the control-file fail-closed fix, a faster exit of the pre-action hook, the test/live key split, the patch-write holds, the Windows-lane port and an IPv4-first dial, plus tightenings found on the way. One change is looser than 3.9.108, on purpose and by the owner's decision: on Windows only, the session loop guard's ACL proof; the rest hold more or only tell the user more, except MCP-9, which changes only the Marrow session id the hooks send.

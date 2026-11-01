@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, constants as fsConstants } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve, posix as pathPosix, win32 as pathWin32 } from 'node:path';
 import { brotliDecompressSync } from 'node:zlib';
 import { codexProcessArgs, codexProcessStartMs } from './host-session';
 import { scanCodexPlugins } from './codex-plugins';
@@ -518,6 +518,119 @@ export function isMarrowServerLaunchShape(command: unknown, args: unknown): bool
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// The stable (version-free) Marrow entry
+// ---------------------------------------------------------------------------
+
+// One stub that carries no MCP version: the installer's stable entry runs `~/.marrow/runtime/launcher/<sha256>.cjs`, a launcher
+// of a pinned core, after hashing its bytes against the digest the entry names. The launcher then reads the owner-only
+// `~/.marrow/runtime/current` record and verifies the runtime it names (the installer's job, not this file's). This file only
+// decides whether a host's `marrow` entry is exactly that stub. The stub text below is the contract: the installer writes it
+// byte for byte (stableMarrowServerLaunch) and a change to it ships here first. It is proven like every installer form: only as
+// this process's own launch, so the launcher bytes that started this hook must hash to the digest the entry carries, and
+// nothing is read from disk, `current` included (a missing `current` proves nothing either way).
+const STABLE_NODE_SOURCE = 'const c=require("node:crypto"),f=require("node:fs"),p=process.argv[1],m=/^\\/.+\\/\\.marrow\\/runtime\\/launcher\\/([0-9a-f]{64})\\.cjs$/.exec(p);'
+  + 'if(!m||!f.lstatSync(p).isFile())process.exit(2);const b=f.readFileSync(p);if(c.createHash("sha256").update(b).digest("hex")!==m[1])process.exit(2);'
+  + 'process.argv.splice(1,1);eval(global.MARROW_L=b.toString("utf8")+[])';
+const STABLE_SH_SCRIPT = `N=; P="$PATH:/usr/local/bin:/opt/homebrew/bin"; while [ -n "$P" ]; do D="\${P%%:*}"; case "$P" in (*:*) P="\${P#*:}" ;; (*) P= ;; esac; case "$D" in ("$PWD"|"$PWD"/*) ;; (/*) if [ -f "$D/node" ] && [ -x "$D/node" ]; then N="$D/node"; break; fi ;; esac; done; if [ -n "$N" ]; then exec "$N" -e '${STABLE_NODE_SOURCE}' -- "$0" "$@"; fi; printf "%s\\n" "${INSTALLER_UNAVAILABLE_TEXT}" >&2; exit 1`;
+const STABLE_LAUNCHER_FILE = /^([0-9a-f]{64})\.cjs$/;
+// win32: an absolute node.exe (no PATH or cwd lookup) and plain drive paths only: no \\?\, \\.\, UNC, alternate stream, 8.3
+// short name, dot segment or trailing dot or space in any segment.
+const WIN_ABSOLUTE = /^[A-Za-z]:\\(?:[^\\/:*?"<>|\u0000-\u001f]+\\)*[^\\/:*?"<>|\u0000-\u001f]+$/;
+const WIN_NODE = /\\node\.exe$/;
+function winPlain(path: string): boolean {
+  if (!WIN_ABSOLUTE.test(path)) return false;
+  return path.slice(3).split('\\').every((segment) => segment !== '.' && segment !== '..' && !/[. ]$/.test(segment) && !/~\d/.test(segment));
+}
+
+/** The launcher path the stable entry names for `digest` under `home` (the only folder the entry may name). */
+function stableLauncherPath(platform: NodeJS.Platform, home: string, digest: string): string {
+  return platform === 'win32' ? pathWin32.join(home, '.marrow', 'runtime', 'launcher', `${digest}.cjs`) : pathPosix.join(home, '.marrow', 'runtime', 'launcher', `${digest}.cjs`);
+}
+
+/**
+ * The stable Marrow entry (command and args) for a launcher digest under `home`, the form the installer writes:
+ *   POSIX  /bin/sh -c <stub> <home>/.marrow/runtime/launcher/<sha256>.cjs marrow-mcp
+ *   win32  <absolute node.exe> <home>\.marrow\runtime\launcher\<sha256>.cjs marrow-mcp
+ * `nodeExe` is required on win32 and ignored elsewhere.
+ */
+export function stableMarrowServerLaunch(platform: NodeJS.Platform, home: string, digest: string, nodeExe?: string): { command: string; args: string[] } {
+  const launcher = stableLauncherPath(platform, home, digest);
+  if (platform === 'win32') {
+    if (typeof nodeExe !== 'string') throw new Error('a node.exe path is required on win32');
+    return { command: nodeExe, args: [launcher, 'marrow-mcp'] };
+  }
+  return { command: '/bin/sh', args: ['-c', STABLE_SH_SCRIPT, launcher, 'marrow-mcp'] };
+}
+
+/** The launcher source this process was started from, when it is a launcher of a pinned core with a CFG the core accepts; else null. */
+function ownStableLauncher(own: unknown): Buffer | null {
+  if (typeof own !== 'string' || own.length > MAX_LAUNCHER_BYTES) return null;
+  const cfg = installerLauncherConfig(own);
+  if (!cfg) return null;
+  // A version-free CFG names neither a version nor a pack (the launcher reads `current`); otherwise it is a CFG the core accepts.
+  const named = [cfg.version, cfg.integrity].filter((value) => value !== undefined).length;
+  if (named === 1) return null;
+  if (named === 2 && (typeof cfg.version !== 'string' || !CFG_VERSION_RE.test(cfg.version) || typeof cfg.integrity !== 'string' || !CFG_INTEGRITY_RE.test(cfg.integrity))) return null;
+  return Buffer.from(own, 'utf8');
+}
+
+type StableContext = { home: string; platform: NodeJS.Platform; ambiguous: boolean };
+
+/**
+ * Whether (command, args) are exactly the stable Marrow entry of the launcher that started this process (`ownLoader`, default
+ * `global.MARROW_L`): the stub text, the launcher folder under `home`, one sha256 name that is the digest of that launcher's
+ * bytes, a launcher of a pinned core, nothing appended or reordered. Another digest, folder, node or arg is not it.
+ */
+export function isStableMarrowServerLaunch(command: unknown, args: unknown, home: string, platform: NodeJS.Platform = process.platform, ownLoader: unknown = (globalThis as Record<string, unknown>).MARROW_L): boolean {
+  if (typeof command !== 'string' || !Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) return false;
+  const argv = args as string[];
+  let launcher: string;
+  if (platform === 'win32') {
+    if (argv.length !== 2 || argv[1] !== 'marrow-mcp' || !WIN_NODE.test(command) || !winPlain(command) || !winPlain(argv[0])) return false;
+    launcher = argv[0];
+  } else {
+    if (command !== '/bin/sh' || argv.length !== 4 || argv[0] !== '-c' || argv[1] !== STABLE_SH_SCRIPT || argv[3] !== 'marrow-mcp') return false;
+    launcher = argv[2];
+  }
+  if (typeof home !== 'string' || !(platform === 'win32' ? pathWin32.isAbsolute(home) : pathPosix.isAbsolute(home))) return false;
+  const name = launcher.slice(launcher.length - 68);
+  const digest = STABLE_LAUNCHER_FILE.exec(name)?.[1];
+  if (!digest || launcher !== stableLauncherPath(platform, home, digest)) return false;
+  const own = ownStableLauncher(ownLoader);
+  return own !== null && createHash('sha256').update(own).digest('hex') === digest;
+}
+
+// ASCII written as an escape (`\u0068`, `\U00000068`, JSON's `\/`) is how a look-alike hides a name or a path from a reader of the
+// raw text: no writer escapes printable ASCII (JSON.stringify and the installer never do). An odd run of backslashes before the
+// `u` is an escaped backslash, not an escape, so the match needs an even run in front of its own backslash.
+const DISGUISED_ASCII = /(?<!\\)(?:\\\\)*\\(?:u00[2-7][0-9a-fA-F]|U000000[2-7][0-9a-fA-F]|\/)/;
+
+/** Whether a JSON text names one key twice in one object (decoded, so `"m\u0061rrow"` is `marrow`): a host may take either. */
+function jsonHasDuplicateKeys(text: string): boolean {
+  const stack: Array<Set<string> | null> = [];
+  let expectKey = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      if (expectKey) {
+        const keys = stack[stack.length - 1]!;
+        const key = JSON.parse(text.slice(i, j + 1)) as string;
+        if (keys.has(key)) return true;
+        keys.add(key);
+        expectKey = false;
+      }
+      i = j;
+    } else if (ch === '{') { stack.push(new Set()); expectKey = true; }
+    else if (ch === '[') { stack.push(null); expectKey = false; }
+    else if (ch === '}' || ch === ']') { stack.pop(); expectKey = false; }
+    else if (ch === ',') expectKey = stack.length > 0 && stack[stack.length - 1] !== null;
+  }
+  return false;
+}
+
 /** A server name a host could turn into the `marrow` label: case, separators and leading `mcp` ignored (wider than any host). */
 export function serverNameCollidesWithMarrow(name: string): boolean {
   let folded = name.normalize('NFKC').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -693,7 +806,7 @@ function launchesWithNpx(entry: unknown): boolean {
 }
 
 /** One server definition: an official launch with only the keys and env names Marrow writes. */
-function officialDefinition(entry: unknown, keys: ReadonlySet<string>, ownLoader: unknown): boolean {
+function officialDefinition(entry: unknown, keys: ReadonlySet<string>, ownLoader: unknown, stable: StableContext): boolean {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
   const record = entry as Record<string, unknown>;
   const own = Object.keys(record);
@@ -704,10 +817,11 @@ function officialDefinition(entry: unknown, keys: ReadonlySet<string>, ownLoader
     if (!env || typeof env !== 'object' || Array.isArray(env)) return false;
     if (!Object.keys(env).every((key) => SERVER_ENV_KEYS.has(key) && typeof (env as Record<string, unknown>)[key] === 'string')) return false;
   }
-  return isOfficialMarrowServerLaunch(record.command, record.args, ownLoader);
+  if (isOfficialMarrowServerLaunch(record.command, record.args, ownLoader)) return true;
+  return !stable.ambiguous && isStableMarrowServerLaunch(record.command, record.args, stable.home, stable.platform, ownLoader);
 }
 
-type ServerSet = { names: Map<string, unknown[]>; bad: string | null };
+type ServerSet = { names: Map<string, unknown[]>; bad: string | null; ambiguous?: boolean };
 
 function addServers(into: ServerSet, servers: unknown, where: string): void {
   if (servers === undefined) return;
@@ -720,7 +834,7 @@ function addServers(into: ServerSet, servers: unknown, where: string): void {
 }
 
 /** The decision over the union of every definition of every server. */
-type NpmContext = { env: NodeJS.ProcessEnv; home: string };
+type NpmContext = { env: NodeJS.ProcessEnv; home: string; platform?: NodeJS.Platform };
 
 /** `undefined` means this process's own installer launcher (`global.MARROW_L`). */
 const ownLoaderOf = (given: unknown): unknown => (given === undefined ? (globalThis as Record<string, unknown>).MARROW_L : given);
@@ -730,7 +844,8 @@ function decide(set: ServerSet, keys: ReadonlySet<string>, onlyServer: boolean, 
   const colliding = [...set.names.keys()].filter(codexNames ? codexServerNameCanProduceMarrowLabel : serverNameCollidesWithMarrow);
   if (colliding.length !== 1) return { official: false, reason: colliding.length ? 'more than one server can produce the marrow label' : 'no marrow server configured' };
   if (colliding[0] !== 'marrow') return { official: false, reason: 'the colliding server is not named exactly marrow' };
-  if (!set.names.get('marrow')!.every((entry) => officialDefinition(entry, keys, ownLoader))) return { official: false, reason: 'the marrow server is not the official Marrow MCP launch' };
+  const stable: StableContext = { home: npm.home, platform: npm.platform ?? process.platform, ambiguous: set.ambiguous === true };
+  if (!set.names.get('marrow')!.every((entry) => officialDefinition(entry, keys, ownLoader, stable))) return { official: false, reason: 'the marrow server is not the official Marrow MCP launch' };
   if (set.names.get('marrow')!.some(resolvesLocally) && localPackageCopy(cwds)) return { official: false, reason: 'a project-local Marrow MCP copy could shadow the npx or bin launch' };
   if (set.names.get('marrow')!.some(launchesWithNpx) && (npmConfigEnv(npm.env) || projectNpmrc(cwds, npm.home))) return { official: false, reason: 'npm config in the project or the environment could redirect the npx launch' };
   if (onlyServer && set.names.size !== 1) return { official: false, reason: 'other MCP servers could expose a tool with this name' };
@@ -755,6 +870,8 @@ export type CodexIdentityOptions = {
   processStartMs?: number | null;
   /** The installer launcher that started this hook (default `global.MARROW_L`; null: none). */
   ownLoader?: unknown;
+  /** Test seam: the host platform whose stable-entry form is read (default process.platform). */
+  platform?: NodeJS.Platform;
 };
 
 const PROFILE_NAME = /^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}$/;
@@ -814,6 +931,7 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
     try {
       const parsed = parseToml(withoutBom(result.text));
       if (file === join(home, 'config.toml')) globalParsed = parsed;
+      if (DISGUISED_ASCII.test(result.text)) set.ambiguous = true;
       parsedFiles.push(parsed);
       return true;
     } catch {
@@ -880,7 +998,7 @@ export function codexOfficialMarrowServer(options: CodexIdentityOptions = {}): S
     if ([...set.names.keys()].some(codexServerNameCanProduceMarrowLabel)) return { official: false, reason: 'the official plugin and another server can both produce the marrow label' };
     return { official: true, reason: 'official plugin' };
   }
-  return decide(set, CODEX_SERVER_KEYS, false, cwds, { env, home: options.userHome ?? homedir() }, ownLoaderOf(options.ownLoader), true);
+  return decide(set, CODEX_SERVER_KEYS, false, cwds, { env, home: options.userHome ?? homedir(), platform: options.platform }, ownLoaderOf(options.ownLoader), true);
 }
 
 // ---------------------------------------------------------------------------
@@ -891,6 +1009,8 @@ export type CursorIdentityOptions = {
   home?: string; cwds?: unknown[]; read?: HostConfigReader; onlyServer: boolean; processCwd?: string; env?: NodeJS.ProcessEnv;
   /** The installer launcher that started this hook (default `global.MARROW_L`; null: none). */
   ownLoader?: unknown;
+  /** Test seam: the host platform whose stable-entry form is read (default process.platform). */
+  platform?: NodeJS.Platform;
 };
 
 /** Whether Cursor's `marrow` server is provably the official one (and, at preToolUse, the only server). */
@@ -910,8 +1030,11 @@ export function cursorOfficialMarrowServer(options: CursorIdentityOptions): Serv
     try { parsed = JSON.parse(withoutBom(result.text)); } catch { return { official: false, reason: 'a Cursor MCP config does not parse' }; }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { official: false, reason: 'a Cursor MCP config is not an object' };
     addServers(set, (parsed as Record<string, unknown>).mcpServers, 'mcpServers');
+    // JSON.parse keeps the last of two equal keys and decodes escapes; a host may keep the first or read the raw text, so the
+    // stable entry is never proven from a file with a repeated key or an escaped ASCII character.
+    if (jsonHasDuplicateKeys(withoutBom(result.text)) || DISGUISED_ASCII.test(result.text)) set.ambiguous = true;
   }
-  return decide(set, CURSOR_SERVER_KEYS, options.onlyServer, cwds, { env: options.env ?? process.env, home }, ownLoaderOf(options.ownLoader));
+  return decide(set, CURSOR_SERVER_KEYS, options.onlyServer, cwds, { env: options.env ?? process.env, home, platform: options.platform }, ownLoaderOf(options.ownLoader));
 }
 
 // ---------------------------------------------------------------------------
