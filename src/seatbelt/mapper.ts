@@ -1164,7 +1164,7 @@ function finish(run: Run): SeatbeltDecision {
     outageHelpOnly: run.helpSeen && run.parse === 'ok' && !run.exhausted
       && hits.every((h) => !UNFINISHED_HITS.test(h.reason) && !run.beyondHelp.has(`${h.category}:${h.reason}`))
       && [...run.risk].every((t) => !run.beyondHelp.has(`risk:${t}`)),
-    ...(run.slice ? { slice: { ok: !run.slice.bad, words: run.slice.words, counts: run.slice.counts } } : {}),
+    ...(run.slice ? { slice: { ok: !run.slice.bad && run.parse === 'ok', words: run.slice.words, counts: run.slice.counts } } : {}),
   };
 }
 
@@ -1507,6 +1507,17 @@ const LOOP_WORD = /(?:^|[\s;&|(){}])(?:while|until|for|select)(?:[\s;]|$)/;
 // (command position, after a reserved word too; line continuations joined). A quoted `;while x` also matches, which only keeps master's answer.
 const LOOP_COMMAND = /(?:^|[;&|(){}\n`])[ \t]*(?:(?:then|do|else|elif|if|time|!)[ \t]+)*(?:while|until)(?=[\s(;]|$)/;
 const hasLoopCommand = (src: string): boolean => LOOP_COMMAND.test(src) || (src.indexOf('\\\n') >= 0 && LOOP_COMMAND.test(src.split('\\\n').join('')));
+// The data slots admit one simple command and nothing else (3.9.110, D1d). The vendored parser reads `if then else elif fi do done while until ! { } time` as separators and keeps no
+// trace of them, so the text is read: the first word of the text (blank and comment lines aside) must be the program itself. Everything else that wraps or chains a command
+// (a list, a pipeline, a group, a subshell, a substitution, a background `&`, a loop word) is read from the parsed structure; none of it is a named shape.
+function loneSimpleCommand(src: string, parsed: ParsedShell): boolean {
+  const c = parsed.commands.length === 1 ? parsed.commands[0] : null;
+  if (!c || c.words.length === 0 || parsed.substitutions.length > 0 || c.subshell || c.pipedInput || c.pipesOutput || c.background || c.forLoop) return false;
+  let i = 0;
+  for (let ch = src[i]; ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n' || ch === '#'; ch = src[i]) i = ch === '#' ? (src.indexOf('\n', i) < 0 ? src.length : src.indexOf('\n', i)) : i + 1;
+  const next = src[i + c.words[0].text.length];
+  return c.words[0].text.length > 0 && src.startsWith(c.words[0].text, i) && (next === undefined || next === ' ' || next === '\t' || next === '\n');
+}
 const DECLARE_PROGS = new Set(['export', 'declare', 'typeset', 'local', 'readonly']);
 const ASSIGN_WORD = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
 function assignName(text: string): string {
@@ -1968,7 +1979,7 @@ function evalShell(src: string, ctx: Ctx, run: Run): void {
   const guards = buildGuards(src, parsed.commands);
   const wordSubs = indexSubstitutions(parsed);
   const fnNames = functionNames(src);
-  if (run.slice && ((fnNames && fnNames.size > 0) || hasLoopCommand(src))) run.slice.bad = true;
+  if (run.slice && ((fnNames && fnNames.size > 0) || hasLoopCommand(src) || !loneSimpleCommand(src, parsed))) run.slice.bad = true;
   // A function body or a trap string was evaluated where it is defined, with the variables and the
   // branch of that moment; it runs later, when they may differ: the list runs twice there as well.
   const rounds = (guards && (guards.unknown ? LOOP_WORD.test(src) : [...guards.byCmd.values()].some((g) => g.assign.concat(g.declare).some((e) => e.inLoop))))
