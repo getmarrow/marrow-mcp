@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased (next batched version)
+## 3.9.110
+
+Repair of a broken install on 3.9.109, plus the changes merged since: a busy host is no longer locked out when the local loop-guard state reaches its 256 KB cap. Older loop history of other sessions is pruned instead; the session making the call is never pruned. The merged changes are the stable, version-free Marrow entry recognized as the official server on Codex and Cursor, a hold in Claude Code auto mode that denies with its receipt instead of opening a dialog, the line that says where a refused agent id came from, and a `marrow_think` fix. Two changes are looser than 3.9.109, on purpose and by the owner's decision: the stable entry (MCP-2), and the loop-guard pruning at the cap, where a loop in another session that repeats a call only after 3 or more other distinct calls can be missed while the pruning runs (see the known limit below). None of the other changes lets through an action that was held before.
 
 - Security (MCP-2): the stable, version-free Marrow entry is recognized as the official server on Codex (`config.toml`) and Cursor (`mcp.json`), so Marrow's own tools skip the gate when a host has moved to it. The entry is exactly `/bin/sh -c <stub> <home>/.marrow/runtime/launcher/<sha256>.cjs marrow-mcp`, and it is proven only as this process's own launch: the launcher that started the hook must hash to the digest in the entry and be a launcher of a pinned core. Another digest, launcher folder, node, arg, env block key, repeated key, or ASCII written as an escape is not official and goes down the normal gate path. Nothing is read from disk, `current` included. The installer loader forms prove exactly as before. This is the only change that is looser than 3.9.109 (the exact entry, an owner decision); `stableMarrowServerLaunch` is the single builder the installer writes from. Scope: stable entry recognized on macOS and Linux; Windows keeps the current entry (the win32 form is not official, whatever `node.exe` it names).
 - Test (MCP-2): writes to `~/.marrow/runtime/current`, `~/.marrow/runtime/launcher/*` and `~/.marrow/identity-record.json` are held as self-protection (S0) and as `marrow-control` through the Write and Edit tools, redirects, `cd ... && mv`, `bash -c`, `$HOME`, `&&`, `;`, `||`, a pipe into `tee` and subshells. They were held already through the `.marrow` rule; these rows pin it. A read-only `cat` of `current` is still not S0. No seatbelt source changed.
@@ -10,6 +12,7 @@
 - Loop guard: a busy host is no longer locked out when the local loop-guard state reaches 256 KB; the oldest entries of other sessions are pruned instead.
 - Known limit (loop guard): when the local loop-guard state goes over 256 KB, other sessions keep only their 3 newest distinct calls, so a loop in another session that repeats a call only after 3 or more other distinct calls can be missed while that pruning runs. The session making the call is never pruned, and loops of 1-3 distinct calls are still denied.
 - Known limit (loop guard): after a large backward clock step, the hook can deny calls until the clock catches up (same as 3.9.109).
+- Version 3.9.110 in package.json, package-lock.json, server.json and the adapter version constant; dist/ rebuilt from src/. The installer 0.1.73 and Q5 fixtures and the tests that pin the pack carry this pack's integrity.
 
 ## 3.9.109
 

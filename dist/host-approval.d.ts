@@ -143,6 +143,14 @@ export type HoldPlan = {
 export declare function heldKindLabel(categories: readonly unknown[] | null | undefined): string;
 /** Claude Code, a hold that waits because no dialog is shown in this session (tier A1, user only). */
 export declare function dialogLaterNotice(kind: string): string;
+/**
+ * Claude Code, a hold that opens no dialog because nobody is known to be at one (auto mode, or default and acceptEdits with no
+ * prompt typed in this session lately). The agent's text: the receipt id, the instruction to carry on, and the one way back.
+ * It names no queue and no command.
+ */
+export declare function heldNoFreezeText(receiptId: string): string;
+/** Claude Code, the user-only line for a hold that opened no dialog (words only: the kind of action). */
+export declare function noFreezeNotice(kind: string): string;
 /** Claude Code, a hold that waits because nobody is in this run (tier A1, user only). */
 export declare function unattendedNotice(kind: string): string;
 /**
@@ -184,6 +192,7 @@ export declare function planHeldAction(input: {
         available: boolean;
         unavailableReason: string;
         headless?: boolean;
+        noFreeze?: boolean;
     };
     /** Cursor: true only when sessionStart reported a local, non-background session. */
     cursorInteractive?: boolean | null;

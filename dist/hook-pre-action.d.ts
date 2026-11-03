@@ -80,13 +80,19 @@ export declare function controlRejectionMessage(error: unknown, agentId?: string
 export type OwnerApprovalPrompt = {
     available: boolean;
     unavailableReason: string;
-    headless?: boolean; /** Static, one-sentence README fix for the person; never built from input. */
+    headless?: boolean;
+    /** Claude Code auto mode only: no dialog is opened (it has no time limit and nobody is at it). The hold is a denial that names its receipt. */
+    noFreeze?: boolean;
+    /** Static, one-sentence README fix for the person; never built from input. */
     fix?: string;
 };
 /**
  * Whether a PreToolUse "ask" from this hook reaches a person who can approve.
  * Only Claude Code asks; the generic entrypoint counts as Claude Code only when
  * Claude Code itself spawned the hook (CLAUDE_CODE_CHILD_SESSION, v2.1.172+).
+ * Every "ask" emitter takes its answer from here (a new hold, a retried hold
+ * that waited for a dialog, and the legacy service), so auto mode, which never
+ * asks, is decided here once.
  */
 export declare function ownerApprovalPrompt(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', event: Pick<PreToolUseEvent, 'permission_mode' | 'scratchpad_dir'>, env?: NodeJS.ProcessEnv): OwnerApprovalPrompt;
 type GateVerdict = {
@@ -108,7 +114,7 @@ export declare function runtimeGateEnforced(runtime: PreActionControlResult['run
 /** A warning for a non-allow gate the runtime does not enforce on this plan. */
 export declare function advisoryGateNotice(runtime: PreActionControlResult['runtime']): string | null;
 export declare function runtimeGateVerdict(runtime: PreActionControlResult['runtime']): GateVerdict | null;
-export declare function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt?: OwnerApprovalPrompt): string;
+export declare function gateDecisionMessage(verdict: GateVerdict, ask: boolean, prompt?: OwnerApprovalPrompt, receiptId?: string | null): string;
 export declare function localControlAllowOutput(harness: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client'): Record<string, unknown> | null;
 /** Keyless seatbelt: a host that cannot hand this action to its own approval prompt holds it (no account to approve it). */
 export declare const SEATBELT_HELD_TEXT = "MARROW SEATBELT held this action: this host cannot show its own approval prompt here, and no Marrow account is linked to approve it. If you (the person at this machine) meant it, run it yourself in your own terminal. Agent: do not retry it another way and do not edit Marrow settings; tell the user it was held. For approval prompts, add a Marrow key: getmarrow.ai/docs#start-here.";

@@ -14,7 +14,7 @@ const { assertNotLiveKey } = require('./dummy-secret.cjs');
 const HEAD = "'use strict';\nconst CFG = ";
 const POSIX_SCRIPT = fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'stable-entry', 'posix-stub.txt'), 'utf8');
 
-/** A launcher of a known (pinned) core: the installer 0.1.73 fixture launcher, CFG naming MCP 3.9.109 and its pack. */
+/** A launcher of a known (pinned) core: the installer 0.1.73 fixture launcher, CFG naming MCP 3.9.110 and its pack. */
 const KNOWN = launcherOf(LOADER);
 /** The same core with a CFG that names no version and no pack (the launcher reads `current`). */
 const withCfg = (source, cfg) => `${HEAD}${typeof cfg === 'string' ? cfg : JSON.stringify(cfg)};${source.slice(source.indexOf('\n', HEAD.length))}`;

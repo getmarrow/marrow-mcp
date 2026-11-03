@@ -19,6 +19,7 @@ const hook_contract_1 = require("./hook-contract");
 const hook_context_1 = require("./hook-context");
 const hook_session_1 = require("./hook-session");
 const hook_pre_action_1 = require("./hook-pre-action");
+const identity_explain_1 = require("./identity-explain");
 const node_child_process_1 = require("node:child_process");
 const env_1 = require("./env");
 const keyless_server_1 = require("./keyless-server");
@@ -639,6 +640,15 @@ if (process.argv[2] !== 'keys') {
                 process.stderr.write(serverKeyRequiredText(resolvedEnv.exactFix));
                 process.exit(1);
             }
+            // Where the id came from, taken from the resolution made at start (the same one that picked the key and the id).
+            const AGENT_ID_SOURCE = (() => {
+                try {
+                    return (0, identity_explain_1.explainAgentIdSource)(resolvedEnv);
+                }
+                catch {
+                    return null;
+                }
+            })();
             if (ENDPOINT_HOST) {
                 process.stderr.write(`[marrow] Using a non-default Marrow endpoint: ${ENDPOINT_HOST} (MARROW_BASE_URL).\n`);
             }
@@ -833,6 +843,12 @@ if (process.argv[2] !== 'keys') {
                 const supportsStale = ['marrow_agent_runtime', 'marrow_orient', 'marrow_ask', 'marrow_handoff_status', 'marrow_runtime_status', 'marrow_status'].includes(toolName || '');
                 const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
                 result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
+                // A refused agent id: say where this server took the id from (variable and origin; never a key). The status, code and repair text stay the service's.
+                if ((0, hook_pre_action_1.controlFailureKind)(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
+                    const errorBody = result.error;
+                    errorBody.message = `${String(errorBody.message || '').trim()} ${(0, identity_explain_1.agentIdSourceSentence)(AGENT_ID_SOURCE)}`.trim();
+                    result.agent_id_source = (0, identity_explain_1.explanationLabelJson)(AGENT_ID_SOURCE);
+                }
                 result.control_path = (0, control_path_state_1.controlPathStats)(toolName || 'marrow_control');
                 result.lifecycle_spool = {
                     state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
@@ -1469,8 +1485,8 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             if (thinkCallCount % 5 === 0) {
                                 refreshOrientWarnings();
                             }
-                            // Inject cached orient warnings into intelligence.insights
-                            if (cachedOrientWarnings.length > 0) {
+                            // Inject cached orient warnings into intelligence.insights (only when the answer has an intelligence object)
+                            if (cachedOrientWarnings.length > 0 && result.intelligence && typeof result.intelligence === 'object' && !Array.isArray(result.intelligence)) {
                                 const existingInsights = result.intelligence?.insights || [];
                                 result.intelligence.insights = [
                                     ...cachedOrientWarnings.map((w) => ({

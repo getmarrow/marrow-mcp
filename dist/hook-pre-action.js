@@ -329,12 +329,14 @@ function controlRejectionMessage(error, agentId, kind = controlFailureKind(error
     }
     return `Marrow did not allow this protected action${suffix}. ${plainControlFix(error)}`;
 }
-// Claude Code permission modes in which a PreToolUse "ask" reaches a person.
+// Claude Code permission modes in which a PreToolUse "ask" can reach a person.
 // bypassPermissions disables prompts, dontAsk auto-denies anything that would
-// prompt, and plan mode with bypass available runs edits without prompting.
+// prompt, plan mode with bypass available runs edits without prompting, and
+// auto mode never asks: a dialog there has no time limit and nobody is at it
+// (a read froze an auto-mode session for 95 minutes), so a hold is a denial.
 // https://code.claude.com/docs/en/hooks#pretooluse-decision-control
 // https://code.claude.com/docs/en/permission-modes
-const OWNER_PROMPT_PERMISSION_MODES = new Set(['default', 'acceptEdits', 'auto']);
+const OWNER_PROMPT_PERMISSION_MODES = new Set(['default', 'acceptEdits']);
 const FIX_DEFAULT_MODE = 'To approve it, switch Claude Code to its default permission mode and retry this exact action.';
 const FIX_HEADLESS = 'To approve it, retry this exact action in an interactive Claude Code session in default permission mode.';
 /** Claude Code entrypoints with no one at a dialog (claude -p and the Agent SDKs); hooks inherit it. */
@@ -344,6 +346,9 @@ const NO_OWNER_PROMPT = { available: false, unavailableReason: 'this agent host 
  * Whether a PreToolUse "ask" from this hook reaches a person who can approve.
  * Only Claude Code asks; the generic entrypoint counts as Claude Code only when
  * Claude Code itself spawned the hook (CLAUDE_CODE_CHILD_SESSION, v2.1.172+).
+ * Every "ask" emitter takes its answer from here (a new hold, a retried hold
+ * that waited for a dialog, and the legacy service), so auto mode, which never
+ * asks, is decided here once.
  */
 function ownerApprovalPrompt(harness, event, env = process.env) {
     const claudeCode = harness === 'claude-code' || (harness === 'mcp-client' && env.CLAUDE_CODE_CHILD_SESSION === '1');
@@ -358,13 +363,12 @@ function ownerApprovalPrompt(harness, event, env = process.env) {
     }
     const mode = typeof event.permission_mode === 'string' && /^[A-Za-z]{1,32}$/.test(event.permission_mode) ? event.permission_mode : '';
     if (!OWNER_PROMPT_PERMISSION_MODES.has(mode)) {
-        return { available: false, unavailableReason: `Claude Code permission mode ${mode || 'unknown'} cannot guarantee an owner prompt`, fix: FIX_DEFAULT_MODE };
-    }
-    // Before Claude Code v2.1.211 the auto-mode classifier could approve a Bash
-    // command outside the sandbox without the prompt a hook asked for. The hook
-    // input carries scratchpad_dir only from v2.1.257, so it proves a fixed version.
-    if (mode === 'auto' && !(typeof event.scratchpad_dir === 'string' && event.scratchpad_dir.trim())) {
-        return { available: false, unavailableReason: 'this auto-mode session does not prove a Claude Code version whose classifier honors hook prompts', fix: FIX_DEFAULT_MODE };
+        return {
+            available: false,
+            unavailableReason: `Claude Code permission mode ${mode || 'unknown'} cannot guarantee an owner prompt`,
+            ...(mode === 'auto' ? { noFreeze: true } : {}),
+            fix: FIX_DEFAULT_MODE,
+        };
     }
     return { available: true, unavailableReason: '' };
 }
@@ -468,7 +472,8 @@ function runtimeGateVerdict(runtime) {
     return { kind: 'denied', reason };
 }
 // Fixed wording leads so a long service reason can never truncate what happened.
-function gateDecisionMessage(verdict, ask, prompt = NO_OWNER_PROMPT) {
+function gateDecisionMessage(verdict, ask, prompt = NO_OWNER_PROMPT, receiptId = null) {
+    const receipt = receiptId && SAFE_DECISION_ID.test(receiptId) ? ` (receipt ${receiptId})` : '';
     const headline = verdict.kind === 'block'
         ? 'Marrow blocked this action under the current policy.'
         : verdict.kind === 'arbitration_review'
@@ -477,7 +482,7 @@ function gateDecisionMessage(verdict, ask, prompt = NO_OWNER_PROMPT) {
                 ? 'Marrow did not allow this action.'
                 : ask
                     ? 'Marrow requires owner review before this action. Approve only if you authorize this exact action.'
-                    : `Marrow requires owner review before this action, and no owner approval prompt is available (${prompt.unavailableReason}), so it was denied. Tell the operator it is waiting for the account owner's approval.${prompt.fix ? ` ${prompt.fix}` : ''}`;
+                    : `Marrow requires owner review before this action, and no owner approval prompt is available (${prompt.unavailableReason}), so it was denied${prompt.noFreeze ? `${receipt}. Continue other work` : ''}. Tell the operator it is waiting for the account owner's approval.${prompt.fix ? ` ${prompt.fix}` : ''}`;
     return boundedText(verdict.reason ? `${headline} Reason: ${verdict.reason}` : headline, 500);
 }
 const SAFE_DECISION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
@@ -1184,6 +1189,7 @@ legacyServiceAsk = false) {
         ].filter(Boolean).join('\n'),
     } : {};
     const verdict = runtimeGateVerdict(runtime);
+    const receiptId = typeof runtime?.gate_receipt_id === 'string' ? runtime.gate_receipt_id : typeof runtime?.runtime_authorization?.id === 'string' ? runtime.runtime_authorization.id : null;
     if (verdict && legacyServiceAsk && verdict.kind === 'review' && prompt.available && harness !== 'codex') {
         return {
             hookSpecificOutput: {
@@ -1206,7 +1212,7 @@ legacyServiceAsk = false) {
             hookSpecificOutput: {
                 hookEventName: 'PreToolUse',
                 permissionDecision: 'deny',
-                permissionDecisionReason: gateDecisionMessage(verdict, false, reason),
+                permissionDecisionReason: gateDecisionMessage(verdict, false, reason, receiptId),
                 ...context,
             },
         };

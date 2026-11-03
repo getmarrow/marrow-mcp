@@ -51,7 +51,7 @@ test('contract: the builder writes the golden POSIX stub and the win32 form, and
 // ------------------------------------------------------------------ T1: the exact entry is official
 
 const T1 = [
-  ['T1-posix-known-core', 'POSIX stub, launcher of a known core (CFG names 3.9.109 and its pack)', S.posixFor(D), KNOWN, {}],
+  ['T1-posix-known-core', 'POSIX stub, launcher of a known core (CFG names 3.9.110 and its pack)', S.posixFor(D), KNOWN, {}],
   ['T1-posix-version-free', 'POSIX stub, same core, version-free CFG', S.posixFor(S.D_FREE), FREE, {}],
   ['T1-posix-darwin-home', 'POSIX stub under a macOS-style home', S.posixFor(D, '/Users/me'), KNOWN, { platform: 'darwin', home: '/Users/me' }],
   ['T1-posix-env', 'POSIX stub with the env block Marrow writes (base url, agent id, profile, key)', [...S.posixFor(D), {

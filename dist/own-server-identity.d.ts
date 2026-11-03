@@ -74,6 +74,22 @@ export declare function isOfficialMarrowServerLaunch(command: unknown, args: unk
  * hooks (setup, doctor); it never proves a server.
  */
 export declare function isMarrowServerLaunchShape(command: unknown, args: unknown): boolean;
+/**
+ * The stable Marrow entry (command and args) for a launcher digest under `home`, the form the installer writes:
+ *   POSIX  /bin/sh -c <stub> <home>/.marrow/runtime/launcher/<sha256>.cjs marrow-mcp
+ *   win32  <absolute node.exe> <home>\.marrow\runtime\launcher\<sha256>.cjs marrow-mcp
+ * `nodeExe` is required on win32 and ignored elsewhere. Only the POSIX form is recognized: a win32 entry is never official.
+ */
+export declare function stableMarrowServerLaunch(platform: NodeJS.Platform, home: string, digest: string, nodeExe?: string): {
+    command: string;
+    args: string[];
+};
+/**
+ * Whether (command, args) are exactly the stable Marrow entry of the launcher that started this process (`ownLoader`, default
+ * `global.MARROW_L`): the stub text, the launcher folder under `home`, one sha256 name that is the digest of that launcher's
+ * bytes, a launcher of a pinned core, nothing appended or reordered. Another digest, folder, node or arg is not it.
+ */
+export declare function isStableMarrowServerLaunch(command: unknown, args: unknown, home: string, platform?: NodeJS.Platform, ownLoader?: unknown): boolean;
 /** A server name a host could turn into the `marrow` label: case, separators and leading `mcp` ignored (wider than any host). */
 export declare function serverNameCollidesWithMarrow(name: string): boolean;
 /**
@@ -114,6 +130,8 @@ export type CodexIdentityOptions = {
     processStartMs?: number | null;
     /** The installer launcher that started this hook (default `global.MARROW_L`; null: none). */
     ownLoader?: unknown;
+    /** Test seam: the host platform whose stable-entry form is read (default process.platform). */
+    platform?: NodeJS.Platform;
 };
 /** Whether the Codex `marrow` server is provably the official Marrow MCP server. */
 export declare function codexOfficialMarrowServer(options?: CodexIdentityOptions): ServerIdentity;
@@ -126,6 +144,8 @@ export type CursorIdentityOptions = {
     env?: NodeJS.ProcessEnv;
     /** The installer launcher that started this hook (default `global.MARROW_L`; null: none). */
     ownLoader?: unknown;
+    /** Test seam: the host platform whose stable-entry form is read (default process.platform). */
+    platform?: NodeJS.Platform;
 };
 /** Whether Cursor's `marrow` server is provably the official one (and, at preToolUse, the only server). */
 export declare function cursorOfficialMarrowServer(options: CursorIdentityOptions): ServerIdentity;

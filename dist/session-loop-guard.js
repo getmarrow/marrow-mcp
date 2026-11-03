@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UnsafeLoopGuardStateError = void 0;
 exports.withLoopGuardPlatform = withLoopGuardPlatform;
+exports.pruneLoopGuardStateToBytes = pruneLoopGuardStateToBytes;
 exports.consultSessionLoopGuard = consultSessionLoopGuard;
 exports.recordSessionLoopOutcome = recordSessionLoopOutcome;
 exports.advanceSessionInstructionEpoch = advanceSessionInstructionEpoch;
@@ -19,6 +20,8 @@ const STATE_VERSION = 1;
 const STATE_DIRECTORY = 'session-loop-guard';
 const STATE_FILENAME = 'state.json';
 const STATE_MAX_BYTES = 256 * 1024;
+const STATE_LOW_WATER_BYTES = 192 * 1024;
+const LOOP_FLOOR = 3;
 const STATE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_SESSIONS = 64;
 const MAX_ENTRIES_PER_SESSION = 256;
@@ -386,11 +389,68 @@ function prune(state, now) {
         }
     }
 }
-function writeState(state, target, directory) {
-    prune(state, Date.now());
-    const raw = `${JSON.stringify(state)}\n`;
-    if (Buffer.byteLength(raw) > STATE_MAX_BYTES)
+const byKey = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const jsonBytes = (value) => Buffer.byteLength(JSON.stringify(value));
+/**
+ * Only over the cap: drop the oldest loop-guard entries of OTHER sessions (oldest session first, clamped to `now`,
+ * never below LOOP_FLOOR entries and one mapping per kept entry) until the state is under the low-water mark. An entry
+ * stamped after `now` (a backward clock step) stays on top of the floor and is never dropped here; master's TTL rule
+ * removes it once the clock has passed it. The current session, the secret and the version are never touched.
+ * Returns the serialized state, or fails closed as before.
+ */
+function pruneLoopGuardStateToBytes(state, currentKey, now, cap = STATE_MAX_BYTES, lowWater = STATE_LOW_WATER_BYTES) {
+    let raw = `${JSON.stringify(state)}\n`;
+    let size = Buffer.byteLength(raw);
+    if (size <= cap)
+        return raw;
+    const others = Object.entries(state.sessions)
+        .filter(([key]) => key !== currentKey)
+        .sort((a, b) => Math.min(a[1].updated_at, now) - Math.min(b[1].updated_at, now) || byKey(a[0], b[0]));
+    for (const [, session] of others) {
+        if (size <= lowWater)
+            break;
+        const entries = Object.entries(session.entries).sort((a, b) => b[1].updated_at - a[1].updated_at || byKey(a[0], b[0]));
+        let floor = 0;
+        const kept = new Set(entries.filter(([, entry]) => entry.updated_at > now || floor++ < LOOP_FLOOR).map(([key]) => key));
+        const mappings = Object.entries(session.invocations);
+        const newest = new Map(mappings.map(([key, fingerprint]) => [fingerprint, key]));
+        // An item leaves with its key and one comma; the last item of an object has no comma.
+        let entryCount = entries.length;
+        let mappingCount = mappings.length;
+        const dropMapping = (key) => {
+            size -= jsonBytes(key) + 1 + jsonBytes(session.invocations[key]) + (mappingCount-- > 1 ? 1 : 0);
+            delete session.invocations[key];
+        };
+        for (const [key, fingerprint] of mappings) {
+            if (size <= lowWater)
+                break;
+            // The newest mapping of an entry that stays is never dropped alone, so a later record still finds its entry.
+            if (newest.get(fingerprint) !== key || !(fingerprint in session.entries))
+                dropMapping(key);
+        }
+        const mapped = new Map();
+        for (const [key, fingerprint] of mappings)
+            mapped.set(fingerprint, [...(mapped.get(fingerprint) ?? []), key]);
+        const droppable = entries.filter(([key]) => !kept.has(key)).sort((a, b) => a[1].updated_at - b[1].updated_at || byKey(a[0], b[0]));
+        for (const [key, entry] of droppable) {
+            if (size <= lowWater)
+                break;
+            size -= jsonBytes(key) + 1 + jsonBytes(entry) + (entryCount-- > 1 ? 1 : 0);
+            delete session.entries[key];
+            for (const mapping of mapped.get(key) ?? [])
+                if (mapping in session.invocations)
+                    dropMapping(mapping);
+        }
+    }
+    raw = `${JSON.stringify(state)}\n`;
+    if (Buffer.byteLength(raw) > cap)
         unsafe();
+    return raw;
+}
+function writeState(state, target, directory, currentKey) {
+    const now = Date.now();
+    prune(state, now);
+    const raw = pruneLoopGuardStateToBytes(state, currentKey, now);
     const temporary = (0, node_path_1.join)(directory, `.state-${process.pid}-${(0, node_crypto_1.randomBytes)(8).toString('hex')}.tmp`);
     let fd = -1;
     try {
@@ -495,7 +555,7 @@ function consultSessionLoopGuard(operation, options = {}) {
         if (operation.invocationId) {
             session.invocations[keyedHash(loaded.state.secret, ['invocation', operation.invocationId])] = fingerprint;
         }
-        writeState(loaded.state, loaded.target, loaded.directory);
+        writeState(loaded.state, loaded.target, loaded.directory, sessionKey(loaded.state, operation));
         return { allow: true, receipt: session.entries[fingerprint].receipt, fingerprint };
     });
 }
@@ -527,7 +587,7 @@ function recordSessionLoopOutcome(operation, success, result, options = {}) {
             session.entries = {};
             session.invocations = {};
         }
-        writeState(loaded.state, loaded.target, loaded.directory);
+        writeState(loaded.state, loaded.target, loaded.directory, sessionKey(loaded.state, operation));
     });
 }
 function advanceSessionInstructionEpoch(operation, options = {}) {
@@ -539,14 +599,14 @@ function advanceSessionInstructionEpoch(operation, options = {}) {
         session.entries = {};
         session.invocations = {};
         session.updated_at = now;
-        writeState(loaded.state, loaded.target, loaded.directory);
+        writeState(loaded.state, loaded.target, loaded.directory, sessionKey(loaded.state, operation));
     });
 }
 function clearSessionLoopGuard(operation, options = {}) {
     withStateLock(options.home, () => {
         const loaded = readState(options.home);
         delete loaded.state.sessions[sessionKey(loaded.state, operation)];
-        writeState(loaded.state, loaded.target, loaded.directory);
+        writeState(loaded.state, loaded.target, loaded.directory, null);
     });
 }
 function sessionLoopGuardPath(home = (0, node_os_1.homedir)()) {

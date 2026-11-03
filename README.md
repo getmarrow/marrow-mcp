@@ -212,7 +212,17 @@ These behaviors shipped in 3.9.103 and still apply.
 - **Hidden commands are checked:** commands inside an unquoted here-document body, a `${x:-$(...)}` default or an arithmetic expansion are checked like any other command.
 - **`marrow-mcp keys create` reads every flag form:** `--name=`, `--type=` and `--expires=` (and `-n=`, `-t=`) are read like `--name value`; a flag that is present but blank, or a `--scopes` / `--agents` list with no entry, is a usage error (exit 2) and nothing is sent; leaving `--scopes` and `--agents` out sends neither.
 
-## What's New in v3.9.109
+## What's New in v3.9.110
+
+v3.9.110 repairs a broken install on 3.9.109 and adds the changes merged since. The full entry is in CHANGELOG.md.
+
+- **A busy host is no longer locked out by the loop guard.** When the local loop-guard state reaches 256 KB, the oldest entries of other sessions are pruned instead. The session making the call is never pruned. This is looser than 3.9.109, by the owner's decision: while the pruning runs, other sessions keep only their 3 newest distinct calls, so a loop in another session that repeats a call only after 3 or more other distinct calls can be missed; loops of 1-3 distinct calls are still denied. After a large backward clock step the hook can still deny calls until the clock catches up, as in 3.9.109.
+- **The stable Marrow entry is recognized on Codex and Cursor.** The version-free entry (`/bin/sh -c <stub> <home>/.marrow/runtime/launcher/<sha256>.cjs marrow-mcp`) is recognized as the official server, so Marrow's own tools skip the gate when a host has moved to it. It counts only as this process's own launch: the launcher that started the hook must hash to the digest in the entry and be a launcher of a pinned core. Anything else goes down the normal gate path. macOS and Linux only; Windows keeps the current entry. This is looser than 3.9.109, by the owner's decision.
+- **A hold in Claude Code auto mode never opens a dialog.** The hook denies with the receipt ("Held for the owner's approval (receipt <id>). Continue other work; run this exact action again after the owner approves.") and the agent carries on. The hold stays open on the same receipt. Default and acceptEdits modes ask as they did before.
+- **A refused agent id says where it came from.** The tool error for a refused agent id (HTTP 403 `MARROW_AGENT_SCOPE_MISMATCH` or `ACTION_PERMIT_AGENT_CREDENTIAL_SCOPE_INVALID`) adds one sentence naming the variable and where the id came from (the owner env file, a fleet key match, or this server's environment). The status, code and repair text are unchanged.
+- **`marrow_think` no longer fails on cached warnings.** When the think answer had no `intelligence` object, the tool failed after the decision was created and the agent never saw its decision id. The tool now returns the backend's answer as it came.
+
+These behaviors shipped in 3.9.109 and still apply.
 
 v3.9.109 adds several security fixes and hook fixes. The full entry is in CHANGELOG.md.
 

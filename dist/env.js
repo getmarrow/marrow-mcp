@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SAFE_AGENT_ID = void 0;
 exports.nonDefaultBaseUrlHost = nonDefaultBaseUrlHost;
 exports.emitBaseUrlNotice = emitBaseUrlNotice;
 exports.resolveMarrowEnv = resolveMarrowEnv;
@@ -73,6 +74,8 @@ function normalizeBaseUrl(value) {
 }
 // File paths come from the working directory; keep notices on one printable line.
 const MAX_PRINTED_PATH = 200;
+// The check for an agent id that may be printed into agent-facing text (the same pattern as the hook head's own copy): the tool 403 sentence prints an id only if it passes.
+exports.SAFE_AGENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 // Paths in notices can be attacker-named: control, line-separator and format
 // (bidi, zero-width) characters become '?', and the length is capped.
 function printablePath(filePath) {
@@ -289,6 +292,18 @@ function pickKey(env) {
         return { key: env.MARROW_KEY, source: 'MARROW_KEY' };
     return { key: '', source: null };
 }
+// The same precedence as `MARROW_FLEET_AGENT_ID || MARROW_AGENT_ID` (an empty value is absent), with the name that won.
+function pickAgentId(values) {
+    if (values.MARROW_FLEET_AGENT_ID)
+        return { variable: 'MARROW_FLEET_AGENT_ID', value: values.MARROW_FLEET_AGENT_ID };
+    if (values.MARROW_AGENT_ID)
+        return { variable: 'MARROW_AGENT_ID', value: values.MARROW_AGENT_ID };
+    return null;
+}
+function envAgentIdSource(env) {
+    const picked = pickAgentId(env);
+    return picked ? { origin: 'process_env', variable: picked.variable } : { origin: 'none', variable: null };
+}
 function matchingFleetIdentity(env, agentId) {
     const want = String(agentId || '').trim();
     if (!want)
@@ -305,6 +320,11 @@ function matchingFleetIdentity(env, agentId) {
     }
     return null;
 }
+// Owner files live under the home directory (the trust check requires it): name them as `~/...` the way the docs do.
+function homeRelative(filePath, home) {
+    const relative = path.relative(path.resolve(home), path.resolve(filePath));
+    return `~/${printablePath(relative.split(path.sep).join('/'))}`;
+}
 function resolveMarrowEnv(options = {}) {
     const env = options.env || process.env;
     const cwd = options.cwd || process.cwd();
@@ -317,6 +337,7 @@ function resolveMarrowEnv(options = {}) {
             apiKey: matchedIdentity.key,
             baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
             agentId: matchedIdentity.agentId,
+            agentIdSource: { origin: 'fleet_key_match', variable: pickAgentId(env)?.variable ?? null, keyVariable: matchedIdentity.source },
             sessionId: env.MARROW_SESSION_ID,
             source: matchedIdentity.source,
             missing: false,
@@ -328,6 +349,7 @@ function resolveMarrowEnv(options = {}) {
             apiKey: direct.key,
             baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
             agentId: requestedAgentId,
+            agentIdSource: envAgentIdSource(env),
             sessionId: env.MARROW_SESSION_ID,
             source: direct.source,
             missing: false,
@@ -351,7 +373,7 @@ function resolveMarrowEnv(options = {}) {
             continue;
         const found = pickKey(read.values);
         if (found.key)
-            return fromFile(filePath, found, read.values, env);
+            return fromFile(filePath, found, read.values, env, home);
     }
     if (options.trustedOnly === true)
         return missingKey(env, ignored, ownerFileRefused);
@@ -437,13 +459,17 @@ function ownerFileNotice(filePath, home) {
     const homeText = homeDir === null ? '' : ' and chmod go-w on your home folder';
     return `${lead} Fix: run chmod 600 on the file named above and chmod 700 on its folder${homeText}${tail}.`;
 }
-function fromFile(filePath, found, parsed, env) {
+function fromFile(filePath, found, parsed, env, home) {
     const target = ownerKeyBaseUrl(filePath, parsed, env);
+    const fileId = pickAgentId(parsed);
     return {
         apiKey: found.key,
         baseUrl: target.baseUrl,
         ...(target.notice ? { baseUrlNotice: target.notice } : {}),
         agentId: parsed.MARROW_FLEET_AGENT_ID || parsed.MARROW_AGENT_ID || env.MARROW_FLEET_AGENT_ID || env.MARROW_AGENT_ID,
+        agentIdSource: fileId
+            ? { origin: 'owner_file', variable: fileId.variable, ownerFile: homeRelative(filePath, home) }
+            : envAgentIdSource(env),
         sessionId: parsed.MARROW_SESSION_ID || env.MARROW_SESSION_ID,
         source: `${filePath}:${found.source}`,
         missing: false,
@@ -455,6 +481,7 @@ function missingKey(env, ignored, ownerFileRefused) {
         apiKey: '',
         baseUrl: env.MARROW_BASE_URL || DEFAULT_BASE_URL,
         agentId: env.MARROW_FLEET_AGENT_ID || env.MARROW_AGENT_ID,
+        agentIdSource: envAgentIdSource(env),
         sessionId: env.MARROW_SESSION_ID,
         source: null,
         missing: true,
