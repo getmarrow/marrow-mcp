@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (next batched version)
+
+- Security (hook, raise-only): the owner check for turning Marrow control off or uninstalling now reads the command the way the shell does, so `marrow-install control disable` and `uninstall` no longer pass when they are written with quotes, a backslash, an ANSI-C `$'..'` string, a full-width, look-alike or zero-width character, or a brace or glob spelling, or run behind a wrapper with options (`sudo -u root`, `timeout -s KILL 30`, `doas`), a loop or `if`, `eval`, `env -S`, `find -exec`, `xargs`, an alias, a variable or a `for` list, or `deno run npm:@getmarrow/install`. Every answer master gives stays; this only adds holds for the account owner, and a text over 8192 bytes that names the installer is held. `control status`, `control enable` and commands that only mention the name are unchanged.
+
 ## 3.9.110
 
 Repair of a broken install on 3.9.109, plus the changes merged since: a busy host is no longer locked out when the local loop-guard state reaches its 256 KB cap. Older loop history of other sessions is pruned instead; the session making the call is never pruned. The merged changes are the stable, version-free Marrow entry recognized as the official server on Codex and Cursor, a hold in Claude Code auto mode that denies with its receipt instead of opening a dialog, the line that says where a refused agent id came from, and a `marrow_think` fix. Two changes are looser than 3.9.109, on purpose and by the owner's decision: the stable entry (MCP-2), and the loop-guard pruning at the cap, where a loop in another session that repeats a call only after 3 or more other distinct calls can be missed while the pruning runs (see the known limit below). None of the other changes lets through an action that was held before.
