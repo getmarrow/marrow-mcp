@@ -24,6 +24,8 @@ const STATE_VERSION = 1;
 const STATE_DIRECTORY = 'session-loop-guard';
 const STATE_FILENAME = 'state.json';
 const STATE_MAX_BYTES = 256 * 1024;
+const STATE_LOW_WATER_BYTES = 192 * 1024;
+const LOOP_FLOOR = 3;
 const STATE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_SESSIONS = 64;
 const MAX_ENTRIES_PER_SESSION = 256;
@@ -384,10 +386,59 @@ function prune(state: GuardState, now: number): void {
   }
 }
 
-function writeState(state: GuardState, target: string, directory: string): void {
+const byKey = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
+
+/**
+ * Only over the cap: drop the oldest loop-guard entries of OTHER sessions (oldest session first, never below
+ * LOOP_FLOOR entries and mappings each) until the state is under the low-water mark. The current session,
+ * the secret and the version are never touched. Returns the serialized state, or fails closed as before.
+ */
+export function pruneLoopGuardStateToBytes(state: GuardState, currentKey: string | null, cap = STATE_MAX_BYTES, lowWater = STATE_LOW_WATER_BYTES): string {
+  let raw = `${JSON.stringify(state)}\n`;
+  let size = Buffer.byteLength(raw);
+  if (size <= cap) return raw;
+  const others = Object.entries(state.sessions)
+    .filter(([key]) => key !== currentKey)
+    .sort((a, b) => a[1].updated_at - b[1].updated_at || byKey(a[0], b[0]));
+  for (const [, session] of others) {
+    if (size <= lowWater) break;
+    const entries = Object.entries(session.entries).sort((a, b) => b[1].updated_at - a[1].updated_at || byKey(a[0], b[0]));
+    const kept = new Set(entries.slice(0, LOOP_FLOOR).map(([key]) => key));
+    const mappings = Object.entries(session.invocations);
+    const newest = new Map(mappings.map(([key, fingerprint]) => [fingerprint, key]));
+    const floor = new Set<string>();
+    for (let i = mappings.length - 1; i >= 0 && floor.size < LOOP_FLOOR; i--) if (kept.has(mappings[i][1])) floor.add(mappings[i][0]);
+    // An item leaves with its key and one comma; the last item of an object has no comma.
+    let entryCount = entries.length;
+    let mappingCount = mappings.length;
+    const dropMapping = (key: string): void => {
+      size -= jsonBytes(key) + 1 + jsonBytes(session.invocations[key]) + (mappingCount-- > 1 ? 1 : 0);
+      delete session.invocations[key];
+    };
+    for (const [key, fingerprint] of mappings) {
+      if (size <= lowWater) break;
+      // The newest mapping of an entry that stays is never dropped alone, so a later record still finds its entry.
+      if (!floor.has(key) && (newest.get(fingerprint) !== key || !(fingerprint in session.entries))) dropMapping(key);
+    }
+    const mapped = new Map<string, string[]>();
+    for (const [key, fingerprint] of mappings) mapped.set(fingerprint, [...(mapped.get(fingerprint) ?? []), key]);
+    const droppable = entries.slice(LOOP_FLOOR).sort((a, b) => a[1].updated_at - b[1].updated_at || byKey(a[0], b[0]));
+    for (const [key, entry] of droppable) {
+      if (size <= lowWater) break;
+      size -= jsonBytes(key) + 1 + jsonBytes(entry) + (entryCount-- > 1 ? 1 : 0);
+      delete session.entries[key];
+      for (const mapping of mapped.get(key) ?? []) if (mapping in session.invocations) dropMapping(mapping);
+    }
+  }
+  raw = `${JSON.stringify(state)}\n`;
+  if (Buffer.byteLength(raw) > cap) unsafe();
+  return raw;
+}
+
+function writeState(state: GuardState, target: string, directory: string, currentKey: string | null): void {
   prune(state, Date.now());
-  const raw = `${JSON.stringify(state)}\n`;
-  if (Buffer.byteLength(raw) > STATE_MAX_BYTES) unsafe();
+  const raw = pruneLoopGuardStateToBytes(state, currentKey);
   const temporary = join(directory, `.state-${process.pid}-${randomBytes(8).toString('hex')}.tmp`);
   let fd = -1;
   try {
@@ -488,7 +539,7 @@ export function consultSessionLoopGuard(operation: LoopGuardOperation, options: 
     if (operation.invocationId) {
       session.invocations[keyedHash(loaded.state.secret, ['invocation', operation.invocationId])] = fingerprint;
     }
-    writeState(loaded.state, loaded.target, loaded.directory);
+    writeState(loaded.state, loaded.target, loaded.directory, sessionKey(loaded.state, operation));
     return { allow: true, receipt: session.entries[fingerprint].receipt, fingerprint };
   });
 }
@@ -525,7 +576,7 @@ export function recordSessionLoopOutcome(
       session.entries = {};
       session.invocations = {};
     }
-    writeState(loaded.state, loaded.target, loaded.directory);
+    writeState(loaded.state, loaded.target, loaded.directory, sessionKey(loaded.state, operation));
   });
 }
 
@@ -541,7 +592,7 @@ export function advanceSessionInstructionEpoch(
     session.entries = {};
     session.invocations = {};
     session.updated_at = now;
-    writeState(loaded.state, loaded.target, loaded.directory);
+    writeState(loaded.state, loaded.target, loaded.directory, sessionKey(loaded.state, operation));
   });
 }
 
@@ -552,7 +603,7 @@ export function clearSessionLoopGuard(
   withStateLock(options.home, () => {
     const loaded = readState(options.home);
     delete loaded.state.sessions[sessionKey(loaded.state, operation)];
-    writeState(loaded.state, loaded.target, loaded.directory);
+    writeState(loaded.state, loaded.target, loaded.directory, null);
   });
 }
 
