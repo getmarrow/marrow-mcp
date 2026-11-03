@@ -512,12 +512,29 @@ function gateReason(runtime: NonNullable<PreActionControlResult['runtime']>): st
   return boundedText(runtime.risk_gate.reasons?.[0]?.message, 240);
 }
 
+const WATCH_ONLY_WORDS = ['review_required', 'block', 'warn'];
+
+/**
+ * Display only. When the runtime answer's top-level watch_only.active is the
+ * boolean true, one fixed line says the account is only watched. The one word
+ * that follows is a closed word chosen from this list, never server text.
+ */
+function watchOnlyNotice(runtime: NonNullable<PreActionControlResult['runtime']>, decision: string): string | null {
+  if (asOptionalRecord((runtime as { watch_only?: unknown }).watch_only)?.active !== true) return null;
+  const would = asOptionalRecord((runtime.risk_gate as { watch_only?: unknown }).watch_only)?.would_decision;
+  const closed = (value: unknown) => WATCH_ONLY_WORDS.find((candidate) => candidate === value);
+  const word = closed(would) ?? closed(decision === 'owner_approval_required' ? 'review_required' : decision);
+  return `Marrow watch-only: this new account records what Marrow would ask; nothing is held.${word ? ` Gate decision: ${word}.` : ''}`;
+}
+
 /** A warning for a non-allow gate the runtime does not enforce on this plan. */
 export function advisoryGateNotice(runtime: PreActionControlResult['runtime']): string | null {
   const gate = runtime?.risk_gate;
   if (!runtime || !gate || !runtimeGateAdvisory(runtime)) return null;
   const decision = String(gate.decision || '');
   if (gate.allow !== false && !['warn', 'review_required', 'owner_approval_required'].includes(decision)) return null;
+  const watching = watchOnlyNotice(runtime, decision);
+  if (watching) return watching;
   const reason = gateReason(runtime);
   return boundedText(`Marrow advisory: this plan does not enforce the pre-action gate, so the action is allowed. Gate decision: ${decision}.${reason ? ` Reason: ${reason}` : ''}`, 500);
 }

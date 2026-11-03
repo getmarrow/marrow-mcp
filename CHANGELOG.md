@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (next batched version)
+
+- Display (watch-only): when Marrow's answer says the account is in watch-only mode (top-level `watch_only.active` is the boolean `true`) and master would show its generic advisory notice, the hook shows one plain line instead: "Marrow watch-only: this new account records what Marrow would ask; nothing is held.", with " Gate decision: <review_required|block|warn>." only when the answer carries one of those three words. No verdict, hold, ask, request or log changes; every other answer shows what 3.9.110 showed.
+
 ## 3.9.110
 
 Repair of a broken install on 3.9.109, plus the changes merged since: a busy host is no longer locked out when the local loop-guard state reaches its 256 KB cap. Older loop history of other sessions is pruned instead; the session making the call is never pruned. The merged changes are the stable, version-free Marrow entry recognized as the official server on Codex and Cursor, a hold in Claude Code auto mode that denies with its receipt instead of opening a dialog, the line that says where a refused agent id came from, and a `marrow_think` fix. Two changes are looser than 3.9.109, on purpose and by the owner's decision: the stable entry (MCP-2), and the loop-guard pruning at the cap, where a loop in another session that repeats a call only after 3 or more other distinct calls can be missed while the pruning runs (see the known limit below). None of the other changes lets through an action that was held before.
