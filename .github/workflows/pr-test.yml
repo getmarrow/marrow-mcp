@@ -1,0 +1,84 @@
+# Full test suite for @getmarrow/mcp on every pull request to master.
+#
+# The suite is `npm test` (the build, then node --test over test/*.test.js), split into
+# shards with node's own --test-shard so a pull request gets its answer quickly. The final
+# job "PR tests" is the one stable check name: it passes only when every shard passed.
+#
+# This workflow only adds a check. It runs on the pull_request event, so a fork gets a
+# read-only token and no secrets. It holds no secrets, no OIDC token, no environment and no
+# cache, and its token can only read the repository. The ship-time tests (npm-publish.yml
+# and release-test.yml) are unchanged; this is not a release gate.
+#
+# Unlike release-test.yml there is no clean-checkout step at the end: dist/ is committed
+# and rebuilt only on the release branch, so the build legitimately changes it here.
+name: pr test
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-test-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  # Same pins as release-test.yml and npm-publish.yml (a script checks they match).
+  NODE_PIN: v22.23.3
+  PACK_NPM_VERSION: 10.9.9
+
+jobs:
+  shard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Check out the pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up the pinned Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+
+      - name: Check the pinned toolchain
+        run: |
+          set -euo pipefail
+          [ "$(node --version)" = "$NODE_PIN" ] || { echo '::error::Unexpected Node version.'; exit 1; }
+          [ "$(npm --version)" = "$PACK_NPM_VERSION" ] || { echo '::error::Unexpected npm version.'; exit 1; }
+
+      - name: Install dependencies without install scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Run this shard of the tests
+        run: node --test --test-shard=${{ matrix.shard }}/6 --require ./test/support/isolated-environment.cjs test/*.test.js
+
+  result:
+    name: PR tests
+    needs: [shard]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require every shard to have succeeded
+        env:
+          RESULT: ${{ needs.shard.result }}
+        run: |
+          set -euo pipefail
+          [ "$RESULT" = success ] || { echo "::error::A test shard did not succeed (result: $RESULT)."; exit 1; }
