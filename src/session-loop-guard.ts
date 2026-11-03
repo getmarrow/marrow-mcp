@@ -390,25 +390,26 @@ const byKey = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 
 /**
- * Only over the cap: drop the oldest loop-guard entries of OTHER sessions (oldest session first, never below
- * LOOP_FLOOR entries and mappings each) until the state is under the low-water mark. The current session,
- * the secret and the version are never touched. Returns the serialized state, or fails closed as before.
+ * Only over the cap: drop the oldest loop-guard entries of OTHER sessions (oldest session first, clamped to `now`,
+ * never below LOOP_FLOOR entries and one mapping per kept entry) until the state is under the low-water mark. An entry
+ * stamped after `now` (a backward clock step) stays on top of the floor and is never dropped here; master's TTL rule
+ * removes it once the clock has passed it. The current session, the secret and the version are never touched.
+ * Returns the serialized state, or fails closed as before.
  */
-export function pruneLoopGuardStateToBytes(state: GuardState, currentKey: string | null, cap = STATE_MAX_BYTES, lowWater = STATE_LOW_WATER_BYTES): string {
+export function pruneLoopGuardStateToBytes(state: GuardState, currentKey: string | null, now: number, cap = STATE_MAX_BYTES, lowWater = STATE_LOW_WATER_BYTES): string {
   let raw = `${JSON.stringify(state)}\n`;
   let size = Buffer.byteLength(raw);
   if (size <= cap) return raw;
   const others = Object.entries(state.sessions)
     .filter(([key]) => key !== currentKey)
-    .sort((a, b) => a[1].updated_at - b[1].updated_at || byKey(a[0], b[0]));
+    .sort((a, b) => Math.min(a[1].updated_at, now) - Math.min(b[1].updated_at, now) || byKey(a[0], b[0]));
   for (const [, session] of others) {
     if (size <= lowWater) break;
     const entries = Object.entries(session.entries).sort((a, b) => b[1].updated_at - a[1].updated_at || byKey(a[0], b[0]));
-    const kept = new Set(entries.slice(0, LOOP_FLOOR).map(([key]) => key));
+    let floor = 0;
+    const kept = new Set(entries.filter(([, entry]) => entry.updated_at > now || floor++ < LOOP_FLOOR).map(([key]) => key));
     const mappings = Object.entries(session.invocations);
     const newest = new Map(mappings.map(([key, fingerprint]) => [fingerprint, key]));
-    const floor = new Set<string>();
-    for (let i = mappings.length - 1; i >= 0 && floor.size < LOOP_FLOOR; i--) if (kept.has(mappings[i][1])) floor.add(mappings[i][0]);
     // An item leaves with its key and one comma; the last item of an object has no comma.
     let entryCount = entries.length;
     let mappingCount = mappings.length;
@@ -419,11 +420,11 @@ export function pruneLoopGuardStateToBytes(state: GuardState, currentKey: string
     for (const [key, fingerprint] of mappings) {
       if (size <= lowWater) break;
       // The newest mapping of an entry that stays is never dropped alone, so a later record still finds its entry.
-      if (!floor.has(key) && (newest.get(fingerprint) !== key || !(fingerprint in session.entries))) dropMapping(key);
+      if (newest.get(fingerprint) !== key || !(fingerprint in session.entries)) dropMapping(key);
     }
     const mapped = new Map<string, string[]>();
     for (const [key, fingerprint] of mappings) mapped.set(fingerprint, [...(mapped.get(fingerprint) ?? []), key]);
-    const droppable = entries.slice(LOOP_FLOOR).sort((a, b) => a[1].updated_at - b[1].updated_at || byKey(a[0], b[0]));
+    const droppable = entries.filter(([key]) => !kept.has(key)).sort((a, b) => a[1].updated_at - b[1].updated_at || byKey(a[0], b[0]));
     for (const [key, entry] of droppable) {
       if (size <= lowWater) break;
       size -= jsonBytes(key) + 1 + jsonBytes(entry) + (entryCount-- > 1 ? 1 : 0);
@@ -437,8 +438,9 @@ export function pruneLoopGuardStateToBytes(state: GuardState, currentKey: string
 }
 
 function writeState(state: GuardState, target: string, directory: string, currentKey: string | null): void {
-  prune(state, Date.now());
-  const raw = pruneLoopGuardStateToBytes(state, currentKey);
+  const now = Date.now();
+  prune(state, now);
+  const raw = pruneLoopGuardStateToBytes(state, currentKey, now);
   const temporary = join(directory, `.state-${process.pid}-${randomBytes(8).toString('hex')}.tmp`);
   let fd = -1;
   try {
