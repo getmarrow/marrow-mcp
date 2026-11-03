@@ -19,7 +19,6 @@ Use `@getmarrow/mcp` when your agent client supports the Model Context Protocol 
    npx -y @getmarrow/install@latest activate
    ```
 
-   Fallback if you cannot set the key first (a key typed on a command line stays in your shell history): `MARROW_API_KEY=<your_key> npx -y @getmarrow/install@latest activate`.
 3. **Restart** the agent host and review/enable its hook trust.
 4. **Verify:**
 
@@ -90,8 +89,6 @@ chmod 600 ~/.marrow/env
 ```
 
 Claude Code plugin users: after /plugin install, run /reload-plugins (or restart Claude Code). To add a key, put MARROW_API_KEY=<your key> in ~/.marrow/env, run chmod 600 ~/.marrow/env, then /reload-plugins. Do not run activate or marrow-mcp setup for the plugin, because they write a second copy of the hooks.
-
-Fallback if you cannot use the key file (a key typed on a command line stays in your shell history): set it through trusted secret storage, or `export MARROW_API_KEY=<your_key>` for the session.
 
 Hooks-only setup (`marrow-mcp setup` writes hooks and `CLAUDE.md` instructions, and adds no MCP server). It needs the key first: without one it prints how to get it and exits 2 before writing anything.
 
