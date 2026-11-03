@@ -1,6 +1,6 @@
 'use strict';
 // Test-only. Commands that put regex metacharacters, repeated shipping words and very long texts next to a shipping word of a data slot: the label the hook gives each is
-// compared with the golden file (d1d-mask-golden.json, made from the port tip d0f7d8a69bac), so a change of how the masked text is built shows.
+// compared with the golden file (d1d-mask-golden.json, made from the port tip d0f7d8a69bac; round 3 turned the two list cases, entries 11 and 18, to null: a list is not a named shape), so a change of how the masked text is built shows.
 const rep = (s, n) => s.repeat(n);
 const COMMANDS = [
   "git grep -c 'deploy' main",

@@ -85,8 +85,9 @@ test('PP1: the corpus shape of the audit finding (an until loop around grep and 
   const command = 'until grep -q ready deploy.log; do sleep 5; done; date';
   assert.equal(decisionOf(command).slice.ok, false);
   await assertMaster(command, 'until/grep/sleep/date');
-  // and the loop word as a plain word of a data slot or of another command is not a loop
-  await assertLowered("git grep -c deploy HEAD; echo until", 'echo until');
+  // and the loop word as a plain word of a data slot is not a loop (alone it is lowered); as the argument of a second command the list is master since round 3
+  await assertLowered("git grep -n until -- deploy", 'until as a pattern');
+  await assertMaster("git grep -c deploy HEAD; echo until", 'echo until');
 });
 
 test('PP1: every spelling of the loop word at command position is bad: separators, reserved words before it, tabs, continuations, nesting', () => {
@@ -106,18 +107,19 @@ test('PP1: every spelling of the loop word at command position is bad: separator
   }
 });
 
-test('PP1: only the loop forms change: the loop word as an argument, a pattern or a file name, and the other compound forms, keep the port answer', () => {
-  const lowered = ["git grep -c deploy HEAD; echo while", "git grep -c deploy HEAD; echo until", "git grep -c deploy HEAD; echo select", "git grep -E 'a|while|b' deploy",
-    "git grep -n while -- deploy", "git grep -n until -- deploy", "git grep -n 'select' -- deploy", "git grep -c deploy HEAD && git grep -c until HEAD",
-    // not loops, and not asked about in this round: the port lowers them and so does the patched tip
-    "git grep -c deploy HEAD; if true; then git grep -c release HEAD; fi", "{ git grep -c deploy HEAD; }", "( git grep -c deploy HEAD )"];
+test('PP1: only the loop forms change: the loop word as an argument, a pattern or a file name keeps the port answer; every list, group and branch around a command is master since round 3', () => {
+  const lowered = ["git grep -E 'a|while|b' deploy", "git grep -n while -- deploy", "git grep -n until -- deploy", "git grep -n 'select' -- deploy"];
   for (const command of lowered) {
     assert.equal(decisionOf(command).slice.ok, true, JSON.stringify(command));
     assert.ok(classifyTool(ev(command), { cwd: ROOT, lowering: true }).lowered, JSON.stringify(command));
   }
-  // functions, case, coproc, tests and arithmetic never lowered on the port and still do not
-  for (const command of ['f() { git grep -c deploy HEAD; }; f', 'function f { git grep -c deploy HEAD; }; f', 'case x in x) git grep -c deploy HEAD;; esac', 'coproc { git grep -c deploy HEAD; }',
+  // round 3: a loop word as the argument of a second command, a list, a group, a subshell and a branch are not one simple command (test/d1d-compound.test.js has the full sweep)
+  for (const command of ["git grep -c deploy HEAD; echo while", "git grep -c deploy HEAD; echo until", "git grep -c deploy HEAD; echo select", "git grep -c deploy HEAD && git grep -c until HEAD",
+    "git grep -c deploy HEAD; if true; then git grep -c release HEAD; fi", "{ git grep -c deploy HEAD; }", "( git grep -c deploy HEAD )",
+    // functions, case, coproc, tests and arithmetic never lowered on the port and still do not
+    'f() { git grep -c deploy HEAD; }; f', 'function f { git grep -c deploy HEAD; }; f', 'case x in x) git grep -c deploy HEAD;; esac', 'coproc { git grep -c deploy HEAD; }',
     '[[ -n x ]] && git grep -c deploy HEAD', 'for i in 1 2; do git grep -c deploy HEAD; done']) {
+    assert.equal(decisionOf(command).slice.ok, false, JSON.stringify(command));
     assert.equal(classifyTool(ev(command), { cwd: ROOT, lowering: true }).lowered, undefined, JSON.stringify(command));
   }
 });
@@ -164,5 +166,7 @@ test('PP10: the mask replaces the proven words only: a shipping word that stays 
     assert.equal(classifyTool(ev(command), { cwd: ROOT, lowering: true }).lowered, undefined, command);
   }
   // and the proven word alone, or with words that are not shipping words, is lowered
-  for (const command of ['git grep -c deploy HEAD; echo hello', 'git grep -c deploy HEAD; cat release.md']) assert.ok(classifyTool(ev(command), { cwd: ROOT, lowering: true }).lowered, command);
+  for (const command of ['git grep -c deploy HEAD', 'git grep -n deploy -- release.md']) assert.ok(classifyTool(ev(command), { cwd: ROOT, lowering: true }).lowered, command);
+  // round 3: the same proven word with a second command after it is a list, which is master
+  for (const command of ['git grep -c deploy HEAD; echo hello', 'git grep -c deploy HEAD; cat release.md']) assert.equal(classifyTool(ev(command), { cwd: ROOT, lowering: true }).lowered, undefined, command);
 });

@@ -39,7 +39,9 @@ test('I-F8: the mapper lists no git subcommand but grep and the four plumbing fo
   for (const c of ['git commit -m x; grep -c deploy f', 'git commit -am x && grep deploy f', 'git tag v1; grep -c deploy f', 'git add -A; grep -c deploy f', 'git push; grep -c deploy f', 'git log; grep -c deploy f']) {
     assert.equal(decisionOf(c).slice.ok, false, c);
   }
-  for (const c of ['git status; grep -c deploy f', 'git rev-parse --show-toplevel && grep -c deploy f', 'git ls-files | grep -c deploy', 'git branch --list | grep -c deploy']) assert.equal(decisionOf(c).slice.ok, true, c);
+  // round 3 (stricter only): the plumbing forms are read as one simple command; chained or piped with a grep they are no slice (a list and a pipeline are not a named shape)
+  for (const c of ['git status', 'git rev-parse --show-toplevel', 'git branch --list']) assert.equal(decisionOf(c).slice.ok, true, c);
+  for (const c of ['git status; grep -c deploy f', 'git rev-parse --show-toplevel && grep -c deploy f', 'git ls-files | grep -c deploy', 'git branch --list | grep -c deploy']) assert.equal(decisionOf(c).slice.ok, false, c);
 });
 
 test('I-A6a: rg flags outside the closed table give no slot (--pre, --pre-glob, --hostname-bin, -z, --search-zip, -f, --file)', () => {
