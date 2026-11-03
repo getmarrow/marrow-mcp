@@ -1089,7 +1089,7 @@ function sliceProvenWords(command: string, decision: SliceDecision): string[] {
   return [...inSlots.entries()].filter(([word, n]) => n > 0 && inText.get(word) === n && slice.counts[word] === n).map(([word]) => word);
 }
 function sliceMask(text: string, words: string[]): string {
-  return text.replace(new RegExp(`\\b(?:${words.join('|')})\\b`, 'gi'), (m) => 'x'.repeat(m.length));
+  return text.replace(SLICE_ANY_WORD, (m) => (words.includes(m.toLowerCase()) ? 'x'.repeat(m.length) : m));
 }
 /** The single text-only reading of `command`: one reading per text and folder. */
 function sliceReading(eventCwd: string | undefined, command: string): SliceDecision | null {
