@@ -121,6 +121,11 @@ export interface SeatbeltEnv {
   classifierClass?: string;
   /** Wall-clock budget for one classification in ms (default LIMITS.timeBudgetMs). Over it: stop. */
   budgetMs?: number;
+  /**
+   * Internal opt-in, set as a constant by the keyed hook's lowering reading and by nothing else: also record the kept data slots of the text in `decision.slice` (see sliceCommand).
+   * Without it the new code never runs and the decision has no such field.
+   */
+  dataSlots?: boolean;
 }
 export interface SeatbeltHit { category: Exclude<SeatbeltCategory, 'none'>; reason: string }
 export interface SeatbeltDecision {
@@ -153,7 +158,11 @@ export interface SeatbeltDecision {
    * Never changes a stop. Not recorded in receipts.
    */
   outageHelpOnly?: boolean;
+  /** Only under SeatbeltEnv.dataSlots: the kept data slots the text proves (see sliceCommand). Never in `hits` or `flags`; not recorded in receipts. */
+  slice?: SeatbeltSlice;
 }
+/** `ok` false = some program, flag or form of the text is not listed: nothing is masked. `words`: the literal text of each kept slot word. `counts`: the data words found in every argument and heredoc body read. */
+export interface SeatbeltSlice { ok: boolean; words: Array<{ slot: string; text: string }>; counts: Record<string, number> }
 export interface SeatbeltEvent { tool_name: string; tool_input?: unknown }
 
 const CATEGORY_ORDER: Array<Exclude<SeatbeltCategory, 'none'>> = ['S0', 'S1', 'S2', 'S3', 'S4', 'S5', 'Sx'];
@@ -238,6 +247,8 @@ interface Run {
   helpBlocked: number;
   helpSeen: boolean;
   beyondHelp: Set<string>;
+  // Data slots: null unless the caller opted in (SeatbeltEnv.dataSlots).
+  slice: { bad: boolean; words: Array<{ slot: string; text: string }>; counts: Record<string, number> } | null;
 }
 
 interface Ctx {
@@ -1019,6 +1030,7 @@ function newRun(rawEnv: SeatbeltEnv, source: string, deadline?: number): Run {
     helpDepth: 0,
     helpBlocked: 0,
     helpSeen: false,
+    slice: rawEnv.dataSlots === true ? { bad: false, words: [], counts: {} } : null,
     beyondHelp: new Set(),
     fsState,
     reads: new Map(),
@@ -1152,6 +1164,7 @@ function finish(run: Run): SeatbeltDecision {
     outageHelpOnly: run.helpSeen && run.parse === 'ok' && !run.exhausted
       && hits.every((h) => !UNFINISHED_HITS.test(h.reason) && !run.beyondHelp.has(`${h.category}:${h.reason}`))
       && [...run.risk].every((t) => !run.beyondHelp.has(`risk:${t}`)),
+    ...(run.slice ? { slice: { ok: !run.slice.bad, words: run.slice.words, counts: run.slice.counts } } : {}),
   };
 }
 
@@ -1951,6 +1964,7 @@ function evalShell(src: string, ctx: Ctx, run: Run): void {
   const guards = buildGuards(src, parsed.commands);
   const wordSubs = indexSubstitutions(parsed);
   const fnNames = functionNames(src);
+  if (run.slice && fnNames && fnNames.size > 0) run.slice.bad = true;
   // A function body or a trap string was evaluated where it is defined, with the variables and the
   // branch of that moment; it runs later, when they may differ: the list runs twice there as well.
   const rounds = (guards && (guards.unknown ? LOOP_WORD.test(src) : [...guards.byCmd.values()].some((g) => g.assign.concat(g.declare).some((e) => e.inLoop))))
@@ -2057,6 +2071,8 @@ function programEnvCheck(values: Map<string, string[] | null>, ctx: Ctx, run: Ru
 }
 
 function evalCommand(cmd: ShellCommand, ctx: Ctx, run: Run, info: CmdInfo): void {
+  // Data slots (opt-in): a loop or an assignment (a PATH, a variable that steers a program) is a form the list does not read.
+  if (run.slice && (cmd.forLoop || cmd.assignments.length > 0)) run.slice.bad = true;
   if (cmd.forLoop) {
     const items = cmd.forLoop.items;
     if (!items) { ctx.vars.set(cmd.forLoop.name, null); return; }
@@ -2465,6 +2481,7 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
     return;
   }
   const prog = progName(args[0], run);
+  if (run.slice && (prog === null || (args[0].glob && args[0].text !== '[' && args[0].text !== '[['))) run.slice.bad = true;
   if (prog === null) return dynamicProgram(args, ctx, run, x);
   // A3b: on native Windows the program is also read by its Windows name (`C:\Program Files\Git\cmd\git.exe`, `GIT.EXE`):
   // a second reading next to the unchanged one, so it can only add stops.
@@ -2491,7 +2508,195 @@ function dispatch(args: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   return dispatchProgram(prog, args, rest, pathLike, ctx, run, x);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Data slots (3.9.110, D1d). Opt-in with `dataSlots` (set as a constant by the keyed hook's lowering reading alone); without it none of this runs, the decision has no
+// `slice` field and every other caller's decision is byte-equal. It records, never decides: the keyed hook masks a shipping word only when every program of the text is
+// listed with a closed flag set and the word sits in one of the six kept data slots (the pattern of grep, egrep, fgrep, rg and `git grep`; the file, revision and path
+// operands of those, of `sed -n`, of `ls`; the one operand of `cd`; the heredoc body of a bare `cat`). It adds no `case` label (the keyless normalizer keeps its own copy of
+// KNOWN_COMMANDS), no tokenizer and no loop over the command text: every loop below is over Args a handler already has, and each regex runs on one word.
+// The drop allowlist is test/support/lower-shapes-d1d.txt (a source-pin test compares it row by row). Fixed tables; any change is a change of the contract.
+export const SLICE_WORDS_12 = ['publish', 'unpublish', 'deprecate', 'deploy', 'release', 'wrangler', 'production', 'prod', 'migration', 'schema', 'database', 'd1'] as const;
+export const SLICE_WORDS_EXTRA = ['commit', 'permit', 'closure'] as const;
+export const SLICE_SHAPES: ReadonlyArray<readonly [string, string, string]> = [
+  ['T05a', 'grep', 'none'], ['T05b', 'grep', '-e'], ['T05c', 'egrep', 'none'], ['T05d', 'egrep', '-e'], ['T05e', 'fgrep', 'none'], ['T05f', 'fgrep', '-e'],
+  ['T05g', 'rg', 'none'], ['T05h', 'rg', '-e'], ['T05i', 'git-grep', 'none'], ['T05j', 'git-grep', '-e'], ['T06', 'cat-heredoc', 'none'],
+  ['P07a', 'grep-file', 'none'], ['P07b', 'egrep-file', 'none'], ['P07c', 'fgrep-file', 'none'], ['P07d', 'rg-file', 'none'], ['P07e', 'git-grep-file', 'none'],
+  ['P08', 'sed', '-n'], ['P09', 'cd', 'none'], ['P05', 'ls', 'none'],
+];
+export const SLICE_PROGRAMS = ['cat', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'cd', 'ls', 'git',
+  'cut', 'wc', 'head', 'tail', 'sort', 'uniq', 'tr', 'echo', 'printf', 'true', 'false', 'pwd', 'test', '[', 'basename', 'dirname', 'sleep', 'seq', 'date'] as const;
+export const SLICE_HIDDEN_OK: ReadonlySet<string> = new Set(['.releases']);
+const SLICE_WORD_RE = /\b(?:publish|unpublish|deprecate|deploy|release|wrangler|production|prod|migration|schema|database|d1|commit|permit|closure)\b/gi;
+const SLICE_SED_SCRIPT = /^(?:(?:\d+|\$)(?:,(?:\d+|\$))?p)(?:;(?:\d+|\$)(?:,(?:\d+|\$))?p)*$/;
+const SLICE_NOTE_EXT = /\.(?:md|txt|log|jsonl|csv|tsv|out|err|html|diff|patch)$/i;
+const SLICE_HIDDEN_SEG = /^\./;
+const SLICE_ARG_CAP = 4096;
+const SLICE_BODY_CAP = 65536;
+const SLICE_PLUMBING: ReadonlySet<string> = new Set(SLICE_PROGRAMS.slice(9));
+// Closed flag tables (ACCEPTANCE A6a): letters of clusters, valued letters, exact long flags.
+const SLICE_GREP = { letters: 'EFGPivwxclLnHhoqsrRIazb', valued: /^-[mABC]$/, glued: /^-[mABC]\d{1,6}$/, e: true, long: /^--(?:(?:include|exclude|exclude-dir)=.+|color(?:=(?:always|never|auto))?)$/, regexp: true } as const;
+const SLICE_RG = { letters: 'inclwFvoHSs', valued: /^-[gt]$|^--(?:glob|type)$/, glued: /^$/, e: true, long: /^--no-heading$|^--(?:glob|type)=.+$/, regexp: false } as const;
+const SLICE_GITGREP = { letters: 'nclLiwvFEGIahHoq', valued: /^--max-depth$/, glued: /^$/, e: true, long: /^--(?:and|or|not|no-color|heading|break|full-name)$/, regexp: false } as const;
+const SLICE_LS_LETTERS = 'laAh1RtSrdFsi';
+const SLICE_GIT_PLUMBING: Record<string, RegExp> = {
+  status: /^(?:-s|--short|-b|--branch|--porcelain)$/,
+  'rev-parse': /^(?:--show-toplevel|--abbrev-ref|--short|--git-dir|--is-inside-work-tree|--show-prefix|--verify|-q|--quiet)$/,
+  'ls-files': /^(?:-c|-o|-m|-d|-s|-u|-z|--cached|--others|--deleted|--modified|--exclude-standard|--stage)$/,
+  branch: /^(?:-a|-r|-v|-vv|--list|--show-current)$/,
+};
+const SLICE_PLUMBING_FLAG: Record<string, RegExp | null> = {
+  cut: /^-(?:[dfcb][^\s]{0,32}|s)$/, wc: /^-[lwcmL]+$/, head: /^-(?:[nc]?\d{1,9}|[nc]|q|v|z)$/, tail: /^-(?:[nc]?\d{1,9}|[nc]|q|v|z)$/,
+  sort: /^-(?:[nrufbdhMV]+|t.|k\d+(?:,\d+)?[nr]?)$/, uniq: /^-[cdui]$/, tr: /^-[cdsC]+$/, echo: null, printf: null, true: /^$/, false: /^$/, pwd: /^$/,
+  test: null, '[': null, basename: /^$/, dirname: /^$/, sleep: /^$/, seq: /^$/, date: /^-(?:u|R|I|d)$/,
+};
+
+function sliceCount(run: Run, text: string): void {
+  const s = run.slice!;
+  if (text.length > SLICE_BODY_CAP) { s.bad = true; return; }
+  for (const m of text.matchAll(SLICE_WORD_RE)) { const w = m[0].toLowerCase(); s.counts[w] = (s.counts[w] || 0) + 1; }
+}
+function sliceLiteral(a: Arg): boolean {
+  return a.text !== null && !a.glob && !a.nonAscii && a.word !== null && !(a.word.dynamic || a.word.substitution || a.word.variables.length > 0 || a.word.glob === true) && a.text.length <= SLICE_ARG_CAP;
+}
+// A path word that may hold a data word: no leading `-` or `~`, no `..` and no hidden segment (except the one name HIDDEN_OK holds).
+function sliceFileWord(t: string, noHidden = false): boolean {
+  if (t.length === 0 || t[0] === '-' || t[0] === '~') return false;
+  for (const seg of t.split('/')) {
+    if (seg === '..') return false;
+    if (SLICE_HIDDEN_SEG.test(seg) && seg !== '.' && (noHidden || !SLICE_HIDDEN_OK.has(seg))) return false;
+  }
+  return true;
+}
+// Redirects of a command that is not a heredoc `cat`: none, or only to /dev/null, a descriptor, or reading.
+function sliceQuietRedirects(x: Exec): boolean {
+  return x.cmd.redirects.every((r) => r.op === '<' || r.op === '<<<' || (r.target !== null && r.target.dynamic === false && !r.target.substitution && /^(?:\/dev\/null|\d+|-)$/.test(r.target.text)));
+}
+// grep, egrep, fgrep, rg, `git grep`: the pattern (the first operand, or each -e value) and the file, revision and path operands.
+function sliceSearch(kind: 'grep' | 'egrep' | 'fgrep' | 'rg' | 'git-grep', tail: Arg[], quiet: boolean, out: Array<{ slot: string; text: string }>): boolean {
+  const cfg = kind === 'rg' ? SLICE_RG : kind === 'git-grep' ? SLICE_GITGREP : SLICE_GREP;
+  const seen = new Set<string>();
+  const pats: string[] = [];
+  const ops: string[] = [];
+  let dd = false;
+  let usedE = false;
+  for (let i = 0; i < tail.length; i += 1) {
+    const t = tail[i].text as string;
+    if (dd || t === '-' || !t.startsWith('-')) { ops.push(t); continue; }
+    if (t === '--') { dd = true; continue; }
+    if (t === '-e') { const v = tail[i + 1]; if (!v) return false; pats.push(v.text as string); usedE = true; i += 1; continue; }
+    if (kind !== 'rg' && kind !== 'git-grep' && /^-e./.test(t)) { pats.push(t.slice(2)); usedE = true; continue; }
+    if (cfg.regexp && t.startsWith('--regexp=')) { pats.push(t.slice(9)); usedE = true; continue; }
+    if (cfg.valued.test(t)) {
+      if (seen.has(t)) return false;
+      seen.add(t);
+      const v = tail[i + 1];
+      if (!v || (kind !== 'rg' && !/^\d{1,6}$/.test(v.text as string))) return false;
+      i += 1;
+      continue;
+    }
+    if (cfg.glued.test(t)) { if (seen.has(t.slice(0, 2))) return false; seen.add(t.slice(0, 2)); continue; }
+    if (cfg.long.test(t)) { if (!/^--(?:glob|type|include|exclude|exclude-dir)=/.test(t)) { if (seen.has(t)) return false; seen.add(t); } continue; }
+    if (/^-[A-Za-z]+$/.test(t)) {
+      for (const ch of t.slice(1)) { if (!cfg.letters.includes(ch) || seen.has(`-${ch}`)) return false; seen.add(`-${ch}`); }
+      continue;
+    }
+    return false;
+  }
+  if (!quiet) return true;
+  const row = 'T05';
+  const id = { grep: 'a', egrep: 'c', fgrep: 'e', rg: 'g', 'git-grep': 'i' }[kind];
+  const idE = String.fromCharCode(id.charCodeAt(0) + 1);
+  for (const p of pats) out.push({ slot: `${row}${idE}`, text: p });
+  let first = true;
+  const fileId = { grep: 'P07a', egrep: 'P07b', fgrep: 'P07c', rg: 'P07d', 'git-grep': 'P07e' }[kind];
+  for (const o of ops) {
+    if (first && !usedE) { out.push({ slot: `${row}${id}`, text: o }); first = false; continue; }
+    first = false;
+    if (sliceFileWord(o)) out.push({ slot: fileId, text: o });
+  }
+  return true;
+}
+// One dispatched command: list check, flag check, and the words of its kept slots (depth 0 only). Anything not listed makes the whole text unmasked.
+function sliceCommand(prog: string, args: Arg[], rest: Arg[], pathLike: boolean, ctx: Ctx, run: Run, x: Exec): void {
+  const s = run.slice;
+  if (!s || s.bad) return;
+  const head = args[0];
+  if (pathLike || ctx.ps !== undefined || x.info.ansiC || run.env.platform === 'win32' || head.text !== prog || head.word === null
+    || head.word.quoted || head.word.dynamic || head.word.substitution || head.word.variables.length > 0 || (head.glob && prog !== '[') || !(SLICE_PROGRAMS as readonly string[]).includes(prog)) { s.bad = true; return; }
+  if (x.cmd.heredoc !== null) sliceCount(run, x.cmd.heredoc);
+  for (const a of args) {
+    if (a !== head && !sliceLiteral(a)) { s.bad = true; return; }
+    if (a.text !== null) sliceCount(run, a.text);
+  }
+  const found: Array<{ slot: string; text: string }> = [];
+  const quiet = sliceQuietRedirects(x);
+  let ok = true;
+  const texts = rest.map((a) => a.text as string);
+  if (prog === 'grep' || prog === 'egrep' || prog === 'fgrep' || prog === 'rg') ok = sliceSearch(prog, rest, quiet, found);
+  else if (prog === 'git') {
+      let i = 0;
+      while (i < texts.length) {
+        if (texts[i] === '-C') { if (i + 1 >= texts.length) { ok = false; break; } i += 2; continue; }
+        if (texts[i] === '--no-pager' || texts[i] === '--no-optional-locks') { i += 1; continue; }
+        break;
+      }
+      const sub = ok && i < texts.length ? texts[i] : null;
+      if (sub === null) ok = ok && i >= texts.length;
+      else if (sub === 'grep') ok = sliceSearch('git-grep', rest.slice(i + 1), quiet, found);
+      else if (Object.prototype.hasOwnProperty.call(SLICE_GIT_PLUMBING, sub)) {
+        const flags = SLICE_GIT_PLUMBING[sub];
+        const tail = texts.slice(i + 1);
+        ok = tail.every((t) => !t.startsWith('-') || flags.test(t)) && (sub !== 'branch' || tail.every((t) => t.startsWith('-')) || tail.includes('--list'));
+      } else ok = false;
+  } else if (prog === 'sed') {
+      let quietFlag = false;
+      let script: string | null = null;
+      const files: string[] = [];
+      for (const t of texts) {
+        if (script === null && /^-(?:n|E|r|s|-quiet|-silent)$/.test(t) && files.length === 0) { if (t === '-n' || t === '--quiet' || t === '--silent') quietFlag = true; continue; }
+        if (script === null) { script = t; continue; }
+        if (t.startsWith('-')) { ok = false; break; }
+        files.push(t);
+      }
+      if (ok && script !== null && !SLICE_SED_SCRIPT.test(script)) ok = false;
+      if (ok && script !== null && quietFlag && quiet) for (const f of files) if (sliceFileWord(f)) found.push({ slot: 'P08', text: f });
+  } else if (prog === 'cd') {
+      const ops = texts[0] === '--' ? texts.slice(1) : texts;
+      if (ops.length > 1 || (texts[0] === '--' && texts.length > 2)) ok = false;
+      else if (ops.length === 1 && ops[0] !== '-' && ops[0].startsWith('-')) ok = false;
+      else if (ops.length === 1 && ops[0] !== '-') { if (sliceFileWord(ops[0])) found.push({ slot: 'P09', text: ops[0] }); else ok = false; }
+  } else if (prog === 'ls') {
+      let dd = false;
+      for (const t of texts) {
+        if (dd || t === '-' || !t.startsWith('-')) { if (quiet && sliceFileWord(t)) found.push({ slot: 'P05', text: t }); continue; }
+        if (t === '--') { dd = true; continue; }
+        if (/^--(?:color(?:=(?:always|never|auto))?|group-directories-first)$/.test(t)) continue;
+        if (!/^-[A-Za-z0-9]+$/.test(t) || [...t.slice(1)].some((ch) => !SLICE_LS_LETTERS.includes(ch))) { ok = false; break; }
+      }
+  } else if (prog === 'cat') {
+      const body = x.cmd.heredoc;
+      if (texts.some((t) => t.startsWith('-') && t !== '-' && !/^-[nbAEsTvet]+$/.test(t))) ok = false;
+      else if (texts.length === 0 && body !== null && !x.cmd.heredocDynamic && body.length <= SLICE_BODY_CAP && run.heredocs.length < 32 && !/[$`\\]/.test(body)) {
+        const rd = x.cmd.redirects.filter((r) => !(r.op === '<<' || r.op === '<<-' || r.op === '<<<'));
+        const t = rd.length === 1 ? rd[0] : null;
+        const target = t && t.target && !t.target.dynamic && !t.target.substitution && t.target.variables.length === 0 && t.target.glob !== true && !t.target.quoted ? t.target.text : null;
+        const writeOk = rd.length === 0 || (t !== null && t.fd === null && (t.op === '>' || t.op === '>>') && target !== null && target.length <= SLICE_ARG_CAP
+          && SLICE_NOTE_EXT.test(target) && sliceFileWord(target, true) && !/^\/(?:dev|proc|sys)(?:\/|$)/.test(target) && !/[*?[\]{}]/.test(target));
+        if (writeOk && x.cmd.redirects.length === rd.length + 1) found.push({ slot: 'T06', text: body });
+      }
+  } else {
+      const flag = SLICE_PLUMBING_FLAG[prog];
+      if (prog === 'printf' && texts[0] !== undefined && texts[0].startsWith('-')) ok = false;
+      else if (SLICE_PLUMBING.has(prog) && flag !== undefined && flag !== null) ok = texts.every((t) => !t.startsWith('-') || t === '-' || flag.test(t));
+      if (ok && prog === 'uniq' && texts.filter((t) => !t.startsWith('-')).length > 1) ok = false;
+  }
+  if (!ok) { s.bad = true; return; }
+  if (ctx.depth === 0) for (const f of found) s.words.push(f);
+}
+
 function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boolean, ctx: Ctx, run: Run, x: Exec): void {
+  // Data slots (opt-in): which kept slots this command proves, and whether the program is listed at all.
+  if (run.slice) sliceCommand(prog, args, rest, pathLike, ctx, run, x);
   // A3: delete verbs, pwsh / cmd / iex / Start-Process text. Adds hits only; the program is then handled as before.
   windowsShell(args, rest, ctx, run, x);
   // Task runners and builders run project code the mapper does not read (audit T1/T3).

@@ -41,7 +41,7 @@ import { recordSessionBypass } from './owner-bypass';
 import { selfProtectKind } from './self-protect';
 import { armKeylessNotice } from './keyless-notice';
 import { marrowSessionId } from './session-id';
-import { allowNokeyFallbackCreate } from './host-approval-state';
+import { allowNokeyFallbackCreate, findHolds } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
 import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
@@ -670,6 +670,8 @@ export type ToolClassification = {
   risk: 'low' | 'medium' | 'high';
   protected: boolean;
   readOnly: boolean;
+  /** Only under ClassifyOptions.lowering: the label this call would carry if the runtime clears it (see lowerParts). Never read by any other caller. */
+  lowered?: ToolClassification;
 };
 
 /**
@@ -677,14 +679,16 @@ export type ToolClassification = {
  * was merged with a fuller classification and `security` took the type, the `type on surfaces` text of each type it displaced, so the
  * runtime action still carries the words the gate's risk categories are read from.
  */
-type ClassificationParts = { tool: string; type: string; surfaces: string[]; readOnly: boolean; protected: boolean; under?: string[] };
+type ClassificationParts = { tool: string; type: string; surfaces: string[]; readOnly: boolean; protected: boolean; under?: string[]; lowered?: ClassificationParts };
 
 // The order classifyTool picks a type and lists surfaces in; earlier types are the more specific (stricter) ones.
 const CLASSIFICATION_TYPES = ['security', 'publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
 const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 
 /** `ownUnproven` and `postTool` are described on classifyTool. `cwd` is the event's working folder (classifyTool fills it from the event when it is an absolute path). */
-export type ClassifyOptions = { ownUnproven?: boolean; postTool?: boolean; cwd?: string };
+export type ClassifyOptions = { ownUnproven?: boolean; postTool?: boolean; cwd?: string;
+  /** Set by the pre-action hook alone: also report the lowered label of a call whose shipping words sit only in data slots (`lowered`). Without it the result is exactly the released one. */
+  lowering?: boolean };
 
 /**
  * The classification of one tool call. A Monitor command (and a native git
@@ -705,6 +709,7 @@ export function classifyTool(event: PreToolUseEvent, options: ClassifyOptions = 
   if (cwd !== options.cwd) options = { ...options, cwd };
   const reading = toolPolicyReading(event);
   if (!reading.shell.length && reading.base === 'named') return classificationFrom(classifyAsNamed(event, options));
+  if (options.lowering) options = { ...options, lowering: false };
   const shell = reading.shell.map((twin) => classifyAsNamed(twin as PreToolUseEvent, options));
   if (reading.exact) {
     const merged = shell.reduce(stricterParts);
@@ -1030,6 +1035,94 @@ function shellPrintsEnvironment(eventCwd: string | undefined, command: string): 
   return dumps;
 }
 
+type SliceDecision = import('./seatbelt/mapper').SeatbeltDecision;
+let sliceMapper: typeof import('./seatbelt/mapper') | null | undefined;
+// The one answer kept for the last text and folder: a text is read once.
+let lastSliceAnswer: { command: string; where: string; decision: SliceDecision | null } | null = null;
+// The one text-only reading of a command in the event's folder (the last folder the event names).
+function sliceTextReading(contexts: WordContext[], command: string): SliceDecision | null {
+  if (sliceMapper === undefined) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      sliceMapper = require('./seatbelt/mapper') as typeof import('./seatbelt/mapper');
+    } catch { sliceMapper = null; }
+  }
+  const mapper = sliceMapper;
+  const at = contexts[contexts.length - 1];
+  if (!mapper || !at) return null;
+  return mapper.evaluateSeatbeltShell(command, {
+    cwd: at.cwd,
+    home: at.home,
+    tmpdir: '/tmp',
+    platform: process.platform,
+    fs: TEXT_ONLY_FS_VIEW,
+    git: { toplevel: () => null, getAll: () => [], currentBranch: () => null, remoteHead: () => null },
+    dataSlots: true,
+  });
+}
+
+// Data slots (3.9.110, D1d). A shipping word that sits only in a proven data slot of a text whose every program is listed (the pattern of grep, egrep, fgrep, rg and
+// `git grep`, the file operands of those, of `sed -n` and of `ls`, the operand of `cd`, the heredoc body of a bare `cat`) is not an action: the mapper (one text-only reading, SeatbeltDecision.slice) records those words and the hook keeps its own count. The classification text is then read once more with
+// each proven word spelled `x` (same length). That second label is only a CANDIDATE (`lowered`): the runtime call sends it with the original class as `base_class`, and it
+// takes effect only when the service answers `decline_check: clear` bound to this call's action (see loweringCleared). The released classification is never changed.
+const SLICE_SHELL_TOOLS = ['bash', 'run_terminal_command', 'shell', 'execute_command', 'run_shell_command'];
+const SLICE_INPUT_KEYS = ['command', 'description', 'timeout', 'run_in_background'];
+const SLICE_ANY_WORD = /\b(?:publish|unpublish|deprecate|deploy|release|wrangler|production|prod|migration|schema|database|d1|commit|permit|closure)\b/gi;
+const SLICE_OUTSIDE_PLAIN = /[^\t\n\x20-\x7e]/;
+const SLICE_EXTRA_WORDS = new Set(['commit', 'permit', 'closure']);
+function sliceCounts(text: string, into: Map<string, number>, withExtra: boolean): void {
+  for (const m of text.matchAll(SLICE_ANY_WORD)) {
+    const word = m[0].toLowerCase();
+    if (!withExtra && SLICE_EXTRA_WORDS.has(word)) continue;
+    into.set(word, (into.get(word) ?? 0) + 1);
+  }
+}
+/** The words of `command` that sit only in recorded data slots: each is masked only when its count in the raw text, in the recorded slots and in every argument the mapper read are one number. */
+function sliceProvenWords(command: string, decision: SliceDecision): string[] {
+  const slice = decision.slice;
+  if (!slice || !slice.ok || decision.parse !== 'ok' || decision.hits.length > 0 || decision.flags.length > 0) return [];
+  if (SLICE_OUTSIDE_PLAIN.test(command)) return [];
+  const inText = new Map<string, number>();
+  sliceCounts(command, inText, true);
+  const inSlots = new Map<string, number>();
+  for (const word of slice.words) sliceCounts(word.text, inSlots, word.slot.startsWith('T05') || word.slot === 'T06');
+  return [...inSlots.entries()].filter(([word, n]) => n > 0 && inText.get(word) === n && slice.counts[word] === n).map(([word]) => word);
+}
+function sliceMask(text: string, words: string[]): string {
+  return text.replace(new RegExp(`\\b(?:${words.join('|')})\\b`, 'gi'), (m) => 'x'.repeat(m.length));
+}
+/** The single text-only reading of `command`: one reading per text and folder. */
+function sliceReading(eventCwd: string | undefined, command: string): SliceDecision | null {
+  const contexts = wordContexts(eventCwd);
+  if (!contexts.length) return null;
+  const where = contexts.map((context) => `${context.cwd}\0${context.home}`).join('\n');
+  if (lastSliceAnswer && lastSliceAnswer.command === command && lastSliceAnswer.where === where && lastSliceAnswer.decision) return lastSliceAnswer.decision;
+  const decision = sliceTextReading(contexts, command);
+  lastSliceAnswer = { command, where, decision };
+  return decision;
+}
+
+/** Whether the service cleared this lowering: `decline_check: {state: 'clear', action: <sha256 hex of this call's normalized action as sent>}`. Anything else (absent, other state, other hash, malformed) is not a clearance. */
+export function loweringCleared(runtime: unknown, normalizedAction: unknown): boolean {
+  try {
+    const check = (runtime as { decline_check?: unknown } | null)?.decline_check;
+    if (!check || typeof check !== 'object' || Array.isArray(check)) return false;
+    const answer = check as { state?: unknown; action?: unknown };
+    return answer.state === 'clear' && typeof answer.action === 'string' && /^[a-f0-9]{64}$/.test(answer.action)
+      && answer.action === createHash('sha256').update(JSON.stringify(normalizedAction)).digest('hex');
+  } catch {
+    return false;
+  }
+}
+/** An answer of `declined` that the hold store still has to deliver (a host prompt refused): the original class stands, nothing is lowered. */
+function hasQueuedDecline(apiKey: string, baseUrl: string, agentId: string | undefined): boolean {
+  try {
+    return findHolds({ apiKey, baseUrl, agentId: agentId || null }, {}).some((hold) => hold.outbox?.report?.verdict === 'declined');
+  } catch {
+    return true;
+  }
+}
+
 /** Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts). */
 export function controlRouteCall(event: PreToolUseEvent): boolean {
   if (!isShellTextTool(event)) return false;
@@ -1062,31 +1155,71 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;
-  let type = 'process';
-  if (/\b(?:publish|unpublish|deprecate)\b/.test(input)) type = 'publish';
-  else if (/\b(?:deploy|release|wrangler)\b/.test(input) || infrastructureDeployment) type = 'deploy';
-  else if (/\b(?:merge|pull request|git push)\b/.test(input) || /\bgit\b[^\n;&|]{0,240}\bpush\b/.test(command.toLowerCase())) type = 'review';
-  else if (/\b(?:migration|schema|database|d1)\b/.test(input)) type = 'migration';
-  else if (secretAccess || /\b(?:secret|credential|token|key|permission)\b/.test(input)) type = 'audit';
-  else if (/\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input)) type = 'financial';
-  const surfaces = [
-    /\b(?:deploy|release|production|prod|wrangler)\b/.test(input) || infrastructureDeployment ? 'production' : '',
-    /\b(?:git|github|merge|pull request|push)\b/.test(input) ? 'github' : '',
-    /\b(?:npm|package|publish)\b/.test(input) ? 'npm' : '',
-    secretAccess || /\b(?:secret|credential|token|key)\b/.test(input) ? 'secrets' : '',
-    /\b(?:migration|schema|database|d1)\b/.test(input) ? 'database' : '',
-    /\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input) ? 'financial' : '',
-  ].filter(Boolean);
-  const protectedAction = !readOnly && (
-    secretAccess
-    || (shellGoverned && /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input))
-    || protectedShellCommand
-    || (isMcpHookTool(event.tool_name) && (options.ownUnproven === true || !isOfficialMarrowMcpTool(event.tool_name)))
-    || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
-  );
-  const full: ClassificationParts = { tool, type, surfaces, readOnly, protected: protectedAction };
+  // The label of one classification text. Called for the call's own text and, when a data slot is proven, once more for the masked text (lowerParts):
+  // the same regexes, the same keyword list, only `input` and the shell-mutation test follow the text; `command` (the git push test), the secret, read-only and
+  // infrastructure readings are always those of the original event.
+  const labelOf = (text: string, protectedShell: boolean): ClassificationParts => {
+    let type = 'process';
+    if (/\b(?:publish|unpublish|deprecate)\b/.test(text)) type = 'publish';
+    else if (/\b(?:deploy|release|wrangler)\b/.test(text) || infrastructureDeployment) type = 'deploy';
+    else if (/\b(?:merge|pull request|git push)\b/.test(text) || /\bgit\b[^\n;&|]{0,240}\bpush\b/.test(command.toLowerCase())) type = 'review';
+    else if (/\b(?:migration|schema|database|d1)\b/.test(text)) type = 'migration';
+    else if (secretAccess || /\b(?:secret|credential|token|key|permission)\b/.test(text)) type = 'audit';
+    else if (/\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(text)) type = 'financial';
+    const surfaces = [
+      /\b(?:deploy|release|production|prod|wrangler)\b/.test(text) || infrastructureDeployment ? 'production' : '',
+      /\b(?:git|github|merge|pull request|push)\b/.test(text) ? 'github' : '',
+      /\b(?:npm|package|publish)\b/.test(text) ? 'npm' : '',
+      secretAccess || /\b(?:secret|credential|token|key)\b/.test(text) ? 'secrets' : '',
+      /\b(?:migration|schema|database|d1)\b/.test(text) ? 'database' : '',
+      /\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(text) ? 'financial' : '',
+    ].filter(Boolean);
+    const protectedAction = !readOnly && (
+      secretAccess
+      || (shellGoverned && /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(text))
+      || protectedShell
+      || (isMcpHookTool(event.tool_name) && (options.ownUnproven === true || !isOfficialMarrowMcpTool(event.tool_name)))
+      || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
+    );
+    return { tool, type, surfaces, readOnly, protected: protectedAction };
+  };
+  const full = labelOf(input, protectedShellCommand);
   const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected])].filter((surface): surface is string => surface !== null);
-  return held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
+  const classified = held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
+  if (options.lowering !== true || options.postTool === true || readOnly || secretAccess || held.length > 0 || !command) return classified;
+  const lowered = lowerParts(event, command, classified, labelOf, options.cwd);
+  return lowered ? { ...classified, lowered } : classified;
+}
+
+/**
+ * The label this call would carry with its proven data words spelled `x`, or null. Only a plain Bash-class call (SHELL_TOOLS, an object input with the keys of a shell call,
+ * one string `command`), never a text with a mapper hit or flag or an unparsed text, never a text with a character outside tab, newline and
+ * printable ASCII. The masked label is used only when it is not stricter than the released one on any axis (stricterParts covers it) and is neither protected nor read-only.
+ */
+function lowerParts(event: PreToolUseEvent, command: string, released: ClassificationParts, labelOf: (text: string, protectedShell: boolean) => ClassificationParts, cwd: string | undefined): ClassificationParts | null {
+  if (process.platform === 'win32' || !SLICE_SHELL_TOOLS.includes(normalizeHookToolName(event.tool_name)) || isMcpHookTool(event.tool_name)) return null;
+  const input = asRecord(event.tool_input);
+  if (!input || typeof input.command !== 'string' || !Object.keys(input).every((key) => SLICE_INPUT_KEYS.includes(key)) || Object.getOwnPropertySymbols(event).length > 0) return null;
+  // A text over 8,192 characters is held whole by the shell-mutation test anyway; the parser drops the `time` keyword (a wrapper by F2), so a standalone `time` word gives the released verdict;
+  // a carriage return or any character outside tab, newline and printable ASCII (the trimmed command above does not show a trailing one) leaves the text unmasked.
+  if (input.command.length > 8192 || command !== hookToolCommand(event) || SLICE_OUTSIDE_PLAIN.test(input.command) || /\btime\b/i.test(input.command)) return null;
+  SLICE_ANY_WORD.lastIndex = 0;
+  if (!SLICE_ANY_WORD.test(command)) { SLICE_ANY_WORD.lastIndex = 0; return null; }
+  SLICE_ANY_WORD.lastIndex = 0;
+  try {
+    const decision = sliceReading(cwd, command);
+    if (!decision) return null;
+    const words = sliceProvenWords(command, decision);
+    if (!words.length) return null;
+    const masked = { ...event, tool_input: { ...input, command: sliceMask(input.command, words) } } as PreToolUseEvent;
+    const maskedCommand = hookToolCommand(masked);
+    const low = labelOf(toolClassificationText(masked).toLowerCase(), isProtectedShellMutation(maskedCommand));
+    if (low.protected || low.readOnly || stricterParts(released, low) !== released) return null;
+    if (low.type === released.type && low.protected === released.protected && low.surfaces.join() === released.surfaces.join()) return null;
+    return low;
+  } catch {
+    return null;
+  }
 }
 
 /** The role the runtime call carries: that of the type, or, where `security` displaced a type (ClassificationParts.under), the strictest displaced one, as 3.9.108 sent it. */
@@ -1120,6 +1253,7 @@ function classificationFrom(parts: ClassificationParts): ToolClassification {
     risk,
     protected: protectedAction,
     readOnly,
+    ...(parts.lowered ? { lowered: classificationFrom(parts.lowered) } : {}),
   };
 }
 
@@ -1588,7 +1722,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     ));
     return;
   }
-  const classified = classifyTool(source, { ownUnproven: isOfficialMarrowMcpEvent(source) });
+  const { lowered: loweredClass, ...classified } = classifyTool(source, { ownUnproven: isOfficialMarrowMcpEvent(source), lowering: true });
   let localControl;
   try {
     localControl = readLocalControlState();
@@ -1826,7 +1960,33 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   // "offline, allowed". Routine actions keep the outage policy (failure_mode low_risk_behavior).
   const reach = { gateAnswered: false };
   const highRisk = classified.protected || classified.risk === 'high';
+  // A lowered label (data slots) is only a candidate: it is asked once, with the original class as `base_class`, and used only on a bound clearance (loweringCleared).
+  // No hold store entry of a declined answer that is still queued, no windsurf / gemini / grok (they always need a permit): then it is not asked at all.
+  const lowerable = loweredClass !== undefined && !['windsurf', 'gemini', 'grok'].includes(identity.harness) && !hasQueuedDecline(resolved.apiKey, baseUrl, agentId);
   const control = async (signal: AbortSignal): Promise<PreActionControlResult> => {
+    if (lowerable && loweredClass) {
+      const probe = await marrowAgentRuntime(resolved.apiKey, baseUrl, {
+        action: loweredClass.action,
+        target: loweredClass.target,
+        type: loweredClass.type,
+        role: loweredClass.role,
+        surfaces: loweredClass.surfaces,
+        normalized_action: normalizedAction,
+        base_class: { action: classified.action, type: classified.type, surfaces: classified.surfaces },
+      } as Parameters<typeof marrowAgentRuntime>[2], sessionId, agentId, signal).catch(() => null);
+      if (probe) {
+        const probeVerdict = probe.risk_gate?.decision === 'block' || runtimeGateVerdict(probe) !== null;
+        // A hold or a block of the asked label stands (never looser than the original: the original is asked only when the answer is neither).
+        if (probeVerdict || loweringCleared(probe, normalizedAction)) {
+          reach.gateAnswered = true;
+          const probeIds = [...new Set([probe.decision_id, probe.completion_contract?.decision_id, probe.runtime_authorization?.decision_id]
+            .filter((value): value is string => typeof value === 'string' && SAFE_DECISION_ID.test(value)))];
+          held.decisionId = probeIds.length === 1 ? probeIds[0] : null;
+          held.gateReceiptId = runtimeAuthorizationReceiptId(probe) || null;
+          return { runtime: probe, permit: null, protectedRisk: probeVerdict ? enforcementRequired : false };
+        }
+      }
+    }
     const runtime = await marrowAgentRuntime(resolved.apiKey, baseUrl, {
       action: classified.action,
       target: classified.target,
