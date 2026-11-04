@@ -542,3 +542,103 @@ test('credential stores are never opened, stat-ed or followed (text reader only)
   } finally { for (const [name, fn] of saved) fs[name] = fn; fs.rmSync(home, { recursive: true, force: true }); }
   assert.deepEqual(seen, []);
 });
+
+// ---- PA1 / PA2 (patch-df3-39a): the PR #39 shape groups and the data-mention rows, on the real hook path (classifyTool: label, risk, protected).
+// The shapes are test/support/df3-39a-pr39-shapes.cjs (vendored from PR #39 head 4bab54eea74c). The A0 columns are the answers of A0 eb0917427bc5 measured on its committed
+// dist (H = held as a control-off route, c = clear); DF3_39A_A0_DIST=<A0 dist folder> re-measures them (the red column).
+const PR39 = require('./support/df3-39a-pr39-shapes.cjs');
+const A0_COLUMN = { GAP1: "cccccccc", COMPOUND: "cccHHHcccHccccHccHHHHHHHHHHHHHcHHHcHcHHHHHHccccHcHH", DECODE: "cHcccHcccccHcHccc", DATA_MENTIONS: "HHHHcccccccccccccccccccHcccccccccccccccccccccccccccc" };
+// The keep-clear rows k01-k16 and r13 of the spec abuse table (text, A0 answer).
+const KEEP_ROWS = [
+  { id: "r13-R", text: "npm uninstall @getmarrow/install", a0: "c" },
+  { id: "k01-C", text: "marrow-install control status", a0: "c" },
+  { id: "k02-C", text: "marrow-install control enable", a0: "c" },
+  { id: "k03-C", text: "npx @getmarrow/install control status --json", a0: "c" },
+  { id: "k04-C", text: "npx @getmarrow/install doctor", a0: "c" },
+  { id: "k05-C", text: "npx @getmarrow/install@latest --yes", a0: "c" },
+  { id: "k06-C", text: "npm install -g @getmarrow/mcp", a0: "c" },
+  { id: "k07-C", text: "npm ls -g @getmarrow/mcp", a0: "c" },
+  { id: "k08-C", text: "claude mcp list", a0: "c" },
+  { id: "k09-C", text: "marrow claim", a0: "c" },
+  { id: "k10-C", text: "claude mcp add marrow -- npx @getmarrow/mcp", a0: "c" },
+  { id: "k11-C", text: "npm uninstall -g left-pad", a0: "c" },
+  { id: "k12-C", text: "npx @getmarrow/install update", a0: "c" },
+  { id: "k13-C", text: "marrow-install status", a0: "c" },
+  { id: "k14-C", text: "npx @getmarrow/install control", a0: "H" },
+  { id: "k15-C", text: "node /usr/lib/node_modules/@getmarrow/install/bin/marrow-install.js control enable", a0: "c" },
+  { id: "k16-C", text: "claude mcp remove other-server", a0: "c" },
+];
+const heldOnHookPath = (text) => { const result = bash(text); return heldLabel(result.action) === SECURITY_LABEL && result.protected === true && result.risk === 'high'; };
+const rowId = (group, index) => `${group}-${String(index + 1).padStart(2, '0')}`;
+const countOf = (column) => [...column].filter((ch) => ch === 'H').length;
+
+for (const group of ['GAP1', 'COMPOUND', 'DECODE']) {
+  PR39[group].forEach(([name, text], index) => test(`B13 ${rowId(group, index)} ${name}: held as security on marrow-control`, () => {
+    assert.equal(heldOnHookPath(text), true, 'hook path label, protected, high');
+    assert.equal(controlRoute(text), true, 'controlRoute');
+  }));
+}
+test('B13 group sizes and the A0 red column (GAP1 0 of 8, COMPOUND 31 of 51, DECODE 4 of 17 held on A0)', () => {
+  assert.deepEqual(['GAP1', 'COMPOUND', 'DECODE'].map((group) => PR39[group].length), [8, 51, 17]);
+  assert.deepEqual(['GAP1', 'COMPOUND', 'DECODE'].map((group) => A0_COLUMN[group].length), [8, 51, 17]);
+  assert.deepEqual(['GAP1', 'COMPOUND', 'DECODE'].map((group) => countOf(A0_COLUMN[group])), [0, 31, 4]);
+});
+
+PR39.DATA_MENTIONS.forEach(([name, text], index) => test(`B12 ${rowId('DATA_MENTIONS', index)} ${name}: same answer as A0 (${A0_COLUMN.DATA_MENTIONS[index] === 'H' ? 'held' : 'clear'})`, () => {
+  const held = A0_COLUMN.DATA_MENTIONS[index] === 'H';
+  assert.equal(heldOnHookPath(text), held, 'hook path');
+  assert.equal(controlRoute(text), held, 'controlRoute');
+}));
+KEEP_ROWS.forEach((row) => test(`B12 ${row.id}: same answer as A0 (${row.a0 === 'H' ? 'held' : 'clear'})`, () => {
+  const held = row.a0 === 'H';
+  assert.equal(heldOnHookPath(row.text), held, 'hook path');
+  assert.equal(controlRoute(row.text), held, 'controlRoute');
+}));
+test('B12 sizes: 52 data mentions (5 held, 47 clear on A0) and 17 keep rows (only k14-C held)', () => {
+  assert.equal(PR39.DATA_MENTIONS.length, 52);
+  assert.equal(A0_COLUMN.DATA_MENTIONS.length, 52);
+  assert.equal(countOf(A0_COLUMN.DATA_MENTIONS), 5);
+  assert.deepEqual(KEEP_ROWS.filter((row) => row.a0 === 'H').map((row) => row.id), ['k14-C']);
+  assert.equal(KEEP_ROWS.length, 17);
+});
+test('B12 the vendored F1 fixture is the PR #39 file', () => {
+  const bytes = fs.readFileSync(join(__dirname, 'support', 'df3-39a-pr39-F1.json'));
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), '7f94ea8aac55a3f5404d24e6756779f1c263287f3cf0cf25d17325783e6d4c23');
+});
+if (process.env.DF3_39A_A0_DIST) {
+  test('B12/B13 the A0 columns are what A0 answers (DF3_39A_A0_DIST)', () => {
+    const a0Route = require(join(process.env.DF3_39A_A0_DIST, 'control-routes.js')).controlRoute;
+    for (const group of ['GAP1', 'COMPOUND', 'DECODE', 'DATA_MENTIONS']) {
+      PR39[group].forEach(([, text], index) => assert.equal(a0Route(text), A0_COLUMN[group][index] === 'H', rowId(group, index)));
+    }
+    for (const row of KEEP_ROWS) assert.equal(a0Route(row.text), row.a0 === 'H', row.id);
+  });
+}
+
+// ---- PA4 (patch-df3-39a): the six plants round 1 called equivalent (m14 m18 m26 m30 m33 m36). Over the 31,507 replay commands and the 350 abuse and shape rows each plant answers
+// like the tip, because master's route already holds every text that spells the installer out. Each one changes the answer on a text whose installer name only shows after the
+// quotes are removed (master's route never sees it), so each has its own row here.
+const nestEval = (inner, levels) => { let text = inner; for (let at = 0; at < levels; at += 1) text = `eval '${text.replace(/'/g, "'\\''")}'`; return text; };
+test('PA4 m14: read NAME <<< VALUE binds the value (a quote-split installer line run through the name)', () => {
+  hold('read c <<< "marrow-inst""all control disable"; $c');
+});
+test('PA4 m18: the depth limit is 3 (4 nested evals of a quote-split installer line hold, 3 are read)', () => {
+  hold(nestEval("marrow-inst''all status", 4));
+  clear(nestEval("marrow-inst''all status", 3));
+});
+test('PA4 m26: a here-string word stays a word (an expansion fed to a quote-split installer)', () => {
+  hold('marrow-inst""all <<< $x');
+  hold("marrow-inst''all status <<< $x");
+});
+test('PA4 m30: a braced parameter is one word (its default text is data, never a command)', () => {
+  clear("echo ${P:-x;marrow-inst''all control disable}");
+  clear('echo "${P:-x;marrow-inst""all control disable}"');
+});
+test('PA4 m33: a command substitution starts its own command', () => {
+  hold("echo $(marrow-inst''all control disable)");
+  hold("x=$(marrow-inst''all control disable)");
+});
+test('PA4 m36: a command substitution inside double quotes is read as a command', () => {
+  hold('echo "$(marrow-inst\'\'all control disable)"');
+  hold('echo "`marrow-inst\'\'all control disable`"');
+});
