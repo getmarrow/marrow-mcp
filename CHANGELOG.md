@@ -2,6 +2,7 @@
 
 ## Unreleased (next batched version)
 
+- Docs (README): the two fallback sentences that showed a key typed on a command line (an inline key setting before the installer command, and an export of the key for the session) are removed. The key setup shown is saving the key in an owner-only `~/.marrow/env` first. Docs only; no code or behavior changes.
 - Fix (hook, quiet plain allows): when Marrow allows an unprotected call and the hook holds no permit, service text made only of the generic sentences (`Do not repeat the failed path. Apply the avoid list before acting.`, `No identified workflow yet. Complete the checks, then commit the outcome so Marrow can reuse this path.`, `Proceed with the low-risk work. Marrow is using cached summaries to keep the agent hot path fast.`) is no longer added to the agent's context, so a read or a local append is not asked to close an outcome. The compare is exact (ASCII whitespace runs collapse, no case or Unicode fold, at most 400 characters). Specific text, the permit line of a protected call, every verdict, every request to Marrow and every closure call are unchanged.
 
 ## 3.9.110
