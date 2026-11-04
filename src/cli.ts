@@ -64,7 +64,11 @@ import {
   marrowAutoHttpTraceFromError,
   validatePathParam,
   validateBaseUrl,
+  chatLinkPersonPresent,
+  chatLinkSentence,
+  requestChatOwnerLink,
 } from './index';
+import { ordinaryApprovalGuidance } from './runtime-contract';
 import { localControlEvidence } from './control-state';
 import { hookSpooledLifecycleEvent, installPermissionRequestHook, installPostToolUseHook, runHookCommand, runPermissionRequestHookCommand } from './hook';
 import { deliverQueuedForReceipt, holdSessionForReceipt, proofFieldsForReceipt, type HoldContext } from './host-approval';
@@ -2360,7 +2364,22 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
         );
         storeRuntimeGuidance(result);
         storeLastKnownStatus(result.status, 'runtime');
-        toolSuccess(id, clientOperationalPayload('marrow_agent_runtime', result));
+        // A held ordinary receipt with a person at the session (the host asks its user, or request_owner_link: true):
+        // Marrow is asked once for this receipt to send the owner its one-tap link. The reply names the channel, never a link.
+        const held = ordinaryApprovalGuidance(result);
+        const chatLink = held && chatLinkPersonPresent(held, { hostAsksUser: clientElicitation, requestOwnerLink: args.request_owner_link })
+          ? await requestChatOwnerLink({ apiKey: API_KEY, baseUrl: BASE_URL, gateReceiptId: held.gateReceiptId, sessionId: SESSION_ID, agentId: FLEET_AGENT_ID, timeoutMs: 2_000 })
+          : null;
+        toolSuccess(id, clientOperationalPayload('marrow_agent_runtime', held && chatLink ? {
+          ...result,
+          owner_approval_request: {
+            gate_receipt_id: held.gateReceiptId,
+            state: chatLink.state.sent ? 'sent' : 'not_sent',
+            channel: chatLink.state.channel,
+            expires_at: chatLink.state.expiresAt,
+            message: `${chatLinkSentence(chatLink.state)} Marrow records the owner's tap on gate receipt ${held.gateReceiptId}; read it at ${held.statusPath} after about ${Math.ceil(held.pollAfterMs / 1000)} s, and run the action only after it shows the owner's approval. Never write or claim an approval yourself.`,
+          },
+        } : result));
         return;
       }
 
