@@ -1,0 +1,3434 @@
+{
+  "g''it push --force origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "\"g\"it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "gi\\t push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "'git' push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "\"/usr/bin/g\"it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "G''IT push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "env g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "bash -c \"g''it push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h pr merge 1": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''h api -X PUT repos/o/r/pulls/1/merge": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push origin fix/x": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it push origin main && echo done": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "echo start; g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "false || g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "echo x | g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "GIT_SSH_COMMAND=ssh g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''it -c core.x=y push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it --no-pager push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it --git-dir=/r/.git push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''it --git-dir /r/.git push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''it -C /r -c a=b push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "command g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "sudo g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "timeout 30 g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "nohup g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "env -i FOO=bar g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "sh -c \"g''it push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "bash -lc \"g''it push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "bash -c \"bash -c 'g''it push origin main'\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "xargs -I{} g''it push origin {} <<< main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "for b in main; do g''it push origin $b; done": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "while true; do g''it push origin main; done": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "if true; then g''it push origin main; fi": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "/usr/bin/g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''it.exe push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "gi''t\tpush origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g\\it  push  -f origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''it push origin HEAD:main --force": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "(g''it push origin main)": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it push origin $(git branch --show-current)": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "G''H pr merge 1 --admin": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "gh pr merge 1 --admin": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''h api repos/o/r/pulls/1/merge -X PUT": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h api --method=PUT repos/o/r/pulls/1/merge": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h api -f merge_method=squash repos/o/r/pulls/1/merge": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "/usr/bin/g''h pr merge 1": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "env g''h pr merge 1": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "bash -c \"g''h pr merge 1\"": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo \"unterminated g''it push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it-push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "/usr/lib/git-core/g''it-push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "env -S 'g''it -C /r push origin main'": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sudo -S g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g\\\nit push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "bash -c 'g''it -C /r push origin main' arg0": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo main | xargs -n 1 g''it -C /r push origin": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push origin main &": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "! g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it push origin main <<EOF\nbody\nEOF": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "{ g''it push origin main; }": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h pr merge 1 $(echo x)": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "find . -exec echo g''it push {} \\;": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "git push origin master": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git push --force origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git -C /repo push origin master": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git -C /repo push --force origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git -c core.x=y push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git --no-pager push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "command git push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "\\git push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "/usr/bin/git push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "GIT=git; $GIT push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git\tpush origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "\"git\" push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''it push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git push origin fix/x": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "env git push origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "xargs -I{} git push origin {} <<< main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git  push  -f origin main": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "gh api -X PUT repos/o/r/pulls/1/merge": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git push origin HEAD:main --force": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git status": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git log --oneline": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git diff": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git diff --stat HEAD~1": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git push --dry-run origin fix/x": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git commit -m \"push to master later\"": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "git commit -m x": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''it commit -m x": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "gi\\t commit -m x": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo git push": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "grep -n \"git push\" src": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it status": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it log": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it log --oneline": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it diff": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it branch": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it fetch origin": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it pull origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it rev-parse HEAD": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''h pr view 1": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''h pr list": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''h api repos/o/r/pulls/1/merge": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h api repos/o/r/pulls": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "gh api repos/o/r/pulls/1/merge": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "ls -la": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "npm test": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "node --test --test-name-pattern \"git push\" test/x.test.js": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "echo g''it push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "echo g''it push origin main": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "printf '%s\\n' g''it push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "cat git-push.md": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "ls docs/git-push.md": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "grep -rn \"push\" src | head": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git log --grep=push": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it commit -m \"g''it push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sed -n 1,5p README.md": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo $(date)": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "git status $(pwd)": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it status $(pwd)": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo \"unterminated": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "ls {a,b}": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "(cd src && ls)": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo $(git log --oneline)": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "git commit -m \"git push origin main\"": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "node --test --test-name-pattern \"git push\" test/a.test.js": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "echo \"g''it push origin main\"": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git commit -m \"merge\"": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "ls git-push.md": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "xargs echo g''it push": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "xargs echo git push": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "S=push; echo $S": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "S=push; git status $S": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "alias gp='git push'\ngit log": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "alias gp=\"g''it push\"\ng''it log": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "for w in git push; do echo $w; done": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "for w in g''it push; do echo $w; done": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "while read x; do echo g''it push; done": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "until false; do echo g''it push; break; done": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "timeout 5 echo g''it push": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "timeout 5 grep -n g''it push file": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "find . -name 'g''it push' -print": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "find . -exec echo git push {} \\;": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "echo ! g''it push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "echo '!g''it push'": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "grep -c push README.md": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git commit -m \"fix: the g''it push hook\"": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "man g''it-push": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo \"push\" | g''rep push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "env FOO=g''it echo push": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "env echo g''it push": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "sudo echo g''it push": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "bash -c \"echo g''it push\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sh -c 'echo g''it push'": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "command echo g''it push": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "nohup echo g''it push": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''rep -n push src": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "ec''ho git push": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "node -e \"console.log('g''it push')\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "python3 -c \"print('g''it push')\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "printf g''it\\ push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "xargs echo g''it -C /r push": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''rep -C 2 push src": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it log --grep push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it -C /r log push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it status push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''h issue list push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''h pr list merge": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''h pr view merge": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git-push-notes.sh": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "bash -c \"echo g''it -C /r push\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "node -e \"console.log('g''it -C /r push')\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "for w in g''it -C /r push; do echo $w; done": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sudo -S echo g''it -C /r push": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "env -S 'echo g''it -C /r push'": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "cd /r && g''it -C . push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push --force origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "\"g\"it -c a=b push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "gi\\t --no-pager push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sudo -u alice -g staff g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "env -i -u X A=1 B=2 g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "nohup g''it -C /r push origin main &": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "timeout 30 nice -n 5 ionice -c 3 g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "command -- g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "xargs -I{} g''it -C /r push origin {}": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "bash -c \"g''it -C /r push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "bash -lc 'g\"\"it -C /r push origin main'": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sh -ec \"g''it -C /r push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "zsh -c \"g''it -C /r push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sudo bash -c \"g''it -C /r push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "env bash -c \"env g''it -C /r push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "bash -c \"bash -c \\\"bash -c 'g''it -C /r push origin main'\\\"\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "eval \"g''it -C /r push origin main\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "eval g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "if true; then g''it -C /r push origin main; fi": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "for i in 1 2; do g''it -C /r push origin $i; done": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "while g''it -C /r push origin main; do sleep 1; done": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "until false; do g''it -C /r push origin main; done": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "true && ! g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "( g''it -C /r push origin main )": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "{ g''it -C /r push origin main; }": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push origin $(date +%s)": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push origin `date`": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push origin main <<< x": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push origin main > out.txt 2>&1": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push origin main | tee out.txt": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push\torigin\tmain": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r push\norigin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo x\ng''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g\\\nit -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "GIT_TRACE=1 g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "GIT_SSH_COMMAND='ssh -i k' g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "PAGER=cat g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "/usr/bin/g''it -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "/usr/local/bin/g\"it\" -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it.exe -C /r push origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "G''IT -C /r PUSH origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r p''ush origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -C /r pu\\sh origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -c alias.p=push p origin main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it -c 'alias.p=push origin' p": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h pr merge 1 --admin --squash": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''h -R o/r pr merge 1": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h pr -R o/r merge 1": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "G''H PR MERGE 1": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''h api --method PUT repos/o/r/pulls/1/merge": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h api -XPUT repos/o/r/pulls/1/merge": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h api repos/o/r/pulls/1/merge -f merge_method=squash": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h api repos/o/r/pulls/1/merge --input body.json": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h api -X POST repos/o/r/merges": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h api -X POST repos/o/r/merge-upstream": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sudo g''h pr merge 1": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "case x in x) g''it push origin main ;; esac": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo main | xargs -I{} sh -c \"g''it -C /r push origin {}\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "git log --oneline -5": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git diff HEAD~1": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git show HEAD": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git branch -a": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git ls-remote origin": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "git rev-parse HEAD": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it show push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it log push": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it -C /r status": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it -c push.default=simple status": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it --no-pager log": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it config push.default": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it config --get remote.origin.pushurl": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it remote get-url --push origin": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it commit -m 'push later'": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it commit -m \"g''it push\"": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it add push.md": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it checkout push-fix": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it branch push-fix": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it tag push-v1": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it stash push -m x": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it stash": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it merge push-fix": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "g''it rebase main": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it reset --hard HEAD": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo g''it -C /r push origin main": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "printf '%s\\n' \"g''it push\"": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "ls docs/g''it-push.md": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "grep -rn 'g''it push' src": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "grep -n \"git push\" README.md": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "rg 'git push' src": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "sed -n '1,5p' push.md": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "env echo g''it -C /r push": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sudo echo g''it -C /r push": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "sh -c 'echo g''it -C /r push'": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "time echo g''it -C /r push": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "node --test --test-name-pattern 'git push' test/x.test.js": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "npm test -- --grep 'git push'": {
+    "action": "classified Bash action: review on workspace",
+    "target": "workspace:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "S=push; g''it status $S": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "alias gp='git push'": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "high",
+    "protected": true,
+    "readOnly": false
+  },
+  "type g''it": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "which g''it": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''it --version": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''it help push": {
+    "action": "classified Bash action: process on github",
+    "target": "github:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h pr list --search merge": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''h pr status": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''h run list": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "low",
+    "protected": false,
+    "readOnly": true
+  },
+  "g''h api -X GET repos/o/r/pulls/1/merge": {
+    "action": "classified Bash action: review on github",
+    "target": "github:review",
+    "type": "review",
+    "role": "review",
+    "surfaces": [
+      "github"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "g''h auth status": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "echo `date`": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "ls (x": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  },
+  "{ ls; }": {
+    "action": "classified Bash action: process on workspace",
+    "target": "workspace:process",
+    "type": "process",
+    "role": "general",
+    "surfaces": [
+      "workspace"
+    ],
+    "risk": "medium",
+    "protected": false,
+    "readOnly": false
+  }
+}
