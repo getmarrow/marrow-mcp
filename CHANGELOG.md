@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased (next batched version)
+
+- Docs (README): the two fallback sentences that showed a key typed on a command line (an inline key setting before the installer command, and an export of the key for the session) are removed. The key setup shown is saving the key in an owner-only `~/.marrow/env` first. Docs only; no code or behavior changes.
+- Fix (hook, quiet plain allows): when Marrow allows an unprotected call and the hook holds no permit, service text made only of the generic sentences (`Do not repeat the failed path. Apply the avoid list before acting.`, `No identified workflow yet. Complete the checks, then commit the outcome so Marrow can reuse this path.`, `Proceed with the low-risk work. Marrow is using cached summaries to keep the agent hot path fast.`) is no longer added to the agent's context, so a read or a local append is not asked to close an outcome. The compare is exact (ASCII whitespace runs collapse, no case or Unicode fold, at most 400 characters). Specific text, the permit line of a protected call, every verdict, every request to Marrow and every closure call are unchanged.
+
 ## 3.9.110
 
 Repair of a broken install on 3.9.109, plus the changes merged since: a busy host is no longer locked out when the local loop-guard state reaches its 256 KB cap. Older loop history of other sessions is pruned instead; the session making the call is never pruned. The merged changes are the stable, version-free Marrow entry recognized as the official server on Codex and Cursor, a hold in Claude Code auto mode that denies with its receipt instead of opening a dialog, the line that says where a refused agent id came from, and a `marrow_think` fix. Two changes are looser than 3.9.109, on purpose and by the owner's decision: the stable entry (MCP-2), and the loop-guard pruning at the cap, where a loop in another session that repeats a call only after 3 or more other distinct calls can be missed while the pruning runs (see the known limit below). None of the other changes lets through an action that was held before.
