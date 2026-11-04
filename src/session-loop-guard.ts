@@ -17,6 +17,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { types } from 'node:util';
 import { hookToolCommand, normalizeHookToolName } from './hook-tool-policy';
 import { ensureWindowsPrivateState, realWindowsDeps, verifyWindowsPrivateState, type WinEnsure, type WinEnsureOk } from './win-private-state';
 
@@ -29,6 +30,12 @@ const LOOP_FLOOR = 3;
 const STATE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_SESSIONS = 64;
 const MAX_ENTRIES_PER_SESSION = 256;
+// MCP-111 K2b: a compile-time switch (item 22, shipped ON). No env, file, option, hook payload or tool input reaches it;
+// OFF is the 3.9.110 loop guard byte for byte (only resolveLoopEntry and the result step in record read it).
+const LOOP_GUARD_SPLIT = true;
+const BACKSTOP_COUNT = 4; // a padded loop (same call, junk past a cut) is stopped by its cut family at this count
+const FULL_BUDGET = 4_194_304; // weighted work units; no clock, so a true repeat never changes branch under load
+const FULL_DEPTH = 256;
 
 type LoopOutcome = 'success' | 'failure';
 type LoopKind = 'poll' | 'verification' | 'read' | 'mutation';
@@ -114,6 +121,98 @@ function keyedHash(secret: string, value: unknown): string {
   return createHmac('sha256', Buffer.from(secret, 'base64url'))
     .update(JSON.stringify(canonical(value)))
     .digest('hex');
+}
+
+type Fingerprint = { fp: string; cut: string; split: boolean };
+
+/** canonical() verbatim, plus `lossy`, set only where a cut branch loses information (a cut is `>`, never `>=`). */
+export function canonicalTracked(value: unknown, depth: number, flag: { lossy: boolean; keys?: number }): unknown {
+  if (depth > 8) { flag.lossy = true; return '[depth]'; }
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') { if (!Number.isFinite(value)) flag.lossy = true; return Number.isFinite(value) ? value : String(value); }
+  if (typeof value === 'string') { if (value.length > 16_384) flag.lossy = true; return value.slice(0, 16_384); }
+  if (Array.isArray(value)) { if (value.length > 128) flag.lossy = true; return value.slice(0, 128).map((item) => canonicalTracked(item, depth + 1, flag)); }
+  if (value && typeof value === 'object') {
+    const source = value as Record<string, unknown>;
+    const names = Object.keys(source).sort();
+    if (names.length > 128) { flag.lossy = true; flag.keys = (flag.keys ?? 0) + names.length; }
+    return Object.fromEntries(names.slice(0, 128).map((key) => { if (key.length > 128) flag.lossy = true; return [key.slice(0, 128), canonicalTracked(source[key], depth + 1, flag)]; }));
+  }
+  flag.lossy = true;
+  return String(value).slice(0, 256);
+}
+
+/**
+ * The full form of a JSON-shaped value as one device-key HMAC: tagged, length-prefixed tokens (prefix-free), strings as
+ * UTF-16LE, keys in code-unit order, no intermediate object. One loop over an explicit stack; every allocation is charged
+ * to `budget` first. null means "not taken": an unsupported shape (undefined, bigint, symbol, function, Map and any other
+ * prototype, Proxy, accessor, hole, a second visit of one object), depth over FULL_DEPTH, an overrun or any throw. The
+ * caller then keeps the 3.9.110 fingerprint. `tap` sees every token (tests only).
+ */
+export function fullDigest(key: Buffer, value: unknown, tap?: (token: string) => void, budget = FULL_BUDGET): string | null {
+  try {
+    const hmac = createHmac('sha256', key).update('k2b-full\n');
+    const put = (token: string, utf16 = false): void => { tap?.(token); hmac.update(token, utf16 ? 'utf16le' : 'utf8'); };
+    const seen = new Set<object>();
+    const vals: unknown[] = [value];
+    const deps: number[] = [0]; // >= 0 a value at that depth, -1 a closing token, -2 a key name
+    let work = 0;
+    while (vals.length) {
+      const v = vals.pop();
+      const d = deps.pop() as number;
+      if (d === -1) { put(v as string); continue; }
+      if (d === -2) { if ((work += 2 * (v as string).length) > budget) return null; put(`s${(v as string).length}:`); put(v as string, true); continue; }
+      if ((work += 40) > budget || d > FULL_DEPTH) return null;
+      if (v === null) put('z');
+      else if (typeof v === 'boolean') put(v ? 'T' : 'F');
+      else if (typeof v === 'number') put(Number.isFinite(v) ? `n${JSON.stringify(v)}` : `N${v};`);
+      else if (typeof v === 'string') { if ((work += 2 * v.length) > budget) return null; put(`s${v.length}:`); put(v, true); }
+      else if (typeof v !== 'object' || types.isProxy(v) || seen.has(v)) return null;
+      else if (Array.isArray(v)) {
+        seen.add(v);
+        if (Object.getPrototypeOf(v) !== Array.prototype || (work += 40 * v.length) > budget) return null;
+        put(`[${v.length}:`);
+        vals.push(']'); deps.push(-1);
+        for (let i = v.length - 1; i >= 0; i -= 1) {
+          const slot = Object.getOwnPropertyDescriptor(v, i);
+          if (!slot || !('value' in slot)) return null;
+          vals.push(slot.value); deps.push(d + 1);
+        }
+      } else {
+        seen.add(v);
+        const proto = Object.getPrototypeOf(v);
+        if (proto !== Object.prototype && proto !== null) return null;
+        const names = Object.keys(v);
+        if ((work += 80 * names.length + 8 * names.length * Math.ceil(Math.log2(names.length || 1))) > budget) return null; // before the sort
+        names.sort();
+        put(`{${names.length}:`);
+        vals.push('}'); deps.push(-1);
+        for (let i = names.length - 1; i >= 0; i -= 1) {
+          const slot = Object.getOwnPropertyDescriptor(v, names[i]);
+          if (!slot || !('value' in slot)) return null;
+          vals.push(slot.value, names[i]); deps.push(d + 1, -2);
+        }
+      }
+    }
+    return hmac.digest('hex');
+  } catch { return null; } // reads nothing from the error and logs nothing: the answer is the 3.9.110 fingerprint
+}
+
+/**
+ * `cut` is exactly 3.9.110's keyedHash of the value (one tracked pass instead of canonical() twice). A value that lost
+ * nothing keeps it. A value a cut branch changed gets `fp`, a second HMAC over the cut text and the full digest, so two
+ * calls that differ only past a cut differ. Anything the full walk cannot take keeps `cut`: exactly 3.9.110.
+ */
+export function loopFingerprint(secret: string, value: unknown, tap?: (token: string) => void, budget?: number, stats?: { fallbacks: number }): Fingerprint {
+  const flag: { lossy: boolean; keys?: number } = { lossy: false };
+  const key = Buffer.from(secret, 'base64url');
+  const text = JSON.stringify(canonicalTracked(value, 0, flag));
+  const cut = createHmac('sha256', key).update(text).digest('hex');
+  if (!flag.lossy) return { fp: cut, cut, split: false };
+  // 80 units per key is charged before any key is read: a list that big overruns the walk, so it is not started
+  const full = (flag.keys ?? 0) * 80 > (budget ?? FULL_BUDGET) ? null : fullDigest(key, value, tap, budget);
+  if (!full) { if (stats) stats.fallbacks += 1; return { fp: cut, cut, split: false }; }
+  return { fp: createHmac('sha256', key).update(`${text}\n${full}`).digest('hex'), cut, split: true };
 }
 
 function paths(home = homedir()): { marrow: string; directory: string; target: string } {
@@ -495,6 +594,45 @@ function operationIdentity(state: GuardState, session: SessionState, operation: 
   ]);
 }
 
+/**
+ * The one resolver for consult and record. `fp` is the call's own key, `cut` the 3.9.110 key, `bk` the key of its cut
+ * family (master's view of every call with the same cut text); null when the switch is off.
+ */
+function resolveLoopEntry(state: GuardState, session: SessionState, operation: LoopGuardOperation, mapped?: string): Fingerprint & { bk: string | null } {
+  if (!LOOP_GUARD_SPLIT) { const fp = mapped ?? operationIdentity(state, session, operation); return { fp, cut: fp, split: false, bk: null }; }
+  // record, with the key consult mapped to the invocation: a split call also mapped its family
+  if (mapped) return { fp: mapped, cut: mapped, split: false, bk: session.invocations[keyedHash(state.secret, ['invocation-backstop', operation.invocationId])] ?? keyedHash(state.secret, ['loop-backstop', mapped]) };
+  const found = loopFingerprint(state.secret, [
+    'operation',
+    operation.harness,
+    operation.agentId || 'credential-agent',
+    normalizeHookToolName(operation.toolName) || 'tool',
+    operation.toolInput ?? null,
+    session.work_epoch,
+    session.instruction_epoch,
+  ]);
+  return { ...found, bk: keyedHash(state.secret, ['loop-backstop', found.cut]) };
+}
+
+// master's rule (3.9.110): a repeat with an outcome and an unchanged count at the threshold is not run again
+const loopStops = (entry?: LoopEntry): boolean => !!entry?.outcome && entry.unchanged_count >= (entry.kind === 'poll' || entry.outcome === 'failure' ? 2 : 1);
+
+/** Count one more attempt on an entry, or create it; a new entry continues from `seed` (a call whose cut family already ran). */
+function touchLoopEntry(state: GuardState, session: SessionState, key: string, kind: LoopKind, now: number, seed?: LoopEntry): LoopEntry {
+  const existing = session.entries[key];
+  if (existing) { existing.attempts += 1; existing.updated_at = now; return existing; }
+  return (session.entries[key] = {
+    fingerprint: key,
+    kind,
+    outcome: seed?.outcome ?? null,
+    result_hash: seed?.result_hash ?? null,
+    unchanged_count: seed?.unchanged_count ?? 0,
+    attempts: (seed?.attempts ?? 0) + 1,
+    updated_at: now,
+    receipt: `lgr_${keyedHash(state.secret, ['receipt', key]).slice(0, 24)}`,
+  });
+}
+
 const SAFE_TOOL_LABEL = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 /** The tool name only, never its input. Anything that is not a plain name reads as "call". */
@@ -514,35 +652,24 @@ export function consultSessionLoopGuard(operation: LoopGuardOperation, options: 
     const now = options.now ?? Date.now();
     const loaded = readState(options.home);
     const session = getSession(loaded.state, operation, now);
-    const fingerprint = operationIdentity(loaded.state, session, operation);
+    const id = resolveLoopEntry(loaded.state, session, operation);
     const kind = operationKind(operation);
-    const existing = session.entries[fingerprint];
-    if (existing) {
-      const threshold = existing.kind === 'poll' || existing.outcome === 'failure' ? 2 : 1;
-      if (existing.outcome && existing.unchanged_count >= threshold) {
-        return { allow: false, receipt: existing.receipt, reason: denial(existing, operation.toolName), fingerprint };
-      }
-      existing.attempts += 1;
-      existing.updated_at = now;
-    } else {
-      const receipt = `lgr_${keyedHash(loaded.state.secret, ['receipt', fingerprint]).slice(0, 24)}`;
-      session.entries[fingerprint] = {
-        fingerprint,
-        kind,
-        outcome: null,
-        result_hash: null,
-        unchanged_count: 0,
-        attempts: 1,
-        updated_at: now,
-        receipt,
-      };
-    }
+    const existing = session.entries[id.fp];
+    const family = id.bk ? session.entries[id.bk] : undefined;
+    // Every deny needs master's view of the cut family too (never stricter than master), or the backstop count.
+    const hit = loopStops(existing) && (!family || loopStops(family)) ? existing
+      : family?.outcome && family.unchanged_count >= BACKSTOP_COUNT ? family : undefined;
+    if (hit) return { allow: false, receipt: hit.receipt, reason: denial(hit, operation.toolName), fingerprint: id.fp };
+    // A split call continues from its family (or from 3.9.110's entry at the cut key): one extra run for a call that straddles the upgrade.
+    const entry = touchLoopEntry(loaded.state, session, id.fp, kind, now, id.split ? family ?? session.entries[id.cut] : undefined);
+    if (id.bk && (family || id.split)) touchLoopEntry(loaded.state, session, id.bk, kind, now, session.entries[id.cut]);
     session.updated_at = now;
     if (operation.invocationId) {
-      session.invocations[keyedHash(loaded.state.secret, ['invocation', operation.invocationId])] = fingerprint;
+      session.invocations[keyedHash(loaded.state.secret, ['invocation', operation.invocationId])] = id.fp;
+      if (id.split && id.bk) session.invocations[keyedHash(loaded.state.secret, ['invocation-backstop', operation.invocationId])] = id.bk;
     }
     writeState(loaded.state, loaded.target, loaded.directory, sessionKey(loaded.state, operation));
-    return { allow: true, receipt: session.entries[fingerprint].receipt, fingerprint };
+    return { allow: true, receipt: entry.receipt, fingerprint: id.fp };
   });
 }
 
@@ -559,16 +686,24 @@ export function recordSessionLoopOutcome(
     const invocationKey = operation.invocationId
       ? keyedHash(loaded.state.secret, ['invocation', operation.invocationId])
       : null;
-    const fingerprint = invocationKey && session.invocations[invocationKey]
-      ? session.invocations[invocationKey]
-      : operationIdentity(loaded.state, session, operation);
-    const entry = session.entries[fingerprint];
+    const id = resolveLoopEntry(loaded.state, session, operation, invocationKey ? session.invocations[invocationKey] : undefined);
+    const entry = session.entries[id.fp];
     if (!entry) return;
     const outcome: LoopOutcome = success ? 'success' : 'failure';
-    const resultHash = keyedHash(loaded.state.secret, ['result', canonical(result ?? null)]);
-    entry.unchanged_count = entry.outcome === outcome && entry.result_hash === resultHash
+    const resultFp = LOOP_GUARD_SPLIT ? loopFingerprint(loaded.state.secret, ['result', result ?? null]) : undefined;
+    const resultHash = resultFp?.fp ?? keyedHash(loaded.state.secret, ['result', canonical(result ?? null)]);
+    const cutHash = resultFp?.cut ?? resultHash;
+    // An entry 3.9.110 recorded holds the cut hash: it still counts as unchanged once, so a poll count is never reset by the upgrade.
+    entry.unchanged_count = entry.outcome === outcome && (entry.result_hash === resultHash || entry.result_hash === cutHash)
       ? entry.unchanged_count + 1
       : 1;
+    const family = id.bk ? session.entries[id.bk] : undefined;
+    if (family) {
+      family.unchanged_count = family.outcome === outcome && family.result_hash === cutHash ? family.unchanged_count + 1 : 1;
+      family.outcome = outcome;
+      family.result_hash = cutHash;
+      family.updated_at = now;
+    }
     entry.outcome = outcome;
     entry.result_hash = resultHash;
     entry.updated_at = now;
