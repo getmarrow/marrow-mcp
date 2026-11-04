@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (next batched version)
+
+- Security (hook, additive): the hook can lower the question for a shell command whose only shipping words sit in a proven data slot of a listed program (a `grep`/`rg`/`git grep` pattern, a bare `cat` heredoc body, the file operands of `sed -n`, `cd`, `ls`). It never lowers on its own: it asks the service with the original labels as `base_class` and acts only on a `decline_check` clearance bound to the sha256 of this call's normalized action; without the clearance, or on any error, unknown form, mapper hit or queued decline, the answer is the unchanged one. The service half must be live before any install sees a lowering.
+- Security (hook, stricter): a shell command with a `while`, `until` or `select` loop (like a `for` loop) is never lowered; it gets the unchanged answer.
+- Security (hook, stricter): only one simple command alone can be lowered; the same command inside a group, subshell, substitution, `if`, loop, `case`, function body, `!`, list or pipeline gets the unchanged answer.
+
 ## 3.9.110
 
 Repair of a broken install on 3.9.109, plus the changes merged since: a busy host is no longer locked out when the local loop-guard state reaches its 256 KB cap. Older loop history of other sessions is pruned instead; the session making the call is never pruned. The merged changes are the stable, version-free Marrow entry recognized as the official server on Codex and Cursor, a hold in Claude Code auto mode that denies with its receipt instead of opening a dialog, the line that says where a refused agent id came from, and a `marrow_think` fix. Two changes are looser than 3.9.109, on purpose and by the owner's decision: the stable entry (MCP-2), and the loop-guard pruning at the cap, where a loop in another session that repeats a call only after 3 or more other distinct calls can be missed while the pruning runs (see the known limit below). None of the other changes lets through an action that was held before.
