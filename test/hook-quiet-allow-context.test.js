@@ -54,6 +54,12 @@ function expectedForKept(result, out, harness) {
 }
 
 test('quiet allow: every matrix cell is quiet exactly where the design says, and kept cells keep BASE text', () => {
+  // Named cells outside the grid (the slim advisory answer), checked first so a red names the cell.
+  for (const named of cells.namedCells()) {
+    for (const harness of named.harnesses) {
+      assert.deepEqual(preActionHookOutput(named.result, harness, undefined, false), named.expected, `${named.name} (${harness})`);
+    }
+  }
   let quiet = 0;
   let total = 0;
   for (const cell of cells.cells()) {
@@ -172,6 +178,18 @@ test('quiet allow: forged event fields and chained or misleading command text do
   for (const command of ['echo ok && wrangler deploy production', 'echo ok; npm publish', 'git push origin fix/x && echo note >> log.md', 'bash -c "git commit -m x"']) {
     assert.equal(classifyTool({ tool_name: 'Bash', tool_input: { command }, cwd: tmpdir() }).protected, true, command);
   }
+});
+
+// The hook's own closed set is exactly the three sentences, in order. It is read from source because a fourth phrase
+// would make the hook drop specific service text, and no other row would notice. Runs everywhere, no environment gate.
+test('quiet allow: the hook closed phrase set is exactly G1, G2 and G3 (source pin of the hook array)', () => {
+  const source = readFileSync(join(__dirname, '..', 'src', 'hook-pre-action.ts'), 'utf8');
+  const found = /const GENERIC_BEFORE_YOU_ACT = \[([\s\S]*?)\n\];/.exec(source);
+  assert.ok(found, 'GENERIC_BEFORE_YOU_ACT array not found in src/hook-pre-action.ts');
+  const literal = /'[^'\\]*'/g;
+  assert.deepEqual([...found[1].matchAll(literal)].map((one) => one[0].slice(1, -1)), [G1, G2, G3]);
+  // nothing but those literals: a double-quoted or template phrase, a spread or an identifier would leave a residue
+  assert.equal(found[1].replace(literal, '').replace(/[\s,]/g, ''), '', 'the array holds more than the three sentences');
 });
 
 // Q13: the three sentences are the service's own text. Set QUIET_ALLOW_BACKEND_BUNDLE to a git bundle of the service source.

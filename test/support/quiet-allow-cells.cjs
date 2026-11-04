@@ -154,6 +154,32 @@ function oracleQuiet(cell) {
   return !cell.bya.absent && oracleGenericOnly(cell.bya.value);
 }
 
+// Named cells outside the generated grid. The grid never sets response_mode, so it never builds the slim advisory
+// answer: response_mode slim, risk_gate_enforced false, risk_gate.allow false next to decision allow and
+// enforcement_decision advisory. That answer is no plain allow (the notice is owed to the agent), so BASE's whole
+// context stays: the advisory notice line, then the service text, generic sentences included. Written from the
+// design and BASE's wording of the notice, never read back from src or dist.
+const SLIM_ADVISORY_NOTICE = 'Marrow advisory: this plan does not enforce the pre-action gate, so the action is allowed. Gate decision: allow.';
+
+function namedCells() {
+  const text = `${G1} ${G2}`;
+  return [{
+    name: 'slim-advisory-allow-false',
+    harnesses: ['claude-code', 'codex', 'mcp-client'],
+    result: {
+      runtime: {
+        response_mode: 'slim',
+        risk_gate_enforced: false,
+        risk_gate: { allow: false, decision: 'allow', enforced: false, enforcement_decision: 'advisory', reasons: [] },
+        before_you_act: text,
+      },
+      permit: null,
+      protectedRisk: false,
+    },
+    expected: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `${SLIM_ADVISORY_NOTICE}\n${text}` } },
+  }];
+}
+
 function* cells() {
   for (const harness of HARNESSES) for (const decision of DECISIONS) for (const allow of ALLOW_FLAGS)
     for (const plan of PLANS) for (const protectedRisk of PROTECTED) for (const permit of PERMITS)
@@ -162,4 +188,4 @@ function* cells() {
       }
 }
 
-module.exports = { G1, G2, G3, GENERIC, JOINS, KEEP_TEXTS, QUIET_TEXTS, BYA_VALUES, cells, buildResult, oracleGenericOnly, oracleQuiet };
+module.exports = { G1, G2, G3, GENERIC, JOINS, KEEP_TEXTS, QUIET_TEXTS, BYA_VALUES, cells, namedCells, buildResult, oracleGenericOnly, oracleQuiet };
