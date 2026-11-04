@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (next batched version)
+
+- Loop guard: a call that differs from an earlier one only past a size cut (a string over 16,384 characters, more than 128 keys or items, a name over 128 characters, nesting past 8 levels, or an infinite number) is no longer denied as an unchanged repeat; a true repeat is still denied, and a loop padded with changing junk past a cut is stopped at its 5th run.
+
 ## 3.9.110
 
 Repair of a broken install on 3.9.109, plus the changes merged since: a busy host is no longer locked out when the local loop-guard state reaches its 256 KB cap. Older loop history of other sessions is pruned instead; the session making the call is never pruned. The merged changes are the stable, version-free Marrow entry recognized as the official server on Codex and Cursor, a hold in Claude Code auto mode that denies with its receipt instead of opening a dialog, the line that says where a refused agent id came from, and a `marrow_think` fix. Two changes are looser than 3.9.109, on purpose and by the owner's decision: the stable entry (MCP-2), and the loop-guard pruning at the cap, where a loop in another session that repeats a call only after 3 or more other distinct calls can be missed while the pruning runs (see the known limit below). None of the other changes lets through an action that was held before.
