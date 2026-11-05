@@ -1,0 +1,102 @@
+'use strict';
+
+// Test-only (never ships). The abuse rows of the hook data-words change (ACCEPTANCE bld-hookdata A1-A30), written from the
+// fail-closed spec before the code. Each row is a hook INPUT (a Bash tool call); nothing here is ever run.
+//   expect ALLOW: the call is not protected on the tip (a LOWER_SHAPES row: `shape`).
+//   expect HOLD:  protected on BASE and on the tip, with the BASE type, surfaces and action text.
+//   expect BASE:  the tip classification equals BASE byte for byte (whatever BASE says).
+// A HOLD row whose BASE is not protected is a broken row (the BASE fixture test says so).
+const NL = '\n';
+const FULL_WIDTH_S = String.fromCharCode(0xff53);
+
+const rows = [
+  { id: 'A1a', expect: 'HOLD', command: `python3 -c "import subprocess; subprocess.run(['npm','publish'])"` },
+  { id: 'A1b', expect: 'HOLD', command: `python3 -c "import subprocess; subprocess.run(['./release.sh'])"` },
+  { id: 'A2', expect: 'HOLD', command: `bash <<'EOF'${NL}git push origin main${NL}EOF` },
+  { id: 'A3a', expect: 'BASE', command: `echo 'ship backend release' | sh` },
+  { id: 'A3b', expect: 'HOLD', command: `echo 'ship backend release' | node -p '"deploy to production"'` },
+  { id: 'A4', expect: 'ALLOW', shape: 'L01', command: [
+    `python3 -I - <<'EOF'`,
+    `from pathlib import Path`,
+    `p = Path('docs/notes.md')`,
+    `text = p.read_text()`,
+    `p.write_text(text.replace('Deploy to production on Friday', 'Deploy to production on Monday'))`,
+    `EOF`].join(NL) },
+  { id: 'A5', expect: 'ALLOW', shape: 'base', command: `grep -rn 'npm publish' src/` },
+  { id: 'A6', expect: 'ALLOW', shape: 'D02', command: `printf '%s\\n' 'production deploy fixture' > test/fixtures/x.txt` },
+  { id: 'A7a', expect: 'HOLD', command: `node -e "require('child_process').execSync('wrangler deploy')"` },
+  { id: 'A7b', expect: 'HOLD', command: `node -e "require('child_process').execSync('./deploy.sh')"` },
+  { id: 'A8a', expect: 'HOLD', command: `python3 -c "exec('aW1wb3J0IG9z'.encode()); print('deploy to production')"` },
+  { id: 'A8b', expect: 'HOLD', command: `python3 -c "getattr(print, 'x', 1); print('release')"` },
+  { id: 'A8c', expect: 'HOLD', command: `python3 -c "__import__('o' + 's').getcwd(); print('release')"` },
+  { id: 'A9a', expect: 'HOLD', command: `"npm" "publish"` },
+  { id: 'A9b', expect: 'HOLD', command: `npm "publish"` },
+  { id: 'A9c', expect: 'HOLD', command: `"printf" 'deploy production' > notes.txt` },
+  { id: 'A9d', expect: 'HOLD', command: `npx "release-it"` },
+  { id: 'A10a', expect: 'HOLD', command: `git commit -m "release notes" && git push` },
+  { id: 'A10b', expect: 'HOLD', command: `git describe --match "release-*"` },
+  { id: 'A11a', expect: 'HOLD', command: `env X=1 npx wrangler deploy` },
+  { id: 'A11b', expect: 'BASE', command: `nohup marrow-ship.py --x` },
+  { id: 'A11c', expect: 'HOLD', command: `nohup marrow-ship.py 'production'` },
+  { id: 'A11d', expect: 'HOLD', command: `timeout 5 gh pr merge 1` },
+  { id: 'A12a', expect: 'HOLD', command: `$CMD 'deploy'` },
+  { id: 'A12b', expect: 'HOLD', command: `"$(echo npm)" publish` },
+  { id: 'A12c', expect: 'HOLD', command: `e\\cho 'deploy' > notes.txt` },
+  { id: 'A13a', expect: 'HOLD', command: `python3 - <<EOF${NL}import ${FULL_WIDTH_S}ubprocess${NL}${FULL_WIDTH_S}ubprocess.run(['./release.sh'])${NL}EOF` },
+  { id: 'A13b', expect: 'HOLD', command: `python3 -c 'import json; subpro\\cess = 1; print("release")'` },
+  { id: 'A14a', expect: 'BASE', command: `sudo sh -c 'echo hi'` },
+  { id: 'A14b', expect: 'HOLD', command: `ssh host 'deploy.sh'` },
+  { id: 'A15a', expect: 'ALLOW', shape: 'L10', command: `python3 harness.py --text "ship backend release"` },
+  { id: 'A15b', expect: 'BASE', command: `python3 harness.py --mode deploy` },
+  { id: 'A16a', expect: 'ALLOW', shape: 'base', command: 'ls', extra: { description: 'deploy to production now', note: 'npm publish release' } },
+  { id: 'A16b', expect: 'ALLOW', shape: 'D03', command: `cat > notes.txt <<'EOF'${NL}hello world${NL}EOF`, extra: { description: 'deploy production release', note: 'publish' } },
+  { id: 'A16c', expect: 'HOLD', command: `cat > notes.txt <<EOF${NL}$(date)${NL}EOF`, extra: { description: 'deploy production release' } },
+  { id: 'A17a', expect: 'HOLD', command: `echo "deploy" && npm publish` },
+  { id: 'A17b', expect: 'HOLD', command: `true; git push` },
+  { id: 'A17c', expect: 'HOLD', command: `(cd x && git push)` },
+  { id: 'A17d', expect: 'HOLD', command: `{ git push; }` },
+  { id: 'A18', expect: 'HOLD', command: `printf '%s\\n' 'staging' > env.txt && wrangler deploy --env production` },
+  { id: 'A19a', expect: 'ALLOW', shape: 'L12', command: `git merge-base --is-ancestor A B` },
+  { id: 'A19b', expect: 'HOLD', command: `git merge feature` },
+  { id: 'A19c', expect: 'HOLD', command: `git -C repo merge x` },
+  { id: 'A19d', expect: 'HOLD', command: `git merge -` },
+  { id: 'A19e', expect: 'HOLD', command: `git merge --ff-only x` },
+  { id: 'A19f', expect: 'ALLOW', shape: 'L12', command: `git merge-tree A B` },
+  { id: 'A19g', expect: 'ALLOW', shape: 'L12', command: `git merge-file a base b` },
+  { id: 'A20', expect: 'HOLD', command: `python3 - <<'EOF'${NL}import os${NL}os.system('./release.sh')${NL}EOF` },
+  { id: 'A21a', expect: 'HOLD', command: `echo 'import os; os.system("npm publish")' | python3` },
+  { id: 'A21b', expect: 'HOLD', command: `echo 'x' | python3 -c 'print("deploy to production")'` },
+  { id: 'A22a', expect: 'HOLD', command: `echo() { npm "$@"; }; echo 'publish'` },
+  { id: 'A22b', expect: 'HOLD', command: `alias printf=npm; printf 'publish' > out.txt` },
+  { id: 'A23a', expect: 'HOLD', command: `PATH=/var/tmp/x echo 'deploy'` },
+  { id: 'A23b', expect: 'HOLD', command: `X='wrangler deploy'; $X` },
+  { id: 'A24a', expect: 'HOLD', command: `python3 -c "import urllib.request; urllib.request.urlopen('https://api.example.test/deploy')"` },
+  { id: 'A24b', expect: 'HOLD', command: `node -e "fetch('https://api.example.test/deploy/production', { method: 'POST' })"` },
+  { id: 'A25a', expect: 'HOLD', command: `./tool.sh 'deploy' 'production'` },
+  { id: 'A25b', expect: 'HOLD', command: `make 'release'` },
+  { id: 'A26a', expect: 'HOLD', command: `git push origin 'feature/prod-fix:master'` },
+  // ACCEPTANCE says ALLOW; the raw-command protection (S1, unchanged) reads the body's `git push`, so the row keeps BASE (DEVIATION).
+  { id: 'A26b', expect: 'BASE', command: `cat > notes.txt <<'EOF'${NL}git push origin master${NL}EOF` },
+  { id: 'A26c', expect: 'ALLOW', shape: 'D03', command: `cat > notes.txt <<'EOF'${NL}ship the backend release to production${NL}EOF` },
+  { id: 'A27a', expect: 'HOLD', command: `printf 'dev only' && wrangler deploy --env production` },
+  { id: 'A27b', expect: 'HOLD', command: `git commit -m "dev only" && wrangler deploy --env production` },
+  { id: 'A28a', expect: 'HOLD', command: `node -e 'console.log(1)' -e 'console.log("deploy")'` },
+  { id: 'A28b', expect: 'HOLD', command: `python3 -c 'print(1)' -c 'print("deploy")'` },
+  { id: 'A28c', expect: 'HOLD', command: `python3 -X importtime -c 'print("deploy")'` },
+  { id: 'A29', expect: 'HOLD', command: `printf 'x' > release-notes.md` },
+  // The three live friction shapes of 2026-11-05 (SPEC "Live re-enable check") and the push that must still ask.
+  { id: 'A30a', expect: 'ALLOW', shape: 'D03', command: `cat >> reports/run-log.md <<'EOF'${NL}- 11:02Z replay of the backend release fixture: deploy step skipped (offline)${NL}EOF`,
+    extra: { description: 'Append the offline release replay to the run log' } },
+  { id: 'A30b', expect: 'ALLOW', shape: 'L01', command: [
+    `python3 -I - <<'EOF'`,
+    `from pathlib import Path`,
+    `p = Path('docs/release-checklist.md')`,
+    `s = p.read_text()`,
+    `s = s.replace('deploy to production after review', 'deploy to production after the owner review')`,
+    `p.write_text(s)`,
+    `EOF`].join(NL), extra: { description: 'Edit the release checklist markdown' } },
+  { id: 'A30c', expect: 'ALLOW', shape: 'L10', command: `python3 test/harness.py --text "ship backend release" --label "production deploy dummy"` },
+  { id: 'A30d', expect: 'HOLD', command: `git push origin feature/hookdata-check` },
+];
+
+module.exports = { rows };
