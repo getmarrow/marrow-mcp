@@ -39,6 +39,19 @@ for (const fix of ['B1', 'B2', 'B3', 'B4', 'B5', 'F2', 'F5', 'SWEEP', 'CUT', 'KE
   }
 }
 
+test('a lowering that throws keeps the BASE classification (the friction rows stay held)', () => {
+  const policy = require('../dist/hook-tool-policy.js');
+  const saved = [policy.toolDataWordsText, policy.isGitMergeSiblingCall];
+  try {
+    policy.toolDataWordsText = () => { throw new Error('forced'); };
+    policy.isGitMergeSiblingCall = () => { throw new Error('forced'); };
+    for (const row of rows.filter((item) => item.fix === 'KEEP')) assert.deepEqual(pick(classifyTool(bash(row))), row.pre, row.id);
+  } finally {
+    [policy.toolDataWordsText, policy.isGitMergeSiblingCall] = saved;
+  }
+  for (const row of rows.filter((item) => item.fix === 'KEEP')) assert.equal(classifyTool(bash(row)).protected, false, row.id);
+});
+
 test('B5: every held row of the hookdata fixtures classifies byte-equal to BASE', () => {
   const held = rows.filter((row) => pick(classifyTool(bash(row))).protected);
   assert.ok(held.length > 0);
