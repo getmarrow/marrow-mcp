@@ -36,9 +36,9 @@ import { normalizedHookAction } from './normalized-action';
  * - report exactly what the host reported, with its marker event; never invent
  *   an answer, a marker or a time; never let the model report an approval;
  * - a decline is only a permission rejection, never an interruption;
- * - a proof-required hold is committed by the agent with its proof (a hook
- *   commit without proof would leave an unverified observation that blocks the
- *   trusted close).
+ * - a proof-required hold that ran sends only the host's result, as an
+ *   untrusted observation; the agent's commit with the same success, outcome
+ *   and observed proof fields plus the rest is the trusted close.
  */
 
 export type ApprovalHost = 'claude-code' | 'codex' | 'cursor' | 'cline' | 'windsurf' | 'gemini' | 'grok' | 'other';
@@ -991,7 +991,18 @@ async function ensureDecision(ctx: HoldContext, hold: HoldRecord, signal: AbortS
   }
 }
 
-async function commitHold(ctx: HoldContext, hold: HoldRecord, commit: HoldCommit, signal: AbortSignal): Promise<'committed' | 'unverified' | 'failed'> {
+/** How long the host's observation of a proof-required call waits for the agent's own commit with proof. */
+export const OBSERVATION_GRACE_MS = 5 * 60_000;
+
+/** A commit in the outbox; `proof` only on the host's own observation of a proof-required call that ran (never trusted). */
+type ObservedCommit = HoldCommit & { proof?: Record<string, string> };
+
+/** The host's result of a proof-required call, as the host reported it: an untrusted observation, never the proof the hold asked for. */
+function hostObservation(outcome: string, success: boolean, toolUseId: string | null): Record<string, string> {
+  return { summary: outcome, checks: 'host tool result only', outcome: success ? 'completed' : 'failed', source: 'hook_post_tool', ...(toolUseId ? { tool_use_id: toolUseId } : {}) };
+}
+
+async function commitHold(ctx: HoldContext, hold: HoldRecord, commit: ObservedCommit, signal: AbortSignal): Promise<'committed' | 'unverified' | 'failed'> {
   const decisionId = hold.decision_id || await ensureDecision(ctx, hold, signal);
   if (!decisionId) return 'failed';
   try {
@@ -999,9 +1010,10 @@ async function commitHold(ctx: HoldContext, hold: HoldRecord, commit: HoldCommit
       decision_id: decisionId,
       success: commit.success,
       outcome: commit.outcome,
+      ...(commit.proof ? { proof: commit.proof } : {}),
       gate_receipt_id: hold.gate_receipt_id,
       auto_gate: false,
-    }, hold.session_id, hold.agent_id || undefined, signal, idempotencyFor(hold, commit.success ? 'commit' : 'denial'));
+    }, hold.session_id, hold.agent_id || undefined, signal, idempotencyFor(hold, commit.proof ? 'observation' : commit.success ? 'commit' : 'denial'));
     return result.committed === true ? 'committed' : 'unverified';
   } catch {
     return 'failed';
@@ -1175,15 +1187,25 @@ export function proofFieldsForReceipt(ctx: HoldContext, gateReceiptId: string): 
   }
 }
 
-/** marrow_commit: send a queued host approval for this receipt before the agent's own commit. */
+const isHookObservation = (commit: HoldCommit | null | undefined): boolean => (commit as ObservedCommit | null | undefined)?.proof?.source === 'hook_post_tool';
+
+/**
+ * marrow_commit: send a queued host approval for this receipt before the agent's own commit. The agent's
+ * commit closes the receipt itself, so the hook's still-unsent observation of it is dropped, never sent after it.
+ */
 export async function deliverQueuedForReceipt(ctx: HoldContext, gateReceiptId: string): Promise<void> {
   let holds: HoldRecord[];
   try {
-    holds = findHolds(scopeOf(ctx), {}, ctx.home).filter((hold) => hold.gate_receipt_id === gateReceiptId && hold.outbox?.report);
+    holds = findHolds(scopeOf(ctx), {}, ctx.home).filter((hold) => hold.gate_receipt_id === gateReceiptId && hold.outbox);
+    for (const hold of holds) {
+      if (!isHookObservation(hold.outbox?.commit)) continue;
+      updateHold(scopeOf(ctx), hold.id, (current) => (current.outbox && isHookObservation(current.outbox.commit)
+        ? { ...current, outbox: current.outbox.report ? { ...current.outbox, commit: null } : null } : current), ctx.home);
+    }
   } catch {
     return;
   }
-  for (const hold of holds) await deliverHold(ctx, hold.id, Date.now() + 5_000).catch(() => null);
+  for (const hold of holds) if (hold.outbox?.report) await deliverHold(ctx, hold.id, Date.now() + 5_000).catch(() => null);
 }
 
 function outcomeText(hold: HoldRecord, success: boolean, host: ApprovalHost): string {
@@ -1279,8 +1301,14 @@ export async function settleAfterTool(ctx: HoldContext, input: {
       if (latest.dialog_at) { lateMarker = true; break; }
     }
   }
-  // An outcome the host does not report (null) is never committed as a success or a failure.
-  const commit = hold.proof_required || input.success === null ? null : { success: input.success, outcome: outcomeText(hold, input.success, ctx.host) };
+  // An outcome the host does not report (null) is never committed as a success or a failure. A proof-required
+  // hold that ran queues the host's result once as an untrusted observation, sent after a grace period so the
+  // agent's own commit with proof comes first (marrow_commit then drops it).
+  const outcome = input.success === null ? null : outcomeText(hold, input.success, ctx.host);
+  const ranId = input.toolUseId && BOUNDED_ID.test(input.toolUseId) ? input.toolUseId : hold.tool_use_id;
+  const observation: ObservedCommit | null = hold.proof_required && input.success !== null && outcome !== null
+    ? { success: input.success, outcome, proof: hostObservation(outcome, input.success, ranId) } : null;
+  const commit = hold.proof_required || input.success === null || outcome === null ? null : { success: input.success, outcome };
   const report: HoldReport | null = hold.mode === 'ask'
     ? {
       verdict: 'approved',
@@ -1300,14 +1328,42 @@ export async function settleAfterTool(ctx: HoldContext, input: {
       ...reportAction(ctx, hold.normalized_action ?? input.normalizedAction),
     }
     : null;
+  const queueObservation = () => {
+    if (observation) updateHold(scope, hold.id, (current) => ({ ...current, outbox: current.outbox ? { ...current.outbox, commit: current.outbox.commit || observation }
+      : { report: null, commit: observation, attempts: 0, next_at: Date.now() + OBSERVATION_GRACE_MS } }), ctx.home);
+  };
+  let text: string | null;
   if (!report && !commit) {
     updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved' }), ctx.home);
-    return handoffText(hold, { kind: 'already_approved', committed: 'skipped' });
+    queueObservation();
+    text = handoffText(hold, { kind: 'already_approved', committed: 'skipped' });
+  } else {
+    updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved', outbox: { report, commit, attempts: 0, next_at: 0 } }), ctx.home);
+    const delivery = await deliverHold(ctx, hold.id);
+    // A report the service dropped as invalid or out of scope closes nothing (as before), so no observation follows it.
+    if (delivery?.kind !== 'dropped') queueObservation();
+    const latest = findHolds(scope, { id: hold.id }, ctx.home)[0] || hold;
+    text = handoffText({ ...latest, decision_id: latest.decision_id || hold.decision_id }, delivery);
   }
-  updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved', outbox: { report, commit, attempts: 0, next_at: 0 } }), ctx.home);
-  const delivery = await deliverHold(ctx, hold.id);
-  const latest = findHolds(scope, { id: hold.id }, ctx.home)[0] || hold;
-  return handoffText({ ...latest, decision_id: latest.decision_id || hold.decision_id }, delivery);
+  if (!text || !observation?.proof) return text;
+  const { checks, outcome: observed, source, tool_use_id: ranTool } = observation.proof;
+  return bounded(`${text} Unless that commit comes first, Marrow sends the host's result in ${OBSERVATION_GRACE_MS / 60_000} minutes as an unverified observation (success ${observation.success}, outcome "${observation.outcome}"); after it, a commit with proof must send the same success and outcome and keep these proof fields exactly as sent: summary (the same outcome), checks "${checks}", outcome "${observed}", source "${source}"${ranTool ? `, tool_use_id "${ranTool}"` : ''}.`, 1_400);
+}
+
+/**
+ * The decision of the held call that just ran, for its PostToolUse record: read only from this key's
+ * own local hold (account and agent by key, session, correlation and the exact tool_use_id or Cursor
+ * generation_id), never from the event. One resolved match, or nothing is sent.
+ */
+export function ranHoldDecision(ctx: HoldContext | null, correlation: string, toolUseId: string | null, generationId: string | null): { decision_id?: string } {
+  if (!ctx || (!toolUseId && !generationId)) return {};
+  try {
+    const holds = findHolds(scopeOf(ctx), { correlation, sessionId: ctx.sessionId, states: ['resolved'] }, ctx.home)
+      .filter((hold) => hold.decision_id && (toolUseId ? hold.tool_use_id === toolUseId : hold.generation_id === generationId));
+    return holds.length === 1 && holds[0].decision_id ? { decision_id: holds[0].decision_id } : {};
+  } catch {
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1407,8 +1463,18 @@ export function transcriptToolResults(path: unknown, toolUseIds: Set<string>): M
   return found;
 }
 
+/** Queues one verdict for a hold that is still open with nothing queued; a hold already answered keeps its one verdict. */
+function queueIfOpen(ctx: HoldContext, hold: HoldRecord, report: HoldReport | null, commit: HoldCommit): boolean {
+  let queued = false;
+  updateHold(scopeOf(ctx), hold.id, (current) => {
+    if (current.state !== 'open' || current.outbox) return current;
+    queued = true;
+    return { ...current, state: 'resolved', outbox: { report, commit, attempts: 0, next_at: 0 } };
+  }, ctx.home);
+  return queued;
+}
+
 async function settleClaudeResolution(ctx: HoldContext, hold: HoldRecord, resolution: ClaudeCallResolution, hookEvent: string, normalizedAction?: Record<string, unknown> | null): Promise<void> {
-  const scope = scopeOf(ctx);
   if (resolution === 'unknown') return;
   if (resolution === 'declined') {
     const report: HoldReport = {
@@ -1426,8 +1492,7 @@ async function settleClaudeResolution(ctx: HoldContext, hold: HoldRecord, resolu
       success: false,
       outcome: `Denied by Marrow pre-action gate: the operator declined in ${HOST_LABEL[ctx.host]} (gate receipt ${hold.gate_receipt_id}).`,
     };
-    updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved', outbox: { report, commit, attempts: 0, next_at: 0 } }), ctx.home);
-    await deliverHold(ctx, hold.id);
+    if (queueIfOpen(ctx, hold, report, commit)) await deliverHold(ctx, hold.id);
     return;
   }
   // Interrupted, cancelled or left unanswered: not a decline and not an approval.
@@ -1436,8 +1501,16 @@ async function settleClaudeResolution(ctx: HoldContext, hold: HoldRecord, resolu
     success: false,
     outcome: `Not completed: the call was interrupted, cancelled or left unanswered in ${HOST_LABEL[ctx.host]} before Marrow recorded an answer (gate receipt ${hold.gate_receipt_id}); no approval or decline was given.`,
   };
-  updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved', outbox: { report: null, commit, attempts: 0, next_at: 0 } }), ctx.home);
-  await deliverHold(ctx, hold.id);
+  if (queueIfOpen(ctx, hold, null, commit)) await deliverHold(ctx, hold.id);
+}
+
+/** An asked call past its expiry with no answer in the transcript: closed as unanswered, never a decline, an approval or a success. */
+async function settleUnanswered(ctx: HoldContext, hold: HoldRecord): Promise<void> {
+  const commit: HoldCommit = {
+    success: false,
+    outcome: `Unanswered: the held call got no answer in ${HOST_LABEL[ctx.host]} before its gate receipt ${hold.gate_receipt_id} expired, and Marrow saw no result for it; no approval or decline was given.`,
+  };
+  if (queueIfOpen(ctx, hold, null, commit)) await deliverHold(ctx, hold.id);
 }
 
 /** Claude Code PostToolBatch: decide each still-open asked call of the batch per tool_use_id. */
@@ -1478,25 +1551,34 @@ export async function settleToolBatch(ctx: HoldContext, input: {
   return settled;
 }
 
-/** Claude Code UserPromptSubmit fallback: a rejected dialog can end the turn before PostToolBatch. */
-export async function settleAtPrompt(ctx: HoldContext, transcriptPath: unknown): Promise<number> {
+/**
+ * UserPromptSubmit, SessionStart and Stop: a rejected dialog can end the turn before PostToolBatch. Each
+ * still-open asked call of this session is decided from the Claude Code transcript exactly as PostToolBatch
+ * decides it; one past its expiry with no answer there closes as unanswered. Bounded by the settle budget.
+ */
+export async function settleAtPrompt(ctx: HoldContext, transcriptPath: unknown, hookEvent = 'UserPromptSubmit'): Promise<number> {
   const scope = scopeOf(ctx);
   let open: HoldRecord[];
   try {
     open = findHolds(scope, { sessionId: ctx.sessionId, mode: 'ask', states: ['open'] }, ctx.home)
-      .filter((hold) => !hold.outbox && hold.tool_use_id);
+      .filter((hold) => !hold.outbox);
   } catch {
     return 0;
   }
   if (open.length === 0) return 0;
-  const results = transcriptToolResults(transcriptPath, new Set(open.map((hold) => hold.tool_use_id as string)));
+  const ids = new Set(open.map((hold) => hold.tool_use_id).filter((id): id is string => Boolean(id)));
+  const results = ctx.host === 'claude-code' ? transcriptToolResults(transcriptPath, ids) : new Map<string, TranscriptToolResult>();
+  const deadline = Date.now() + settleBudgetMs(ctx.host);
   let settled = 0;
   for (const hold of open) {
-    const found = results.get(hold.tool_use_id as string);
-    if (!found) continue;
-    const resolution = classifyClaudeToolResult({ toolName: hold.tool_name, text: found.text, denialKind: found.denialKind, unanswered: found.unanswered });
-    if (resolution === 'unknown') continue;
-    await settleClaudeResolution(ctx, hold, resolution, 'UserPromptSubmit');
+    if (Date.now() >= deadline) break;
+    const found = hold.tool_use_id ? results.get(hold.tool_use_id) : undefined;
+    const resolution = found
+      ? classifyClaudeToolResult({ toolName: hold.tool_name, text: found.text, denialKind: found.denialKind, unanswered: found.unanswered })
+      : 'unknown';
+    if (resolution !== 'unknown') await settleClaudeResolution(ctx, hold, resolution, hookEvent);
+    else if (hold.expires_at && Date.parse(hold.expires_at) <= Date.now()) await settleUnanswered(ctx, hold);
+    else continue;
     settled += 1;
   }
   return settled;

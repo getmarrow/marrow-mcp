@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix (hook, every decision closes): a held call that needs proof and ran now sends the host's own result once as an untrusted observation (proof source `hook_post_tool`, checks `host tool result only`; never trusted, never a success the host did not report; a Cursor result the host does not give is not sent), next to the unchanged approval report. The PreToolUse runtime call sends its `correlation_id`; the PostToolUse record names the decision of its own local hold only (same key, agent, session, correlation and call id, never from the event) and no longer says `pending` for a known result. Claude Code asked calls are also settled at SessionStart and Stop from the transcript, with the same structured rule as PostToolBatch, so the operator's "no" is reported as a decline; an asked call past its expiry with no answer closes as unanswered (never a decline). No hold, ask, proof field or classification changes.
+
 ## 3.9.111
 
 Two fixes on top of 3.9.110. Plain allowed calls (a read, a local append) no longer get generic Marrow service text in the agent's context, so routine work is not asked to close an outcome; and the README no longer shows a key typed on a command line. Every verdict, every request to Marrow and every closure call are unchanged, and the README change is docs only.
