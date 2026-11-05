@@ -12,10 +12,16 @@ const { localLoopGuardDenyOutput, runPreActionHookCommand } = dist('hook-pre-act
 const { runHookCommand } = dist('hook.js');
 
 // One Date.now stub for the whole file (the guard prunes with Date.now(), never options.now): real time plus an offset,
-// or a pinned trace clock for the clock-step rows.
+// or a pinned trace clock for the clock-step rows, or (tick > 0) the controlled clock: every Date.now() call returns the previous value plus tick.
 const realNow = Date.now.bind(Date);
-const clock = { offset: 0, fixed: null };
-Date.now = () => (clock.fixed ?? realNow() + clock.offset);
+const clock = { offset: 0, fixed: null, tick: 0 };
+Date.now = () => (clock.tick ? (clock.fixed += clock.tick) : (clock.fixed ?? realNow() + clock.offset));
+// The ONE controlled clock of the rows that need an order of stamps (K1/K3, C2 dropped half, P6): a constant start and a step far above any stamp spread
+// inside a call, never wall time, so every stamp the guard writes is strictly later than the one before and a millisecond tie cannot decide a prune.
+const CTL_START = 1_700_000_000_000;
+const CTL_STEP = 10_000;
+const controlClock = () => { clock.fixed = CTL_START; clock.tick = CTL_STEP; };
+const releaseClock = () => { clock.fixed = null; clock.tick = 0; };
 const {
   advanceSessionInstructionEpoch, clearSessionLoopGuard, consultSessionLoopGuard, recordSessionLoopOutcome,
   sessionLoopGuardPath, UnsafeLoopGuardStateError,
@@ -102,8 +108,11 @@ const sizeOf = (root) => statSync(stateFile(root)).size;
 function inflate(root, target, tag = 'fill', age = 7_200_000, abs = undefined) {
   const state = loadFile(root);
   for (const key of Object.keys(state.sessions)) if (state.sessions[key].filler) delete state.sessions[key];
-  // newer fillers: move the trace clock on so they are stamped in the past, never after now
-  if (age < 0) { clock.offset += 120_000; age = 60_000; }
+  // newer fillers: move the trace clock on so they are stamped in the past, never after now (the controlled clock needs no move: its steps are 10 s)
+  if (age < 0) {
+    if (clock.tick) age = 3_000;
+    else { clock.offset += 120_000; age = 60_000; }
+  }
   const now = Date.now();
   const base = abs ?? now - age;
   const holders = [];
@@ -466,6 +475,7 @@ test('S2 the writing session is never trimmed: a consult-triggered and a record-
 test('K1/K3 a pruned-then-recreated entry gets the same fingerprint and receipt', () => {
   const root = home();
   try {
+    controlClock();
     const target = op({ sessionId: 'k-owner', toolInput: { file_path: '/k/first' }, invocationId: 'k-first' });
     const first = consultSessionLoopGuard(target, { home: root });
     for (let i = 1; i < 6; i += 1) consultSessionLoopGuard(op({ sessionId: 'k-owner', toolInput: { file_path: `/k/${i}` }, invocationId: `k-${i}` }), { home: root });
@@ -478,7 +488,7 @@ test('K1/K3 a pruned-then-recreated entry gets the same fingerprint and receipt'
     assert.equal(again.allow, true);
     assert.equal(again.fingerprint, first.fingerprint);
     assert.equal(again.receipt, first.receipt);
-  } finally { clean(root); }
+  } finally { releaseClock(); clean(root); }
 });
 
 test('K2 operations that differ in any field get different fingerprints; a different session id gets a different session', () => {
@@ -600,6 +610,7 @@ test('C2 post-tool record: a kept entry still receives it through its newest map
   } finally { clean(root); }
   const dropped = home();
   try {
+    controlClock();
     const pre = op({ sessionId: 'drop-owner', toolInput: { file_path: '/drop/pre' }, invocationId: 'toolu_drop' });
     consultSessionLoopGuard(pre, { home: dropped });
     for (let i = 0; i < 5; i += 1) consultSessionLoopGuard(op({ sessionId: 'drop-owner', toolInput: { file_path: `/drop/${i}` }, invocationId: `d-${i}` }), { home: dropped });
@@ -608,7 +619,7 @@ test('C2 post-tool record: a kept entry still receives it through its newest map
     const before = readFileSync(stateFile(dropped), 'utf8');
     recordSessionLoopOutcome({ ...pre, toolInput: { file_path: '/drop/post', extra: 'differs' } }, true, { done: 1 }, { home: dropped });
     assert.equal(readFileSync(stateFile(dropped), 'utf8'), before, 'a record for a dropped entry must change no other entry');
-  } finally { clean(dropped); }
+  } finally { releaseClock(); clean(dropped); }
 });
 
 test('the denial text exported to hosts is unchanged', () => {
@@ -797,6 +808,7 @@ test('P6 F1 mapping rule: a kept entry keeps its newest mapping only; an older m
   // master's path for an invocation without a mapping (record: operationIdentity of the call, then `if (!entry) return`): no throw, nothing written
   const root = home();
   try {
+    controlClock();
     const first = op({ sessionId: 'p6-owner', toolInput: { file_path: '/p6/a' }, invocationId: 'p6-a1' });
     consultSessionLoopGuard(first, { home: root });
     for (const [name, file] of [['p6-b', '/p6/b'], ['p6-c', '/p6/c']]) consultSessionLoopGuard(op({ sessionId: 'p6-owner', toolInput: { file_path: file }, invocationId: name }), { home: root });
@@ -809,7 +821,7 @@ test('P6 F1 mapping rule: a kept entry keeps its newest mapping only; an older m
     const before = readFileSync(stateFile(root), 'utf8');
     assert.doesNotThrow(() => recordSessionLoopOutcome({ ...first, toolInput: { file_path: '/p6/other-input' }, invocationId: 'p6-a1' }, true, { done: 1 }, { home: root }));
     assert.equal(readFileSync(stateFile(root), 'utf8'), before, 'a record on a dropped older mapping must change nothing');
-  } finally { clean(root); }
+  } finally { releaseClock(); clean(root); }
 });
 
 test('P8 session order: a session stamped after now is ordered as now (ties by key), and its future entries stay on top of the floor', () => {
