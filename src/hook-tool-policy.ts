@@ -765,7 +765,7 @@ const L01_CODE_VETO = new RegExp(['__', '(?:^|[^A-Za-z0-9_])_', ...('os sys posi
 // F2: a quoted L10 argument that is a flag or an environment/risk label (one word, a key=value or key: value, or only risk words) keeps BASE.
 const ENV_LABEL_WORD = /prod|prd|live|deploy|publish|release|staging|master|main|wrangler|merge|push|git|npm|migrat|secret|credential|token|key|rotate|revoke|payment|refund|charge|invoice|stripe|financial|schema|database|d1|package|permission|deprecate|pull request/i;
 type DataSegment = ShellSegment & { kinds: ('quoted' | 'literal' | 'other')[]; piped: boolean; heredoc: string | null; herestrings: number };
-// One sticky pass: blanks | separator | here-string or heredoc | redirect | word part | comment; no $, \, `, brace, parenthesis or "$..." is lowered.
+// One sticky pass: blanks | separator | here-string or heredoc | redirect | word part | comment (keeps BASE); no $, \, `, brace, parenthesis or "$..." is lowered.
 const DATA_LEX = /([ \t]+)|(\n|;|&&|\|\||\|&?|&(?!>))|(<<<[ \t]*(?:'[^']*'|"[^"$`\\]*")(?![^\s;&|<>])|<<(-?)[ \t]*(?:'(\w+)'|"(\w+)"|(\w+))(?![^\s;&|<>]))|(\d*(?:&>>?|>[>|]?|<>?)(?:&(?:\d+|-))?)|('[^']*'|"[^"$`\\]*"|[^\s'"\\$`|&;<>(){}#]+)|(#[^\n]*)/y;
 /** Segments with word quoting, pipe readers, heredoc and here-strings, and the text left with those cut out; null on any doubt. */
 function dataSegments(command: string): { segments: DataSegment[]; stripped: string } | null {
@@ -793,10 +793,11 @@ function dataSegments(command: string): { segments: DataSegment[]; stripped: str
   while (DATA_LEX.lastIndex < command.length) {
     const start = DATA_LEX.lastIndex;
     const token = DATA_LEX.exec(command);
-    if (!token || (token[10] !== undefined && parts.length)) return null;
+    // A comment is in no kept shape: the whole command keeps BASE.
+    if (!token || token[10] !== undefined) return null;
     const [text, blank, separator, here, strip, singleTag, doubleTag, bareTag, redirectOp, part] = token;
     if (part !== undefined) { parts.push(part); continue; }
-    if (blank !== undefined || token[10] !== undefined) { finishWord(); continue; }
+    if (blank !== undefined) { finishWord(); continue; }
     if (separator !== undefined) {
       if (!finishSegment(separator === '|' || separator === '|&')) return null;
       if (separator !== '\n' || !pending) continue;
@@ -838,7 +839,7 @@ function labelArgument(arg: string): boolean {
   return text.startsWith('-') || (ENV_LABEL_WORD.test(text) && (words.length === 1 || /[=:]/.test(text) || words.every((word) => ENV_LABEL_WORD.test(word))));
 }
 /** The indexes of a segment's data words, or null when the whole command must keep its BASE reading. */
-function dataWordIndexes(segment: DataSegment, read: boolean): Set<number> | null {
+function dataWordIndexes(segment: DataSegment, read: boolean, alone: boolean): Set<number> | null {
   const { words, kinds } = segment;
   let at = 0;
   if (SHELL_ASSIGNMENT.test(words[0] ?? '')) return null;
@@ -855,12 +856,12 @@ function dataWordIndexes(segment: DataSegment, read: boolean): Set<number> | nul
     if ((segment.heredoc !== null || segment.herestrings) && !HEREDOC_DATA_PROGRAMS.has(program)) return null;
     return new Set(words.map((_, i) => i).filter((i) => i > at && kinds[i] === 'quoted' && !words[i].startsWith('-')));
   }
-  if (program === 'python3' && at === 0) return python3DataWords(segment);
+  if (program === 'python3' && at === 0) return python3DataWords(segment, alone);
   return read && segment.heredoc === null && !segment.herestrings ? new Set() : null;
 }
-// L01: exactly `python3 -I -` with a heredoc whose code passes B1. L10: `python3 <script>` (no risk word in its name) then only quoted
-// arguments, none a flag or a label (F2). Every other python3 form, and python and node (L02-L09, L11 are cut), keeps BASE.
-function python3DataWords(segment: DataSegment): Set<number> | null {
+// L01: exactly `python3 -I -` with a heredoc whose code passes B1. L10: the whole command is `python3 <script>` (no risk word in its name)
+// then only quoted arguments, none a flag or a label (F2), so no other segment can have written the script. Every other python3 form, and python and node (L02-L09, L11 are cut), keeps BASE.
+function python3DataWords(segment: DataSegment, alone: boolean): Set<number> | null {
   const { words, kinds } = segment;
   if (segment.inputs.length || segment.herestrings) return null;
   if (segment.heredoc !== null) {
@@ -868,7 +869,7 @@ function python3DataWords(segment: DataSegment): Set<number> | null {
     return exact && codeIsData(segment.heredoc) ? new Set() : null;
   }
   const script = kinds[1] === 'literal' ? words[1] : '';
-  if (!script || script.startsWith('-') || RISK_SCRIPT_NAME.test(script.split('/').pop() || '') || words.length < 3) return null;
+  if (!alone || !script || script.startsWith('-') || RISK_SCRIPT_NAME.test(script.split('/').pop() || '') || words.length < 3) return null;
   if (kinds.slice(2).some((kind) => kind !== 'quoted') || words.slice(2).some(labelArgument)) return null;
   return new Set(words.map((_, i) => i).filter((i) => i > 1));
 }
@@ -884,7 +885,7 @@ function dataWordsText(tool: string, command: string, base: ReturnType<typeof sh
   const parts = [tool];
   let dropped = false;
   for (const [index, segment] of lexed.segments.entries()) {
-    const data = dataWordIndexes(segment, analysis.verdicts[index] === 'read');
+    const data = dataWordIndexes(segment, analysis.verdicts[index] === 'read', lexed.segments.length === 1);
     if (!data) return null;
     dropped ||= data.size > 0 || segment.heredoc !== null || segment.herestrings > 0;
     if (analysis.verdicts[index] !== 'read') parts.push([...segment.words.filter((_, i) => !data.has(i)), ...segment.outputs].join(' '));
