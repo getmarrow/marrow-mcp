@@ -60,10 +60,14 @@ import {
   isSecretPath,
   isShellGovernedTool,
   normalizeHookToolName,
+  parseShellSegments,
   policyReadsAllWords,
   readEquivalent,
+  SHELL_DIALECT,
   toolClassificationText,
   toolPolicyReading,
+  type ShellDialect,
+  type ToolPolicyEvent,
 } from './hook-tool-policy';
 import {
   clientReportedHookLifecycleIdentity,
@@ -1039,6 +1043,73 @@ export function controlRouteCall(event: PreToolUseEvent): boolean {
   return texts.some((text) => controlRoute(text));
 }
 
+/** Programs that run the command that follows them, with the options that take a separate value (any other `-` word takes none). */
+const COMMAND_WRAPPERS = new Map(Object.entries({
+  env: '-u -C -S', xargs: '-I -n -P -L -d -E -s -a', sudo: '-u -g -h -p -C -r -t -D -R -T', doas: '-u -C', timeout: '-s -k', nice: '-n', ionice: '-c -n -p', time: '-f -o', exec: '-a',
+  command: '', builtin: '', nohup: '', stdbuf: '', setsid: '', '!': '', if: '', then: '', else: '', elif: '', do: '', while: '', until: '',
+}).map(([word, options]): [string, Set<string>] => [word, new Set(options.split(' '))]));
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix', '--attr-source']);
+/** A `gh api` call that is no plain read: a mutating method or a field flag (what the protected shell rules already ask for). */
+const GH_API_MUTATION = /(?:^|\s)(?:(?:--method|-X)[=\s]*(?:POST|PUT|PATCH|DELETE)\b|-f|--(?:field|raw-field|input))/i;
+const programBase = (word: string): string => word.toLowerCase().split(/[\\/]/).pop()!.replace(/\.(?:exe|cmd|bat)$/, '');
+
+/** S2: a text the parser cannot read, lowercased with quotes and backslashes removed, names `git` then `push` (at most 240 characters apart, no separator between) or `gh pr merge`. One linear pass: no input makes it slow. */
+function textPushesOrMerges(text: string): boolean {
+  const lower = text.toLowerCase();
+  // Nothing to dequote when no push or merge can be spelled in it (the common long text).
+  if (!/p['"\\]*u['"\\]*s['"\\]*h|m['"\\]*e['"\\]*r['"\\]*g['"\\]*e/.test(lower)) return false;
+  const flat = lower.replace(/['"\\]/g, '');
+  if (/\bgh\s+pr\s+merge\b/.test(flat)) return true;
+  let gitEnd = -1;
+  for (const hit of flat.matchAll(/\bgit\b|\bpush\b|[\n;&|]/g)) {
+    if (hit[0] === 'push') { if (gitEnd >= 0 && hit.index! - gitEnd <= 240) return true; } else gitEnd = hit[0] === 'git' ? hit.index! + 3 : -1;
+  }
+  return false;
+}
+
+/** Whether one simple command (its words as the parser gives them) runs a git push or a gh merge, through the wrappers it can unwrap. */
+function segmentRunsPushOrMerge(words: string[], dialect: ShellDialect | undefined, depth: number): boolean {
+  let at = 0;
+  for (;;) {
+    while (at < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[at])) at += 1;
+    if (at >= words.length) return false;
+    const wrapper = COMMAND_WRAPPERS.get(programBase(words[at]));
+    if (!wrapper) break;
+    for (at += 1; at < words.length && (words[at].startsWith('-') || /^\d+[smhd]?$/.test(words[at])); at += wrapper.has(words[at]) ? 2 : 1) {
+      if (words[at] === '-S' && wrapper.has('-S')) return readsPushOrMerge(words[at + 1] ?? '', dialect, depth + 1);
+    }
+  }
+  const program = programBase(words[at]);
+  if (program === 'git-push') return true;
+  if (program === 'eval') return readsPushOrMerge(words.slice(at + 1).join(' '), dialect, depth + 1);
+  if (/^(?:ba|z|da|k|fi|tc|c|a)?sh$/.test(program)) {
+    for (let index = at + 1; index < words.length && /^[-+]/.test(words[index]); index += 1) {
+      if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[index])) return readsPushOrMerge(words[index + 1] ?? '', dialect, depth + 1);
+      if (words[index] === '-o' || words[index] === '+o') index += 1;
+    }
+    return false;
+  }
+  if (program === 'git') {
+    let index = at + 1;
+    for (; index < words.length && words[index].startsWith('-'); index += GIT_VALUE_OPTIONS.has(words[index]) ? 2 : 1) {
+      if (words[index] === '-c' && /^alias\.[^=]*=.*\bpush\b/i.test(words[index + 1] ?? '')) return true;
+    }
+    return words[index]?.toLowerCase() === 'push';
+  }
+  if (program !== 'gh') return false;
+  const args = words.slice(at + 1).filter((word, index, all) => !word.startsWith('-') && all[index - 1] !== '-R' && all[index - 1] !== '--repo').map((word) => word.toLowerCase());
+  return (args[0] === 'pr' && args[1] === 'merge')
+    || (args[0] === 'api' && args.some((word) => /\/merge(?:s|-upstream)?(?:[?#]|$)/.test(word)) && GH_API_MUTATION.test(words.join(' ')));
+}
+
+/** S1: any simple command of a shell text runs a push or merge (a shell string, eval or `env -S` text is read the same way, to a depth of 3). S2: a text the parser cannot read, or nested past the bound, is judged by its dequoted letters. A read that fails is a yes, never a quiet no. */
+function readsPushOrMerge(text: string, dialect: ShellDialect | undefined, depth = 0): boolean {
+  try {
+    const segments = depth > 3 ? null : parseShellSegments(text, dialect);
+    return segments === null ? textPushesOrMerges(text) : segments.some((segment) => segmentRunsPushOrMerge(segment.words, dialect, depth));
+  } catch { return true; }
+}
+
 /** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
 function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): ClassificationParts {
   const tool = String(event.tool_name || 'tool').slice(0, 64);
@@ -1060,18 +1131,19 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   // T2: a write to Marrow's control files, a host's hooks settings or a file that makes a command run later is a security action, not an audit one.
   const selfProtected = readOnly && !controlRoute ? null : selfProtectKind(event, options.cwd);
   const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
+  const pushOrMerge = shellGoverned && command !== '' && readsPushOrMerge(command, (event as ToolPolicyEvent)[SHELL_DIALECT]);
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;
   let type = 'process';
   if (/\b(?:publish|unpublish|deprecate)\b/.test(input)) type = 'publish';
   else if (/\b(?:deploy|release|wrangler)\b/.test(input) || infrastructureDeployment) type = 'deploy';
-  else if (/\b(?:merge|pull request|git push)\b/.test(input) || /\bgit\b[^\n;&|]{0,240}\bpush\b/.test(command.toLowerCase())) type = 'review';
+  else if (/\b(?:merge|pull request|git push)\b/.test(input) || /\bgit\b[^\n;&|]{0,240}\bpush\b/.test(command.toLowerCase()) || pushOrMerge) type = 'review';
   else if (/\b(?:migration|schema|database|d1)\b/.test(input)) type = 'migration';
   else if (secretAccess || /\b(?:secret|credential|token|key|permission)\b/.test(input)) type = 'audit';
   else if (/\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input)) type = 'financial';
   const surfaces = [
     /\b(?:deploy|release|production|prod|wrangler)\b/.test(input) || infrastructureDeployment ? 'production' : '',
-    /\b(?:git|github|merge|pull request|push)\b/.test(input) ? 'github' : '',
+    /\b(?:git|github|merge|pull request|push)\b/.test(input) || pushOrMerge ? 'github' : '',
     /\b(?:npm|package|publish)\b/.test(input) ? 'npm' : '',
     secretAccess || /\b(?:secret|credential|token|key)\b/.test(input) ? 'secrets' : '',
     /\b(?:migration|schema|database|d1)\b/.test(input) ? 'database' : '',
@@ -1081,6 +1153,7 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
     secretAccess
     || (shellGoverned && /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input))
     || protectedShellCommand
+    || pushOrMerge
     || (isMcpHookTool(event.tool_name) && (options.ownUnproven === true || !isOfficialMarrowMcpTool(event.tool_name)))
     || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
   );
