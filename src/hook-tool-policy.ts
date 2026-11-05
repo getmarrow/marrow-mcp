@@ -896,13 +896,21 @@ function dataWordsText(tool: string, command: string, base: ReturnType<typeof sh
   return heredocs ? [tool, lexed.stripped].join(' ; ') : parts.join(' ; ');
 }
 
+/** A string input, or exactly one string command field: a second `command`, `cmd` or `script` (one a host may run instead) keeps BASE. */
+function oneCommandField(event: ToolPolicyEvent): boolean {
+  if (typeof event.tool_input === 'string') return true;
+  const input = asRecord(event.tool_input);
+  const fields = ['command', 'cmd', 'script'].filter((key) => input?.[key] !== undefined);
+  return fields.length === 1 && typeof input?.[fields[0]] === 'string';
+}
+
 /**
  * The classification text of a shell call with the data words of a kept shape left out (L01, L10, D01-D23), or null when the call
  * has none or any doubt remains. The caller uses it only to turn a hold into an allow (B5); toolClassificationText stays BASE.
  */
 export function toolDataWordsText(event: ToolPolicyEvent): string | null {
   const tool = normalizeHookToolName(event.tool_name);
-  if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell') return null;
+  if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell' || !oneCommandField(event)) return null;
   const command = shellCommandText(event);
   return dataWordsText(tool, command, shellAnalysis(command, event[SHELL_DIALECT]));
 }
@@ -914,7 +922,7 @@ const GIT_MERGE_SIBLING = /^[ \t]*git(?:[ \t]+-C[ \t]+[\w./@^~:+-]+)*[ \t]+merge
 const GIT_MERGE_SIBLING_NEVER = new Set('bash sh eval xargs env command exec'.split(' '));
 export function isGitMergeSiblingCall(event: ToolPolicyEvent): boolean {
   const tool = normalizeHookToolName(event.tool_name);
-  if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell') return false;
+  if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell' || !oneCommandField(event)) return false;
   const command = shellCommandText(event);
   return command.length <= 4096 && GIT_MERGE_SIBLING.test(command)
     && !command.trim().split(/[ \t]+/).some((word) => GIT_MERGE_SIBLING_NEVER.has(word) || SHELL_STATE_WORDS.has(word));
