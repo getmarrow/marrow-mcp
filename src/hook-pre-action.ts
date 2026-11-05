@@ -1094,8 +1094,14 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
     return held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
   };
   const base = classify(toolClassificationText(event).toLowerCase(), false);
-  const lowered = shellGoverned && base.protected ? toolDataWordsText(event) : null;
-  const mergeSibling = shellGoverned && base.protected && isGitMergeSiblingCall(event);
+  let lowered: string | null = null;
+  let mergeSibling = false;
+  try {
+    lowered = shellGoverned && base.protected ? toolDataWordsText(event) : null;
+    mergeSibling = shellGoverned && base.protected && isGitMergeSiblingCall(event);
+  } catch {
+    return base; // a lowering that fails keeps the BASE classification
+  }
   if (lowered === null && !mergeSibling) return base;
   // B5: a kept shape may only turn a hold into an allow; a call it still holds keeps the BASE text, type and surfaces.
   const parts = classify((lowered ?? toolClassificationText(event)).toLowerCase(), mergeSibling);
