@@ -209,9 +209,9 @@ These behaviors shipped in 3.9.103 and still apply.
 - **Hidden commands are checked:** commands inside an unquoted here-document body, a `${x:-$(...)}` default or an arithmetic expansion are checked like any other command.
 - **`marrow-mcp keys create` reads every flag form:** `--name=`, `--type=` and `--expires=` (and `-n=`, `-t=`) are read like `--name value`; a flag that is present but blank, or a `--scopes` / `--agents` list with no entry, is a usage error (exit 2) and nothing is sent; leaving `--scopes` and `--agents` out sends neither.
 
-## What's New in v3.9.111
+## What's New in v3.9.112
 
-v3.9.111 keeps routine work quiet and keeps keys off the command line. The full entry is in CHANGELOG.md.
+v3.9.112 keeps routine work quiet and keeps keys off the command line. The full entry is in CHANGELOG.md.
 
 - **Plain allows stay quiet.** When Marrow allows an unprotected call (for example a read or a local append) and the hook holds no permit, generic service text ("Do not repeat the failed path...", "No identified workflow yet...", "Proceed with the low-risk work...") is no longer added to the agent's context, so routine work is not asked to close an outcome. Specific guidance, the permit line of a protected call, every verdict, every request to Marrow and every closure call are unchanged.
 - **No key on the command line.** The key setup in this README is one path: save `MARROW_API_KEY` in the owner-only `~/.marrow/env` (`chmod 700 ~/.marrow && chmod 600 ~/.marrow/env`) first, then run the command. The fallbacks that showed a key typed on a command line are gone. Docs only.

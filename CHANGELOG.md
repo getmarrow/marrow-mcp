@@ -1,12 +1,15 @@
 # Changelog
 
-## 3.9.111
+## 3.9.112
+
+3.9.111 was tagged but never published (a release-run test flake); 3.9.112 carries the same changes plus a test-only fix.
 
 Two fixes on top of 3.9.110. Plain allowed calls (a read, a local append) no longer get generic Marrow service text in the agent's context, so routine work is not asked to close an outcome; and the README no longer shows a key typed on a command line. Every verdict, every request to Marrow and every closure call are unchanged, and the README change is docs only.
 
 - Docs (README): the two fallback sentences that showed a key typed on a command line (an inline key setting before the installer command, and an export of the key for the session) are removed. The key setup shown is saving the key in an owner-only `~/.marrow/env` first. Docs only; no code or behavior changes.
 - Fix (hook, quiet plain allows): when Marrow allows an unprotected call and the hook holds no permit, service text made only of the generic sentences (`Do not repeat the failed path. Apply the avoid list before acting.`, `No identified workflow yet. Complete the checks, then commit the outcome so Marrow can reuse this path.`, `Proceed with the low-risk work. Marrow is using cached summaries to keep the agent hot path fast.`) is no longer added to the agent's context, so a read or a local append is not asked to close an outcome. The compare is exact (ASCII whitespace runs collapse, no case or Unicode fold, at most 400 characters). Specific text, the permit line of a protected call, every verdict, every request to Marrow and every closure call are unchanged.
 - Version 3.9.111 in package.json, package-lock.json, server.json and the adapter version constant; dist/ rebuilt from src/. The installer 0.1.73 and Q5 fixtures and the tests that pin the pack carry this pack's integrity.
+- Tests: the loop-guard prune tests now take every stamp from one controlled clock, so a millisecond tie no longer makes the "oldest entry is pruned" check depend on the run.
 
 ## 3.9.110
 
