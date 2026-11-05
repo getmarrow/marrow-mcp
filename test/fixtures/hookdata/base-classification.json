@@ -5780,6 +5780,108 @@
         "readOnly": false
       }
     },
+    "SWEEP-forged-cmd-field": {
+      "id": "SWEEP-forged-cmd-field",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "L10",
+      "command": "python3 check.py 'deploy to production'",
+      "extra": {
+        "cmd": "git push origin main"
+      },
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "SWEEP-forged-script-field": {
+      "id": "SWEEP-forged-script-field",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "D03",
+      "command": "cat >> log.md <<'EOF'\ndeploy to production\nEOF",
+      "extra": {
+        "script": "./deploy.sh --prod"
+      },
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "SWEEP-forged-cmd-l12": {
+      "id": "SWEEP-forged-cmd-l12",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "L12",
+      "command": "git merge-base A B",
+      "extra": {
+        "cmd": "git merge feature"
+      },
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
     "CUT-L02": {
       "id": "CUT-L02",
       "fix": "CUT",
