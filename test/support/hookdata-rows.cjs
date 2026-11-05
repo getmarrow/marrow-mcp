@@ -46,7 +46,7 @@ const rows = [
   { id: 'A13b', expect: 'HOLD', command: `python3 -c 'import json; subpro\\cess = 1; print("release")'` },
   { id: 'A14a', expect: 'BASE', command: `sudo sh -c 'echo hi'` },
   { id: 'A14b', expect: 'HOLD', command: `ssh host 'deploy.sh'` },
-  { id: 'A15a', expect: 'ALLOW', shape: 'L10', command: `python3 harness.py --text "ship backend release"` },
+  { id: 'A15a', expect: 'HOLD', shape: 'L10', command: `python3 harness.py --text "ship backend release"` },
   { id: 'A15b', expect: 'BASE', command: `python3 harness.py --mode deploy` },
   { id: 'A16a', expect: 'ALLOW', shape: 'base', command: 'ls', extra: { description: 'deploy to production now', note: 'npm publish release' } },
   { id: 'A16b', expect: 'ALLOW', shape: 'D03', command: `cat > notes.txt <<'EOF'${NL}hello world${NL}EOF`, extra: { description: 'deploy production release', note: 'publish' } },
@@ -95,7 +95,7 @@ const rows = [
     `s = s.replace('deploy to production after review', 'deploy to production after the owner review')`,
     `p.write_text(s)`,
     `EOF`].join(NL), extra: { description: 'Edit the release checklist markdown' } },
-  { id: 'A30c', expect: 'ALLOW', shape: 'L10', command: `python3 test/harness.py --text "ship backend release" --label "production deploy dummy"` },
+  { id: 'A30c', expect: 'HOLD', shape: 'L10', command: `python3 test/harness.py --text "ship backend release" --label "production deploy dummy"` },
   { id: 'A30d', expect: 'HOLD', command: `git push origin feature/hookdata-check` },
 ];
 

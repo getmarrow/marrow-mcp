@@ -739,25 +739,31 @@ export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, printsEnvi
   return command.split(/[\s'"`;&|<>(){}]+/).some((token) => isProtectedWriteTarget(token));
 }
 
-// Data words (LOWER-SHAPES-hookdata): only the fully quoted arguments, heredoc bodies and here-strings of these programs, and python3/python/node
-// code holding no spawn, network or unlisted-import token, are data. Anything unproven, and any command a raw-command family protects, keeps BASE.
+// Data words (LOWER-SHAPES-hookdata, kept shapes L01, L10, L12 and D01-D23 only): the fully quoted arguments of these programs, the heredoc
+// body or here-string of echo, printf, cat and tee, `python3 -I -` heredoc code that passes the B1 scan and the quoted text of a `python3 <script>`
+// run (F2) are data. Anything unproven, and any command a raw-command family protects, keeps BASE.
 const DATA_PROGRAMS = new Set('echo printf cat tee grep egrep fgrep rg head tail wc sort uniq cut tr diff cmp ls test true mkdir touch date'.split(' '));
+const HEREDOC_DATA_PROGRAMS = new Set('echo printf cat tee'.split(' '));
 const NEVER_DATA_PROGRAMS = new Set(('sh bash zsh dash ksh fish eval source . exec xargs ssh su sudo doas watch parallel find env command script expect '
   + 'tmux screen nsenter chroot git gh npm npx pnpm yarn bun bunx wrangler kubectl terraform pulumi helm flyctl fly vercel netlify aws gcloud az docker '
   + 'podman twine cargo gem pip pip3 curl wget http rsync scp sed awk gawk perl make').split(' '));
 const TRANSPARENT_WRAPPERS = new Set('time nice nohup timeout stdbuf ionice'.split(' '));
-const SHELL_STATE_WORDS = new Set('export declare typeset readonly local alias unalias function hash enable builtin shopt set trap source . eval exec'.split(' '));
-const PYTHON_FLAGS = new Set('-I -B -E -s -S -u'.split(' '));
+// S5 + B4: any of these words anywhere (or an assignment, or printf with an option) keeps the WHOLE command at BASE.
+const SHELL_STATE_WORDS = new Set(('export declare typeset readonly local alias unalias function hash enable builtin shopt set trap source . eval exec '
+  + 'read mapfile readarray getopts let coproc wait for select while until case esac if then elif else fi do done { } (( ))').split(' '));
+const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
 const RISK_SCRIPT_NAME = /deploy|release|publish|ship|push|merge|migrat|rotate|revoke|prod/i;
-// The spec's SPAWN and NET lists, then hardening: dunder and frame walks, aliased exec/eval/popen, node's other loaders, bare fetch.
-const CODE_SPAWN = ('subprocess os.system os.popen os.exec os.spawn posix_spawn pty pexpect plumbum sh. commands. multiprocessing ctypes child_process '
-  + 'execSync execFile spawn fork exec( eval( compile( __import__ importlib getattr( globals( Function( require( import( vm. process.binding system( ` '
-  + '__ exec eval popen require constructor getBuiltinModule _linkedBinding dlopen mainModule globalThis Reflect vars( locals( breakpoint runpy _frame f_globals '
-  + 'f_builtins f_locals help(').split(' ');
-const CODE_NET = ('urllib http.client requests httpx aiohttp socket fetch( http.request https.request XMLHttpRequest WebSocket net. tls. dgram smtplib '
-  + 'ftplib paramiko boto3 wrangler cloudflare fetch webbrowser xmlrpc asyncio ssl telnetlib imaplib poplib EventSource').split(' ');
-const SAFE_PYTHON_MODULES = new Set(('re json pathlib textwrap datetime time math hashlib base64 csv difflib glob fnmatch io unicodedata random '
-  + 'statistics decimal itertools collections functools struct bisect heapq html zlib gzip copy pprint').split(' '));
+// B1: L01 code imports only these modules, holds no `\x`/`\u`/`\U`/`\N`/octal escape, and no `__`, `_name` or listed name part (any case,
+// inside longer names too, string literals included). Literal alternations: linear in the code length.
+const L01_MODULE = '(?:json|re|pathlib|textwrap|datetime|difflib|collections|itertools|csv|math)';
+const L01_IMPORT_LINE = new RegExp(`^[ \\t]*(?:import[ \\t]+${L01_MODULE}(?:[ \\t]*,[ \\t]*${L01_MODULE})*`
+  + `|from[ \\t]+${L01_MODULE}[ \\t]+import[ \\t]+[A-Za-z][A-Za-z0-9_]*(?:[ \\t]*,[ \\t]*[A-Za-z][A-Za-z0-9_]*)*)[ \\t]*$`);
+const L01_ESCAPE = /\\[xuUN0-7]/;
+const L01_CODE_VETO = new RegExp(['__', '(?:^|[^A-Za-z0-9_])_', ...('os sys posix nt subprocess system popen spawn exec eval compile fork kill getattr setattr '
+  + 'delattr vars globals locals dir importlib builtins breakpoint ctypes pty socket pickle marshal shelve asyncio multiprocessing webbrowser pydoc '
+  + 'runpy code operator formatter format_map urllib http requests ssl ftplib smtplib xmlrpc help secret credential token passw').split(' ')].join('|'), 'i');
+// F2: a quoted L10 argument that is a flag or an environment/risk label (one word, a key=value or key: value, or only risk words) keeps BASE.
+const ENV_LABEL_WORD = /prod|prd|live|deploy|publish|release|staging|master|main|wrangler|merge|push|git|npm|migrat|secret|credential|token|key|rotate|revoke|payment|refund|charge|invoice|stripe|financial|schema|database|d1|package|permission|deprecate|pull request/i;
 type DataSegment = ShellSegment & { kinds: ('quoted' | 'literal' | 'other')[]; piped: boolean; heredoc: string | null; herestrings: number };
 // One sticky pass: blanks | separator | here-string or heredoc | redirect | word part | comment; no $, \, `, brace, parenthesis or "$..." is lowered.
 const DATA_LEX = /([ \t]+)|(\n|;|&&|\|\||\|&?|&(?!>))|(<<<[ \t]*(?:'[^']*'|"[^"$`\\]*")(?![^\s;&|<>])|<<(-?)[ \t]*(?:'(\w+)'|"(\w+)"|(\w+))(?![^\s;&|<>]))|(\d*(?:&>>?|>[>|]?|<>?)(?:&(?:\d+|-))?)|('[^']*'|"[^"$`\\]*"|[^\s'"\\$`|&;<>(){}#]+)|(#[^\n]*)/y;
@@ -818,23 +824,24 @@ function dataSegments(command: string): { segments: DataSegment[]; stripped: str
   if (pending || !finishSegment(false)) return null;
   return { segments, stripped: stripped + command.slice(kept) };
 }
-/** Code is data only with no spawn, network or (python) import of an unlisted module (it could run anything) in any copy; never non-ASCII or > 64 KB. */
-function codeIsData(code: string, python: boolean): boolean {
+/** B1: `python3 -I -` heredoc code is data only when it is ASCII, at most 64 KB, imports only listed modules and holds no listed escape or name part. */
+function codeIsData(code: string): boolean {
   if (code.length > 65536 || /[^\x00-\x7f]/.test(code)) return false;
-  const copies = [code, code.normalize('NFKC'), code.replace(/\\/g, ''), code.replace(/[\\\s]/g, '')];
-  const holds = (tokens: string[]) => copies.some((copy) => tokens.some((token) => copy.includes(token)));
-  if (holds(CODE_SPAWN) || (python && !pythonImportsListed(code.replace(/\\\n/g, ' ')))) return false;
-  return !holds(CODE_NET);
+  const text = code.normalize('NFKC');
+  if (L01_ESCAPE.test(text) || L01_CODE_VETO.test(text)) return false;
+  return text.split('\n').every((line) => !/\bimport\b/.test(line) || L01_IMPORT_LINE.test(line));
 }
-function pythonImportsListed(code: string): boolean {
-  return [...code.matchAll(/(?:\bfrom[ \t]+([\w.]+)[ \t]+)?\bimport\b([^\n;]*)/g)].every((found) => (found[1] !== undefined ? [found[1]]
-    : found[2].split(',').map((part) => part.trim().split(/[ \t]/)[0])).every((name) => SAFE_PYTHON_MODULES.has(name.split('.')[0])));
+/** F2: a quoted argument that reads as a flag or an environment or risk label, never as free text. */
+function labelArgument(arg: string): boolean {
+  const text = arg.normalize('NFKC').trim();
+  const words = text.split(/\s+/);
+  return text.startsWith('-') || (ENV_LABEL_WORD.test(text) && (words.length === 1 || /[=:]/.test(text) || words.every((word) => ENV_LABEL_WORD.test(word))));
 }
 /** The indexes of a segment's data words, or null when the whole command must keep its BASE reading. */
 function dataWordIndexes(segment: DataSegment, read: boolean): Set<number> | null {
   const { words, kinds } = segment;
   let at = 0;
-  if (/^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(words[0] ?? '')) return null;
+  if (SHELL_ASSIGNMENT.test(words[0] ?? '')) return null;
   while (kinds[at] === 'literal' && TRANSPARENT_WRAPPERS.has(words[at])) {
     at += 1;
     while (kinds[at] === 'literal' && /^(?:-[A-Za-z-]*|\d+(?:\.\d+)?[smhd]?)$/.test(words[at])) at += 1;
@@ -844,38 +851,36 @@ function dataWordIndexes(segment: DataSegment, read: boolean): Set<number> | nul
   if (SHELL_STATE_WORDS.has(program) || (segment.piped && !data)) return null;
   if (data) {
     if (['rg', 'sort'].includes(program) && words.some((arg) => longOptionPrefix(arg, ['pre', 'pre-glob', 'hostname-bin', 'compress-program']))) return null;
+    // B3: a heredoc body or here-string is data only for echo, printf, cat and tee (D01-D04).
+    if ((segment.heredoc !== null || segment.herestrings) && !HEREDOC_DATA_PROGRAMS.has(program)) return null;
     return new Set(words.map((_, i) => i).filter((i) => i > at && kinds[i] === 'quoted' && !words[i].startsWith('-')));
   }
-  if (['python3', 'python', 'node'].includes(program)) return interpreterDataWords(segment, at, program !== 'node');
+  if (program === 'python3' && at === 0) return python3DataWords(segment);
   return read && segment.heredoc === null && !segment.herestrings ? new Set() : null;
 }
-// S3: `python3 [-I -B -E -s -S -u] -c CODE` or `- <<TAG`, `node -e|-p CODE` or `- <<TAG`, or a flagless script path with no risk word in its name.
-function interpreterDataWords(segment: DataSegment, at: number, python: boolean): Set<number> | null {
+// L01: exactly `python3 -I -` with a heredoc whose code passes B1. L10: `python3 <script>` (no risk word in its name) then only quoted
+// arguments, none a flag or a label (F2). Every other python3 form, and python and node (L02-L09, L11 are cut), keeps BASE.
+function python3DataWords(segment: DataSegment): Set<number> | null {
   const { words, kinds } = segment;
-  if (segment.inputs.length || segment.herestrings || words.filter((arg, i) => i > at && ['-c', '-e', '-p'].includes(arg)).length > 1) return null;
-  let i = at + 1;
-  while (python && kinds[i] === 'literal' && PYTHON_FLAGS.has(words[i])) i += 1;
-  const flag = kinds[i] === 'literal' ? words[i] : '';
-  const data = new Set<number>();
-  let code: string | null = null;
-  if (python ? flag === '-c' : flag === '-e' || flag === '-p') {
-    if (kinds[i + 1] !== 'quoted' || segment.heredoc !== null) return null;
-    code = words[i + 1]; data.add(i + 1); i += 2;
-  } else if (flag === '-' && segment.heredoc !== null) [code, i] = [segment.heredoc, i + 1];
-  else if (i === at + 1 && flag && !flag.startsWith('-') && segment.heredoc === null && !RISK_SCRIPT_NAME.test(flag.split('/').pop() || '')) i += 1;
-  else return null;
-  if (code !== null && !codeIsData(code, python)) return null;
-  for (; i < words.length; i += 1) {
-    if (!python && code !== null && words[i].startsWith('-')) return null;
-    if (kinds[i] === 'quoted' && !words[i].startsWith('-')) data.add(i);
+  if (segment.inputs.length || segment.herestrings) return null;
+  if (segment.heredoc !== null) {
+    const exact = words.length === 3 && words[1] === '-I' && words[2] === '-' && kinds.every((kind) => kind === 'literal') && !segment.outputs.length;
+    return exact && codeIsData(segment.heredoc) ? new Set() : null;
   }
-  return data;
+  const script = kinds[1] === 'literal' ? words[1] : '';
+  if (!script || script.startsWith('-') || RISK_SCRIPT_NAME.test(script.split('/').pop() || '') || words.length < 3) return null;
+  if (kinds.slice(2).some((kind) => kind !== 'quoted') || words.slice(2).some(labelArgument)) return null;
+  return new Set(words.map((_, i) => i).filter((i) => i > 1));
 }
 /** The classification text with the proven data words left out, or null when nothing is proven data (the caller keeps BASE). */
 function dataWordsText(tool: string, command: string, base: ReturnType<typeof shellAnalysis>): string | null {
   const lexed = dataSegments(command);
-  const analysis = lexed && (lexed.stripped === command ? base : shellAnalysis(lexed.stripped)); // must split exactly as the lexer did
+  const heredocs = lexed !== null && lexed.stripped !== command;
+  const analysis = lexed && (heredocs ? shellAnalysis(lexed.stripped) : base); // must split exactly as the lexer did
   if (!lexed || !analysis || JSON.stringify(analysis.segments) !== JSON.stringify(lexed.segments.map(({ words, outputs, inputs, expansions }) => ({ words, outputs, inputs, expansions })))) return null;
+  // B4: a shell-state or control word, an assignment or a printf option anywhere keeps the whole command at BASE.
+  if (lexed.segments.some(({ words, kinds }) => words.some((word, i) => SHELL_STATE_WORDS.has(word) || (kinds[i] !== 'quoted' && SHELL_ASSIGNMENT.test(word)))
+    || (words.includes('printf') && words.some((word) => word.startsWith('-'))))) return null;
   const parts = [tool];
   let dropped = false;
   for (const [index, segment] of lexed.segments.entries()) {
@@ -885,7 +890,33 @@ function dataWordsText(tool: string, command: string, base: ReturnType<typeof sh
     if (analysis.verdicts[index] !== 'read') parts.push([...segment.words.filter((_, i) => !data.has(i)), ...segment.outputs].join(' '));
   }
   // S6: a command a raw-command family protects (npm publish, git push, wrangler deploy, ...) keeps every BASE word.
-  return dropped && !isProtectedShellMutation(command) ? parts.join(' ; ') : null;
+  if (!dropped || isProtectedShellMutation(command)) return null;
+  // B3: with a heredoc or here-string only its body or content is left out; every word of every segment stays, read segments included.
+  return heredocs ? [tool, lexed.stripped].join(' ; ') : parts.join(' ; ');
+}
+
+/**
+ * The classification text of a shell call with the data words of a kept shape left out (L01, L10, D01-D23), or null when the call
+ * has none or any doubt remains. The caller uses it only to turn a hold into an allow (B5); toolClassificationText stays BASE.
+ */
+export function toolDataWordsText(event: ToolPolicyEvent): string | null {
+  const tool = normalizeHookToolName(event.tool_name);
+  if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell') return null;
+  const command = shellCommandText(event);
+  return dataWordsText(tool, command, shellAnalysis(command, event[SHELL_DIALECT]));
+}
+
+// L12 (S7 + B2): `git [-C <dir>] merge-base|merge-tree|merge-file <operands>` is not `git merge` only when the WHOLE command is that one
+// simple command: no separator, newline, subshell, substitution, quote, variable, redirect, assignment, wrapper or shell-state word.
+// Disjoint character classes between the blanks and the words: linear.
+const GIT_MERGE_SIBLING = /^[ \t]*git(?:[ \t]+-C[ \t]+[\w./@^~:+-]+)*[ \t]+merge-(?:base|tree|file)(?:[ \t]+[\w./@^~:+-]+)*[ \t]*$/;
+const GIT_MERGE_SIBLING_NEVER = new Set('bash sh eval xargs env command exec'.split(' '));
+export function isGitMergeSiblingCall(event: ToolPolicyEvent): boolean {
+  const tool = normalizeHookToolName(event.tool_name);
+  if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell') return false;
+  const command = shellCommandText(event);
+  return command.length <= 4096 && GIT_MERGE_SIBLING.test(command)
+    && !command.trim().split(/[ \t]+/).some((word) => GIT_MERGE_SIBLING_NEVER.has(word) || SHELL_STATE_WORDS.has(word));
 }
 
 /**
@@ -900,8 +931,6 @@ export function toolClassificationText(event: ToolPolicyEvent): string {
   const command = hookToolCommand(event);
   if (SHELL_TOOLS.has(tool)) {
     const analysis = shellAnalysis(shellCommandText(event), event[SHELL_DIALECT]);
-    const lowered = event[SHELL_DIALECT] === 'powershell' ? null : dataWordsText(tool, shellCommandText(event), analysis);
-    if (lowered !== null) return lowered;
     if (analysis) {
       return [tool, ...analysis.segments
         .filter((_, index) => analysis.verdicts[index] !== 'read')

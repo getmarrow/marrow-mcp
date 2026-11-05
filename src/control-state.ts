@@ -84,7 +84,7 @@ export function localControlEvidence(bypassRecordingAvailable: boolean): Record<
       changed_at: control.changed_at,
       bypass_recording_available: bypassRecordingAvailable,
       exact_next_action: control.enabled
-        ? 'The account owner runs `npx @getmarrow/install control disable` in their own terminal; it asks for a confirmation code. Agents cannot turn control off.'
+        ? 'The account owner runs `npx @getmarrow/install control disable --yes` in their own terminal; it asks for a confirmation code. Agents cannot turn control off.'
         : 'Run npx @getmarrow/install control enable to resume local enforcement; hook processes poll this state without reinstalling.',
     };
   } catch {

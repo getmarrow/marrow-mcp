@@ -13,7 +13,7 @@ const { join } = require('node:path');
 const test = require('node:test');
 
 const { classifyTool } = require('../dist/hook-pre-action.js');
-const { toolClassificationText } = require('../dist/hook-tool-policy.js');
+const { toolDataWordsText } = require('../dist/hook-tool-policy.js');
 const { localControlEvidence } = require('../dist/control-state.js');
 const { rows } = require('./support/hookdata-rows.cjs');
 const BASE = require('./fixtures/hookdata/base-classification.json');
@@ -23,7 +23,7 @@ const CAPTURE = join(__dirname, 'support', 'hookdata-capture.cjs');
 const FIELDS = ['action', 'target', 'type', 'role', 'surfaces', 'risk', 'protected', 'readOnly'];
 const pick = (c) => Object.fromEntries(FIELDS.map((field) => [field, c[field]]));
 const bash = (row) => ({ tool_name: 'Bash', tool_input: { command: row.command, ...(row.extra || {}) } });
-const NEW_ROW_F = 'The account owner runs `npx @getmarrow/install control disable` in their own terminal; it asks for a confirmation code. Agents cannot turn control off.';
+const NEW_ROW_F = 'The account owner runs `npx @getmarrow/install control disable --yes` in their own terminal; it asks for a confirmation code. Agents cannot turn control off.';
 
 test('the BASE fixture covers every row, and every HOLD row is protected on BASE', () => {
   assert.equal(BASE.base, 'cb1918f261f2dde66dcaf29bbd1f99861bbe92f5');
@@ -40,7 +40,7 @@ for (const row of rows) {
       assert.equal(tip.protected, false, `${row.id}: ${tip.action}`);
       if (row.shape !== 'base' && row.shape !== 'L12') {
         // The branch ran: the classification text keeps the program word and drops the data.
-        const text = toolClassificationText(bash(row)).toLowerCase();
+        const text = (toolDataWordsText(bash(row)) || '').toLowerCase();
         assert.match(text, /^bash ; /, `${row.id}: ${text}`);
         assert.doesNotMatch(text, /deploy|release|production|publish/, `${row.id}: ${text}`);
       }
@@ -81,7 +81,7 @@ test('F1 row F: the control-disable text is exact, and control state is unchange
     assert.equal(evidence.exact_next_action, NEW_ROW_F);
     assert.equal(evidence.enabled, true);
     assert.equal(evidence.state, 'default_enabled');
-    assert.doesNotMatch(JSON.stringify(evidence), /--yes/);
+    assert.match(evidence.exact_next_action, /control disable --yes`/);
   } finally {
     if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
     rmSync(home, { recursive: true, force: true });
