@@ -5625,6 +5625,161 @@
         "readOnly": false
       }
     },
+    "SWEEP-pipe-into-read": {
+      "id": "SWEEP-pipe-into-read",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "D22",
+      "command": "touch 'deploy-notes' | git log --oneline",
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "B1-net-word": {
+      "id": "B1-net-word",
+      "fix": "B1",
+      "expect": "BASE",
+      "shape": "L01",
+      "command": "python3 -I - <<'EOF'\nfrom pathlib import Path\nPath('n.md').write_text('deploy notes at https://example.test')\nEOF",
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "B2-exec-operand": {
+      "id": "B2-exec-operand",
+      "fix": "B2",
+      "expect": "BASE",
+      "shape": "L12",
+      "command": "git merge-base exec main",
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "B2-read-operand": {
+      "id": "B2-read-operand",
+      "fix": "B2",
+      "expect": "BASE",
+      "shape": "L12",
+      "command": "git merge-base read main",
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "F2-unquoted-arg": {
+      "id": "F2-unquoted-arg",
+      "fix": "F2",
+      "expect": "BASE",
+      "shape": "L10",
+      "command": "python3 check.py notes 'deploy to production'",
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
     "CUT-L02": {
       "id": "CUT-L02",
       "fix": "CUT",
