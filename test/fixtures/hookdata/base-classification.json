@@ -1,0 +1,1861 @@
+{
+  "base": "cb1918f261f2dde66dcaf29bbd1f99861bbe92f5",
+  "rows": {
+    "A1a": {
+      "pre": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A1b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A2": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A3a": {
+      "pre": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      }
+    },
+    "A3b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A4": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A5": {
+      "pre": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "post": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      }
+    },
+    "A6": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A7a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A7b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A8a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A8b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A8c": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A9a": {
+      "pre": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A9b": {
+      "pre": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A9c": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A9d": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A10a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production, github",
+        "target": "github:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production, github",
+        "target": "github:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A10b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production, github",
+        "target": "github:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production, github",
+        "target": "github:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A11a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A11b": {
+      "pre": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      }
+    },
+    "A11c": {
+      "pre": {
+        "action": "classified Bash action: process on production",
+        "target": "production:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: process on production",
+        "target": "production:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A11d": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A12a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A12b": {
+      "pre": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A12c": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A13a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A13b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A14a": {
+      "pre": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "medium",
+        "protected": false,
+        "readOnly": false
+      }
+    },
+    "A14b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A15a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A15b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A16a": {
+      "pre": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      },
+      "post": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "low",
+        "protected": false,
+        "readOnly": true
+      }
+    },
+    "A16b": {
+      "pre": {
+        "action": "classified Bash action: publish on production, npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: publish on production, npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A16c": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A17a": {
+      "pre": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A17b": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A17c": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A17d": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A18": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A19a": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A19b": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A19c": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A19d": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A19e": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A19f": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A19g": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A20": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A21a": {
+      "pre": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: process on workspace",
+        "target": "workspace:process",
+        "type": "process",
+        "role": "general",
+        "surfaces": [
+          "workspace"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A21b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A22a": {
+      "pre": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A22b": {
+      "pre": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: publish on npm",
+        "target": "npm:publish",
+        "type": "publish",
+        "role": "deploy",
+        "surfaces": [
+          "npm"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A23a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A23b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A24a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A24b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A25a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A25b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A26a": {
+      "pre": {
+        "action": "classified Bash action: review on production, github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "production",
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on production, github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "production",
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A26b": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A26c": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A27a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A27b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production, github",
+        "target": "github:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production, github",
+        "target": "github:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production",
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A28a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A28b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A28c": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A29": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A30a": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A30b": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A30c": {
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "A30d": {
+      "pre": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: review on github",
+        "target": "github:review",
+        "type": "review",
+        "role": "review",
+        "surfaces": [
+          "github"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    }
+  }
+}
