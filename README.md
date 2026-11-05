@@ -209,9 +209,16 @@ These behaviors shipped in 3.9.103 and still apply.
 - **Hidden commands are checked:** commands inside an unquoted here-document body, a `${x:-$(...)}` default or an arithmetic expansion are checked like any other command.
 - **`marrow-mcp keys create` reads every flag form:** `--name=`, `--type=` and `--expires=` (and `-n=`, `-t=`) are read like `--name value`; a flag that is present but blank, or a `--scopes` / `--agents` list with no entry, is a usage error (exit 2) and nothing is sent; leaving `--scopes` and `--agents` out sends neither.
 
-## What's New in v3.9.110
+## What's New in v3.9.111
 
-v3.9.110 repairs a broken install on 3.9.109 and adds the changes merged since. The full entry is in CHANGELOG.md.
+v3.9.111 keeps routine work quiet and keeps keys off the command line. The full entry is in CHANGELOG.md.
+
+- **Plain allows stay quiet.** When Marrow allows an unprotected call (for example a read or a local append) and the hook holds no permit, generic service text ("Do not repeat the failed path...", "No identified workflow yet...", "Proceed with the low-risk work...") is no longer added to the agent's context, so routine work is not asked to close an outcome. Specific guidance, the permit line of a protected call, every verdict, every request to Marrow and every closure call are unchanged.
+- **No key on the command line.** The key setup in this README is one path: save `MARROW_API_KEY` in the owner-only `~/.marrow/env` (`chmod 700 ~/.marrow && chmod 600 ~/.marrow/env`) first, then run the command. The fallbacks that showed a key typed on a command line are gone. Docs only.
+
+## Loop guard, stable entry and auto-mode holds
+
+These behaviors shipped in 3.9.110 and still apply. v3.9.110 repaired a broken install on 3.9.109; the full entry is in CHANGELOG.md.
 
 - **A busy host is no longer locked out by the loop guard.** When the local loop-guard state reaches 256 KB, the oldest entries of other sessions are pruned instead. The session making the call is never pruned. This is looser than 3.9.109, by the owner's decision: while the pruning runs, other sessions keep only their 3 newest distinct calls, so a loop in another session that repeats a call only after 3 or more other distinct calls can be missed; loops of 1-3 distinct calls are still denied. After a large backward clock step the hook can still deny calls until the clock catches up, as in 3.9.109.
 - **The stable Marrow entry is recognized on Codex and Cursor.** The version-free entry (`/bin/sh -c <stub> <home>/.marrow/runtime/launcher/<sha256>.cjs marrow-mcp`) is recognized as the official server, so Marrow's own tools skip the gate when a host has moved to it. It counts only as this process's own launch: the launcher that started the hook must hash to the digest in the entry and be a launcher of a pinned core. Anything else goes down the normal gate path. macOS and Linux only; Windows keeps the current entry. This is looser than 3.9.109, by the owner's decision.

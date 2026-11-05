@@ -36,9 +36,9 @@ const codex = (table, ownLoader = OWN_SOURCE) => codexOfficialMarrowServer({ env
 const cursorWith = (launch, ownLoader) => cursor({ [`${PROJECT}/.cursor/mcp.json`]: cursorJson({ marrow: entryOf(launch) }) }, ownLoader);
 const codexWith = (launch, ownLoader) => codex({ [`${CODEX_HOME}/config.toml`]: tomlEntry('marrow', launch) }, ownLoader);
 
-test('fixture: the installer 0.1.73 loader carries MCP 3.9.110, its pack integrity and the lockfile SDK pin', () => {
-  assert.equal(V, '3.9.110');
-  assert.equal(CFG.integrity, 'sha512-bSWb1g3oxYPxDNUuOuM6Yw7ReC4CNR9AVVr7OwJiN0LNjYCtliP4uoJc5h6zujjsX4ujfSSKybuui9n8FRO+/A==');
+test('fixture: the installer 0.1.73 loader carries MCP 3.9.111, its pack integrity and the lockfile SDK pin', () => {
+  assert.equal(V, '3.9.111');
+  assert.equal(CFG.integrity, 'sha512-zjGQ9m1TRHAlYeqnDO5RuBsfvhoYHV3K/3hwbznP3B+PNezcOkC+ARWNoiIppiNyWgC31OvjI1/aufm86DITww==');
   const lock = require('../package-lock.json').packages['node_modules/@getmarrow/sdk'];
   assert.deepEqual(CFG.sdk, { version: lock.version, integrity: lock.integrity }, 'A1 F2: the fixture SDK pin is the rebuilt 3.7.67 pack');
 });
@@ -96,7 +96,7 @@ test('a forged or unusable own loader proves nothing', () => {
     'core changed': OWN_SOURCE.replace('could not start its verified local runtime', 'could not start its verified local runtimes'),
     'CFG not canonical JSON': OWN_SOURCE.replace('{"version"', '{ "version"'),
     'trailing byte': `${OWN_SOURCE} `,
-    'version 3.9.110 with build metadata': launcherOf(cfg(() => ({ version: `${V}+x` }))),
+    'version 3.9.111 with build metadata': launcherOf(cfg(() => ({ version: `${V}+x` }))),
     'integrity with extra padding': launcherOf(cfg((c) => ({ integrity: `${c.integrity}=` }))),
     'oversized': OWN_SOURCE + ' '.repeat(1 << 17),
     'version wider than the shape check (5 digits)': launcherOf(cfg(() => ({ version: '3.9.10500' }))),
@@ -114,7 +114,7 @@ test('a forged or unusable own loader proves nothing', () => {
 test('identity is relative to the own launch: same exact launch proven, any other pair not', () => {
   const own104 = launcherOf(L104);
   assert.equal(isOfficialMarrowServerLaunch(...sh(L104, '3.9.104'), own104), true, 'a hook started by the 3.9.104 loader proves its own launch');
-  assert.equal(isOfficialMarrowServerLaunch(...sh(), own104), false, 'and not the 3.9.110 launch');
+  assert.equal(isOfficialMarrowServerLaunch(...sh(), own104), false, 'and not the 3.9.111 launch');
   const own172 = launcherOf(loaderIn('installer-0172'));
   assert.equal(isOfficialMarrowServerLaunch(...sh(loaderIn('installer-0172'), '3.9.103'), own172), true, '0.1.72 proves its own launch');
   assert.equal(isOfficialMarrowServerLaunch(...sh(), own172), false);

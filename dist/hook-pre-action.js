@@ -1160,6 +1160,55 @@ function grokPreActionHookOutput(result) {
         ? { decision: 'deny', reason: 'Marrow blocked this protected action.' }
         : { decision: 'allow' };
 }
+// The generic sentences the service puts in before_you_act when it has nothing specific to say.
+const GENERIC_BEFORE_YOU_ACT = [
+    'Do not repeat the failed path. Apply the avoid list before acting.',
+    'No identified workflow yet. Complete the checks, then commit the outcome so Marrow can reuse this path.',
+    'Proceed with the low-risk work. Marrow is using cached summaries to keep the agent hot path fast.',
+];
+/**
+ * True only when the whole text is 1 to 3 distinct generic sentences. The compare
+ * is exact: ASCII space, tab, CR and LF runs count as one space, nothing is folded,
+ * and anything else (extra text, a changed letter, a repeat, a non-string) is specific.
+ */
+function genericBeforeYouActOnly(text) {
+    if (typeof text !== 'string' || text.length > 400)
+        return false;
+    let rest = '';
+    for (const char of text) {
+        const space = char === ' ' || char === '\t' || char === '\r' || char === '\n';
+        if (!space)
+            rest += char;
+        else if (rest && !rest.endsWith(' '))
+            rest += ' ';
+    }
+    rest = rest.endsWith(' ') ? rest.slice(0, -1) : rest;
+    const left = [...GENERIC_BEFORE_YOU_ACT];
+    while (rest) {
+        const at = left.findIndex((phrase) => rest === phrase || rest.startsWith(`${phrase} `));
+        if (at < 0)
+            return false;
+        rest = rest.slice(left[at].length + 1);
+        left.splice(at, 1);
+    }
+    return left.length < GENERIC_BEFORE_YOU_ACT.length;
+}
+/** A plain allow of an unprotected call: no hold, no advisory, no permit, no failure. */
+function plainUnprotectedAllow(result) {
+    const { runtime, permit } = result;
+    const gate = runtime?.risk_gate;
+    return !isMarrowOutage(result)
+        && result.timedOut !== true
+        && result.enforcementError === undefined
+        && typeof runtime === 'object' && runtime !== null
+        && typeof gate === 'object' && gate !== null
+        && String(gate.decision) === 'allow'
+        && gate.allow !== false
+        && runtimeGateVerdict(runtime) === null
+        && advisoryGateNotice(runtime) === null
+        && result.protectedRisk === false
+        && (permit === null || permit === undefined);
+}
 function preActionHookOutput(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT, 
 /** An older service without host approvals: Claude Code asks in its dialog exactly as 3.9.98 did. */
 legacyServiceAsk = false) {
@@ -1181,10 +1230,12 @@ legacyServiceAsk = false) {
     }
     const { runtime, permit, protectedRisk } = result;
     const advisory = advisoryGateNotice(runtime);
-    const context = runtime?.before_you_act || permit?.permit_id || advisory ? {
+    // Generic-only service text on a plain allow tells the agent nothing it can act on.
+    const beforeYouAct = plainUnprotectedAllow(result) && genericBeforeYouActOnly(runtime?.before_you_act) ? null : runtime?.before_you_act;
+    const context = beforeYouAct || permit?.permit_id || advisory ? {
         additionalContext: [
             advisory,
-            runtime?.before_you_act,
+            beforeYouAct,
             permit?.permit_id ? `Marrow action permit verified: ${permit.permit_id}. Evidence and outcome closure remain required.` : null,
         ].filter(Boolean).join('\n'),
     } : {};
