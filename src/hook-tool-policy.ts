@@ -739,6 +739,157 @@ export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, printsEnvi
   return command.split(/[\s'"`;&|<>(){}]+/).some((token) => isProtectedWriteTarget(token));
 }
 
+// Data words (LOWER-SHAPES-hookdata): only the fully quoted arguments, heredoc bodies and here-strings of these programs, and python3/python/node
+// code holding no spawn, network or unlisted-import token, are data. Anything unproven, and any command a raw-command family protects, keeps BASE.
+const DATA_PROGRAMS = new Set('echo printf cat tee grep egrep fgrep rg head tail wc sort uniq cut tr diff cmp ls test true mkdir touch date'.split(' '));
+const NEVER_DATA_PROGRAMS = new Set(('sh bash zsh dash ksh fish eval source . exec xargs ssh su sudo doas watch parallel find env command script expect '
+  + 'tmux screen nsenter chroot git gh npm npx pnpm yarn bun bunx wrangler kubectl terraform pulumi helm flyctl fly vercel netlify aws gcloud az docker '
+  + 'podman twine cargo gem pip pip3 curl wget http rsync scp sed awk gawk perl make').split(' '));
+const TRANSPARENT_WRAPPERS = new Set('time nice nohup timeout stdbuf ionice'.split(' '));
+const SHELL_STATE_WORDS = new Set('export declare typeset readonly local alias unalias function hash enable builtin shopt set trap source . eval exec'.split(' '));
+const PYTHON_FLAGS = new Set('-I -B -E -s -S -u'.split(' '));
+const RISK_SCRIPT_NAME = /deploy|release|publish|ship|push|merge|migrat|rotate|revoke|prod/i;
+// The spec's SPAWN and NET lists, then hardening: dunder and frame walks, aliased exec/eval/popen, node's other loaders, bare fetch.
+const CODE_SPAWN = ('subprocess os.system os.popen os.exec os.spawn posix_spawn pty pexpect plumbum sh. commands. multiprocessing ctypes child_process '
+  + 'execSync execFile spawn fork exec( eval( compile( __import__ importlib getattr( globals( Function( require( import( vm. process.binding system( ` '
+  + '__ exec eval popen require constructor getBuiltinModule _linkedBinding dlopen mainModule globalThis Reflect vars( locals( breakpoint runpy _frame f_globals '
+  + 'f_builtins f_locals help(').split(' ');
+const CODE_NET = ('urllib http.client requests httpx aiohttp socket fetch( http.request https.request XMLHttpRequest WebSocket net. tls. dgram smtplib '
+  + 'ftplib paramiko boto3 wrangler cloudflare fetch webbrowser xmlrpc asyncio ssl telnetlib imaplib poplib EventSource').split(' ');
+const SAFE_PYTHON_MODULES = new Set(('re json pathlib textwrap datetime time math hashlib base64 csv difflib glob fnmatch io unicodedata random '
+  + 'statistics decimal itertools collections functools struct bisect heapq html zlib gzip copy pprint').split(' '));
+type DataSegment = ShellSegment & { kinds: ('quoted' | 'literal' | 'other')[]; piped: boolean; heredoc: string | null; herestrings: number };
+// One sticky pass: blanks | separator | here-string or heredoc | redirect | word part | comment; no $, \, `, brace, parenthesis or "$..." is lowered.
+const DATA_LEX = /([ \t]+)|(\n|;|&&|\|\||\|&?|&(?!>))|(<<<[ \t]*(?:'[^']*'|"[^"$`\\]*")(?![^\s;&|<>])|<<(-?)[ \t]*(?:'(\w+)'|"(\w+)"|(\w+))(?![^\s;&|<>]))|(\d*(?:&>>?|>[>|]?|<>?)(?:&(?:\d+|-))?)|('[^']*'|"[^"$`\\]*"|[^\s'"\\$`|&;<>(){}#]+)|(#[^\n]*)/y;
+/** Segments with word quoting, pipe readers, heredoc and here-strings, and the text left with those cut out; null on any doubt. */
+function dataSegments(command: string): { segments: DataSegment[]; stripped: string } | null {
+  if (command.length > MAX_SHELL_ANALYSIS_BYTES || UNMODELED_SHELL_CHARACTER.test(command)) return null;
+  const open = (piped: boolean): DataSegment => ({ words: [], outputs: [], inputs: [], expansions: [], kinds: [], piped, heredoc: null, herestrings: 0 });
+  const segments: DataSegment[] = [];
+  let segment = open(false), parts: string[] = [], redirect: 'out' | 'in' | null = null, stripped = '', kept = 0;
+  let pending: { tag: string; strip: boolean; expands: boolean; owner: DataSegment } | null = null;
+  const cut = (start: number, end: number): void => { stripped += command.slice(kept, start); kept = end; };
+  const finishWord = (): void => {
+    if (!parts.length) return;
+    const text = parts.map((part) => (/^['"]/.test(part) ? part.slice(1, -1) : part)).join('');
+    if (redirect) (redirect === 'out' ? segment.outputs : segment.inputs).push(text);
+    else segment.kinds.push(parts.length === 1 && /^['"]/.test(parts[0]) ? 'quoted' : parts.some((part) => /^['"]|[*?[\]~]/.test(part)) ? 'other' : 'literal');
+    if (!redirect) segment.words.push(text);
+    parts = []; redirect = null;
+  };
+  const finishSegment = (piped: boolean): boolean => {
+    finishWord();
+    if (redirect || (!segment.words.length && (segment.herestrings || pending?.owner === segment))) return false;
+    if (segment.words.length || segment.outputs.length || segment.inputs.length) segments.push(segment);
+    segment = open(piped); return true;
+  };
+  DATA_LEX.lastIndex = 0;
+  while (DATA_LEX.lastIndex < command.length) {
+    const start = DATA_LEX.lastIndex;
+    const token = DATA_LEX.exec(command);
+    if (!token || (token[10] !== undefined && parts.length)) return null;
+    const [text, blank, separator, here, strip, singleTag, doubleTag, bareTag, redirectOp, part] = token;
+    if (part !== undefined) { parts.push(part); continue; }
+    if (blank !== undefined || token[10] !== undefined) { finishWord(); continue; }
+    if (separator !== undefined) {
+      if (!finishSegment(separator === '|' || separator === '|&')) return null;
+      if (separator !== '\n' || !pending) continue;
+      // The body runs to a line that is exactly the tag (leading tabs dropped for <<-); the body and the tag line are cut out.
+      let line = start + 1, stop = 0;
+      for (; ; line = stop + 1) {
+        stop = command.indexOf('\n', line); if (stop < 0) stop = command.length;
+        if (command.slice(line, stop).replace(pending.strip ? /^\t+/ : /^(?!)/, '') === pending.tag) break;
+        if (stop === command.length) return null;
+      }
+      pending.owner.heredoc = command.slice(start + 1, line);
+      if (pending.expands && /[$`\\]/.test(pending.owner.heredoc)) return null;
+      cut(start + 1, stop); DATA_LEX.lastIndex = stop; pending = null;
+      continue;
+    }
+    finishWord();
+    if (redirect) return null;
+    if (here?.startsWith('<<<')) segment.herestrings += 1;
+    else if (here !== undefined && (pending || segment.heredoc !== null)) return null;
+    else if (here !== undefined) pending = { tag: singleTag ?? doubleTag ?? bareTag, strip: strip === '-', expands: bareTag !== undefined, owner: segment };
+    // `2>&1` and `>&-` duplicate a descriptor (no target word); any other redirect names the next word.
+    else if (!/&(?:\d+|-)$/.test(redirectOp)) redirect = /^\d*(?:&|>|<>)/.test(text) ? 'out' : 'in';
+    if (here !== undefined) cut(start, DATA_LEX.lastIndex);
+  }
+  if (pending || !finishSegment(false)) return null;
+  return { segments, stripped: stripped + command.slice(kept) };
+}
+/** Code is data only with no spawn, network or (python) import of an unlisted module (it could run anything) in any copy; never non-ASCII or > 64 KB. */
+function codeIsData(code: string, python: boolean): boolean {
+  if (code.length > 65536 || /[^\x00-\x7f]/.test(code)) return false;
+  const copies = [code, code.normalize('NFKC'), code.replace(/\\/g, ''), code.replace(/[\\\s]/g, '')];
+  const holds = (tokens: string[]) => copies.some((copy) => tokens.some((token) => copy.includes(token)));
+  if (holds(CODE_SPAWN) || (python && !pythonImportsListed(code.replace(/\\\n/g, ' ')))) return false;
+  return !holds(CODE_NET);
+}
+function pythonImportsListed(code: string): boolean {
+  return [...code.matchAll(/(?:\bfrom[ \t]+([\w.]+)[ \t]+)?\bimport\b([^\n;]*)/g)].every((found) => (found[1] !== undefined ? [found[1]]
+    : found[2].split(',').map((part) => part.trim().split(/[ \t]/)[0])).every((name) => SAFE_PYTHON_MODULES.has(name.split('.')[0])));
+}
+/** The indexes of a segment's data words, or null when the whole command must keep its BASE reading. */
+function dataWordIndexes(segment: DataSegment, read: boolean): Set<number> | null {
+  const { words, kinds } = segment;
+  let at = 0;
+  if (/^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(words[0] ?? '')) return null;
+  while (kinds[at] === 'literal' && TRANSPARENT_WRAPPERS.has(words[at])) {
+    at += 1;
+    while (kinds[at] === 'literal' && /^(?:-[A-Za-z-]*|\d+(?:\.\d+)?[smhd]?)$/.test(words[at])) at += 1;
+  }
+  const program = kinds[at] === 'literal' ? words[at] : '';
+  const data = DATA_PROGRAMS.has(program) && !NEVER_DATA_PROGRAMS.has(program);
+  if (SHELL_STATE_WORDS.has(program) || (segment.piped && !data)) return null;
+  if (data) {
+    if (['rg', 'sort'].includes(program) && words.some((arg) => longOptionPrefix(arg, ['pre', 'pre-glob', 'hostname-bin', 'compress-program']))) return null;
+    return new Set(words.map((_, i) => i).filter((i) => i > at && kinds[i] === 'quoted' && !words[i].startsWith('-')));
+  }
+  if (['python3', 'python', 'node'].includes(program)) return interpreterDataWords(segment, at, program !== 'node');
+  return read && segment.heredoc === null && !segment.herestrings ? new Set() : null;
+}
+// S3: `python3 [-I -B -E -s -S -u] -c CODE` or `- <<TAG`, `node -e|-p CODE` or `- <<TAG`, or a flagless script path with no risk word in its name.
+function interpreterDataWords(segment: DataSegment, at: number, python: boolean): Set<number> | null {
+  const { words, kinds } = segment;
+  if (segment.inputs.length || segment.herestrings || words.filter((arg, i) => i > at && ['-c', '-e', '-p'].includes(arg)).length > 1) return null;
+  let i = at + 1;
+  while (python && kinds[i] === 'literal' && PYTHON_FLAGS.has(words[i])) i += 1;
+  const flag = kinds[i] === 'literal' ? words[i] : '';
+  const data = new Set<number>();
+  let code: string | null = null;
+  if (python ? flag === '-c' : flag === '-e' || flag === '-p') {
+    if (kinds[i + 1] !== 'quoted' || segment.heredoc !== null) return null;
+    code = words[i + 1]; data.add(i + 1); i += 2;
+  } else if (flag === '-' && segment.heredoc !== null) [code, i] = [segment.heredoc, i + 1];
+  else if (i === at + 1 && flag && !flag.startsWith('-') && segment.heredoc === null && !RISK_SCRIPT_NAME.test(flag.split('/').pop() || '')) i += 1;
+  else return null;
+  if (code !== null && !codeIsData(code, python)) return null;
+  for (; i < words.length; i += 1) {
+    if (!python && code !== null && words[i].startsWith('-')) return null;
+    if (kinds[i] === 'quoted' && !words[i].startsWith('-')) data.add(i);
+  }
+  return data;
+}
+/** The classification text with the proven data words left out, or null when nothing is proven data (the caller keeps BASE). */
+function dataWordsText(tool: string, command: string, base: ShellSegment[] | null): string | null {
+  const lexed = dataSegments(command);
+  const parsed = lexed && (lexed.stripped === command ? base : parseShellSegments(lexed.stripped)); // must split exactly as the lexer did
+  if (!lexed || !parsed || JSON.stringify(parsed) !== JSON.stringify(lexed.segments.map(({ words, outputs, inputs, expansions }) => ({ words, outputs, inputs, expansions })))) return null;
+  const parts = [tool];
+  let dropped = false, cwd: string | null = process.cwd();
+  for (const segment of lexed.segments) {
+    const verdict = shellSegmentVerdict(segment, cwd);
+    cwd = nextWorkingDirectory(segment, cwd);
+    const data = dataWordIndexes(segment, verdict === 'read');
+    if (!data) return null;
+    dropped ||= data.size > 0 || segment.heredoc !== null || segment.herestrings > 0;
+    if (verdict !== 'read') parts.push([...segment.words.filter((_, i) => !data.has(i)), ...segment.outputs].join(' '));
+  }
+  // S6: a command a raw-command family protects (npm publish, git push, wrangler deploy, ...) keeps every BASE word.
+  return dropped && !isProtectedShellMutation(command) ? parts.join(' ; ') : null;
+}
+
 /**
  * The text whose words decide a tool's action type, surfaces and keyword
  * protection. Read-only shell segments, task bookkeeping and the content an
@@ -751,6 +902,8 @@ export function toolClassificationText(event: ToolPolicyEvent): string {
   const command = hookToolCommand(event);
   if (SHELL_TOOLS.has(tool)) {
     const analysis = shellAnalysis(shellCommandText(event), event[SHELL_DIALECT]);
+    const lowered = event[SHELL_DIALECT] === 'powershell' ? null : dataWordsText(tool, shellCommandText(event), analysis?.segments ?? null);
+    if (lowered !== null) return lowered;
     if (analysis) {
       return [tool, ...analysis.segments
         .filter((_, index) => analysis.verdicts[index] !== 'read')

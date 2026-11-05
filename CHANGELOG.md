@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix (hook, data words): words that are data no longer decide what a shell call is. The fully quoted arguments, heredoc bodies and quoted here-strings of a short list of data programs (echo, printf, cat, tee, grep, rg, head, tail, wc, sort, uniq, cut, tr, diff, cmp, ls, test, true, mkdir, touch, date and egrep/fgrep), the fully quoted arguments of a `python3`/`python`/`node` script run, and `python3 -c`, `node -e`/`-p` or `-` heredoc code that holds no spawn, network or unlisted-import token are left out of the classification text, so a dummy string, a markdown edit or a log append with deploy words is no longer held. Anything unproven keeps the old reading: a pipe into any other program, an assignment, alias, function or other shell-state word, a `$`, backslash, backtick or subshell, an unknown interpreter flag, a second code operand, a non-ASCII byte, and any command a raw-command family protects (npm publish, git push, wrangler deploy, ...). `git merge-base`, `merge-tree` and `merge-file` are no longer read as `git merge`; `git merge` keeps its hold. The control-off next step now says the account owner runs `npx @getmarrow/install control disable` in their own terminal (it asks for a confirmation code); agents cannot turn control off.
+
 ## 3.9.111
 
 Two fixes on top of 3.9.110. Plain allowed calls (a read, a local append) no longer get generic Marrow service text in the agent's context, so routine work is not asked to close an outcome; and the README no longer shows a key typed on a command line. Every verdict, every request to Marrow and every closure call are unchanged, and the README change is docs only.

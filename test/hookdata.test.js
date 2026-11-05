@@ -80,7 +80,7 @@ test('F1 row F: the control-disable text is exact, and control state is unchange
     const evidence = localControlEvidence(false);
     assert.equal(evidence.exact_next_action, NEW_ROW_F);
     assert.equal(evidence.enabled, true);
-    assert.equal(evidence.state, 'enabled');
+    assert.equal(evidence.state, 'default_enabled');
     assert.doesNotMatch(JSON.stringify(evidence), /--yes/);
   } finally {
     if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;

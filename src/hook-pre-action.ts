@@ -1059,7 +1059,8 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   const secretAccess = isSecretMaterialAccessAsNamed(event, printsEnvironment);
   // T2: a write to Marrow's control files, a host's hooks settings or a file that makes a command run later is a security action, not an audit one.
   const selfProtected = readOnly && !controlRoute ? null : selfProtectKind(event, options.cwd);
-  const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
+  // S7 (LOWER_SHAPES L12): `git merge-base`, `merge-tree` and `merge-file` are not `git merge`; every other word stays as typed.
+  const protectedShellCommand = shellGoverned && isProtectedShellMutation(command.replace(/(^|\s)merge-(base|tree|file)(?=\s|$)/g, '$1merge_$2'));
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;
   let type = 'process';
@@ -1079,7 +1080,7 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   ].filter(Boolean);
   const protectedAction = !readOnly && (
     secretAccess
-    || (shellGoverned && /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input))
+    || (shellGoverned && /\b(?:deploy|release|publish|git\s+push|git\s+merge(?!-)|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input))
     || protectedShellCommand
     || (isMcpHookTool(event.tool_name) && (options.ownUnproven === true || !isOfficialMarrowMcpTool(event.tool_name)))
     || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
