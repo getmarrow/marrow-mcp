@@ -5439,6 +5439,192 @@
         "readOnly": false
       }
     },
+    "SWEEP-comment-after-L10": {
+      "id": "SWEEP-comment-after-L10",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "L10",
+      "command": "python3 check.py 'deploy to production' # ./deploy.sh --prod",
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "SWEEP-comment-after-D01": {
+      "id": "SWEEP-comment-after-D01",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "D01",
+      "command": "echo 'deploy to production' > notes.txt # notes",
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "SWEEP-heredoc-script-then-L10": {
+      "id": "SWEEP-heredoc-script-then-L10",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "L10",
+      "command": "cat > run.py <<'EOF'\nimport os\nos.system('./deploy.sh --prod')\nEOF\npython3 run.py 'hello'",
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "SWEEP-echo-script-then-L10": {
+      "id": "SWEEP-echo-script-then-L10",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "L10",
+      "command": "echo 'import os; os.system(\"./deploy.sh --prod\")' > run.py && python3 run.py 'hello'",
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "SWEEP-L10-then-echo": {
+      "id": "SWEEP-L10-then-echo",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "L10",
+      "command": "python3 check.py 'deploy to production' && echo 'done'",
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
+    "SWEEP-L01-then-L10": {
+      "id": "SWEEP-L01-then-L10",
+      "fix": "SWEEP",
+      "expect": "BASE",
+      "shape": "L01",
+      "command": "python3 -I - <<'EOF'\nfrom pathlib import Path\nPath('run.py').write_text('import o' + 's')\nEOF\npython3 run.py 'deploy now'",
+      "pre": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      },
+      "post": {
+        "action": "classified Bash action: deploy on production",
+        "target": "production:deploy",
+        "type": "deploy",
+        "role": "deploy",
+        "surfaces": [
+          "production"
+        ],
+        "risk": "high",
+        "protected": true,
+        "readOnly": false
+      }
+    },
     "CUT-L02": {
       "id": "CUT-L02",
       "fix": "CUT",

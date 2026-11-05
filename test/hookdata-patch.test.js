@@ -23,7 +23,7 @@ test('the patch rows are recorded from BASE, and every row is held on BASE', () 
   for (const row of rows) assert.equal(row.pre.protected, true, row.id);
 });
 
-for (const fix of ['B1', 'B2', 'B3', 'B4', 'B5', 'F2', 'F5', 'CUT', 'KEEP']) {
+for (const fix of ['B1', 'B2', 'B3', 'B4', 'B5', 'F2', 'F5', 'SWEEP', 'CUT', 'KEEP']) {
   for (const row of rows.filter((item) => item.fix === fix)) {
     test(`${row.id} ${row.expect} (${row.shape})`, () => {
       const pre = pick(classifyTool(bash(row)));
