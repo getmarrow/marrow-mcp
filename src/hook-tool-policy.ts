@@ -872,19 +872,17 @@ function interpreterDataWords(segment: DataSegment, at: number, python: boolean)
   return data;
 }
 /** The classification text with the proven data words left out, or null when nothing is proven data (the caller keeps BASE). */
-function dataWordsText(tool: string, command: string, base: ShellSegment[] | null): string | null {
+function dataWordsText(tool: string, command: string, base: ReturnType<typeof shellAnalysis>): string | null {
   const lexed = dataSegments(command);
-  const parsed = lexed && (lexed.stripped === command ? base : parseShellSegments(lexed.stripped)); // must split exactly as the lexer did
-  if (!lexed || !parsed || JSON.stringify(parsed) !== JSON.stringify(lexed.segments.map(({ words, outputs, inputs, expansions }) => ({ words, outputs, inputs, expansions })))) return null;
+  const analysis = lexed && (lexed.stripped === command ? base : shellAnalysis(lexed.stripped)); // must split exactly as the lexer did
+  if (!lexed || !analysis || JSON.stringify(analysis.segments) !== JSON.stringify(lexed.segments.map(({ words, outputs, inputs, expansions }) => ({ words, outputs, inputs, expansions })))) return null;
   const parts = [tool];
-  let dropped = false, cwd: string | null = process.cwd();
-  for (const segment of lexed.segments) {
-    const verdict = shellSegmentVerdict(segment, cwd);
-    cwd = nextWorkingDirectory(segment, cwd);
-    const data = dataWordIndexes(segment, verdict === 'read');
+  let dropped = false;
+  for (const [index, segment] of lexed.segments.entries()) {
+    const data = dataWordIndexes(segment, analysis.verdicts[index] === 'read');
     if (!data) return null;
     dropped ||= data.size > 0 || segment.heredoc !== null || segment.herestrings > 0;
-    if (verdict !== 'read') parts.push([...segment.words.filter((_, i) => !data.has(i)), ...segment.outputs].join(' '));
+    if (analysis.verdicts[index] !== 'read') parts.push([...segment.words.filter((_, i) => !data.has(i)), ...segment.outputs].join(' '));
   }
   // S6: a command a raw-command family protects (npm publish, git push, wrangler deploy, ...) keeps every BASE word.
   return dropped && !isProtectedShellMutation(command) ? parts.join(' ; ') : null;
@@ -902,7 +900,7 @@ export function toolClassificationText(event: ToolPolicyEvent): string {
   const command = hookToolCommand(event);
   if (SHELL_TOOLS.has(tool)) {
     const analysis = shellAnalysis(shellCommandText(event), event[SHELL_DIALECT]);
-    const lowered = event[SHELL_DIALECT] === 'powershell' ? null : dataWordsText(tool, shellCommandText(event), analysis?.segments ?? null);
+    const lowered = event[SHELL_DIALECT] === 'powershell' ? null : dataWordsText(tool, shellCommandText(event), analysis);
     if (lowered !== null) return lowered;
     if (analysis) {
       return [tool, ...analysis.segments
