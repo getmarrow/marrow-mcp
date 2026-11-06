@@ -656,3 +656,221 @@ test('DR12: a flood of open holds: at most one report per hold per settle pass a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------- patch-hookclose (R6): no automatic host outcome
+
+// The hook never sends the host's own success or outcome for a proof-required hold that ran: the agent's own
+// marrow_commit with proof is its only outcome record. Each hook runs with its clock moved (a preload written
+// into the private test folder), so a send that waits for any delay is caught.
+const CLOCK_SHIFT = `'use strict';
+const offset = Number(process.env.HOOKCLOSE_CLOCK_OFFSET_MS || 0);
+if (offset) {
+  const RealDate = Date; const realNow = RealDate.now.bind(RealDate);
+  class ShiftedDate extends RealDate { constructor(...a) { if (a.length === 0) super(realNow() + offset); else super(...a); } static now() { return realNow() + offset; } }
+  globalThis.Date = ShiftedDate;
+}
+`;
+const CLOCKS = [1_000, 5 * 60_000 + 1_000, 60 * 60_000];
+function clockEnv(h, ms) {
+  const file = join(h.dir, 'clock-shift.cjs');
+  if (!existsSync(file)) writeFileSync(file, CLOCK_SHIFT);
+  return { NODE_OPTIONS: `--require=${MOCK} --require=${file}`, HOOKCLOSE_CLOCK_OFFSET_MS: String(ms) };
+}
+function agentCommit(h, args, env = {}) {
+  const input = [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'marrow_commit', arguments: args } },
+  ].map(JSON.stringify).join('\n') + '\n';
+  const server = spawnSync(process.execPath, [CLI], {
+    input, cwd: projectCwd(), encoding: 'utf8', timeout: 30_000,
+    env: { PATH: process.env.PATH, HOME: h.home, MARROW_API_KEY: h.apiKey, MARROW_BASE_URL: 'https://api.example.test', MARROW_AGENT_ID: 'agent-one',
+      MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false', MARROW_AUTO_ENROLL: 'false',
+      MARROW_TEST_MOCK_DIR: join(h.dir, 'mock'), NODE_OPTIONS: `--require=${MOCK}`, ...env },
+  });
+  assert.equal(server.status, 0);
+  return server.stdout;
+}
+// Every commit the hooks sent (the MCP server's own session-end close is BASE behaviour, not a hook record).
+const hookCommits = (h) => commits(h).filter((c) => !/^Session ended without explicit commit/.test(c.body.outcome));
+const noHostOutcome = (h, label) => {
+  assert.deepEqual(hookCommits(h).map((c) => c.body.outcome), [], `${label}: no commit or observation from the hook`);
+  assert.equal(JSON.stringify(h.requests()).includes('hook_post_tool'), false, `${label}: no host observation anywhere`);
+  for (const report of hostReports(h)) assert.equal('success' in report.body || 'outcome' in report.body, false, `${label}: the report carries no outcome`);
+  for (const hold of Object.values(h.state().holds)) assert.equal(hold.outbox?.commit ?? null, null, `${label}: no commit queued in the outbox`);
+};
+const AGENT_PROOF = { summary: 'Deployed the worker.', checks: ['smoke'], outcome: 'success', blockers: 'none', commits_prs_shas: 'n/a', rollback_target: 'previous version', handoff_result_file: 'n/a', deployment_and_smoke: 'smoke ran' };
+
+for (const [shape, post] of [['success true', 'claude-post-tool-use.json'], ['success false', 'claude-post-tool-use-failure.json']]) {
+  test(`HP1 (i)(ii) Claude Code, ${shape}: a proof-required hold that ran sends no host outcome at any settle point, 1 s, 5 min + 1 s and 1 h later`, () => {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), commit: OBSERVED });
+      heldClaudeCall(h);
+      h.run('claude-hook', fixture(post));
+      assert.equal(hostReports(h).length, 1, 'the approved report is sent as before');
+      assert.equal(postEvents(h)[0].body.decision_id, 'decision-review', 'the lifecycle record of its own hold is unchanged');
+      assert.notEqual(postEvents(h)[0].body.outcome_state, 'closed');
+      noHostOutcome(h, 'right after the call');
+      for (const ms of CLOCKS) {
+        const env = clockEnv(h, ms);
+        h.run('claude-session-hook', sessionEvent('Stop'), env);
+        h.run('claude-session-hook', sessionEvent('SessionStart'), env);
+        h.run('claude-context-hook', fixture('claude-user-prompt-submit.json'), env);
+        h.run('claude-hook', fixture('claude-post-tool-batch-unknown.json'), env);
+        h.run('claude-hook', { ...fixture(post), tool_use_id: `toolu_unrelated_${ms}`, tool_input: { command: 'ls', description: 'list' } }, env);
+        h.run('claude-hook', fixture(post), env);
+        noHostOutcome(h, `+${ms} ms`);
+      }
+      assert.equal(hostReports(h).length, 1);
+      assert.deepEqual(declines(h), []);
+    } finally { h.cleanup(); }
+  });
+}
+
+test('HP1 (i)(ii) Codex: an owner-approved waiting hold that ran sends no host outcome, 1 s, 5 min + 1 s and 1 h later; a Codex stop sends no decline', () => {
+  const h = harness();
+  const codexStop = { session_id: '019a6f4e-0000-7000-8000-00000000000c', hook_event_name: 'Stop', cwd: '/home/operator/project' };
+  try {
+    h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' }, commit: OBSERVED });
+    assert.equal(h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json')).json.hookSpecificOutput.permissionDecision, 'deny');
+    h.setConfig({ status: { 'gate-held': 'approved' } });
+    assert.equal(h.run('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_retry' }).json.hookSpecificOutput.permissionDecision, undefined);
+    h.run('codex-hook', { ...fixture('codex-post-tool-use.json'), tool_use_id: 'call_retry' });
+    assert.equal(postEvents(h)[0].body.decision_id, 'decision-review');
+    noHostOutcome(h, 'right after the call');
+    for (const ms of CLOCKS) {
+      const env = clockEnv(h, ms);
+      h.run('codex-session-hook', codexStop, env);
+      h.run('codex-context-hook', fixture('codex-user-prompt-submit.json'), env);
+      h.run('codex-hook', { ...fixture('codex-post-tool-use.json'), tool_use_id: 'call_retry' }, env);
+      noHostOutcome(h, `+${ms} ms`);
+    }
+    assert.deepEqual(declines(h), []);
+    assert.deepEqual(auditBodies(h), []);
+  } finally { h.cleanup(); }
+});
+
+test('HP1 (i)(ii) Cursor: a proof-required hold that ran (success null) sends no host outcome and queues no commit, 1 s, 5 min + 1 s and 1 h later', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime(), commit: OBSERVED });
+    h.run('cursor-session-hook', fixture('cursor-session-start.json'));
+    assert.equal(h.run('cursor-pre-action-hook', fixture('cursor-before-shell.json')).json.permission, 'ask');
+    h.run('cursor-hook', fixture('cursor-after-shell.json'));
+    noHostOutcome(h, 'right after the call');
+    for (const ms of CLOCKS) {
+      const env = clockEnv(h, ms);
+      h.run('cursor-session-hook', { conversation_id: 'c0ffee00-0000-4000-8000-00000000000d', generation_id: 'gen-0001', hook_event_name: 'stop', status: 'completed' }, env);
+      h.run('cursor-hook', fixture('cursor-after-shell.json'), env);
+      noHostOutcome(h, `+${ms} ms`);
+    }
+    assert.equal(postEvents(h)[0].body.outcome_state, 'unknown');
+  } finally { h.cleanup(); }
+});
+
+test('HP1 (iii): the handoff after a proof-required hold ran promises no automatic send and is the master wording', () => {
+  const close = 'Close it with marrow_commit: decision_id decision-review, gate_receipt_id gate-held, the real success and outcome, and proof with summary, checks, outcome, blockers, commits_prs_shas, rollback_target, handoff_result_file, deployment_and_smoke. Do not call marrow_agent_runtime or marrow_think again for it.';
+  for (const [post, event] of [['claude-post-tool-use.json', 'PostToolUse'], ['claude-post-tool-use-failure.json', 'PostToolUseFailure']]) {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), commit: OBSERVED });
+      heldClaudeCall(h);
+      const text = h.run('claude-hook', fixture(post)).json.hookSpecificOutput;
+      assert.deepEqual(text, { hookEventName: event, additionalContext: `Marrow recorded the approval of this held action (client-attested). ${close}` });
+      assert.doesNotMatch(text.additionalContext, /Unless that commit comes first|minutes|unverified observation|hook_post_tool/);
+    } finally { h.cleanup(); }
+  }
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' }, commit: OBSERVED });
+    h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json'));
+    h.setConfig({ status: { 'gate-held': 'approved' } });
+    h.run('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_retry' });
+    const text = h.run('codex-hook', { ...fixture('codex-post-tool-use.json'), tool_use_id: 'call_retry' }).json.hookSpecificOutput;
+    assert.deepEqual(text, { hookEventName: 'PostToolUse', additionalContext: `This held action was approved (gate receipt gate-held). ${close}` });
+  } finally { h.cleanup(); }
+});
+
+test('HP1 (iv): a queued approved report is still delivered at marrow_commit, and the agent\'s commit is the only commit, before and after the old grace window', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime(), commit: OBSERVED, hostApproval: [{ status: 503, body: { error: 'unavailable' } }] });
+    heldClaudeCall(h);
+    h.run('claude-hook', fixture('claude-post-tool-use.json'));
+    const [held] = Object.values(h.state().holds);
+    assert.ok(held.outbox?.report, 'the approved report waits in the outbox');
+    assert.equal(held.outbox.commit, null, 'no commit waits next to it');
+    h.setConfig({ hostApproval: [] });
+    agentCommit(h, { decision_id: 'decision-review', success: true, outcome: 'Deployed the worker; smoke passed.', gate_receipt_id: 'gate-held', proof: AGENT_PROOF });
+    const approved = hostReports(h).filter((r) => r.body.verdict === 'approved');
+    assert.equal(approved.length, 2, 'the queued report is delivered at marrow_commit');
+    const reportAt = h.requests().lastIndexOf(approved[1]);
+    const list = hookCommits(h);
+    assert.deepEqual(list.map((c) => c.body.outcome), ['Deployed the worker; smoke passed.'], 'only the agent\'s own commit');
+    assert.ok(h.requests().findIndex((r) => r.path === '/v1/agent/commit') > reportAt - 1);
+    for (const ms of CLOCKS) h.run('claude-session-hook', sessionEvent('Stop'), clockEnv(h, ms));
+    assert.equal(hookCommits(h).length, 1);
+    assert.deepEqual(Object.values(h.state().holds).map((hold) => hold.outbox), [null]);
+  } finally { h.cleanup(); }
+});
+
+test('HP1 AE5 replacement: the agent\'s own truthful failure commit after the old grace window is the only commit for the hold', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime(), commit: { committed: true, decision_id: 'decision-review' } });
+    heldClaudeCall(h);
+    h.run('claude-hook', fixture('claude-post-tool-use.json'));
+    for (const ms of CLOCKS) h.run('claude-session-hook', sessionEvent('Stop'), clockEnv(h, ms));
+    agentCommit(h, { decision_id: 'decision-review', success: false, outcome: 'The deploy exited 0 but the smoke test failed.', gate_receipt_id: 'gate-held', proof: { ...AGENT_PROOF, outcome: 'failed', deployment_and_smoke: 'smoke failed' } });
+    const list = hookCommits(h);
+    assert.equal(list.length, 1, 'one commit: the agent\'s own');
+    assert.equal(list[0].body.success, false);
+    assert.equal(list[0].body.outcome, 'The deploy exited 0 but the smoke test failed.');
+    assert.equal(list[0].body.proof.deployment_and_smoke, 'smoke failed');
+    assert.equal(JSON.stringify(h.requests()).includes('hook_post_tool'), false);
+  } finally { h.cleanup(); }
+});
+
+test('HP1 AE2 replacement: the same post event replayed sends one approved report and no commit', () => {
+  const h = harness();
+  try {
+    h.setConfig({ runtime: hostRuntime(), commit: OBSERVED });
+    heldClaudeCall(h);
+    for (let index = 0; index < 3; index += 1) h.run('claude-hook', fixture('claude-post-tool-use.json'), clockEnv(h, CLOCKS[index]));
+    assert.equal(hostReports(h).length, 1);
+    assert.deepEqual(hookCommits(h), []);
+    assert.deepEqual(postEvents(h).map((event) => event.body.decision_id), ['decision-review', 'decision-review', 'decision-review']);
+  } finally { h.cleanup(); }
+});
+
+test('HP7 stale outbox: a host observation queued by an earlier build is dropped, never sent, and a queued report next to it is still delivered', () => {
+  for (const withReport of [false, true]) {
+    const h = harness();
+    try {
+      h.setConfig({ runtime: hostRuntime(), commit: OBSERVED, ...(withReport ? { hostApproval: [{ status: 503, body: { error: 'unavailable' } }] } : {}) });
+      heldClaudeCall(h);
+      h.run('claude-hook', fixture('claude-post-tool-use.json'));
+      // The outbox exactly as the 41053f8 build wrote it for a proof-required hold that ran.
+      h.editHolds((hold) => {
+        const outcome = `${hold.action.action} completed in Claude Code after it was approved (gate receipt gate-held).`;
+        hold.outbox = {
+          report: withReport ? hold.outbox.report : null,
+          commit: { success: true, outcome, proof: { summary: outcome, checks: 'host tool result only', outcome: 'completed', source: 'hook_post_tool', tool_use_id: HELD_TOOL_USE } },
+          attempts: 0, next_at: Date.now() + 5 * 60_000,
+        };
+      });
+      h.setConfig({ hostApproval: [] });
+      for (const ms of CLOCKS) {
+        const env = clockEnv(h, ms);
+        h.run('claude-session-hook', sessionEvent('Stop'), env);
+        h.run('claude-context-hook', fixture('claude-user-prompt-submit.json'), env);
+      }
+      agentCommit(h, { decision_id: 'decision-review', success: true, outcome: 'Deployed the worker; smoke passed.', gate_receipt_id: 'gate-held', proof: AGENT_PROOF });
+      const list = hookCommits(h);
+      assert.deepEqual(list.map((c) => c.body.outcome), ['Deployed the worker; smoke passed.'], `report ${withReport}: only the agent's commit`);
+      assert.equal(JSON.stringify(h.requests()).includes('hook_post_tool'), false, `report ${withReport}: the stale observation is never sent`);
+      assert.equal(hostReports(h).filter((r) => r.body.verdict === 'approved').length, withReport ? 2 : 1);
+      assert.deepEqual(Object.values(h.state().holds).map((hold) => hold.outbox), [null], 'the stale entry is dropped');
+    } finally { h.cleanup(); }
+  }
+});

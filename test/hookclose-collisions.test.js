@@ -107,6 +107,53 @@ test('KC1/KC2 at the join: each of two calls that differ after a redacted span c
   }
 });
 
+test('KC1/KC2 at the join (R6): two calls that differ after a redacted span each resolve only their own hold; proof-required ones send no commit at any later time, the others commit under their own key', async () => {
+  const approvals = require('../dist/host-approval.js');
+  for (const proofRequired of [true, false]) {
+    for (const [label, tool, left, right] of pairs(dummySecret())) {
+      await withMock(async ({ home, requests }) => {
+        const ctx = {
+          apiKey: `mrw_test_${randomBytes(16).toString('hex')}`, baseUrl: 'https://api.example.test', sessionId: SESSION,
+          agentId: 'agent-one', harness: 'claude-code', host: 'claude-code', hostSessionId: SESSION, home,
+        };
+        const calls = [['a', left], ['b', right]].map(([name, input]) => ({ name, input, correlation: stableToolCorrelation({ session_id: SESSION, tool_name: tool, tool_input: input }) }));
+        for (const call of calls) {
+          approvals.rememberHold(ctx, {
+            guidance: { gateReceiptId: `gate-${call.name}`, decisionId: `decision-${call.name}`, proofRequired, proofFields: proofRequired ? ['summary'] : [], expiresAt: '2030-01-01T00:30:00.000Z', approvalLinkPath: null },
+            correlation: call.correlation, target: 'b'.repeat(64), toolUseId: `toolu_${call.name}`, generationId: null, toolName: tool, hookEvent: 'PreToolUse',
+            mode: 'ask', withCode: false, preActionEventId: null, action: { action: `classified ${tool} action`, target: 'example', type: 'general', surfaces: [] },
+          });
+        }
+        // Later hooks flush every due outbox entry, with the clock moved past any delay.
+        const later = async () => {
+          const realNow = Date.now;
+          for (const ms of [1_000, 5 * 60_000 + 1_000, 60 * 60_000]) {
+            Date.now = () => realNow() + ms;
+            try { await approvals.flushHoldOutbox(ctx, 4, 4_000); } finally { Date.now = realNow; }
+          }
+        };
+        const holdState = (name) => Object.values(JSON.parse(readFileSync(join(home, '.marrow', 'host-approvals', 'state.json'), 'utf8')).holds).find((hold) => hold.gate_receipt_id === `gate-${name}`).state;
+        await approvals.settleAfterTool(ctx, { correlation: calls[1].correlation, target: 'b'.repeat(64), toolUseId: null, generationId: null, success: true, markerWaitMs: 0 });
+        await later();
+        assert.deepEqual([holdState('a'), holdState('b')], ['open', 'resolved'], `${label}: only its own hold`);
+        await approvals.settleAfterTool(ctx, { correlation: calls[0].correlation, target: 'b'.repeat(64), toolUseId: 'toolu_a', generationId: null, success: false, markerWaitMs: 0 });
+        await later();
+        assert.deepEqual([holdState('a'), holdState('b')], ['resolved', 'resolved'], label);
+        const reports = requests().filter((r) => r.path.endsWith('/host-approval'));
+        assert.deepEqual(reports.map((r) => r.path), ['/v1/agent/gate-receipts/gate-b/host-approval', '/v1/agent/gate-receipts/gate-a/host-approval'], label);
+        const commits = requests().filter((r) => r.path === '/v1/agent/commit');
+        assert.equal(JSON.stringify(requests()).includes('hook_post_tool'), false, label);
+        if (proofRequired) {
+          assert.deepEqual(commits, [], `${label}: no host outcome for a proof-required hold`);
+        } else {
+          assert.deepEqual(commits.map((c) => [c.body.gate_receipt_id, c.body.decision_id, c.body.success]), [['gate-b', 'decision-b', true], ['gate-a', 'decision-a', false]], label);
+          assert.notEqual(commits[0].idempotency_key, commits[1].idempotency_key, `${label}: KC2 keys differ`);
+        }
+      });
+    }
+  }
+});
+
 test('DR8: two declines whose actions differ after a redacted span carry different normalized actions (the key input); a secret-only difference matches', () => {
   for (let round = 0; round < 5; round += 1) {
     const secret = dummySecret();
