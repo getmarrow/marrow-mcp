@@ -1883,6 +1883,8 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       type: classified.type,
       role: classified.role,
       surfaces: classified.surfaces,
+      // The correlation this call's PreToolUse record and hold carry, so Marrow can join the call's result to this decision.
+      ...{ correlation_id: correlation },
       // The exact command or tool call (secrets removed), so Marrow binds the
       // gate and any approval to this action, not to its coarse class.
       normalized_action: normalizedAction,

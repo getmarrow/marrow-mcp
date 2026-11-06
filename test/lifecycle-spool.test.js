@@ -465,7 +465,9 @@ test('passive hooks use joinable action bindings without treating tool exits as 
   assert.match(preAction, /payloadBoundEvent\(`pretool-\$\{correlation\}`/);
   assert.match(preAction, /const preActionEventId = preActionEvent\.event_id;/);
   assert.match(hook, /return classifyTool\(event, \{ postTool: true \}\)\.action/);
-  assert.match(hook, /outcome_state: 'pending'/);
+  // bld-hookclose H3: a known result is the host's result (success only), never a closed outcome; unknown stays unknown.
+  assert.match(hook, /outcome_state: 'unknown'/);
+  assert.doesNotMatch(hook, /outcome_state: 'closed'/);
   assert.doesNotMatch(hook, /marrowAuto\(/);
   assert.doesNotMatch(hook, /outcome_committed/);
   assert.match(context, /classified agent request:/);
