@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
 import { APPROVAL_STATE_TREE, ENV_TEMPLATE_WORDS, PROC_ENVIRON, PROC_PROCESS_TREE, SECRET_PATTERNS } from './secret-paths';
+import { RUN_LATER_FILES, runLaterPath, runLaterText } from './self-protect';
 
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
 
@@ -896,6 +897,34 @@ function dataWordsText(tool: string, command: string, base: ReturnType<typeof sh
   return heredocs ? [tool, lexed.stripped].join(' ; ') : parts.join(' ; ');
 }
 
+// A141: a run-later file named anywhere, resolved from a word, globbed or moved into, or a python3 heredoc path not one plain literal keeps BASE.
+const PATH_MOVES = new Set('tee cp mv ln cd pushd'.split(' '));
+const PY_TOKEN = /('''(?:[^'\\]|\\[\s\S]|'(?!''))*'''|"""(?:[^"\\]|\\[\s\S]|"(?!""))*"""|'(?:[^'\\\n]|\\[\s\S])*'|"(?:[^"\\\n]|\\[\s\S])*")|(#[^\n]*)|([^'"#]+)/y;
+const PY_DERIVED = /\/|\b(?:home|cwd|glob|rglob|iterdir|walk|joinpath|with_name|with_stem|with_suffix|with_segments|expanduser|resolve|absolute|readlink|parents?|type)\b/;
+const PY_PATH_CALL = /\b(?:(?:Pure)?(?:Posix|Windows)?Path|open|rename|replace|symlink_to|hardlink_to|link_to)\b(?:\s*\(\s*\0(\d+)\0\s*[,)])?/g;
+function codeTouchesRunLater(code: string, unsafe: (path: string) => boolean): boolean {
+  const literals: string[] = [];
+  let blank = '';
+  for (PY_TOKEN.lastIndex = 0; PY_TOKEN.lastIndex < code.length;) {
+    const token = code.includes('\0') ? null : PY_TOKEN.exec(code);
+    if (!token) return true;
+    const quote = token[1]?.startsWith(token[1][0].repeat(3)) ? 3 : 1; // a prefixed literal (f, r, b) is never plain
+    blank += token[3] ?? (token[2] !== undefined ? ' ' : `\0${literals.push(/\w$/.test(blank) ? '\\' : token[1].slice(quote, -quote)) - 1}\0`);
+  }
+  blank = blank.replace(/^[ \t]*(?:from|import)[ \t][^\n]*/gm, ''); // import lines are B1-checked: names only
+  return PY_DERIVED.test(blank) || [...blank.matchAll(PY_PATH_CALL)].some((call) => call[1] === undefined || unsafe(literals[Number(call[1])]));
+}
+function touchesRunLater(command: string, event: ToolPolicyEvent): boolean {
+  if (runLaterText(command).split(/[^a-z0-9._/-]+/).some((word) => [word, posix.normalize(word || '.')].some((path) => RUN_LATER_FILES.some((name) => name.test(path))))) return true;
+  const cwds = [process.cwd(), (event as { cwd?: unknown }).cwd].filter((cwd): cwd is string => typeof cwd === 'string' && posix.isAbsolute(cwd));
+  const unsafe = (path: string, folder = false): boolean => cwds.some((cwd) => runLaterPath(path, cwd, folder));
+  return dataSegments(command)?.segments.some((segment) => {
+    const moves = segment.words.some((word) => PATH_MOVES.has(word));
+    return [...segment.outputs, ...(moves ? segment.words : [])].some((path) => /[*?[\]{}]/.test(path))
+      || [...segment.outputs, ...segment.words].some((path) => unsafe(path, moves))
+      || (segment.heredoc !== null && segment.words[0] === 'python3' && codeTouchesRunLater(segment.heredoc, (path) => /[\\*?[\]{}]/.test(path) || unsafe(path)));
+  }) ?? false;
+}
 /** A string input, or exactly one string command field: a second `command`, `cmd` or `script` (one a host may run instead) keeps BASE. */
 function oneCommandField(event: ToolPolicyEvent): boolean {
   if (typeof event.tool_input === 'string') return true;
@@ -912,6 +941,7 @@ export function toolDataWordsText(event: ToolPolicyEvent): string | null {
   const tool = normalizeHookToolName(event.tool_name);
   if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell' || !oneCommandField(event)) return null;
   const command = shellCommandText(event);
+  if (touchesRunLater(command, event)) return null;
   return dataWordsText(tool, command, shellAnalysis(command, event[SHELL_DIALECT]));
 }
 
@@ -924,7 +954,7 @@ export function isGitMergeSiblingCall(event: ToolPolicyEvent): boolean {
   const tool = normalizeHookToolName(event.tool_name);
   if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell' || !oneCommandField(event)) return false;
   const command = shellCommandText(event);
-  return command.length <= 4096 && GIT_MERGE_SIBLING.test(command)
+  return command.length <= 4096 && GIT_MERGE_SIBLING.test(command) && !touchesRunLater(command, event)
     && !command.trim().split(/[ \t]+/).some((word) => GIT_MERGE_SIBLING_NEVER.has(word) || SHELL_STATE_WORDS.has(word));
 }
 

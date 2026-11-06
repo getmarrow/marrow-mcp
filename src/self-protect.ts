@@ -30,6 +30,15 @@ const PERSISTENCE_FILES: RegExp[] = [
   /\/etc\/cron/i,
   /\.config\/systemd(?![A-Za-z0-9_-])/i,
 ];
+// A141, not a T2 list (an edit of one is not held for itself): files whose content runs a command later, read on runLaterText.
+export const RUN_LATER_FILES: RegExp[] = [/\.git\/config(?![a-z0-9_])/, /package\.json(?![a-z0-9_])/, /\.github\/workflows(?![a-z0-9_.-])/,
+  /\.husky(?![a-z0-9_.-])/, /makefile(?![a-z0-9_]|\.[a-z0-9])/];
+const RUN_LATER_FOLDER = /(?:^|\/)\.(?:git|github|husky)(?:\/|$)/;
+/** A141: the text the run-later scan reads: NFKC, lower case, no quote, backslash or other non-ASCII character. */
+export const runLaterText = (text: string): string => text.normalize('NFKC').toLowerCase().replace(/[^\x00-\x7f]|['"\\]/g, '');
+/** A141: a path that names a run-later file as written, resolved or through links; with `folder`, any path in .git, .github or .husky. */
+export const runLaterPath = (raw: string, cwd: string | undefined, folder = false): boolean => [raw, ...resolvedPaths(raw, cwd)].map(runLaterText)
+  .some((path) => RUN_LATER_FILES.some((name) => name.test(path)) || (folder && RUN_LATER_FOLDER.test(path)));
 // Programs that only read their operands: naming a protected file to one of them is not a write.
 const READING_PROGRAMS = new Set([
   'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ls', 'stat', 'file', 'wc', 'diff', 'cmp', 'du', 'echo', 'printf',
