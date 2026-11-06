@@ -70,43 +70,6 @@ async function withMock(run) {
   }
 }
 
-test('KC1/KC2 at the join: each of two calls that differ after a redacted span closes only its own decision, and their observations never share a key', async () => {
-  const approvals = require('../dist/host-approval.js');
-  for (const [label, tool, left, right] of pairs(dummySecret())) {
-    await withMock(async ({ home, requests }) => {
-      const ctx = {
-        apiKey: `mrw_test_${randomBytes(16).toString('hex')}`, baseUrl: 'https://api.example.test', sessionId: SESSION,
-        agentId: 'agent-one', harness: 'claude-code', host: 'claude-code', hostSessionId: SESSION, home,
-      };
-      const calls = [['a', left], ['b', right]].map(([name, input]) => ({ name, input, correlation: stableToolCorrelation({ session_id: SESSION, tool_name: tool, tool_input: input }) }));
-      for (const call of calls) {
-        approvals.rememberHold(ctx, {
-          guidance: { gateReceiptId: `gate-${call.name}`, decisionId: `decision-${call.name}`, proofRequired: true, proofFields: ['summary'], expiresAt: '2030-01-01T00:30:00.000Z', approvalLinkPath: null },
-          correlation: call.correlation, target: 'b'.repeat(64), toolUseId: `toolu_${call.name}`, generationId: null, toolName: tool, hookEvent: 'PreToolUse',
-          mode: 'ask', withCode: false, preActionEventId: null, action: { action: `classified ${tool} action`, target: 'example', type: 'general', surfaces: [] },
-        });
-      }
-      // Sends the queued observations as a later hook does once the grace period is over.
-      const afterGrace = async () => {
-        const realNow = Date.now;
-        Date.now = () => realNow() + approvals.OBSERVATION_GRACE_MS + 1_000;
-        try { await approvals.flushHoldOutbox(ctx, 4, 4_000); } finally { Date.now = realNow; }
-      };
-      // The post event of call b (its own correlation): only its own hold closes.
-      await approvals.settleAfterTool(ctx, { correlation: calls[1].correlation, target: 'b'.repeat(64), toolUseId: null, generationId: null, success: true, markerWaitMs: 0 });
-      await afterGrace();
-      const commits = requests().filter((r) => r.path === '/v1/agent/commit');
-      assert.deepEqual(commits.map((c) => c.body.gate_receipt_id), ['gate-b'], label);
-      assert.deepEqual(commits.map((c) => c.body.decision_id), ['decision-b'], label);
-      await approvals.settleAfterTool(ctx, { correlation: calls[0].correlation, target: 'b'.repeat(64), toolUseId: 'toolu_a', generationId: null, success: false, markerWaitMs: 0 });
-      await afterGrace();
-      const all = requests().filter((r) => r.path === '/v1/agent/commit');
-      assert.deepEqual(all.map((c) => c.body.gate_receipt_id), ['gate-b', 'gate-a'], label);
-      assert.notEqual(all[0].idempotency_key, all[1].idempotency_key, `${label}: KC2 observation keys differ`);
-    });
-  }
-});
-
 test('KC1/KC2 at the join (R6): two calls that differ after a redacted span each resolve only their own hold; proof-required ones send no commit at any later time, the others commit under their own key', async () => {
   const approvals = require('../dist/host-approval.js');
   for (const proofRequired of [true, false]) {

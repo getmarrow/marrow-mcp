@@ -36,9 +36,9 @@ import { normalizedHookAction } from './normalized-action';
  * - report exactly what the host reported, with its marker event; never invent
  *   an answer, a marker or a time; never let the model report an approval;
  * - a decline is only a permission rejection, never an interruption;
- * - a proof-required hold that ran sends only the host's result, as an
- *   untrusted observation; the agent's commit with the same success, outcome
- *   and observed proof fields plus the rest is the trusted close.
+ * - a proof-required hold is committed by the agent with its proof (a hook
+ *   commit without proof would leave an unverified observation that blocks the
+ *   trusted close).
  */
 
 export type ApprovalHost = 'claude-code' | 'codex' | 'cursor' | 'cline' | 'windsurf' | 'gemini' | 'grok' | 'other';
@@ -991,18 +991,7 @@ async function ensureDecision(ctx: HoldContext, hold: HoldRecord, signal: AbortS
   }
 }
 
-/** How long the host's observation of a proof-required call waits for the agent's own commit with proof. */
-export const OBSERVATION_GRACE_MS = 5 * 60_000;
-
-/** A commit in the outbox; `proof` only on the host's own observation of a proof-required call that ran (never trusted). */
-type ObservedCommit = HoldCommit & { proof?: Record<string, string> };
-
-/** The host's result of a proof-required call, as the host reported it: an untrusted observation, never the proof the hold asked for. */
-function hostObservation(outcome: string, success: boolean, toolUseId: string | null): Record<string, string> {
-  return { summary: outcome, checks: 'host tool result only', outcome: success ? 'completed' : 'failed', source: 'hook_post_tool', ...(toolUseId ? { tool_use_id: toolUseId } : {}) };
-}
-
-async function commitHold(ctx: HoldContext, hold: HoldRecord, commit: ObservedCommit, signal: AbortSignal): Promise<'committed' | 'unverified' | 'failed'> {
+async function commitHold(ctx: HoldContext, hold: HoldRecord, commit: HoldCommit, signal: AbortSignal): Promise<'committed' | 'unverified' | 'failed'> {
   const decisionId = hold.decision_id || await ensureDecision(ctx, hold, signal);
   if (!decisionId) return 'failed';
   try {
@@ -1010,10 +999,9 @@ async function commitHold(ctx: HoldContext, hold: HoldRecord, commit: ObservedCo
       decision_id: decisionId,
       success: commit.success,
       outcome: commit.outcome,
-      ...(commit.proof ? { proof: commit.proof } : {}),
       gate_receipt_id: hold.gate_receipt_id,
       auto_gate: false,
-    }, hold.session_id, hold.agent_id || undefined, signal, idempotencyFor(hold, commit.proof ? 'observation' : commit.success ? 'commit' : 'denial'));
+    }, hold.session_id, hold.agent_id || undefined, signal, idempotencyFor(hold, commit.success ? 'commit' : 'denial'));
     return result.committed === true ? 'committed' : 'unverified';
   } catch {
     return 'failed';
@@ -1058,6 +1046,11 @@ export async function deliverHold(
 ): Promise<DeliveryResult | null> {
   const scope = scopeOf(ctx);
   let hold = findHolds(scope, { id: holdId }, ctx.home)[0];
+  if (hold?.outbox?.commit && 'proof' in hold.outbox.commit) {
+    // An earlier build queued the host's own result here as an observation: dropped, never sent.
+    updateHold(scope, holdId, (current) => ({ ...current, outbox: current.outbox?.report ? { ...current.outbox, commit: null } : null }), ctx.home);
+    hold = findHolds(scope, { id: holdId }, ctx.home)[0];
+  }
   if (!hold?.outbox) return null;
   const outbox = hold.outbox;
   const remaining = () => Math.max(250, deadline - Date.now());
@@ -1187,25 +1180,15 @@ export function proofFieldsForReceipt(ctx: HoldContext, gateReceiptId: string): 
   }
 }
 
-const isHookObservation = (commit: HoldCommit | null | undefined): boolean => (commit as ObservedCommit | null | undefined)?.proof?.source === 'hook_post_tool';
-
-/**
- * marrow_commit: send a queued host approval for this receipt before the agent's own commit. The agent's
- * commit closes the receipt itself, so the hook's still-unsent observation of it is dropped, never sent after it.
- */
+/** marrow_commit: send a queued host approval for this receipt before the agent's own commit. */
 export async function deliverQueuedForReceipt(ctx: HoldContext, gateReceiptId: string): Promise<void> {
   let holds: HoldRecord[];
   try {
-    holds = findHolds(scopeOf(ctx), {}, ctx.home).filter((hold) => hold.gate_receipt_id === gateReceiptId && hold.outbox);
-    for (const hold of holds) {
-      if (!isHookObservation(hold.outbox?.commit)) continue;
-      updateHold(scopeOf(ctx), hold.id, (current) => (current.outbox && isHookObservation(current.outbox.commit)
-        ? { ...current, outbox: current.outbox.report ? { ...current.outbox, commit: null } : null } : current), ctx.home);
-    }
+    holds = findHolds(scopeOf(ctx), {}, ctx.home).filter((hold) => hold.gate_receipt_id === gateReceiptId && hold.outbox?.report);
   } catch {
     return;
   }
-  for (const hold of holds) if (hold.outbox?.report) await deliverHold(ctx, hold.id, Date.now() + 5_000).catch(() => null);
+  for (const hold of holds) await deliverHold(ctx, hold.id, Date.now() + 5_000).catch(() => null);
 }
 
 function outcomeText(hold: HoldRecord, success: boolean, host: ApprovalHost): string {
@@ -1301,14 +1284,8 @@ export async function settleAfterTool(ctx: HoldContext, input: {
       if (latest.dialog_at) { lateMarker = true; break; }
     }
   }
-  // An outcome the host does not report (null) is never committed as a success or a failure. A proof-required
-  // hold that ran queues the host's result once as an untrusted observation, sent after a grace period so the
-  // agent's own commit with proof comes first (marrow_commit then drops it).
-  const outcome = input.success === null ? null : outcomeText(hold, input.success, ctx.host);
-  const ranId = input.toolUseId && BOUNDED_ID.test(input.toolUseId) ? input.toolUseId : hold.tool_use_id;
-  const observation: ObservedCommit | null = hold.proof_required && input.success !== null && outcome !== null
-    ? { success: input.success, outcome, proof: hostObservation(outcome, input.success, ranId) } : null;
-  const commit = hold.proof_required || input.success === null || outcome === null ? null : { success: input.success, outcome };
+  // An outcome the host does not report (null) is never committed as a success or a failure.
+  const commit = hold.proof_required || input.success === null ? null : { success: input.success, outcome: outcomeText(hold, input.success, ctx.host) };
   const report: HoldReport | null = hold.mode === 'ask'
     ? {
       verdict: 'approved',
@@ -1328,26 +1305,14 @@ export async function settleAfterTool(ctx: HoldContext, input: {
       ...reportAction(ctx, hold.normalized_action ?? input.normalizedAction),
     }
     : null;
-  const queueObservation = () => {
-    if (observation) updateHold(scope, hold.id, (current) => ({ ...current, outbox: current.outbox ? { ...current.outbox, commit: current.outbox.commit || observation }
-      : { report: null, commit: observation, attempts: 0, next_at: Date.now() + OBSERVATION_GRACE_MS } }), ctx.home);
-  };
-  let text: string | null;
   if (!report && !commit) {
     updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved' }), ctx.home);
-    queueObservation();
-    text = handoffText(hold, { kind: 'already_approved', committed: 'skipped' });
-  } else {
-    updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved', outbox: { report, commit, attempts: 0, next_at: 0 } }), ctx.home);
-    const delivery = await deliverHold(ctx, hold.id);
-    // A report the service dropped as invalid or out of scope closes nothing (as before), so no observation follows it.
-    if (delivery?.kind !== 'dropped') queueObservation();
-    const latest = findHolds(scope, { id: hold.id }, ctx.home)[0] || hold;
-    text = handoffText({ ...latest, decision_id: latest.decision_id || hold.decision_id }, delivery);
+    return handoffText(hold, { kind: 'already_approved', committed: 'skipped' });
   }
-  if (!text || !observation?.proof) return text;
-  const { checks, outcome: observed, source, tool_use_id: ranTool } = observation.proof;
-  return bounded(`${text} Unless that commit comes first, Marrow sends the host's result in ${OBSERVATION_GRACE_MS / 60_000} minutes as an unverified observation (success ${observation.success}, outcome "${observation.outcome}"); after it, a commit with proof must send the same success and outcome and keep these proof fields exactly as sent: summary (the same outcome), checks "${checks}", outcome "${observed}", source "${source}"${ranTool ? `, tool_use_id "${ranTool}"` : ''}.`, 1_400);
+  updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved', outbox: { report, commit, attempts: 0, next_at: 0 } }), ctx.home);
+  const delivery = await deliverHold(ctx, hold.id);
+  const latest = findHolds(scope, { id: hold.id }, ctx.home)[0] || hold;
+  return handoffText({ ...latest, decision_id: latest.decision_id || hold.decision_id }, delivery);
 }
 
 /**

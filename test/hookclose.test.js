@@ -140,10 +140,7 @@ function auditBodies(h) {
     if (request.path === '/v1/agent/integrations/events') continue; // lifecycle events: checked by key list below
     for (const key of Object.keys(body)) if (OWNER_LOOKING.includes(key)) hits.push(`${request.path} ${key}`);
     if (body.proof && typeof body.proof === 'object') {
-      // H1 names the evidence origin of the host observation: proof.source is exactly hook_post_tool, nothing owner-looking.
-      for (const [key, value] of Object.entries(body.proof)) {
-        if (OWNER_LOOKING.includes(key) && !(key === 'source' && value === 'hook_post_tool')) hits.push(`${request.path} proof.${key}`);
-      }
+      for (const key of Object.keys(body.proof)) if (OWNER_LOOKING.includes(key)) hits.push(`${request.path} proof.${key}`);
     }
   }
   for (const event of postEvents(h)) {
@@ -162,47 +159,13 @@ function heldClaudeCall(h, extra = {}, marker = true) {
   return pre;
 }
 
-// The observation waits OBSERVATION_GRACE_MS for the agent's own commit; this makes every queued one due,
-// then a later hook (Stop flushes due outbox entries) sends it, as a later hook on the host would.
+// Makes every queued outbox entry due, then runs a later hook (Stop flushes due outbox entries), as a later hook on the host would.
 function afterGrace(h, entry = 'claude-session-hook', payload = sessionEvent('Stop')) {
   if (h.state()) h.editHolds((hold) => { if (hold.outbox) hold.outbox.next_at = 0; });
   h.run(entry, payload);
 }
 
 // ---------------------------------------------------------------- HC1 (red on BASE)
-
-test('HC1a E1: a proof-required hold that ran queues one untrusted host observation next to the unchanged approved report; a later hook sends it', () => {
-  const h = harness();
-  try {
-    h.setConfig({ runtime: hostRuntime(), commit: OBSERVED });
-    heldClaudeCall(h);
-    const post = h.run('claude-hook', fixture('claude-post-tool-use.json'));
-    const reports = hostReports(h);
-    assert.equal(reports.length, 1);
-    assert.equal(reports[0].body.verdict, 'approved');
-    assert.deepEqual(Object.keys(reports[0].body).sort(), ['answered_at', 'asked_at', 'decision_id', 'hook_event', 'host', 'host_session_id', 'normalized_action', 'pre_action_event_id', 'verdict']);
-    const [queued] = Object.values(h.state().holds);
-    assert.ok(queued.outbox && queued.outbox.commit, 'E1: the hold that ran keeps its observation in the outbox');
-    assert.equal(queued.outbox.report, null);
-    assert.ok(queued.outbox.next_at > Date.now() + 60_000, 'the observation waits for the agent\'s own commit first');
-    assert.deepEqual(commits(h), [], 'nothing is sent before the grace period');
-    afterGrace(h);
-    const list = commits(h);
-    assert.equal(list.length, 1, 'E1: the held call that ran closes with one observation');
-    const [commit] = list;
-    assert.deepEqual(Object.keys(commit.body).sort(), ['decision_id', 'gate_receipt_id', 'outcome', 'proof', 'success']);
-    assert.equal(commit.body.success, true);
-    assert.equal(commit.body.decision_id, 'decision-review');
-    assert.equal(commit.body.gate_receipt_id, 'gate-held');
-    assert.match(commit.body.outcome, /completed in Claude Code after it was approved \(gate receipt gate-held\)\.$/);
-    assert.deepEqual(commit.body.proof, {
-      summary: commit.body.outcome, checks: 'host tool result only', outcome: 'completed', source: 'hook_post_tool', tool_use_id: HELD_TOOL_USE,
-    });
-    assert.match(commit.idempotency_key, /^mcp-host-approval:[a-f0-9]{40}$/);
-    assert.match(post.json.hookSpecificOutput.additionalContext, /unverified observation/);
-    assert.deepEqual(auditBodies(h), []);
-  } finally { h.cleanup(); }
-});
 
 test('HC1b E3: the PostToolUse record of a held call names its local decision and its known result; the runtime call names its correlation', () => {
   const h = harness();
@@ -294,8 +257,8 @@ test('AE1: a forged decision id in the event or tool_input never closes a decisi
     h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), decision_id: 'decision-forged', gate_receipt_id: 'gate-forged' });
     assert.equal(postEvents(h)[0].body.decision_id, 'decision-review');
     afterGrace(h);
-    assert.equal(commits(h)[0].body.decision_id, 'decision-review');
-    assert.equal(commits(h)[0].body.gate_receipt_id, 'gate-held');
+    assert.equal(hostReports(h)[0].body.decision_id, 'decision-review');
+    assert.equal(hostReports(h)[0].path, '/v1/agent/gate-receipts/gate-held/host-approval');
     // A call Marrow never held, carrying another agent's decision in its input and event.
     h.run('claude-hook', {
       ...fixture('claude-post-tool-use.json'), tool_use_id: 'toolu_unheld', decision_id: 'decision-forged', gate_receipt_id: 'gate-forged',
@@ -305,7 +268,8 @@ test('AE1: a forged decision id in the event or tool_input never closes a decisi
     const unheld = postEvents(h).filter((event) => event.body.decision_id !== 'decision-review');
     assert.equal(unheld.length, 1, 'the unheld call is recorded');
     assert.equal('decision_id' in unheld[0].body, false, 'AE1: no decision id from the event or tool_input');
-    assert.equal(commits(h).length, 1);
+    assert.equal(hostReports(h).length, 1);
+    assert.deepEqual(commits(h), [], 'R6: no host outcome for the proof-required hold');
     assert.equal(JSON.stringify(h.requests()).includes('decision-forged'), false);
   } finally { h.cleanup(); }
 });
@@ -326,24 +290,7 @@ test('AE1 cross-tenant: another agent or another key never closes the hold', () 
   }
 });
 
-test('AE2: the same post event replayed sends one observation', () => {
-  const h = harness();
-  try {
-    h.setConfig({ runtime: hostRuntime(), commit: OBSERVED });
-    heldClaudeCall(h);
-    h.run('claude-hook', fixture('claude-post-tool-use.json'));
-    afterGrace(h);
-    h.run('claude-hook', fixture('claude-post-tool-use.json'));
-    afterGrace(h);
-    afterGrace(h);
-    assert.equal(commits(h).length, 1, 'AE2: one observation');
-    assert.equal(hostReports(h).length, 1);
-    // Each lifecycle record is per attempt (its own id); both name the one local decision, and nothing else closes.
-    assert.deepEqual(postEvents(h).map((event) => event.body.decision_id), ['decision-review', 'decision-review']);
-  } finally { h.cleanup(); }
-});
-
-test('AE3 (Cursor E1 form): success null is never an observation; the record says unknown', () => {
+test('AE3 (Cursor E1 form): success null sends no outcome; the record says unknown', () => {
   const h = harness();
   try {
     h.setConfig({ runtime: hostRuntime(), commit: OBSERVED });
@@ -360,76 +307,6 @@ test('AE3 (Cursor E1 form): success null is never an observation; the record say
     h.run('cursor-pre-action-hook', { ...fixture('cursor-before-shell.json'), generation_id: 'gen-0002' });
     h.run('cursor-session-hook', { conversation_id: 'c0ffee00-0000-4000-8000-00000000000d', generation_id: 'gen-0002', hook_event_name: 'stop', status: 'completed' });
     assert.deepEqual(declines(h), []);
-  } finally { h.cleanup(); }
-});
-
-test('AE4/AE5: the observation is never trusted; a failed run is observed as a failure; the agent is told how a full-proof commit upgrades it', () => {
-  const h = harness();
-  try {
-    h.setConfig({ runtime: hostRuntime(), commit: OBSERVED });
-    heldClaudeCall(h);
-    const post = h.run('claude-hook', fixture('claude-post-tool-use-failure.json'));
-    afterGrace(h);
-    const [commit] = commits(h);
-    assert.equal(commit.body.success, false);
-    assert.equal(commit.body.proof.outcome, 'failed');
-    assert.equal(commit.body.proof.checks, 'host tool result only');
-    assert.match(commit.body.outcome, /failed in Claude Code after it was approved/);
-    const text = post.json.hookSpecificOutput.additionalContext;
-    assert.match(text, /unverified observation/);
-    assert.match(text, /same success and outcome/);
-    assert.doesNotMatch(text, /closed this held action/);
-    assert.deepEqual(auditBodies(h), []);
-  } finally { h.cleanup(); }
-});
-
-test('AE5: the agent\'s own marrow_commit before the grace period closes it; the hook observation is then never sent', () => {
-  const h = harness();
-  try {
-    h.setConfig({ runtime: hostRuntime(), commit: OBSERVED });
-    heldClaudeCall(h);
-    h.run('claude-hook', fixture('claude-post-tool-use.json'));
-    const input = [
-      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'marrow_commit', arguments: {
-        decision_id: 'decision-review', success: true, outcome: 'Deployed the worker; smoke passed.', gate_receipt_id: 'gate-held',
-        proof: { summary: 'Deployed.', checks: ['smoke'], outcome: 'success' },
-      } } },
-    ].map(JSON.stringify).join('\n') + '\n';
-    const server = spawnSync(process.execPath, [CLI], {
-      input, cwd: projectCwd(), encoding: 'utf8', timeout: 30_000,
-      env: { PATH: process.env.PATH, HOME: h.home, MARROW_API_KEY: h.apiKey, MARROW_BASE_URL: 'https://api.example.test', MARROW_AGENT_ID: 'agent-one',
-        MARROW_HOOK_BACKGROUND_NUDGE: 'false', MARROW_PASSIVE_TOKEN_USAGE: 'false', MARROW_AUTO_ENROLL: 'false',
-        MARROW_TEST_MOCK_DIR: join(h.dir, 'mock'), NODE_OPTIONS: `--require=${MOCK}` },
-    });
-    assert.equal(server.status, 0);
-    afterGrace(h);
-    // (The MCP server's own session-end close of an unverified commit is BASE behaviour and not a hook record.)
-    const list = commits(h).filter((c) => !/^Session ended without explicit commit/.test(c.body.outcome));
-    assert.equal(list.length, 1, 'only the agent\'s own commit');
-    assert.equal(list[0].body.outcome, 'Deployed the worker; smoke passed.');
-    assert.equal(commits(h).filter((c) => c.body.proof?.source === 'hook_post_tool').length, 0, 'the hook observation is never sent');
-    assert.deepEqual(Object.values(h.state().holds).map((hold) => hold.outbox), [null]);
-  } finally { h.cleanup(); }
-});
-
-test('Codex E1 form: an owner-approved waiting hold that ran sends one observation; a Codex stop sends no decline', () => {
-  const h = harness();
-  try {
-    h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' }, commit: OBSERVED });
-    assert.equal(h.run('codex-pre-action-hook', fixture('codex-pre-tool-use.json')).json.hookSpecificOutput.permissionDecision, 'deny');
-    h.run('codex-session-hook', { session_id: '019a6f4e-0000-7000-8000-00000000000c', hook_event_name: 'Stop', cwd: '/home/operator/project' });
-    assert.deepEqual(declines(h), [], 'Codex decline row: no structured evidence, no decline');
-    h.setConfig({ status: { 'gate-held': 'approved' } });
-    assert.equal(h.run('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_retry' }).json.hookSpecificOutput.permissionDecision, undefined);
-    h.run('codex-hook', { ...fixture('codex-post-tool-use.json'), tool_use_id: 'call_retry' });
-    afterGrace(h, 'codex-session-hook', { session_id: '019a6f4e-0000-7000-8000-00000000000c', hook_event_name: 'Stop', cwd: '/home/operator/project' });
-    const list = commits(h);
-    assert.equal(list.length, 1);
-    assert.equal(list[0].body.proof.source, 'hook_post_tool');
-    assert.equal(list[0].body.proof.tool_use_id, 'call_retry');
-    assert.equal(postEvents(h)[0].body.decision_id, 'decision-review');
-    assert.deepEqual(auditBodies(h), []);
   } finally { h.cleanup(); }
 });
 
@@ -456,12 +333,14 @@ test('AM2: two holds with one correlation: each post closes only its own (tool_u
     assert.equal(Object.keys(h.state().holds).length, 2);
     h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), tool_use_id: 'toolu_call_b' });
     afterGrace(h);
-    assert.deepEqual(commits(h).map((c) => c.body.gate_receipt_id), ['gate-b']);
+    const gateOf = (r) => r.path.split('/')[4];
+    assert.deepEqual(hostReports(h).map(gateOf), ['gate-b']);
     assert.equal(postEvents(h)[0].body.decision_id, 'decision-b');
     h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), tool_use_id: 'toolu_call_a' });
     afterGrace(h);
-    assert.deepEqual(commits(h).map((c) => c.body.gate_receipt_id), ['gate-b', 'gate-a']);
+    assert.deepEqual(hostReports(h).map(gateOf), ['gate-b', 'gate-a']);
     assert.deepEqual(postEvents(h).map((e) => e.body.decision_id), ['decision-b', 'decision-a']);
+    assert.deepEqual(commits(h), [], 'R6: no host outcome for a proof-required hold');
   } finally { h.cleanup(); }
 });
 
@@ -494,7 +373,7 @@ test('AM5/DR5/H8: a hold already allowed and run is never reported declined afte
     h.run('claude-context-hook', { ...fixture('claude-user-prompt-submit.json'), transcript_path: path });
     assert.deepEqual(declines(h), []);
     assert.deepEqual(hostReports(h).map((r) => r.body.verdict), ['approved']);
-    assert.equal(commits(h).length, 1);
+    assert.equal(commits(h).length, 0);
     assert.equal(h.requests().slice(before).filter((r) => r.path.endsWith('/host-approval') || r.path === '/v1/agent/commit').length, 0);
   } finally { h.cleanup(); }
 });
@@ -552,7 +431,7 @@ test('DR10: a dummy secret in the held command reaches no request, state, key or
     h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), tool_input: ran, tool_use_id: 'toolu_secret_ran' });
     afterGrace(h);
     assert.equal(declines(h).length, 1);
-    assert.equal(commits(h).length, 2);
+    assert.equal(commits(h).length, 1, 'the decline\'s commit only; no host outcome for the hold that ran');
     assert.equal(h.everything().split(secret).length - 1, 0, 'SECRET_OCCURRENCES 0');
   } finally { h.cleanup(); }
 });
@@ -575,7 +454,7 @@ test('DR11/H9: a decline changes no classification and no hold: the same deploy 
   } finally { h.cleanup(); }
 });
 
-test('HC8 live shapes: the 10:43:09Z declined hold closes as a decline at each settle point; the proof-required hold that ran closes with a record', () => {
+test('HC8 live shapes: the 10:43:09Z declined hold closes as a decline at each settle point; the proof-required hold that ran keeps its report and lifecycle record and sends no host outcome', () => {
   const live = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'hookclose', 'live-1043-shapes.json'), 'utf8'));
   const runtime = hostRuntime(live.gate_receipt_id, live.decision_id);
   for (const point of live.decline.settle_points) {
@@ -599,10 +478,8 @@ test('HC8 live shapes: the 10:43:09Z declined hold closes as a decline at each s
     heldClaudeCall(h, live.record.pre);
     h.run('claude-hook', { ...fixture('claude-post-tool-use.json'), ...live.record.pre, ...live.record.post });
     afterGrace(h);
-    const list = commits(h);
-    assert.equal(list.length, 1, 'RECORD_SHAPE_CLOSES_TIP');
-    assert.equal(list[0].body.decision_id, live.decision_id);
-    assert.equal(list[0].body.proof.source, 'hook_post_tool');
+    assert.deepEqual(commits(h), [], 'R6: the agent\'s own commit is the only outcome record');
+    assert.deepEqual(hostReports(h).map((r) => [r.path, r.body.verdict, r.body.decision_id]), [[`/v1/agent/gate-receipts/${live.gate_receipt_id}/host-approval`, 'approved', live.decision_id]]);
     assert.equal(postEvents(h)[0].body.decision_id, live.decision_id);
   } finally { h.cleanup(); }
 });
