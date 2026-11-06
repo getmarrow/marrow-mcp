@@ -59,10 +59,12 @@ import {
   isSecretMaterialAccessAsNamed,
   isSecretPath,
   isShellGovernedTool,
+  isGitMergeSiblingCall,
   normalizeHookToolName,
   policyReadsAllWords,
   readEquivalent,
   toolClassificationText,
+  toolDataWordsText,
   toolPolicyReading,
 } from './hook-tool-policy';
 import {
@@ -1051,7 +1053,6 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   // and every risk category it has without the hold.
   const controlRoute = controlRouteCall(event);
   const command = shellGoverned ? hookToolCommand(event) : '';
-  const input = toolClassificationText(event).toLowerCase();
   // A look-alike of Marrow's own tool is never read-only, whatever its verb.
   // The PostToolUse path passes no check (options.postTool): the mapper is never loaded for it.
   const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment.bind(null, options.cwd);
@@ -1059,34 +1060,52 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   const secretAccess = isSecretMaterialAccessAsNamed(event, printsEnvironment);
   // T2: a write to Marrow's control files, a host's hooks settings or a file that makes a command run later is a security action, not an audit one.
   const selfProtected = readOnly && !controlRoute ? null : selfProtectKind(event, options.cwd);
-  const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
-  const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
-    && protectedShellCommand;
-  let type = 'process';
-  if (/\b(?:publish|unpublish|deprecate)\b/.test(input)) type = 'publish';
-  else if (/\b(?:deploy|release|wrangler)\b/.test(input) || infrastructureDeployment) type = 'deploy';
-  else if (/\b(?:merge|pull request|git push)\b/.test(input) || /\bgit\b[^\n;&|]{0,240}\bpush\b/.test(command.toLowerCase())) type = 'review';
-  else if (/\b(?:migration|schema|database|d1)\b/.test(input)) type = 'migration';
-  else if (secretAccess || /\b(?:secret|credential|token|key|permission)\b/.test(input)) type = 'audit';
-  else if (/\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input)) type = 'financial';
-  const surfaces = [
-    /\b(?:deploy|release|production|prod|wrangler)\b/.test(input) || infrastructureDeployment ? 'production' : '',
-    /\b(?:git|github|merge|pull request|push)\b/.test(input) ? 'github' : '',
-    /\b(?:npm|package|publish)\b/.test(input) ? 'npm' : '',
-    secretAccess || /\b(?:secret|credential|token|key)\b/.test(input) ? 'secrets' : '',
-    /\b(?:migration|schema|database|d1)\b/.test(input) ? 'database' : '',
-    /\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input) ? 'financial' : '',
-  ].filter(Boolean);
-  const protectedAction = !readOnly && (
-    secretAccess
-    || (shellGoverned && /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/.test(input))
-    || protectedShellCommand
-    || (isMcpHookTool(event.tool_name) && (options.ownUnproven === true || !isOfficialMarrowMcpTool(event.tool_name)))
-    || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
-  );
-  const full: ClassificationParts = { tool, type, surfaces, readOnly, protected: protectedAction };
   const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected])].filter((surface): surface is string => surface !== null);
-  return held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
+  const classify = (input: string, mergeSibling: boolean): ClassificationParts => {
+    // S7 (LOWER_SHAPES L12): `git merge-base`, `merge-tree` and `merge-file` are not `git merge` when they are the whole command (B2).
+    const protectedShellCommand = shellGoverned && isProtectedShellMutation(mergeSibling ? command.replace(/(^|\s)merge-(base|tree|file)(?=\s|$)/g, '$1merge_$2') : command);
+    const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
+      && protectedShellCommand;
+    let type = 'process';
+    if (/\b(?:publish|unpublish|deprecate)\b/.test(input)) type = 'publish';
+    else if (/\b(?:deploy|release|wrangler)\b/.test(input) || infrastructureDeployment) type = 'deploy';
+    else if (/\b(?:merge|pull request|git push)\b/.test(input) || /\bgit\b[^\n;&|]{0,240}\bpush\b/.test(command.toLowerCase())) type = 'review';
+    else if (/\b(?:migration|schema|database|d1)\b/.test(input)) type = 'migration';
+    else if (secretAccess || /\b(?:secret|credential|token|key|permission)\b/.test(input)) type = 'audit';
+    else if (/\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input)) type = 'financial';
+    const surfaces = [
+      /\b(?:deploy|release|production|prod|wrangler)\b/.test(input) || infrastructureDeployment ? 'production' : '',
+      /\b(?:git|github|merge|pull request|push)\b/.test(input) ? 'github' : '',
+      /\b(?:npm|package|publish)\b/.test(input) ? 'npm' : '',
+      secretAccess || /\b(?:secret|credential|token|key)\b/.test(input) ? 'secrets' : '',
+      /\b(?:migration|schema|database|d1)\b/.test(input) ? 'database' : '',
+      /\b(?:payment|refund|charge|invoice|stripe|financial)\b/.test(input) ? 'financial' : '',
+    ].filter(Boolean);
+    const protectedAction = !readOnly && (
+      secretAccess
+      || (shellGoverned && (mergeSibling
+        ? /\b(?:deploy|release|publish|git\s+push|git\s+merge(?!-)|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/
+        : /\b(?:deploy|release|publish|git\s+push|git\s+merge|gh\s+pr\s+merge|migration|migrate|secret|credential|rotate|revoke|payment|refund|charge|invoice|production|prod)\b/).test(input))
+      || protectedShellCommand
+      || (isMcpHookTool(event.tool_name) && (options.ownUnproven === true || !isOfficialMarrowMcpTool(event.tool_name)))
+      || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
+    );
+    const full: ClassificationParts = { tool, type, surfaces, readOnly, protected: protectedAction };
+    return held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
+  };
+  const base = classify(toolClassificationText(event).toLowerCase(), false);
+  let lowered: string | null = null;
+  let mergeSibling = false;
+  try {
+    lowered = shellGoverned && base.protected ? toolDataWordsText(event) : null;
+    mergeSibling = shellGoverned && base.protected && isGitMergeSiblingCall(event);
+  } catch {
+    return base; // a lowering that fails keeps the BASE classification
+  }
+  if (lowered === null && !mergeSibling) return base;
+  // B5: a kept shape may only turn a hold into an allow; a call it still holds keeps the BASE text, type and surfaces.
+  const parts = classify((lowered ?? toolClassificationText(event)).toLowerCase(), mergeSibling);
+  return parts.protected ? base : parts;
 }
 
 /** The role the runtime call carries: that of the type, or, where `security` displaced a type (ClassificationParts.under), the strictest displaced one, as 3.9.108 sent it. */

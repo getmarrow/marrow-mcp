@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
 import { APPROVAL_STATE_TREE, ENV_TEMPLATE_WORDS, PROC_ENVIRON, PROC_PROCESS_TREE, SECRET_PATTERNS } from './secret-paths';
+import { RUN_LATER_FILES, runLaterPath, runLaterText } from './self-protect';
 
 export { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool };
 
@@ -737,6 +738,224 @@ export function isSecretMaterialAccessAsNamed(event: ToolPolicyEvent, printsEnvi
     if (analysis && asBash) return false;
   } else if (analysis) return analysis.verdicts.includes('secret');
   return command.split(/[\s'"`;&|<>(){}]+/).some((token) => isProtectedWriteTarget(token));
+}
+
+// Data words (LOWER-SHAPES-hookdata, kept shapes L01, L10, L12 and D01-D23 only): the fully quoted arguments of these programs, the heredoc
+// body or here-string of echo, printf, cat and tee, `python3 -I -` heredoc code that passes the B1 scan and the quoted text of a `python3 <script>`
+// run (F2) are data. Anything unproven, and any command a raw-command family protects, keeps BASE.
+const DATA_PROGRAMS = new Set('echo printf cat tee grep egrep fgrep rg head tail wc sort uniq cut tr diff cmp ls test true mkdir touch date'.split(' '));
+const HEREDOC_DATA_PROGRAMS = new Set('echo printf cat tee'.split(' '));
+const NEVER_DATA_PROGRAMS = new Set(('sh bash zsh dash ksh fish eval source . exec xargs ssh su sudo doas watch parallel find env command script expect '
+  + 'tmux screen nsenter chroot git gh npm npx pnpm yarn bun bunx wrangler kubectl terraform pulumi helm flyctl fly vercel netlify aws gcloud az docker '
+  + 'podman twine cargo gem pip pip3 curl wget http rsync scp sed awk gawk perl make').split(' '));
+const TRANSPARENT_WRAPPERS = new Set('time nice nohup timeout stdbuf ionice'.split(' '));
+// S5 + B4: any of these words anywhere (or an assignment, or printf with an option) keeps the WHOLE command at BASE.
+const SHELL_STATE_WORDS = new Set(('export declare typeset readonly local alias unalias function hash enable builtin shopt set trap source . eval exec '
+  + 'read mapfile readarray getopts let coproc wait for select while until case esac if then elif else fi do done { } (( ))').split(' '));
+const SHELL_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/;
+const RISK_SCRIPT_NAME = /deploy|release|publish|ship|push|merge|migrat|rotate|revoke|prod/i;
+// B1: L01 code imports only these modules, holds no `\x`/`\u`/`\U`/`\N`/octal escape, and no `__`, `_name` or listed name part (any case,
+// inside longer names too, string literals included). Literal alternations: linear in the code length.
+const L01_MODULE = '(?:json|re|pathlib|textwrap|datetime|difflib|collections|itertools|csv|math)';
+const L01_IMPORT_LINE = new RegExp(`^[ \\t]*(?:import[ \\t]+${L01_MODULE}(?:[ \\t]*,[ \\t]*${L01_MODULE})*`
+  + `|from[ \\t]+${L01_MODULE}[ \\t]+import[ \\t]+[A-Za-z][A-Za-z0-9_]*(?:[ \\t]*,[ \\t]*[A-Za-z][A-Za-z0-9_]*)*)[ \\t]*$`);
+const L01_ESCAPE = /\\[xuUN0-7]/;
+const L01_CODE_VETO = new RegExp(['__', '(?:^|[^A-Za-z0-9_])_', ...('os sys posix nt subprocess system popen spawn exec eval compile fork kill getattr setattr '
+  + 'delattr vars globals locals dir importlib builtins breakpoint ctypes pty socket pickle marshal shelve asyncio multiprocessing webbrowser pydoc '
+  + 'runpy code operator formatter format_map urllib http requests ssl ftplib smtplib xmlrpc help secret credential token passw').split(' ')].join('|'), 'i');
+// F2: a quoted L10 argument that is a flag or an environment/risk label (one word, a key=value or key: value, or only risk words) keeps BASE.
+const ENV_LABEL_WORD = /prod|prd|live|deploy|publish|release|staging|master|main|wrangler|merge|push|git|npm|migrat|secret|credential|token|key|rotate|revoke|payment|refund|charge|invoice|stripe|financial|schema|database|d1|package|permission|deprecate|pull request/i;
+type DataSegment = ShellSegment & { kinds: ('quoted' | 'literal' | 'other')[]; piped: boolean; heredoc: string | null; herestrings: number };
+// One sticky pass: blanks | separator | here-string or heredoc | redirect | word part | comment (keeps BASE); no $, \, `, brace, parenthesis or "$..." is lowered.
+const DATA_LEX = /([ \t]+)|(\n|;|&&|\|\||\|&?|&(?!>))|(<<<[ \t]*(?:'[^']*'|"[^"$`\\]*")(?![^\s;&|<>])|<<(-?)[ \t]*(?:'(\w+)'|"(\w+)"|(\w+))(?![^\s;&|<>]))|(\d*(?:&>>?|>[>|]?|<>?)(?:&(?:\d+|-))?)|('[^']*'|"[^"$`\\]*"|[^\s'"\\$`|&;<>(){}#]+)|(#[^\n]*)/y;
+/** Segments with word quoting, pipe readers, heredoc and here-strings, and the text left with those cut out; null on any doubt. */
+function dataSegments(command: string): { segments: DataSegment[]; stripped: string } | null {
+  if (command.length > MAX_SHELL_ANALYSIS_BYTES || UNMODELED_SHELL_CHARACTER.test(command)) return null;
+  const open = (piped: boolean): DataSegment => ({ words: [], outputs: [], inputs: [], expansions: [], kinds: [], piped, heredoc: null, herestrings: 0 });
+  const segments: DataSegment[] = [];
+  let segment = open(false), parts: string[] = [], redirect: 'out' | 'in' | null = null, stripped = '', kept = 0;
+  let pending: { tag: string; strip: boolean; expands: boolean; owner: DataSegment } | null = null;
+  const cut = (start: number, end: number): void => { stripped += command.slice(kept, start); kept = end; };
+  const finishWord = (): void => {
+    if (!parts.length) return;
+    const text = parts.map((part) => (/^['"]/.test(part) ? part.slice(1, -1) : part)).join('');
+    if (redirect) (redirect === 'out' ? segment.outputs : segment.inputs).push(text);
+    else segment.kinds.push(parts.length === 1 && /^['"]/.test(parts[0]) ? 'quoted' : parts.some((part) => /^['"]|[*?[\]~]/.test(part)) ? 'other' : 'literal');
+    if (!redirect) segment.words.push(text);
+    parts = []; redirect = null;
+  };
+  const finishSegment = (piped: boolean): boolean => {
+    finishWord();
+    if (redirect || (!segment.words.length && (segment.herestrings || pending?.owner === segment))) return false;
+    if (segment.words.length || segment.outputs.length || segment.inputs.length) segments.push(segment);
+    segment = open(piped); return true;
+  };
+  DATA_LEX.lastIndex = 0;
+  while (DATA_LEX.lastIndex < command.length) {
+    const start = DATA_LEX.lastIndex;
+    const token = DATA_LEX.exec(command);
+    // A comment is in no kept shape: the whole command keeps BASE.
+    if (!token || token[10] !== undefined) return null;
+    const [text, blank, separator, here, strip, singleTag, doubleTag, bareTag, redirectOp, part] = token;
+    if (part !== undefined) { parts.push(part); continue; }
+    if (blank !== undefined) { finishWord(); continue; }
+    if (separator !== undefined) {
+      if (!finishSegment(separator === '|' || separator === '|&')) return null;
+      if (separator !== '\n' || !pending) continue;
+      // The body runs to a line that is exactly the tag (leading tabs dropped for <<-); the body and the tag line are cut out.
+      let line = start + 1, stop = 0;
+      for (; ; line = stop + 1) {
+        stop = command.indexOf('\n', line); if (stop < 0) stop = command.length;
+        if (command.slice(line, stop).replace(pending.strip ? /^\t+/ : /^(?!)/, '') === pending.tag) break;
+        if (stop === command.length) return null;
+      }
+      pending.owner.heredoc = command.slice(start + 1, line);
+      if (pending.expands && /[$`\\]/.test(pending.owner.heredoc)) return null;
+      cut(start + 1, stop); DATA_LEX.lastIndex = stop; pending = null;
+      continue;
+    }
+    finishWord();
+    if (redirect) return null;
+    if (here?.startsWith('<<<')) segment.herestrings += 1;
+    else if (here !== undefined && (pending || segment.heredoc !== null)) return null;
+    else if (here !== undefined) pending = { tag: singleTag ?? doubleTag ?? bareTag, strip: strip === '-', expands: bareTag !== undefined, owner: segment };
+    // `2>&1` and `>&-` duplicate a descriptor (no target word); any other redirect names the next word.
+    else if (!/&(?:\d+|-)$/.test(redirectOp)) redirect = /^\d*(?:&|>|<>)/.test(text) ? 'out' : 'in';
+    if (here !== undefined) cut(start, DATA_LEX.lastIndex);
+  }
+  if (pending || !finishSegment(false)) return null;
+  return { segments, stripped: stripped + command.slice(kept) };
+}
+/** B1: `python3 -I -` heredoc code is data only when it is ASCII, at most 64 KB, imports only listed modules and holds no listed escape or name part. */
+function codeIsData(code: string): boolean {
+  if (code.length > 65536 || /[^\x00-\x7f]/.test(code)) return false;
+  const text = code.normalize('NFKC');
+  if (L01_ESCAPE.test(text) || L01_CODE_VETO.test(text)) return false;
+  return text.split('\n').every((line) => !/\bimport\b/.test(line) || L01_IMPORT_LINE.test(line));
+}
+/** F2: a quoted argument that reads as a flag or an environment or risk label, never as free text. */
+function labelArgument(arg: string): boolean {
+  const text = arg.normalize('NFKC').trim();
+  const words = text.split(/\s+/);
+  return text.startsWith('-') || (ENV_LABEL_WORD.test(text) && (words.length === 1 || /[=:]/.test(text) || words.every((word) => ENV_LABEL_WORD.test(word))));
+}
+/** The indexes of a segment's data words, or null when the whole command must keep its BASE reading. */
+function dataWordIndexes(segment: DataSegment, read: boolean, alone: boolean): Set<number> | null {
+  const { words, kinds } = segment;
+  let at = 0;
+  if (SHELL_ASSIGNMENT.test(words[0] ?? '')) return null;
+  while (kinds[at] === 'literal' && TRANSPARENT_WRAPPERS.has(words[at])) {
+    at += 1;
+    while (kinds[at] === 'literal' && /^(?:-[A-Za-z-]*|\d+(?:\.\d+)?[smhd]?)$/.test(words[at])) at += 1;
+  }
+  const program = kinds[at] === 'literal' ? words[at] : '';
+  const data = DATA_PROGRAMS.has(program) && !NEVER_DATA_PROGRAMS.has(program);
+  if (SHELL_STATE_WORDS.has(program) || (segment.piped && !data)) return null;
+  if (data) {
+    if (['rg', 'sort'].includes(program) && words.some((arg) => longOptionPrefix(arg, ['pre', 'pre-glob', 'hostname-bin', 'compress-program']))) return null;
+    // B3: a heredoc body or here-string is data only for echo, printf, cat and tee (D01-D04).
+    if ((segment.heredoc !== null || segment.herestrings) && !HEREDOC_DATA_PROGRAMS.has(program)) return null;
+    return new Set(words.map((_, i) => i).filter((i) => i > at && kinds[i] === 'quoted' && !words[i].startsWith('-')));
+  }
+  if (program === 'python3' && at === 0) return python3DataWords(segment, alone);
+  return read && segment.heredoc === null && !segment.herestrings ? new Set() : null;
+}
+// L01: exactly `python3 -I -` with a heredoc whose code passes B1. L10: the whole command is `python3 <script>` (no risk word in its name)
+// then only quoted arguments, none a flag or a label (F2), so no other segment can have written the script. Every other python3 form, and python and node (L02-L09, L11 are cut), keeps BASE.
+function python3DataWords(segment: DataSegment, alone: boolean): Set<number> | null {
+  const { words, kinds } = segment;
+  if (segment.inputs.length || segment.herestrings) return null;
+  if (segment.heredoc !== null) {
+    const exact = words.length === 3 && words[1] === '-I' && words[2] === '-' && kinds.every((kind) => kind === 'literal') && !segment.outputs.length;
+    return exact && codeIsData(segment.heredoc) ? new Set() : null;
+  }
+  const script = kinds[1] === 'literal' ? words[1] : '';
+  if (!alone || !script || script.startsWith('-') || RISK_SCRIPT_NAME.test(script.split('/').pop() || '') || words.length < 3) return null;
+  if (kinds.slice(2).some((kind) => kind !== 'quoted') || words.slice(2).some(labelArgument)) return null;
+  return new Set(words.map((_, i) => i).filter((i) => i > 1));
+}
+/** The classification text with the proven data words left out, or null when nothing is proven data (the caller keeps BASE). */
+function dataWordsText(tool: string, command: string, base: ReturnType<typeof shellAnalysis>): string | null {
+  const lexed = dataSegments(command);
+  const heredocs = lexed !== null && lexed.stripped !== command;
+  const analysis = lexed && (heredocs ? shellAnalysis(lexed.stripped) : base); // must split exactly as the lexer did
+  if (!lexed || !analysis || JSON.stringify(analysis.segments) !== JSON.stringify(lexed.segments.map(({ words, outputs, inputs, expansions }) => ({ words, outputs, inputs, expansions })))) return null;
+  // B4: a shell-state or control word, an assignment or a printf option anywhere keeps the whole command at BASE.
+  if (lexed.segments.some(({ words, kinds }) => words.some((word, i) => SHELL_STATE_WORDS.has(word) || (kinds[i] !== 'quoted' && SHELL_ASSIGNMENT.test(word)))
+    || (words.includes('printf') && words.some((word) => word.startsWith('-'))))) return null;
+  const parts = [tool];
+  let dropped = false;
+  for (const [index, segment] of lexed.segments.entries()) {
+    const data = dataWordIndexes(segment, analysis.verdicts[index] === 'read', lexed.segments.length === 1);
+    if (!data) return null;
+    dropped ||= data.size > 0 || segment.heredoc !== null || segment.herestrings > 0;
+    if (analysis.verdicts[index] !== 'read') parts.push([...segment.words.filter((_, i) => !data.has(i)), ...segment.outputs].join(' '));
+  }
+  // S6: a command a raw-command family protects (npm publish, git push, wrangler deploy, ...) keeps every BASE word.
+  if (!dropped || isProtectedShellMutation(command)) return null;
+  // B3: with a heredoc or here-string only its body or content is left out; every word of every segment stays, read segments included.
+  return heredocs ? [tool, lexed.stripped].join(' ; ') : parts.join(' ; ');
+}
+
+// A141: a run-later file named anywhere, resolved from a word, globbed or moved into, or a python3 heredoc path not one plain literal keeps BASE.
+const PATH_MOVES = new Set('tee cp mv ln cd pushd'.split(' '));
+const PY_TOKEN = /('''(?:[^'\\]|\\[\s\S]|'(?!''))*'''|"""(?:[^"\\]|\\[\s\S]|"(?!""))*"""|'(?:[^'\\\n]|\\[\s\S])*'|"(?:[^"\\\n]|\\[\s\S])*")|(#[^\n]*)|([^'"#]+)/y;
+const PY_DERIVED = /\/|\b(?:home|cwd|glob|rglob|iterdir|walk|joinpath|with_name|with_stem|with_suffix|with_segments|expanduser|resolve|absolute|readlink|parents?|type)\b/;
+const PY_PATH_CALL = /\b(?:(?:Pure)?(?:Posix|Windows)?Path|open|rename|replace|symlink_to|hardlink_to|link_to)\b(?:\s*\(\s*\0(\d+)\0\s*[,)])?/g;
+function codeTouchesRunLater(code: string, unsafe: (path: string) => boolean): boolean {
+  const literals: string[] = [];
+  let blank = '';
+  for (PY_TOKEN.lastIndex = 0; PY_TOKEN.lastIndex < code.length;) {
+    const token = code.includes('\0') ? null : PY_TOKEN.exec(code);
+    if (!token) return true;
+    const quote = token[1]?.startsWith(token[1][0].repeat(3)) ? 3 : 1; // a prefixed literal (f, r, b) is never plain
+    blank += token[3] ?? (token[2] !== undefined ? ' ' : `\0${literals.push(/\w$/.test(blank) ? '\\' : token[1].slice(quote, -quote)) - 1}\0`);
+  }
+  blank = blank.replace(/^[ \t]*(?:from|import)[ \t][^\n]*/gm, ''); // import lines are B1-checked: names only
+  return PY_DERIVED.test(blank) || [...blank.matchAll(PY_PATH_CALL)].some((call) => call[1] === undefined || unsafe(literals[Number(call[1])]));
+}
+function touchesRunLater(command: string, event: ToolPolicyEvent): boolean {
+  if (runLaterText(command).split(/[^a-z0-9._/-]+/).some((word) => [word, posix.normalize(word || '.')].some((path) => RUN_LATER_FILES.some((name) => name.test(path))))) return true;
+  const cwds = [process.cwd(), (event as { cwd?: unknown }).cwd].filter((cwd): cwd is string => typeof cwd === 'string' && posix.isAbsolute(cwd));
+  const unsafe = (path: string, folder = false): boolean => cwds.some((cwd) => runLaterPath(path, cwd, folder));
+  return dataSegments(command)?.segments.some((segment) => {
+    const moves = segment.words.some((word) => PATH_MOVES.has(word));
+    return [...segment.outputs, ...(moves ? segment.words : [])].some((path) => /[*?[\]{}]/.test(path))
+      || [...segment.outputs, ...segment.words].some((path) => unsafe(path, moves))
+      || (segment.heredoc !== null && segment.words[0] === 'python3' && codeTouchesRunLater(segment.heredoc, (path) => /[\\*?[\]{}]/.test(path) || unsafe(path)));
+  }) ?? false;
+}
+/** A string input, or exactly one string command field: a second `command`, `cmd` or `script` (one a host may run instead) keeps BASE. */
+function oneCommandField(event: ToolPolicyEvent): boolean {
+  if (typeof event.tool_input === 'string') return true;
+  const input = asRecord(event.tool_input);
+  const fields = ['command', 'cmd', 'script'].filter((key) => input?.[key] !== undefined);
+  return fields.length === 1 && typeof input?.[fields[0]] === 'string';
+}
+
+/**
+ * The classification text of a shell call with the data words of a kept shape left out (L01, L10, D01-D23), or null when the call
+ * has none or any doubt remains. The caller uses it only to turn a hold into an allow (B5); toolClassificationText stays BASE.
+ */
+export function toolDataWordsText(event: ToolPolicyEvent): string | null {
+  const tool = normalizeHookToolName(event.tool_name);
+  if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell' || !oneCommandField(event)) return null;
+  const command = shellCommandText(event);
+  if (touchesRunLater(command, event)) return null;
+  return dataWordsText(tool, command, shellAnalysis(command, event[SHELL_DIALECT]));
+}
+
+// L12 (S7 + B2): `git [-C <dir>] merge-base|merge-tree|merge-file <operands>` is not `git merge` only when the WHOLE command is that one
+// simple command: no separator, newline, subshell, substitution, quote, variable, redirect, assignment, wrapper or shell-state word.
+// Disjoint character classes between the blanks and the words: linear.
+const GIT_MERGE_SIBLING = /^[ \t]*git(?:[ \t]+-C[ \t]+[\w./@^~:+-]+)*[ \t]+merge-(?:base|tree|file)(?:[ \t]+[\w./@^~:+-]+)*[ \t]*$/;
+const GIT_MERGE_SIBLING_NEVER = new Set('bash sh eval xargs env command exec'.split(' '));
+export function isGitMergeSiblingCall(event: ToolPolicyEvent): boolean {
+  const tool = normalizeHookToolName(event.tool_name);
+  if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] === 'powershell' || !oneCommandField(event)) return false;
+  const command = shellCommandText(event);
+  return command.length <= 4096 && GIT_MERGE_SIBLING.test(command) && !touchesRunLater(command, event)
+    && !command.trim().split(/[ \t]+/).some((word) => GIT_MERGE_SIBLING_NEVER.has(word) || SHELL_STATE_WORDS.has(word));
 }
 
 /**
