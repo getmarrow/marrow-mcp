@@ -15,7 +15,12 @@
  * most one environment flag with a DEPLOY_ENV_VALUE value, nothing else, and
  * no secret replaced) is also sent as `tool_input.command`, exactly as typed
  * (for example `sst deploy --stage production`), so the service can judge the
- * deploy target. Every other command sends only its hash.
+ * deploy target. For one kind of command the text is also sent (sourceControlCommandText): a plain `git push` or
+ * `gh pr create` that the hook already treats as a review on GitHub, checked on this machine first: a single command
+ * of plain ASCII, at most 1024 bytes, with no chaining, pipes, variables or substitutions, and no credential found in
+ * it. Only the hook's runtime call carries it, with the plain hash, so the source-control quiet of the learned pattern
+ * engine can read the branch and flags. `MARROW_HOOK_COMMAND_TEXT=off` keeps every command hash-only. Every other
+ * command sends only its hash.
  *
  * Before hashing, a normalized form is built (whitespace and quoting
  * normalized) in which:
@@ -134,6 +139,21 @@ export declare function normalizeShellCommand(command: string, deadline?: number
  * word ever leaves the machine.
  */
 export declare function deployCommandText(command: string): string | null;
+/**
+ * The normalized text of a plain `git push` or `gh pr create`, for the source-control quiet of the learned pattern
+ * engine, or null. Only for the host's Bash tool with one string command (no `cmd`, no argument vector, no Monitor or
+ * PowerShell call, no cut input); the host's raw text and the normalized text are both printable ASCII without a
+ * forbidden character (so no chain, quote trick, variable, glob or look-alike); normalizing replaced nothing (no secret
+ * marker, not truncated, no quoting signature) and found one program, git or gh; and the text starts with one of the
+ * two heads. The hook's own class (`review on github`) is checked by the one caller that sends the text.
+ */
+export declare function sourceControlCommandText(event: {
+    tool_name?: unknown;
+    tool_input?: unknown;
+}, text: string, state: {
+    truncated: boolean;
+    sigs: readonly string[];
+}, programs: readonly string[]): string | null;
 /** runOptionsKey as a standalone identity (no deadline), for the exact target of a call (hook-contract exactHookTarget). */
 export declare function shellToolRunOptionsKey(event: ToolEvent): string | null;
 /**
@@ -157,10 +177,16 @@ export declare function keyedTargetHash(parts: unknown): string | null;
  * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a machine with neither a
  * device salt nor a usable host-approval state (exactSalt) give a random nonce: the action matches
  * nothing (it is asked again). `salt` is a test seam (undefined: the device salt).
+ * A plain push or pull request (sourceControlCommandText) keeps the plain hash at every call site; only a caller that
+ * passes `sendCommandText` (the hook's runtime call, for a review on GitHub) also gets its text as `command`.
+ * `MARROW_HOOK_COMMAND_TEXT=off` in the hook's environment gives the keyed hash and no text, as before, and so does
+ * `claudeCodeBash: false` (the hook's runtime call for any host event other than a raw Claude Code Bash call).
  */
 export declare function normalizedHookAction(event: ToolEvent, options?: {
     deadlineAt?: number;
     salt?: Buffer | null;
+    sendCommandText?: boolean;
+    claudeCodeBash?: boolean;
 }): NormalizedHookAction;
 export {};
 //# sourceMappingURL=normalized-action.d.ts.map
