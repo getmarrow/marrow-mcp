@@ -1866,9 +1866,15 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   const lifecycle = recordLifecycleEvent({ apiKey: resolved.apiKey, baseUrl, event: preActionEvent }).catch(() => null);
   // Normalizing has its own share of the host's budget: past it the action is
   // a truncated placeholder, so the hook still answers (deny first) in time.
-  const normalizedAction = normalizedHookAction(source, {
+  // A plain push or pull request the hook treats as a review on GitHub also sends its text, on the runtime call only, for
+  // the source-control quiet of the learned pattern engine; the hold keeps the same plain hash without the text.
+  const sendCommandText = classified.action === 'classified Bash action: review on github';
+  const runtimeAction = normalizedHookAction(source, {
     deadlineAt: Math.min(Date.now() + 750, (holdContext.deadlineAt ?? Number.POSITIVE_INFINITY) - 1_000),
+    sendCommandText,
   });
+  const { command: _sentText, ...heldInput } = runtimeAction.tool_input as Record<string, unknown>;
+  const normalizedAction = sendCommandText ? { ...runtimeAction, tool_input: heldInput } as typeof runtimeAction : runtimeAction;
   // The decision and gate receipt this control path holds, so a denial can close them.
   const held: HeldDecision = { decisionId: null, gateReceiptId: null };
   // Set once the runtime gate has answered. A later network or 5xx failure (decision, permit issue
@@ -1885,7 +1891,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       surfaces: classified.surfaces,
       // The exact command or tool call (secrets removed), so Marrow binds the
       // gate and any approval to this action, not to its coarse class.
-      normalized_action: normalizedAction,
+      normalized_action: runtimeAction,
       // Without a risk level the runtime may take its low-risk fast path, whose
       // non-durable fast_gate receipt can never back an action permit.
       ...(enforcementRequired ? { risk_level: classified.risk } : {}),

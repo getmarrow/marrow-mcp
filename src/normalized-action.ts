@@ -30,7 +30,12 @@ import { keyClassOf } from './key-class';
  * most one environment flag with a DEPLOY_ENV_VALUE value, nothing else, and
  * no secret replaced) is also sent as `tool_input.command`, exactly as typed
  * (for example `sst deploy --stage production`), so the service can judge the
- * deploy target. Every other command sends only its hash.
+ * deploy target. For one kind of command the text is also sent (sourceControlCommandText): a plain `git push` or
+ * `gh pr create` that the hook already treats as a review on GitHub, checked on this machine first: a single command
+ * of plain ASCII, at most 1024 bytes, with no chaining, pipes, variables or substitutions, and no credential found in
+ * it. Only the hook's runtime call carries it, with the plain hash, so the source-control quiet of the learned pattern
+ * engine can read the branch and flags. `MARROW_HOOK_COMMAND_TEXT=off` keeps every command hash-only. Every other
+ * command sends only its hash.
  *
  * Before hashing, a normalized form is built (whitespace and quoting
  * normalized) in which:
@@ -1509,6 +1514,45 @@ export function deployCommandText(command: string): string | null {
   return normalizedWords(words, trimmed);
 }
 
+/** The two heads whose normalized text may be sent: a plain push and a plain pull request. */
+const SOURCE_CONTROL_HEADS = ['git push ', 'gh pr create '];
+/** Characters that chain, substitute, expand, redirect, escape, comment or assign: any one of them sends no text. */
+const SOURCE_CONTROL_FORBIDDEN = ';&|`$()<>\\{}[]*?~!#=^';
+
+/** 1 to 1024 characters, each printable ASCII (0x20-0x7E, so one byte each) and none of SOURCE_CONTROL_FORBIDDEN. */
+function plainSourceControlBytes(text: string): boolean {
+  if (text.length < 1 || text.length > 1024) return false;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || code > 0x7e || SOURCE_CONTROL_FORBIDDEN.includes(text[i])) return false;
+  }
+  return true;
+}
+
+/**
+ * The normalized text of a plain `git push` or `gh pr create`, for the source-control quiet of the learned pattern
+ * engine, or null. Only for the host's Bash tool with one string command (no `cmd`, no argument vector, no Monitor or
+ * PowerShell call, no cut input); the host's raw text and the normalized text are both printable ASCII without a
+ * forbidden character (so no chain, quote trick, variable, glob or look-alike); normalizing replaced nothing (no secret
+ * marker, not truncated, no quoting signature) and found one program, git or gh; and the text starts with one of the
+ * two heads. The hook's own class (`review on github`) is checked by the one caller that sends the text.
+ */
+export function sourceControlCommandText(
+  event: { tool_name?: unknown; tool_input?: unknown },
+  text: string,
+  state: { truncated: boolean; sigs: readonly string[] },
+  programs: readonly string[],
+): string | null {
+  const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input as Record<string, unknown> : null;
+  if (event.tool_name !== 'Bash' || input === null || typeof input.command !== 'string' || 'cmd' in input) return null;
+  if ((event as { input_truncated?: unknown }).input_truncated !== undefined) return null;
+  if (shellCommandToolText(event as Parameters<typeof shellCommandToolText>[0]) !== null) return null;
+  if (!plainSourceControlBytes(input.command) || !plainSourceControlBytes(text)) return null;
+  if (state.truncated || state.sigs.length > 0) return null;
+  const head = SOURCE_CONTROL_HEADS.find((words) => text.startsWith(words));
+  return head !== undefined && programs.length === 1 && programs[0] === head.split(' ')[0] ? text : null;
+}
+
 /** The words as the normalized form writes them (single spaces), launcher included. */
 function normalizedWords(_toolWords: string[], trimmed: string): string {
   return trimmed.split(/[ \t]+/).join(' ');
@@ -1783,8 +1827,11 @@ export function keyedTargetHash(parts: unknown): string | null {
  * 1 MB). Input a host adapter cut or dropped, input over 1 MB and a machine with neither a
  * device salt nor a usable host-approval state (exactSalt) give a random nonce: the action matches
  * nothing (it is asked again). `salt` is a test seam (undefined: the device salt).
+ * A plain push or pull request (sourceControlCommandText) keeps the plain hash at every call site; only a caller that
+ * passes `sendCommandText` (the hook's runtime call, for a review on GitHub) also gets its text as `command`.
+ * `MARROW_HOOK_COMMAND_TEXT=off` in the hook's environment gives the keyed hash and no text, as before.
  */
-export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: number; salt?: Buffer | null } = {}): NormalizedHookAction {
+export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: number; salt?: Buffer | null; sendCommandText?: boolean } = {}): NormalizedHookAction {
   const deadline = options.deadlineAt ?? Date.now() + DEFAULT_NORMALIZE_MS;
   const state = newExactness(deadline);
   const toolName = normalizeHookToolName(event.tool_name) || 'tool';
@@ -1809,7 +1856,8 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
   let plain = false;
   let placeholder = false;
   try {
-    ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state));
+    const commandText = process.env.MARROW_HOOK_COMMAND_TEXT === 'off' ? 'off' : options.sendCommandText === true ? 'send' : 'hash';
+    ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state, commandText));
   } catch (error) {
     if (!(error instanceof NormalizationLimit)) throw error;
     action = { tool_kind: kind, tool_name: hostToolName, tool_input: {}, truncated: true };
@@ -1844,7 +1892,7 @@ function inputAction(base: Omit<NormalizedHookAction, 'tool_input'>, input: unkn
   return { action: withExactness(action, state), hashField: 'input_sha256', preimage, plain: false };
 }
 
-function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], hostToolName: string, state: Exactness): BuiltAction {
+function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], hostToolName: string, state: Exactness, commandText: 'off' | 'hash' | 'send'): BuiltAction {
   if (kind === 'mcp') {
     return inputAction({ tool_kind: 'mcp', tool_name: hostToolName }, event.tool_input, state);
   }
@@ -1872,6 +1920,8 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
       : `shell-tool+run\n${JSON.stringify(hostToolName)}\n${runOptions}`;
     // An exact action also hashes its quoting (never for a truncated one: a secret's characters stay out of it).
     const preimage = `${HASH_VERSION}\n${domain}\n${state.truncated || !state.sigs.length ? text : `${text}\n${JSON.stringify(state.sigs)}`}`;
+    // A plain push or pull request: the plain hash wherever it is computed; the text only for a caller that sends it.
+    const sourceControlText = commandText === 'off' ? null : sourceControlCommandText(event, text, state, programs);
     return {
       action: withExactness({
         tool_kind: 'shell',
@@ -1880,13 +1930,15 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
         tool_input: {
           command_sha256: sha256(preimage),
           ...(deployText !== null && deployText === text ? { command: deployText } : {}),
+          ...(sourceControlText !== null && commandText === 'send' ? { command: sourceControlText } : {}),
         },
       }, state),
       hashField: 'command_sha256',
       preimage,
-      // Only the grammar-bound deploy text is sent in clear, so only its hash may stay plain (the service binds a deploy
-      // word for word). The run options in the preimage must be numbers or booleans: any other value takes the keyed form.
-      plain: deployText !== null && deployText === text && !state.truncated && runOptionsScalar(event),
+      // Only the grammar-bound deploy text and a plain push or pull request are sent in clear, so only their hash may
+      // stay plain (the service binds them word for word). The run options in the preimage must be numbers or booleans:
+      // any other value takes the keyed form.
+      plain: (deployText !== null && deployText === text && !state.truncated && runOptionsScalar(event)) || sourceControlText !== null,
     };
   }
   if (kind === 'edit') {

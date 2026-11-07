@@ -172,8 +172,11 @@ test('D2: H1-H5 (printf/echo word joins, trailing CR, lone CR) are different act
   assert.equal(same(norm(bash('git status\r\n')), norm(bash('git status\n'))), true);
   assert.equal(norm(bash('git status\r\n')).truncated, undefined);
   // The allowed equal forms stay equal (same meaning): Codex argv vs string, tab vs space, description.
-  assert.equal(same(norm({ tool_name: 'Bash', tool_input: { command: ['git', 'push', 'origin', 'a b'] } }), norm(bash(`git push origin 'a b'`))), true);
-  assert.equal(same(norm(bash('git\tpush origin main')), norm(bash('git push origin main'))), true);
+  assert.equal(same(norm({ tool_name: 'Bash', tool_input: { command: ['git', 'commit', '-m', 'a b'] } }), norm(bash(`git commit -m 'a b'`))), true);
+  assert.equal(same(norm(bash('git\tcommit -m main')), norm(bash('git commit -m main'))), true);
+  // A plain push takes the plain hash (source-control text, Bash string only): its argv and tab forms stay keyed, so they differ.
+  assert.equal(same(norm({ tool_name: 'Bash', tool_input: { command: ['git', 'push', 'origin', 'a b'] } }), norm(bash(`git push origin 'a b'`))), false);
+  assert.equal(same(norm(bash('git\tpush origin main')), norm(bash('git push origin main'))), false);
   assert.equal(same(norm({ tool_name: 'Bash', tool_input: { command: 'make deploy', description: 'a' } }), norm({ tool_name: 'Bash', tool_input: { command: 'make deploy', description: 'b' } })), true);
 });
 
@@ -529,7 +532,11 @@ test('every truncation site has an exact-pass decision (grep count against the l
 
 test('V1 (unit): v3 keys never equal the v2 keys of the same text', () => {
   const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
-  for (const command of ['wrangler deploy --env production', 'git push origin main', 'kubectl delete namespace prod']) {
+  // A plain push takes the plain v3 hash (its text is sent for the source-control quiet); never the v2 one.
+  const plainPush = norm(bash('git push origin main')).tool_input.command_sha256;
+  assert.equal(plainPush, sha(`marrow-normalized-action-v3\nshell\n${normalizeShellCommand('git push origin main').text}`));
+  assert.notEqual(plainPush, sha(`marrow-normalized-action-v2\nshell\n${normalizeShellCommand('git push origin main').text}`));
+  for (const command of ['wrangler deploy --env production', 'git push --force origin main;', 'kubectl delete namespace prod']) {
     const v3 = norm(bash(command)).tool_input.command_sha256;
     const keyed = require('./support/keyed-text-hash.cjs');
     assert.equal(v3, keyed.shellMac(keyed.deviceSalt(), 'Bash', normalizeShellCommand(command).text));
