@@ -1829,9 +1829,10 @@ export function keyedTargetHash(parts: unknown): string | null {
  * nothing (it is asked again). `salt` is a test seam (undefined: the device salt).
  * A plain push or pull request (sourceControlCommandText) keeps the plain hash at every call site; only a caller that
  * passes `sendCommandText` (the hook's runtime call, for a review on GitHub) also gets its text as `command`.
- * `MARROW_HOOK_COMMAND_TEXT=off` in the hook's environment gives the keyed hash and no text, as before.
+ * `MARROW_HOOK_COMMAND_TEXT=off` in the hook's environment gives the keyed hash and no text, as before, and so does
+ * `claudeCodeBash: false` (the hook's runtime call for any host event other than a raw Claude Code Bash call).
  */
-export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: number; salt?: Buffer | null; sendCommandText?: boolean } = {}): NormalizedHookAction {
+export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: number; salt?: Buffer | null; sendCommandText?: boolean; claudeCodeBash?: boolean } = {}): NormalizedHookAction {
   const deadline = options.deadlineAt ?? Date.now() + DEFAULT_NORMALIZE_MS;
   const state = newExactness(deadline);
   const toolName = normalizeHookToolName(event.tool_name) || 'tool';
@@ -1856,7 +1857,12 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
   let plain = false;
   let placeholder = false;
   try {
-    const commandText = process.env.MARROW_HOOK_COMMAND_TEXT === 'off' ? 'off' : options.sendCommandText === true ? 'send' : 'hash';
+    // A caller that knows the call is not a raw Claude Code Bash call (claudeCodeBash false) gets the 3.9.111 action, and
+    // so does, without that fact, a hook process run as any entrypoint but a Claude Code one (another host's or generic).
+    const entrypoint = String(process.argv[2] ?? '');
+    const claudeCodeBash = options.claudeCodeBash ?? !(entrypoint.endsWith('hook') && !entrypoint.startsWith('claude-'));
+    const commandText = process.env.MARROW_HOOK_COMMAND_TEXT === 'off' || !claudeCodeBash ? 'off'
+      : options.sendCommandText === true ? 'send' : 'hash';
     ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state, commandText));
   } catch (error) {
     if (!(error instanceof NormalizationLimit)) throw error;

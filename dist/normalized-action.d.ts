@@ -179,12 +179,14 @@ export declare function keyedTargetHash(parts: unknown): string | null;
  * nothing (it is asked again). `salt` is a test seam (undefined: the device salt).
  * A plain push or pull request (sourceControlCommandText) keeps the plain hash at every call site; only a caller that
  * passes `sendCommandText` (the hook's runtime call, for a review on GitHub) also gets its text as `command`.
- * `MARROW_HOOK_COMMAND_TEXT=off` in the hook's environment gives the keyed hash and no text, as before.
+ * `MARROW_HOOK_COMMAND_TEXT=off` in the hook's environment gives the keyed hash and no text, as before, and so does
+ * `claudeCodeBash: false` (the hook's runtime call for any host event other than a raw Claude Code Bash call).
  */
 export declare function normalizedHookAction(event: ToolEvent, options?: {
     deadlineAt?: number;
     salt?: Buffer | null;
     sendCommandText?: boolean;
+    claudeCodeBash?: boolean;
 }): NormalizedHookAction;
 export {};
 //# sourceMappingURL=normalized-action.d.ts.map

@@ -1869,9 +1869,16 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   // A plain push or pull request the hook treats as a review on GitHub also sends its text, on the runtime call only, for
   // the source-control quiet of the learned pattern engine; the hold keeps the same plain hash without the text.
   const sendCommandText = classified.action === 'classified Bash action: review on github';
+  // Only a raw Claude Code Bash call keeps that plain hash and text: this hook runs as the Claude Code entrypoint and the
+  // host's own event, before any adapter rename, names the Bash tool with the input no adapter rebuilt. Every other host,
+  // an unknown entrypoint or a renamed call gets the 3.9.111 action (keyed hash, no text).
+  const raw = rawEvent && typeof rawEvent === 'object' && !Array.isArray(rawEvent) ? rawEvent as Record<string, unknown> : null;
+  const claudeCodeBash = process.argv[2] === 'claude-pre-action-hook' && identity.harness === 'claude-code' && raw !== null
+    && raw.tool_name === 'Bash' && source.tool_name === 'Bash' && raw.tool_input === source.tool_input;
   const runtimeAction = normalizedHookAction(source, {
     deadlineAt: Math.min(Date.now() + 750, (holdContext.deadlineAt ?? Number.POSITIVE_INFINITY) - 1_000),
     sendCommandText,
+    claudeCodeBash,
   });
   const { command: _sentText, ...heldInput } = runtimeAction.tool_input as Record<string, unknown>;
   const normalizedAction = sendCommandText ? { ...runtimeAction, tool_input: heldInput } as typeof runtimeAction : runtimeAction;
