@@ -383,7 +383,8 @@ function holdsMoreThanCredential(value: string): boolean {
 function cutCredential(value: string, state: Exactness): string {
   const at = credentialValueEnd(value, 0, true);
   if (at >= value.length) {
-    if (holdsMoreThanCredential(value)) return withheld(state, value);
+    // F-3: a value with a space may hold text after the credential: withheld, so the keyed exact pass tells such actions apart.
+    if (holdsMoreThanCredential(value) || /\s/.test(value)) return withheld(state, value);
     return secretFor(value);
   }
   state.truncated = true; // exact: certain (the credential before the field; the rest is scanned in the same pass)

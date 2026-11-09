@@ -267,7 +267,8 @@ function holdsMoreThanCredential(value) {
 function cutCredential(value, state) {
     const at = credentialValueEnd(value, 0, true);
     if (at >= value.length) {
-        if (holdsMoreThanCredential(value))
+        // F-3: a value with a space may hold text after the credential: withheld, so the keyed exact pass tells such actions apart.
+        if (holdsMoreThanCredential(value) || /\s/.test(value))
             return withheld(state, value);
         return secretFor(value);
     }
