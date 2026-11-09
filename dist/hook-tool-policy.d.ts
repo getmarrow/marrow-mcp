@@ -141,4 +141,6 @@ export declare function splitHeredocs(command: string): {
         quoted: boolean;
     }>;
 } | null;
+/** The text (tool, program, target) of a Bash call whose risk words sit only in data; null (oversize first) keeps toolClassificationText. */
+export declare function dataWordText(event: ToolPolicyEvent, cwd?: string): string | null;
 //# sourceMappingURL=hook-tool-policy.d.ts.map

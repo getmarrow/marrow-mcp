@@ -28,6 +28,7 @@ exports.shellCommandToolRunOptions = shellCommandToolRunOptions;
 exports.isWholeInputNativeTool = isWholeInputNativeTool;
 exports.isRunLaterPath = isRunLaterPath;
 exports.splitHeredocs = splitHeredocs;
+exports.dataWordText = dataWordText;
 const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
@@ -1201,4 +1202,115 @@ function splitHeredocs(command) {
     return quote || pending.length ? null : { head, bodies };
 }
 function lineEnd(text, from) { const stop = text.indexOf('\n', from); return stop < 0 ? text.length : stop; }
+// Data words: the args of a literal echo/printf or a heredoc body fed to a literal cat, written by one `>`/`>>` to an ordinary file in a known folder.
+const DATA_TEXT_ENDINGS = new Set(['md', 'mdx', 'txt', 'log', 'json', 'jsonl', 'csv', 'tsv', 'yaml', 'yml', 'toml', 'html', 'css', 'svg', 'ndjson', 'out', 'err', 'text', 'rst', 'adoc']);
+const DATA_TEXT_FOLDERS = new Set(['notes', 'records', 'logs', 'reports', 'results', 'tmp', 'scratch', 'docs', 'briefs', 'handoff']);
+const DATA_TOOL_INPUT_KEYS = new Set(['command', 'description', 'timeout', 'timeout_ms', 'run_in_background']);
+const DATA_FOLDER_KEYS = new Set(['cwd', 'workdir', 'working_directory', 'directory']);
+// The one resolved folder every source names (options, event, process, tool_input folder keys); null if any differs or a key is unknown.
+function dataWordFolder(event, cwd) {
+    const values = [cwd, event.cwd, process.cwd()];
+    const input = asRecord(event.tool_input);
+    for (const key of Object.keys(input ?? {})) {
+        if (DATA_FOLDER_KEYS.has(key))
+            values.push(input?.[key]);
+        else if (!DATA_TOOL_INPUT_KEYS.has(key))
+            return null;
+    }
+    let folder = null;
+    for (const value of values) {
+        if (value === undefined)
+            continue;
+        if (typeof value !== 'string' || !value.startsWith('/'))
+            return null;
+        let real;
+        try {
+            real = (0, node_fs_1.realpathSync)(value);
+        }
+        catch {
+            return null;
+        }
+        if ((folder !== null && real !== folder) || real.split('/').some((part) => part.startsWith('.')))
+            return null;
+        folder = real;
+    }
+    return folder;
+}
+// A plain data file in the folder (no link out, hard link, mode x, shebang, dot part or run-later name); names are judged before any open.
+function ordinaryDataFile(target, folder) {
+    if (/[*?[\]{}~$`\\]/.test(target))
+        return false;
+    let real = node_path_1.posix.normalize(target.startsWith('/') ? target : node_path_1.posix.join(folder, target));
+    try {
+        real = node_path_1.posix.join((0, node_fs_1.realpathSync)(node_path_1.posix.dirname(real)), node_path_1.posix.basename(real));
+    }
+    catch {
+        return false;
+    }
+    try {
+        if ((0, node_fs_1.lstatSync)(real).isSymbolicLink())
+            real = (0, node_fs_1.realpathSync)(real);
+    }
+    catch (error) {
+        if (error?.code !== 'ENOENT' || lstatExists(real))
+            return false;
+    }
+    if (!real.startsWith(`${folder}/`) || isRunLaterPath(real))
+        return false;
+    const parts = real.slice(folder.length + 1).split('/');
+    const name = parts[parts.length - 1];
+    const dot = name.lastIndexOf('.');
+    if (parts.some((part) => part.startsWith('.')) || name.startsWith('package'))
+        return false;
+    if (dot > 0 ? !DATA_TEXT_ENDINGS.has(name.slice(dot + 1)) : !(parts.length > 1 && DATA_TEXT_FOLDERS.has(parts[parts.length - 2])))
+        return false;
+    try {
+        const stat = (0, node_fs_1.statSync)(real);
+        if (!stat.isFile() || stat.nlink > 1 || (stat.mode & 0o111) !== 0)
+            return false;
+        const fd = (0, node_fs_1.openSync)(real, 'r');
+        const first = Buffer.alloc(2);
+        try {
+            (0, node_fs_1.readSync)(fd, first, 0, 2, 0);
+        }
+        finally {
+            (0, node_fs_1.closeSync)(fd);
+        }
+        return first.toString('latin1') !== '#!';
+    }
+    catch (error) {
+        return error?.code === 'ENOENT';
+    }
+}
+function lstatExists(path) { try {
+    (0, node_fs_1.lstatSync)(path);
+    return true;
+}
+catch {
+    return false;
+} }
+/** The text (tool, program, target) of a Bash call whose risk words sit only in data; null (oversize first) keeps toolClassificationText. */
+function dataWordText(event, cwd) {
+    const tool = normalizeHookToolName(event.tool_name);
+    if (!SHELL_TOOLS.has(tool) || event[exports.SHELL_DIALECT] !== undefined)
+        return null;
+    const command = shellCommandText(event);
+    if (command.length > MAX_SHELL_ANALYSIS_BYTES || isProtectedShellMutation(command))
+        return null;
+    const split = splitHeredocs(command);
+    const segments = split && split.bodies.length <= 1 ? parseShellSegments(split.head) : null;
+    if (!split || segments?.length !== 1 || /[&<]|>\||\d>/.test(split.head))
+        return null;
+    const [{ words: [program, ...args], outputs, inputs, expansions }] = segments;
+    if (expansions.length || inputs.length || outputs.length !== 1)
+        return null;
+    if (split.bodies.length) {
+        if (program !== 'cat' || args.length || (!split.bodies[0].quoted && /[$`\\]/.test(split.bodies[0].body)))
+            return null;
+    }
+    else if ((program !== 'echo' && program !== 'printf') || !args.length || args.some((arg) => /^-|[*?[\]{}~$`]/.test(arg)))
+        return null;
+    const folder = dataWordFolder(event, cwd);
+    return folder && ordinaryDataFile(outputs[0], folder) ? `${tool} ; ${program} ${outputs[0]}` : null;
+}
 //# sourceMappingURL=hook-tool-policy.js.map

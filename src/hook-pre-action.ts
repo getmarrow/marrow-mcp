@@ -63,6 +63,7 @@ import {
   policyReadsAllWords,
   readEquivalent,
   toolClassificationText,
+  dataWordText,
   toolPolicyReading,
 } from './hook-tool-policy';
 import {
@@ -1051,7 +1052,8 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   // and every risk category it has without the hold.
   const controlRoute = controlRouteCall(event);
   const command = shellGoverned ? hookToolCommand(event) : '';
-  const input = toolClassificationText(event).toLowerCase();
+  // Risk words only in a data position of a plain write to an ordinary file are data (dataWordText); every other call keeps its full text.
+  const input = (dataWordText(event, options.cwd) ?? toolClassificationText(event)).toLowerCase();
   // A look-alike of Marrow's own tool is never read-only, whatever its verb.
   // The PostToolUse path passes no check (options.postTool): the mapper is never loaded for it.
   const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment.bind(null, options.cwd);
