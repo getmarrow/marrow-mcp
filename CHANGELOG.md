@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Hook (data words): risk words that sit only in data (the arguments of a literal `echo`/`printf`, or a heredoc body fed to a literal `cat`) and are written by one `>`/`>>` to an ordinary data file in a known working folder no longer make the call ask; the real verb, target, flags, chaining and folder still decide. Writes into run-later files (git config and hooks, CI workflows, package and build scripts, hook and tool config, shell rc and scheduler files) and `source`/`.` now ask by name with no risk word needed. A credential value with a space inside one shell word is withheld, so commands that differ after it get different keys.
+
 ## 3.9.112
 
 3.9.111 was tagged but never published (a release-run test flake); 3.9.112 carries the same changes plus a test-only fix.
