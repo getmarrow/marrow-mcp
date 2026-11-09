@@ -1143,7 +1143,7 @@ function isRunLaterPath(path) {
 }
 /** A command without its heredoc bodies (`head`: what bash runs); null if a body or quote is left open or a form is not modelled (`<<<`, `<<-`). */
 function splitHeredocs(command) {
-    if (command.length > MAX_SHELL_ANALYSIS_BYTES || command.includes("$'"))
+    if (command.length > MAX_SHELL_ANALYSIS_BYTES)
         return null;
     let head = '';
     const bodies = [];
@@ -1289,13 +1289,13 @@ function lstatExists(path) { try {
 catch {
     return false;
 } }
-/** The text (tool, program, target) of a Bash call whose risk words sit only in data; null (oversize first) keeps toolClassificationText. */
+/** Text (tool, program, target) of a Bash call whose risk words are only data; null keeps the master text (a real verb or > 8192 bytes first). */
 function dataWordText(event, cwd) {
     const tool = normalizeHookToolName(event.tool_name);
     if (!SHELL_TOOLS.has(tool) || event[exports.SHELL_DIALECT] !== undefined)
         return null;
     const command = shellCommandText(event);
-    if (command.length > MAX_SHELL_ANALYSIS_BYTES || isProtectedShellMutation(command))
+    if (isProtectedShellMutation(command))
         return null;
     const split = splitHeredocs(command);
     const segments = split && split.bodies.length <= 1 ? parseShellSegments(split.head) : null;

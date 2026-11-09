@@ -1014,7 +1014,7 @@ export function isRunLaterPath(path: string): boolean {
 
 /** A command without its heredoc bodies (`head`: what bash runs); null if a body or quote is left open or a form is not modelled (`<<<`, `<<-`). */
 export function splitHeredocs(command: string): { head: string; bodies: Array<{ body: string; quoted: boolean }> } | null {
-  if (command.length > MAX_SHELL_ANALYSIS_BYTES || command.includes("$'")) return null;
+  if (command.length > MAX_SHELL_ANALYSIS_BYTES) return null;
   let head = '';
   const bodies: Array<{ body: string; quoted: boolean }> = [];
   const pending: Array<{ tag: string; quoted: boolean }> = [];
@@ -1121,12 +1121,12 @@ function ordinaryDataFile(target: string, folder: string): boolean {
 
 function lstatExists(path: string): boolean { try { lstatSync(path); return true; } catch { return false; } }
 
-/** The text (tool, program, target) of a Bash call whose risk words sit only in data; null (oversize first) keeps toolClassificationText. */
+/** Text (tool, program, target) of a Bash call whose risk words are only data; null keeps the master text (a real verb or > 8192 bytes first). */
 export function dataWordText(event: ToolPolicyEvent, cwd?: string): string | null {
   const tool = normalizeHookToolName(event.tool_name);
   if (!SHELL_TOOLS.has(tool) || event[SHELL_DIALECT] !== undefined) return null;
   const command = shellCommandText(event);
-  if (command.length > MAX_SHELL_ANALYSIS_BYTES || isProtectedShellMutation(command)) return null;
+  if (isProtectedShellMutation(command)) return null;
   const split = splitHeredocs(command);
   const segments = split && split.bodies.length <= 1 ? parseShellSegments(split.head) : null;
   if (!split || segments?.length !== 1 || /[&<]|>\||\d>/.test(split.head)) return null;

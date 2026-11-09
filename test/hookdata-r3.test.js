@@ -75,6 +75,7 @@ test('PLATFORM_FORMS: one lowered row and one master row per host shape; PowerSh
     assert.equal(decide(lowered).decision, 'allow', host);
     assert.equal(decide(real).decision, 'ask', host);
   }
+  assert.equal(policy.dataWordText({ tool_name: 'Bash', tool_input: { command: FN1 }, cwd: root, [policy.SHELL_DIALECT]: 'powershell' }, root), null, 'a PowerShell twin');
   const ps = R.HOSTS.powershell(FN1); ps.cwd = root;
   assert.equal(decide(ps).decision, 'ask');
   assert.equal(decide({ ...bash(FN1), tool_name: 'UnknownShell' }).decision, 'ask', 'unknown tool name = master');
@@ -102,6 +103,11 @@ test('R6 working folder (B2): every folder source must agree, be absolute, reada
     assert.equal(decide(bash(FN1, extra)).decision, 'ask', JSON.stringify(Object.keys(extra)));
   }
   assert.equal(decide(bash(FN1, {}, path.join(root, 'notes'))).decision, 'ask', 'event cwd differs from the process folder');
+  fs.writeFileSync(path.join(root, '.github', 'ISSUE_TEMPLATE', 'bug.md'), 'x\n');
+  for (const dir of ['.github', '.github/ISSUE_TEMPLATE']) {
+    const at = path.join(root, dir);
+    assert.equal(policy.dataWordText({ tool_name: 'Bash', tool_input: { command: `echo "${W}" >> bug.md`, workdir: at }, cwd: at }, at), null, `a dot folder: ${dir}`);
+  }
   assert.equal(decide({ tool_name: 'Bash', tool_input: { command: FN1 } }).decision, 'allow', 'absent event cwd: the process folder alone');
   assert.equal(policy.dataWordText(bash(FN1), path.join(root, 'notes')), null, 'option cwd differs');
 });
@@ -127,6 +133,15 @@ test('R8 links (B4): a hard link or a symlink target keeps the master answer', (
 });
 function linkHard(target) { const at = path.join(root, `t-hl-${path.basename(target)}.txt`); if (!fs.existsSync(at)) fs.linkSync(path.join(root, target), at); return path.basename(at); }
 function linkSoft(target) { const at = path.join(root, 'notes', `t-sl-${path.basename(target)}.md`); if (!fs.existsSync(at)) fs.symlinkSync(path.join(root, target), at); return `notes/${path.basename(at)}`; }
+
+test('R11 / B6 veto: a real verb in data keeps the master reading and labels (SA9, merge siblings, publish)', () => {
+  for (const [command, want] of [[`cat > records/x.md <<'EOF'\n${W}\ngit push origin master\nEOF`, ['ask', 'deploy', 'production,github']],
+    ['echo "git merge-file .git/config a b" >> notes/x.md', ['ask', 'review', 'github']], ['echo "npm publish now" >> notes/x.md', ['ask', 'publish', 'npm']]]) {
+    assert.equal(policy.dataWordText(bash(command), root), null, command);
+    const answer = decide(bash(command));
+    assert.deepEqual([answer.decision, answer.type, answer.surfaces], want, command);
+  }
+});
 
 test('B6 merge siblings and git writers: never a data sink, a run-later target asks', () => {
   for (const command of ['git merge-file .git/config a b', 'git checkout-index -f .git/config', 'git restore --source HEAD~1 package.json', 'git checkout -- Makefile']) {
@@ -165,7 +180,7 @@ test('splitHeredocs follows quotes and comments: an operator inside them is not 
 
 test('R5 targets and section 4: only an ordinary data file in the folder is a data target', () => {
   const ok = ['notes/NOTES.md', 'logs/run.log', './notes/x.md', `${root}/records/x.md`, 'docs/x.txt', 'out.json', 'notes/brief', 'notes/Makefile.md', 'notes/deploy-notes.md'];
-  const no = ['package.json', 'package-lock.json', 'notes/package.json', 'Makefile', 'x.mk', 'notes/run.sh', 'gen.py', 'x.ts', 'notes/exec.md', 'notes/bang.md', '.hidden.md',
+  const no = ['package.json', 'package-lock.json', 'notes/package.json', 'package-x.json', 'notes/package-notes.md', 'Makefile', 'x.mk', 'notes/run.sh', 'gen.py', 'x.ts', 'notes/exec.md', 'notes/bang.md', '.hidden.md',
     '.github/ISSUE_TEMPLATE/bug.md', 'README', 'x.bin', '../x.md', '/dev/null', '/proc/self/fd/1', '/etc/hosts', '~/notes.md', 'notes/*.md', 'notes/{a,b}.md',
     'notes/$F.md', 'missing/x.md', 'tsconfig.json', 'docker-compose.yml', 'vite.config.ts', '.env.local'];
   for (const target of ok) assert.notEqual(policy.dataWordText(bash(`echo "plain" >> ${target}`), root), null, target);
