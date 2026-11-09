@@ -131,4 +131,14 @@ export declare function shellCommandToolText(event: ToolPolicyEvent): string | n
 export declare function shellCommandToolRunOptions(event: ToolPolicyEvent): Record<string, unknown> | null;
 /** A Claude Code built-in keyed by its whole input (a native git equivalent, Skill, or a call whose words are not actions). */
 export declare function isWholeInputNativeTool(event: ToolPolicyEvent): boolean;
+/** Whether a path names a run-later file: git, CI, package and build scripts, hook and tool config, shell and scheduler files. */
+export declare function isRunLaterPath(path: string): boolean;
+/** A command without its heredoc bodies (`head`: what bash runs); null if a body or quote is left open or a form is not modelled (`<<<`, `<<-`). */
+export declare function splitHeredocs(command: string): {
+    head: string;
+    bodies: Array<{
+        body: string;
+        quoted: boolean;
+    }>;
+} | null;
 //# sourceMappingURL=hook-tool-policy.d.ts.map

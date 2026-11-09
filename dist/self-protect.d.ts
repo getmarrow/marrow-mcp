@@ -15,4 +15,6 @@ export declare function protectedMention(text: string): SelfProtectKind | null;
  * read-only: a Read of ~/.bashrc stays a read.
  */
 export declare function selfProtectKind(event: ToolPolicyEvent, cwd?: string): SelfProtectKind | null;
+/** RAISE (owner A141): whether a shell call writes a run-later file by any write form, no word needed (heredoc bodies are not read). */
+export declare function writesRunLaterFile(event: ToolPolicyEvent, cwd?: string): boolean;
 //# sourceMappingURL=self-protect.d.ts.map

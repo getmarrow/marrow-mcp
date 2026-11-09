@@ -38,7 +38,7 @@ import {
 } from './host-approval';
 import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
 import { recordSessionBypass } from './owner-bypass';
-import { selfProtectKind } from './self-protect';
+import { selfProtectKind, writesRunLaterFile } from './self-protect';
 import { armKeylessNotice } from './keyless-notice';
 import { marrowSessionId } from './session-id';
 import { allowNokeyFallbackCreate } from './host-approval-state';
@@ -1085,7 +1085,9 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
     || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
   );
   const full: ClassificationParts = { tool, type, surfaces, readOnly, protected: protectedAction };
-  const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected])].filter((surface): surface is string => surface !== null);
+  // RAISE (A141): a write into a run-later file is held by its name where nothing else holds or protects the call.
+  const runLater = !protectedAction && !selfProtected && !controlRoute && writesRunLaterFile(event, options.cwd) ? 'persistence' : null;
+  const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected, runLater])].filter((surface): surface is string => surface !== null);
   return held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
 }
 

@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
@@ -982,3 +982,87 @@ export function isWholeInputNativeTool(event: ToolPolicyEvent): boolean {
   // A Monitor or PowerShell call is keyed as shell text only when it is a plain one.
   return ((reading.exact && reading.bashLabel) || reading.dialect === 'powershell') && shellCommandToolText(event) === null;
 }
+
+// Run-later files (owner A141): a write into one is held by its name, whatever words the command holds. Byte-exact, no case or Unicode folding.
+const RUN_LATER_NAMES = new Set(['.gitmodules', '.gitattributes', '.gitconfig', '.gitlab-ci.yml', 'azure-pipelines.yml', 'Jenkinsfile', 'bitbucket-pipelines.yml',
+  '.travis.yml', 'package.json', 'package.yaml', 'package-lock.json', 'Makefile', 'makefile', 'GNUmakefile', 'justfile', 'Justfile', 'Taskfile.yml', 'Taskfile.yaml',
+  'Rakefile', 'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml', 'tsconfig.json', '.npmrc', '.pnpmrc', 'pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini',
+  'noxfile.py', 'pom.xml', 'composer.json', 'Cargo.toml', 'build.rs', 'conftest.py', '.pre-commit-config.yaml', '.envrc', '.tool-versions', '.bashrc', '.bash_profile',
+  '.profile', '.zshrc', '.zshenv', '.zprofile', '.zlogin', 'crontab']);
+const RUN_LATER_PREFIXES = ['.yarnrc', '.lefthook', '.env', 'build.gradle', 'jest.config', 'vitest.config', 'webpack.config', 'vite.config', 'rollup.config'];
+const RUN_LATER_ENDINGS = ['.mk', '.config.js', '.config.cjs', '.config.mjs', '.config.ts', '.service', '.timer', '.plist'];
+const RUN_LATER_FOLDERS = new Set(['.git', '.husky', '.circleci', '.buildkite', 'buildkite', '.claude', '.cursor', '.codex', '.marrow', '.ssh', 'cron.d', 'systemd', 'LaunchAgents', 'LaunchDaemons']);
+
+/** Whether a path names a run-later file: git, CI, package and build scripts, hook and tool config, shell and scheduler files. */
+export function isRunLaterPath(path: string): boolean {
+  const parts = path.split('/').filter((part) => part && part !== '.');
+  const name = parts[parts.length - 1] ?? '';
+  if (path.startsWith('/etc/')) return true;
+  for (let at = 0; at < parts.length - 1; at += 1) {
+    const [part, next] = [parts[at], parts[at + 1]];
+    if (RUN_LATER_FOLDERS.has(part) || part.startsWith('.lefthook')) return true;
+    if (part === '.github' && (next === 'workflows' || next === 'actions' || (at === parts.length - 2 && name === 'dependabot.yml'))) return true;
+    if (part === '.vscode' && at === parts.length - 2 && (name === 'tasks.json' || name === 'settings.json')) return true;
+    if (part === '.config' && (next === 'git' || next === 'systemd' || next === 'fish')) return true;
+  }
+  if (RUN_LATER_NAMES.has(name) || RUN_LATER_PREFIXES.some((prefix) => name.startsWith(prefix)) || RUN_LATER_ENDINGS.some((ending) => name.endsWith(ending))) return true;
+  const folder = posix.dirname(path);
+  if (!path.startsWith('/') || (folder === homeDirectory() && name.endsWith('rc'))) return path.startsWith('/');
+  // A bare repository keeps its config next to HEAD and objects.
+  try { return name === 'config' && existsSync(posix.join(folder, 'HEAD')) && existsSync(posix.join(folder, 'objects')); } catch { return false; }
+}
+
+/** A command without its heredoc bodies (`head`: what bash runs); null if a body or quote is left open or a form is not modelled (`<<<`, `<<-`). */
+export function splitHeredocs(command: string): { head: string; bodies: Array<{ body: string; quoted: boolean }> } | null {
+  if (command.length > MAX_SHELL_ANALYSIS_BYTES || command.includes("$'")) return null;
+  let head = '';
+  const bodies: Array<{ body: string; quoted: boolean }> = [];
+  const pending: Array<{ tag: string; quoted: boolean }> = [];
+  let quote = '';
+  let index = 0;
+  while (index < command.length) {
+    const char = command[index];
+    // Quoted text, an escaped character and a comment are copied as they are: no operator starts inside them.
+    const comment = !quote && char === '#' && (index === 0 || ' \t\n;&|()<>'.includes(command[index - 1]));
+    const step = comment ? lineEnd(command, index) - index : char === '\\' && quote !== "'" ? 2 : 1;
+    if (quote || comment || char === '\\' || char === "'" || char === '"') {
+      quote = quote ? (char === quote ? '' : quote) : comment || char === '\\' ? '' : char;
+      head += command.slice(index, index + step);
+      index += step;
+      continue;
+    }
+    if (char === '<' && command[index + 1] === '<') {
+      if (command[index + 2] === '<' || command[index + 2] === '-') return null;
+      let at = index + 2;
+      while (command[at] === ' ' || command[at] === '\t') at += 1;
+      const open = command[at] === "'" || command[at] === '"' ? command[at] : '';
+      const start = at + open.length;
+      let end = start;
+      while (end < command.length && /[A-Za-z0-9_]/.test(command[end])) end += 1;
+      const after = end + open.length;
+      if (end === start || /[0-9]/.test(command[start]) || (open && command[end] !== open) || (after < command.length && !' \t\n;&|>'.includes(command[after]))) return null;
+      pending.push({ tag: command.slice(start, end), quoted: open !== '' });
+      head += ' ';
+      index = after;
+      continue;
+    }
+    head += char;
+    index += 1;
+    if (char !== '\n' || !pending.length) continue;
+    for (const doc of pending) {
+      const lines: string[] = [];
+      for (;;) {
+        if (index >= command.length) return null;
+        const line = command.slice(index, lineEnd(command, index));
+        index += line.length + 1;
+        if (line === doc.tag) break;
+        lines.push(line);
+      }
+      bodies.push({ body: lines.join('\n'), quoted: doc.quoted });
+    }
+    pending.length = 0;
+  }
+  return quote || pending.length ? null : { head, bodies };
+}
+
+function lineEnd(text: string, from: number): number { const stop = text.indexOf('\n', from); return stop < 0 ? text.length : stop; }
