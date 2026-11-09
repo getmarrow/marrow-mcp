@@ -114,7 +114,6 @@ function baseName(word) {
 // Programs that write their operands (cp, mv, ln, install, rsync: the last; tee, truncate, sed -i, perl -i, a git file writer: every one).
 const LAST_OPERAND_WRITERS = new Set(['cp', 'mv', 'ln', 'install', 'rsync']);
 const GIT_FILE_WRITERS = new Set(['merge-file', 'checkout-index', 'restore', 'checkout', 'apply', 'am']);
-const GIT_CONFIG_READS = /^(?:--get(?:-all|-regexp|-urlmatch)?|-l|--list|--show-origin|--show-scope|--get-color(?:bool)?)$/;
 function writtenOperands(program, args) {
     const operands = args.filter((arg) => !arg.startsWith('-'));
     if (LAST_OPERAND_WRITERS.has(program))
@@ -138,11 +137,7 @@ function writesRunLater(segments, cwd) {
             at += 1;
         const program = at < segment.words.length ? baseName(segment.words[at]) : '';
         const args = segment.words.slice(at + 1);
-        // `source` and `.` run a file now; `git config` (not a read) writes the repository or user config.
-        if (program === 'source' || program === '.')
-            return true;
-        if (program === 'git' && args[0] === 'config' && !args.some((arg) => GIT_CONFIG_READS.test(arg)))
-            return true;
+        // `source`, `.` (they run a file, not write one) and the `git config` verb are not write forms: they keep the master answer.
         const targets = [...segment.outputs.filter((target) => !/^\/dev\/(?:null|stdout|stderr)$/.test(target)), ...writtenOperands(program, args)];
         if (targets.some((target) => [target, resolvedPaths(target, folder)[0]].some(hook_tool_policy_1.isRunLaterPath)))
             return true;

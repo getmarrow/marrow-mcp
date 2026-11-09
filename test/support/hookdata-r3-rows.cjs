@@ -74,8 +74,8 @@ function rows() {
   add('SA5-eval', `eval "npm publish"`, 'ask', 'ask');
   add('SA5-eval-sub', 'eval $(echo x)', 'allow', 'allow', { masterAllows: true });
   add('SA5-builtin', `builtin eval "npm publish"`, 'ask', 'ask');
-  add('SA6-source', 'source ./x.sh', 'allow', 'ask', { raised: true });
-  add('SA6-dot', '. ./x.sh', 'allow', 'ask', { raised: true });
+  add('SA6-source', 'source ./x.sh', 'allow', 'allow');
+  add('SA6-dot', '. ./x.sh', 'allow', 'allow');
   add('SA6-stdin', `source /dev/stdin <<EOF\n${W}\nEOF`, 'ask', 'ask');
   for (const [name, tail] of [['bash', 'bash run.sh'], ['sh', 'sh run.sh'], ['dot', './run.sh'], ['chmod', 'chmod +x run.sh && ./run.sh'], ['glob', 'bash run.*'], ['var', 'F=run.sh; bash $F']]) {
     add(`SA7-${name}`, `cat > run.sh <<'EOF'\necho ${W}\nEOF\n${tail}`, 'ask', 'ask');

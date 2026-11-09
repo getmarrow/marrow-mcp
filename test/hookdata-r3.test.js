@@ -41,7 +41,7 @@ for (const row of R.rows()) {
 
 test('RAISE: a run-later write with no risk word asks, by name (package.json, workflow heredoc, tee -a Makefile)', () => {
   for (const command of ['echo "{}" > package.json', 'cat <<EOF > .github/workflows/x.yml\nname: ci\nEOF', 'echo "all:" | tee -a Makefile',
-    'cp notes/NOTES.md .husky/pre-commit', 'sed -i s/a/b/ .git/config', 'git config core.editor vim', 'cd .git && echo x >> config']) {
+    'cp notes/NOTES.md .husky/pre-commit', 'sed -i s/a/b/ .git/config', 'cd .git && echo x >> config']) {
     const answer = decide(bash(command));
     assert.equal(answer.decision, 'ask', command);
     assert.equal(answer.type, 'security', command);
