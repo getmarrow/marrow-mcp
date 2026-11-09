@@ -20,7 +20,7 @@ const savedHome = process.env.HOME;
 const savedCwd = process.cwd();
 process.env.HOME = path.join(root, 'home');
 process.chdir(root);
-test.after(() => { process.chdir(savedCwd); process.env.HOME = savedHome; fs.rmSync(root, { recursive: true, force: true }); });
+test.after(() => { process.chdir(savedCwd); process.env.HOME = savedHome; fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(`${root}-out`, { recursive: true, force: true }); });
 
 const W = R.W;
 const decide = (event) => R.answer({ classifyTool }, event);
@@ -54,7 +54,7 @@ test('RAISE: a run-later write with no risk word asks, by name (package.json, wo
 
 test('RAISE: no new hold for reads, mentions or ordinary writes', () => {
   for (const command of ['cat package.json', 'grep -n test Makefile', 'echo "see package.json" >> notes/NOTES.md', 'git add package.json', 'git config --get user.name',
-    'ls .github/workflows', 'echo x >> notes/plain.md', 'cp a.txt b.txt', 'git restore notes/NOTES.md']) {
+    'ls .github/workflows', 'echo x >> notes/plain.md', 'cp a.txt b.txt', 'git restore notes/NOTES.md', 'sed -n 1p Makefile', 'cp Makefile notes/x.md']) {
     assert.equal(writesRunLaterFile(bash(command), root), false, command);
   }
 });
@@ -106,8 +106,11 @@ test('R6 working folder (B2): every folder source must agree, be absolute, reada
   fs.writeFileSync(path.join(root, '.github', 'ISSUE_TEMPLATE', 'bug.md'), 'x\n');
   for (const dir of ['.github', '.github/ISSUE_TEMPLATE']) {
     const at = path.join(root, dir);
-    assert.equal(policy.dataWordText({ tool_name: 'Bash', tool_input: { command: `echo "${W}" >> bug.md`, workdir: at }, cwd: at }, at), null, `a dot folder: ${dir}`);
+    process.chdir(at);
+    try { assert.equal(policy.dataWordText({ tool_name: 'Bash', tool_input: { command: `echo "${W}" >> bug.md`, workdir: at }, cwd: at }, at), null, `a dot folder: ${dir}`); }
+    finally { process.chdir(root); }
   }
+  assert.equal(policy.dataWordText(bash(FN1, { cwd: '.' }), root), null, 'a relative folder key, even one naming the same folder');
   assert.equal(decide({ tool_name: 'Bash', tool_input: { command: FN1 } }).decision, 'allow', 'absent event cwd: the process folder alone');
   assert.equal(policy.dataWordText(bash(FN1), path.join(root, 'notes')), null, 'option cwd differs');
 });
@@ -176,6 +179,9 @@ test('splitHeredocs follows quotes and comments: an operator inside them is not 
   assert.deepEqual(split.bodies, [{ body: 'one', quoted: true }]);
   assert.equal(split.head, `cat   >> notes/a.md\nls`);
   assert.equal(policy.splitHeredocs('cat <<EOF\nx\nEOF\r'), null, 'a CRLF end tag is not an end tag');
+  assert.equal(policy.splitHeredocs('cat > notes/x.md <<\nx\n\n'), null, 'an empty tag');
+  assert.equal(policy.splitHeredocs('cat <<< x > notes/x.md'), null, 'a here-string');
+  assert.equal(policy.splitHeredocs('cat <<-EOF > notes/x.md\nx\nEOF'), null, 'a tab-stripping heredoc');
 });
 
 test('R5 targets and section 4: only an ordinary data file in the folder is a data target', () => {
@@ -184,6 +190,8 @@ test('R5 targets and section 4: only an ordinary data file in the folder is a da
     '.github/ISSUE_TEMPLATE/bug.md', 'README', 'x.bin', '../x.md', '/dev/null', '/proc/self/fd/1', '/etc/hosts', '~/notes.md', 'notes/*.md', 'notes/{a,b}.md',
     'notes/$F.md', 'missing/x.md', 'tsconfig.json', 'docker-compose.yml', 'vite.config.ts', '.env.local'];
   for (const target of ok) assert.notEqual(policy.dataWordText(bash(`echo "plain" >> ${target}`), root), null, target);
+  fs.mkdirSync(`${root}-out/notes`, { recursive: true });
+  no.push(`${root}-out/notes/x.md`);
   for (const target of no) assert.equal(policy.dataWordText(bash(`echo "plain" >> ${target}`), root), null, target);
 });
 

@@ -1032,7 +1032,6 @@ export function splitHeredocs(command: string): { head: string; bodies: Array<{ 
       continue;
     }
     if (char === '<' && command[index + 1] === '<') {
-      if (command[index + 2] === '<' || command[index + 2] === '-') return null;
       let at = index + 2;
       while (command[at] === ' ' || command[at] === '\t') at += 1;
       const open = command[at] === "'" || command[at] === '"' ? command[at] : '';
@@ -1040,7 +1039,7 @@ export function splitHeredocs(command: string): { head: string; bodies: Array<{ 
       let end = start;
       while (end < command.length && /[A-Za-z0-9_]/.test(command[end])) end += 1;
       const after = end + open.length;
-      if (end === start || /[0-9]/.test(command[start]) || (open && command[end] !== open) || (after < command.length && !' \t\n;&|>'.includes(command[after]))) return null;
+      if (end === start || (open && command[end] !== open) || (after < command.length && !' \t\n;&|>'.includes(command[after]))) return null;
       pending.push({ tag: command.slice(start, end), quoted: open !== '' });
       head += ' ';
       index = after;
