@@ -1201,10 +1201,21 @@ function splitHeredocs(command) {
 }
 function lineEnd(text, from) { const stop = text.indexOf('\n', from); return stop < 0 ? text.length : stop; }
 // Data words: the args of a literal echo/printf or a heredoc body fed to a literal cat, written by one `>`/`>>` to an ordinary file in a known folder.
-const DATA_TEXT_ENDINGS = new Set(['md', 'mdx', 'txt', 'log', 'json', 'jsonl', 'csv', 'tsv', 'yaml', 'yml', 'toml', 'html', 'css', 'svg', 'ndjson', 'out', 'err', 'text', 'rst', 'adoc']);
+// A .toml, .yml or .yaml file is never a data file: CI, deploy and workspace tools read many of them (wrangler.toml, fly.toml, pnpm-workspace.yaml).
+const DATA_TEXT_ENDINGS = new Set(['md', 'mdx', 'txt', 'log', 'json', 'jsonl', 'csv', 'tsv', 'html', 'css', 'svg', 'ndjson', 'out', 'err', 'text', 'rst', 'adoc']);
 const DATA_TEXT_FOLDERS = new Set(['notes', 'records', 'logs', 'reports', 'results', 'tmp', 'scratch', 'docs', 'briefs', 'handoff']);
 const DATA_TOOL_INPUT_KEYS = new Set(['command', 'description', 'timeout', 'timeout_ms', 'run_in_background']);
 const DATA_FOLDER_KEYS = new Set(['cwd', 'workdir', 'working_directory', 'directory']);
+// Run-later names are judged on the lower-case base name (a case-insensitive disk opens Package.json as package.json), with the JSON
+// siblings of the run-later list. A base name that is not plain ASCII (a look-alike, an accent, a joiner: NFKC folding never makes it
+// ordinary), holds a colon or ends in a dot or a space is never ordinary.
+const RUN_LATER_JSON_SIBLINGS = new Set(['deno.json', 'vercel.json', 'firebase.json', 'tsconfig.build.json']);
+const RUN_LATER_LOWER_NAMES = new Set([...RUN_LATER_NAMES].map((name) => name.toLowerCase()));
+function runLaterBaseName(name) {
+    const lower = name.toLowerCase();
+    return /[^ -~]|:|[. ]$/.test(name) || lower.startsWith('package') || RUN_LATER_LOWER_NAMES.has(lower) || RUN_LATER_JSON_SIBLINGS.has(lower)
+        || RUN_LATER_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
 // The one resolved folder every source names (options, event, process, tool_input folder keys); null if any differs or a key is unknown.
 function dataWordFolder(event, cwd) {
     const values = [cwd, event.cwd, process.cwd()];
@@ -1258,7 +1269,7 @@ function ordinaryDataFile(target, folder) {
     const parts = real.slice(folder.length + 1).split('/');
     const name = parts[parts.length - 1];
     const dot = name.lastIndexOf('.');
-    if (parts.some((part) => part.startsWith('.')) || name.startsWith('package'))
+    if (parts.some((part) => part.startsWith('.')) || runLaterBaseName(name))
         return false;
     if (dot > 0 ? !DATA_TEXT_ENDINGS.has(name.slice(dot + 1)) : !(parts.length > 1 && DATA_TEXT_FOLDERS.has(parts[parts.length - 2])))
         return false;
@@ -1309,6 +1320,11 @@ function dataWordText(event, cwd) {
     else if ((program !== 'echo' && program !== 'printf') || !args.length || args.some((arg) => /^-|[*?[\]{}~$`]/.test(arg)))
         return null;
     const folder = dataWordFolder(event, cwd);
-    return folder && ordinaryDataFile(outputs[0], folder) ? `${tool} ; ${program} ${outputs[0]}` : null;
+    if (!folder || !ordinaryDataFile(outputs[0], folder))
+        return null;
+    // The description and every other tool_input value are not data: where master cannot parse the command it reads them, so they stay.
+    const others = JSON.stringify({ ...asRecord(event.tool_input), command: undefined });
+    const rest = shellAnalysis(command) || others === '{}' ? '' : ` ${others}`;
+    return `${tool} ; ${program} ${outputs[0]}${rest}`;
 }
 //# sourceMappingURL=hook-tool-policy.js.map

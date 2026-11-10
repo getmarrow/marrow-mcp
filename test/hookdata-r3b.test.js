@@ -75,3 +75,30 @@ test('a run form or the git config verb before or after a run-later write still 
     assert.equal(writesRunLaterFile(bash(command), root), true, command);
   }
 });
+
+// Audit fix round: case spellings, look-alike spellings and sibling run-later files with data words, and words only in the tool
+// description, give master's decision; mixed chains, repeated redirects, variables and odd name endings stay master or stricter.
+for (const row of P.cutRows()) {
+  test(`run-later files judged folded ${row.cls} ${row.id.replace(/\n/g, ' ')}: master ${row.master}`, () => {
+    const answer = R.answer({ classifyTool }, P.cutEvent(row, root));
+    assert.equal(answer.decision, row.master, row.id);
+    if (row.master === 'ask') assert.notDeepEqual([answer.type, answer.surfaces], ['process', 'workspace'], `${row.id}: never the lowered class`);
+    if (!row.input) assert.equal(R.answer({ classifyTool }, P.cutEvent(row, root, 'codex')).decision, row.master, `${row.id} (codex shape)`);
+  });
+}
+
+test('the run-later hold by name is unchanged: case spellings and siblings with no risk word keep master (no new raise)', () => {
+  for (const name of ['Package.json', 'PACKAGE.json', 'cargo.toml', 'wrangler.toml', 'deno.json', 'vercel.json', 'tsconfig.build.json', 'fly.toml']) {
+    const event = bash(`echo x >> ${name}`);
+    assert.equal(writesRunLaterFile(event, root), false, name);
+    assert.equal(R.answer({ classifyTool }, event).decision, 'allow', name);
+  }
+});
+
+test('data words to an ordinary file still stop asking beside the fold: lower-case and ASCII names, a description with no risk word', () => {
+  for (const command of [`echo "${R.W}" >> notes/NOTES.md`, `echo "${R.W}" >> notes/pkg-notes.md`, `echo "${R.W}" >> "notes/my notes.md"`,
+    `cat >> notes/NOTES.md <<'EOF'\n${R.W}\nEOF`, `echo "${R.W}" >> reports/results.csv`]) {
+    const answer = R.answer({ classifyTool }, { ...R.HOSTS.claude(command), cwd: root });
+    assert.deepEqual([answer.decision, answer.type, answer.surfaces], ['allow', 'process', 'workspace'], command);
+  }
+});

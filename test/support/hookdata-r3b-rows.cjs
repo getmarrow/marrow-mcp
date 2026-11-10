@@ -122,4 +122,93 @@ function record(dist, root) {
   return out;
 }
 
-module.exports = { W, fixture, rows, record, HOSTS };
+// Audit fix round: run-later file names are judged folded; look-alike spellings, sibling run-later files and words in the tool
+// description keep the master answer. Each row: master = master's decision (recorded from a master build), head = the audited
+// head's decision (012ed3c4). Hook INPUT strings only: nothing here is ever run.
+const CASE_NAMES = ['Package.json', 'PACKAGE.json', 'Tsconfig.json', 'Composer.json', 'Docker-compose.yml', 'taskfile.yml', 'Pyproject.toml', 'cargo.toml',
+  'Azure-pipelines.yml'];
+const LOOK_ALIKES = ['p\u0430ckage.json', '\uff50ackage.json'];
+const SIBLINGS = ['wrangler.toml', 'deno.json', 'vercel.json', 'netlify.toml', 'firebase.json', 'pnpm-workspace.yaml', 'tsconfig.build.json'];
+const WORDS = { W, R: 'release to prod', S: 'rotate the secret token' };
+const SINKS = {
+  'echo-dq': (w, t) => `echo "${w}" >> ${t}`,
+  'echo-sq': (w, t) => `echo '${w}' > ${t}`,
+  printf: (w, t) => `printf '%s\\n' "${w}" >> ${t}`,
+  'cat-q': (w, t) => `cat >> ${t} <<'EOF'\n${w}\nEOF`,
+  'cat-u': (w, t) => `cat > ${t} <<EOF\n${w}\nEOF`,
+};
+const PLAIN_HEREDOC = `cat >> notes/NOTES.md <<'EOF'\nplain words only\nEOF`;
+
+function cutRows() {
+  const r = [];
+  const add = (id, cls, command, master, head, extra = {}) => r.push({ id, cls, command, master, head, ...extra });
+  for (const name of [...CASE_NAMES, ...LOOK_ALIKES]) {
+    const cls = LOOK_ALIKES.includes(name) ? 'F-B' : 'F-A';
+    add(`RLspell|"${name}"|w`, cls, `echo "${W}" >> "${name}"`, 'ask', 'allow');
+    add(`RLspell-bare|"${name}"|w`, cls, `echo "${W}" >> ${name}`, 'ask', 'allow');
+  }
+  for (const [target, cls] of [['Package.json', 'F-A'], ['wrangler.toml', 'FU-1']]) {
+    for (const [sink, make] of Object.entries(SINKS)) {
+      for (const [set, words] of Object.entries(WORDS)) {
+        for (const folder of ['event-root', 'workdir-root']) add(`gen:${sink}|${set}|none|${target}|${folder}`, cls, make(words, target), 'ask',
+          cls === 'FU-1' && sink.startsWith('cat') && set !== 'R' ? 'ask' : 'allow', { folder });
+      }
+    }
+  }
+  add('N56', 'F-A', `echo "${W}" >> Package.json`, 'ask', 'allow');
+  add('N57', 'FU-1', `echo "${W}" >> wrangler.toml`, 'ask', 'allow');
+  for (const [id, description] of [['N58', 'deploy production'], ['desc-deploy-verb', 'wrangler deploy --env production'],
+    ['desc-force-push', 'git push --force origin main'], ['desc-production', 'update the production database']]) {
+    add(id, 'F-C', PLAIN_HEREDOC, 'ask', 'allow', { input: { description } });
+  }
+  add('desc-timeout-words', 'F-C', PLAIN_HEREDOC, 'ask', 'allow', { input: { description: 'x', timeout: 'deploy production' } });
+  add('desc-echo-parsed', 'F-C', 'echo "plain words only" >> notes/NOTES.md', 'allow', 'allow', { input: { description: 'deploy production' } });
+  for (const name of [...SIBLINGS, 'Wrangler.TOML', 'DENO.json', 'fly.toml', 'serverless.yml', 'render.yaml', 'app.yaml']) {
+    // The head reads the wrangler program word in a wrangler.toml target name, so those rows already ask there.
+    const wrangler = name.toLowerCase() === 'wrangler.toml';
+    add(`sib-echo|${name}`, 'FU-1', `echo "${W}" >> ${name}`, 'ask', name === 'Wrangler.TOML' ? 'ask' : 'allow');
+    add(`sib-printf|${name}`, 'FU-1', `printf '%s\\n' "${W}" >> ${name}`, 'ask', name === 'Wrangler.TOML' ? 'ask' : 'allow');
+    add(`sib-heredoc|${name}`, 'FU-1', `cat >> ${name} <<'EOF'\n${W}\nEOF`, 'ask', wrangler ? 'ask' : 'allow');
+    add(`sib-tee|${name}`, 'FU-1', `echo "${W}" | tee -a ${name}`, 'allow', 'allow');
+  }
+  for (const name of ['Package.JSON', 'PACKAGE.json']) {
+    const write = `echo "${W}" >> ${name}`;
+    for (const [chain, command] of [['and', `${write} && ls`], ['semi', `ls; ${write}`], ['or', `${write} || true`], ['pipe', `${write} | cat`],
+      ['subshell', `(${write})`], ['bash-c', `bash -c '${write.replace(/"/g, '')}'`]]) add(`mixed-${chain}|${name}`, 'mixed', command, 'ask', 'ask');
+  }
+  add('mixed-repeat-last', 'mixed', `echo "${W}" > notes/a.md > Package.json`, 'ask', 'ask');
+  add('mixed-repeat-first', 'mixed', `echo "${W}" > Package.json > notes/a.md`, 'ask', 'ask');
+  add('mixed-var', 'mixed', `F=Package.json; echo "${W}" >> $F`, 'ask', 'ask');
+  add('mixed-var-bare', 'mixed', `echo "${W}" >> $F`, 'ask', 'ask');
+  add('mixed-trailing-dot', 'mixed', `echo "${W}" >> "Package.json."`, 'ask', 'ask');
+  add('mixed-trailing-space', 'mixed', `echo "${W}" >> "Package.json "`, 'ask', 'ask');
+  add('mixed-noext-trailing-space', 'mixed', `echo "${W}" >> "notes/Makefile "`, 'ask', 'allow');
+  add('mixed-noext-trailing-dot', 'mixed', `echo "${W}" >> "notes/Jenkinsfile."`, 'ask', 'ask');
+  add('mixed-noext-case', 'mixed', `echo "${W}" >> notes/JenkinsFile`, 'ask', 'allow');
+  add('mixed-nfd', 'mixed', `echo "${W}" >> "pa\u0301ckage.json"`, 'ask', 'allow');
+  add('mixed-nfd-notes', 'mixed', `echo "${W}" >> "notes/re\u0301sume\u0301.md"`, 'ask', 'allow');
+  add('mixed-zwj', 'mixed', `echo "${W}" >> "pack\u200dage.json"`, 'ask', 'ask');
+  add('mixed-zwj-noext', 'mixed', `echo "${W}" >> "notes/Make\u200dfile"`, 'ask', 'ask');
+  add('mixed-fullwidth-notes', 'mixed', `echo "${W}" >> "\uff4eotes.md"`, 'ask', 'allow');
+  add('mixed-prefix-case', 'mixed', `echo "${W}" >> Jest.config.json`, 'ask', 'allow');
+  add('mixed-package-prefix-case', 'mixed', `echo "${W}" >> Package-notes.json`, 'ask', 'allow');
+  // Run-later folders with no dot part: the run-later list inside the ordinary test still decides (master answer).
+  for (const dir of ['buildkite', 'systemd', 'cron.d', 'LaunchAgents']) {
+    add(`folder-${dir}`, 'mixed', `echo "${W}" >> ${dir}/notes.json`, 'ask', 'ask', { dirs: [dir] });
+    // Through a linked folder only the ordinary test sees the run-later folder (the hold by name reads the path as written).
+    add(`folder-link-${dir}`, 'mixed', `echo "${W}" >> lnk-${dir}/notes.json`, 'ask', 'ask', { dirs: [dir], links: [[`lnk-${dir}`, dir]] });
+  }
+  add('mixed-colon-stream', 'mixed', `echo "${W}" >> "notes/Makefile:x"`, 'ask', 'allow');
+  return r;
+}
+
+/** The event of a cut row in a fixture root: the folder comes from the event cwd or from tool_input.workdir. */
+function cutEvent(row, root, host = 'claude') {
+  for (const dir of row.dirs ?? []) fs.mkdirSync(path.join(root, dir), { recursive: true });
+  for (const [from, to] of row.links ?? []) if (!fs.existsSync(path.join(root, from))) fs.symlinkSync(path.join(root, to), path.join(root, from));
+  const event = R.HOSTS[host](row.command, { ...(row.folder === 'workdir-root' ? { workdir: root } : {}), ...(row.input ?? {}) });
+  event.cwd = root;
+  return event;
+}
+
+module.exports = { W, fixture, rows, record, HOSTS, cutRows, cutEvent, SIBLINGS };
