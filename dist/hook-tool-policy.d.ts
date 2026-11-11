@@ -53,6 +53,12 @@ export type EnvironmentPrintCheck = (command: string) => boolean;
  * file a command may read.
  */
 export declare function shellSegmentVerdict(segment: ShellSegment, cwd?: string | null, dialect?: ShellDialect): ShellSegmentVerdict;
+export type ProtectedProgramClass = 'security' | 'publish' | 'deploy';
+declare function listFileText(path: string): string | null;
+export declare function protectedProgramClasses(command: string, cwd?: string | null, io?: {
+    read: typeof listFileText;
+    now: () => number;
+}): ProtectedProgramClass[];
 /**
  * True when the policy's own reading is the whole answer for a shell command: it parses, every simple command in it is a recognised read-only
  * program (a `cat`, `grep`, `ls`, `jq`, `ps`, never a wrapper such as `bash -c`, `eval`, `sudo`, `ssh`, `xargs` or a program that writes), and no word
