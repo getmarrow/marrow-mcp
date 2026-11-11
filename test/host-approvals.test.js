@@ -1143,7 +1143,8 @@ test('HIGH-N1: when Marrow is slow, a held action on Codex, Cursor, Grok and Gem
         // and the host's own approval step decides (recorded as not observed).
         const passedToHost = decision === 'allow' && Object.values(h.state()?.holds || {}).some((hold) => hold.not_observed === true);
         assert.ok(['deny', 'ask'].includes(decision) || passedToHost, `${label} at ${delay} ms: ${decision} ${out.stdout}`);
-        assert.ok(out.ms < 4_600, `${label} at ${delay} ms took ${out.ms} ms`);
+        // Cursor's hook budget is 9 s (the others 4 s or less); a slow answer is still cut and held well inside it.
+        assert.ok(out.ms < (label === 'cursor' ? 9_000 : 4_600), `${label} at ${delay} ms took ${out.ms} ms`);
         assert.doesNotMatch(out.stdout, /offline|is allowed/i, `${label} at ${delay} ms`);
       } finally { h.cleanup(); }
     }
@@ -2059,7 +2060,7 @@ test('R5 INFO: Codex measures its budget from when the host spawned the hook, so
   close(preToolDeadline('codex', () => 900) - start(), 1_700, '2.6 s from spawn');
   close(preToolDeadline('codex', () => 2_500) - start(), 1_000, 'at least 1 s for this process');
   close(preToolDeadline('codex', () => { throw new Error('x'); }) - start(), 2_000, 'an error reading /proc');
-  close(preToolDeadline('cursor', () => 2_500) - start(), 4_000, 'other hosts unchanged');
+  close(preToolDeadline('cursor', () => 2_500) - start(), 9_000, 'Cursor: 9 s from process start, no head start counted');
 });
 
 // ---------------------------------------------------------------- Fix round 6 re-audit (ed41267): collision matrix at the hook

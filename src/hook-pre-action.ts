@@ -1404,6 +1404,29 @@ export async function closeDeniedDecision(
   }
 }
 
+/**
+ * MARROW_HOOK_TIMING=1 (exactly that value) writes one stderr line per control call, `marrow-hook-timing route=<name> ms=<n>`,
+ * and one `route=total` line when the process exits. Names are fixed literals and n is whole milliseconds: never a URL,
+ * header, body, agent id, key or command text. Any other value, or none, runs no timing code.
+ * The lines are kept in memory and written once, in the 'exit' event: the answer is on stdout and the exit code is
+ * set by then, and no stderr fault (a closed reader, a bad fd, a throwing write, a full pipe) can delay or change
+ * either; a failed write drops the lines (its async error never fires after 'exit'), never retried into stdout.
+ */
+let timingLines: string[] | undefined;
+function writeTimingLines(): void {
+  try {
+    const text = `${timingLines?.join('') ?? ''}marrow-hook-timing route=total ms=${Math.round(process.uptime() * 1000)}\n`;
+    process.stderr.on('error', () => { /* dropped */ });
+    process.stderr.write(text);
+  } catch { /* a timing line never changes the answer */ }
+}
+async function timed<T>(route: 'runtime' | 'think' | 'issue' | 'verify', call: () => Promise<T>): Promise<T> {
+  if (process.env.MARROW_HOOK_TIMING !== '1') return call();
+  if (!timingLines) { timingLines = []; process.once('exit', writeTimingLines); }
+  const started = Date.now();
+  try { return await call(); } finally { timingLines.push(`marrow-hook-timing route=${route} ms=${Math.round(Date.now() - started)}\n`); }
+}
+
 async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs = PRE_ACTION_CONTROL_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1890,7 +1913,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   const reach = { gateAnswered: false };
   const highRisk = classified.protected || classified.risk === 'high';
   const control = async (signal: AbortSignal): Promise<PreActionControlResult> => {
-    const runtime = await marrowAgentRuntime(resolved.apiKey, baseUrl, {
+    const runtime = await timed('runtime', () => marrowAgentRuntime(resolved.apiKey, baseUrl, {
       action: classified.action,
       target: classified.target,
       type: classified.type,
@@ -1902,7 +1925,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       // Without a risk level the runtime may take its low-risk fast path, whose
       // non-durable fast_gate receipt can never back an action permit.
       ...(enforcementRequired ? { risk_level: classified.risk } : {}),
-    }, sessionId, agentId, signal);
+    }, sessionId, agentId, signal));
     reach.gateAnswered = true;
     const heldIds = [...new Set([runtime.decision_id, runtime.completion_contract?.decision_id, runtime.runtime_authorization?.decision_id]
       .filter((value): value is string => typeof value === 'string' && SAFE_DECISION_ID.test(value)))];
@@ -1930,7 +1953,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     }
     let decisionId = distinctRuntimeIds[0] || null;
     if (creationRequired === true) {
-      const decision = await marrowThink(resolved.apiKey, baseUrl, {
+      const decision = await timed('think', () => marrowThink(resolved.apiKey, baseUrl, {
         action: classified.action,
         target: classified.target,
         surfaces: classified.surfaces,
@@ -1939,7 +1962,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
         // Think rejects any source_meta key outside channel, client, agent_id, task_depth and
         // user_intent with HTTP 400. The gate receipt and correlation bind on the permit below.
         ...(identity.harness !== 'mcp-client' ? { source_meta: { client: identity.harness } } : {}),
-      }, sessionId, agentId, signal);
+      }, sessionId, agentId, signal));
       decisionId = SAFE_DECISION_ID.test(decision.decision_id) ? decision.decision_id : null;
       // The runtime receipt is not bound to a decision Think creates; closing with it is a scope mismatch.
       held.decisionId = decisionId;
@@ -1953,7 +1976,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
         ...(enforcementRequired ? { enforcementError: 'Marrow runtime did not provide a valid decision and did not authorize decision creation.' } : {}),
       };
     }
-    const issued = await marrowEnforcement(resolved.apiKey, baseUrl, {
+    const issued = await timed('issue', () => marrowEnforcement(resolved.apiKey, baseUrl, {
       operation: 'issue',
       action: classified.action,
       action_type: classified.type,
@@ -1964,12 +1987,12 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       gate_receipt_id: gateReceiptId,
       proof_requirements: runtime.proof_pack?.fields || [],
       surfaces: classified.surfaces,
-    }, sessionId, agentId, signal);
+    }, sessionId, agentId, signal));
     const issuedPermitId = typeof issued.permit_id === 'string' ? issued.permit_id.trim() : '';
     if (!issued.permit || !issuedPermitId) {
       return { runtime, permit: { ...issued, verified: false }, protectedRisk: enforcementRequired, enforcementError: 'Marrow did not issue a complete action permit.' };
     }
-    const verified = await marrowEnforcement(resolved.apiKey, baseUrl, {
+    const verified = await timed('verify', () => marrowEnforcement(resolved.apiKey, baseUrl, {
       operation: 'verify',
       // Verify must declare the permit's protocol; issue defaults to version 1.
       protocol_version: issued.protocol_version === 2 ? 2 : 1,
@@ -1980,7 +2003,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       surfaces: classified.surfaces,
       correlation_id: correlation,
       harness: identity.harness,
-    }, sessionId, agentId, signal);
+    }, sessionId, agentId, signal));
     const verifiedPermitId = typeof verified.permit_id === 'string' ? verified.permit_id.trim() : '';
     const verifiedExactly = verified.verified === true && verifiedPermitId === issuedPermitId;
     return {
@@ -1990,8 +2013,9 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       ...(verifiedExactly ? {} : { enforcementError: 'Marrow permit verification did not match the issued permit.' }),
     };
   };
-  // Codex and Cursor stop the hook at 5 s (and Codex then lets the call run):
-  // the control path ends inside the hook's budget, leaving time to answer.
+  // Codex stops the hook at 5 s and then lets the call run; Cursor honours the hooks.json timeout
+  // (15 s as installed, 9 s used here) and blocks the tool when it kills the hook. Either way the
+  // control path ends inside the hook's budget, leaving time to answer.
   const controlTimeoutMs = Math.max(1_000, Math.min(PRE_ACTION_CONTROL_TIMEOUT_MS, remainingMs(holdContext) - 400));
   const [result] = await Promise.all([
     withTimeout(control, controlTimeoutMs).catch((error: unknown): PreActionControlResult => (

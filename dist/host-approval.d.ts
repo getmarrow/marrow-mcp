@@ -28,8 +28,9 @@ export declare const HOST_APPROVAL_REQUEST_TIMEOUT_MS = 4000;
  * One total time budget for a pre-tool hook, counted from the start of the
  * hook process and set from each host's real kill timeout as
  * @getmarrow/install configures it: Codex 5 s (it then lets the call run),
- * Cursor 5 s with failClosed, the installer's Grok guard 5 s (it then blocks),
- * Gemini CLI 5 s. The margin covers npx start-up before the process starts.
+ * Cursor 15 s with failClosed (it honours the hooks.json timeout; a hook that
+ * overruns is killed and the tool is blocked), the installer's Grok guard 5 s
+ * (it then blocks), Gemini CLI 5 s. The margin covers npx start-up before the process starts.
  * Cold auth can take 900 ms plus a 1.6 s grace, so the control path keeps
  * room for a slow but healthy Marrow; when the budget still runs out, an
  * action that can be held stays held (never an outage allow).
@@ -51,9 +52,10 @@ export declare function stepTimeoutMs(ctx: {
     deadlineAt?: number;
 }, max: number, reserve?: number): number | null;
 /**
- * Work a post-tool hook does for a held call. Codex and Cursor run these hooks
- * with a 5-second timeout (as @getmarrow/install configures them); a hook cut
- * short keeps its queued report, which a later hook resends.
+ * Work a post-tool hook does for a held call: 4 s on Codex and Cursor, 9 s on
+ * every other host. It is not the pre-tool budget (Cursor's is 9 s there); the
+ * post-tool hook's own kill timeout is the host's, as @getmarrow/install writes
+ * it. A hook cut short keeps its queued report, which a later hook resends.
  */
 export declare function settleBudgetMs(host: ApprovalHost): number;
 export type HoldContext = {
