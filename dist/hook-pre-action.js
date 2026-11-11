@@ -29,6 +29,7 @@ exports.windsurfPreActionDecision = windsurfPreActionDecision;
 exports.geminiPreActionHookOutput = geminiPreActionHookOutput;
 exports.grokPreActionHookOutput = grokPreActionHookOutput;
 exports.preActionHookOutput = preActionHookOutput;
+exports.masterDeniesWithoutVerdict = masterDeniesWithoutVerdict;
 exports.closeDeniedDecision = closeDeniedDecision;
 exports.localApprovalCategories = localApprovalCategories;
 exports.installPreActionHook = installPreActionHook;
@@ -1287,6 +1288,15 @@ legacyServiceAsk = false) {
         },
     };
 }
+/** True when master's own answer to a result without a gate verdict is a denial; any doubt counts as a denial, so master's answer and text stand. */
+function masterDeniesWithoutVerdict(result) {
+    try {
+        return !isMarrowOutage(result) && Boolean(result.protectedRisk) && (!result.runtime || !result.permit?.verified);
+    }
+    catch {
+        return true;
+    }
+}
 function emitDecision(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT, legacyServiceAsk = false) {
     if (harness === 'windsurf') {
         const decision = windsurfPreActionDecision(result);
@@ -2106,6 +2116,15 @@ async function runPreActionHook(input, watch) {
         }
         emitHeldPlan(identity.harness, effective, code);
         await afterAnswer(holdContext, { link: laterLink });
+        return;
+    }
+    // T1: a backend allow never lifts a marrow-control hold: the owner's dialog where a person can answer, the owner text where nobody can;
+    // where master's own answer is a denial (a rejected key or a failed permit), master's denial stands.
+    if (!verdict && classified.surfaces.includes('marrow-control') && !masterDeniesWithoutVerdict(result)) {
+        if (claudePrompt.available && !noPersonAtPrompt(source))
+            emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, { kind: 'ask', promptText: control_routes_1.CONTROL_ROUTE_ASK_TEXT }));
+        else
+            emitLoopGuardDenial(identity.harness, control_routes_1.CONTROL_ROUTE_DENY_TEXT);
         return;
     }
     const emitted = emitDecision(result, identity.harness, claudePrompt);

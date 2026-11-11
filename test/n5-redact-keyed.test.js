@@ -72,7 +72,10 @@ test('N1 and N5 forms (the redactor does not see the value): bindable, but the h
   // The redactor does not see the value (sudo -u root parses `root` as the program; cmd /c and pwsh -c keep their quoted text as one word),
   // so the action stays bindable. Build 2: its hash is the per-install keyed MAC (SPEC section 10.2), so a guessed value cannot be tested offline.
   const value = dummy('alnum', 12);
-  for (const command of [`sudo -u root smbpasswd -a u1 ${value}`, `cmd /c "${value} | smbpasswd -s -a u1"`, `pwsh -c '"${value}" | smbpasswd -s -a u1'`]) {
+  // T1: `sudo -u root` now consumes `root`, so the redactor sees smbpasswd and withholds the value (never binds; the test above covers that form).
+  assert.equal(bash(`sudo -u root smbpasswd -a u1 ${value}`).truncated, true);
+  assert.equal(reaches(bash(`sudo -u root smbpasswd -a u1 ${value}`), value), false);
+  for (const command of [`cmd /c "${value} | smbpasswd -s -a u1"`, `pwsh -c '"${value}" | smbpasswd -s -a u1'`]) {
     const action = bash(command);
     assert.equal(action.truncated, undefined, command.split(' ')[0]);
     assert.equal(reaches({ programs: action.programs }, value), false, 'programs[] holds no clear or case-folded value');

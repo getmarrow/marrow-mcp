@@ -36,7 +36,7 @@ import {
   type HoldPlan,
   type OwnerLinkOutcome,
 } from './host-approval';
-import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
+import { CONTROL_ROUTE_ASK_TEXT, CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
 import { recordSessionBypass } from './owner-bypass';
 import { selfProtectKind } from './self-protect';
 import { armKeylessNotice } from './keyless-notice';
@@ -1332,6 +1332,11 @@ export function preActionHookOutput(
   };
 }
 
+/** True when master's own answer to a result without a gate verdict is a denial; any doubt counts as a denial, so master's answer and text stand. */
+export function masterDeniesWithoutVerdict(result: PreActionControlResult): boolean {
+  try { return !isMarrowOutage(result) && Boolean(result.protectedRisk) && (!result.runtime || !result.permit?.verified); } catch { return true; }
+}
+
 type EmittedDecision = { denied: boolean; reason: string };
 
 function emitDecision(
@@ -2140,6 +2145,13 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     }
     emitHeldPlan(identity.harness, effective, code);
     await afterAnswer(holdContext, { link: laterLink });
+    return;
+  }
+  // T1: a backend allow never lifts a marrow-control hold: the owner's dialog where a person can answer, the owner text where nobody can;
+  // where master's own answer is a denial (a rejected key or a failed permit), master's denial stands.
+  if (!verdict && classified.surfaces.includes('marrow-control') && !masterDeniesWithoutVerdict(result)) {
+    if (claudePrompt.available && !noPersonAtPrompt(source)) emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, { kind: 'ask', promptText: CONTROL_ROUTE_ASK_TEXT }));
+    else emitLoopGuardDenial(identity.harness, CONTROL_ROUTE_DENY_TEXT);
     return;
   }
   const emitted = emitDecision(result, identity.harness, claudePrompt);

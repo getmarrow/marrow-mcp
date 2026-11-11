@@ -199,6 +199,8 @@ export declare function grokPreActionHookOutput(result: PreActionControlResult):
 export declare function preActionHookOutput(result: PreActionControlResult, harness?: 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'grok' | 'windsurf' | 'mcp-client', prompt?: OwnerApprovalPrompt, 
 /** An older service without host approvals: Claude Code asks in its dialog exactly as 3.9.98 did. */
 legacyServiceAsk?: boolean): Record<string, unknown>;
+/** True when master's own answer to a result without a gate verdict is a denial; any doubt counts as a denial, so master's answer and text stand. */
+export declare function masterDeniesWithoutVerdict(result: PreActionControlResult): boolean;
 type HeldDecision = {
     decisionId: string | null;
     gateReceiptId: string | null;
