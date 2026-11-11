@@ -1,7 +1,8 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, normalize } from 'node:path';
-import { isShellTextTool, parseShellSegments, toolTargetPaths } from './hook-tool-policy';
+import { isRunLaterPath, isShellTextTool, parseShellSegments, splitHeredocs, toolTargetPaths } from './hook-tool-policy';
+import type { ShellSegment } from './hook-tool-policy';
 import type { ToolPolicyEvent } from './hook-tool-policy';
 
 /**
@@ -113,6 +114,39 @@ function baseName(word: string): string {
   return cut < 0 ? word : word.slice(cut + 1);
 }
 
+// Programs that write their operands (cp, mv, ln, install, rsync: the last; tee, truncate, sed -i, perl -i, a git file writer: every one).
+const LAST_OPERAND_WRITERS = new Set(['cp', 'mv', 'ln', 'install', 'rsync']);
+const GIT_FILE_WRITERS = new Set(['merge-file', 'checkout-index', 'restore', 'checkout', 'apply', 'am']);
+
+function writtenOperands(program: string, args: string[]): string[] {
+  const operands = args.filter((arg) => !arg.startsWith('-'));
+  if (LAST_OPERAND_WRITERS.has(program)) return args.some((arg) => arg === '-t' || arg.startsWith('--target-directory')) ? operands : operands.slice(-1);
+  if (program === 'tee' || program === 'truncate') return operands;
+  if ((program === 'sed' || program === 'perl') && args.some((arg) => /^-[A-Za-z]*i|^--in-place/.test(arg))) return operands;
+  if (program === 'dd') return args.filter((arg) => arg.startsWith('of=')).map((arg) => arg.slice(3));
+  if (program === 'git' && GIT_FILE_WRITERS.has(operands[0])) return operands.slice(1);
+  return [];
+}
+
+// Whether the segments write a run-later file, judged by name and lexical place (a link keeps the master reading).
+function writesRunLater(segments: ShellSegment[], cwd: string | undefined): boolean {
+  let folder: string | undefined = cwd;
+  for (const segment of segments) {
+    let at = 0;
+    while (at < segment.words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(segment.words[at])) at += 1;
+    const program = at < segment.words.length ? baseName(segment.words[at]) : '';
+    const args = segment.words.slice(at + 1);
+    // `source`, `.` (they run a file, not write one) and the `git config` verb are not write forms: they keep the master answer.
+    const targets = [...segment.outputs.filter((target) => !/^\/dev\/(?:null|stdout|stderr)$/.test(target)), ...writtenOperands(program, args)];
+    if (targets.some((target) => [target, resolvedPaths(target, folder)[0]].some(isRunLaterPath))) return true;
+    if (program === 'cd' || program === 'pushd' || program === 'popd') {
+      const operands = args.filter((arg) => arg !== '--');
+      folder = operands.length === 1 && !operands[0].startsWith('-') && !operands[0].startsWith('+') && folder ? resolvedPaths(operands[0], folder)[0] : undefined;
+    }
+  }
+  return false;
+}
+
 function shellKind(command: string): SelfProtectKind | null {
   const segments = parseShellSegments(command);
   // A command the parser cannot read (heredoc, substitution, brace group) is judged by its whole text.
@@ -138,17 +172,20 @@ function shellKind(command: string): SelfProtectKind | null {
   return persistence;
 }
 
+function shellTexts(event: ToolPolicyEvent): string[] {
+  const input = event.tool_input && typeof event.tool_input === 'object' ? event.tool_input as Record<string, unknown> : {};
+  return typeof event.tool_input === 'string' ? [event.tool_input]
+    : ['command', 'cmd', 'script'].map((key) => input[key]).filter((value): value is string => typeof value === 'string' && value.length > 0);
+}
+
 /**
  * The kind of protected file a mutating call touches, or null. `cwd` resolves relative targets. Call it only for a call that is not
  * read-only: a Read of ~/.bashrc stays a read.
  */
 export function selfProtectKind(event: ToolPolicyEvent, cwd?: string): SelfProtectKind | null {
   if (isShellTextTool(event)) {
-    const input = event.tool_input && typeof event.tool_input === 'object' ? event.tool_input as Record<string, unknown> : {};
-    const texts = typeof event.tool_input === 'string' ? [event.tool_input]
-      : ['command', 'cmd', 'script'].map((key) => input[key]).filter((value): value is string => typeof value === 'string' && value.length > 0);
     let found: SelfProtectKind | null = null;
-    for (const text of texts) {
+    for (const text of shellTexts(event)) {
       const kind = shellKind(text);
       if (kind === 'marrow-control') return kind;
       if (kind) found = kind;
@@ -162,4 +199,13 @@ export function selfProtectKind(event: ToolPolicyEvent, cwd?: string): SelfProte
     if (kind) found = kind;
   }
   return found;
+}
+
+/** RAISE (owner A141): whether a shell call writes a run-later file by any write form, no word needed (heredoc bodies are not read). */
+export function writesRunLaterFile(event: ToolPolicyEvent, cwd?: string): boolean {
+  return isShellTextTool(event) && shellTexts(event).some((text) => {
+    const split = splitHeredocs(text);
+    const segments = split ? parseShellSegments(split.head) : null;
+    return segments !== null && writesRunLater(segments, cwd);
+  });
 }

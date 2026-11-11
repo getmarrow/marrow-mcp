@@ -26,6 +26,9 @@ exports.readEquivalent = readEquivalent;
 exports.shellCommandToolText = shellCommandToolText;
 exports.shellCommandToolRunOptions = shellCommandToolRunOptions;
 exports.isWholeInputNativeTool = isWholeInputNativeTool;
+exports.isRunLaterPath = isRunLaterPath;
+exports.splitHeredocs = splitHeredocs;
+exports.dataWordText = dataWordText;
 const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
@@ -1098,5 +1101,235 @@ function isWholeInputNativeTool(event) {
         return true;
     // A Monitor or PowerShell call is keyed as shell text only when it is a plain one.
     return ((reading.exact && reading.bashLabel) || reading.dialect === 'powershell') && shellCommandToolText(event) === null;
+}
+// Run-later files (owner A141): a write into one is held by its name, whatever words the command holds. Byte-exact, no case or Unicode folding.
+const RUN_LATER_NAMES = new Set(['.gitmodules', '.gitattributes', '.gitconfig', '.gitlab-ci.yml', 'azure-pipelines.yml', 'Jenkinsfile', 'bitbucket-pipelines.yml',
+    '.travis.yml', 'package.json', 'package.yaml', 'package-lock.json', 'Makefile', 'makefile', 'GNUmakefile', 'justfile', 'Justfile', 'Taskfile.yml', 'Taskfile.yaml',
+    'Rakefile', 'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml', 'tsconfig.json', '.npmrc', '.pnpmrc', 'pyproject.toml', 'setup.py', 'setup.cfg', 'tox.ini',
+    'noxfile.py', 'pom.xml', 'composer.json', 'Cargo.toml', 'build.rs', 'conftest.py', '.pre-commit-config.yaml', '.envrc', '.tool-versions', '.bashrc', '.bash_profile',
+    '.profile', '.zshrc', '.zshenv', '.zprofile', '.zlogin', 'crontab']);
+const RUN_LATER_PREFIXES = ['.yarnrc', '.lefthook', '.env', 'build.gradle', 'jest.config', 'vitest.config', 'webpack.config', 'vite.config', 'rollup.config'];
+const RUN_LATER_ENDINGS = ['.mk', '.config.js', '.config.cjs', '.config.mjs', '.config.ts', '.service', '.timer', '.plist'];
+const RUN_LATER_FOLDERS = new Set(['.git', '.husky', '.circleci', '.buildkite', 'buildkite', '.claude', '.cursor', '.codex', '.marrow', '.ssh', 'cron.d', 'systemd', 'LaunchAgents', 'LaunchDaemons']);
+/** Whether a path names a run-later file: git, CI, package and build scripts, hook and tool config, shell and scheduler files. */
+function isRunLaterPath(path) {
+    const parts = path.split('/').filter((part) => part && part !== '.');
+    const name = parts[parts.length - 1] ?? '';
+    if (path.startsWith('/etc/'))
+        return true;
+    for (let at = 0; at < parts.length - 1; at += 1) {
+        const [part, next] = [parts[at], parts[at + 1]];
+        if (RUN_LATER_FOLDERS.has(part) || part.startsWith('.lefthook'))
+            return true;
+        if (part === '.github' && (next === 'workflows' || next === 'actions' || (at === parts.length - 2 && name === 'dependabot.yml')))
+            return true;
+        if (part === '.vscode' && at === parts.length - 2 && (name === 'tasks.json' || name === 'settings.json'))
+            return true;
+        if (part === '.config' && (next === 'git' || next === 'systemd' || next === 'fish'))
+            return true;
+    }
+    if (RUN_LATER_NAMES.has(name) || RUN_LATER_PREFIXES.some((prefix) => name.startsWith(prefix)) || RUN_LATER_ENDINGS.some((ending) => name.endsWith(ending)))
+        return true;
+    const folder = node_path_1.posix.dirname(path);
+    if (!path.startsWith('/') || (folder === homeDirectory() && name.endsWith('rc')))
+        return path.startsWith('/');
+    // A bare repository keeps its config next to HEAD and objects.
+    try {
+        return name === 'config' && (0, node_fs_1.existsSync)(node_path_1.posix.join(folder, 'HEAD')) && (0, node_fs_1.existsSync)(node_path_1.posix.join(folder, 'objects'));
+    }
+    catch {
+        return false;
+    }
+}
+/** A command without its heredoc bodies (`head`: what bash runs); null if a body or quote is left open or a form is not modelled (`<<<`, `<<-`). */
+function splitHeredocs(command) {
+    if (command.length > MAX_SHELL_ANALYSIS_BYTES)
+        return null;
+    let head = '';
+    const bodies = [];
+    const pending = [];
+    let quote = '';
+    let index = 0;
+    while (index < command.length) {
+        const char = command[index];
+        // Quoted text, an escaped character and a comment are copied as they are: no operator starts inside them.
+        const comment = !quote && char === '#' && (index === 0 || ' \t\n;&|()<>'.includes(command[index - 1]));
+        const step = comment ? lineEnd(command, index) - index : char === '\\' && quote !== "'" ? 2 : 1;
+        if (quote || comment || char === '\\' || char === "'" || char === '"') {
+            quote = quote ? (char === quote ? '' : quote) : comment || char === '\\' ? '' : char;
+            head += command.slice(index, index + step);
+            index += step;
+            continue;
+        }
+        if (char === '<' && command[index + 1] === '<') {
+            let at = index + 2;
+            while (command[at] === ' ' || command[at] === '\t')
+                at += 1;
+            const open = command[at] === "'" || command[at] === '"' ? command[at] : '';
+            const start = at + open.length;
+            let end = start;
+            while (end < command.length && /[A-Za-z0-9_]/.test(command[end]))
+                end += 1;
+            const after = end + open.length;
+            if (end === start || (open && command[end] !== open) || (after < command.length && !' \t\n;&|>'.includes(command[after])))
+                return null;
+            pending.push({ tag: command.slice(start, end), quoted: open !== '' });
+            head += ' ';
+            index = after;
+            continue;
+        }
+        head += char;
+        index += 1;
+        if (char !== '\n' || !pending.length)
+            continue;
+        for (const doc of pending) {
+            const lines = [];
+            for (;;) {
+                if (index >= command.length)
+                    return null;
+                const line = command.slice(index, lineEnd(command, index));
+                index += line.length + 1;
+                if (line === doc.tag)
+                    break;
+                lines.push(line);
+            }
+            bodies.push({ body: lines.join('\n'), quoted: doc.quoted });
+        }
+        pending.length = 0;
+    }
+    return quote || pending.length ? null : { head, bodies };
+}
+function lineEnd(text, from) { const stop = text.indexOf('\n', from); return stop < 0 ? text.length : stop; }
+// Data words: the args of a literal echo/printf or a heredoc body fed to a literal cat, written by one `>`/`>>` to an ordinary file in a known folder.
+// A .toml, .yml or .yaml file is never a data file: CI, deploy and workspace tools read many of them (wrangler.toml, fly.toml, pnpm-workspace.yaml).
+const DATA_TEXT_ENDINGS = new Set(['md', 'mdx', 'txt', 'log', 'json', 'jsonl', 'csv', 'tsv', 'html', 'css', 'svg', 'ndjson', 'out', 'err', 'text', 'rst', 'adoc']);
+const DATA_TEXT_FOLDERS = new Set(['notes', 'records', 'logs', 'reports', 'results', 'tmp', 'scratch', 'docs', 'briefs', 'handoff']);
+const DATA_TOOL_INPUT_KEYS = new Set(['command', 'description', 'timeout', 'timeout_ms', 'run_in_background']);
+const DATA_FOLDER_KEYS = new Set(['cwd', 'workdir', 'working_directory', 'directory']);
+// Run-later names are judged on the lower-case base name (a case-insensitive disk opens Package.json as package.json), with the JSON
+// siblings of the run-later list. A base name that is not plain ASCII (a look-alike, an accent, a joiner: NFKC folding never makes it
+// ordinary), holds a colon or ends in a dot or a space is never ordinary. Folder names are folded too (NFKC, then lower case), and a
+// folder below the working folder with such an odd name is never ordinary.
+const ODD_NAME = /[^ -~]|:|[. ]$/;
+const RUN_LATER_LOWER_FOLDERS = new Set([...RUN_LATER_FOLDERS].map((part) => part.toLowerCase()));
+const RUN_LATER_JSON_SIBLINGS = new Set(['deno.json', 'vercel.json', 'firebase.json', 'tsconfig.build.json']);
+const RUN_LATER_LOWER_NAMES = new Set([...RUN_LATER_NAMES].map((name) => name.toLowerCase()));
+function runLaterBaseName(name) {
+    const lower = name.toLowerCase();
+    return ODD_NAME.test(name) || lower.startsWith('package') || RUN_LATER_LOWER_NAMES.has(lower) || RUN_LATER_JSON_SIBLINGS.has(lower)
+        || RUN_LATER_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+// The one resolved folder every source names (options, event, process, tool_input folder keys); null if any differs or a key is unknown.
+function dataWordFolder(event, cwd) {
+    const values = [cwd, event.cwd, process.cwd()];
+    const input = asRecord(event.tool_input);
+    for (const key of Object.keys(input ?? {})) {
+        if (DATA_FOLDER_KEYS.has(key))
+            values.push(input?.[key]);
+        else if (!DATA_TOOL_INPUT_KEYS.has(key))
+            return null;
+    }
+    let folder = null;
+    for (const value of values) {
+        if (value === undefined)
+            continue;
+        if (typeof value !== 'string' || !value.startsWith('/'))
+            return null;
+        let real;
+        try {
+            real = (0, node_fs_1.realpathSync)(value);
+        }
+        catch {
+            return null;
+        }
+        if ((folder !== null && real !== folder) || real.split('/').some((part) => part.startsWith('.')))
+            return null;
+        folder = real;
+    }
+    return folder;
+}
+// A plain data file in the folder (no link out, hard link, mode x, shebang, dot part or run-later name); names are judged before any open.
+function ordinaryDataFile(target, folder) {
+    if (/[*?[\]{}~$`\\]/.test(target))
+        return false;
+    let real = node_path_1.posix.normalize(target.startsWith('/') ? target : node_path_1.posix.join(folder, target));
+    try {
+        real = node_path_1.posix.join((0, node_fs_1.realpathSync)(node_path_1.posix.dirname(real)), node_path_1.posix.basename(real));
+    }
+    catch {
+        return false;
+    }
+    try {
+        if ((0, node_fs_1.lstatSync)(real).isSymbolicLink())
+            real = (0, node_fs_1.realpathSync)(real);
+    }
+    catch (error) {
+        if (error?.code !== 'ENOENT' || lstatExists(real))
+            return false;
+    }
+    const folded = real.normalize('NFKC').toLowerCase();
+    if (!real.startsWith(`${folder}/`) || isRunLaterPath(real) || folded.startsWith('/etc/')
+        || real.split('/').slice(0, -1).some((part) => RUN_LATER_LOWER_FOLDERS.has(part.normalize('NFKC').toLowerCase())))
+        return false;
+    const parts = real.slice(folder.length + 1).split('/');
+    const name = parts[parts.length - 1];
+    const dot = name.lastIndexOf('.');
+    if (parts.some((part) => part.startsWith('.')) || parts.slice(0, -1).some((part) => ODD_NAME.test(part)) || runLaterBaseName(name))
+        return false;
+    if (dot > 0 ? !DATA_TEXT_ENDINGS.has(name.slice(dot + 1)) : !(parts.length > 1 && DATA_TEXT_FOLDERS.has(parts[parts.length - 2])))
+        return false;
+    try {
+        const stat = (0, node_fs_1.statSync)(real);
+        if (!stat.isFile() || stat.nlink > 1 || (stat.mode & 0o111) !== 0)
+            return false;
+        const fd = (0, node_fs_1.openSync)(real, 'r');
+        const first = Buffer.alloc(2);
+        try {
+            (0, node_fs_1.readSync)(fd, first, 0, 2, 0);
+        }
+        finally {
+            (0, node_fs_1.closeSync)(fd);
+        }
+        return first.toString('latin1') !== '#!';
+    }
+    catch (error) {
+        return error?.code === 'ENOENT';
+    }
+}
+function lstatExists(path) { try {
+    (0, node_fs_1.lstatSync)(path);
+    return true;
+}
+catch {
+    return false;
+} }
+/** Text (tool, program, target) of a Bash call whose risk words are only data; null keeps the master text (a real verb or > 8192 bytes first). */
+function dataWordText(event, cwd) {
+    const tool = normalizeHookToolName(event.tool_name);
+    if (!SHELL_TOOLS.has(tool) || event[exports.SHELL_DIALECT] !== undefined)
+        return null;
+    const command = shellCommandText(event);
+    if (isProtectedShellMutation(command))
+        return null;
+    const split = splitHeredocs(command);
+    const segments = split && split.bodies.length <= 1 ? parseShellSegments(split.head) : null;
+    if (!split || segments?.length !== 1 || /[&<]|>\||\d>/.test(split.head))
+        return null;
+    const [{ words: [program, ...args], outputs, inputs, expansions }] = segments;
+    if (expansions.length || inputs.length || outputs.length !== 1)
+        return null;
+    if (split.bodies.length) {
+        if (program !== 'cat' || args.length || (!split.bodies[0].quoted && /[$`\\]/.test(split.bodies[0].body)))
+            return null;
+    }
+    else if ((program !== 'echo' && program !== 'printf') || !args.length || args.some((arg) => /^-|[*?[\]{}~$`]/.test(arg)))
+        return null;
+    const folder = dataWordFolder(event, cwd);
+    if (!folder || !ordinaryDataFile(outputs[0], folder))
+        return null;
+    // The description and every other tool_input value are not data: where master cannot parse the command it reads them, so they stay.
+    const others = JSON.stringify({ ...asRecord(event.tool_input), command: undefined });
+    const rest = shellAnalysis(command) || others === '{}' ? '' : ` ${others}`;
+    return `${tool} ; ${program} ${outputs[0]}${rest}`;
 }
 //# sourceMappingURL=hook-tool-policy.js.map

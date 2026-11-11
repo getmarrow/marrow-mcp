@@ -1006,7 +1006,8 @@ function classifyAsNamed(event, options) {
     // and every risk category it has without the hold.
     const controlRoute = controlRouteCall(event);
     const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
-    const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
+    // Risk words only in a data position of a plain write to an ordinary file are data (dataWordText); every other call keeps its full text.
+    const input = ((0, hook_tool_policy_1.dataWordText)(event, options.cwd) ?? (0, hook_tool_policy_1.toolClassificationText)(event)).toLowerCase();
     // A look-alike of Marrow's own tool is never read-only, whatever its verb.
     // The PostToolUse path passes no check (options.postTool): the mapper is never loaded for it.
     const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment.bind(null, options.cwd);
@@ -1044,7 +1045,9 @@ function classifyAsNamed(event, options) {
         || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && (options.ownUnproven === true || !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name)))
         || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
     const full = { tool, type, surfaces, readOnly, protected: protectedAction };
-    const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected])].filter((surface) => surface !== null);
+    // RAISE (A141): a write into a run-later file is held by its name where nothing else holds or protects the call.
+    const runLater = !protectedAction && !selfProtected && !controlRoute && (0, self_protect_1.writesRunLaterFile)(event, options.cwd) ? 'persistence' : null;
+    const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected, runLater])].filter((surface) => surface !== null);
     return held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
 }
 /** The role the runtime call carries: that of the type, or, where `security` displaced a type (ClassificationParts.under), the strictest displaced one, as 3.9.108 sent it. */

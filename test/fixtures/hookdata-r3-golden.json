@@ -1,0 +1,1187 @@
+{
+ "echo \"2026-11-09 deploy production secrets rotated\" >> logs/run.log": {
+  "key": "ce6eeb243554f2293e17c90444d4297d7c9f67e36babb0243ef2be1657e9e42c",
+  "deploy": null,
+  "text": "echo [data:85ecc6e345148e134d2c0f114a1e6faac1f101908692fd977af25ccf10dd4bef] '>>' logs/run.log"
+ },
+ "echo '2026-11-09 deploy production secrets rotated' >> logs/run.log": {
+  "key": "ce6eeb243554f2293e17c90444d4297d7c9f67e36babb0243ef2be1657e9e42c",
+  "deploy": null,
+  "text": "echo [data:85ecc6e345148e134d2c0f114a1e6faac1f101908692fd977af25ccf10dd4bef] '>>' logs/run.log"
+ },
+ "printf '%s\\n' \"2026-11-09 deploy production secrets rotated\" >> logs/run.log": {
+  "key": "22ac4f842bcb7ebf0db890988f108f64e32095368e6e5b43593182e2e27aa14c",
+  "deploy": null,
+  "text": "printf [data:821cbc93bd79cd8e71b53cdb319e76c6e0aa2b4104a33c5ec90f4914c06a0f3b] '>>' logs/run.log"
+ },
+ "echo \"deploy production secrets\" > logs/new.log": {
+  "key": "9f30fa098cc37bab10cd5f11b90e5d160c70897c9a7835ab1bc3de7bc91fcb38",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>' logs/new.log"
+ },
+ "echo \"deploy production secrets\" >> ./notes/x.md": {
+  "key": "ffc12ef893d8cfacb7a91d0034a304f212a1711628020c79c5a5f975d99faa87",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' ./notes/x.md"
+ },
+ "echo \"deploy is the first word\" >> logs/run.log": {
+  "key": "5ba1d9e62aab5ebfa955e5454d9bf6378f34222c34cdba7e370221fd4f43a444",
+  "deploy": null,
+  "text": "echo [data:53e38c7c58296d873d99f264961d817cc44d20f013e9c049c718876abbc1693c] '>>' logs/run.log"
+ },
+ "echo \"last word is production\" >> logs/run.log": {
+  "key": "89901d939f24f8d90001df135236fe0def1f53625f26df8b04c5b931f16f5ba7",
+  "deploy": null,
+  "text": "echo [data:e1483f5bde6881eeed2e454214e39f24c80a95d55deafbe0aaed7c8cd4921324] '>>' logs/run.log"
+ },
+ "cat >> notes/NOTES.md <<'EOF'\nchecklist deploy production secrets\nsecond line\nEOF": {
+  "key": "db9cd5b5b7b4b06d29a929ef4c0675c2bd2d4a2f9291dc90409630a6b5f0b35a",
+  "deploy": null,
+  "text": "cat '>>' notes/NOTES.md '<<' EOF [data:567a4d920a0af0d1457c8523fe62fe87f3c4114301915a32e4214aefe1db1566]"
+ },
+ "cat >> notes/NOTES.md <<\"EOF\"\nchecklist deploy production secrets\nsecond line\nEOF": {
+  "key": "db9cd5b5b7b4b06d29a929ef4c0675c2bd2d4a2f9291dc90409630a6b5f0b35a",
+  "deploy": null,
+  "text": "cat '>>' notes/NOTES.md '<<' EOF [data:567a4d920a0af0d1457c8523fe62fe87f3c4114301915a32e4214aefe1db1566]"
+ },
+ "cat >> notes/NOTES.md <<'EOF'\nchecklist deploy production secrets\r\nsecond\r\nEOF": {
+  "key": "e9bbc0a776efb380b55647f4c094fe23361afaf15bfc6ac54a07a99588c82f4b",
+  "deploy": null,
+  "text": "cat '>>' notes/NOTES.md '<<' EOF [data:612a8354096b4eeff623743611a6e2374e54ce5b449ffc2bc04dafbe0e22a015]"
+ },
+ "cat >> notes/NOTES.md <<'EOF'\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\nnotes line with plain text\ndeploy production secrets\nEOF": {
+  "key": "cc08156cddb028d0758491e82bc33ec07716561ca9a1e7413e1da969a875225c",
+  "deploy": null,
+  "text": "cat '>>' notes/NOTES.md '<<' EOF [data:a87f7097c93d4de440f816ceaa922d48f28d88acb04e74b84eb5eaa9febf8dd6]"
+ },
+ "cat <<'EOF' >> notes/NOTES.md\nchecklist deploy production secrets\nsecond line\nEOF": {
+  "key": "15d219b7ddffeda66afd2bb20ea767c79823585bcf1beb8855b4661f2d9c4cef",
+  "deploy": null,
+  "text": "cat '<<' EOF [data:567a4d920a0af0d1457c8523fe62fe87f3c4114301915a32e4214aefe1db1566] '>>' notes/NOTES.md"
+ },
+ "cat > records/DOGFOOD-20261109.md <<'EOF'\n# Dogfood\ndeploy production secrets named here\nEOF": {
+  "key": "145fdc9e55ce86ee7da0b7a25a18b782c830c58800e3455f67ac98b0ed43be73",
+  "deploy": null,
+  "text": "cat '>' records/DOGFOOD-20261109.md '<<' EOF [data:99539c3b81d32a5057db4c9a2778d68ed71a1556bbddf359f508f3d4786413d5]"
+ },
+ "cat > briefs/job-brief.md <<EOF\nbrief: deploy production secrets\nEOF": {
+  "key": "3fe53f2705ebc2ae1ac2343a76c5d8b69ae661434b2d8d1cb48cd21d5e7e8d26",
+  "deploy": null,
+  "text": "cat '>' briefs/job-brief.md '<<' EOF [data:ec9258542f94fce9825dcb406e3a6767253de5843ce176d4c9705744072ff751]"
+ },
+ "cat > notes/brief <<EOF\nbrief: deploy production secrets\nEOF": {
+  "key": "c8784ec3a4f2601180330c6fb3352924955f431aa141a4c8f2cee477a4e6ceba",
+  "deploy": null,
+  "text": "cat '>' notes/brief '<<' EOF [data:ec9258542f94fce9825dcb406e3a6767253de5843ce176d4c9705744072ff751]"
+ },
+ "echo 'see package.json scripts before the deploy' >> notes/NOTES.md": {
+  "key": "e8775a806ae96a607377e16e4fd9f99484d376d43c4089c752fd0c38f95d4198",
+  "deploy": null,
+  "text": "echo [data:7e608064d2d09459d2c4c7a8e4164db4147480dd10a90007f746bb8f9075163d] '>>' notes/NOTES.md"
+ },
+ "cat >> notes/NOTES.md <<'EOF'\nthe Makefile deploy target and .github/workflows/ci.yml production job\nEOF": {
+  "key": "96d7250e3a5882357b9846efa68262f9fec4c35a00fdbdeddad790269802ba5c",
+  "deploy": null,
+  "text": "cat '>>' notes/NOTES.md '<<' EOF [data:487c4a63719cf4c559d5f652a63713dcb0a9b01c32d95e73ba89da0a731da2dc]"
+ },
+ "printf '%s\\n' 'the .github/workflows release job' >> notes/NOTES.md": {
+  "key": "51ca11cda5910ff788f5402c5469bacefa945c8a74424a63ea832eaf73711616",
+  "deploy": null,
+  "text": "printf [data:a67fee7ad08a2dbdae9c3b72e5cc4a82ad75a61dcdad194ca7f04cf150c8bae3] '>>' notes/NOTES.md"
+ },
+ "grep -rn \"deploy production secrets\" docs": {
+  "key": "a62442bfdde2f8523a4da1e567a5c412006699df8a3d1a3fd4b4f6ff691da797",
+  "deploy": null,
+  "text": "grep -rn 'deploy production secrets' docs"
+ },
+ "echo \"deploy production secrets\" | tee -a logs/run.log": {
+  "key": "bb1a9f56c5ecfc4ba3a907024a064250ac6bc47b4bc45b071e6a72fe2b2c6b0c",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] | tee -a logs/run.log"
+ },
+ "bash -c 'wrangler deploy --env production <<EOF\nx\nEOF'": {
+  "key": "5e70c49b1e8fc3868d13b9ee633d8792d79ee41baeaf056f08d94f0cd4ea79c1",
+  "deploy": null,
+  "text": "bash -c 'wrangler deploy --env production '\\''<<'\\'' EOF [data:05d5ea7114deb91bca99ba46f446d97e12f3d290e8ab9e385c313f6026daf7ca] [data:05d5ea7114deb91bca99ba46f446d97e12f3d290e8ab9e385c313f6026daf7ca]'"
+ },
+ "sh -c \"cat <<EOF | sh\ndeploy production secrets\nEOF\"": {
+  "key": "0fb5be57b0796431bc293336e62a5b4beab2db3154b016a5b12c666d5ede87e9",
+  "deploy": null,
+  "text": "sh -c 'cat '\\''<<'\\'' EOF [data:05d5ea7114deb91bca99ba46f446d97e12f3d290e8ab9e385c313f6026daf7ca] [data:05d5ea7114deb91bca99ba46f446d97e12f3d290e8ab9e385c313f6026daf7ca] | sh'"
+ },
+ "bash -c 'echo deploy production secrets >> logs/run.log'": {
+  "key": "a8dab2e01072237341d4671f9d025d3b2229b036d413df5345e4b8208465dbcc",
+  "deploy": null,
+  "text": "bash -c 'echo [data:15cb8008debe16b59d2cd7f4a53f55339dde4b8fada5bb4779d4f4e13aeb177c] '\\''>>'\\'' logs/run.log'"
+ },
+ "bash <<EOF\necho deploy production secrets\nEOF": {
+  "key": "dcc7319b1bdb67dc595acbf780eff7d9c38a26205093bf236895b5d0483ebc3a",
+  "deploy": null,
+  "text": "bash '<<' EOF [data:ad6a9f86765fec2ffd09e5d5ed7dc99ae6ec1cf240ced3f6c2b33de8b0a36d59]"
+ },
+ "sh <<'EOF'\necho deploy production secrets\nEOF": {
+  "key": "552a3057a5f064917f4868db01ec963fde0a7bbdb14bd4d93c86df8caa548e11",
+  "deploy": null,
+  "text": "sh '<<' EOF [data:ad6a9f86765fec2ffd09e5d5ed7dc99ae6ec1cf240ced3f6c2b33de8b0a36d59]"
+ },
+ "cat <<EOF > .github/workflows/x.yml\nname: deploy production secrets\nEOF": {
+  "key": "8cadc02e3a51ad1df431dbcc613ec407b6636bac6c59f23791bd3204b6fa298c",
+  "deploy": null,
+  "text": "cat '<<' EOF [data:bbcf7e1aa27bd647a69cb61de1db087723abfc8200d255442291b8307c0d7506] '>' .github/workflows/x.yml"
+ },
+ "cat <<EOF > .github/workflows/x.yml\nname: ci\nEOF": {
+  "key": "5cc78d6e9198a57021ed7851b0573fed3eefa3d93ebddfd328bcd394018dd408",
+  "deploy": null,
+  "text": "cat '<<' EOF [data:366c8f7d07c2c46dd4aadb5a6110e8c1797ba2d869c7dcfa2c0a98b883d4f200] '>' .github/workflows/x.yml"
+ },
+ "echo \"deploy production\" | tee -a ~/.bashrc": {
+  "key": "262813b1e0fa7ed1d2acbae64260c39f462ce2f81302de54b9f7aa0addaf5013",
+  "deploy": null,
+  "text": "echo [data:dbe4cd0931ff76c565a52c11c06c6327b3d374e89b5e23ba4c9db5e530c40c69] | tee -a ~/.bashrc"
+ },
+ "echo \"deploy production secrets\" >> ~/.zshrc": {
+  "key": "e1b51f6560beb996fec3b61a6e98feda0cae94de2f110f818cbc9faff94a08db",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' ~/.zshrc"
+ },
+ "echo \"deploy production secrets\" > ~/.profile": {
+  "key": "6d558b5cfd58c9faba014a8795ce17bcc5ac6398e9f60bc42e6a25eb57322889",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>' ~/.profile"
+ },
+ "echo \"wrangler deploy --env production\" | sh": {
+  "key": "fffaa808a3c13f21386cf0bc3d4a91dd0a06e1d30fd5a32073b87daf30f17dd4",
+  "deploy": null,
+  "text": "echo [data:1cdc92fab242da423e8dcf476887d3b852c648987774c7f2f87c0ac43e4926a1] | sh"
+ },
+ "echo \"deploy production secrets\" | bash": {
+  "key": "5234c56fca023c16db0f35dd76137538fb40822e5f886cbefa84dc140a7bc42b",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] | bash"
+ },
+ "echo \"deploy production secrets\" | zsh": {
+  "key": "bdede95c3f780cc91ed7dc816555ca72c45bfe1ed01f0981266fc29363214be5",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] | zsh"
+ },
+ "echo \"deploy production secrets\" | xargs sh -c": {
+  "key": "824363d7d4517bc4f376be4f130082442d69d1e52bf1e980325c74a409e01c25",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] | xargs sh -c"
+ },
+ "eval \"npm publish\"": {
+  "key": "c2140a84bee2b1b71ba788f88b425dd2362489f1de9b6dcfb98e8b70477bdb78",
+  "deploy": null,
+  "text": "eval 'npm publish'"
+ },
+ "eval $(echo x)": {
+  "key": "1a44098480a6190cded29d3ec8005c7a78a0bec90a0708a520882fa1415f9aa4",
+  "deploy": null,
+  "text": "eval ''\\''$'\\''' ( echo x )"
+ },
+ "builtin eval \"npm publish\"": {
+  "key": "b0560e45681ac89e241005eb5e7e656443d3fb2250232cda1728caa0e6d698cf",
+  "deploy": null,
+  "text": "builtin eval 'npm publish'"
+ },
+ "source ./x.sh": {
+  "key": "cdd365c6f4e6a55d755dfdb67486a4efab8d7651e06f04fd574487e90423572d",
+  "deploy": null,
+  "text": "source ./x.sh"
+ },
+ ". ./x.sh": {
+  "key": "73efadbcecd8694df0b91c0d7310666c40bbb47bb8bccfc63fadf86e49f9c160",
+  "deploy": null,
+  "text": ". ./x.sh"
+ },
+ "source /dev/stdin <<EOF\ndeploy production secrets\nEOF": {
+  "key": "d31393481f3bd57d0e3a4ebcb987a59ca3eecb9b3eca9804efc071bcfd05d37e",
+  "deploy": null,
+  "text": "source /dev/stdin '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "cat > run.sh <<'EOF'\necho deploy production secrets\nEOF\nbash run.sh": {
+  "key": "0f8cdcd75f631c36045ba0dd15ba707daca93b80970454c5e275cec9d1a2c0cf",
+  "deploy": null,
+  "text": "cat '>' run.sh '<<' EOF [data:ad6a9f86765fec2ffd09e5d5ed7dc99ae6ec1cf240ced3f6c2b33de8b0a36d59] ; bash run.sh"
+ },
+ "cat > run.sh <<'EOF'\necho deploy production secrets\nEOF\nsh run.sh": {
+  "key": "776b84466356564025cec3933587b3779ce1d61073b4d7f8f15cbca8e02c8ad0",
+  "deploy": null,
+  "text": "cat '>' run.sh '<<' EOF [data:ad6a9f86765fec2ffd09e5d5ed7dc99ae6ec1cf240ced3f6c2b33de8b0a36d59] ; sh run.sh"
+ },
+ "cat > run.sh <<'EOF'\necho deploy production secrets\nEOF\n./run.sh": {
+  "key": "0a1358d34cbcc54678ed9a60b3c3023865856fa1136917fce3ba016589e2718c",
+  "deploy": null,
+  "text": "cat '>' run.sh '<<' EOF [data:ad6a9f86765fec2ffd09e5d5ed7dc99ae6ec1cf240ced3f6c2b33de8b0a36d59] ; ./run.sh"
+ },
+ "cat > run.sh <<'EOF'\necho deploy production secrets\nEOF\nchmod +x run.sh && ./run.sh": {
+  "key": "e424e3d4541e0de99dfc2332fff3d7015158f1c120b573b64bf0dfc674237a12",
+  "deploy": null,
+  "text": "cat '>' run.sh '<<' EOF [data:ad6a9f86765fec2ffd09e5d5ed7dc99ae6ec1cf240ced3f6c2b33de8b0a36d59] ; chmod +x run.sh && ./run.sh"
+ },
+ "cat > run.sh <<'EOF'\necho deploy production secrets\nEOF\nbash run.*": {
+  "key": "1efbb99ea217e7b0b170355239c66fc08dabcbba54b9bcd3259b07355d455fa0",
+  "deploy": null,
+  "text": "cat '>' run.sh '<<' EOF [data:ad6a9f86765fec2ffd09e5d5ed7dc99ae6ec1cf240ced3f6c2b33de8b0a36d59] ; bash 'run.*'"
+ },
+ "cat > run.sh <<'EOF'\necho deploy production secrets\nEOF\nF=run.sh; bash $F": {
+  "key": "04f571332ae4f12bfed1f05c64674093617ac9439bdd416a491bc2efdf6526fc",
+  "deploy": null,
+  "text": "cat '>' run.sh '<<' EOF [data:ad6a9f86765fec2ffd09e5d5ed7dc99ae6ec1cf240ced3f6c2b33de8b0a36d59] ; F=[data:a7cd26e85b3b627be8ba9a6f99aae80aeb162ce41648aeb8336c527bb024516b] ; bash '$F'"
+ },
+ "cat > notes/run.md <<'EOF'\ndeploy production secrets\nEOF\n; bash notes/run.md": {
+  "key": "99b075b068bee55e4e8941d355af9c33c3cfaaafd879edecb840c5149ad3b85d",
+  "deploy": null,
+  "text": "cat '>' notes/run.md '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849] ; bash notes/run.md"
+ },
+ "echo \"deploy production secrets\" > notes/run.md && bash notes/run.md": {
+  "key": "0242151c02a002fef42a8f55e1568a92e764ae65b939bf78a0ee43b2244f0252",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>' notes/run.md && bash notes/run.md"
+ },
+ "echo \"deploy production secrets\" > notes/run.md || sh notes/run.md": {
+  "key": "4608a15530b31e834b5e894076428eee22b2dbc6990caf511aff022d4da82138",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>' notes/run.md || sh notes/run.md"
+ },
+ "cat > gen.py <<'EOF'\nprint(\"deploy production secrets\")\nEOF\npython3 gen.py": {
+  "key": "84eb0b33ad02d8497ca1f9eafcafefb69cdaa36a0a4ec4c47d98ab00d9c8d7ce",
+  "deploy": null,
+  "text": "cat '>' gen.py '<<' EOF [data:0d226f282bf098b5013b31061bc7ae4a6dae6c0fd0503b1606f08f96ded6f704] ; python3 gen.py"
+ },
+ "echo \"console.log('deploy production secrets')\" > x.js && node x.js": {
+  "key": "15bb37b19b38d8e49931e0f90792f69d19e9b25fcea217b885530156b612136f",
+  "deploy": null,
+  "text": "echo [data:e55cc30a61e134ff04a296a5f00fa8c4b7b0ee8350eeca13831761c94687a8cd] '>' x.js && node x.js"
+ },
+ "cat > Makefile <<'EOF'\nall:\n\techo deploy production secrets\nEOF\nmake": {
+  "key": "5e0809307f9d2f538a72662a06e0a6e67da81433843f6591dd170c8aeaa70f70",
+  "deploy": null,
+  "text": "cat '>' Makefile '<<' EOF [data:536216fc959ba7b40fca889fd5a34e98520bb544f6a420009fc96bc33610fec8] ; make"
+ },
+ "(echo \"deploy production secrets\" > notes/run.md) && sh notes/run.md": {
+  "key": "ce17b42c61448b2e8343fb6b0a857979e257cfbae70aaeec6ed4968396b44fe0",
+  "deploy": null,
+  "text": "( echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>' notes/run.md ) && sh notes/run.md"
+ },
+ "wrangler deploy --env production": {
+  "key": "1577c6d3904d282f60180cf9cbeac5fd28054a89f282ec66c3f275ac28c2eb93",
+  "deploy": null,
+  "text": "wrangler deploy --env production"
+ },
+ "npm publish": {
+  "key": "55cc6755fc711edd1b412aef21739576e5b9064416c2416223d5be3f2ca8b745",
+  "deploy": null,
+  "text": "npm publish"
+ },
+ "git push origin master": {
+  "key": "59719f18bf5e7fc12565e3dc50249ee0e6aba7c654d6d58afe8fc4dea80ffeb5",
+  "deploy": null,
+  "text": "git push origin master"
+ },
+ "git push --force": {
+  "key": "baa61bf2d454362be64a55500f75c529089d5fbd467281354692997ed7eb7cbc",
+  "deploy": null,
+  "text": "git push --force"
+ },
+ "curl -X POST https://example.invalid/deploy": {
+  "key": "4baffeaec589ad6833dce00ba5b36ca7c3b3c81c73887aff1fa061e8fb56a072",
+  "deploy": null,
+  "text": "curl -X POST https://example.invalid/deploy"
+ },
+ "kubectl apply -f x.yml": {
+  "key": "856becd9e83c8c79f9e1e44f35271079f90e24b6d0d78dbcf082c25a7c6d9cef",
+  "deploy": null,
+  "text": "kubectl apply -f x.yml"
+ },
+ "terraform apply": {
+  "key": "17b82fd7e64ed235a7f0ffcdd7e4c2dc3e375db6a0e1dea0c7b2cf27ab0c4edf",
+  "deploy": null,
+  "text": "terraform apply"
+ },
+ "gh release create v0.0.0": {
+  "key": "c1730c894768cb85767bcbca428ef942656620f4346a45f2d00eab25f0f69fcd",
+  "deploy": null,
+  "text": "gh release create v0.0.0"
+ },
+ "rm -rf build && echo \"deploy production secrets\" >> logs/run.log": {
+  "key": "b8cce89efa3648077a081c2707c7fc6441f014339950995ecc10fc2467a9a219",
+  "deploy": null,
+  "text": "rm -rf build && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' logs/run.log"
+ },
+ "cat > records/x.md <<'EOF'\ndeploy production secrets\ngit push origin master\nEOF": {
+  "key": "461150b8d0fa4e180ecb562784fc5b6e5fdf45eab451da8374530feaa92af4e7",
+  "deploy": null,
+  "text": "cat '>' records/x.md '<<' EOF [data:ad9945caa9e88baf480fcacaab74939ebde88c5f8c80ead678e2db28b96175e1]"
+ },
+ "node -e \"console.log('deploy production secrets')\"": {
+  "key": "0ffe1d5f4f1c93c28d66aa84e8b4308cb0dcc25a78a1d3c8c12a38a5907f3ebb",
+  "deploy": null,
+  "text": "node -e 'console.log('\\''deploy production secrets'\\'')'"
+ },
+ "node -p \"'deploy production secrets'\"": {
+  "key": "f2622778416b0eab881f6dd2b7f01f492a157736c61760fddf706a71fe53ab07",
+  "deploy": null,
+  "text": "node -p ''\\''deploy production secrets'\\'''"
+ },
+ "node <<EOF\nconsole.log('deploy production secrets')\nEOF": {
+  "key": "3a5a7657f396aeae1bde1990432d873d83f07e5441c2020268ba654337e986c2",
+  "deploy": null,
+  "text": "node '<<' EOF [data:efc30cc825e63432a017f4754db47c2e19dd853e21ca73eec53c04798df789c2]"
+ },
+ "python -c \"print('deploy production secrets')\"": {
+  "key": "16c602bad27dd2b1d08e5b7b948c111de62709abc8d89b58313d2c91f4193348",
+  "deploy": null,
+  "text": "python -c 'print('\\''deploy production secrets'\\'')'"
+ },
+ "python3 <<EOF\nprint('deploy production secrets')\nEOF": {
+  "key": "11d1e9f9a28eb17c736acd1cfd83a7623ad61b49ace34f6c473a2685cf476128",
+  "deploy": null,
+  "text": "python3 '<<' EOF [data:eeb7d010e5a407d04646ee3d4f354728887f67a72456dd984a1c054825ecd0f0]"
+ },
+ "python3 -I - <<'EOF'\nprint('deploy production secrets')\nEOF": {
+  "key": "28d46e39db1418a6fe889f2ff4ea7604f2ed07d1f8d60ef0c7d231a6ea22293d",
+  "deploy": null,
+  "text": "python3 -I - '<<' EOF [data:eeb7d010e5a407d04646ee3d4f354728887f67a72456dd984a1c054825ecd0f0]"
+ },
+ "python \"deploy production secrets.py\"": {
+  "key": "bd0f28921b0804ef45f552297f7def766a20e5406c4506968e75fc788a544e5d",
+  "deploy": null,
+  "text": "python 'deploy production secrets.py'"
+ },
+ "echo \"{}\" > package.json": {
+  "key": "e34b0b3389e76bd000c33abee11ae4a5739f43b7421919f8770664cb2bd03691",
+  "deploy": null,
+  "text": "echo [data:bf4c542630565c028a3b31f88f4d9c1dc9ee0557e07fc20fe36a19525481eeb2] '>' package.json"
+ },
+ "echo \"deploy production secrets\" > package.json": {
+  "key": "6a0bc8e7b4097482ec90ed5ddd1facc834d66c54ec833aba991b59b11fb1d4a7",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>' package.json"
+ },
+ "echo \"on: push\" | tee -a .github/workflows/ci.yml": {
+  "key": "03beaa414fe0233dd9c36a6edd55e7ab84e420bd352459184ab2eeab6fdb572a",
+  "deploy": null,
+  "text": "echo [data:5eecc589d57bc23ff6bfc661add1763b43335bf093065acb6da69f137d0a8061] | tee -a .github/workflows/ci.yml"
+ },
+ "echo \"deploy production secrets\" | tee -a .github/workflows/ci.yml": {
+  "key": "8e3456806905d42b4dbd5dc21bcf9a013dc6ebb24ac2319a1f32f590245748db",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] | tee -a .github/workflows/ci.yml"
+ },
+ "echo \"all:\" >> Makefile": {
+  "key": "354c812aae22968ed2dc516d8c1844a1007aad7f37dd9c26798e6f7dc50f03c8",
+  "deploy": null,
+  "text": "echo [data:bdb4f3447d665e0ce3561fbda535de5644ab48342c8aa0795ce78964540ab6ec] '>>' Makefile"
+ },
+ "echo \"deploy production secrets\" >> Makefile": {
+  "key": "e207b30ff2f1a30c8eee5a87b41de3e8262aaf937198072041f670df2f001ac6",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' Makefile"
+ },
+ "echo \"npm test\" > .husky/pre-commit": {
+  "key": "78e2192824e4971546ff51cecaf5f5149de091e9cc0a5ebc2944a48182b23707",
+  "deploy": null,
+  "text": "echo [data:5ee6f36d0308ebc00db6fa0f0c9c4e336c79cc3fec7fb5d639a75cd44800c8c1] '>' .husky/pre-commit"
+ },
+ "echo \"deploy production secrets\" > .husky/pre-commit": {
+  "key": "3483732fd7b6ca25f763f31401c723fd449ae6e31981854044fbc570e5091e61",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>' .husky/pre-commit"
+ },
+ "echo \"[core]\" >> .git/config": {
+  "key": "928f35fdfd967c06cfe801ca4b548b571bbdee76df9937c6307a386bfb051a52",
+  "deploy": null,
+  "text": "echo [data:0e09024f5bfc148bc087f2120d678c54ce8cccf9cb3ac4b7b2a92d04d30370f0] '>>' .git/config"
+ },
+ "echo \"deploy production secrets\" >> .git/config": {
+  "key": "1c4859d78861a4d1b74f2f9d4e32709ad05da33d616a884086ab61c037303101",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .git/config"
+ },
+ "git commit -m \"docs: deploy production secrets runbook\"": {
+  "key": "39f824a1a7299c23a80ca3ee0b7affd48bacd0214bf7c3799d79f24d246cdab1",
+  "deploy": null,
+  "text": "git commit -m 'docs: deploy production secrets runbook'"
+ },
+ "git commit -m \"docs: update runbook\"": {
+  "key": "5ea82dceff207950b9d0c5abcc0dd2d04bc9010e025633ad4d2108113a33b3fd",
+  "deploy": null,
+  "text": "git commit -m 'docs: update runbook'"
+ },
+ "git push origin production": {
+  "key": "dd40b8c2e21fb0f8fa649b785d9e8f181fca6c5275c7ee0edccde1b8263f8b2f",
+  "deploy": null,
+  "text": "git push origin production"
+ },
+ "npm run deploy": {
+  "key": "a8748b99fc4044803f0373e7deb33e1532b61fac470b43217982634d336fb2f0",
+  "deploy": null,
+  "text": "npm run deploy"
+ },
+ "docker push registry.invalid/prod": {
+  "key": "103cb47e11e62208f2e774bc4b61e2afbce61bbacd4087c170b8c39a80da9ffe",
+  "deploy": null,
+  "text": "docker push registry.invalid/prod"
+ },
+ "some-tool --env=production": {
+  "key": "086b81ad92a1f5410601fbbf4e98f8313b18804bfd12cedf64e2ec3fb1a4f0a9",
+  "deploy": null,
+  "text": "some-tool --env=production"
+ },
+ "some-tool -e prod": {
+  "key": "0aab9e62f33b4bb9110d53f9c31efa4e785d057d96f5b61e82f295ed2f20b381",
+  "deploy": null,
+  "text": "some-tool -e prod"
+ },
+ "python3 -I - <<'EOF'\nfrom pathlib import Path\np = Path('.git','config')\ntext = p.read_text()\np.write_text(text.replace('Deploy to production on Friday', 'Deploy to production on Monday'))\nEOF": {
+  "key": "37e8fa35911d8e21aac17130a2bfa2ee9b5888e3e2f865e4fa6ffc7d8b679ada",
+  "deploy": null,
+  "text": "python3 -I - '<<' EOF [data:ddf9408f5fc1b27d85b11bca0cfeef391e5ab7284084ef1763b40cc361dc48ce]"
+ },
+ "python3 -I - <<'EOF'\nfrom pathlib import Path\np = Path('.git', 'config')\ntext = p.read_text()\np.write_text(text.replace('Deploy to production on Friday', 'Deploy to production on Monday'))\nEOF": {
+  "key": "9e4ff88987e597f2b323989ffbecdbc1ca0e35013408aa1677db824ea71e5b7f",
+  "deploy": null,
+  "text": "python3 -I - '<<' EOF [data:7fcdedf6acd5f21cd10187ed699c228cb4a349d29717cbddf41c4933d4e3ce87]"
+ },
+ "python3 -I - <<'EOF'\nfrom pathlib import Path\np = Path('.','.git','config')\ntext = p.read_text()\np.write_text(text.replace('Deploy to production on Friday', 'Deploy to production on Monday'))\nEOF": {
+  "key": "558a94b141eada7f00fbabf7bc41b8f15d2686247b4360074031d663b831e5b2",
+  "deploy": null,
+  "text": "python3 -I - '<<' EOF [data:8e374d6323436d87d84ead784e143e0be3780f6df16001c859a1a1413faf698b]"
+ },
+ "python3 -I - <<'EOF'\nfrom pathlib import Path\np = Path('.', '.git', 'config')\ntext = p.read_text()\np.write_text(text.replace('Deploy to production on Friday', 'Deploy to production on Monday'))\nEOF": {
+  "key": "34f9f7087b22ceab7d6fbca2918965e164926528a474306195ae4871a63d75ef",
+  "deploy": null,
+  "text": "python3 -I - '<<' EOF [data:038f21ca8637b517be7080d4e2ae5308792e439befe4d94fe2e45764ad87e4da]"
+ },
+ "python3 -I - <<'EOF'\nfrom pathlib import Path\np = Path('.github','workflows','ci.yml')\ntext = p.read_text()\np.write_text(text.replace('Deploy to production on Friday', 'Deploy to production on Monday'))\nEOF": {
+  "key": "21d48271576a5bab85fa52c5aa53025a73006322a06918ebde559d63f2171a83",
+  "deploy": null,
+  "text": "python3 -I - '<<' EOF [data:f7dd3a623da712f41753bb09dc48be66e8754dbbe668751593b5d64d00b09c3e]"
+ },
+ "python3 -I - <<'EOF'\nfrom pathlib import Path\np = Path('.github', 'workflows', 'ci.yml')\ntext = p.read_text()\np.write_text(text.replace('Deploy to production on Friday', 'Deploy to production on Monday'))\nEOF": {
+  "key": "b4328d39afbb3c8785f2621a525b1dcb1accd3f4251b541073abb5f1deeb9730",
+  "deploy": null,
+  "text": "python3 -I - '<<' EOF [data:51be1ede5604d5aaa22b1594ee7d7236c4ca21c3510515e0d5bb38e147769c5d]"
+ },
+ "python3 -I - <<'EOF'\nfrom pathlib import Path\np = Path('.github', 'workflows/ci.yml')\ntext = p.read_text()\np.write_text(text.replace('Deploy to production on Friday', 'Deploy to production on Monday'))\nEOF": {
+  "key": "4f969731993a7c47ca72f9c981ba2d64bb86d7c934a158073bb03defe58836a5",
+  "deploy": null,
+  "text": "python3 -I - '<<' EOF [data:c3f263cae732d0a87e27019c919733faceec2c02ec44fdbae7446f281a3f1ff4]"
+ },
+ "python3 -I - <<'EOF'\nfrom pathlib import Path\np = open('.git','config')\ntext = p.read_text()\np.write_text(text.replace('Deploy to production on Friday', 'Deploy to production on Monday'))\nEOF": {
+  "key": "5ead068ce93ec8ede2cee5c290e091550d2904b03fb305fed232a38712708f96",
+  "deploy": null,
+  "text": "python3 -I - '<<' EOF [data:5ac2d225b3f38a2f1ba7b0ef9ffc7b22c2167b15e11ed05408d75d8753c46a0e]"
+ },
+ "echo \"deploy production secrets\" >> config": {
+  "key": "f2ecc4c221bed97b6fa8c2d1ee0ecad7e6c26e8a126a4a9bf936ffb7881cbe9a",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "cat >> config <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "ced741843c5bc63c119ded5fa233543966b96c8b3084982591b285becb0cbc65",
+  "deploy": null,
+  "text": "cat '>>' config '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "cd - && echo \"deploy production secrets\" >> config": {
+  "key": "8bc20415e30102d7f8fc132a77327a48c29e467f6db53148b119ca201b1a76c6",
+  "deploy": null,
+  "text": "cd - && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "cd ~- && echo \"deploy production secrets\" >> config": {
+  "key": "f2258cdba5f506b4f9c5657bee20687e801ec3bd80eba7d9d1441cd4fef571cf",
+  "deploy": null,
+  "text": "cd ~- && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "popd && echo \"deploy production secrets\" >> config": {
+  "key": "10d8bc9dd020500b4526e74b983dc12c034993993fce316a689ee352d4fd76ce",
+  "deploy": null,
+  "text": "popd && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "cd && echo \"deploy production secrets\" >> config": {
+  "key": "665b21a11de4d5ea328111fc7852f9bf201202d97ae33498a7b5777cc93f09a0",
+  "deploy": null,
+  "text": "cd && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "cd +1 && echo \"deploy production secrets\" >> config": {
+  "key": "f06cc0632b05458fb7f0849994a279966be3133dbec512a78dcce03d9b25287d",
+  "deploy": null,
+  "text": "cd +1 && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "cd -1 && echo \"deploy production secrets\" >> config": {
+  "key": "61282349dea7a2f25abba99040f76a9599a4ade7a2ff737c6039c327682d79a4",
+  "deploy": null,
+  "text": "cd -1 && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "pushd +1 && echo \"deploy production secrets\" >> config": {
+  "key": "1d77809f22f7febc3a15c75869ad88d3c3044e0f03c025c8447f040cdf1d5600",
+  "deploy": null,
+  "text": "pushd +1 && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "cd \"\" && echo \"deploy production secrets\" >> config": {
+  "key": "912db58cf2fad7f2292cd29a2ea5a2e865e66f9d478a2b7c8239cf134620cf2e",
+  "deploy": null,
+  "text": "cd  && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "cd $OLDPWD && echo \"deploy production secrets\" >> config": {
+  "key": "3d457b872d9b09cbad3716dd079cb0197faa8da0ab72ed5b549448ca5cfed515",
+  "deploy": null,
+  "text": "cd '$OLDPWD' && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "cd .git && echo \"deploy production secrets\" >> config": {
+  "key": "43a388922017c131b99dd1c153150f0decbf02bc40fdee09bfa1d2f2b423eb16",
+  "deploy": null,
+  "text": "cd .git && echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' config"
+ },
+ "git merge-file .git/config a b": {
+  "key": "b347cac428e761152df7502e44905e73c2ee0e0a112cfed043a0fd8bd149d4b9",
+  "deploy": null,
+  "text": "git merge-file .git/config a b"
+ },
+ "git merge-tree a b": {
+  "key": "7b2c692109f1247651b65b8d1647a2a14aef50dab3a5f5c82abef508b159b830",
+  "deploy": null,
+  "text": "git merge-tree a b"
+ },
+ "git merge-base a b && rm -rf build": {
+  "key": "9588c136f6575533aad3ab61394943667e902cbfd24451fc599c12aef0dca20e",
+  "deploy": null,
+  "text": "git merge-base a b && rm -rf build"
+ },
+ "git apply x.patch": {
+  "key": "949f0f9d85e708fe9fa0d548e53dcaa6de2df611bd203b6fcbb7e84a6ca77a82",
+  "deploy": null,
+  "text": "git apply x.patch"
+ },
+ "git am x.mbox": {
+  "key": "e7a4b3e80782f8cb90a06f8d915158933afa3264c6bc6975fa459d51c8ff5e18",
+  "deploy": null,
+  "text": "git am x.mbox"
+ },
+ "git checkout-index -f .git/config": {
+  "key": "cac0b0752d61acb924f0824c55abf7076dbc514e757af38d9d28a7c32af1facd",
+  "deploy": null,
+  "text": "git checkout-index -f .git/config"
+ },
+ "git restore --source HEAD~1 package.json": {
+  "key": "5f4cd35a004bf9a61012cbd16c6eda3bcbd88b538018f7c705eb236e75f765d6",
+  "deploy": null,
+  "text": "git restore --source HEAD~1 package.json"
+ },
+ "git restore --source HEAD~1 Makefile": {
+  "key": "f593c8bddbcd3f0c6db8913f3a725602d75f53652ea8b4634dd9b5afdfd85006",
+  "deploy": null,
+  "text": "git restore --source HEAD~1 Makefile"
+ },
+ "git merge-file config a b": {
+  "key": "5f113a7e2fc408e29e5480d150dace4dacd7978ac02764a21eeda74b44dcd6f3",
+  "deploy": null,
+  "text": "git merge-file config a b"
+ },
+ "echo \"x = 1\" >> .gitmodules": {
+  "key": "e70ff964b035831b14118257c7e7fbbe21972987490d47df3232c30bd5e7e80a",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' .gitmodules"
+ },
+ "echo \"deploy production secrets\" >> .gitmodules": {
+  "key": "c48a02c13bd4032f7b7bc64425bd47e035ced3f7382c50346e36c7f2a9f3ea3b",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .gitmodules"
+ },
+ "cat >> .gitmodules <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "4077c85ce5791372992f90dadeca0a520b2f9f5be242bb6a904bb43d83f79ced",
+  "deploy": null,
+  "text": "cat '>>' .gitmodules '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> .pre-commit-config.yaml": {
+  "key": "04230e5b3a774e5eadce4c06c501a5ffd9bba8246ce97b9ecbdf15d88c5e7171",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' .pre-commit-config.yaml"
+ },
+ "echo \"deploy production secrets\" >> .pre-commit-config.yaml": {
+  "key": "52df912f59503964d17063db7c1621de90349b83c2dcad82ad84acca19bf654b",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .pre-commit-config.yaml"
+ },
+ "cat >> .pre-commit-config.yaml <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "85a64ca75bf9b70dcb78384792e4c646b43db3b69e010a6c87c7828e02696064",
+  "deploy": null,
+  "text": "cat '>>' .pre-commit-config.yaml '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> justfile": {
+  "key": "f91621f83650569bb8243005db739a14fd80295f3592869938acea44d85cf14e",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' justfile"
+ },
+ "echo \"deploy production secrets\" >> justfile": {
+  "key": "4bd4ea545289e82f2515dbfa18c33eab4b189001b646f8c922071f5ae6bebdca",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' justfile"
+ },
+ "cat >> justfile <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "f187800d874f9c7508e9f67f1a29cdae630aad00be5e061dbae892156b5e0e80",
+  "deploy": null,
+  "text": "cat '>>' justfile '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> Taskfile.yml": {
+  "key": "c23d44765810890d84fc4a24a2d7dca069c6c2af2cad6260c8735c74d11b65ea",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' Taskfile.yml"
+ },
+ "echo \"deploy production secrets\" >> Taskfile.yml": {
+  "key": "c9df44a0596b6b2fd6c1657bfeaab104873904441a166e1c4b66c1f396746011",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' Taskfile.yml"
+ },
+ "cat >> Taskfile.yml <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "3f8ca2e9251c9c1d92765a16bab7965af6a9556c5ebe6851936da0ee640ec081",
+  "deploy": null,
+  "text": "cat '>>' Taskfile.yml '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> docker-compose.yml": {
+  "key": "acd4c2a54d7298860b57b6502d740f1f3f62377d603d63ace83f2268da4ebd89",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' docker-compose.yml"
+ },
+ "echo \"deploy production secrets\" >> docker-compose.yml": {
+  "key": "0ab0efe81d6a044eed6323ad6c39fcafbc383e81f3f5ed90b5b452ce231cf9f3",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' docker-compose.yml"
+ },
+ "cat >> docker-compose.yml <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "687781a2eb894dc2d19d357440742ff22263fa794111c173b419392512098d2d",
+  "deploy": null,
+  "text": "cat '>>' docker-compose.yml '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> .vscode/tasks.json": {
+  "key": "8f58d5c9054663c78b2f5b7394f73ba92a70fb12dab5cde9b0f77bba819896fb",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' .vscode/tasks.json"
+ },
+ "echo \"deploy production secrets\" >> .vscode/tasks.json": {
+  "key": "13f54bbe52590be5c04a56c3cf88e9804313b15b3c2d0d4e784c89a94b9f162a",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .vscode/tasks.json"
+ },
+ "cat >> .vscode/tasks.json <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "a3ee1b868f66589487ca43f8ee7f7df6e324ee31f32d3dda73b3d05e437394e0",
+  "deploy": null,
+  "text": "cat '>>' .vscode/tasks.json '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> .git/modules/sub/config": {
+  "key": "364d8d036b009ad47156d97569b31561f4ae05a380ed0f983fe4613e2e33fc10",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' .git/modules/sub/config"
+ },
+ "echo \"deploy production secrets\" >> .git/modules/sub/config": {
+  "key": "5b65c62e40eab36e70fd5bb3d8f1654dc834b170896b7a25f34c779389b9195c",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .git/modules/sub/config"
+ },
+ "cat >> .git/modules/sub/config <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "daffa49289d02b4838d4fea55166f9f0976a83b913329ba1d61b42f1d3cf196b",
+  "deploy": null,
+  "text": "cat '>>' .git/modules/sub/config '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> bare.git/config": {
+  "key": "6d99f3dce13470d4b9c6b8decf958f78b524b475e2acaafc668ec82ada6c7403",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' bare.git/config"
+ },
+ "echo \"deploy production secrets\" >> bare.git/config": {
+  "key": "f4b9bb495a6a7fe592b19fd604461b925855cb90f8a68e0be3ffb40f884f6846",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' bare.git/config"
+ },
+ "cat >> bare.git/config <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "0e65f23f45b01ad46b7d6b7e2c45c12e68a29e851e02251dc53706e6460adc95",
+  "deploy": null,
+  "text": "cat '>>' bare.git/config '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> .gitlab-ci.yml": {
+  "key": "b73f724753288b8197b29ebf04f6f9bf593dd339394e1ff64ee764339a190be3",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' .gitlab-ci.yml"
+ },
+ "echo \"deploy production secrets\" >> .gitlab-ci.yml": {
+  "key": "f84af0e74dd5a8856a5bd1dcfff5195f616d89ab7dcecd1cfea65931090e01fb",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .gitlab-ci.yml"
+ },
+ "cat >> .gitlab-ci.yml <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "f16bc9f920e71d884f2a5c919e1d2298292d2e11ab2406c01c6899863b93f583",
+  "deploy": null,
+  "text": "cat '>>' .gitlab-ci.yml '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> .circleci/config.yml": {
+  "key": "7f011048382b08acb245a68e93870f0ac632973bc146720d41c909491363b328",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' .circleci/config.yml"
+ },
+ "echo \"deploy production secrets\" >> .circleci/config.yml": {
+  "key": "377d6aca82a948bbb0c452c68cfcf394b59fd8825f00888e2f24792abc47c6d6",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .circleci/config.yml"
+ },
+ "cat >> .circleci/config.yml <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "1c0b530b57089438cb5be9a003da8aeec5fb8d1a49c8e53f86af32086b6a9b0a",
+  "deploy": null,
+  "text": "cat '>>' .circleci/config.yml '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> package.yaml": {
+  "key": "81ec8f8793b14352e5c99ce49609bebe8d4120315dab33537e0018cb74b84c77",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' package.yaml"
+ },
+ "echo \"deploy production secrets\" >> package.yaml": {
+  "key": "6f34af5a31caee4bb180a52e96c568a632f5bb6931dad3c152c58064697587b0",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' package.yaml"
+ },
+ "cat >> package.yaml <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "66b7f2042b37dbcf7c4862de17db05501eda315e807fb8e7b44df8e691bfcbad",
+  "deploy": null,
+  "text": "cat '>>' package.yaml '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> rules.mk": {
+  "key": "cdaefc43ca3eaa5d62dcd1a3528d430124eae1755da9af03a8ce7a409914909d",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' rules.mk"
+ },
+ "echo \"deploy production secrets\" >> rules.mk": {
+  "key": "b89766e4b00587d7ac08c33cd2861fbba4154d6c80341a76ba8d4fccdf280d05",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' rules.mk"
+ },
+ "cat >> rules.mk <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "f0a5885bced1df9dd8344f2695444f3f94aac6ff19ef72eb73e6011ca3543bbc",
+  "deploy": null,
+  "text": "cat '>>' rules.mk '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> tsconfig.json": {
+  "key": "783d24ae5a33d64888cd88a231937b012b8fa83f0cab0b49ca4858afffbdd4f9",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' tsconfig.json"
+ },
+ "echo \"deploy production secrets\" >> tsconfig.json": {
+  "key": "d2f7c2672ae7578b4738834cedc4a89f6ced2d52bbede957f93237bb0fdb442b",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' tsconfig.json"
+ },
+ "cat >> tsconfig.json <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "d011263c1c63db545a3599e1701c5897f7b12d6db942f28bdd4ac99f4a0fae71",
+  "deploy": null,
+  "text": "cat '>>' tsconfig.json '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> .github/actions/a/action.yml": {
+  "key": "65dfe890eb7a2cf00044887acdfd902c3e3b827202e211ce31b72392db3bbf4a",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' .github/actions/a/action.yml"
+ },
+ "echo \"deploy production secrets\" >> .github/actions/a/action.yml": {
+  "key": "08ef9aa794aec4d1dedacd4c55c425579308859c69787ffb34852030926550a3",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .github/actions/a/action.yml"
+ },
+ "cat >> .github/actions/a/action.yml <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "3a1d087a678cd5f362acf93b0b77a27084b82a10ccad85f1a9e69fba2da14de6",
+  "deploy": null,
+  "text": "cat '>>' .github/actions/a/action.yml '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> home/.gitconfig": {
+  "key": "d7aed28369a322245c7c1fdab1089eef99393b3a5bea252ea77e3525f7087dd2",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' home/.gitconfig"
+ },
+ "echo \"deploy production secrets\" >> home/.gitconfig": {
+  "key": "a6cb794f5322f39305fc8c176cb6fb33686954349267b1aea592d0e2fac6dc66",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' home/.gitconfig"
+ },
+ "cat >> home/.gitconfig <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "9e3ed3706bde62cdab6741fea5f8a21153205c81c01ffed7e97940da255c71a5",
+  "deploy": null,
+  "text": "cat '>>' home/.gitconfig '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> home/.config/git/config": {
+  "key": "48e3a14bc786ef1f2289737ea2d2ab1c5bd64608fdcbd0897d49f81161f710b9",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' home/.config/git/config"
+ },
+ "echo \"deploy production secrets\" >> home/.config/git/config": {
+  "key": "0c94d16f242c2943f195ca2ca6886d558b7404fa764d55ffc7eb448dc55b26dd",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' home/.config/git/config"
+ },
+ "cat >> home/.config/git/config <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "a13ec44d8b3d74befd63835a51cefe630bec59bfd49d869a0b76642cf652a174",
+  "deploy": null,
+  "text": "cat '>>' home/.config/git/config '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> .git/hooks/pre-push": {
+  "key": "47e152ea3514174bff5a82028b61eb1691ffd0c64bd3fd703233afe9eb0ba4e6",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' .git/hooks/pre-push"
+ },
+ "echo \"deploy production secrets\" >> .git/hooks/pre-push": {
+  "key": "c588e9299fca3f11b0186662eaa3c49d7200e42c042513fa727d320326bf45ed",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .git/hooks/pre-push"
+ },
+ "cat >> .git/hooks/pre-push <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "767df03e81910387f8106dace32e6248a88b7bdee57f609be9de2d5163087c11",
+  "deploy": null,
+  "text": "cat '>>' .git/hooks/pre-push '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> vite.config.ts": {
+  "key": "858ba3aed19b7565d3ab8a8810cf96ad0f5cfafed4eb2682c19a9bda586adf75",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' vite.config.ts"
+ },
+ "echo \"deploy production secrets\" >> vite.config.ts": {
+  "key": "144f71e4280b1d0280bb7541318824dc54b3b892d83af74ff2fe49a6632563dd",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' vite.config.ts"
+ },
+ "cat >> vite.config.ts <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "a88018df4cc79a3bd57f652c19e4242aa70bcb6eb975bf0f0fc4468b751d97af",
+  "deploy": null,
+  "text": "cat '>>' vite.config.ts '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"x = 1\" >> /etc/profile.d/x.sh": {
+  "key": "5463d59fa025533d307dbabf4bf81af698f816d4e193cbb9abca94e70fa83724",
+  "deploy": null,
+  "text": "echo [data:7f748037457f09946781273f0d09e2b1884cd12344a9bcd9681a39ed3e8d5ccf] '>>' /etc/profile.d/x.sh"
+ },
+ "echo \"deploy production secrets\" >> /etc/profile.d/x.sh": {
+  "key": "eadc5a31d2dcb3c8468a124321b2efc9a741d946a1f8818f1bc3258645019486",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' /etc/profile.d/x.sh"
+ },
+ "cat >> /etc/profile.d/x.sh <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "ebcd9bcf339c034b5331ecce6ddfcd238db884b52c6c4f8117744831881a22b4",
+  "deploy": null,
+  "text": "cat '>>' /etc/profile.d/x.sh '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo \"deploy production secrets\" >> .github/ISSUE_TEMPLATE/bug.md": {
+  "key": "b655cb0597e67184c005d00a262fcc02de5645172da7144571f10e1e409dc9c0",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .github/ISSUE_TEMPLATE/bug.md"
+ },
+ "echo \"deploy production secrets\" >> .github/PULL_REQUEST_TEMPLATE.md": {
+  "key": "f698fdc644e506003aaeb55c9db4fd0656a429e1885b64a8727be77941b98cd1",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .github/PULL_REQUEST_TEMPLATE.md"
+ },
+ "echo \"deploy production secrets\" >> notes/NOTES.md && wrangler deploy": {
+  "key": "091aeee99736a4d2f1b51b88bd38008cf5cad07cf99e73a4e7ac6627b84a7e9e",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md && wrangler deploy"
+ },
+ "echo \"deploy production secrets\" >> notes/NOTES.md; npm publish": {
+  "key": "c2c9607df2a4402be5ca9884e0aa6be61b7ffda61b21ddef8570677d96ed62f0",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md ; npm publish"
+ },
+ "echo \"deploy production secrets\" >> notes/NOTES.md || git push origin master": {
+  "key": "176ef5b6dcba2bc2b937126c7ae54a64bb43cbfd71718f4d19fb5784fae89e75",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md || git push origin master"
+ },
+ "echo \"deploy production secrets\" >> notes/NOTES.md | sh": {
+  "key": "2f36f8255d3cd4c95f321f3d05db1d8c7251c16abd7503db44a2ce9abda9d101",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md | sh"
+ },
+ "echo \"deploy production secrets\" >> notes/NOTES.md & echo \"deploy production secrets\" >> logs/run.log": {
+  "key": "3b928086bd38edf958a68d4a7c987b129f9cfc8a965c371f72bd8a6ae2b88848",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md & echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' logs/run.log"
+ },
+ "echo \"deploy production secrets\" >> notes/NOTES.md\necho \"deploy production secrets\" >> logs/run.log": {
+  "key": "eefdd848153ab0d548b9c1469853740e135d44a8653773276b979ff677f5ca8f",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md ; echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' logs/run.log"
+ },
+ "(echo \"deploy production secrets\" >> notes/NOTES.md)": {
+  "key": "e44740308d03c753a98d3a1a5e429aa6c855dbdf202777af077dd1d09e1365b4",
+  "deploy": null,
+  "text": "( echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md )"
+ },
+ "{ echo \"deploy production secrets\" >> notes/NOTES.md; }": {
+  "key": "ac557920389e2da8911266a766cbfea53ece3beeb5eb7435a8e4c3ec409fe0e9",
+  "deploy": null,
+  "text": "{ echo 'deploy production secrets' '>>' notes/NOTES.md ; }"
+ },
+ "cat >> notes/NOTES.md <<'EOF'\ndeploy production secrets\nEOF\necho \"deploy production secrets\" >> logs/run.log": {
+  "key": "5336e2e96a13d38d66305d4fd7828915f1d546312c7d8d596ee07c401fdbdf69",
+  "deploy": null,
+  "text": "cat '>>' notes/NOTES.md '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849] ; echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' logs/run.log"
+ },
+ "sudo echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "6032187045ce1462bf6998af2267bc6a1f7cd1ace2cc75024aed2de5f4537ce9",
+  "deploy": null,
+  "text": "sudo echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md"
+ },
+ "env echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "67ce8b81800a617cf2e0b0bddeddf14c4a6237515d4daa349aca678ca69560b2",
+  "deploy": null,
+  "text": "env echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md"
+ },
+ "time echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "7e15770626d3a9e33c3a348cef539fad65a282013efcc9598494fc7ea451a853",
+  "deploy": null,
+  "text": "time echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md"
+ },
+ "nohup echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "650177457f6114df02965e70cf48e5ff39eebf887d479b9337bb3a2be56502b0",
+  "deploy": null,
+  "text": "nohup echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md"
+ },
+ "echo \"deploy production secrets\" >> $F": {
+  "key": "80575af6be8bb94a6ed120241d82760ac370d592de0bc01593312fe1a7de6ee9",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' '$F'"
+ },
+ "echo \"deploy production secrets $HOME\" >> notes/NOTES.md": {
+  "key": "c9f6cc7378fe3d998009ef8404237c63a74faf2b8a14cb23b60ad18d3bec4b93",
+  "deploy": null,
+  "text": "echo [data:8b1b52402a9d06f5fd468de77619f4a169204c31f3bbf03db4b912dacba271a6] '>>' notes/NOTES.md"
+ },
+ "echo \"deploy production secrets\" >> notes/{a,b}.md": {
+  "key": "694ba4ce01313a8d112d215ba2e3bee6dd12b7de2b8c7b545f5a2fdb2cfd4ccb",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/{a,b}.md"
+ },
+ "echo \"deploy production secrets\" >> notes/*.md": {
+  "key": "3b5dbd3021b6b609ee9f5b7ec3f1567f78f94f12f68b4700f879af56167197c8",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' 'notes/*.md'"
+ },
+ "echo \"deploy production secrets $(id)\" >> notes/NOTES.md": {
+  "key": "0617fb3c169c4a50d500a7b750841770a2c3459b07cac8e97bf8b3774990d17a",
+  "deploy": null,
+  "text": "echo [data:4d8154b993c5bf3e457f85a27748e2d897befc4eff316604edca736b8c58d0a3] '>>' notes/NOTES.md"
+ },
+ "echo \"deploy production secrets `id`\" >> notes/NOTES.md": {
+  "key": "5893977793c64e85e4027b7fffe1588422065d0efe0c6a381105906d3197ee30",
+  "deploy": null,
+  "text": "echo [data:68f6ae2f886aa885ae3bb5227134751c47566316530763be6174f78518cd5dc4] '>>' notes/NOTES.md"
+ },
+ "alias echo=bash; echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "c74249cb6699b6e83b0887aebbf4a4c705c8fb733d22eb537f79e5f0b4b92d16",
+  "deploy": null,
+  "text": "alias echo=bash ; echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md"
+ },
+ "echo() { bash; }; echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "b8a371ae223d9c7183d7275928dcad52e2a217fd7414b9bc53af411ff0e14cba",
+  "deploy": null,
+  "text": "echo ( ) { bash ; } ; echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md"
+ },
+ "cat > notes/x.md <<EOF\ndeploy production secrets $(id)\nEOF": {
+  "key": "b8adf8b75b102e4e213126c3ba3798eba04466333b1916cc88d260122cfae640",
+  "deploy": null,
+  "text": "cat '>' notes/x.md '<<' EOF [data:f0b9856ee329520d01da21afe0c13c22409650eb7d319e1625e1bf2128d7b57c]"
+ },
+ "cat > notes/x.md <<EOF\ndeploy production secrets ${HOME}\nEOF": {
+  "key": "1e8afcc3cc0eadb3fb5bb52c31305a00bba018b459c05e9783869a846ae82298",
+  "deploy": null,
+  "text": "cat '>' notes/x.md '<<' EOF [data:1c573766872ce3b9359dc2cc199f4e054afbf852cf11375d6873f74714228d64]"
+ },
+ "./echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "f38ead3f9573d2f88b846b060ae42ff67bd34fd3b94c7edd10e81917b55bdfa9",
+  "deploy": null,
+  "text": "./echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md"
+ },
+ "/bin/echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "5511eee1516562c5d45448ad11b0c203bafcbdd803e81342989515f831a42cb6",
+  "deploy": null,
+  "text": "/bin/echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md"
+ },
+ "command echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "90b74f17c9f6830aea3916ddacf8ad11f1775019cf6e488237abd7f4016b67f3",
+  "deploy": null,
+  "text": "command echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/NOTES.md"
+ },
+ "builtin echo \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "fa12344e1a3d88e09789a714fea18da56fa1b246dc55469c5cc1a3a88e4ef72f",
+  "deploy": null,
+  "text": "builtin echo 'deploy production secrets' '>>' notes/NOTES.md"
+ },
+ "echо \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "956568f983c2dda4eecdb50fa994813136f509f9b71dd0df0d8745b1eadac7e0",
+  "deploy": null,
+  "text": "echо 'deploy production secrets' '>>' notes/NOTES.md"
+ },
+ "echo \"deploy production secrets\" >> ~/notes.md": {
+  "key": "d5d222a87cfb14a2d7180f2ee19b00557865ae29ce9afb2eb93320bf9cd16068",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' ~/notes.md"
+ },
+ "echo \"deploy production secrets\" >> ../outside.md": {
+  "key": "0ec3d6a6a32d092bc383ec873ac13d779b2d5ab2f006e718548042073763175d",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' ../outside.md"
+ },
+ "echo \"deploy production secrets\" >> /dev/tcp/127.0.0.1/9": {
+  "key": "d756dfda07563a2f4f56520572f56060ca853989cacd250f6063c7da80b673c7",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' /dev/tcp/127.0.0.1/9"
+ },
+ "echo \"deploy production secrets\" >> /proc/self/fd/1": {
+  "key": "cf4c91b3ea2224aed77c0c67ffba7561d5c7cf36b45536c8e00267ef359cd9d3",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' /proc/self/fd/1"
+ },
+ "echo \"deploy production secrets\" >| notes/NOTES.md": {
+  "key": "92e743279ebdb6f4f198d4e68db1a517a210d1abf05dbcf4858fe42073b7c6a0",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>' | notes/NOTES.md"
+ },
+ "echo \"deploy production secrets\" &> notes/NOTES.md": {
+  "key": "0e89c0946fdf196f6031bf21b1ce32082d8d8002907ab02369a5f6101531d704",
+  "deploy": null,
+  "text": "echo 'deploy production secrets' & '>' notes/NOTES.md"
+ },
+ "echo \"deploy production secrets\" 2> notes/NOTES.md": {
+  "key": "78fd1c85f652aa7c63e0d9f342fa8510eb47ecc6cb1d894f3657e2451ec1e06f",
+  "deploy": null,
+  "text": "echo [data:d0fe873c3ac60fa20e6691e2b42397632aeee014dccf963f137cf94fcd311988] '>' notes/NOTES.md"
+ },
+ "echo \"deploy production secrets\" <> notes/NOTES.md": {
+  "key": "208b837f1ccc9083e9e86db18db52105c31b9cbca95ea128e3b4c8a2b14f12b8",
+  "deploy": null,
+  "text": "echo 'deploy production secrets' '<' '>' notes/NOTES.md"
+ },
+ "echo \"deploy production secrets\" > notes/a.md > notes/b.md": {
+  "key": "b26bee4ae46a41656a2e3a40d4f10c83482c1f29613033206232e31b5829d10c",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>' notes/a.md '>' notes/b.md"
+ },
+ "echo -e \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "21e2fe87621328fd7eb02604e4e9e92870f7b980fb203b2aa0e5cd2953711ae9",
+  "deploy": null,
+  "text": "echo [data:cfd8f5152d7dbf744dc56fd9486d5e00973211b4a84e1d3f4009c59224fb9a4a] '>>' notes/NOTES.md"
+ },
+ "printf -v x \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "7616ff667fe074f7dd8a8bc816b7ebc107233cb644934de3b131f52291bc8411",
+  "deploy": null,
+  "text": "printf [data:4691b252629fe3b5f3b6e3b28c8d38f0ee27565bb263ac5810504c128c0cdbd3] '>>' notes/NOTES.md"
+ },
+ "cat <<< \"deploy production secrets\" >> notes/NOTES.md": {
+  "key": "8b5aa8ac4bef0c31485aa8d7ffbdc36c6d957a822ecc9b74b0b7086ca096c31d",
+  "deploy": null,
+  "text": "cat '<<<' [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849] '>>' notes/NOTES.md"
+ },
+ "cat <<-EOF >> notes/NOTES.md\ndeploy production secrets\nEOF": {
+  "key": "8aedadbcbec4c5c06aec12e4203cd2bffc80b89414695bbe152059e6637c11b7",
+  "deploy": null,
+  "text": "cat '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849] '>>' notes/NOTES.md"
+ },
+ "cat x <<'EOF' >> notes/NOTES.md\ndeploy production secrets\nEOF": {
+  "key": "3677af0ab96ce991c43e7879ddbc75a940a71fbb34fa7622ae9b0479c5c8052a",
+  "deploy": null,
+  "text": "cat x '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849] '>>' notes/NOTES.md"
+ },
+ "cat >> notes/NOTES.md <<'EOF'\ndeploy production secrets\n": {
+  "key": "d7f4b396183c548db2f42c41369271524517f069d59a2afa8a905f8d7d94fd27",
+  "deploy": null,
+  "text": "cat '>>' notes/NOTES.md '<<' EOF [data:e56695a1bbb9bb9f51e7e0962c5068603dcbf0fa6c1ad3acd4ccaa217fdf3b09]"
+ },
+ "tee notes/NOTES.md <<'EOF'\ndeploy production secrets\nEOF": {
+  "key": "8212374b185d0c64eea462f0570e4a417844c1abadeaf27b85563c31c2034127",
+  "deploy": null,
+  "text": "tee notes/NOTES.md '<<' EOF [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "cat >> notes/NOTES.md <<'A' <<'B'\ndeploy production secrets\nA\ndeploy production secrets\nB": {
+  "key": "380d52b6341da3dbae2c66067493f01b2b2b79e2bbbbc3811bf9bf62ec9508b2",
+  "deploy": null,
+  "text": "cat '>>' notes/NOTES.md '<<' A [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849] '<<' B [data:db76c8d5966a297dbfbc164598302dcaa716a42d0cddf76fa0782c0763cbc849]"
+ },
+ "echo hi >> notes/NOTES.md # <<EOF\nwrangler deploy\nEOF": {
+  "key": "607329bd3b3536dfdc7e6fbfc97b7e76a04380d188e205d31ceab73eff688dc1",
+  "deploy": null,
+  "text": "echo [data:269bd037aeed49a87caffbb3f418459e62054eb2c580b3236c06132b53405149] '>>' notes/NOTES.md '<<' EOF [data:8c7f6d9906d48d8e09601994db2bf09971a681e9f37deb319324535f98648e29]"
+ },
+ "echo \"x <<EOF y\" >> notes/NOTES.md\nwrangler deploy\nEOF": {
+  "key": "814b256f46953de989c914aef4a909fb9b65a4dcb8aa05eb5f420fc796a23454",
+  "deploy": null,
+  "text": "echo [data:e6f77af482bc5ae1f0c4cd3adb5f5499cda4a8ac54d1c70fbcdcd75f1c8c2bb1] '>>' notes/NOTES.md"
+ },
+ "echo \"deploy production secrets\" >> notes/run.sh": {
+  "key": "b4ea4a190ca2d60bfb6c6d91f4b743cae7238c892a1f605128fc34378187f3cd",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/run.sh"
+ },
+ "echo \"deploy production secrets\" >> gen.py": {
+  "key": "56c71b8cd5d0e1a9d75b1d7441eb3bb4957e6e2796c3e96d59b9b7632624de25",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' gen.py"
+ },
+ "echo \"deploy production secrets\" >> notes/exec.md": {
+  "key": "35bf35fd531651f45853142ab00dfc8a24d6d5a7392be150ec6eff15c45357ed",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/exec.md"
+ },
+ "echo \"deploy production secrets\" >> notes/bang.md": {
+  "key": "0128fd6ad18b27c4b5dc0ae0465bee0938e490b89f801c7c9b33ebc393558158",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/bang.md"
+ },
+ "echo \"deploy production secrets\" >> notes/.hidden.md": {
+  "key": "2e69aad56061db40079063840127819881fe027ec65fb7712256e8682efaeb31",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/.hidden.md"
+ },
+ "echo \"deploy production secrets\" >> notes/x.bin": {
+  "key": "6c87cd1530f8a5228b395c12494d7fd7d611e6ac0a556ee81ec5c608cb33e40b",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/x.bin"
+ },
+ "echo \"deploy production secrets\" >> README": {
+  "key": "83a15c50f74a6b53a76ab4ba3f9f3c7ecc787c896b0f043a3f75c7f0f00626c0",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' README"
+ },
+ "echo \"deploy production secrets\" >> nofolder/x.md": {
+  "key": "6691363a44680a92647a5948d2d7c9ff84f2abb92726963600eb6669baa0e23f",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' nofolder/x.md"
+ },
+ "echo \"deploy production secrets\" >> .git-notes/x.md": {
+  "key": "dbdbfcc987d1e826bced8a6085ba55509ad234c1dbce99ebe5915a716f900926",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' .git-notes/x.md"
+ },
+ "echo \"deploy production secrets\" >> notes/Makefile.md": {
+  "key": "90dcd8dcb22ccd6d472aafcf29f19cf99e9f9a84110b105a16437a48f72f1871",
+  "deploy": null,
+  "text": "echo [data:93992ad85a5a4c0a0f33f91bb4458617c2d7629584ad21560b9c21268073f1ef] '>>' notes/Makefile.md"
+ },
+ "echo \"plain text\" >> notes/deploy-notes.md": {
+  "key": "4242a6bdb4201a7929ecf4365e49095c5024679bcacefb19c16b08e2d12c7a05",
+  "deploy": null,
+  "text": "echo [data:be87034ad1011a587e04b3468faf2fa774e297a63546047222aeb5af6fa80e48] '>>' notes/deploy-notes.md"
+ },
+ "echo \"this file will run later\" >> notes/NOTES.md": {
+  "key": "fef2720ce5f4f9132dabff9bb79c9de58a9d4094717ba2f32f40515273e2a0f2",
+  "deploy": null,
+  "text": "echo [data:004b8927d0ff85991f71c64df01858ad863bf69bc5c5b3ff9ef992cf242f7a2d] '>>' notes/NOTES.md"
+ },
+ "git checkout -b production": {
+  "key": "c986a428d740b610cadc9f4a1ddbcd552070a174e314cd35d439015aab6aa809",
+  "deploy": null,
+  "text": "git checkout -b production"
+ },
+ "git push origin feat/x": {
+  "key": "e62529e3f5eeb596e605bb8ce4318550006b4d7a2b27e0b9784a0a8322783ae6",
+  "deploy": null,
+  "text": "git push origin feat/x"
+ },
+ "gh pr create --title x --body y": {
+  "key": "ea4374c3fee4197e2a745351eb5898fe2fbdb108d61dfad9a77dff51bf3fcccf",
+  "deploy": null,
+  "text": "gh pr create --title x --body y"
+ }
+}
