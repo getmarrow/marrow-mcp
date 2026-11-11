@@ -2108,6 +2108,14 @@ async function runPreActionHook(input, watch) {
         await afterAnswer(holdContext, { link: laterLink });
         return;
     }
+    // T1: a backend allow never lifts a marrow-control hold: the owner's dialog where a person can answer, the owner text where nobody can.
+    if (!verdict && classified.surfaces.includes('marrow-control')) {
+        if (claudePrompt.available && !noPersonAtPrompt(source))
+            emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, { kind: 'ask', promptText: control_routes_1.CONTROL_ROUTE_ASK_TEXT }));
+        else
+            emitLoopGuardDenial(identity.harness, control_routes_1.CONTROL_ROUTE_DENY_TEXT);
+        return;
+    }
     const emitted = emitDecision(result, identity.harness, claudePrompt);
     if (emitted.denied && !result.outage) {
         await closeDeniedDecision(resolved.apiKey, baseUrl, held, emitted.reason, sessionId, agentId);

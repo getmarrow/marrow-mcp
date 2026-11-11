@@ -12,6 +12,7 @@ exports.normalizedHookAction = normalizedHookAction;
 const node_crypto_1 = require("node:crypto");
 const node_os_1 = require("node:os");
 const hook_tool_policy_1 = require("./hook-tool-policy");
+const control_routes_1 = require("./control-routes");
 const key_class_1 = require("./key-class");
 const SECRET = '[secret]';
 /** The marker of a replaced Stripe-style key keeps its class (a closed set: never built from input). */
@@ -545,9 +546,11 @@ function parseSegment(words) {
     while (index < words.length && ASSIGNMENT.test(words[index]))
         index += 1;
     while (index < words.length && WRAPPERS.has(basename(words[index]))) {
+        const wrapper = basename(words[index]);
         index += 1;
+        // T1: a wrapper option that takes an argument consumes it (`env -u NAME npm`, `sudo -u USER rm`): the program is the word after it.
         while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index])))
-            index += 1;
+            index += (0, control_routes_1.wrapperOptionTakesValue)(wrapper, words[index]) ? 2 : 1;
     }
     const program = index < words.length ? basename(words[index]).toLowerCase() : null;
     const plain = [];

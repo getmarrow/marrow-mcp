@@ -11,6 +11,7 @@ import {
   shellCommandToolText,
   toolTargetPaths,
 } from './hook-tool-policy';
+import { wrapperOptionTakesValue } from './control-routes';
 import { keyClassOf } from './key-class';
 
 /**
@@ -678,8 +679,10 @@ function parseSegment(words: string[]): Parsed {
   let index = 0;
   while (index < words.length && ASSIGNMENT.test(words[index])) index += 1;
   while (index < words.length && WRAPPERS.has(basename(words[index]))) {
+    const wrapper = basename(words[index]);
     index += 1;
-    while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index]))) index += 1;
+    // T1: a wrapper option that takes an argument consumes it (`env -u NAME npm`, `sudo -u USER rm`): the program is the word after it.
+    while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index]))) index += wrapperOptionTakesValue(wrapper, words[index]) ? 2 : 1;
   }
   const program = index < words.length ? basename(words[index]).toLowerCase() : null;
   const plain: number[] = [];

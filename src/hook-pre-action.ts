@@ -36,7 +36,7 @@ import {
   type HoldPlan,
   type OwnerLinkOutcome,
 } from './host-approval';
-import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
+import { CONTROL_ROUTE_ASK_TEXT, CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
 import { recordSessionBypass } from './owner-bypass';
 import { selfProtectKind } from './self-protect';
 import { armKeylessNotice } from './keyless-notice';
@@ -2140,6 +2140,12 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     }
     emitHeldPlan(identity.harness, effective, code);
     await afterAnswer(holdContext, { link: laterLink });
+    return;
+  }
+  // T1: a backend allow never lifts a marrow-control hold: the owner's dialog where a person can answer, the owner text where nobody can.
+  if (!verdict && classified.surfaces.includes('marrow-control')) {
+    if (claudePrompt.available && !noPersonAtPrompt(source)) emitHookOutput(identity.harness, heldActionHookOutput(identity.harness, { kind: 'ask', promptText: CONTROL_ROUTE_ASK_TEXT }));
+    else emitLoopGuardDenial(identity.harness, CONTROL_ROUTE_DENY_TEXT);
     return;
   }
   const emitted = emitDecision(result, identity.harness, claudePrompt);
