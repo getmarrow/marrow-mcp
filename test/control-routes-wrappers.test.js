@@ -334,3 +334,79 @@ test('T1 A14/A15: a hook-config write and a link to it are held in every mode, k
     }
   });
 });
+
+// ---- F3 (patch-t1selfoff-r1): a wrapper command that never bound an approval before T1 still never binds ------------------------
+// Before T1 the option argument was read as the program (`sudo -u smbpasswd ls` ran `smbpasswd`), and such a command was withheld
+// (truncated). T1 reads `ls`; truncated is the union of both readings, so no command goes from never-binds to bindable.
+const NEVER_BINDS_BEFORE = [
+  ['F3a env -u smbpasswd', 'env -u smbpasswd ls'],
+  ['F3a sudo -u smbpasswd', 'sudo -u smbpasswd ls'],
+  ['F3a timeout -s smbpasswd', 'timeout -s smbpasswd 5 ls'],
+  ['F3a nice -n smbpasswd', 'nice -n smbpasswd ls'],
+  ['F3a sudo --user smbpasswd', 'sudo --user smbpasswd git push origin main'],
+  ['F3a doas -u password', 'doas -u password npm test'],
+  ['F3a ionice -c token', 'ionice -c token rm -rf build'],
+  ['F3a stdbuf -o secret', 'stdbuf -o secret ls'],
+  ['F3a xargs -I password', 'xargs -I password ls'],
+  ['F3a exec -a token', 'exec -a token ls'],
+  ['F3a env -C token', 'env -C token ls'],
+  ['F3c ; sudo -u smbpasswd b', 'a; sudo -u smbpasswd b'],
+  ['F3c && env -u token npm test', 'ls && env -u token npm test'],
+  ['F3c || sudo -u password', 'a || sudo -u password ls'],
+  ['F3c pipe into sudo -u vault', 'x | sudo -u vault cat'],
+  ['F3c subshell', '( env -u smbpasswd ls )'],
+  ['F3c bash -c', 'bash -c "sudo -u smbpasswd ls"'],
+  ['F3d repeated option, the secret-named argument first', 'sudo -u smbpasswd -u root ls'],
+  ['F3d repeated option, env, the secret-named argument first', 'env -u token -u A ls'],
+  ['F3h production deploy', 'sudo -u smbpasswd wrangler deploy --env production'],
+];
+for (const [id, command] of NEVER_BINDS_BEFORE) {
+  test(`T1 F3 never-binds stays never-binds: ${id}`, () => {
+    assert.equal(normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }, { salt }).truncated, true, command);
+  });
+}
+
+test('T1 F3: the union keeps T1 programs[] and keys; a benign argument stays bindable; a fed or valued secret stays out of every key', () => {
+  assert.deepEqual(normalizeShellCommand('sudo -u smbpasswd ls').programs, ['ls']);
+  assert.equal(normalizeShellCommand('sudo -u alice ls').truncated, false);
+  assert.equal(normalizeShellCommand('env -u A npm test').truncated, false);
+  assert.equal(normalizeShellCommand('git commit -m "env -u smbpasswd ls"').truncated, false, 'F3g a message is as before');
+  assert.equal(normalizeShellCommand('env -u A -u token ls').truncated, false, 'F3d last-named argument: bindable before T1 too (the program was A)');
+  const secret = dummySecret();
+  const other = dummySecret();
+  for (const command of [`echo ${secret} | sudo -u root vault kv put secret/app`, `env -u A smbpasswd -a u1 ${secret}`, `echo ${secret} | sudo -u smbpasswd passwd`]) {
+    const action = normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }, { salt });
+    assert.equal(action.truncated, true, 'F3b withheld');
+    assert.equal(JSON.stringify(action).toLowerCase().includes(secret.toLowerCase()), false, 'F3b no value in the action');
+  }
+  // COLLF3: text after the secret keys; only a different secret may match.
+  assert.notEqual(key(`env -u A smbpasswd -a u1 ${secret} --tag next`), key(`env -u A smbpasswd -a u1 ${secret} --tag latest`));
+  assert.notEqual(key(`sudo -u smbpasswd npm publish --tag next`), key(`sudo -u smbpasswd npm publish --tag latest`));
+  assert.notEqual(key(`sudo -u smbpasswd ls`), key(`sudo -u smbpasswdx ls`));
+  assert.equal(key(`sudo -u smbpasswd ls ${secret}`).includes(secret), false);
+  assert.equal(key(`sudo -u smbpasswd ls ${other}`).includes(other), false);
+});
+
+test('T1 F3R: the wrapper forms of the new routes are no more reusable than the plain master route under a backend allow', () => {
+  const h = keyedHarness();
+  try {
+    h.setConfig({ runtime: ALLOW_RUNTIME });
+    const forms = [
+      'npx @getmarrow/install control disable --yes',
+      A1,
+      'sudo -u root npx @getmarrow/install control disable',
+      'timeout -s KILL 5 npx @getmarrow/install control disable',
+      'timeout 240 npx -y --package=@getmarrow/mcp@3.9.108 marrow-mcp setup',
+      'MARROW_AUTO_HOOK=false claude -p "x"',
+    ];
+    for (const [mode, env] of [['default', {}], ['plan', {}], ['auto', {}], ['default', { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }]]) {
+      const answers = forms.map((command, index) => {
+        assert.equal(held(command), true, command);
+        const out = h.run('claude-pre-action-hook', hookEvent({ tool_name: 'Bash', tool_input: { command }, permission_mode: mode, tool_use_id: `toolu_t1_f3r_${index}_${mode}_${Object.keys(env).length}` }), env);
+        return decision(out);
+      });
+      assert.ok(['ask', 'deny'].includes(answers[0]), `${mode} plain`);
+      assert.deepEqual(answers, forms.map(() => answers[0]), `${mode} ${JSON.stringify(env)}: every wrapper form answers as the plain route`);
+    }
+  } finally { h.cleanup(); }
+});

@@ -142,8 +142,9 @@ type ScanBudget = { scanned: number; deadline: number };
  * withheld only because it MAY be a secret is kept as it is.
  * `freeText`: the text is a field of a tool that does not run shell text (a prompt, a query, a path), read as shell
  * words only for classification: a program word is then listed only when it is a known program (UNLISTED_PROGRAM).
+ * `consumed`: a wrapper option consumed its argument (T1); `wordsAsBefore`: the reading before T1, where it did not (F3).
  */
-type Exactness = { truncated: boolean; budget: ScanBudget; exact: boolean; sigs: string[]; freeText: boolean };
+type Exactness = { truncated: boolean; budget: ScanBudget; exact: boolean; sigs: string[]; freeText: boolean; consumed?: boolean; wordsAsBefore?: boolean };
 
 /** Thrown when normalization runs out of its budget: the caller sends a truncated placeholder instead. */
 class NormalizationLimit extends Error {}
@@ -675,14 +676,18 @@ type Parsed = {
   targets: string[];
 };
 
-function parseSegment(words: string[]): Parsed {
+function parseSegment(words: string[], state: Exactness): Parsed {
   let index = 0;
   while (index < words.length && ASSIGNMENT.test(words[index])) index += 1;
   while (index < words.length && WRAPPERS.has(basename(words[index]))) {
     const wrapper = basename(words[index]);
     index += 1;
     // T1: a wrapper option that takes an argument consumes it (`env -u NAME npm`, `sudo -u USER rm`): the program is the word after it.
-    while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index]))) index += wrapperOptionTakesValue(wrapper, words[index]) ? 2 : 1;
+    while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index]))) {
+      const takes = !state.wordsAsBefore && wrapperOptionTakesValue(wrapper, words[index]);
+      if (takes) state.consumed = true;
+      index += takes ? 2 : 1;
+    }
   }
   const program = index < words.length ? basename(words[index]).toLowerCase() : null;
   const plain: number[] = [];
@@ -755,7 +760,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
   const out = [...words];
   const handled = new Set<number>();
   const removed = new Set<number>();
-  const parsed = parseSegment(out);
+  const parsed = parseSegment(out, state);
   const { index, program, targets } = parsed;
 
   // Environment assignments before the program (and a wrapper's own, as in `env X=1 cmd`).
@@ -1227,7 +1232,22 @@ function feederNameKept(program: string, stage: string[]): boolean {
   return LONE_FEEDER_PROGRAMS.has(program) && stage[0] === program;
 }
 
-function normalizeInner(command: string, state: Exactness, depth: number): { text: string; programs: string[] } {
+/**
+ * F3: a command that the reading before T1 (a wrapper option argument read as the program: `sudo -u smbpasswd ls`) withholds
+ * stays withheld, so it never binds an approval. Truncated is the union of both readings (the second reads with the same state, so
+ * its own sites mark it; `textBefore` carries its text for the secret-marker check); the text and programs[] are T1's.
+ */
+function normalizeInner(command: string, state: Exactness, depth: number): { text: string; programs: string[]; textBefore?: string } {
+  const result: { text: string; programs: string[]; textBefore?: string } = readShellText(command, state, depth);
+  if (depth === 0 && state.consumed && !state.truncated && !state.exact && !state.wordsAsBefore) {
+    const sigs = state.sigs.length;
+    state.wordsAsBefore = true;
+    try { result.textBefore = readShellText(command, state, 0).text; } finally { state.wordsAsBefore = false; state.sigs.length = sigs; }
+  }
+  return result;
+}
+
+function readShellText(command: string, state: Exactness, depth: number): { text: string; programs: string[] } {
   if (command.length > MAX_COMMAND_CHARS) throw new NormalizationLimit();
   spend(state, 0);
   // Quoting of the characters the shell expands (kept apart from the unquoted words, see quoteSignature).
@@ -1276,7 +1296,7 @@ function normalizeInner(command: string, state: Exactness, depth: number): { tex
   for (let k = segments.length - 2; k >= 0; k -= 1) {
     if (!piped(k)) continue;
     const next = segments[k + 1].words;
-    sinkAfter[k] = (next.length > 0 && takesSecrets(next, parseSegment(next))) || sinkAfter[k + 1];
+    sinkAfter[k] = (next.length > 0 && takesSecrets(next, parseSegment(next, state))) || sinkAfter[k + 1];
   }
   segments.forEach((segment, k) => {
     if (segment.words.length) {
@@ -1909,9 +1929,9 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     const raw = shellCommand(event);
     if (untrimmedShellText(event, raw) !== null) state.truncated = true; // exact: raw (the host's untrimmed text)
     state.freeText = !isShellTextTool(event as Parameters<typeof isShellTextTool>[0]);
-    const { text, programs } = normalizeInner(raw, state, 0);
-    // A secret was replaced: the action is never bound or reused (it asks each time).
-    if (hasSecretMarker(text)) state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
+    const { text, programs, textBefore } = normalizeInner(raw, state, 0);
+    // A secret was replaced (in either reading, F3): the action is never bound or reused (it asks each time).
+    if (hasSecretMarker(text) || hasSecretMarker(textBefore ?? '')) state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
     // The command text itself only for a deploy the service can judge word for word (see deployCommandText).
     // Judged on the host's exact text (a trimmed non-ASCII space must not slip through).
     const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input as Record<string, unknown> : null;

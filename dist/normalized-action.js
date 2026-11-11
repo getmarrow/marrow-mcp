@@ -541,7 +541,7 @@ function basename(word) {
     return word.replace(/^.*\//, '');
 }
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
-function parseSegment(words) {
+function parseSegment(words, state) {
     let index = 0;
     while (index < words.length && ASSIGNMENT.test(words[index]))
         index += 1;
@@ -549,8 +549,12 @@ function parseSegment(words) {
         const wrapper = basename(words[index]);
         index += 1;
         // T1: a wrapper option that takes an argument consumes it (`env -u NAME npm`, `sudo -u USER rm`): the program is the word after it.
-        while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index])))
-            index += (0, control_routes_1.wrapperOptionTakesValue)(wrapper, words[index]) ? 2 : 1;
+        while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index]))) {
+            const takes = !state.wordsAsBefore && (0, control_routes_1.wrapperOptionTakesValue)(wrapper, words[index]);
+            if (takes)
+                state.consumed = true;
+            index += takes ? 2 : 1;
+        }
     }
     const program = index < words.length ? basename(words[index]).toLowerCase() : null;
     const plain = [];
@@ -619,7 +623,7 @@ function redactSegment(words, ctx) {
     const out = [...words];
     const handled = new Set();
     const removed = new Set();
-    const parsed = parseSegment(out);
+    const parsed = parseSegment(out, state);
     const { index, program, targets } = parsed;
     // Environment assignments before the program (and a wrapper's own, as in `env X=1 cmd`).
     for (let i = 0; i < index; i += 1) {
@@ -1173,7 +1177,27 @@ function feederNameKept(program, stage) {
     // Alone, only the exact lower-case name of a stdin producer: no path, no other case (`"Cat" | smbpasswd` is a value).
     return LONE_FEEDER_PROGRAMS.has(program) && stage[0] === program;
 }
+/**
+ * F3: a command that the reading before T1 (a wrapper option argument read as the program: `sudo -u smbpasswd ls`) withholds
+ * stays withheld, so it never binds an approval. Truncated is the union of both readings (the second reads with the same state, so
+ * its own sites mark it; `textBefore` carries its text for the secret-marker check); the text and programs[] are T1's.
+ */
 function normalizeInner(command, state, depth) {
+    const result = readShellText(command, state, depth);
+    if (depth === 0 && state.consumed && !state.truncated && !state.exact && !state.wordsAsBefore) {
+        const sigs = state.sigs.length;
+        state.wordsAsBefore = true;
+        try {
+            result.textBefore = readShellText(command, state, 0).text;
+        }
+        finally {
+            state.wordsAsBefore = false;
+            state.sigs.length = sigs;
+        }
+    }
+    return result;
+}
+function readShellText(command, state, depth) {
     if (command.length > MAX_COMMAND_CHARS)
         throw new NormalizationLimit();
     spend(state, 0);
@@ -1226,7 +1250,7 @@ function normalizeInner(command, state, depth) {
         if (!piped(k))
             continue;
         const next = segments[k + 1].words;
-        sinkAfter[k] = (next.length > 0 && takesSecrets(next, parseSegment(next))) || sinkAfter[k + 1];
+        sinkAfter[k] = (next.length > 0 && takesSecrets(next, parseSegment(next, state))) || sinkAfter[k + 1];
     }
     segments.forEach((segment, k) => {
         if (segment.words.length) {
@@ -1882,9 +1906,9 @@ function normalizedOfKind(event, kind, hostToolName, state, commandText) {
         if (untrimmedShellText(event, raw) !== null)
             state.truncated = true; // exact: raw (the host's untrimmed text)
         state.freeText = !(0, hook_tool_policy_1.isShellTextTool)(event);
-        const { text, programs } = normalizeInner(raw, state, 0);
-        // A secret was replaced: the action is never bound or reused (it asks each time).
-        if (hasSecretMarker(text))
+        const { text, programs, textBefore } = normalizeInner(raw, state, 0);
+        // A secret was replaced (in either reading, F3): the action is never bound or reused (it asks each time).
+        if (hasSecretMarker(text) || hasSecretMarker(textBefore ?? ''))
             state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
         // The command text itself only for a deploy the service can judge word for word (see deployCommandText).
         // Judged on the host's exact text (a trimmed non-ASCII space must not slip through).

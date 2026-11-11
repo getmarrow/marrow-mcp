@@ -47,6 +47,7 @@ const ROUTES = [
   ['quoted words', 'npx @getmarrow/install "control" \'disable\''],
   ['split quotes', "npx @getmarrow/install con''trol dis''able"],
   ['glob argument', 'npx @getmarrow/install control dis*'],
+  ['setup (owner decision 10 Nov: installer setup asks)', 'npx -y @getmarrow/install@0.1.76 setup'],
   ['heredoc the parser cannot read', "cat <<'EOF' | npx @getmarrow/install control disable\nx\nEOF"],
 ];
 
@@ -63,7 +64,6 @@ for (const [id, command] of ROUTES) {
 const NOT_ROUTES = [
   ['C10 control enable', 'npx @getmarrow/install control enable'],
   ['C10 control status', 'npx @getmarrow/install control status'],
-  ['setup', 'npx -y @getmarrow/install@0.1.76 setup'],
   ['doctor', 'npx @getmarrow/install doctor'],
   ['an echo that only names it', 'echo "npx @getmarrow/install control disable"'],
   ['a commit message that names it', 'git commit -m "docs: marrow-install uninstall"'],
