@@ -83,8 +83,9 @@ const MIN_STEP_MS = 600;
  * One total time budget for a pre-tool hook, counted from the start of the
  * hook process and set from each host's real kill timeout as
  * @getmarrow/install configures it: Codex 5 s (it then lets the call run),
- * Cursor 5 s with failClosed, the installer's Grok guard 5 s (it then blocks),
- * Gemini CLI 5 s. The margin covers npx start-up before the process starts.
+ * Cursor 15 s with failClosed (it honours the hooks.json timeout; a hook that
+ * overruns is killed and the tool is blocked), the installer's Grok guard 5 s
+ * (it then blocks), Gemini CLI 5 s. The margin covers npx start-up before the process starts.
  * Cold auth can take 900 ms plus a 1.6 s grace, so the control path keeps
  * room for a slow but healthy Marrow; when the budget still runs out, an
  * action that can be held stays held (never an outage allow).
@@ -93,7 +94,9 @@ export function preToolBudgetMs(host: ApprovalHost): number {
   // Codex: 5 s kill, then it runs the call. npx start-up before this process
   // takes about 0.5-1.3 s and more under load, so the answer comes within 2 s.
   if (host === 'codex') return 2_000;
-  if (host === 'cursor' || host === 'grok' || host === 'gemini') return 4_000;
+  // Cursor: a keyed commit needs 3 serial calls (median 3.2 s) and the hook is killed at 15 s; 9 s leaves 6 s.
+  if (host === 'cursor') return 9_000;
+  if (host === 'grok' || host === 'gemini') return 4_000;
   return 14_000;
 }
 

@@ -220,7 +220,7 @@ test('I3: a real outage allows routine shell commands whose only high-risk signa
 test('I3: the production 300 ms hook budget still applies in an outage: an overrun holds a high-classified command (fail closed), a routine one keeps flowing', () => {
   assert.equal(require('../dist/seatbelt/hook.js').HOOK_BUDGET_MS, 300, 'the production budget is 300 ms; only the test preload gives a spawned hook 30 s');
   const { preToolBudgetMs } = require('../dist/host-approval.js');
-  assert.deepEqual(['codex', 'cursor', 'grok', 'gemini', 'claude-code'].map((host) => preToolBudgetMs(host)), [2_000, 4_000, 4_000, 4_000, 14_000], 'the production hook deadlines; only the test preload moves them');
+  assert.deepEqual(['codex', 'cursor', 'grok', 'gemini', 'claude-code'].map((host) => preToolBudgetMs(host)), [2_000, 9_000, 4_000, 4_000, 14_000], 'the production hook deadlines; only the test preload moves them');
   assert.equal(classifyTool({ tool_name: 'Bash', tool_input: { command: 'git branch -D old' } }).risk, 'high');
   driven.clear();
   const wrong = [];

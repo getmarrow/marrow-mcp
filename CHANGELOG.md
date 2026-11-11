@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Hook (Cursor): the pre-action hook now has a 9 s budget (was 4 s) inside Cursor's 15 s hook timeout, so a keyed commit that needs three server calls shows Marrow's real answer instead of "did not answer in time"; a slower answer is still held, never allowed, and every other host keeps its budget. `MARROW_HOOK_TIMING=1` (exactly) prints one stderr line per control call with a fixed route name and milliseconds, nothing else.
+
 ## 3.9.112
 
 3.9.111 was tagged but never published (a release-run test flake); 3.9.112 carries the same changes plus a test-only fix.
