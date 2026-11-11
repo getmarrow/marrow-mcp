@@ -15,6 +15,7 @@ const SHAPES = {
   cursor: (c, cwd, id) => ({ hook_event_name: 'beforeShellExecution', conversation_id: id, generation_id: 'g1', command: c, cwd }),
   claude: (c, cwd, id) => ({ hook_event_name: 'PreToolUse', session_id: id, tool_use_id: 't1', tool_name: 'Bash', tool_input: { command: c }, cwd }),
   codex: (c, cwd, id) => ({ hook_event_name: 'PreToolUse', session_id: id, turn_id: 't1', tool_use_id: 't1', tool_name: 'Bash', tool_input: { command: c }, cwd }),
+  windsurf: (c, cwd, id) => ({ agent_action_name: 'pre_run_command', trajectory_id: id, execution_id: 'e1', tool_info: { command_line: c, cwd } }),
 };
 
 function dummyKey() {
@@ -68,4 +69,4 @@ const denied = (r) => r.status === 2 || r.answer?.permission === 'deny' || r.ans
 /** The answer lets the action run (no deny, no ask), in any host's JSON shape. */
 const allowed = (r) => r.status === 0 && !denied(r) && r.answer?.permission !== 'ask';
 
-module.exports = { runHook, makeHome, dummyKey, allowed, denied, ROOT };
+module.exports = { runHook, makeHome, dummyKey, allowed, denied, ROOT, SHAPES };

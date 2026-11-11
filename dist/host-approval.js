@@ -147,9 +147,10 @@ function stepTimeoutMs(ctx, max, reserve = OUTPUT_RESERVE_MS) {
     return Math.min(max, left);
 }
 /**
- * Work a post-tool hook does for a held call. Codex and Cursor run these hooks
- * with a 5-second timeout (as @getmarrow/install configures them); a hook cut
- * short keeps its queued report, which a later hook resends.
+ * Work a post-tool hook does for a held call: 4 s on Codex and Cursor, 9 s on
+ * every other host. It is not the pre-tool budget (Cursor's is 9 s there); the
+ * post-tool hook's own kill timeout is the host's, as @getmarrow/install writes
+ * it. A hook cut short keeps its queued report, which a later hook resends.
  */
 function settleBudgetMs(host) {
     return host === 'codex' || host === 'cursor' ? 4_000 : 9_000;

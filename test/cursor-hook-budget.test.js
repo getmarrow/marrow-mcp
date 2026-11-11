@@ -11,7 +11,8 @@ const crypto = require('node:crypto');
 
 const { runHook, makeHome, allowed, denied, ROOT } = require('./support/cursor-budget-run.cjs');
 const { HELD_SLOW_TEXT, HELD_OFFLINE_TEXT, classifyTool } = require(`${ROOT}/dist/hook-pre-action.js`);
-const { preToolBudgetMs } = require(`${ROOT}/dist/host-approval.js`);
+const { preToolBudgetMs, settleBudgetMs } = require(`${ROOT}/dist/host-approval.js`);
+const { runFaulted, FAULTS } = require('./support/hook-stderr-faults.cjs');
 
 const COMMIT = 'git commit -m t';
 const FORCE = 'git push --force origin main';
@@ -23,6 +24,11 @@ test('FC8 BUD: the hook budget per host: only Cursor moved (9 s); Codex 2 s, Gro
   const table = Object.fromEntries(['codex', 'cursor', 'grok', 'gemini', 'claude-code', 'windsurf', 'cline', 'other'].map((host) => [host, preToolBudgetMs(host)]));
   assert.deepEqual(table, { codex: 2_000, cursor: 9_000, grok: 4_000, gemini: 4_000, 'claude-code': 14_000, windsurf: 14_000, cline: 14_000, other: 14_000 });
   assert.ok(table.cursor + 6_000 <= 15_000, 'at least 6 s inside the 15 s hooks.json timeout');
+});
+
+test('F4: the post-tool settle budget is unchanged by the Cursor pre-tool budget: Codex and Cursor 4 s, every other host 9 s', () => {
+  const table = Object.fromEntries(['codex', 'cursor', 'grok', 'gemini', 'claude-code', 'windsurf', 'cline', 'other'].map((host) => [host, settleBudgetMs(host)]));
+  assert.deepEqual(table, { codex: 4_000, cursor: 4_000, grok: 9_000, gemini: 9_000, 'claude-code': 9_000, windsurf: 9_000, cline: 9_000, other: 9_000 });
 });
 
 test('FC8: non-Cursor hosts answer as before (Claude Code and Codex, a commit with three 1.2 s calls)', async () => {
@@ -195,4 +201,92 @@ test('T3: timing on does not change the hook answer or the server calls: stdout 
     assert.equal(off.err.includes('marrow-hook-timing'), false);
     assert.ok(on.err.includes('marrow-hook-timing route='), on.err);
   }
+});
+
+// ---------------------------------------------------------------- C1R1: a stderr fault drops the timing lines, never the answer
+// Each row runs the same hook twice under the same stderr fault, MARROW_HOOK_TIMING unset and =1, and needs equal stdout
+// bytes, exit status and (timing-on) stderr, no timing text on stdout, and timing on at most 100 ms later to the last
+// stdout byte and to exit. Only a time miss is measured again (load), at most three times.
+const VERIFY_HANG = { command: FORCE, delays: { verify: 60_000 } };
+const ROUTINE = { command: COMMIT };
+const sayF = (r) => `${r.host}/${r.fault}/${r.timing ? 'on' : 'off'} status=${r.status} signal=${r.signal} last=${r.lastOutMs} exit=${r.exitMs} out=${JSON.stringify(r.out.slice(0, 120))}`;
+
+function pairDiff(off, on) {
+  if (on.out !== off.out) return 'stdout differs';
+  if (on.status !== off.status || on.signal !== off.signal) return 'exit differs';
+  if (on.out.includes('marrow-hook-timing')) return 'timing text on stdout';
+  // Where stderr stays readable, it holds what timing off holds plus whole timing lines at most: no uncaught error text.
+  if (['throw', 'async-error'].includes(on.fault) && on.err.replace(/^marrow-hook-timing route=\w+ ms=\d+\n/gm, '') !== off.err) return 'stderr differs';
+  if ((off.lastOutMs === null) !== (on.lastOutMs === null)) return 'stdout presence differs';
+  if (on.lastOutMs !== null && on.lastOutMs > off.lastOutMs + 100) return 'time: last stdout byte';
+  if (on.exitMs > off.exitMs + 100) return 'time: exit';
+  return '';
+}
+
+async function faultPair(base, fault, arm = '') {
+  let why = '';
+  let pair;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const [off, on] = await Promise.all([false, true].map((timing) => runFaulted({ root: ROOT, ...base, fault, arm, timing })));
+    pair = { off, on };
+    why = pairDiff(off, on);
+    if (!why || !why.startsWith('time')) break;
+  }
+  assert.equal(why, '', `${why}: ${sayF(pair.off)} | ${sayF(pair.on)}`);
+  return pair;
+}
+
+/** Every fault for one host and row: the four short faults side by side, then the full pipe alone. */
+async function allFaults(base) {
+  const pairs = await Promise.all(FAULTS.filter((f) => f !== 'full').map((fault) => faultPair(base, fault)));
+  pairs.push(await faultPair(base, 'full'));
+  return pairs;
+}
+
+test('B1a-B1e: a held force push (verify hangs) stays held with timing on under every stderr fault, on Cursor, Claude Code and Codex', async () => {
+  for (const host of ['cursor', 'claude', 'codex']) {
+    for (const { off, on } of await allFaults({ ...VERIFY_HANG, host })) {
+      assert.ok(heldSlow(on) && heldSlow(off), `held: ${sayF(on)}`);
+      if (on.fault !== 'throw') assert.equal(on.status, 0, sayF(on));
+    }
+  }
+});
+
+test('B1b: a routine commit with a fast ok server answers as timing off under every stderr fault, on Cursor, Claude Code and Codex', async () => {
+  for (const host of ['cursor', 'claude', 'codex']) {
+    for (const { on } of await allFaults({ ...ROUTINE, host })) {
+      if (on.fault !== 'throw') assert.ok(allowed(on), `allowed: ${sayF(on)}`);
+    }
+  }
+});
+
+test('B1f: the route=total exit line under a fault that starts only at exit (reader closed after the answer, a throwing or erroring write)', async () => {
+  for (const host of ['cursor', 'claude', 'codex']) {
+    const pairs = await Promise.all([
+      faultPair({ ...ROUTINE, host }, 'epipe-after-answer'),
+      faultPair({ ...ROUTINE, host }, 'throw', 'exit'),
+      faultPair({ ...ROUTINE, host }, 'async-error', 'exit'),
+      faultPair({ ...VERIFY_HANG, host }, 'async-error', 'exit'),
+    ]);
+    for (const { on } of pairs) assert.equal(on.status, 0, sayF(on));
+  }
+});
+
+test('B1g: the hook\'s own stderr text (Windsurf deny with exit 2, the outage warning) is unchanged by timing under every stderr fault', async () => {
+  for (const { off, on } of await allFaults({ ...VERIFY_HANG, host: 'windsurf' })) {
+    if (on.fault !== 'throw') assert.equal(on.status, 2, sayF(on));
+    if (on.fault === 'async-error') assert.equal(on.err, off.err);
+  }
+  const plain = await runFaulted({ root: ROOT, ...VERIFY_HANG, host: 'windsurf', timing: true });
+  assert.ok(plain.err.includes(HELD_SLOW_TEXT) && /marrow-hook-timing route=total ms=\d+\n$/.test(plain.err), plain.err);
+  for (const host of ['cursor', 'claude']) await allFaults({ command: FORCE, scenario: 'down', host });
+});
+
+test('TMO: a verify call that ignores the abort (control timeout) or whose body reader throws stays held with timing on under a stalled or closed stderr', async () => {
+  const rows = [];
+  for (const scenario of ['verify-hang-ignore-abort', 'verify-cut']) {
+    rows.push(...await Promise.all(['none', 'epipe', 'async-error'].map((fault) => faultPair({ command: FORCE, scenario }, fault))));
+    rows.push(await faultPair({ command: FORCE, scenario }, 'full'));
+  }
+  for (const { on } of rows) assert.ok(denied(on) && on.status === 0, sayF(on));
 });

@@ -1408,16 +1408,23 @@ export async function closeDeniedDecision(
  * MARROW_HOOK_TIMING=1 (exactly that value) writes one stderr line per control call, `marrow-hook-timing route=<name> ms=<n>`,
  * and one `route=total` line when the process exits. Names are fixed literals and n is whole milliseconds: never a URL,
  * header, body, agent id, key or command text. Any other value, or none, runs no timing code.
+ * The lines are kept in memory and written once, in the 'exit' event: the answer is on stdout and the exit code is
+ * set by then, and no stderr fault (a closed reader, a bad fd, a throwing write, a full pipe) can delay or change
+ * either; a failed write drops the lines (its async error never fires after 'exit'), never retried into stdout.
  */
-let timingExitHooked = false;
-function timingLine(route: string, ms: number): void {
-  try { process.stderr.write(`marrow-hook-timing route=${route} ms=${Math.round(ms)}\n`); } catch { /* a timing line never changes the answer */ }
+let timingLines: string[] | undefined;
+function writeTimingLines(): void {
+  try {
+    const text = `${timingLines?.join('') ?? ''}marrow-hook-timing route=total ms=${Math.round(process.uptime() * 1000)}\n`;
+    process.stderr.on('error', () => { /* dropped */ });
+    process.stderr.write(text);
+  } catch { /* a timing line never changes the answer */ }
 }
 async function timed<T>(route: 'runtime' | 'think' | 'issue' | 'verify', call: () => Promise<T>): Promise<T> {
   if (process.env.MARROW_HOOK_TIMING !== '1') return call();
-  if (!timingExitHooked) { timingExitHooked = true; process.once('exit', () => timingLine('total', process.uptime() * 1000)); }
+  if (!timingLines) { timingLines = []; process.once('exit', writeTimingLines); }
   const started = Date.now();
-  try { return await call(); } finally { timingLine(route, Date.now() - started); }
+  try { return await call(); } finally { timingLines.push(`marrow-hook-timing route=${route} ms=${Math.round(Date.now() - started)}\n`); }
 }
 
 async function withTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs = PRE_ACTION_CONTROL_TIMEOUT_MS): Promise<T> {
