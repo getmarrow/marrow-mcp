@@ -263,15 +263,84 @@ test('T1 A1/A11/A13: auto, bypassPermissions, dontAsk and headless runs deny loc
   });
 });
 
+// A scripted Marrow backend (loopback only, written at run time into the row's own folder): MARROW_TEST_MOCK_DIR/config.json
+// { scenario } picks the answer; the runtime body is the recorded runtime answer; every request is appended to requests.jsonl.
+function backendDouble() {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const directory = process.env.MARROW_TEST_MOCK_DIR;
+  const recorded = JSON.parse(fs.readFileSync(process.env.T1_RECORDED_RUNTIME, 'utf8')).runtime;
+  const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const refused = () => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+  globalThis.fetch = async (url, init = {}) => {
+    let config = {};
+    try { config = JSON.parse(fs.readFileSync(path.join(directory, 'config.json'), 'utf8')); } catch { config = {}; }
+    const scenario = config.scenario || 'allow_permit_ok';
+    const pathname = new URL(String(url)).pathname;
+    let body = {};
+    try { body = init.body ? JSON.parse(String(init.body)) : {}; } catch { body = {}; }
+    const op = typeof body.operation === 'string' ? body.operation : '';
+    fs.appendFileSync(path.join(directory, 'requests.jsonl'), `${JSON.stringify({
+      method: String(init.method || 'GET').toUpperCase(), path: pathname, op,
+      idempotency_key: new Headers(init.headers).get('Idempotency-Key'), decision_id: typeof body.decision_id === 'string' ? body.decision_id : null,
+    })}\n`);
+    if (pathname === '/v1/agent/runtime') {
+      if (scenario === 'unreachable') throw refused();
+      if (config.runtimeError) return json(config.runtimeError.status, config.runtimeError.body);
+      if (scenario === 'runtime_400') return json(400, { error: 'Invalid request', code: 'INVALID_REQUEST' });
+      if (scenario === 'runtime_401') return json(401, { error: 'Invalid API key', code: 'UNAUTHORIZED' });
+      if (scenario === 'runtime_403') return json(403, { error: 'Forbidden', code: 'FORBIDDEN' });
+      if (scenario === 'runtime_500') return json(500, { error: 'Internal error', code: 'INTERNAL_ERROR' });
+      const data = structuredClone(recorded.data);
+      data.risk_gate = { decision: 'allow', allow: true, enforced: true, gate_required: false };
+      data.before_you_act = 'Do not repeat the failed path. Apply the avoid list before acting.';
+      if (scenario === 'allow_nodecision') {
+        delete data.decision_id;
+        data.runtime_authorization = { ...data.runtime_authorization, decision_creation_required: true, decision_id: null };
+        data.completion_contract = { ...data.completion_contract, decision_creation_required: true, decision_id: null };
+      }
+      if (scenario === 'allow_conflicting_ids') data.completion_contract = { ...data.completion_contract, decision_id: 'rtdec_conflicting_t1_second_id' };
+      if (scenario === 'block') data.risk_gate = { decision: 'block', allow: false, enforced: true, reason: 'blocked by policy' };
+      if (scenario === 'denied') data.risk_gate = { decision: 'deny', allow: false, enforced: true, reason: 'denied by policy' };
+      return json(200, { data });
+    }
+    if (pathname === '/v1/agent/think') return json(200, { data: { decision_id: 'dec_t1_think' } });
+    if (pathname === '/v1/agent/enforcement' && op === 'issue') {
+      if (scenario === 'enforcement_403') return json(403, { error: 'Forbidden', code: 'FORBIDDEN' });
+      if (scenario === 'permit_not_issued') return json(200, { data: { protocol_version: 1 } });
+      if (scenario === 'issue_no_id') return json(200, { data: { permit: 'signed-permit-t1', protocol_version: 1 } });
+      return json(200, { data: { permit_id: 'permit-t1', permit: 'signed-permit-t1', protocol_version: 1 } });
+    }
+    if (pathname === '/v1/agent/enforcement' && op === 'verify') {
+      if (scenario === 'permit_unverified') return json(200, { data: { permit_id: 'permit-t1', verified: false } });
+      if (scenario === 'permit_mismatch') return json(200, { data: { permit_id: 'permit-other', verified: true } });
+      if (scenario === 'verified_string') return json(200, { data: { permit_id: 'permit-t1', verified: 'true' } });
+      if (scenario === 'verified_missing') return json(200, { data: { permit_id: 'permit-t1' } });
+      return json(200, { data: { permit_id: 'permit-t1', verified: true } });
+    }
+    if (pathname === '/v1/agent/commit') return json(200, { data: { committed: true } });
+    return json(200, { data: { accepted: true } });
+  };
+}
+const RECORDED = join(__dirname, 'fixtures', 'f2-recorded-force-push.json');
+
+function scriptedHarness() {
+  const folder = mkdtempSync(join(tmpdir(), 'marrow-t1-double-'));
+  const preload = join(folder, 'backend-double.cjs');
+  writeFileSync(preload, `'use strict';\n(${backendDouble.toString()})();\n`);
+  const h = keyedHarness({ nodeOptions: [preload], extraEnv: { T1_RECORDED_RUNTIME: RECORDED } });
+  return { ...h, cleanup: () => { h.cleanup(); rmSync(folder, { recursive: true, force: true }); } };
+}
+
 // A18: a backend that ALLOWS (loopback fetch double, no network): the hold is never lifted.
 const ALLOW_RUNTIME = { response_mode: 'slim', decision: 'allow', risk_level: 'low', gate_required: false, proof_required: false, proof_complete: true, gate_receipt_id: 'gate-t1' };
 const decision = (out) => out.json?.hookSpecificOutput?.permissionDecision;
 const hookEvent = (over) => ({ session_id: 's-t1h', hook_event_name: 'PreToolUse', cwd: tmpdir(), ...over });
 
 test('T1 A18: a backend allow never lifts a marrow-control hold: a dialog in default and acceptEdits, a denial in plan, auto and headless', () => {
-  const h = keyedHarness();
+  const h = scriptedHarness();
   try {
-    h.setConfig({ runtime: ALLOW_RUNTIME });
+    h.setConfig({ scenario: 'allow_permit_ok' });
     const settings = join(h.home, '.claude', 'settings.json');
     const events = [
       { tool_name: 'Bash', tool_input: { command: A1 } },
@@ -409,4 +478,218 @@ test('T1 F3R: the wrapper forms of the new routes are no more reusable than the 
       assert.deepEqual(answers, forms.map(() => answers[0]), `${mode} ${JSON.stringify(env)}: every wrapper form answers as the plain route`);
     }
   } finally { h.cleanup(); }
+});
+
+// Round 2 (audit F1): where master's own answer to a result without a gate verdict is a denial (a rejected key, a failed
+// permit), master's denial stands: the same decision, master's exact text and master's requests (the close of the denied
+// decision included). Texts and request lists are pinned from the BASE dist run with this double (master pins).
+const CONTROL_ROUTE_ASK_TEXT = 'Marrow: this would switch Marrow control off or change its hooks. Approve it only if you, the account owner, want that.';
+const PLAIN_ROUTE = 'npx @getmarrow/install control disable --yes';
+const TEXT_403 = 'Marrow did not allow this protected action (HTTP 403 FORBIDDEN). Use a Marrow key whose account, agent binding, and scopes match this request.';
+const UNVERIFIED = 'Marrow permit verification did not match the issued permit.';
+const MASTER_DENIAL = {
+  allow_conflicting_ids: ['Marrow runtime returned conflicting decision identifiers.', ['runtime']],
+  permit_not_issued: ['Marrow did not issue a complete action permit.', ['runtime', 'enforcement#issue', 'commit']],
+  permit_unverified: [UNVERIFIED, ['runtime', 'enforcement#issue', 'enforcement#verify', 'commit']],
+  permit_mismatch: [UNVERIFIED, ['runtime', 'enforcement#issue', 'enforcement#verify', 'commit']],
+  enforcement_403: [TEXT_403, ['runtime', 'enforcement#issue', 'commit']],
+  runtime_403: [TEXT_403, ['runtime']],
+  runtime_401: ['Marrow did not allow this protected action (HTTP 401 UNAUTHORIZED). Run `npx -y @getmarrow/install@latest doctor` in this terminal to check this machine\'s Marrow setup, then retry.', ['runtime']],
+  runtime_400: ['Marrow did not allow this protected action (HTTP 400 INVALID_REQUEST). Retry once after the reported delay. If the error persists, run npx -y @getmarrow/install@latest doctor.', ['runtime']],
+};
+const F1_ANSWERS = Object.keys(MASTER_DENIAL);
+const RECORDED_DECISION = JSON.parse(readFileSync(RECORDED, 'utf8')).runtime.data.decision_id;
+// The control requests in order (the lifecycle event delivery runs beside them and is not part of the answer).
+const paths = (h) => h.requests().filter((r) => r.path !== '/v1/agent/integrations/events').map((r) => `${r.path.replace('/v1/agent/', '')}${r.op ? `#${r.op}` : ''}`);
+function answerOf(out) {
+  const specific = out.json?.hookSpecificOutput;
+  if (specific?.permissionDecision) return [specific.permissionDecision, specific.permissionDecisionReason];
+  if (out.json?.permission) return [out.json.permission, out.json.agent_message];
+  return ['allow', specific?.additionalContext ?? ''];
+}
+const plainTool = () => ({ tool_name: 'Bash', tool_input: { command: PLAIN_ROUTE } });
+const wrappedTool = () => ({ tool_name: 'Bash', tool_input: { command: A1 } });
+const settingsTool = (h) => ({ tool_name: 'Write', tool_input: { file_path: join(h.home, '.claude', 'settings.json'), content: '{}' } });
+// One fresh machine per cell: no loop-guard or approval state carries from one cell to the next.
+function cell(scenario, tool, mode, { entry = 'claude-pre-action-hook', event, env = {}, config } = {}) {
+  const h = scriptedHarness();
+  try {
+    h.setConfig(config || { scenario });
+    const payload = event ? event(h) : hookEvent({ ...tool(h), permission_mode: mode, tool_use_id: `toolu_t1r2_${scenario}_${mode}` });
+    const before = JSON.stringify(h.stateSnapshot());
+    const out = h.run(entry, payload, env);
+    const requests = h.requests();
+    return { out, answer: answerOf(out), paths: paths(h), requests, stateEqual: JSON.stringify(h.stateSnapshot()) === before };
+  } finally { h.cleanup(); }
+}
+function assertMasterDenial(got, scenario, label) {
+  const [text, requests] = MASTER_DENIAL[scenario];
+  assert.deepEqual(got.answer, ['deny', text], label);
+  assert.deepEqual(got.paths, requests, `${label}: master's requests`);
+  // Isolation: the cell reached the backend, so no earlier local answer decided it.
+  assert.equal(got.paths[0], 'runtime', label);
+  const close = got.requests.filter((r) => r.path === '/v1/agent/commit');
+  if (requests.includes('commit')) {
+    assert.equal(close.length, 1, `${label}: master's close of the denied decision`);
+    assert.equal(close[0].decision_id, RECORDED_DECISION, label);
+  }
+  assert.equal(got.stateEqual, true, `${label}: a verdict-less denial writes no hold`);
+}
+
+test('T1 F1-a/b/c: the plain master route keeps master\'s denial, text and close in default and acceptEdits', () => {
+  for (const scenario of F1_ANSWERS) {
+    for (const mode of ['default', 'acceptEdits']) assertMasterDenial(cell(scenario, plainTool, mode), scenario, `plain ${scenario} ${mode}`);
+  }
+});
+
+test('T1 F1-d: a Write of the settings file keeps master\'s denial, text and close in default and acceptEdits', () => {
+  for (const scenario of F1_ANSWERS) {
+    for (const mode of ['default', 'acceptEdits']) assertMasterDenial(cell(scenario, settingsTool, mode), scenario, `settings ${scenario} ${mode}`);
+  }
+});
+
+test('T1 A7.4: runtime 403 on the plain master route in default mode is master\'s denial, not a dialog', () => {
+  assertMasterDenial(cell('runtime_403', plainTool, 'default'), 'runtime_403', 'A7.4');
+});
+
+test('T1 A7.5: an allow whose permit does not verify, plain master route, acceptEdits, is master\'s denial', () => {
+  assertMasterDenial(cell('permit_unverified', plainTool, 'acceptEdits'), 'permit_unverified', 'A7.5');
+});
+
+test('T1 WR: the A1 wrapped route answers as the plain master route where master denies', () => {
+  for (const scenario of F1_ANSWERS) {
+    for (const mode of ['default', 'acceptEdits']) assertMasterDenial(cell(scenario, wrappedTool, mode), scenario, `A1 ${scenario} ${mode}`);
+  }
+});
+
+test('T1 TX: after the network, plan (and auto for a file write) give master\'s text where master denies, not the owner text', () => {
+  for (const scenario of F1_ANSWERS) {
+    for (const [tool, mode, label] of [[plainTool, 'plan', 'plain'], [settingsTool, 'plan', 'settings'], [settingsTool, 'auto', 'settings'], [wrappedTool, 'plan', 'A1']]) {
+      assertMasterDenial(cell(scenario, tool, mode), scenario, `${label} ${scenario} ${mode}`);
+    }
+  }
+});
+
+test('T1 HX: Codex and Cursor beforeShellExecution give master\'s denial for that host', () => {
+  for (const scenario of F1_ANSWERS) {
+    const codex = cell(scenario, null, null, {
+      entry: 'codex-pre-action-hook',
+      event: (h) => ({ session_id: 's-t1-codex', hook_event_name: 'PreToolUse', cwd: h.home, tool_name: 'Bash', tool_input: { command: PLAIN_ROUTE }, tool_use_id: `call_hx_${scenario}` }),
+    });
+    assertMasterDenial(codex, scenario, `codex ${scenario}`);
+    const cursor = cell(scenario, null, null, {
+      entry: 'cursor-pre-action-hook',
+      event: (h) => ({ hook_event_name: 'beforeShellExecution', conversation_id: 'c-t1', generation_id: `g-${scenario}`, command: PLAIN_ROUTE, cwd: h.home }),
+    });
+    assertMasterDenial(cursor, scenario, `cursor ${scenario}`);
+    assert.equal(cursor.out.json.user_message, MASTER_DENIAL[scenario][0]);
+  }
+});
+
+test('T1 F1-e: the incomplete allow of the old A18 fixture is master\'s denial for every held route', () => {
+  const MOCK_TEXT = 'Marrow is unavailable, so this protected action was denied (HTTP 500 service_unavailable). Retry when Marrow is reachable.';
+  const tools = [wrappedTool, plainTool, () => ({ tool_name: 'Bash', tool_input: { command: 'timeout 240 npx -y --package=@getmarrow/mcp@3.9.108 marrow-mcp setup' } }), settingsTool,
+    (h) => ({ tool_name: 'Bash', tool_input: { command: `printf '{}' > ${join(h.home, '.claude', 'settings.json')}` } })];
+  for (const [index, tool] of tools.entries()) {
+    for (const mode of ['default', 'acceptEdits']) {
+      const h = keyedHarness();
+      try {
+        h.setConfig({ runtime: ALLOW_RUNTIME });
+        const out = h.run('claude-pre-action-hook', hookEvent({ ...tool(h), permission_mode: mode, tool_use_id: `toolu_t1e_${index}_${mode}` }));
+        assert.deepEqual(answerOf(out), ['deny', MOCK_TEXT], `${index} ${mode}`);
+        assert.deepEqual(h.requests().map((r) => r.path.replace('/v1/agent/', '')).filter((p) => p !== 'integrations/events'), ['runtime', 'think', 'enforcement', 'commit'], `${index} ${mode}`);
+      } finally { h.cleanup(); }
+    }
+  }
+});
+
+const hookModule = () => require('../dist/hook-pre-action.js');
+const HARNESSES = ['claude-code', 'codex', 'cursor', 'cline', 'gemini', 'grok', 'windsurf', 'mcp-client'];
+const ADVISORY_RUNTIME = { risk_gate: { decision: 'allow', allow: true, enforced: false, enforcement_decision: 'advisory', reason: 'advisory only' } };
+// The deny test emitDecision applies to each host's own output function.
+function hostDenies(result, harness) {
+  const m = hookModule();
+  if (harness === 'windsurf') return m.windsurfPreActionDecision(result).exitCode === 2;
+  const output = m.preActionHookOutput(result, harness);
+  return output.hookSpecificOutput?.permissionDecision === 'deny' || output.permission === 'deny' || output.cancel === true || output.decision === 'deny';
+}
+
+test('T1 PAR: masterDeniesWithoutVerdict equals the deny test of every host output for every verdict-less result shape', () => {
+  const m = hookModule();
+  assert.equal(typeof m.masterDeniesWithoutVerdict, 'function');
+  assert.equal(m.runtimeGateAdvisory(ADVISORY_RUNTIME), true);
+  let shapes = 0;
+  let mismatches = 0;
+  for (const outage of [true, false, undefined]) {
+    for (const protectedRisk of [true, false]) {
+      for (const runtime of [null, {}, { risk_gate: { decision: 'allow', allow: true } }, ADVISORY_RUNTIME]) {
+        for (const permit of [null, { verified: false }, { verified: true }, { verified: 'true' }]) {
+          for (const enforcementError of [undefined, 'Marrow did not issue a complete action permit.']) {
+            const result = { runtime, permit, protectedRisk, ...(outage === undefined ? {} : { outage }), ...(enforcementError ? { enforcementError } : {}) };
+            if (m.runtimeGateVerdict(runtime)) continue;
+            shapes += 1;
+            for (const harness of HARNESSES) {
+              if (m.masterDeniesWithoutVerdict(result) !== hostDenies(result, harness)) mismatches += 1;
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.equal(shapes, 192);
+  assert.equal(mismatches, 0);
+});
+
+test('T1 DOUBT: a result whose runtime or permit cannot be read counts as master\'s denial', () => {
+  const m = hookModule();
+  assert.equal(m.masterDeniesWithoutVerdict({ protectedRisk: true, permit: null, get runtime() { throw new Error('unreadable'); } }), true);
+  assert.equal(m.masterDeniesWithoutVerdict({ protectedRisk: true, runtime: {}, get permit() { throw new Error('unreadable'); } }), true);
+  assert.equal(m.masterDeniesWithoutVerdict({ runtime: {}, permit: null, get protectedRisk() { throw new Error('unreadable'); } }), true);
+});
+
+test('T1 OUT: an outage is not a master denial, so a marrow-control hold keeps its local answer (the outage holds return earlier)', () => {
+  const m = hookModule();
+  const outage = { runtime: null, permit: null, protectedRisk: true, outage: true, enforcementError: 'x' };
+  assert.equal(m.masterDeniesWithoutVerdict(outage), false);
+  for (const harness of HARNESSES) assert.equal(hostDenies(outage, harness), false, harness);
+});
+
+test('T1 ADVY: an advisory gate is not a master denial, so the local dialog stays', () => {
+  const m = hookModule();
+  assert.equal(m.masterDeniesWithoutVerdict({ runtime: ADVISORY_RUNTIME, permit: null, protectedRisk: false }), false);
+});
+
+test('T1 F3R-C: under a complete backend allow every wrapper form answers as the plain route: ask in default, deny elsewhere', () => {
+  const forms = [PLAIN_ROUTE, A1, 'sudo -u root npx @getmarrow/install control disable', 'timeout -s KILL 5 npx @getmarrow/install control disable',
+    'timeout 240 npx -y --package=@getmarrow/mcp@3.9.108 marrow-mcp setup', 'MARROW_AUTO_HOOK=false claude -p "x"'];
+  for (const [mode, env, expected] of [['default', {}, ['ask', CONTROL_ROUTE_ASK_TEXT]], ['plan', {}, ['deny', DENY_TEXT]], ['auto', {}, ['deny', DENY_TEXT]], ['default', { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }, ['deny', DENY_TEXT]]]) {
+    for (const command of forms) {
+      const got = cell('allow_permit_ok', () => ({ tool_name: 'Bash', tool_input: { command } }), mode, { env });
+      assert.deepEqual(got.answer, expected, `${mode} ${JSON.stringify(env)} ${command}`);
+    }
+  }
+});
+
+test('T1 KEEP: where master allows, gates or is unreachable the answer is the candidate\'s', () => {
+  const keep = [
+    ['allow_permit_ok', plainTool, 'default', ['ask', CONTROL_ROUTE_ASK_TEXT], ['runtime', 'enforcement#issue', 'enforcement#verify']],
+    ['allow_nodecision', settingsTool, 'acceptEdits', ['ask', CONTROL_ROUTE_ASK_TEXT], ['runtime', 'think', 'enforcement#issue', 'enforcement#verify']],
+    ['allow_permit_ok', plainTool, 'plan', ['deny', DENY_TEXT], ['runtime', 'enforcement#issue', 'enforcement#verify']],
+    ['allow_permit_ok', settingsTool, 'auto', ['deny', DENY_TEXT], ['runtime', 'enforcement#issue', 'enforcement#verify']],
+    ['block', plainTool, 'default', ['deny', 'Marrow blocked this action under the current policy.'], ['runtime', 'commit']],
+    ['denied', settingsTool, 'default', ['deny', 'Marrow did not allow this action.'], ['runtime', 'commit']],
+    ['runtime_500', plainTool, 'default', ['deny', 'Marrow cannot be reached right now, so this high-risk action is held; routine actions keep running. Retry it when Marrow is back.'], ['runtime', 'runtime']],
+    ['unreachable', wrappedTool, 'acceptEdits', ['deny', 'Marrow cannot be reached right now, so this high-risk action is held; routine actions keep running. Retry it when Marrow is back.'], ['runtime', 'runtime']],
+    // A protected action that is not a marrow-control hold keeps master's allow under a complete allow (never a T1 dialog).
+    ['allow_permit_ok', () => ({ tool_name: 'Bash', tool_input: { command: 'git push --force origin main' } }), 'default',
+      ['allow', 'Do not repeat the failed path. Apply the avoid list before acting.\nMarrow action permit verified: permit-t1. Evidence and outcome closure remain required.'],
+      ['runtime', 'enforcement#issue', 'enforcement#verify']],
+    ['runtime_403', plainTool, 'auto', ['deny', DENY_TEXT], []],
+    ['permit_unverified', wrappedTool, 'auto', ['deny', DENY_TEXT], []],
+  ];
+  for (const [scenario, tool, mode, answer, requests] of keep) {
+    const got = cell(scenario, tool, mode);
+    assert.deepEqual(got.answer, answer, `${scenario} ${mode}`);
+    assert.deepEqual(got.paths, requests, `${scenario} ${mode}`);
+  }
 });
