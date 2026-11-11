@@ -102,3 +102,43 @@ test('data words to an ordinary file still stop asking beside the fold: lower-ca
     assert.deepEqual([answer.decision, answer.type, answer.surfaces], ['allow', 'process', 'workspace'], command);
   }
 });
+
+// Last fix round: run-later folder names are judged folded too (NFKC, then lower case), over every folder of the resolved path; a
+// look-alike, colon, trailing dot or space in a folder below the working folder and an /etc spelling keep the master answer.
+const folderAnswer = (row, host) => {
+  const event = P.folderEvent(row, root, host);
+  process.chdir(event.cwd);
+  try { return R.answer({ classifyTool }, event); } finally { process.chdir(root); }
+};
+for (const row of P.folderRows()) {
+  test(`run-later folder names judged folded ${row.id.replace(/\n/g, ' ')}: ${row.want}`, () => {
+    const answer = folderAnswer(row);
+    assert.equal(answer.decision, row.want, row.id);
+    if (row.want === 'ask') assert.notDeepEqual([answer.type, answer.surfaces], ['process', 'workspace'], `${row.id}: never the lowered class`);
+    if (!row.inputCwd) assert.equal(folderAnswer(row, 'codex').decision, row.want, `${row.id} (codex shape)`);
+  });
+}
+
+test('the folder class sweep: 5 run-later folders x 5 spellings x 4 positions x 3 sinks all ask', () => {
+  const rows = P.sweepRows();
+  assert.equal(rows.length, 300);
+  assert.deepEqual(rows.filter((row) => folderAnswer(row).decision !== 'ask').map((row) => row.id), []);
+});
+
+test('an /etc spelling as the working folder keeps asking (stub: an upper-case /Etc exists only on a case-insensitive disk)', () => {
+  const { realpathSync } = fs;
+  const { cwd } = process;
+  const answerIn = (folder) => {
+    fs.realpathSync = (p, ...rest) => (String(p).startsWith(folder) ? String(p) : realpathSync(p, ...rest));
+    process.cwd = () => folder;
+    const event = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo deploy production > notes/a.md' }, cwd: folder };
+    return R.answer({ classifyTool }, event).decision;
+  };
+  try {
+    for (const folder of ['/Etc', '/ETC/work', '/ｅtc']) assert.equal(answerIn(folder), 'ask', folder);
+    assert.equal(answerIn('/Etcetera'), 'allow', 'the stub reaches the data-word path');
+  } finally {
+    fs.realpathSync = realpathSync;
+    process.cwd = cwd;
+  }
+});

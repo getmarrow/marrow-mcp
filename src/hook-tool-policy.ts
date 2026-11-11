@@ -1074,12 +1074,15 @@ const DATA_TOOL_INPUT_KEYS = new Set(['command', 'description', 'timeout', 'time
 const DATA_FOLDER_KEYS = new Set(['cwd', 'workdir', 'working_directory', 'directory']);
 // Run-later names are judged on the lower-case base name (a case-insensitive disk opens Package.json as package.json), with the JSON
 // siblings of the run-later list. A base name that is not plain ASCII (a look-alike, an accent, a joiner: NFKC folding never makes it
-// ordinary), holds a colon or ends in a dot or a space is never ordinary.
+// ordinary), holds a colon or ends in a dot or a space is never ordinary. Folder names are folded too (NFKC, then lower case), and a
+// folder below the working folder with such an odd name is never ordinary.
+const ODD_NAME = /[^ -~]|:|[. ]$/;
+const RUN_LATER_LOWER_FOLDERS = new Set([...RUN_LATER_FOLDERS].map((part) => part.toLowerCase()));
 const RUN_LATER_JSON_SIBLINGS = new Set(['deno.json', 'vercel.json', 'firebase.json', 'tsconfig.build.json']);
 const RUN_LATER_LOWER_NAMES = new Set([...RUN_LATER_NAMES].map((name) => name.toLowerCase()));
 function runLaterBaseName(name: string): boolean {
   const lower = name.toLowerCase();
-  return /[^ -~]|:|[. ]$/.test(name) || lower.startsWith('package') || RUN_LATER_LOWER_NAMES.has(lower) || RUN_LATER_JSON_SIBLINGS.has(lower)
+  return ODD_NAME.test(name) || lower.startsWith('package') || RUN_LATER_LOWER_NAMES.has(lower) || RUN_LATER_JSON_SIBLINGS.has(lower)
     || RUN_LATER_PREFIXES.some((prefix) => lower.startsWith(prefix));
 }
 
@@ -1111,11 +1114,13 @@ function ordinaryDataFile(target: string, folder: string): boolean {
   try { if (lstatSync(real).isSymbolicLink()) real = realpathSync(real); } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT' || lstatExists(real)) return false;
   }
-  if (!real.startsWith(`${folder}/`) || isRunLaterPath(real)) return false;
+  const folded = real.normalize('NFKC').toLowerCase();
+  if (!real.startsWith(`${folder}/`) || isRunLaterPath(real) || folded.startsWith('/etc/')
+    || real.split('/').slice(0, -1).some((part) => RUN_LATER_LOWER_FOLDERS.has(part.normalize('NFKC').toLowerCase()))) return false;
   const parts = real.slice(folder.length + 1).split('/');
   const name = parts[parts.length - 1];
   const dot = name.lastIndexOf('.');
-  if (parts.some((part) => part.startsWith('.')) || runLaterBaseName(name)) return false;
+  if (parts.some((part) => part.startsWith('.')) || parts.slice(0, -1).some((part) => ODD_NAME.test(part)) || runLaterBaseName(name)) return false;
   if (dot > 0 ? !DATA_TEXT_ENDINGS.has(name.slice(dot + 1)) : !(parts.length > 1 && DATA_TEXT_FOLDERS.has(parts[parts.length - 2]))) return false;
   try {
     const stat = statSync(real);

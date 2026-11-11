@@ -212,3 +212,140 @@ function cutEvent(row, root, host = 'claude') {
 }
 
 module.exports = { W, fixture, rows, record, HOSTS, cutRows, cutEvent, SIBLINGS };
+
+// Last fix round: run-later FOLDER names are judged folded too (NFKC, then lower case); a look-alike, colon, trailing dot or space in a
+// folder below the working folder and an /etc spelling keep the master answer. want = the expected answer (master asks on every row
+// with data words; 'allow' only where the row is an owner-decided data write that stays quiet). Hook INPUT strings only: never run.
+const FD_WORDS = 'deploy production';
+const FD_SINKS = {
+  echo: (t) => `echo ${FD_WORDS} > ${t}`,
+  printf: (t) => `printf '%s\\n' "${FD_WORDS}" > ${t}`,
+  heredoc: (t) => `cat > ${t} <<EOF\n${FD_WORDS}\nEOF`,
+  append: (t) => `echo ${FD_WORDS} >> ${t}`,
+};
+const fdQuote = (t) => (/[ \\]/.test(t) ? `'${t}'` : t);
+
+function folderRows() {
+  const r = [];
+  const add = (id, target, want, extra = {}) => {
+    for (const [sink, make] of Object.entries(FD_SINKS)) {
+      const quote = extra.bare ? (t) => t : fdQuote;
+      r.push({ id: `${id}|${sink}|${target}`, command: (root) => make(quote(typeof target === 'function' ? target(root) : target)), want, ...extra });
+    }
+  };
+  const one = (id, command, want, extra = {}) => r.push({ id, command, want, ...extra });
+  const leaf = (id, dir, file, want = 'ask') => add(id, `${dir}/${file}`, want, { dirs: [dir] });
+  leaf('F-D1', 'Buildkite', 'pipeline.json');
+  leaf('F-D2', 'BUILDKITE', 'p.json');
+  leaf('F-D3', '.BUILDKITE', 'p.json');
+  leaf('F-D4', 'CRON.D', 'x.log');
+  leaf('F-D5', 'Cron.d', 'x.log');
+  leaf('F-D6', 'cron.d', 'x.log');
+  leaf('F-D7', 'SystemD', 'x.txt');
+  leaf('F-D8', 'systemd', 'x.txt');
+  leaf('F-D9', 'launchagents', 'x.txt');
+  leaf('F-D10', 'LaunchAgents', 'x.txt');
+  leaf('F-D11a', 'Launchdaemons', 'x.txt');
+  leaf('F-D11b', 'LAUNCHDAEMONS', 'x.txt');
+  leaf('F-D12a', '\u212auildkite', 'p.json');
+  leaf('F-D12b', 'build\u212aite', 'p.json');
+  leaf('F-D13a', 'b\u0131ldkite', 'p.json');
+  leaf('F-D13b', 'BU\u0130LDKITE', 'p.json');
+  leaf('F-D14a', '\uff42uildkite', 'p.json');
+  leaf('F-D14b', '\uff53ystemd', 'x.txt');
+  leaf('F-D14c', '\uff43\uff52\uff4f\uff4e.\uff44', 'x.log');
+  leaf('F-D14d', 'cron\uff0ed', 'x.log');
+  leaf('F-D15a', 'cron.d.', 'x.log');
+  leaf('F-D15b', 'Buildkite.', 'p.json');
+  leaf('F-D16a', 'cron.d ', 'x.log');
+  leaf('F-D16b', 'Buildkite ', 'p.json');
+  add('F-D17a', 'notes/../Buildkite/p.json', 'ask', { dirs: ['Buildkite'] });
+  add('F-D17b', 'docs/../SystemD/x.txt', 'ask', { dirs: ['SystemD'] });
+  add('F-D18a', './Buildkite/p.json', 'ask', { dirs: ['Buildkite'] });
+  add('F-D18b', '././CRON.D/x.log', 'ask', { dirs: ['CRON.D'] });
+  // The shell drops an unquoted backslash: the target is the plain file Buildkitep.json in the working folder (the decided class);
+  // a quoted or doubled backslash names a file with a backslash in it and asks.
+  add('F-D19a', 'Buildkite\\p.json', 'allow', { dirs: ['Buildkite'], bare: true });
+  add('F-D19b', 'Buildkite\\p.json', 'ask', { dirs: ['Buildkite'] });
+  add('F-D19c', 'Buildkite\\\\p.json', 'ask', { dirs: ['Buildkite'], bare: true });
+  add('F-D20a', 'lk/notes/p.json', 'ask', { dirs: ['Buildkite', 'lk'], links: [['lk/notes', 'Buildkite']] });
+  add('F-D20b', 'lk/docs/x.log', 'ask', { dirs: ['CRON.D', 'lk'], links: [['lk/docs', 'CRON.D']] });
+  add('F-D20c', 'lk2/Buildkite/a.md', 'allow', { dirs: ['notes', 'lk2'], links: [['lk2/Buildkite', 'notes']] });
+  add('F-D20d', 'notes/lx.md', 'ask', { dirs: ['SystemD', 'notes'], files: ['SystemD/x.md'], links: [['notes/lx.md', 'SystemD/x.md']] });
+  add('F-D21a', 'a/B/Buildkite/p.json', 'ask', { dirs: ['a/B/Buildkite'] });
+  add('F-D21b', 'notes/Cron.D/x.log', 'ask', { dirs: ['notes/Cron.D'] });
+  add('F-D21c', 'Notes/SystemD/x.txt', 'ask', { dirs: ['Notes/SystemD'] });
+  add('F-D21d', 'docs/LaunchAgents/x.md', 'ask', { dirs: ['docs/LaunchAgents'] });
+  for (const [id, cwd] of [['F-D22a', 'w1/SystemD'], ['F-D22b', 'w2/Buildkite/work'], ['F-D22c', 'w3/CRON.D'], ['F-D22d', 'w4/\uff4caunchagents']]) {
+    add(id, 'notes/a.md', 'ask', { dirs: [`${cwd}/notes`], cwd });
+    for (const key of ['cwd', 'workdir', 'working_directory']) add(`${id}-${key}`, 'notes/a.md', 'ask', { dirs: [`${cwd}/notes`], cwd, inputCwd: key });
+    add(`F-D23${id.slice(-1)}`, (root) => `${root}/${cwd}/notes/a.md`, 'ask', { dirs: [`${cwd}/notes`], cwd });
+  }
+  add('F-D23e', (root) => `${root}/Buildkite/p.json`, 'ask', { dirs: ['Buildkite'] });
+  for (const target of ['/ETC/x.log', '/Etc/cron.d/x.log', '/\uff45tc/x.log']) add(`F-D24|${target}`, target, 'ask');
+  for (const [id, command] of [['F-D25-cd', 'cd Buildkite && echo deploy > p.json'], ['F-D25-semi', 'echo hi; echo deploy > Buildkite/p.json'],
+    ['F-D25-or', 'true || echo deploy > CRON.D/x.log'],['F-D25-subshell', '(echo deploy > Buildkite/p.json)'],
+    ['F-D25-bash-c', "bash -c 'echo deploy > Buildkite/p.json'"], ['F-D26-last', 'echo deploy > notes/a.md > Buildkite/p.json'],
+    ['F-D26-first', 'echo deploy > Buildkite/p.json > notes/a.md'], ['F-D27-var', 'echo deploy > $D/p.json'], ['F-D27-glob', 'echo deploy > Build*/p.json'],
+    ['F-D27-brace', 'echo deploy > {Buildkite,notes}/p.json']]) one(id, () => command, 'ask', { dirs: ['Buildkite', 'CRON.D', 'SystemD', 'notes'] });
+  // The lone verb through tee is allowed on master too (the hold by name reads the folder as written): master's answer stays.
+  for (const [id, command] of [['F-D25-pipe', 'echo deploy | tee SystemD/x.txt'], ['F-D25-pipe-words', 'echo deploy production | tee SystemD/x.txt']]) {
+    one(id, () => command, 'allow', { dirs: ['SystemD'] });
+  }
+  leaf('F-D28a', 'cron\u200d.d', 'x.log');
+  leaf('F-D28b', 'Buildki\u0301te', 'p.json');
+  leaf('F-D28c', 'sys\u200btemd', 'x.txt');
+  leaf('F-D28d', 'n\u00f6tes', 'a.md');
+  leaf('F-D28e', 'notes:x', 'a.md');
+  for (const [id, command] of [['F-D29-env-flag', 'echo deploy --env production > Buildkite/p.json'], ['F-D29-node-env', 'NODE_ENV=production echo deploy > Buildkite/p.json'],
+    ['F-D29-file-word', 'echo deploy > Buildkite/production.json'], ['F-D29-prod-folder', 'echo deploy > notes/prod/SystemD/x.txt'],
+    ['F-D29-real-verb', 'wrangler deploy > Buildkite/p.json'], ['F-D29-real-verb-env', 'wrangler deploy --env production > CRON.D/x.log']]) {
+    one(id, () => command, 'ask', { dirs: ['Buildkite', 'CRON.D', 'notes/prod/SystemD'] });
+  }
+  for (const target of ['notes/a.md', 'docs/x.md', 'logs/run.log', 'reports/R.md', 'tmp/x.txt']) add(`F-D30|${target}`, target, 'allow', { dirs: [target.split('/')[0]] });
+  add('F-D30-home', 'notes/a.md', 'allow', { dirs: ['h\u00f6me/work/notes'], cwd: 'h\u00f6me/work' });
+  add('F-D30-Notes-noext', 'Notes/x', 'ask', { dirs: ['Notes'] });
+  add('F-D30-Notes-md', 'Notes/x.md', 'allow', { dirs: ['Notes'] });
+  // A FILE named like a run-later folder in a data folder is judged by its file name (the folder fold reads folders only).
+  for (const target of ['notes/buildkite', 'notes/SystemD']) add(`F-D32|${target}`, target, 'allow', { dirs: ['notes'] });
+  // The run-later list still decides inside the ordinary test where no folder fold applies: a bare repository's config in a data folder,
+  // written through a link (the hold by name reads the path as written).
+  add('F-D33', 'lnkbare/config', 'ask', { dirs: ['bare/notes/objects'], files: ['bare/notes/HEAD'], links: [['lnkbare', 'bare/notes']] });
+  for (const [id, dir] of [['F-D31a', 'buildkites'], ['F-D31b', 'my-cron.d'], ['F-D31c', 'systemd-notes'], ['F-D31d', 'Buildkite2'], ['F-D31e', 'xcron.d']]) leaf(id, dir, 'x.json', 'allow');
+  return r;
+}
+
+/** The class sweep: 5 non-dotted run-later folders x 5 spellings x 4 positions x 3 sinks = 300 rows, every one asks (equality after fold). */
+function sweepRows() {
+  const r = [];
+  const spell = { buildkite: ['buildkite', 'BUILDKITE', 'buildkite', 'BuildKite', 'build\u212aite'], 'cron.d': ['cron.d', 'CRON.D', 'cron.d', 'Cron.D', '\uff43ron.d'],
+    systemd: ['systemd', 'SYSTEMD', 'systemd', 'SystemD', '\uff53ystemd'], LaunchAgents: ['LaunchAgents', 'LAUNCHAGENTS', 'launchagents', 'launchAgents', '\uff2caunchAgents'],
+    LaunchDaemons: ['LaunchDaemons', 'LAUNCHDAEMONS', 'launchdaemons', 'launchDaemons', '\uff2caunchDaemons'] };
+  const forms = ['exact', 'upper', 'lower', 'mixed', 'look'];
+  for (const [folder, names] of Object.entries(spell)) {
+    names.forEach((dir, at) => {
+      for (const sink of ['echo', 'printf', 'heredoc']) {
+        const make = FD_SINKS[sink];
+        const id = `sweep|${folder}|${forms[at]}|${sink}`;
+        r.push({ id: `${id}|leaf`, command: () => make(`${dir}/x.json`), want: 'ask', dirs: [dir] });
+        r.push({ id: `${id}|nested`, command: () => make(`notes/${dir}/x.json`), want: 'ask', dirs: [`notes/${dir}`] });
+        r.push({ id: `${id}|cwd`, command: () => make('notes/x.json'), want: 'ask', dirs: [`sw/${dir}/notes`], cwd: `sw/${dir}` });
+        r.push({ id: `${id}|absolute`, command: (root) => make(`${root}/${dir}/x.json`), want: 'ask', dirs: [dir] });
+      }
+    });
+  }
+  return r;
+}
+
+/** The event of a folder row: its folders, files and links made in the fixture root; the working folder is root or row.cwd below it. */
+function folderEvent(row, root, host = 'claude') {
+  for (const dir of row.dirs ?? []) fs.mkdirSync(path.join(root, dir), { recursive: true });
+  for (const file of row.files ?? []) if (!fs.existsSync(path.join(root, file))) fs.writeFileSync(path.join(root, file), 'x\n');
+  for (const [from, to] of row.links ?? []) if (!fs.existsSync(path.join(root, from))) fs.symlinkSync(path.join(root, to), path.join(root, from));
+  const cwd = path.join(root, row.cwd ?? '');
+  const event = R.HOSTS[host](row.command(root), row.inputCwd ? { [row.inputCwd]: cwd } : {});
+  event.cwd = cwd;
+  return event;
+}
+
+Object.assign(module.exports, { folderRows, sweepRows, folderEvent });
