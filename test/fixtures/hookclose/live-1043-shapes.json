@@ -1,0 +1,14 @@
+{
+  "_note": "Shapes of the 2026-11-05 live holds (SPEC-hookclose.md, SPEC-decline-record.md): ids and flags only, no action text, no key. The 10:43:09Z hold of rtdec_57b03c95 stayed open after the operator's decline; 8 of 8 proof-required holds had no commit. Replayed as hook INPUT JSON with a fake HOME; nothing is executed.",
+  "decision_id": "rtdec_57b03c9523ad9f11a2a3db43bfaf60c1c45a805c",
+  "gate_receipt_id": "gate-rtdec57b03c95-104309",
+  "decline": {
+    "pre": { "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "toolu_01LIVE1043090000000000001", "tool_input": { "command": "git merge-base origin/master HEAD", "description": "read the merge base" } },
+    "transcript_kind": "user-rejected",
+    "settle_points": ["Stop", "SessionStart", "UserPromptSubmit"]
+  },
+  "record": {
+    "pre": { "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "toolu_01LIVE1045460000000000001", "tool_input": { "command": "git merge-base origin/master HEAD", "description": "read the merge base" } },
+    "post": { "hook_event_name": "PostToolUse", "tool_response": { "stdout": "0000000000000000000000000000000000000000", "stderr": "", "interrupted": false, "isImage": false } }
+  }
+}
