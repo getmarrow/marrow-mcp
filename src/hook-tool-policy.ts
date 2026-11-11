@@ -1,4 +1,5 @@
-import { realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
 import { isOfficialMarrowMcpEvent, isOfficialMarrowMcpTool } from './own-tool';
@@ -639,6 +640,79 @@ function nextWorkingDirectory(segment: ShellSegment, cwd: string | null): string
   if (!targets.length) return homeDirectory();
   if (targets.length > 1 || targets[0] === '-' || targets[0].startsWith('-') || segment.expansions.some((name) => name !== 'HOME')) return null;
   return normalizedToolPath(targets[0], cwd);
+}
+
+// T4: the owner's ~/.marrow/protected-programs.json ({"version":1,"programs":[{"name","class","args"?}]}). A run of a listed name (the program, a script runner's
+// operand before -m or -c, symlinks resolved) is that entry's class, protected, whatever its flags; `args` (or an expanded word) scope it to a subcommand. Present but
+// unreadable or malformed: every run of a `marrow-*` name or one in the hash-only last-good copy holds; no file is no list. Unsplit text and a budget overrun hold.
+export type ProtectedProgramClass = 'security' | 'publish' | 'deploy';
+type ProgramScan = { listed: (name: string) => { class: ProtectedProgramClass; args?: string[] } | undefined; tick: () => void; found: Set<string> };
+const PROGRAM_CLASSES: readonly string[] = ['security', 'publish', 'deploy'];
+const PROGRAM_WRAPPER = /^(?:sudo|doas|su|env|nohup|time|exec|eval|command|builtin|nice|ionice|stdbuf|timeout|xargs|setsid|chrt|taskset|flock|watch|ssh)$/;
+const SCRIPT_RUNNER = /^(?:python[\d.]*|pypy[\d.]*|node|nodejs|deno|bun|tsx|ts-node|ruby|perl|php|bash|sh|zsh|dash|ksh|source|\.|uv|poetry|pipenv)$/;
+const programBase = (word: string): string => word.slice(word.lastIndexOf('/') + 1).toLowerCase();
+const nameHash = (name: string): string => createHash('sha256').update(name).digest('hex');
+function listFileText(path: string): string | null {
+  try { const info = statSync(path); return info.isFile() && info.size <= 65536 ? readFileSync(path, 'utf8') : ''; }
+  catch (error) { return ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException | null)?.code || '') ? null : ''; }
+}
+function programList(read: (path: string) => string | null): ProgramScan['listed'] | null {
+  const file = posix.join(homeDirectory(), '.marrow', 'protected-programs.json'), lastGood = file.replace(/\.json$/, '.last-good.json');
+  const text = (() => { try { return read(file); } catch { return ''; } })();
+  if (text === null) return null;
+  try {
+    const list = JSON.parse(text);
+    if (list?.version !== 1 || !Array.isArray(list.programs) || list.programs.length > 1000) throw new Error('malformed');
+    const entries = new Map<string, { class: ProtectedProgramClass; args?: string[] }>();
+    for (const { name, class: kind, args } of list.programs) {
+      if (typeof name !== 'string' || !/^[^/\\\0]{1,255}$/.test(name) || entries.has(name.toLowerCase()) || !PROGRAM_CLASSES.includes(kind)
+        || (args !== undefined && !(Array.isArray(args) && args.every((arg) => typeof arg === 'string' && arg)))) throw new Error('malformed');
+      entries.set(name.toLowerCase(), { class: kind, ...(args?.length ? { args: args.map((arg: string) => arg.toLowerCase()) } : {}) });
+    }
+    const copy = JSON.stringify({ version: 1, hashes: [...entries].map(([name, entry]) => [nameHash(name), entry.class]) });
+    try { if (listFileText(lastGood) !== copy) writeFileSync(`${lastGood}.${process.pid}`, copy, { mode: 0o600, flag: 'wx' }), renameSync(`${lastGood}.${process.pid}`, lastGood); } catch { /* next read */ }
+    return (name) => entries.get(name);
+  } catch {
+    const hashes = new Map<string, ProtectedProgramClass>();
+    try { for (const [hash, kind] of JSON.parse(listFileText(lastGood) || '{}').hashes) hashes.set(hash, PROGRAM_CLASSES.includes(kind) ? kind : 'deploy'); } catch { /* none */ }
+    return (name) => (name.startsWith('marrow-') || hashes.has(nameHash(name)) ? { class: hashes.get(nameHash(name)) ?? 'deploy' } : undefined);
+  }
+}
+export function protectedProgramClasses(command: string, cwd: string | null = process.cwd(), io = { read: listFileText, now: Date.now }): ProtectedProgramClass[] {
+  const listed = programList(io.read), deadline = io.now() + 25;
+  if (!listed) return [];
+  const scan: ProgramScan = { listed, found: new Set(), tick: () => { if (io.now() > deadline) throw new Error('budget'); } };
+  try { if (command.length > 65536) throw new Error('size'); listedRuns(command, cwd, scan); } catch { scan.found.add('deploy'); }
+  return PROGRAM_CLASSES.filter((kind) => scan.found.has(kind)) as ProtectedProgramClass[];
+}
+function listedRuns(command: string, cwd: string | null, scan: ProgramScan): void {
+  const segments = parseShellSegments(command);
+  for (const word of segments ? [] : new Set(command.split(/[\s;&|()<>`'"=:{}$]+/))) { scan.tick(); scan.found.add(scan.listed(programBase(word))?.class ?? ''); }
+  for (const segment of segments ?? []) { segmentRuns(segment.words, cwd, scan); cwd = nextWorkingDirectory(segment, cwd); }
+}
+// After a wrapper every word up to a script runner or a listed name is taken as the wrapper's (never a run); an assignment runs nothing.
+function segmentRuns(words: string[], cwd: string | null, scan: ProgramScan): void {
+  let at = 0;
+  for (let wrapped = false; at < words.length; at += 1) {
+    if (PROGRAM_WRAPPER.test(programBase(words[at]))) wrapped = true;
+    else if (!/^[A-Za-z_]\w*=/.test(words[at]) && (!wrapped || SCRIPT_RUNNER.test(programBase(words[at])) || listedEntry(words[at], cwd, scan))) break;
+  }
+  const name = programBase(words[at] ?? '');
+  if (name) runOf(words, at, cwd, scan);
+  if (!SCRIPT_RUNNER.test(name)) return;
+  const inline = /^(?:bash|sh|zsh|dash|ksh)$/.test(name) ? words.findIndex((word, index) => index > at && /^-[A-Za-z]*c[A-Za-z]*$/.test(word)) : -1;
+  if (inline > 0 && words[inline + 1] !== undefined) listedRuns(words[inline + 1], cwd, scan);
+  for (let index = at + 1; index < words.length && !/^-[A-Za-z]*[cm]/.test(words[index]); index += 1) if (!words[index].startsWith('-')) runOf(words, index, cwd, scan);
+}
+function runOf(words: string[], index: number, cwd: string | null, scan: ProgramScan): void {
+  const entry = listedEntry(words[index], cwd, scan);
+  const scoped = (arg: string) => words.slice(index + 1).some((word) => /[$`*?[]/.test(word) || [word, word.slice(word.indexOf('=') + 1)].some((part) => part.toLowerCase() === arg));
+  if (entry && !scan.found.has(entry.class) && (!entry.args || entry.args.every(scoped))) scan.found.add(entry.class);
+}
+function listedEntry(word: string, cwd: string | null, scan: ProgramScan): ReturnType<ProgramScan['listed']> {
+  if (/\s/.test(word)) listedRuns(word, cwd, scan); else scan.tick(); // a command text (eval, ssh, env -S, a script's operand)
+  const real = cwd !== null || /^[/~$]/.test(word) ? (() => { try { return programBase(realpathSync(normalizedToolPath(word, cwd ?? '/'))); } catch { return ''; } })() : '';
+  return scan.listed(programBase(word)) ?? (real ? scan.listed(real) : undefined);
 }
 
 /** `parse`: the dialect the words are split in; `dialect`: the dialect the simple commands are judged in (default: the same). */
