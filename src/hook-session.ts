@@ -18,7 +18,7 @@ import { recordSessionBypass } from './owner-bypass';
 import { armKeylessNotice } from './keyless-notice';
 import { marrowSessionId } from './session-id';
 import { clearSessionLoopGuard } from './session-loop-guard';
-import { approvalHostFor, flushHoldOutbox, hostSessionIdFor, noteCursorSession, type HoldContext } from './host-approval';
+import { approvalHostFor, flushHoldOutbox, hostSessionIdFor, noteCursorSession, settleAtPrompt, type HoldContext } from './host-approval';
 
 export const SESSION_HOOK_COMMAND = SESSION_END_HOOK_COMMAND;
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
@@ -150,6 +150,18 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
       return;
     }
     const baseUrl = validateBaseUrl(resolved.baseUrl || 'https://api.getmarrow.ai');
+    const holdContext: HoldContext = {
+      apiKey: resolved.apiKey,
+      baseUrl,
+      sessionId,
+      agentId,
+      harness: identity.harness,
+      host: approvalHostFor(identity.harness),
+      hostSessionId: hostSessionIdFor([source.session_id, source.conversation_id, source.task_id], sessionId),
+    };
+    // SessionStart and Stop: a declined dialog can end the turn before PostToolBatch. The session's still-open
+    // asked calls are decided from the Claude Code transcript as at UserPromptSubmit; an expired one closes unanswered.
+    await settleAtPrompt(holdContext, raw.transcript_path, raw.hook_event_name === 'SessionStart' ? 'SessionStart' : 'Stop').catch(() => 0);
     const workflowId = stableSessionWorkflowId(
       sessionId,
       identity.harness === 'cursor'
@@ -196,15 +208,7 @@ export async function runSessionHookCommand(input?: unknown): Promise<void> {
     } catch {
       // The pending lifecycle receipt remains durable for later reconciliation.
     }
-    await flushHoldOutbox({
-      apiKey: resolved.apiKey,
-      baseUrl,
-      sessionId,
-      agentId,
-      harness: identity.harness,
-      host: approvalHostFor(identity.harness),
-      hostSessionId: hostSessionIdFor([source.session_id, source.conversation_id, source.task_id], sessionId),
-    }, 2, 2_000).catch(() => undefined);
+    await flushHoldOutbox(holdContext, 2, 2_000).catch(() => undefined);
 
     if (!['windsurf', 'gemini', 'grok'].includes(identity.harness) && process.env.MARROW_PASSIVE_TOKEN_USAGE !== 'false') {
       const usage = extractModelUsageFromUnknown(payload, { ...modelUsageCaptureContextFromEnv(), usage_kind: 'cumulative' });
