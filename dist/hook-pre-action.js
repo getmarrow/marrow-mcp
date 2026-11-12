@@ -994,6 +994,74 @@ function controlRouteCall(event) {
         : ['command', 'cmd', 'script'].map((key) => input?.[key]).filter((value) => typeof value === 'string');
     return texts.some((text) => (0, control_routes_1.controlRoute)(text));
 }
+// L2 (owner-decided, Buu 2026-11-11 item 2; LOWER-SHAPES-l2.md): the values of these flags of `gh pr create|edit|comment|review` and
+// `gh issue create|comment|edit` are prose, a repo slug, a branch, a label or a person, never action words.
+const GH_PROSE_SHAPES = new Map([
+    ['pr', { subcommands: ['create', 'edit', 'comment', 'review'], flags: ['--title', '-t', '--body', '-b', '--body-file', '-F', '--repo', '-R', '--head', '-H', '--base', '-B', '--label', '-l', '--reviewer', '--assignee'] }],
+    ['issue', { subcommands: ['create', 'comment', 'edit'], flags: ['--title', '-t', '--body', '-b', '--body-file', '-F', '--repo', '-R', '--label', '-l', '--assignee'] }],
+]);
+const GH_PROSE_SHELL_TOOLS = new Set(['bash', 'run_terminal_command', 'shell', 'execute_command', 'run_shell_command']);
+const GH_PROSE_BUDGET_MS = 1_000;
+/** The words of a listed gh segment without the listed values, or null for any other segment (one with a variable included). */
+function ghProseWords(segment) {
+    const [program, group, subcommand] = segment.words;
+    const shape = program === 'gh' && segment.expansions.length === 0 ? GH_PROSE_SHAPES.get(group) : undefined;
+    if (!shape || !shape.subcommands.includes(subcommand))
+        return null;
+    const kept = segment.words.slice(0, 3);
+    for (let index = 3; index < segment.words.length; index += 1) {
+        const word = segment.words[index];
+        if (word === '--') {
+            kept.push(...segment.words.slice(index));
+            break;
+        }
+        const flag = word.startsWith('--') && word.includes('=') ? word.slice(0, word.indexOf('=')) : word;
+        const value = flag === word ? segment.words[index + 1] ?? '' : word.slice(flag.length + 1);
+        // An unlisted flag, or a value that is code (a substitution or variable), is scanned as before.
+        if (!shape.flags.includes(flag) || /[$`]/.test(value)) {
+            kept.push(word);
+            continue;
+        }
+        kept.push(flag);
+        if (flag === word)
+            index += 1;
+    }
+    return kept;
+}
+/**
+ * The word-scan text of a shell call with the listed gh values left out (ghProseWords), or master's `text` unchanged. The text is rebuilt
+ * from the reading toolClassificationText makes, with the folder after any `cd` unknown (so no later segment reads as read-only and the
+ * rebuild keeps at least master's segments); it is used only when it equals `text`, so the answer is master's text less those values.
+ * A reader that throws, answers nothing or runs past its budget leaves master's text.
+ */
+function ghProseScanText(event, text) {
+    try {
+        const started = Date.now();
+        const tool = (0, hook_tool_policy_1.normalizeHookToolName)(event.tool_name);
+        if (!GH_PROSE_SHELL_TOOLS.has(tool) || event[hook_tool_policy_1.SHELL_DIALECT] !== undefined)
+            return text;
+        const input = asRecord(event.tool_input);
+        const command = typeof event.tool_input === 'string' ? event.tool_input
+            : ['command', 'cmd'].map((key) => input?.[key]).find((value) => typeof value === 'string' && value.trim() !== '') ?? (0, hook_tool_policy_1.hookToolCommand)(event);
+        const segments = (0, hook_tool_policy_1.parseShellSegments)(command);
+        if (!segments)
+            return text;
+        let cwd = process.cwd();
+        const kept = segments.filter((segment) => {
+            const read = (0, hook_tool_policy_1.shellSegmentVerdict)(segment, cwd) === 'read';
+            if (/(?:^|\/)cd$/i.test(segment.words[0] ?? ''))
+                cwd = null;
+            return !read;
+        });
+        const join = (words) => [tool, ...kept.map((segment, index) => [...words[index], ...segment.outputs].join(' '))].join(' ; ');
+        if (join(kept.map((segment) => segment.words)) !== text || Date.now() - started > GH_PROSE_BUDGET_MS)
+            return text;
+        return join(kept.map((segment) => ghProseWords(segment) ?? segment.words));
+    }
+    catch {
+        return text;
+    }
+}
 /** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
 function classifyAsNamed(event, options) {
     const tool = String(event.tool_name || 'tool').slice(0, 64);
@@ -1006,7 +1074,7 @@ function classifyAsNamed(event, options) {
     // and every risk category it has without the hold.
     const controlRoute = controlRouteCall(event);
     const command = shellGoverned ? (0, hook_tool_policy_1.hookToolCommand)(event) : '';
-    const input = (0, hook_tool_policy_1.toolClassificationText)(event).toLowerCase();
+    const input = ghProseScanText(event, (0, hook_tool_policy_1.toolClassificationText)(event)).toLowerCase();
     // A look-alike of Marrow's own tool is never read-only, whatever its verb.
     // The PostToolUse path passes no check (options.postTool): the mapper is never loaded for it.
     const printsEnvironment = options.postTool === true ? undefined : shellPrintsEnvironment.bind(null, options.cwd);
