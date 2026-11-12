@@ -388,3 +388,63 @@ test('CL-9 chains, repeated flags, misleading words and unknown flags are sent u
     assert.equal(action.tool_input.command_sha256, P(command), command);
   }
 });
+
+// ------------------------------------------------------------------ R1-R3: hash form, CL-1 as amended, text only when equal
+
+test('R1 the plain hash is the push-path form of the text sent, never a bare sha256 of it', () => {
+  const sent = runHook('claude-pre-action-hook', claudeEvent('mkdir -p ./out/x'));
+  const input = sent.bodies[0].normalized_action.tool_input;
+  assert.equal(input.command_sha256, createHash('sha256').update(`marrow-normalized-action-v3\nshell\n${input.command}`).digest('hex'));
+  assert.notEqual(input.command_sha256, createHash('sha256').update(input.command).digest('hex'), 'not a bare sha256');
+});
+
+test('CL-1 as amended: reads have no runtime call, mkdir sends text, a redirect or a quoting signature sends none', () => {
+  const outcome = (text) => {
+    const sent = runHook('claude-pre-action-hook', claudeEvent(text));
+    if (sent.bodies.length === 0) return 'no runtime call';
+    return 'command' in sent.bodies[0].normalized_action.tool_input ? 'text sent' : 'no text';
+  };
+  assert.deepEqual(Object.fromEntries(['ls -l ./out', 'grep -rl foo ./src | head -n 3', 'mkdir -p ./out/x', "printf 'row\\n' >> ./records/STATE.md", 'cd ~/proj && ls'].map((text) => [text, outcome(text)])), {
+    'ls -l ./out': 'no runtime call', 'grep -rl foo ./src | head -n 3': 'no runtime call', 'mkdir -p ./out/x': 'text sent',
+    "printf 'row\\n' >> ./records/STATE.md": 'no text', 'cd ~/proj && ls': 'no runtime call',
+  });
+});
+
+test('R3 text is sent only when the normalized text is exactly the host text', () => {
+  const salt = randomBytes(32);
+  for (const command of ["printf 'row\\n' >> ./records/STATE.md", 'cd ~/proj && ls', "ls 'a b'", 'echo "x y"', 'sed -i s/a/b/ ./f', 'ls  ./a', 'ls ./a ', 'cat ./a > ./b', 'mkdir -p ./out/x', 'cp ./a ./b']) {
+    const action = normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }, { salt, claudeCodeBash: true, bashText: {} });
+    if ('command' in action.tool_input) assert.equal(action.tool_input.command, command, `${command}: only the host's own text`);
+  }
+  for (const command of ["printf 'row\\n' >> ./records/STATE.md", 'cd ~/proj && ls', 'ls  ./a']) {
+    const action = normalizedHookAction({ tool_name: 'Bash', tool_input: { command } }, { salt, claudeCodeBash: true, bashText: {} });
+    assert.equal('command' in action.tool_input, false, `${command}: no text`);
+    assert.notEqual(action.tool_input.command_sha256, P(command), `${command}: the keyed hash`);
+  }
+});
+
+// ------------------------------------------------------------------ CL-8 / C0.7: the local client update command
+
+test('CL-8 the local client update builds no MCP setup command; the installer update is the one update path', () => {
+  const { localClientUpdate } = require('../dist/request-reliability.js');
+  const { MCP_ADAPTER_VERSION } = require('../dist/hook-contract.js');
+  const update = localClientUpdate();
+  assert.deepEqual(update, {
+    package: '@getmarrow/mcp', installed_version: MCP_ADAPTER_VERSION, installed_version_verified: true, latest_version: MCP_ADAPTER_VERSION,
+    version_status: 'current', metadata_status: 'local_adapter_version', auto_update_command: 'npx @getmarrow/install@latest update',
+    launch_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp', verification_command: 'npx -y @getmarrow/install@latest doctor --self-test',
+    operator_approval_required: true,
+  });
+  assert.equal('update_command' in update, false);
+  assert.equal(Object.values(update).some((value) => /\bsetup\b/.test(String(value))), false, 'no setup command in any field');
+  // The context display shows no update command for it; its allow-list still takes a pinned MCP setup form.
+  const { buildCombinedContextBlock } = require('../dist/hook-context.js');
+  const signals = { warnings: [], loopWarnings: [], similarCount: 0, patternsCount: 0, templatesAvailable: 0, primaryInsight: null, collectiveInsight: null, hasSignal: true };
+  const display = (clientUpdate) => buildCombinedContextBlock(signals, null, null, {
+    client_update: { ...clientUpdate, latest_version: '9.9.9', version_status: 'behind', update_available: true, notification_state: 'security_required', security_policy: { source: 'server_policy', minimum_secure_version: '9.9.9' } },
+    risk_gate: { decision: 'allow', risk_level: 'low', allow: true }, proof_pack: { required: false, fields: [], missing: [] }, auto_outcome_closure: null, exact_next_action: null,
+  });
+  assert.match(display(update), /Marrow client update required by server policy/);
+  assert.doesNotMatch(display(update), /Update command|install@latest update/);
+  assert.match(display({ ...update, exact_update_command: 'npx -y --package=@getmarrow/mcp@9.9.9 marrow-mcp setup' }), /Update command \(operator approval\): npx -y --package=@getmarrow\/mcp@9\.9\.9 marrow-mcp setup/);
+});

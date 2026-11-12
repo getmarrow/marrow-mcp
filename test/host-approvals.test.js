@@ -64,11 +64,14 @@ function hostRuntime(receipt = 'gate-held', approval = {}, extra = {}) {
 }
 
 // The normalized action of the fixture's deploy: program names and a keyed hash, never the command text.
+// The plain hash of a command text (the push-path form); a raw Claude Code Bash call sends its text with it.
+const plainShellHash = (text) => require('node:crypto').createHash('sha256').update(`marrow-normalized-action-v3\nshell\n${text}`).digest('hex');
+// The hold and approval records keep the plain hash without the text; the runtime call also carries the text.
 const DEPLOY_NORMALIZED = {
   tool_kind: 'shell', tool_name: 'Bash', programs: ['wrangler'],
-  // The text hash is keyed with this install's device key (the hook children share the scratch passwd home).
-  tool_input: { command_sha256: require('./support/keyed-text-hash.cjs').shellMac(require('./support/keyed-text-hash.cjs').deviceSalt(), 'Bash', 'wrangler deploy --env production') },
+  tool_input: { command_sha256: plainShellHash('wrangler deploy --env production') },
 };
+const DEPLOY_SENT = { ...DEPLOY_NORMALIZED, tool_input: { ...DEPLOY_NORMALIZED.tool_input, command: 'wrangler deploy --env production' } };
 
 function noProofRuntime(receipt = 'gate-held') {
   const runtime = hostRuntime(receipt);
@@ -1274,7 +1277,7 @@ test('normalized_action: sent on the runtime call and the report; a service that
     h.setConfig({ runtime: hostRuntime(), hostRouteStrict: true });
     h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
     const runtimeBody = runtimes(h)[0].body;
-    assert.deepEqual(runtimeBody.normalized_action, DEPLOY_NORMALIZED);
+    assert.deepEqual(runtimeBody.normalized_action, DEPLOY_SENT);
     h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
     h.run('claude-hook', fixture('claude-post-tool-use.json'));
     const reports = hostReports(h);
@@ -2385,11 +2388,15 @@ test('3.9.100: no free-text word of a command leaves the machine; only an allowe
   for (const command of [`./deploy.sh ${word}`, `sst deploy ./${word}.txt --stage staging`, `sst deploy --stage staging ${word}`, `mysql -p${word} prod`, `wrangler deploy --env ${word}`]) {
     const { bodies, actions } = run(command);
     assert.ok(actions.length > 0);
-    assert.equal(bodies.includes(word), false, `${command.replace(word, '<word>')}: the word never leaves the machine`);
-    assert.equal(actions.some((action) => action.tool_input?.command !== undefined), false);
+    // A raw Claude Code Bash call may send its own command text with the plain hash; the word never leaves any other way.
+    const sent = actions.filter((action) => action.tool_input?.command !== undefined);
+    assert.equal(sent.every((action) => action.tool_input.command === command && action.tool_input.command_sha256 === plainShellHash(command)), true);
+    assert.equal(bodies.split(word).length - 1, sent.length, `${command.replace(word, '<word>')}: the word leaves only as the command text`);
+    if (command.startsWith('mysql')) assert.equal(sent.length, 0, 'a -p value never leaves the machine');
   }
   for (const command of ['vercel deploy --target staging', 'netlify deploy', 'railway up --environment staging']) {
-    assert.equal(run(command).actions.some((action) => action.tool_input?.command !== undefined), false, `${command}: no text`);
+    const sent = run(command).actions.filter((action) => action.tool_input?.command !== undefined);
+    assert.equal(sent.every((action) => action.tool_input.command === command && action.tool_input.command_sha256 === plainShellHash(command)), true, `${command}: only its own text`);
   }
   const { actions } = run('npx sst deploy --stage staging');
   assert.equal(actions[0].tool_input.command, 'npx sst deploy --stage staging');

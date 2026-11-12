@@ -345,7 +345,8 @@ function localClientUpdate() {
         latest_version: hook_contract_1.MCP_ADAPTER_VERSION,
         version_status: 'current',
         metadata_status: 'local_adapter_version',
-        update_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp setup',
+        // No local MCP setup command: for a plugin install it writes a second hook copy. The one update path is the installer.
+        auto_update_command: 'npx @getmarrow/install@latest update',
         launch_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp',
         verification_command: 'npx -y @getmarrow/install@latest doctor --self-test',
         operator_approval_required: true,
