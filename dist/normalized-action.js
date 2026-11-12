@@ -11,6 +11,7 @@ exports.keyedTargetHash = keyedTargetHash;
 exports.normalizedHookAction = normalizedHookAction;
 const node_crypto_1 = require("node:crypto");
 const node_os_1 = require("node:os");
+const node_path_1 = require("node:path");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const key_class_1 = require("./key-class");
 const SECRET = '[secret]';
@@ -1170,6 +1171,80 @@ function feederNameKept(program, stage) {
     // Alone, only the exact lower-case name of a stdin producer: no path, no other case (`"Cat" | smbpasswd` is a value).
     return LONE_FEEDER_PROGRAMS.has(program) && stage[0] === program;
 }
+/** The service delete floor's programs (delete-floor DELETES): their targets are sent in `paths[]`, as `find … -delete`'s. */
+const DELETE_PROGRAMS = new Set(['rm', 'rmdir', 'unlink', 'shred', 'srm', 'wipe', 'trash', 'trash-put', 'rimraf']);
+const UNRESOLVED_PATH = '$unresolved'; // a target the hook cannot make literal (the floor holds it)
+const deleteName = (word) => basename(word).normalize('NFKC').toLowerCase();
+const tryRead = (read) => { try {
+    return read();
+}
+catch {
+    return null;
+} };
+const homeFolder = () => { const home = tryRead(node_os_1.homedir); return home && home.startsWith('/') && home !== '/' ? node_path_1.posix.resolve(home) : null; };
+const otherUser = (path) => path.replace(/^(\/(?:home|Users))\/[^/]+(?=\/|$)/, '$1/[user]');
+/** A target's folders on this machine: lexical, joined to each possible cwd; one the hook cannot make literal is unresolved. */
+function resolveTarget(word, cwds) {
+    const homeDir = homeFolder();
+    if (/[$`{}]/.test(word) || /^~[^/]/.test(word) || /^[A-Za-z]:/.test(word) || (word.startsWith('~') && !homeDir))
+        return [UNRESOLVED_PATH];
+    const path = word.startsWith('~') ? `${homeDir}${word.slice(1)}` : word;
+    if (!path.startsWith('/') && (!cwds.length || node_path_1.posix.normalize(path).split('/')[0] === '..'))
+        return [UNRESOLVED_PATH];
+    return (path.startsWith('/') ? ['/'] : cwds).map((cwd) => node_path_1.posix.resolve(cwd, path)).map((resolved) => (/[*?[]/.test(node_path_1.posix.dirname(resolved))
+        || (/[*?[]/.test(node_path_1.posix.basename(resolved)) && ['/', '/home', '/Users', homeDir].includes(node_path_1.posix.dirname(resolved))) ? UNRESOLVED_PATH : resolved));
+}
+/** A resolved target as sent: the home folder as /home/[user] (its parents as /home or /), another user's as [user]. */
+function sentDeletePath(resolved) {
+    const homeDir = homeFolder();
+    if (!homeDir || resolved === UNRESOLVED_PATH)
+        return otherUser(resolved);
+    if (resolved === homeDir || resolved.startsWith(`${homeDir}/`))
+        return `/home/[user]${resolved.slice(homeDir.length)}`;
+    const up = homeDir.split('/').length - (resolved === '/' ? 1 : resolved.split('/').length);
+    return homeDir.startsWith(resolved === '/' ? '/' : `${resolved}/`) ? node_path_1.posix.resolve('/home/[user]', '../'.repeat(up)) : otherUser(resolved);
+}
+/** Records the delete targets of one simple command (and a `cd`'s folder for the commands after it). */
+function collectDeleteTargets(words, into) {
+    const parsed = parseSegment(words);
+    let at = parsed.index + (['busybox', 'toybox'].includes(deleteName(words[parsed.index] ?? '')) ? 1 : 0);
+    // A wrapper option's value read as the program (`sudo -u x rm`): the delete program after the option values.
+    for (let j = at; j < words.length && at > 0 && !DELETE_PROGRAMS.has(deleteName(words[at])); j += 1) {
+        if (DELETE_PROGRAMS.has(deleteName(words[j])))
+            at = j;
+        else if (!(WRAPPERS.has(basename(words[j])) || /^-|^\d+[smhd]?$/.test(words[j]) || ASSIGNMENT.test(words[j]) || /^-[^=]*$/.test(words[j - 1])))
+            break;
+    }
+    const name = deleteName(words[at] ?? '');
+    const cwds = words.slice(0, at).some((word) => /^(?:-[CD]|--chdir(?:=|$))/.test(word)) ? [] : into.cwds;
+    const operands = parsed.plain.filter((i) => i > at).map((i) => words[i]);
+    if (name === 'cd' || name === 'pushd' || name === 'popd') {
+        // A cd may fail or end in a subshell: a later relative target may be in any folder seen so far (at most 8).
+        const folder = name === 'cd' ? operands.find((word) => !/^-[LPe@]+$/.test(word)) ?? '~' : '-';
+        const seen = folder === '-' ? [] : [...new Set([...into.cwds, ...resolveTarget(folder, into.cwds)])];
+        into.cwds = into.cwds.length && seen.length <= 8 && !seen.includes(UNRESOLVED_PATH) ? seen : [];
+    }
+    const execs = name !== 'find' ? [] : operands.filter((word, k) => /^-(?:exec|execdir|ok|okdir)$/.test(operands[k - 1] ?? '') && DELETE_PROGRAMS.has(deleteName(word)));
+    let targets = [];
+    if (name === 'find' && (operands.includes('-delete') || execs.length)) {
+        const first = operands.findIndex((word) => /^[(!]|^-(?![HLPD]$|O\d*$)/.test(word));
+        targets = operands.slice(0, first < 0 ? undefined : first).filter((word) => !word.startsWith('-'));
+        if (!targets.length)
+            targets.push('.');
+    }
+    else if (DELETE_PROGRAMS.has(name)) {
+        const ended = operands.indexOf('--');
+        targets = operands.filter((word, k) => (ended >= 0 && k > ended) || (!(word.startsWith('-') && word !== '-') && (ended < 0 || k < ended)));
+        if (words.slice(0, at).some((word) => basename(word) === 'xargs'))
+            targets.push(UNRESOLVED_PATH);
+    }
+    // A lone word (no target) deletes nothing and may be a value fed to a password program: never named. Past 64: cut (sentPaths).
+    if (targets.length)
+        into.names.push(name === 'find' ? deleteName(execs[0] ?? 'find') : name);
+    for (const target of targets)
+        if (into.paths.length <= 64)
+            into.paths.push(...resolveTarget(target, cwds).map(sentDeletePath));
+}
 function normalizeInner(command, state, depth) {
     if (command.length > MAX_COMMAND_CHARS)
         throw new NormalizationLimit();
@@ -1227,6 +1302,8 @@ function normalizeInner(command, state, depth) {
     }
     segments.forEach((segment, k) => {
         if (segment.words.length) {
+            if (state.deletes)
+                collectDeleteTargets(segment.words, state.deletes);
             const result = redactSegment(segment.words, {
                 pipedOut: piped(k),
                 downstreamTakes: sinkAfter[k],
@@ -1870,6 +1947,18 @@ function inputAction(base, input, state) {
     const action = { ...base, tool_input: preimage === null ? {} : { input_sha256: sha256(preimage) } };
     return { action: withExactness(action, state), hashField: 'input_sha256', preimage, plain: false };
 }
+/** Paths as sent (an edit's targets, a shell delete's): at most 64, secret spans as `[secret]`, each cut at 512 characters. */
+function sentPaths(targets, state, named) {
+    if (targets.length > 64)
+        state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
+    return targets.slice(0, 64).map((path) => {
+        // The paths go to the service's path classifier as they did before the key class: class-free (the class is in the hashes).
+        const redacted = redactPathSpans(redactText(named(path), state)).replace(SECRET_MARKER_ALL, SECRET);
+        if (redacted.length > 512 || redacted.includes(SECRET) || path.length > PATH_SCAN_CHARS)
+            state.truncated = true; // exact: n/a (as above)
+        return redacted.slice(0, 512);
+    });
+}
 function normalizedOfKind(event, kind, hostToolName, state, commandText) {
     if (kind === 'mcp') {
         return inputAction({ tool_kind: 'mcp', tool_name: hostToolName }, event.tool_input, state);
@@ -1879,7 +1968,12 @@ function normalizedOfKind(event, kind, hostToolName, state, commandText) {
         if (untrimmedShellText(event, raw) !== null)
             state.truncated = true; // exact: raw (the host's untrimmed text)
         state.freeText = !(0, hook_tool_policy_1.isShellTextTool)(event);
+        // Delete targets (pass 1, shell text tools) go out as edit paths do (one redacted whole: unresolved); the delete floor reads them.
+        const deletes = { paths: [], names: [], cwds: [tryRead(() => process.cwd()) ?? ''].filter((cwd) => cwd.startsWith('/')) };
+        if (!state.freeText)
+            state.deletes = deletes;
         const { text, programs } = normalizeInner(raw, state, 0);
+        delete state.deletes;
         // A secret was replaced: the action is never bound or reused (it asks each time).
         if (hasSecretMarker(text))
             state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
@@ -1902,11 +1996,13 @@ function normalizedOfKind(event, kind, hostToolName, state, commandText) {
         const preimage = `${HASH_VERSION}\n${domain}\n${state.truncated || !state.sigs.length ? text : `${text}\n${JSON.stringify(state.sigs)}`}`;
         // A plain push or pull request: the plain hash wherever it is computed; the text only for a caller that sends it.
         const sourceControlText = commandText === 'off' ? null : sourceControlCommandText(event, text, state, programs);
+        const paths = sentPaths([...new Set(deletes.paths)], state, (path) => path).map((path) => (path.startsWith('/') ? path : UNRESOLVED_PATH));
         return {
             action: withExactness({
                 tool_kind: 'shell',
                 tool_name: hostToolName,
-                programs,
+                programs: [...programs, ...new Set(deletes.names.filter((name) => !programs.includes(name)))],
+                ...(paths.length ? { paths } : {}),
                 tool_input: {
                     command_sha256: sha256(preimage),
                     ...(deployText !== null && deployText === text ? { command: deployText } : {}),
@@ -1922,16 +2018,7 @@ function normalizedOfKind(event, kind, hostToolName, state, commandText) {
         };
     }
     if (kind === 'edit') {
-        const targets = (0, hook_tool_policy_1.toolTargetPaths)(event);
-        if (targets.length > 64)
-            state.truncated = true; // exact: n/a (paths are not exact material; the whole input is)
-        const paths = targets.slice(0, 64).map((path) => {
-            // The paths go to the service's path classifier as they did before the key class: class-free (the class is in the hashes).
-            const redacted = redactPathSpans(redactText(withoutUserName(path, state), state)).replace(SECRET_MARKER_ALL, SECRET);
-            if (redacted.length > 512 || redacted.includes(SECRET) || path.length > PATH_SCAN_CHARS)
-                state.truncated = true; // exact: n/a (as above)
-            return redacted.slice(0, 512);
-        });
+        const paths = sentPaths((0, hook_tool_policy_1.toolTargetPaths)(event), state, (path) => withoutUserName(path, state));
         return inputAction({ tool_kind: 'edit', tool_name: hostToolName, paths }, event.tool_input, state);
     }
     return inputAction({ tool_kind: 'other', tool_name: hostToolName }, event.tool_input, state);

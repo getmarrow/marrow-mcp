@@ -1043,7 +1043,10 @@ function classifyAsNamed(event, options) {
         || protectedShellCommand
         || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && (options.ownUnproven === true || !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name)))
         || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
-    const full = { tool, type, surfaces, readOnly, protected: protectedAction };
+    // T4: a run of a program on the owner's production list takes that entry's class, protected, merged with the rest of the call.
+    const listed = shellGoverned ? (0, hook_tool_policy_1.protectedProgramClasses)(command, options.cwd) : [];
+    const full = listed.map((kind) => ({ tool, type: kind, surfaces: [{ deploy: 'production', publish: 'npm', security: 'secrets' }[kind]], readOnly: false, protected: true }))
+        .reduce(stricterParts, { tool, type, surfaces, readOnly, protected: protectedAction });
     const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected])].filter((surface) => surface !== null);
     return held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
 }
