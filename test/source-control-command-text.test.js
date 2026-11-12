@@ -157,11 +157,11 @@ test('A8 variables, globs, tilde, braces: S3 rejects', () => {
   }
 });
 
-test('A9 misleading title: classified deploy on production, so the hook sends no text (S2)', () => {
+test('A9 misleading title: classified as the same call without the prose (L2), never the review class, so the hook sends no text (S2)', () => {
   const event = bash("gh pr create --base feat/a --title 'deploy to production'");
   const classified = classifyTool(event).action;
   assert.notEqual(classified, REVIEW_CLASS);
-  assert.match(classified, /deploy on production/);
+  assert.equal(classified, classifyTool(bash("gh pr create --base feat/a --title 'x'")).action);
   // The one sending caller gates on the class (source pin below); the end-to-end run checks the body.
 });
 
