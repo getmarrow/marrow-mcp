@@ -108,6 +108,8 @@ export type NormalizedHookAction = {
   tool_input: { command_sha256: string; exact_hmac?: string } | { input_sha256: string; exact_hmac?: string } | { exact_hmac: string } | Record<string, never>;
   /** The hash could not cover everything that decides the action: Marrow never binds an approval to it. */
   truncated?: true;
+  /** The home-relative folder (`~` or `~/path`), only beside the command text of a raw Claude Code Bash call. */
+  cwd?: string;
 };
 
 const SECRET = '[secret]';
@@ -1553,6 +1555,91 @@ export function sourceControlCommandText(
   return head !== undefined && programs.length === 1 && programs[0] === head.split(' ')[0] ? text : null;
 }
 
+/** The longest command text sent (the backend cap) and the longest home-relative folder. */
+const BASH_TEXT_CHARS = 8192;
+const BASH_CWD_CHARS = 512;
+/** Lower-case parts that make a command text or a folder name secret-shaped (a superset of the redactor's name scan). */
+const SECRET_SHAPED_PARTS = ['key', 'token', 'secret', 'credential', 'pass', 'auth', 'bearer', 'cookie', 'private', 'session',
+  'signature', 'webhook', 'jwt', 'otp', '.pem', '.env', '.ssh', '.gnupg', '.aws', '.netrc', '.npmrc', '.pgpass', '.marrow',
+  'id_rsa', 'id_ed25519', 'id_ecdsa', 'ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat', 'xox', 'glpat', 'aiza', 'akia',
+  'asia', 'mrw_', 'npm_', 'eyj', '-----begin', '<<', 'login', 'passphrase', '--pw', '--pin'];
+/** Words that set a value (an environment assignment), send a header or name a program whose flags take a password. */
+const SECRET_SHAPED_WORDS = new Set(['export', 'declare', 'typeset', 'readonly', 'local', 'set', 'env',
+  'mysql', 'mariadb', 'mysqldump', 'mysqladmin', 'mariadb-dump', 'sshpass', 'psql', 'pg_dump', 'pg_restore', 'mongosh', 'redis-cli',
+  'zip', 'unzip', '7z', 'openssl', 'htpasswd', 'smbclient', 'gpg', 'ssh-keygen']);
+/** The `-p` words that carry no value (find predicates); any other word starting `-p` with more after it may be a password. */
+const PLAIN_P_WORDS = new Set(['-p', '-print', '-print0', '-printf', '-perm', '-prune', '-path', '-pv']);
+
+/** 1 to `max` characters, each printable ASCII (0x20-0x7E). */
+function printableAscii(text: string, max: number): boolean {
+  if (text.length < 1 || text.length > max) return false;
+  for (let i = 0; i < text.length; i += 1) if (text.charCodeAt(i) < 0x20 || text.charCodeAt(i) > 0x7e) return false;
+  return true;
+}
+
+/**
+ * The independent secret-shape scan of a command text (hand-written, linear): a secret-shaped part or word, an
+ * environment assignment, an attached `-p` value, a `-u user:pass`, a URL with a user, query or fragment, a
+ * `user:pass@host`, or a key-shaped run (24+ letters and digits, or 32+ mixed-case with `/`).
+ */
+function secretShapedText(text: string): boolean {
+  const lower = text.toLowerCase();
+  if (SECRET_SHAPED_PARTS.some((part) => lower.includes(part))) return true;
+  const words = text.split(/[ \t;&|()`'"{}<>]+/).filter(Boolean);
+  for (let i = 0; i < words.length; i += 1) {
+    const word = words[i];
+    if (SECRET_SHAPED_WORDS.has(word.toLowerCase()) || /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(word) || word.startsWith('-H')
+      || word.toLowerCase().startsWith('--header')) return true;
+    if (word.startsWith('-p') && !PLAIN_P_WORDS.has(word)) return true;
+    if (word.includes(':') && (/^(?:-u|--user|--proxy-user)/.test(word) || ['-u', '--user', '--proxy-user'].includes(words[i - 1] ?? ''))) return true;
+    if (word.includes('://') && /[@?#]/.test(word)) return true;
+  }
+  let run = '';
+  for (let i = 0, colon = -1, slash = -1; i <= text.length; i += 1) {
+    const c = text[i] ?? ' ';
+    if (c === ':') colon = i;
+    if (c === '/' || c === ' ') slash = i;
+    if (c === '@' && colon > slash) return true; // user:pass@host
+    if (/[A-Za-z0-9_+=/-]/.test(c)) { run += c; continue; }
+    for (const part of run.split('/')) if (part.length >= 24 && /[0-9]/.test(part) && /[A-Za-z]/.test(part)) return true;
+    if (run.length >= 32 && /[0-9]/.test(run) && /[A-Z]/.test(run) && /[a-z]/.test(run)) return true;
+    run = '';
+  }
+  return false;
+}
+
+/**
+ * The normalized command text of a raw Claude Code Bash call, for the learned pattern engine, or null. Only the host's
+ * Bash tool with one string command (no `cmd`, no argument vector, no Monitor or PowerShell call, no cut input); the
+ * normalized text is exactly the host's raw text, printable ASCII within the cap; normalizing replaced nothing (no
+ * secret marker, not truncated, no quoting signature); and the independent secret-shape scan finds nothing in it.
+ * The client decides nothing about the class: chains, variables and flags are sent as they are.
+ */
+function claudeBashCommandText(event: { tool_name?: unknown; tool_input?: unknown }, text: string, state: { truncated: boolean; sigs: readonly string[] }): string | null {
+  const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input as Record<string, unknown> : null;
+  if (event.tool_name !== 'Bash' || input === null || typeof input.command !== 'string' || 'cmd' in input) return null;
+  if ((event as { input_truncated?: unknown }).input_truncated !== undefined) return null;
+  if (shellCommandToolText(event as Parameters<typeof shellCommandToolText>[0]) !== null) return null;
+  // Only a text the normalizer left exactly as the host sent it: no data hash, no requoted word or operator.
+  if (input.command !== text || !printableAscii(text, BASH_TEXT_CHARS)) return null;
+  if (state.truncated || state.sigs.length > 0 || hasSecretMarker(text)) return null;
+  return secretShapedText(text) ? null : text;
+}
+
+/**
+ * The working folder relative to the user's home folder (`~` or `~/relative/path`), or null: outside the home folder,
+ * not absolute, a `.` or `..` or empty segment, a non-printable byte, a secret-shaped segment or over 512 characters.
+ */
+export function homeRelativeFolder(cwd: unknown, home: string = homedir()): string | null {
+  if (typeof cwd !== 'string' || !home.startsWith('/') || home.length < 2 || home.endsWith('/')) return null;
+  if (cwd === home) return '~';
+  if (!cwd.startsWith(`${home}/`)) return null;
+  const rest = cwd.slice(home.length + 1).replace(/\/$/, '');
+  const folder = `~/${rest}`;
+  if (!printableAscii(folder, BASH_CWD_CHARS) || folder.includes('\\')) return null;
+  return rest.split('/').every((part) => part !== '' && part !== '.' && part !== '..' && !secretShapedText(part)) ? folder : null;
+}
+
 /** The words as the normalized form writes them (single spaces), launcher included. */
 function normalizedWords(_toolWords: string[], trimmed: string): string {
   return trimmed.split(/[ \t]+/).join(' ');
@@ -1832,7 +1919,9 @@ export function keyedTargetHash(parts: unknown): string | null {
  * `MARROW_HOOK_COMMAND_TEXT=off` in the hook's environment gives the keyed hash and no text, as before, and so does
  * `claudeCodeBash: false` (the hook's runtime call for any host event other than a raw Claude Code Bash call).
  */
-export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: number; salt?: Buffer | null; sendCommandText?: boolean; claudeCodeBash?: boolean } = {}): NormalizedHookAction {
+export function normalizedHookAction(event: ToolEvent, options: {
+  deadlineAt?: number; salt?: Buffer | null; sendCommandText?: boolean; claudeCodeBash?: boolean; bashText?: { cwd?: unknown; sent?: boolean };
+} = {}): NormalizedHookAction {
   const deadline = options.deadlineAt ?? Date.now() + DEFAULT_NORMALIZE_MS;
   const state = newExactness(deadline);
   const toolName = normalizeHookToolName(event.tool_name) || 'tool';
@@ -1863,7 +1952,14 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
     const claudeCodeBash = options.claudeCodeBash ?? !(entrypoint.endsWith('hook') && !entrypoint.startsWith('claude-'));
     const commandText = process.env.MARROW_HOOK_COMMAND_TEXT === 'off' || !claudeCodeBash ? 'off'
       : options.sendCommandText === true ? 'send' : 'hash';
-    ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state, commandText));
+    let bashText: boolean | undefined;
+    ({ action, preimage, hashField, plain, bashText } = normalizedOfKind(event, kind, hostToolName, state, commandText, options.bashText !== undefined));
+    // The command text of a raw Claude Code Bash call goes with the home-relative folder (when it has one) on the runtime call.
+    if (bashText === true && options.bashText) {
+      options.bashText.sent = true;
+      const folder = homeRelativeFolder(options.bashText.cwd);
+      if (folder !== null) action = { ...action, cwd: folder };
+    }
   } catch (error) {
     if (!(error instanceof NormalizationLimit)) throw error;
     action = { tool_kind: kind, tool_name: hostToolName, tool_input: {}, truncated: true };
@@ -1889,6 +1985,8 @@ type BuiltAction = {
   preimage: string | null;
   /** The hash stays the plain hash: the text it covers is itself sent in clear (the deploy `command`). */
   plain: boolean;
+  /** The command text of a raw Claude Code Bash call is sent (claudeBashCommandText). */
+  bashText?: boolean;
 };
 
 /** An action whose tool input is hashed whole (mcp, edit, other). */
@@ -1898,7 +1996,7 @@ function inputAction(base: Omit<NormalizedHookAction, 'tool_input'>, input: unkn
   return { action: withExactness(action, state), hashField: 'input_sha256', preimage, plain: false };
 }
 
-function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], hostToolName: string, state: Exactness, commandText: 'off' | 'hash' | 'send'): BuiltAction {
+function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], hostToolName: string, state: Exactness, commandText: 'off' | 'hash' | 'send', allBash = false): BuiltAction {
   if (kind === 'mcp') {
     return inputAction({ tool_kind: 'mcp', tool_name: hostToolName }, event.tool_input, state);
   }
@@ -1928,6 +2026,9 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     const preimage = `${HASH_VERSION}\n${domain}\n${state.truncated || !state.sigs.length ? text : `${text}\n${JSON.stringify(state.sigs)}`}`;
     // A plain push or pull request: the plain hash wherever it is computed; the text only for a caller that sends it.
     const sourceControlText = commandText === 'off' ? null : sourceControlCommandText(event, text, state, programs);
+    // Any other raw Claude Code Bash text, only on the runtime call that asks for it; the deploy text keeps its own form.
+    const bashText = !allBash || commandText === 'off' || sourceControlText !== null || deployText !== null ? null
+      : claudeBashCommandText(event, text, state);
     return {
       action: withExactness({
         tool_kind: 'shell',
@@ -1937,6 +2038,7 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
           command_sha256: sha256(preimage),
           ...(deployText !== null && deployText === text ? { command: deployText } : {}),
           ...(sourceControlText !== null && commandText === 'send' ? { command: sourceControlText } : {}),
+          ...(bashText !== null ? { command: bashText } : {}),
         },
       }, state),
       hashField: 'command_sha256',
@@ -1944,7 +2046,8 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
       // Only the grammar-bound deploy text and a plain push or pull request are sent in clear, so only their hash may
       // stay plain (the service binds them word for word). The run options in the preimage must be numbers or booleans:
       // any other value takes the keyed form.
-      plain: (deployText !== null && deployText === text && !state.truncated && runOptionsScalar(event)) || sourceControlText !== null,
+      plain: (deployText !== null && deployText === text && !state.truncated && runOptionsScalar(event)) || sourceControlText !== null || bashText !== null,
+      bashText: bashText !== null,
     };
   }
   if (kind === 'edit') {

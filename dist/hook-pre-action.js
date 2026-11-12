@@ -1836,13 +1836,20 @@ async function runPreActionHook(input, watch) {
     const raw = rawEvent && typeof rawEvent === 'object' && !Array.isArray(rawEvent) ? rawEvent : null;
     const claudeCodeBash = process.argv[2] === 'claude-pre-action-hook' && identity.harness === 'claude-code' && raw !== null
         && raw.tool_name === 'Bash' && source.tool_name === 'Bash' && raw.tool_input === source.tool_input;
+    // A raw Claude Code Bash call also sends its command text (secrets replaced on this machine, none found) with its plain
+    // hash and the home-relative folder, on the runtime call only, so the learned pattern engine can read the action.
+    const bashText = claudeCodeBash && raw !== null ? { cwd: raw.cwd } : undefined;
     const runtimeAction = (0, normalized_action_1.normalizedHookAction)(source, {
         deadlineAt: Math.min(Date.now() + 750, (holdContext.deadlineAt ?? Number.POSITIVE_INFINITY) - 1_000),
         sendCommandText,
         claudeCodeBash,
+        bashText,
     });
+    // The hold, denial, permit and approval records keep the plain hash without the text or the folder.
     const { command: _sentText, ...heldInput } = runtimeAction.tool_input;
-    const normalizedAction = sendCommandText ? { ...runtimeAction, tool_input: heldInput } : runtimeAction;
+    const { cwd: _sentFolder, ...heldAction } = runtimeAction;
+    const normalizedAction = sendCommandText || bashText?.sent === true
+        ? { ...heldAction, tool_input: heldInput } : runtimeAction;
     // The decision and gate receipt this control path holds, so a denial can close them.
     const held = { decisionId: null, gateReceiptId: null };
     // Set once the runtime gate has answered. A later network or 5xx failure (decision, permit issue

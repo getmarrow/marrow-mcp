@@ -101,6 +101,8 @@ export type NormalizedHookAction = {
     } | Record<string, never>;
     /** The hash could not cover everything that decides the action: Marrow never binds an approval to it. */
     truncated?: true;
+    /** The home-relative folder (`~` or `~/path`), only beside the command text of a raw Claude Code Bash call. */
+    cwd?: string;
 };
 /** A word, data text or input string longer than this is not scanned: it is withheld and the action marked truncated. */
 export declare const MAX_SCAN_CHARS = 16384;
@@ -154,6 +156,11 @@ export declare function sourceControlCommandText(event: {
     truncated: boolean;
     sigs: readonly string[];
 }, programs: readonly string[]): string | null;
+/**
+ * The working folder relative to the user's home folder (`~` or `~/relative/path`), or null: outside the home folder,
+ * not absolute, a `.` or `..` or empty segment, a non-printable byte, a secret-shaped segment or over 512 characters.
+ */
+export declare function homeRelativeFolder(cwd: unknown, home?: string): string | null;
 /** runOptionsKey as a standalone identity (no deadline), for the exact target of a call (hook-contract exactHookTarget). */
 export declare function shellToolRunOptionsKey(event: ToolEvent): string | null;
 /**
@@ -187,6 +194,10 @@ export declare function normalizedHookAction(event: ToolEvent, options?: {
     salt?: Buffer | null;
     sendCommandText?: boolean;
     claudeCodeBash?: boolean;
+    bashText?: {
+        cwd?: unknown;
+        sent?: boolean;
+    };
 }): NormalizedHookAction;
 export {};
 //# sourceMappingURL=normalized-action.d.ts.map
