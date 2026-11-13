@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Hook (command text for ordinary Bash calls): for an ordinary Bash call in Claude Code that reaches Marrow, the hook now sends the command text with its plain hash and the home-relative folder on the runtime call only, so the learned pattern engine can read the action; the text goes only when normalizing left it exactly as written and nothing secret-shaped is found on the machine, otherwise no text and no folder are sent (as before); the hold, denial, permit and approval records keep the plain hash without the text; `MARROW_HOOK_COMMAND_TEXT=off` still turns it off.
+- Client update (local answer): the local client update no longer builds the MCP setup command (for a plugin install it wrote a second hook copy); `auto_update_command` names the installer update, the one update path.
+
 ## 3.9.112
 
 3.9.111 was tagged but never published (a release-run test flake); 3.9.112 carries the same changes plus a test-only fix.

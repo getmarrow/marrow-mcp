@@ -316,5 +316,5 @@ test('static guard: a new bare [secret] site must be reviewed (it would skip the
   const uses = source.filter((line) => /\bSECRET\b/.test(line) && !/^\s*(?:\*|\/\/|\/\*)/.test(line));
   assert.equal(uses.length, 9, `bare SECRET uses: ${uses.map((line) => line.trim().slice(0, 60)).join(' | ')}`);
   assert.equal(source.filter((line) => /includes\(SECRET\)/.test(line)).length, 1, 'the one includes(SECRET) is the path check, after the class is dropped');
-  assert.equal(source.filter((line) => /hasSecretMarker\(/.test(line)).length, 3, 'the definition and the two callers');
+  assert.equal(source.filter((line) => /hasSecretMarker\(/.test(line)).length, 4, 'the definition, the two callers and the command text check');
 });
