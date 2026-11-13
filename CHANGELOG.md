@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Client update (local answer): the local client update no longer builds the MCP setup command (for a plugin install it wrote a second hook copy); `auto_update_command` names the installer update, the one update path.
+
 ## 3.9.112
 
 3.9.111 was tagged but never published (a release-run test flake); 3.9.112 carries the same changes plus a test-only fix.
