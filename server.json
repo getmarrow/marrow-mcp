@@ -24,12 +24,12 @@
       ]
     }
   ],
-  "version": "3.9.112",
+  "version": "3.9.113",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@getmarrow/mcp",
-      "version": "3.9.112",
+      "version": "3.9.113",
       "transport": {
         "type": "stdio"
       },

@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## 3.9.113
+
+The local client update no longer builds the MCP setup command. The update goes through the installer, the one update path.
 
 - Client update (local answer): the local client update no longer builds the MCP setup command (for a plugin install it wrote a second hook copy); `auto_update_command` names the installer update, the one update path.
+- Version 3.9.113 in package.json, package-lock.json, server.json and the adapter version constant; dist/ rebuilt from src/. The installer 0.1.73 and Q5 fixtures and the tests that pin the pack carry this version.
 
 ## 3.9.112
 
