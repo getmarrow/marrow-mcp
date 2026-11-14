@@ -48,7 +48,7 @@ import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
 import { normalizedHookAction, withoutSentText } from './normalized-action';
 import { APPROVAL_STATE_REASON } from './secret-paths';
 import { consultSessionLoopGuard, type LoopGuardOperation } from './session-loop-guard';
-import { nodeScriptReader, runtimeWithScripts, scriptAttachments, withScriptsSha256 } from './script-attach';
+import { runtimeWithScripts, withScriptsSha256, type ScriptAttachments } from './script-attach';
 import {
   hookToolCommand,
   isMcpHookTool,
@@ -1889,9 +1889,8 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     claudeCodeBash,
   });
   const { command: _sentText, ...heldInput } = runtimeAction.tool_input as Record<string, unknown>;
-  // CL-6: only when the runtime call sends the text (C1), the text of the local script it runs; the hold keeps hashes only (C4).
-  const sentText = claudeCodeBash ? (runtimeAction.tool_input as Record<string, unknown>).command : undefined;
-  const scripts = typeof sentText === 'string' ? scriptAttachments(sentText, absoluteFolder(raw?.cwd) ?? '', homedir(), nodeScriptReader()) : { none: 'no_text' };
+  // CL-6: script text is not sent in this version; every body is the no-script body (no `scripts`, no `scripts_sha256`).
+  const scripts: ScriptAttachments = { none: 'off' };
   const normalizedAction = withScriptsSha256(sendCommandText ? { ...runtimeAction, tool_input: heldInput } as typeof runtimeAction : withoutSentText(runtimeAction), scripts);
   // The decision and gate receipt this control path holds, so a denial can close them.
   const held: HeldDecision = { decisionId: null, gateReceiptId: null };

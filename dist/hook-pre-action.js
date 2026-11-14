@@ -1857,9 +1857,8 @@ async function runPreActionHook(input, watch) {
         claudeCodeBash,
     });
     const { command: _sentText, ...heldInput } = runtimeAction.tool_input;
-    // CL-6: only when the runtime call sends the text (C1), the text of the local script it runs; the hold keeps hashes only (C4).
-    const sentText = claudeCodeBash ? runtimeAction.tool_input.command : undefined;
-    const scripts = typeof sentText === 'string' ? (0, script_attach_1.scriptAttachments)(sentText, absoluteFolder(raw?.cwd) ?? '', (0, node_os_1.homedir)(), (0, script_attach_1.nodeScriptReader)()) : { none: 'no_text' };
+    // CL-6: script text is not sent in this version; every body is the no-script body (no `scripts`, no `scripts_sha256`).
+    const scripts = { none: 'off' };
     const normalizedAction = (0, script_attach_1.withScriptsSha256)(sendCommandText ? { ...runtimeAction, tool_input: heldInput } : (0, normalized_action_1.withoutSentText)(runtimeAction), scripts);
     // The decision and gate receipt this control path holds, so a denial can close them.
     const held = { decisionId: null, gateReceiptId: null };
