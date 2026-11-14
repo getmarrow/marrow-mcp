@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from 'node:fs';
 import { posix } from 'node:path';
 import { isSecretPath, parseShellSegments, secretPatternRegex } from './hook-tool-policy';
-import { looksLikeKey } from './normalized-action';
+import { looksLikeKey, normalizeShellCommand } from './normalized-action';
 import { redactSensitiveText } from './redact';
 import { APPROVAL_STATE_TREE, PRESENT_SECRET_PATTERNS, SECRET_PATTERNS } from './secret-paths';
 
@@ -35,11 +35,20 @@ const INERT = new Set(['ls', 'cat', 'echo', 'printf', 'grep', 'egrep', 'fgrep', 
 const INTERPRETERS: Record<string, RegExp> = { bash: /^-[euxv]+$/, sh: /^-[euxv]+$/, zsh: /^-[euxv]+$/, python: /^-[IBuOEsSq]+$/,
   python3: /^-[IBuOEsSq]+$/, node: /^--(?:no-warnings|enable-source-maps)$/, ruby: /^-w$/, perl: /^-w$/, php: /^-n$/ };
 const JS_FILE = /\.(?:[cm]?[jt]sx?)$/;
-const CREDENTIAL_DIR = /(?:^|\/)(?:\.ssh|\.aws|\.gnupg|\.marrow\/credentials|\.config\/gh|\.codex|\.docker|\.kube|\.azure)(?:\/|$)|(?:^|\/)auth\.json$/i;
+const CREDENTIAL_DIR = /(?:^|\/)(?:\.ssh|\.aws|\.gnupg|\.marrow\/credentials|\.config\/gh|\.config\/gcloud|\.codex|\.docker|\.kube|\.azure)(?:\/|$)|(?:^|\/)auth\.json$/i;
 const SECRET_RES = [...SECRET_PATTERNS, ...PRESENT_SECRET_PATTERNS].map(secretPatternRegex);
 const PEM = /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----/;
 const KEY_WORD_SPLIT = /[^A-Za-z0-9+=_-]+/;
 const DIGEST = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+// R7: a script whose file name names a credential is never read.
+const SECRET_NAME = /secret|credential|token|passw|\.env/i;
+// R5: a credential word on a line with a quoted literal or a word:word operand (curl -u, sshpass -p, an auth tuple or header).
+const CREDENTIAL_WORD = /auth|user|pass|pwd|secret|token|api_?key|credential|basic/i;
+const QUOTED_OR_PAIR = /'[^'\n]*'|"[^"\n]*"|`[^`\n]*`|[^\s:]:[^\s:]/;
+// R8: code that loads or runs other code the client does not attach (a dynamic import, a worker, a fork, node or python run by a call).
+const DYNAMIC_LOADER = /\bimportlib\b|__import__|\brunpy\b|\bexec[ \t]*\([ \t]*open[ \t]*\(|\bWorker\b|\bworker_threads\b|\bfork[ \t]*\(/;
+const EXEC_CALL = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|system|popen|Popen|run|call|check_call|check_output|getoutput|getstatusoutput|exec[lv]\w*|spawn[lv]\w*)\b/;
+const INTERPRETER_WORD = /\b(?:node|nodejs|python[0-9.]*|deno|bun)\b/;
 const NODE_IMPORT = /\b(?:require|import)[ \t]{0,16}\([ \t]{0,16}(['"`])([^'"`\n]{0,512})\1|\b(?:from|import)[ \t]{0,16}(['"])([^'"\n]{0,512})\3/g;
 const SHELL_SOURCE = /(?:^|[;&|({]|\bthen|\bdo|\belse)[ \t]{0,64}(?:source|\.)[ \t]{1,64}([^ \t\n;&|)]{1,512})/gm;
 const OTHER_IMPORT = /\brequire_relative\b|\buse[ \t]+lib\b|\b(?:require|load|include|include_once|require_once|do)[ \t(]{0,16}['"][.~/]/;
@@ -87,6 +96,8 @@ function collect(text: string, cwd: string, home: string, reader: ScriptReader, 
   if (!run || (concurrent && busy > 1)) return { none: 'no_script' };
   const group = loadGroup(ctx, run);
   if (!group) return { none: 'not_attached' };
+  // R5, R8: every attached text, line by line (the file, an import, the package.json entry or the Makefile).
+  if (group.some((e) => e.content.split('\n').some((line) => (tick(), withheldLine(line))) || dynamicLoader(e.content))) return { none: 'not_attached' };
   // A redirect into the script (by any name or link) changes what runs, even after the script starts: bash reads as it goes.
   const written = new Set(writes.map((w) => (secretPathLike(posix.resolve(w)) ? posix.resolve(w) : (tick(), reader.realpath(w) ?? posix.resolve(w))).toLowerCase()));
   if (group.some((e) => written.has(e.real.toLowerCase()) || written.has(posix.resolve(e.lexical).toLowerCase()))) return { none: 'written' };
@@ -128,10 +139,20 @@ const secretPathLike = (path: string): boolean => [path.slice(-4096), path.slice
 const secretFree = (text: string): boolean => !PEM.test(text) && redactSensitiveText(text) === text
   && !text.split(KEY_WORD_SPLIT).some((word) => word.length >= 12 && looksLikeKey(word) && !DIGEST.test(word));
 
+/** R5: a line the 3A path would withhold (the normalizer's secret marker, the shared redactor, a key-shaped word, a 20+ letter or digit run, as eligibleHostText runs them), or a credential line. */
+const withheldLine = (line: string): boolean => ((n) => n.truncated || n.text.includes('[secret'))(normalizeShellCommand(line)) || redactSensitiveText(line) !== line
+  || line.split(/[\s=:,;@/?&'"`()[\]{}<>|!*$]+/).some((word) => !(/^[0-9a-f]+$/i.test(word) && (word.length <= 12 || word.length === 40 || word.length === 64)) && looksLikeKey(word))
+  || (line.match(/[A-Za-z0-9]{20,}/g) ?? []).some((run) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(run)) || (CREDENTIAL_WORD.test(line) && QUOTED_OR_PAIR.test(line));
+
+/** R8: the content loads code dynamically, or runs node or python through a call. */
+function dynamicLoader(text: string): boolean {
+  return DYNAMIC_LOADER.test(text) || text.split('\n').some((line) => EXEC_CALL.test(line) && INTERPRETER_WORD.test(line));
+}
+
 /** C3: the file's exact text, or null. A secret-class path is refused before it is resolved, and its target before it is read. */
 function load(ctx: Ctx, lexical: string): { real: string; text: string } | null {
   const real = secretPathLike(posix.normalize(lexical)) ? null : (ctx.tick(), ctx.reader.realpath(lexical));
-  if (!real || secretPathLike(real) || !ctx.roots.some((root) => real.startsWith(`${root}/`))) return null;
+  if (!real || secretPathLike(real) || [lexical, real].some((p) => SECRET_NAME.test(posix.basename(p))) || !ctx.roots.some((root) => real.startsWith(`${root}/`))) return null;
   const stat = (ctx.tick(), ctx.reader.lstat(real));
   if (!stat || stat.type !== 'file' || stat.nlink !== 1 || stat.size > SCRIPT_LIMITS.entryBytes) return null;
   const bytes = (ctx.tick(), ctx.reader.read(real, SCRIPT_LIMITS.entryBytes));

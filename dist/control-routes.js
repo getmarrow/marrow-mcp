@@ -18,6 +18,8 @@ const INSTALLER_PACKAGE = /(?:^|=)@getmarrow\/install(?:@[^\s/]*)?$/i;
 const INSTALLER_BIN = /(?:^|\/)marrow-install(?:\.[cm]?js)?$/i;
 const INSTALLER_PATH = /@getmarrow\/install\//i;
 const INSTALLER_TEXT = /@getmarrow\/install|marrow-install/i;
+const INSTALLER_TEXT_ALL = /@getmarrow\/install|marrow-install/gi;
+const L1_PROGRAM = /^(?:printf|echo|grep|git|cat|cd|ls)$/; // CL-5 L1: the owner-decided data programs
 const WRAPPER = /^(?:sudo|env|nohup|time|exec|command|builtin|nice|ionice|stdbuf|timeout|xargs|setsid)$/;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const KEYWORD = /^(?:do|then|else|elif|if|while|until|!)$/;
@@ -241,6 +243,70 @@ const installerRule = (all, dynamic, depth) => {
     const args = runs ? installerArguments(words) : null;
     return args !== null && routeArguments(args, dynamic);
 };
+/** 3.9.113's reading of one parsed command (master's rule, unchanged). */
+function masterSegmentIsRoute(segment, depth) {
+    let at = 0;
+    while (at < segment.words.length && ASSIGNMENT.test(segment.words[at]))
+        at += 1;
+    while (at < segment.words.length && WRAPPER.test(baseName(segment.words[at]))) {
+        at += 1;
+        while (at < segment.words.length && (segment.words[at].startsWith('-') || ASSIGNMENT.test(segment.words[at]) || /^\d+$/.test(segment.words[at])))
+            at += 1;
+    }
+    const words = segment.words.slice(at);
+    if (!words.length)
+        return false;
+    if (/^(?:sh|bash|zsh|dash|ksh)$/.test(baseName(words[0]))) {
+        const flag = words.findIndex((word, index) => index > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(word));
+        if (flag > 0 && words[flag + 1] !== undefined)
+            return masterControlRoute(words[flag + 1], depth + 1);
+    }
+    const program = words[0];
+    const runs = RUNNER.test(baseName(program)) || INSTALLER_BIN.test(program) || INSTALLER_PATH.test(program) || /[$`]/.test(program);
+    const args = runs ? installerArguments(words) : null;
+    return args !== null && routeArguments(args, segment.expansions.length > 0);
+}
+/** 3.9.113's text-wide rule (master's answer, unchanged). */
+function masterControlRoute(command, depth = 0) {
+    try {
+        if (typeof command !== 'string' || !INSTALLER_TEXT.test(command))
+            return false;
+        if (depth > 3)
+            return true;
+        const segments = (0, hook_tool_policy_1.parseShellSegments)(command);
+        // A command the parser cannot read that names the installer next to a control word is held, never guessed at.
+        if (!segments)
+            return /control|disable|uninstall|[$`]/i.test(command);
+        return segments.some((segment) => masterSegmentIsRoute(segment, depth));
+    }
+    catch {
+        return true;
+    }
+}
+/**
+ * Ruling R4: the clean L1 shape, the only text where the reader may answer "no route" against master. The text parses, holds no
+ * here-doc and no `#`, and every installer mention is a data operand of printf, echo, grep, git, cat, cd or ls (none in a redirect,
+ * a substitution or a word the parser joined).
+ */
+function cleanL1Text(command) {
+    if (/<<|#/.test(command))
+        return false;
+    const segments = (0, hook_tool_policy_1.parseShellSegments)(command);
+    if (!segments)
+        return false;
+    let operands = 0;
+    for (const segment of segments) {
+        const at = segment.words.findIndex((word) => INSTALLER_TEXT.test(word));
+        if (at < 0)
+            continue;
+        const words = programWords(segment.words);
+        const program = segment.words.length - words.length;
+        if (!L1_PROGRAM.test(words[0] ?? '') || at <= program || segment.expansions.length > 0)
+            return false;
+        operands += segment.words.reduce((n, word) => n + (word.match(INSTALLER_TEXT_ALL) ?? []).length, 0);
+    }
+    return operands >= (command.match(INSTALLER_TEXT_ALL) ?? []).length;
+}
 /** Whether the shell text runs the installer in a way that can switch Marrow control off, remove it, or cannot be read as one fixed command. */
 function controlRoute(command, depth = 0) {
     try {
@@ -248,7 +314,10 @@ function controlRoute(command, depth = 0) {
             return false;
         if (command.length > MAX_READ)
             return /control|disable|uninstall|[$`]/i.test(command);
-        return anyCommand(command, depth, installerRule);
+        if (anyCommand(command, depth, installerRule))
+            return true;
+        // R4: outside the clean L1 shape, master's route stands (a route if either reading says route).
+        return !cleanL1Text(command) && masterControlRoute(command, depth);
     }
     catch {
         return true;

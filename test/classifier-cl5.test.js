@@ -158,17 +158,24 @@ const stripNonce = (action) => (action.tool_input && action.tool_input.exact_hma
 test('CX-P1 (F4): a printf whose quoted text names the installer next to control is not a control route', () => {
   assertRows([
     `printf '%s ran npx @getmarrow/install control enable\\n' "$(date -u +%FT%TZ)" >> ./records/LOG.md`,
-  ], 'none');
+  ].map((row) => row.replace(' "$(date -u +%FT%TZ)"', ' now')), 'none');
+  // R4: a text the shell parser cannot read (here the substitution) keeps master's route.
+  assertRows([
+    `printf '%s ran npx @getmarrow/install control enable\\n' "$(date -u +%FT%TZ)" >> ./records/LOG.md`,
+  ], 'ROUTE');
 });
 
 test('CX-P2 (F8, CL4-2): folder names that contain the installer name, with or without a dollar sign, are not a route', () => {
   assertRows([
     'for d in marrow marrow-install marrow-mcp; do git --git-dir=$d/repo.git grep -l foo master; done | wc -l',
     'cd ~/agents/builds/getmarrow/marrow-install && git log -1',
-    'for d in marrow marrow-install marrow-mcp; do (cd $d && git log -1 --format=%h); done',
-    'ls ./marrow-install/ && echo "$(date -u +%FT%TZ)"',
     'cat ./marrow-install/README.md | head -5; echo "$HOME done"',
   ], 'none');
+  // R4: a text the shell parser cannot read keeps master's route (a dollar sign next to the installer name).
+  assertRows([
+    'for d in marrow marrow-install marrow-mcp; do (cd $d && git log -1 --format=%h); done',
+    'ls ./marrow-install/ && echo "$(date -u +%FT%TZ)"',
+  ], 'ROUTE');
 });
 
 test('CX-P3: a grep pattern, a commit message and a cat of a file under the installer folder are not a route', () => {
@@ -176,10 +183,13 @@ test('CX-P3: a grep pattern, a commit message and a cat of a file under the inst
     'git grep -n "@getmarrow/install control disable" -- src',
     'git commit -m "doc: npx @getmarrow/install control disable needs the owner"',
     'cat ./marrow-install/README.md',
+  ], 'none');
+  // R4: a text the shell parser cannot read keeps master's route.
+  assertRows([
     'git commit -m "doc: npx @getmarrow/install control disable needs the owner ($(date -u +%F))"',
     'grep -rn "marrow-install control disable" ./docs | head -3; echo `date`',
     'echo "$(date -u) npx @getmarrow/install control disable" >> ./notes.md',
-  ], 'none');
+  ], 'ROUTE');
 });
 
 // ------------------------------------------------------------------ (a) CX-A1, CX-A2: real control-off runs stay routes
@@ -529,12 +539,14 @@ test('CX-A1 (lexical): a quoted string piped or fed to a shell, eval or source k
     'eval "$(echo npx @getmarrow/install control disable)"',
     'npx @getmarrow/install control disable',
   ], 'ROUTE');
-  // The owner-decided L1 rows stay no route in the lexical fallback too.
+  // R4: in the lexical fallback master's route stands; a text with no control word stays no route.
+  assertRows([
+    `cd ~/agents/builds/getmarrow/marrow-install && git log -1${PAD}`,
+  ], 'none');
   assertRows([
     `printf '%s ran npx @getmarrow/install control enable\\n' "$(date -u +%FT%TZ)" >> ./records/LOG.md${PAD}`,
-    `cd ~/agents/builds/getmarrow/marrow-install && git log -1${PAD}`,
     `git commit -m "doc: npx @getmarrow/install control disable needs the owner"${PAD}`,
-  ], 'none');
+  ], 'ROUTE');
 });
 
 test('CX-A4: a push whose host text is its grammar text word for word keeps the 3.9.113 body', () => {
@@ -687,4 +699,85 @@ test('CX-A7: the local floors stay (self-protect of hook settings and Marrow fil
   }
   assert.notEqual(selfProtectKind({ tool_name: 'Bash', tool_input: { command: `rm -f ${join(home, '.claude', 'settings.json')}` } }), null);
   assert.match(CONTROL_ROUTE_DENY_TEXT, /account owner/);
+});
+
+// ------------------------------------------------------------------ fix round 3: R4 (F1a, F1b) and R6 (F3)
+const I = 'npx @getmarrow/install';
+// The audit's ADV-CR rows: quotes in comments and here-docs, and installer runs through other programs, on texts the parser cannot read.
+const fallbackRows = () => [
+  ['CR1', `find . -name x -exec ${I} control disable \; #\r`], ['CR2', `python3 -c "import os; os.system('${I} control disable')" #\r`],
+  ['CR3', `# it's\r\n${I} control disable\n# it's`], ['CR3-vt', `# it's\u000b\n${I} control disable\n# it's`],
+  ['CR3-ff', `# it's\u000c\n${I} control disable\n# it's`], ['CR3-dq', `# it"s\r\n${I} control disable\n# it"s`],
+  ['CR3-uninstall', `# it's\r\nnpx -y @getmarrow/install@latest uninstall\n# it's`], ['CR3-9k', `# it's\n${I} control disable\n# it's\n${'true; '.repeat(1400)}`],
+  ['CR4', `cat <<EOF\n'\nEOF\n${I} control disable\n# '\r`], ['CR4-noCR', `cat <<EOF\n'\nEOF\n${I} control disable\n# '`],
+  ['CR5', `${'true; '.repeat(1400)}find . -exec ${I} control disable \;`], ['CR6', `watch -n1 ${I} control disable #\r`],
+  ['CR9', `ssh host ${I} control disable #\r`], ['CR5-33k', `${'true; '.repeat(5600)}find . -exec ${I} control disable \;`],
+];
+
+test('R4 (F1a, F1b): a comment, a here-doc or a text the parser cannot read keeps master\'s route (control route, hold label, loop guard)', () => {
+  const { classifyTool, controlRouteCall } = require('../dist/hook-pre-action.js');
+  for (const [id, command] of fallbackRows()) {
+    assert.equal(controlRoute(command), true, `${id}: route`);
+    assert.equal(controlRouteCall(bash(command)), true, `${id}: the loop-guard denial`);
+    const c = classifyTool({ ...bash(command), cwd: '/srv/w' }, {});
+    assert.ok(c.surfaces.includes('marrow-control'), `${id}: held on marrow-control`);
+  }
+});
+
+test('R4: the clean L1 shape (parsed, no comment, no here-doc, installer words only as printf/echo/grep/git/cat/cd/ls data) keeps no route', () => {
+  for (const command of [
+    `printf '%s ran ${I} control enable\\n' now >> ./records/LOG.md`,
+    `echo "${I} control disable needs the owner" >> ./notes.md`,
+    `git commit -m "doc: ${I} control disable needs the owner"`,
+    `grep -rn "${I} control disable" ./docs`,
+    'cat ./marrow-install/README.md && ls ./marrow-install',
+  ]) assert.equal(controlRoute(command), false, command.slice(0, 40));
+  assertRows([`printf '%s ran ${I} control enable\\n' now >> ./records/LOG.md`], 'none');
+});
+
+test('R4: outside the clean L1 shape the answer is master OR the reader (the reader\'s stricter rows stay routes)', () => {
+  for (const command of [
+    `eval "${I} control disable"`, `for i in 1; do ${I} control disable; done`, 'x=@getmarrow/install; npx $x control disable',
+    'P=@getmarrow/install; npx "$P" control disable', 'python3 -I ~/agents/cliff-tools/host_report.py R D KEY_NAME a b post',
+    `bash -c "${I} control disable" # note`, `cat <<'EOF' | bash\n${I} control disable\nEOF`,
+  ]) {
+    const { classifyTool } = require('../dist/hook-pre-action.js');
+    const c = classifyTool({ ...bash(command), cwd: '/srv/w' }, {});
+    assert.ok(c.surfaces.includes('marrow-control') || /host_report/.test(command), command.slice(0, 40));
+  }
+});
+
+test('R4 fails closed: a thrown parser error in the reader is a route', () => {
+  const policy = require('../dist/hook-tool-policy.js');
+  const original = policy.parseShellSegments;
+  policy.parseShellSegments = () => { throw new Error('fault'); };
+  try { assert.equal(controlRoute(`echo "${I} control disable"`), true); } finally { policy.parseShellSegments = original; }
+});
+
+test('R6 (F3): the f8 family (20 characters, upper case and digits) is never sent, over 2000 runtime draws', () => {
+  const { SHAPES } = require('./support/seatbelt-fuzz-values.cjs');
+  let sent = 0;
+  for (let i = 0; i < 2000; i += 1) {
+    const k = SHAPES[4]();
+    assertNotLiveKey(k);
+    if (fiveSites(bash(`./pay.sh ${k} a`)).runtime.tool_input.command !== undefined) sent += 1;
+  }
+  assert.equal(sent, 0, 'F8_SENT');
+});
+
+test('R6: a letter or digit run of 20, 24 or 32 in any case is withheld; the R3 boundary rows keep their answer', () => {
+  const LOW = 'abcdefghjkmnpqrstuvwxyz', UP = 'ABCDEFGHJKLMNPQRSTUVWXYZ', MIX = `${LOW}${UP}`;
+  const draw = (alpha, n) => Array.from(randomBytes(n), (byte) => alpha[byte % alpha.length]).join('');
+  for (const n of [20, 24, 32]) {
+    for (const alpha of [LOW, UP, MIX, `${LOW}0123456789`]) {
+      const command = `./tool.sh --name ${draw(alpha, n)} a`;
+      assert.equal(keptAction(command).sent, undefined, `${n} withheld`);
+    }
+  }
+  const short = `./tool.sh --name ${draw(LOW, 8)}-${draw(LOW, 8)} a`;
+  assert.equal(keptAction(short).sent, short, 'runs under 20 keep their R3 answer (sent)');
+  // 41 or 63 hex: a run that is not exactly 40 or 64 is withheld.
+  assert.equal(keptAction(`git show v-${hex(20)}a > ./scratch/a.txt`).sent, undefined, '41 hex withheld');
+  assert.equal(keptAction(`echo v-${hex(32).toUpperCase()} >> ./notes.md`).sent, undefined, '64 upper-case hex withheld');
+  for (const [name, command] of boundaryRows()) if (name !== 'sha256: + 64 hex') assert.equal(keptAction(command).sent, command, `${name} sent`);
 });

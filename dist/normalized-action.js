@@ -1909,6 +1909,9 @@ function eligibleHostText(event, state) {
         const host = input.command;
         if (!host || host.length > 8192 || !/^[\x20-\x7e\n\t]+$/.test(host) || (0, redact_1.redactSensitiveText)(host) !== host)
             return null;
+        // R6 (F3): a letter or digit run of 20 or more, any case, is withheld; only exactly 40 or 64 lowercase hex (R3 BOUNDARY) stays.
+        if ((host.match(/[A-Za-z0-9]{20,}/g) ?? []).some((run) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(run)))
+            return null;
         // CX-A3-JOINED (R3, R2: EITHER word basis, whitespace or shell characters); a thrown error: null
         if (host.split(/\s+/).some(joinedHexWord) || host.split(/[\s`()[\]{}<>|!*$]+/).some(joinedHexWord))
             return null;
