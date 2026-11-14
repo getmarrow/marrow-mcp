@@ -12,6 +12,7 @@ import {
   toolTargetPaths,
 } from './hook-tool-policy';
 import { keyClassOf } from './key-class';
+import { redactSensitiveText } from './redact';
 
 /**
  * The exact action a hook-classified tool call performs, in the service's
@@ -1863,7 +1864,11 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
     const claudeCodeBash = options.claudeCodeBash ?? !(entrypoint.endsWith('hook') && !entrypoint.startsWith('claude-'));
     const commandText = process.env.MARROW_HOOK_COMMAND_TEXT === 'off' || !claudeCodeBash ? 'off'
       : options.sendCommandText === true ? 'send' : 'hash';
-    ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state, commandText));
+    // CL-5 (3A): the host's own text of a raw Claude Code Bash call, in a Claude Code hook process only; sent by the one caller
+    // that names the call a raw Claude Code Bash call (the hook's runtime call), the plain hash alone at every other call site.
+    const hostText = commandText === 'off' ? 'off' : options.claudeCodeBash === true ? 'send'
+      : /^claude-[a-z-]*hook$/.test(entrypoint) ? 'hash' : 'off';
+    ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state, commandText, hostText));
   } catch (error) {
     if (!(error instanceof NormalizationLimit)) throw error;
     action = { tool_kind: kind, tool_name: hostToolName, tool_input: {}, truncated: true };
@@ -1898,7 +1903,51 @@ function inputAction(base: Omit<NormalizedHookAction, 'tool_input'>, input: unkn
   return { action: withExactness(action, state), hashField: 'input_sha256', preimage, plain: false };
 }
 
-function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], hostToolName: string, state: Exactness, commandText: 'off' | 'hash' | 'send'): BuiltAction {
+/** The tool inputs whose `command` is the 3A text sent on the runtime call only (the hold strips it: withoutSentText). */
+const SENT_HOST_TEXT = new WeakSet<object>();
+
+/** The action without the 3A text the runtime call carries (hold, report): the same hash, no text. */
+export function withoutSentText(action: NormalizedHookAction): NormalizedHookAction {
+  if (!SENT_HOST_TEXT.has(action.tool_input)) return action;
+  const { command: _text, ...input } = action.tool_input as Record<string, unknown>;
+  return { ...action, tool_input: input } as NormalizedHookAction;
+}
+
+/**
+ * CL-5 (3A): the host's command text T unchanged, only when ALL hold: a raw Bash call (one string `command`, no `cmd`, no cut
+ * input); the normalization replaced or withheld nothing (not truncated, no secret marker); the shared redactor changes nothing;
+ * no word looks like a key (hex words of at most 12, exactly 40 or 64 characters excepted); no word of 20 or more characters
+ * that is not a path mixes lower case, upper case and digits; printable ASCII plus newline and tab; at most 8192 bytes. Any error: null.
+ */
+/**
+ * CX-A3-JOINED (ruling R3): a word split on - _ . : = @ , ; ' " + (and on / ? & # when it holds ://) into 2 or more pieces,
+ * one of them a hex run over 12 characters that is not exactly 40 or 64 long: a key shape hidden by one separator.
+ */
+function joinedHexWord(word: string): boolean {
+  const pieces = word.split(word.includes('://') ? /[-_.:=@,;'"+/?&#]/ : /[-_.:=@,;'"+]/);
+  return pieces.length > 1 && pieces.some((piece) => /^[0-9a-f]{13,}$/i.test(piece) && piece.length !== 40 && piece.length !== 64);
+}
+
+function eligibleHostText(event: ToolEvent, state: Exactness): string | null {
+  try {
+    const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input as Record<string, unknown> : null;
+    if (event.tool_name !== 'Bash' || input === null || typeof input.command !== 'string' || 'cmd' in input) return null;
+    if ((event as { input_truncated?: unknown }).input_truncated !== undefined || state.truncated) return null; // a secret marker or withheld word
+    const host = input.command;
+    if (!host || host.length > 8192 || !/^[\x20-\x7e\n\t]+$/.test(host) || redactSensitiveText(host) !== host) return null;
+    // CX-A3-JOINED (R3, R2: EITHER word basis, whitespace or shell characters); a thrown error: null
+    if (host.split(/\s+/).some(joinedHexWord) || host.split(/[\s`()[\]{}<>|!*$]+/).some(joinedHexWord)) return null;
+    for (const word of host.split(/[\s=:,;@/?&'"`()[\]{}<>|!*$]+/)) {
+      if (/^[0-9a-f]+$/i.test(word) && (word.length <= 12 || word.length === 40 || word.length === 64)) continue;
+      if (looksLikeKey(word) || (/^[A-Za-z0-9]{20,}$/.test(word) && /[A-Za-z]/.test(word) && /[0-9]/.test(word))) return null; // and random-looking ids
+    }
+    return host.split(/\s+/).some((word) => word.length >= 20 && !word.includes('/') && /[a-z]/.test(word) && /[A-Z]/.test(word) && /[0-9]/.test(word)) ? null : host;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kind'], hostToolName: string, state: Exactness, commandText: 'off' | 'hash' | 'send', hostText: 'off' | 'hash' | 'send' = 'off'): BuiltAction {
   if (kind === 'mcp') {
     return inputAction({ tool_kind: 'mcp', tool_name: hostToolName }, event.tool_input, state);
   }
@@ -1928,6 +1977,15 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     const preimage = `${HASH_VERSION}\n${domain}\n${state.truncated || !state.sigs.length ? text : `${text}\n${JSON.stringify(state.sigs)}`}`;
     // A plain push or pull request: the plain hash wherever it is computed; the text only for a caller that sends it.
     const sourceControlText = commandText === 'off' ? null : sourceControlCommandText(event, text, state, programs);
+    // 3A: a deploy, push or pull request whose host text is its grammar text word for word keeps the 3.9.113 body; any other eligible text
+    // gets the plain hash of the host text everywhere, and the text itself on the runtime call only.
+    const kept = exact === text && (deployText === text || (sourceControlText !== null && sourceControlText === text));
+    const host = hostText === 'off' || plainShellTool || kept ? null : eligibleHostText(event, state);
+    if (host !== null) {
+      const tool_input = { command_sha256: sha256(`${HASH_VERSION}\nshell\n${host}`), ...(hostText === 'send' ? { command: host } : {}) };
+      if (hostText === 'send') SENT_HOST_TEXT.add(tool_input);
+      return { action: { tool_kind: 'shell', tool_name: hostToolName, programs, tool_input }, hashField: 'command_sha256', preimage, plain: true };
+    }
     return {
       action: withExactness({
         tool_kind: 'shell',

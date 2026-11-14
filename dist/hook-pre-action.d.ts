@@ -181,7 +181,9 @@ export declare function mayPrintEnvironment(command: string): boolean;
 export declare function mayReadApprovalState(command: string): boolean;
 export declare function mayReadSecret(command: string): boolean;
 /** Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts). */
-export declare function controlRouteCall(event: PreToolUseEvent): boolean;
+export declare function controlRouteCall(event: PreToolUseEvent, route?: (text: string) => boolean): boolean;
+/** M-SELF-APPROVE (g): a call that reports an approval for a gate receipt (a shell text, or an MCP or fetch tool carrying the path). */
+export declare function selfApproveCall(event: PreToolUseEvent): boolean;
 export declare function cursorPreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function clinePreActionHookOutput(result: PreActionControlResult): Record<string, unknown>;
 export declare function windsurfPreActionDecision(result: PreActionControlResult): {

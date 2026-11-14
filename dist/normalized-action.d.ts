@@ -188,5 +188,7 @@ export declare function normalizedHookAction(event: ToolEvent, options?: {
     sendCommandText?: boolean;
     claudeCodeBash?: boolean;
 }): NormalizedHookAction;
+/** The action without the 3A text the runtime call carries (hold, report): the same hash, no text. */
+export declare function withoutSentText(action: NormalizedHookAction): NormalizedHookAction;
 export {};
 //# sourceMappingURL=normalized-action.d.ts.map

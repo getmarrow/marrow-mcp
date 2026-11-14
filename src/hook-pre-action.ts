@@ -36,7 +36,7 @@ import {
   type HoldPlan,
   type OwnerLinkOutcome,
 } from './host-approval';
-import { CONTROL_ROUTE_DENY_TEXT, controlRoute } from './control-routes';
+import { CONTROL_ROUTE_DENY_TEXT, approvalReportUrl, controlRoute, selfApproveRoute } from './control-routes';
 import { recordSessionBypass } from './owner-bypass';
 import { selfProtectKind } from './self-protect';
 import { armKeylessNotice } from './keyless-notice';
@@ -45,9 +45,10 @@ import { allowNokeyFallbackCreate } from './host-approval-state';
 import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
 import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
-import { normalizedHookAction } from './normalized-action';
+import { normalizedHookAction, withoutSentText } from './normalized-action';
 import { APPROVAL_STATE_REASON } from './secret-paths';
 import { consultSessionLoopGuard, type LoopGuardOperation } from './session-loop-guard';
+import { nodeScriptReader, runtimeWithScripts, scriptAttachments, withScriptsSha256 } from './script-attach';
 import {
   hookToolCommand,
   isMcpHookTool,
@@ -1031,12 +1032,19 @@ function shellPrintsEnvironment(eventCwd: string | undefined, command: string): 
 }
 
 /** Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts). */
-export function controlRouteCall(event: PreToolUseEvent): boolean {
+export function controlRouteCall(event: PreToolUseEvent, route: (text: string) => boolean = controlRoute): boolean {
   if (!isShellTextTool(event)) return false;
   const input = asRecord(event.tool_input);
   const texts = typeof event.tool_input === 'string' ? [event.tool_input]
     : ['command', 'cmd', 'script'].map((key) => input?.[key]).filter((value): value is string => typeof value === 'string');
-  return texts.some((text) => controlRoute(text));
+  return texts.some((text) => route(text));
+}
+
+/** M-SELF-APPROVE (g): a call that reports an approval for a gate receipt (a shell text, or an MCP or fetch tool carrying the path). */
+export function selfApproveCall(event: PreToolUseEvent): boolean {
+  if (isShellTextTool(event)) return controlRouteCall(event, selfApproveRoute);
+  if (!isMcpHookTool(event.tool_name) && !/^(?:webfetch|web_fetch|fetch)$/i.test(String(event.tool_name || ''))) return false;
+  try { return approvalReportUrl(JSON.stringify(event.tool_input ?? null)); } catch { return true; }
 }
 
 /** The classification of a call under its own tool name only (every tool before the built-ins were hooked). */
@@ -1049,7 +1057,7 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   // MCP-10: a way to switch Marrow control off through the installer is a security action on marrow-control, held for the account owner.
   // A hold is merged with the classification of the whole call below, never returned in its place: the rest of a chain keeps every surface
   // and every risk category it has without the hold.
-  const controlRoute = controlRouteCall(event);
+  const controlRoute = controlRouteCall(event) || selfApproveCall(event);
   const command = shellGoverned ? hookToolCommand(event) : '';
   const input = toolClassificationText(event).toLowerCase();
   // A look-alike of Marrow's own tool is never read-only, whatever its verb.
@@ -1881,7 +1889,10 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     claudeCodeBash,
   });
   const { command: _sentText, ...heldInput } = runtimeAction.tool_input as Record<string, unknown>;
-  const normalizedAction = sendCommandText ? { ...runtimeAction, tool_input: heldInput } as typeof runtimeAction : runtimeAction;
+  // CL-6: only when the runtime call sends the text (C1), the text of the local script it runs; the hold keeps hashes only (C4).
+  const sentText = claudeCodeBash ? (runtimeAction.tool_input as Record<string, unknown>).command : undefined;
+  const scripts = typeof sentText === 'string' ? scriptAttachments(sentText, absoluteFolder(raw?.cwd) ?? '', homedir(), nodeScriptReader()) : { none: 'no_text' };
+  const normalizedAction = withScriptsSha256(sendCommandText ? { ...runtimeAction, tool_input: heldInput } as typeof runtimeAction : withoutSentText(runtimeAction), scripts);
   // The decision and gate receipt this control path holds, so a denial can close them.
   const held: HeldDecision = { decisionId: null, gateReceiptId: null };
   // Set once the runtime gate has answered. A later network or 5xx failure (decision, permit issue
@@ -1890,7 +1901,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   const reach = { gateAnswered: false };
   const highRisk = classified.protected || classified.risk === 'high';
   const control = async (signal: AbortSignal): Promise<PreActionControlResult> => {
-    const runtime = await marrowAgentRuntime(resolved.apiKey, baseUrl, {
+    const runtime = await runtimeWithScripts(runtimeAction, scripts, (action) => marrowAgentRuntime(resolved.apiKey, baseUrl, {
       action: classified.action,
       target: classified.target,
       type: classified.type,
@@ -1898,11 +1909,11 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
       surfaces: classified.surfaces,
       // The exact command or tool call (secrets removed), so Marrow binds the
       // gate and any approval to this action, not to its coarse class.
-      normalized_action: runtimeAction,
+      normalized_action: action,
       // Without a risk level the runtime may take its low-risk fast path, whose
       // non-durable fast_gate receipt can never back an action permit.
       ...(enforcementRequired ? { risk_level: classified.risk } : {}),
-    }, sessionId, agentId, signal);
+    }, sessionId, agentId, signal));
     reach.gateAnswered = true;
     const heldIds = [...new Set([runtime.decision_id, runtime.completion_contract?.decision_id, runtime.runtime_authorization?.decision_id]
       .filter((value): value is string => typeof value === 'string' && SAFE_DECISION_ID.test(value)))];

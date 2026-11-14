@@ -155,11 +155,13 @@ test('F1-X a Claude Code-shaped payload at every non-Claude pre-action entrypoin
 
 test('F1-CC genuine Claude Code Bash push and pull request through the Claude Code entrypoint: text and plain hash', () => {
   assertTextSent('claude-pre-action-hook', claudeEvent(PUSH), PUSH, 'claude push');
-  // The hook classes a pull request `process on workspace`, not a review on GitHub (S2), so, as on the audited head,
-  // it keeps the plain hash and sends no text.
-  const pr = runHook('claude-pre-action-hook', claudeEvent('gh pr create --base feat/a --head feat/b --title "Fix the thing"'));
+  // The hook classes a pull request `process on workspace`, not a review on GitHub (S2). CL-5 (3A): its host text is not
+  // the grammar text word for word (the quotes differ), so the runtime call carries the host text with its own plain hash.
+  const host = 'gh pr create --base feat/a --head feat/b --title "Fix the thing"';
+  const pr = runHook('claude-pre-action-hook', claudeEvent(host));
   assert.equal(pr.bodies.length, 1, 'claude pr: the runtime was called once');
-  assert.deepEqual(pr.bodies[0].normalized_action.tool_input, { command_sha256: P(PR) }, 'claude pr: plain hash, no text');
+  assert.notEqual(host, PR);
+  assert.deepEqual(pr.bodies[0].normalized_action.tool_input, { command: host, command_sha256: P(host) }, 'claude pr: the 3A text and its plain hash');
 });
 
 // ------------------------------------------------------------------ adversarial rows on the raw-event gate

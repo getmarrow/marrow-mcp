@@ -64,11 +64,29 @@ function hostRuntime(receipt = 'gate-held', approval = {}, extra = {}) {
 }
 
 // The normalized action of the fixture's deploy: program names and a keyed hash, never the command text.
+// CL-5 (3A): a raw Claude Code Bash call with an eligible text has the plain hash of the host's text at every call site, with
+// no device key; the hold and the host report carry the hash without the text (the runtime call alone carries it: DEPLOY_RUNTIME).
+const DEPLOY_TEXT = 'wrangler deploy --env production';
 const DEPLOY_NORMALIZED = {
   tool_kind: 'shell', tool_name: 'Bash', programs: ['wrangler'],
-  // The text hash is keyed with this install's device key (the hook children share the scratch passwd home).
-  tool_input: { command_sha256: require('./support/keyed-text-hash.cjs').shellMac(require('./support/keyed-text-hash.cjs').deviceSalt(), 'Bash', 'wrangler deploy --env production') },
+  tool_input: { command_sha256: require('node:crypto').createHash('sha256').update(`marrow-normalized-action-v3\nshell\n${DEPLOY_TEXT}`).digest('hex') },
 };
+const DEPLOY_RUNTIME = { ...DEPLOY_NORMALIZED, tool_input: { ...DEPLOY_NORMALIZED.tool_input, command: DEPLOY_TEXT } };
+/** The request bodies with the one 3A text removed: the runtime call's `command`, which must equal the host's text under its plain hash. */
+function withoutRuntimeText(requests, text) {
+  const hash = require('node:crypto').createHash('sha256').update(`marrow-normalized-action-v3\nshell\n${text}`).digest('hex');
+  let sent = 0;
+  const bodies = requests.map((request) => {
+    const input = request.body?.normalized_action?.tool_input;
+    if (!input || input.command === undefined) return request.body;
+    assert.equal(request.path, '/v1/agent/runtime', 'the text rides only on the runtime call');
+    assert.deepEqual(input, { command: text, command_sha256: hash }, 'the text is the host text, bound to its 3A hash');
+    sent += 1;
+    const { command: _text, ...rest } = input;
+    return { ...request.body, normalized_action: { ...request.body.normalized_action, tool_input: rest } };
+  });
+  return { bodies, sent };
+}
 
 function noProofRuntime(receipt = 'gate-held') {
   const runtime = hostRuntime(receipt);
@@ -1274,7 +1292,7 @@ test('normalized_action: sent on the runtime call and the report; a service that
     h.setConfig({ runtime: hostRuntime(), hostRouteStrict: true });
     h.run('claude-pre-action-hook', fixture('claude-pre-tool-use.json'));
     const runtimeBody = runtimes(h)[0].body;
-    assert.deepEqual(runtimeBody.normalized_action, DEPLOY_NORMALIZED);
+    assert.deepEqual(runtimeBody.normalized_action, DEPLOY_RUNTIME);
     h.run('claude-permission-request-hook', fixture('claude-permission-request.json'));
     h.run('claude-hook', fixture('claude-post-tool-use.json'));
     const reports = hostReports(h);
@@ -1849,7 +1867,9 @@ test('MEDIUM-R1-1: at the hook, piped SELECT and DROP send different command has
       h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_input: { command, description: 'held call' } });
       const sent = h.requests().map((request) => request.body).filter((body) => body?.normalized_action);
       assert.ok(sent.length > 0, `${command.slice(0, 30)}: the normalized action was sent`);
-      return { action: sent[0].normalized_action, all: JSON.stringify(h.requests().map((request) => request.body)) };
+      // CL-5 (3A): the host text rides on the runtime call only, bound to its plain hash; every other body has no data.
+      const { bodies, sent: texts } = withoutRuntimeText(h.requests(), command);
+      return { action: sent[0].normalized_action, all: JSON.stringify(bodies), texts };
     } finally { h.cleanup(); }
   };
   const select = run('echo "SELECT count(*) FROM users" | npx wrangler d1 execute marrow-db --remote --command -');
@@ -1857,9 +1877,11 @@ test('MEDIUM-R1-1: at the hook, piped SELECT and DROP send different command has
   assert.notEqual(select.action.tool_input.command_sha256, drop.action.tool_input.command_sha256);
   assert.equal(select.action.truncated, undefined);
   assert.equal(drop.action.truncated, undefined);
+  assert.equal(select.texts + drop.texts, 2, 'each runtime call carries its own text');
   assert.doesNotMatch(select.all + drop.all, /SELECT count|DROP TABLE/);
   const secretPipe = run(`echo ${secret} | wrangler secret put API_KEY`);
   assert.equal(secretPipe.action.truncated, true);
+  assert.equal(secretPipe.texts, 0, 'a secret-bearing call sends no text');
   assert.equal(secretPipe.all.includes(secret), false);
 });
 
@@ -2379,17 +2401,27 @@ test('3.9.100: no free-text word of a command leaves the machine; only an allowe
     try {
       h.setConfig({ runtime: hostRuntime(), status: { 'gate-held': 'pending' } });
       h.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), tool_input: { command, description: 'x' } });
-      return { bodies: JSON.stringify(h.requests().map((request) => request.body)), actions: h.requests().map((request) => request.body?.normalized_action).filter(Boolean) };
+      // CL-5 (3A): the host text of a raw Claude Code Bash call rides on the runtime call only, bound to its plain hash.
+      const { bodies, sent } = withoutRuntimeText(h.requests(), command);
+      return { bodies: JSON.stringify(bodies), sent, actions: h.requests().map((request) => request.body?.normalized_action).filter(Boolean) };
     } finally { h.cleanup(); }
   };
-  for (const command of [`./deploy.sh ${word}`, `sst deploy ./${word}.txt --stage staging`, `sst deploy --stage staging ${word}`, `mysql -p${word} prod`, `wrangler deploy --env ${word}`]) {
-    const { bodies, actions } = run(command);
+  for (const command of [`./deploy.sh ${word}`, `sst deploy ./${word}.txt --stage staging`, `sst deploy --stage staging ${word}`, `wrangler deploy --env ${word}`]) {
+    const { bodies, actions, sent } = run(command);
     assert.ok(actions.length > 0);
-    assert.equal(bodies.includes(word), false, `${command.replace(word, '<word>')}: the word never leaves the machine`);
-    assert.equal(actions.some((action) => action.tool_input?.command !== undefined), false);
+    assert.equal(sent, 1, `${command.replace(word, '<word>')}: the runtime call carries the text`);
+    assert.equal(bodies.includes(word), false, `${command.replace(word, '<word>')}: the word leaves the machine in no other body`);
   }
+  // A password flag is a secret shape: no text, and the word never leaves the machine.
+  const password = run(`mysql -p${word} prod`);
+  assert.ok(password.actions.length > 0);
+  assert.equal(password.sent, 0);
+  assert.equal(password.bodies.includes(word), false, 'mysql -p<word>: the word never leaves the machine');
+  assert.equal(password.actions.some((action) => action.tool_input?.command !== undefined), false);
   for (const command of ['vercel deploy --target staging', 'netlify deploy', 'railway up --environment staging']) {
-    assert.equal(run(command).actions.some((action) => action.tool_input?.command !== undefined), false, `${command}: no text`);
+    const { sent, actions } = run(command);
+    assert.equal(sent, 1, `${command}: the text on the runtime call only`);
+    assert.equal(actions.filter((action) => action.tool_input?.command !== undefined).length, 1, `${command}: one body with text`);
   }
   const { actions } = run('npx sst deploy --stage staging');
   assert.equal(actions[0].tool_input.command, 'npx sst deploy --stage staging');

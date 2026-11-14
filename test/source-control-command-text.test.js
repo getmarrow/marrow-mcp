@@ -238,7 +238,12 @@ test('CM2 source pin: only the hook runtime call passes sendCommandText, gated o
   const pre = readFileSync(join(SRC, 'hook-pre-action.ts'), 'utf8');
   assert.match(pre, /const sendCommandText = classified\.action === 'classified Bash action: review on github';/);
   assert.equal((pre.match(/sendCommandText/g) || []).length, 3, 'declared, passed once, used once for the hold copy');
-  assert.match(pre, /normalized_action: runtimeAction,/);
+  assert.match(pre, /runtimeWithScripts\(runtimeAction,/);
+  assert.match(pre, /normalized_action: action,/);
+  const start = pre.indexOf('runtimeWithScripts(runtimeAction,');
+  const end = pre.indexOf('}, sessionId, agentId, signal))', start);
+  assert.ok(start >= 0 && end > start, 'the runtime call body');
+  assert.equal((pre.slice(start, end).match(/normalized_action:/g) || []).length, 1, 'the runtime call body has no other normalized_action key');
   for (const file of ['hook-contract.ts', 'host-approval.ts', 'hook.ts', 'lifecycle-spool.ts', 'runtime-contract.ts', 'host-approval-state.ts']) {
     const text = existsSync(join(SRC, file)) ? readFileSync(join(SRC, file), 'utf8') : '';
     assert.equal(text.includes('sendCommandText'), false, `${file} keeps the default`);

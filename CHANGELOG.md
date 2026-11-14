@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Claude Code hook: control routes read from the command's program position, the command text for Claude Code Bash calls, a self-approval report held for the owner.
+
+- Control routes (friction F4, F8, CL4-2): the installer is a control-off route only where it runs (the program, a runner's package or file, the code of `-c`, `eval`, `$( )` or backticks, up to three levels); its name in a printf, echo, grep or commit message, or in a folder name, and a `$` elsewhere are no longer a route. A runner whose package argument is a variable or a substitution in a text that names the installer is now a route. A text the shell parser cannot read that feeds a shell, `eval` or `source` keeps the 3.9.113 answer.
+- Command text: For Claude Code Bash calls the hook sends the shell command text, checked for secrets on your machine first; a command in which a secret is found is sent only as a hash. Marrow does not store the text. A command with a word that looks like a key or a random id (20 or more letters and digits) is sent only as a hash too. A push, pull request or deploy whose text is its grammar text word for word keeps its 3.9.113 body. Such calls are keyed by the plain hash of the text at every call site, so an approval reused under 3.9.113's keyed hash is asked once more after the upgrade. Other hosts and `MARROW_HOOK_COMMAND_TEXT=off` keep the 3.9.113 action.
+- Self-approval reports: a call that posts a host approval or approval link for a gate receipt (by URL or by a host-report script) is labelled security on marrow-control and held for the account owner.
+- Typed approval code in the chat: not offered for Claude Code (its prompt hook input cannot tell a person's prompt from a scheduled task, a subagent report or another session).
+- Hook (script text, privacy): When a Bash call runs a local script, the hook sends that script's text so Marrow can judge what it does. Marrow reads it once and keeps only a SHA-256 fingerprint, never the text. Scripts that contain secret values, and files in credential folders, are never sent. A new module (src/script-attach.ts) reads the first local script a Claude Code Bash call runs (an interpreter or `./` path, `source`, `npm|pnpm|yarn run|test|start`, `make <target>`) and its local imports, at most 8 files and 256 KB, and refuses links out of the working and home folders, credential folders and secret file classes, files over 64 KB, binaries, files the secret check would change, files the same command writes, and runs behind a loader setting (such as `BASH_ENV` or `NODE_OPTIONS`), a shebang with extra words or code that moves where imports resolve. It returns data only and never an answer; the backend judges the text. The runtime call wiring lands with the command-text change; an older server that rejects the new key gets the same call once more without it.
+
 ## 3.9.113
 
 The local client update no longer builds the MCP setup command. The update goes through the installer, the one update path.
