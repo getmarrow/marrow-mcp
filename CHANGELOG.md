@@ -9,6 +9,7 @@ Claude Code hook: control routes read from the command's program position, the c
 - Self-approval reports: a call that posts a host approval or approval link for a gate receipt (by URL or by a host-report script) is labelled security on marrow-control and held for the account owner.
 - Typed approval code in the chat: not offered for Claude Code (its prompt hook input cannot tell a person's prompt from a scheduled task, a subagent report or another session).
 - Hook (script text): the hook does NOT send script text in this version: no Bash call sends the text or a fingerprint of a local script it runs; the script module (src/script-attach.ts) is in the package for a later release and the hook does not use it.
+- Control routes on data-only texts (friction F4, F8, CL4-2): with a Marrow key, a command text that names the installer only as data (every command a data program such as printf, echo, grep, git log or cat, with data-only write targets, read in full by a strict reader) is no longer held as a control-off route when its own class is plain process on the workspace or GitHub; any text the reader cannot prove, and every keyless call, keeps the previous answer.
 
 ## 3.9.113
 

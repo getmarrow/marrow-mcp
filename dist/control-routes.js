@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CONTROL_ROUTE_DENY_TEXT = void 0;
+exports.provenDataText = provenDataText;
 exports.controlRoute = controlRoute;
 exports.approvalReportUrl = approvalReportUrl;
 exports.selfApproveRoute = selfApproveRoute;
@@ -307,17 +308,355 @@ function cleanL1Text(command) {
     }
     return operands >= (command.match(INSTALLER_TEXT_ALL) ?? []).length;
 }
-/** Whether the shell text runs the installer in a way that can switch Marrow control off, remove it, or cannot be read as one fixed command. */
-function controlRoute(command, depth = 0) {
+// S4 (client round 4): the strict reader. Programs that never run a program, a package or code named in their arguments, stdin or environment.
+const DATA_PROGRAMS = new Set(['printf', 'echo', 'cat', 'ls', 'cd', 'pwd', 'wc', 'sort', 'uniq', 'head', 'tail', 'cut', 'tr', 'date', 'basename', 'dirname',
+    'true', 'false', 'test', '[', 'realpath', 'readlink', 'stat', 'comm', 'seq', 'sleep', 'grep', 'egrep', 'fgrep', 'jq', 'diff', 'tee', 'git', 'gh', 'find',
+    'sed', 'mkdir', 'touch', 'nl', 'du', 'df']);
+// Programs with an option that can run a program: an expansion or a glob may never start a word of theirs.
+const EXEC_OPTION_PROGRAMS = new Set(['git', 'gh', 'sort', 'find', 'sed']);
+const MAX_PROVEN = 8192;
+const FIND_BANNED = /^-(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/;
+const SED_PRINT = /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/;
+const DATA_KEYWORDS = new Set(['do', 'done', 'then', 'fi', 'else', 'elif', 'if', 'while', 'until', '!']);
+const GIT_GLOBAL_FLAG = /^(?:--git-dir=.+|--work-tree=.+|--no-pager|-P|--no-replace-objects|--literal-pathspecs|--bare)$/;
+const GIT_SUB = new Set(['grep', 'log', 'show', 'ls-tree', 'ls-files', 'rev-parse', 'status', 'diff', 'rev-list', 'describe', 'cat-file', 'shortlog',
+    'blame', 'merge-base', 'for-each-ref', 'commit', 'remote']);
+const GIT_BANNED_ARG = /^(?:-O|--open-files-in-pager|--ext-diff|--textconv|--filters|--output|--exec|--upload-pack|--receive-pack|--template)/;
+// git takes unambiguous long-option prefixes (`--open=`, `--ext`) and short clusters (`-iO...`): either form of a banned option is refused.
+const GIT_BANNED_LONG = ['open-files-in-pager', 'ext-diff', 'textconv', 'filters', 'output', 'exec', 'upload-pack', 'receive-pack', 'template'];
+const GH_PAIRS = new Set(['api', 'pr view', 'pr list', 'pr checks', 'pr diff', 'pr status', 'run list', 'run view', 'repo view', 'release list',
+    'release view', 'issue view', 'issue list']);
+const GH_WRITE_ARG = /^(?:-f|-F|--field|--raw-field|--input)(?:=|$)|^-[fF].|^-[^-]*[fF]/;
+const BAD_ASSIGN = /^(?:PATH|IFS|BASH_ENV|ENV|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|CDPATH|HOME|LD_\w+|DYLD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|\w*PAGER|LESS\w*|EDITOR|VISUAL|SHELL|\w*_COMMAND|GH_\w+|BROWSER|TERMINFO|TZDIR|LOCPATH|GCONV_PATH|XDG_\w+|BASH_\w+|PS4|POSIXLY_CORRECT|\w*INIT|VIM\w*|MYVIMRC|EMACS\w*)$/i;
+const PLAIN = /^[A-Za-z0-9._/~@+:,=-]+$/;
+const DATA_TARGET_RE = /(?:^\/dev\/(?:null|stdout|stderr)$)|^(?![^]*(?:^|\/)\.[^./])[^]*\.(?:md|txt|log|json|jsonl|csv|tsv|out|ya?ml|toml|tsx?|[cm]?js|py|html|css|sql)$/i;
+// Never a data target: a file a package manager, the installer or a host runs later.
+const RUN_LATER_TARGET = /(?:^|\/)(?:package(?:-lock)?\.json|npm-shrinkwrap\.json|marrow-install(?:\.[cm]?js)?)$|(?:^|\/)node_modules\/|@getmarrow\/install\//i;
+const HEREDOC = /<<(-?)[ \t]*(?:'([A-Za-z0-9_]+)'|"([A-Za-z0-9_]+)"|([A-Za-z0-9_]+))(?=$|[ \t\n;|&><])/y;
+/** S4 strict reader: the commands of the text at every depth (into `all`), or null when any byte is outside the modelled grammar. */
+function readCommands(text, start, depth, nested, all) {
+    if (depth > MAX_DEPTH)
+        return null;
+    let i = start;
+    let cmd = { words: [], redirects: [] };
+    let w = null;
+    let redirect = null;
+    let parens = 0;
+    let heredoc = null;
+    const word = () => (w ??= { text: '', exps: [], startsDyn: false, optDyn: false, glob: false, quoted: false, lead: '', leadDone: false });
+    const exp = (name, quoted) => {
+        const cur = word();
+        if (cur.text === '' && cur.exps.length === 0)
+            cur.startsDyn = true;
+        else if (cur.text.startsWith('-') && !cur.text.includes('='))
+            cur.optDyn = true;
+        cur.leadDone = true;
+        cur.exps.push({ name, quoted });
+    };
+    const endWord = () => {
+        if (w && redirect?.needs) {
+            redirect.target = w;
+            redirect.needs = false;
+            cmd.redirects.push(redirect);
+            redirect = null;
+        }
+        else if (w)
+            cmd.words.push(w);
+        w = null;
+    };
+    const endCmd = () => {
+        endWord();
+        if (redirect)
+            return false;
+        if (cmd.words.length || cmd.redirects.length)
+            all.push(cmd);
+        cmd = { words: [], redirects: [] };
+        return true;
+    };
+    // `$( )` or backticks, read one level down. While a here-doc waits for its body no substitution (nor a quote across a line) is read.
+    const sub = (quoted) => {
+        const tick = text[i] === '`';
+        const end = tick ? text.indexOf('`', i + 1) : -1;
+        if (heredoc || (tick && (end < 0 || text.slice(i + 1, end).includes('\\'))))
+            return false;
+        const inner = tick ? readCommands(text.slice(i + 1, end), 0, depth + 1, false, all) : readCommands(text, i + 2, depth + 1, true, all);
+        if (!inner || (tick && inner.end !== end - i - 1))
+            return false;
+        exp(tick ? '`' : '$(', quoted);
+        i = tick ? end + 1 : inner.end + 1;
+        return true;
+    };
+    const dollar = (quoted) => {
+        const rest = text.slice(i);
+        if (rest.startsWith('$('))
+            return sub(quoted);
+        const m = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/.exec(rest) || /^\$([A-Za-z_][A-Za-z0-9_]*|[0-9@*?$!#-])/.exec(rest);
+        if (m) {
+            exp(m[1], quoted);
+            i += m[0].length;
+            return true;
+        }
+        if (rest.startsWith('${'))
+            return false;
+        word().text += '$';
+        i += 1;
+        return true;
+    };
+    while (i < text.length) {
+        const c = text[i];
+        const next = text[i + 1];
+        if (c === "'") {
+            const end = text.indexOf("'", i + 1);
+            if (end < 0 || (heredoc && text.slice(i, end).includes('\n')))
+                return null;
+            const cur = word();
+            cur.text += text.slice(i + 1, end);
+            cur.quoted = cur.leadDone = true;
+            i = end + 1;
+        }
+        else if (c === '"') {
+            const cur = word();
+            cur.quoted = cur.leadDone = true;
+            for (i += 1; text[i] !== '"';) {
+                const d = text[i];
+                if (d === undefined || (d === '\n' && heredoc))
+                    return null;
+                if (d === '\\') {
+                    const e = text[i + 1];
+                    if (e === undefined || e === '\n')
+                        return null;
+                    cur.text += '$`"\\'.includes(e) ? e : `\\${e}`;
+                    i += 2;
+                }
+                else if (d === '$' || d === '`') {
+                    if (!(d === '$' ? dollar(true) : sub(true)))
+                        return null;
+                }
+                else {
+                    cur.text += d;
+                    i += 1;
+                }
+            }
+            i += 1;
+        }
+        else if (c === '\\' || c === '{' || c === '}')
+            return null;
+        // W2: a comment starts only at the start of a word outside quotes and runs to the newline (bash's rule).
+        else if (c === '#' && !w) {
+            while (i < text.length && text[i] !== '\n')
+                i += 1;
+        }
+        else if (c === '$' || c === '`') {
+            if (!(c === '$' ? dollar(false) : sub(false)))
+                return null;
+        }
+        else if (c === '(') {
+            // A subshell opens only where a command starts (after nothing or after keywords such as `do`).
+            if (w || redirect || cmd.words.some((x) => !(literal(x) && !x.quoted && DATA_KEYWORDS.has(x.text))))
+                return null;
+            parens += 1;
+            i += 1;
+        }
+        else if (c === ')') {
+            if (!endCmd())
+                return null;
+            if (parens === 0)
+                return nested ? { end: i } : null;
+            parens -= 1;
+            i += 1;
+        }
+        else if (c === ' ' || c === '\t') {
+            endWord();
+            i += 1;
+        }
+        else if (c === '\n' && heredoc) {
+            // W1: the body runs to the first line that equals the delimiter exactly (leading tabs dropped for <<-); none = unread.
+            const doc = heredoc;
+            const lines = text.slice(i + 1).split('\n');
+            const at = lines.findIndex((line) => (doc.strip ? line.replace(/^\t+/, '') : line) === doc.delim);
+            if (!endCmd() || at < 0 || (!doc.quoted && /[$`\\]/.test(lines.slice(0, at).join('\n'))))
+                return null;
+            i = Math.min(text.length, i + 2 + lines.slice(0, at + 1).join('\n').length);
+            heredoc = null;
+        }
+        else if (c === '\n' || c === ';') {
+            if (!endCmd())
+                return null;
+            i += 1;
+        }
+        else if (c === '|' || (c === '&' && next !== '>')) {
+            if (!endCmd())
+                return null;
+            i += next === '|' || next === '&' ? 2 : 1;
+        }
+        else if (c === '>' || c === '<' || c === '&') {
+            const fd = w;
+            if (fd && literal(fd) && !fd.quoted && /^\d+$/.test(fd.text))
+                w = null;
+            else
+                endWord();
+            if (redirect)
+                return null;
+            if (c === '<' && next === '<' && text[i + 2] === '<') {
+                redirect = { out: false, needs: true, target: null };
+                i += 3;
+                continue;
+            }
+            if (c === '<' && next === '<') {
+                HEREDOC.lastIndex = i;
+                const m = HEREDOC.exec(text);
+                if (nested || depth > 0 || heredoc || !m)
+                    return null;
+                heredoc = { delim: m[2] ?? m[3] ?? m[4], quoted: m[4] === undefined, strip: m[1] === '-' };
+                i += m[0].length;
+                continue;
+            }
+            let j = i + 1;
+            let out = c !== '<';
+            if (c === '&')
+                j = text[i + 2] === '>' ? i + 3 : i + 2;
+            else if (c === '>' && (text[j] === '>' || text[j] === '|'))
+                j += 1;
+            else if (c === '<' && text[j] === '>') {
+                out = true;
+                j += 1;
+            }
+            const dup = c !== '&' && text[j] === '&' ? /^(\d+|-)/.exec(text.slice(j + 1)) : undefined;
+            if (dup === null)
+                return null;
+            if (dup)
+                i = j + 1 + dup[0].length;
+            else {
+                redirect = { out, needs: true, target: null };
+                i = j;
+            }
+        }
+        else {
+            const cur = word();
+            if (c === '*' || c === '?' || c === '[')
+                cur.glob = true;
+            cur.text += c;
+            if (!cur.leadDone)
+                cur.lead += c;
+            i += 1;
+        }
+    }
+    return nested || parens !== 0 || heredoc || !endCmd() ? null : { end: i };
+}
+function literal(w) { return w.exps.length === 0; }
+/**
+ * S4 PROVEN-DATA (LOWER-SHAPES r4, C0-C6, C8): whether the strict reader proves every command of the whole text, at every depth, is a
+ * data program with data arguments and data-only write targets. Any doubt, any unread byte or any throw is false (the c5af0d83 answer).
+ */
+function provenDataText(text) {
+    try {
+        if (typeof text !== 'string' || !INSTALLER_TEXT.test(text) || text.length > MAX_PROVEN)
+            return false;
+        if (/[^\x20-\x7e\n\t]/.test(text) || /<\(|>\(|\(\(|\$\[|\$'|\$"|;;|\$\{#/.test(text))
+            return false;
+        const commands = [];
+        if (readCommands(text, 0, 0, false, commands)?.end !== text.length)
+            return false;
+        const bare = (x, word) => !!x && literal(x) && !x.quoted && (word === undefined || x.text === word);
+        const forVars = new Map();
+        // First pass: for-loop variables and their lists (a variable reaches an exec-option program only from a list of plain words).
+        for (const c of commands.filter((x) => bare(x.words[0], 'for'))) {
+            const [, name, inWord, ...list] = c.words;
+            if (!bare(name) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name.text) || BAD_ASSIGN.test(name.text) || !bare(inWord, 'in'))
+                return false;
+            const plain = list.every((x) => literal(x) && !x.glob && PLAIN.test(x.text) && !x.text.startsWith('-'));
+            forVars.set(name.text, plain && forVars.get(name.text) !== false);
+        }
+        // A `cd` moves every relative write target: with one in the text, only /dev/null, stdout and stderr stay data targets.
+        const moved = commands.some((c) => c.words.some((x) => bare(x, 'cd')));
+        const target = (x) => !!x && literal(x) && !x.glob && DATA_TARGET_RE.test(x.text) && !RUN_LATER_TARGET.test(x.text) && (!moved || x.text.startsWith('/dev/'));
+        for (const c of commands) {
+            if (c.redirects.some((r) => r.out && !target(r.target)))
+                return false;
+            if (bare(c.words[0], 'for'))
+                continue;
+            let at = 0;
+            for (let begin = -1; begin !== at;) {
+                begin = at;
+                while (at < c.words.length && bare(c.words[at]) && DATA_KEYWORDS.has(c.words[at].text))
+                    at += 1;
+                for (; at < c.words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(c.words[at].lead); at += 1) {
+                    if (BAD_ASSIGN.test(c.words[at].text.split('=')[0]) || INSTALLER_TEXT.test(c.words[at].text))
+                        return false;
+                }
+            }
+            const [prog, ...args] = c.words.slice(at);
+            if (!prog)
+                continue;
+            if (!bare(prog) || (prog.glob && prog.text !== '[') || !DATA_PROGRAMS.has(prog.text))
+                return false;
+            const [p, argText] = [prog.text, args.map((x) => x.text)];
+            const has = (re) => argText.some((t) => re.test(t));
+            if (p === 'printf' && has(/^-v/))
+                return false;
+            // bash's test -v / -R expand an array subscript (and so a substitution in it).
+            if ((p === 'test' || p === '[') && has(/^-[vR]$/))
+                return false;
+            // sort -o, also in a short cluster (`-uo`), and its long-option prefixes (`--out=`, `--co`) write a file or run a program.
+            if (p === 'sort' && has(/^(?:--compress|--output|-o)|^--(?:o|co)|^-[^-]*o/))
+                return false;
+            // uniq's second operand is an output file.
+            if (p === 'uniq' && argText.filter((t) => !t.startsWith('-')).length > 1)
+                return false;
+            if (p === 'tee' && args.some((x) => !x.text.startsWith('-') && !target(x)))
+                return false;
+            if (p === 'find' && has(FIND_BANNED))
+                return false;
+            if (p === 'sed' && (!args.every(literal) || has(/^-(?!(?:n|E|r|s|-quiet|-silent)$)/) || !has(/^(?:-n|--quiet|--silent)$/)
+                || !SED_PRINT.test(argText.find((t) => !t.startsWith('-')) ?? '')))
+                return false;
+            if (EXEC_OPTION_PROGRAMS.has(p) && args.some((x) => x.startsDyn || x.optDyn || (x.glob && !x.quoted) || x.exps.some((e) => !e.quoted && forVars.get(e.name) !== true)))
+                return false;
+            if (p === 'git') {
+                let k = 0;
+                for (; k < args.length && args[k].text.startsWith('-'); k += 1) {
+                    if (args[k].text === '-C' && literal(args[k]))
+                        k += 1;
+                    else if (!GIT_GLOBAL_FLAG.test(args[k].text))
+                        return false;
+                }
+                const rest = argText.slice(k + 1);
+                if (!args[k] || !literal(args[k]) || !GIT_SUB.has(args[k].text))
+                    return false;
+                if (rest.some((t) => GIT_BANNED_ARG.test(t) || /^-[^-]*O/.test(t) || (/^--[^=]/.test(t) && GIT_BANNED_LONG.some((name) => name.startsWith(t.slice(2).split('=')[0])))))
+                    return false;
+                if (args[k].text === 'remote' && !(rest.length === 1 && rest[0] === '-v') && rest[0] !== 'get-url')
+                    return false;
+            }
+            if (p === 'gh' && (!GH_PAIRS.has(argText[0] === 'api' ? 'api' : `${argText[0]} ${argText[1]}`) || has(GH_WRITE_ARG) || has(/^-[^-X]+X/)
+                || argText.some((t, k) => ((t === '-X' || t === '--method') && argText[k + 1] !== 'GET') || (/^(?:-X|--method=)./.test(t) && !/^(?:-XGET|--method=GET)$/.test(t)))))
+                return false;
+        }
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Whether the shell text runs the installer in a way that can switch Marrow control off, remove it, or cannot be read as one fixed command.
+ * `proven` (round 4, S4): a route stands unless it proves the whole text is data; a throw in it keeps the route (the c5af0d83 answer).
+ */
+function controlRoute(command, depth = 0, proven = provenDataText) {
     try {
         if (typeof command !== 'string' || !INSTALLER_TEXT.test(command))
             return false;
         if (command.length > MAX_READ)
             return /control|disable|uninstall|[$`]/i.test(command);
-        if (anyCommand(command, depth, installerRule))
-            return true;
         // R4: outside the clean L1 shape, master's route stands (a route if either reading says route).
-        return !cleanL1Text(command) && masterControlRoute(command, depth);
+        if (!anyCommand(command, depth, installerRule) && (cleanL1Text(command) || !masterControlRoute(command, depth)))
+            return false;
+        try {
+            return proven(command) !== true;
+        }
+        catch {
+            return true;
+        }
     }
     catch {
         return true;

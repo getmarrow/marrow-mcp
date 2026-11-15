@@ -7,8 +7,16 @@
  * `$( )` or backticks); the installer's name in a data operand, a folder name or a message is not a route.
  */
 export declare const CONTROL_ROUTE_DENY_TEXT = "Turning Marrow control off needs the account owner. Ask them to run it in their own terminal.";
-/** Whether the shell text runs the installer in a way that can switch Marrow control off, remove it, or cannot be read as one fixed command. */
-export declare function controlRoute(command: string, depth?: number): boolean;
+/**
+ * S4 PROVEN-DATA (LOWER-SHAPES r4, C0-C6, C8): whether the strict reader proves every command of the whole text, at every depth, is a
+ * data program with data arguments and data-only write targets. Any doubt, any unread byte or any throw is false (the c5af0d83 answer).
+ */
+export declare function provenDataText(text: string): boolean;
+/**
+ * Whether the shell text runs the installer in a way that can switch Marrow control off, remove it, or cannot be read as one fixed command.
+ * `proven` (round 4, S4): a route stands unless it proves the whole text is data; a throw in it keeps the route (the c5af0d83 answer).
+ */
+export declare function controlRoute(command: string, depth?: number, proven?: (text: string) => boolean): boolean;
 /** Whether a text holds a gate receipt's host-approval or approval-link path (any case, `%2F`, doubled slashes). */
 export declare function approvalReportUrl(text: string): boolean;
 /**

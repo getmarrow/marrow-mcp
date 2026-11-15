@@ -154,11 +154,15 @@ export type ToolClassification = {
     protected: boolean;
     readOnly: boolean;
 };
-/** `ownUnproven` and `postTool` are described on classifyTool. `cwd` is the event's working folder (classifyTool fills it from the event when it is an absolute path). */
+/**
+ * `ownUnproven` and `postTool` are described on classifyTool. `cwd` is the event's working folder (classifyTool fills it from the event when it is an absolute path).
+ * `keyed`: a Marrow key is configured (the pre-action hook only). Round 4 lowers a proven data-only text only then; keyless keeps the c5af0d83 route.
+ */
 export type ClassifyOptions = {
     ownUnproven?: boolean;
     postTool?: boolean;
     cwd?: string;
+    keyed?: boolean;
 };
 /**
  * The classification of one tool call. A Monitor command (and a native git

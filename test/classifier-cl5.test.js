@@ -159,10 +159,10 @@ test('CX-P1 (F4): a printf whose quoted text names the installer next to control
   assertRows([
     `printf '%s ran npx @getmarrow/install control enable\\n' "$(date -u +%FT%TZ)" >> ./records/LOG.md`,
   ].map((row) => row.replace(' "$(date -u +%FT%TZ)"', ' now')), 'none');
-  // R4: a text the shell parser cannot read (here the substitution) keeps master's route.
+  // Round 4 (S4): the strict reader proves the text with the substitution is data only (printf, a data target): no route with a key.
   assertRows([
     `printf '%s ran npx @getmarrow/install control enable\\n' "$(date -u +%FT%TZ)" >> ./records/LOG.md`,
-  ], 'ROUTE');
+  ], 'none');
 });
 
 test('CX-P2 (F8, CL4-2): folder names that contain the installer name, with or without a dollar sign, are not a route', () => {
@@ -171,11 +171,11 @@ test('CX-P2 (F8, CL4-2): folder names that contain the installer name, with or w
     'cd ~/agents/builds/getmarrow/marrow-install && git log -1',
     'cat ./marrow-install/README.md | head -5; echo "$HOME done"',
   ], 'none');
-  // R4: a text the shell parser cannot read keeps master's route (a dollar sign next to the installer name).
+  // Round 4 (S4): texts the parser cannot read that the strict reader proves data only (a loop, a subshell, cd, git log, ls, echo): no route with a key.
   assertRows([
     'for d in marrow marrow-install marrow-mcp; do (cd $d && git log -1 --format=%h); done',
     'ls ./marrow-install/ && echo "$(date -u +%FT%TZ)"',
-  ], 'ROUTE');
+  ], 'none');
 });
 
 test('CX-P3: a grep pattern, a commit message and a cat of a file under the installer folder are not a route', () => {
@@ -184,12 +184,15 @@ test('CX-P3: a grep pattern, a commit message and a cat of a file under the inst
     'git commit -m "doc: npx @getmarrow/install control disable needs the owner"',
     'cat ./marrow-install/README.md',
   ], 'none');
-  // R4: a text the shell parser cannot read keeps master's route.
+  // R4: a text the shell parser cannot read keeps master's route where the call's own class is not plain process (S4 C7: the commit).
   assertRows([
     'git commit -m "doc: npx @getmarrow/install control disable needs the owner ($(date -u +%F))"',
+  ], 'ROUTE');
+  // Round 4 (S4): proven data only (grep, head, echo, a data target): no route with a key.
+  assertRows([
     'grep -rn "marrow-install control disable" ./docs | head -3; echo `date`',
     'echo "$(date -u) npx @getmarrow/install control disable" >> ./notes.md',
-  ], 'ROUTE');
+  ], 'none');
 });
 
 // ------------------------------------------------------------------ (a) CX-A1, CX-A2: real control-off runs stay routes

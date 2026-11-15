@@ -684,8 +684,11 @@ type ClassificationParts = { tool: string; type: string; surfaces: string[]; rea
 const CLASSIFICATION_TYPES = ['security', 'publish', 'deploy', 'review', 'migration', 'audit', 'financial', 'process'];
 const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'database', 'financial'];
 
-/** `ownUnproven` and `postTool` are described on classifyTool. `cwd` is the event's working folder (classifyTool fills it from the event when it is an absolute path). */
-export type ClassifyOptions = { ownUnproven?: boolean; postTool?: boolean; cwd?: string };
+/**
+ * `ownUnproven` and `postTool` are described on classifyTool. `cwd` is the event's working folder (classifyTool fills it from the event when it is an absolute path).
+ * `keyed`: a Marrow key is configured (the pre-action hook only). Round 4 lowers a proven data-only text only then; keyless keeps the c5af0d83 route.
+ */
+export type ClassifyOptions = { ownUnproven?: boolean; postTool?: boolean; cwd?: string; keyed?: boolean };
 
 /**
  * The classification of one tool call. A Monitor command (and a native git
@@ -1031,6 +1034,9 @@ function shellPrintsEnvironment(eventCwd: string | undefined, command: string): 
   return dumps;
 }
 
+/** The route before the round-4 lowering (the c5af0d83 answer): the selfProtect skip, the keyless call and the loop guard read it. */
+const unloweredRoute = (text: string): boolean => controlRoute(text, 0, () => false);
+
 /** Whether a shell call (or the shell text another tool carries) runs the installer as a control-off route (control-routes.ts). */
 export function controlRouteCall(event: PreToolUseEvent, route: (text: string) => boolean = controlRoute): boolean {
   if (!isShellTextTool(event)) return false;
@@ -1057,7 +1063,9 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   // MCP-10: a way to switch Marrow control off through the installer is a security action on marrow-control, held for the account owner.
   // A hold is merged with the classification of the whole call below, never returned in its place: the rest of a chain keeps every surface
   // and every risk category it has without the hold.
-  const controlRoute = controlRouteCall(event) || selfApproveCall(event);
+  const selfApprove = selfApproveCall(event);
+  const headRoute = controlRouteCall(event, unloweredRoute) || selfApprove;
+  let controlRoute = options.keyed === true ? controlRouteCall(event) || selfApprove : headRoute;
   const command = shellGoverned ? hookToolCommand(event) : '';
   const input = toolClassificationText(event).toLowerCase();
   // A look-alike of Marrow's own tool is never read-only, whatever its verb.
@@ -1066,7 +1074,7 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
   const readOnly = options.ownUnproven !== true && isReadOnlyToolEventAsNamed(event, printsEnvironment);
   const secretAccess = isSecretMaterialAccessAsNamed(event, printsEnvironment);
   // T2: a write to Marrow's control files, a host's hooks settings or a file that makes a command run later is a security action, not an audit one.
-  const selfProtected = readOnly && !controlRoute ? null : selfProtectKind(event, options.cwd);
+  const selfProtected = readOnly && !headRoute ? null : selfProtectKind(event, options.cwd); // F3: the pre-lowering route
   const protectedShellCommand = shellGoverned && isProtectedShellMutation(command);
   const infrastructureDeployment = /\b(?:kubectl|terraform|pulumi|helm)\b/.test(command.toLowerCase())
     && protectedShellCommand;
@@ -1093,6 +1101,8 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
     || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
   );
   const full: ClassificationParts = { tool, type, surfaces, readOnly, protected: protectedAction };
+  // S4 C7: a lowered route stands only when the call's own class is plain process on workspace/github with no other hold.
+  if (headRoute && !controlRoute && !(type === 'process' && !protectedAction && selfProtected === null && surfaces.every((s) => s === 'github'))) controlRoute = true;
   const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected])].filter((surface): surface is string => surface !== null);
   return held.length ? stricterParts({ tool, type: 'security', surfaces: held, readOnly: false, protected: true }, full) : full;
 }
@@ -1646,7 +1656,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
     ));
     return;
   }
-  const classified = classifyTool(source, { ownUnproven: isOfficialMarrowMcpEvent(source) });
+  const classified = classifyTool(source, { ownUnproven: isOfficialMarrowMcpEvent(source), keyed: Boolean(identity.environment.apiKey) });
   let localControl;
   try {
     localControl = readLocalControlState();
@@ -1684,7 +1694,7 @@ async function runPreActionHook(input: unknown, watch: { harness?: string; event
   // MCP-5: control is on and no key resolves, so nothing this hook does is recorded: say so once per session.
   if (!identity.environment.apiKey) armKeylessNotice(identity.harness, identity.environment.sessionId || source.session_id || source.conversation_id || source.task_id);
   // MCP-10: where no person can answer a prompt (auto, bypass and dontAsk modes, headless runs), turning control off is denied outright.
-  if (classified.type === 'security' && classified.surfaces.includes('marrow-control') && controlRouteCall(source) && noPersonAtPrompt(source)) {
+  if (classified.type === 'security' && classified.surfaces.includes('marrow-control') && controlRouteCall(source, unloweredRoute) && noPersonAtPrompt(source)) {
     emitLoopGuardDenial(identity.harness, CONTROL_ROUTE_DENY_TEXT);
     return;
   }
