@@ -211,9 +211,13 @@ These behaviors shipped in 3.9.103 and still apply.
 - **Hidden commands are checked:** commands inside an unquoted here-document body, a `${x:-$(...)}` default or an arithmetic expansion are checked like any other command.
 - **`marrow-mcp keys create` reads every flag form:** `--name=`, `--type=` and `--expires=` (and `-n=`, `-t=`) are read like `--name value`; a flag that is present but blank, or a `--scopes` / `--agents` list with no entry, is a usage error (exit 2) and nothing is sent; leaving `--scopes` and `--agents` out sends neither.
 
-## What's New in v3.9.113
+## What's New in v3.9.114
 
-v3.9.113 makes the client update one path. The full entry is in CHANGELOG.md.
+v3.9.114 lets Marrow judge what a Claude Code Bash call really does. The full entry is in CHANGELOG.md.
+
+- **Command text.** The hook sends the command text of Claude Code Bash calls, checked for secrets on your machine first; Marrow does not store the text (details under Claude Code Bash command text). Script text is not sent in this version. Risky actions are still held, and a command that only mentions the installer in its text (echo, grep, git log) is no longer mistaken for an installer run. When a Marrow call fails, the client says the latest version was not checked and no longer reports the install as current.
+
+These behaviors shipped in 3.9.113 and still apply.
 
 - **One update path.** The local client update no longer builds the MCP setup command, which for a plugin install wrote a second hook copy next to the plugin. The update hint names the installer update (`npx @getmarrow/install@latest update`). Verdicts, requests to Marrow and closure calls are unchanged.
 
