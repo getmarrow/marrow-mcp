@@ -181,15 +181,16 @@ test('end to end (new-core loader -> verified runtime -> this hook, no key): exa
     assert.equal(installVerifiedRuntime(home, NEW), V);
     const OWN = [...MARROW_OWN_TOOL_NAMES].slice(0, 6);
     const event = (tool) => ({ hook_event_name: 'beforeMCPExecution', conversation_id: 'c', generation_id: 'g', workspace_roots: [project], mcp_server_name: 'marrow', tool_name: tool, tool_input: '{}' });
-    const run = (where, launch, tool) => settled(() => {
-      writeFileSync(join(project, '.cursor', 'mcp.json'), cursorJson(launch));
-      return runThroughLoader(NEW, 'cursor-pre-action-hook', event(tool), { home: where, cwd: project });
-    });
+    // CIRED-SKIP: the hooks of one test share this HOME and project. Three in flight raced on shared files (the project config
+    // rewritten while another hook read it: no own launch, the keyless deny; the loop guard state in HOME: an unsafe-state deny).
+    // The config is written once per case, and each hook starts only after the previous one closed (pool of 1).
+    const run = (where, tool) => settled(() => runThroughLoader(NEW, 'cursor-pre-action-hook', event(tool), { home: where, cwd: project }));
     const lookalike = sh(withConfig(NEW, (c) => ({ ...c, integrity: `sha512-${'A'.repeat(86)}==` })));
     const cases = [['exact new-core launch', sh(NEW), assertSkipped], ['old-core launch under the new loader', sh(OLD), assertDenied], ['look-alike integrity', lookalike, assertDenied]];
     for (const [label, launch, check] of cases) {
-      const real = await pool(OWN.map((tool) => async () => ({ tool, ...(await run(home, launch, tool)) })), 3);
-      const link = await pool(OWN.map((tool) => async () => ({ tool, ...(await run(linked, launch, tool)) })), 3);
+      writeFileSync(join(project, '.cursor', 'mcp.json'), cursorJson(launch));
+      const real = await pool(OWN.map((tool) => async () => ({ tool, ...(await run(home, tool)) })), 1);
+      const link = await pool(OWN.map((tool) => async () => ({ tool, ...(await run(linked, tool)) })), 1);
       for (let index = 0; index < OWN.length; index += 1) {
         check('cursor', real[index], `real HOME ${label} ${OWN[index]}`);
         check('cursor', link[index], `symlinked HOME ${label} ${OWN[index]}`);

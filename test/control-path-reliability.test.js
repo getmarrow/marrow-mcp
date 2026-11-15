@@ -551,7 +551,7 @@ test('explicit core MCP surface is compact and transient runtime failure returns
     assert.match(result.stale_brief, /verify the deploy proof/);
     assert.match(result.error.exact_fix, /retry|doctor|outbound/i);
     assert.equal(result.client_update.installed_version_verified, true);
-    assert.equal(result.client_update.version_status, 'current');
+    assert.equal(result.client_update.version_status, 'unknown');
     assert.equal('update_command' in result.client_update, false);
     assert.equal(result.client_update.auto_update_command, 'npx @getmarrow/install@latest update');
     assert.equal(result.control_path.tool, 'marrow_agent_runtime');

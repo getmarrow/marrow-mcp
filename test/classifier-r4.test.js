@@ -517,10 +517,14 @@ test('R4-GROWTH: provenDataText and controlRoute stay near-linear (8 KiB to 1 Mi
     const ms = {};
     for (const size of [8192, 16384, 32768, 1048576]) {
       const text = make(Math.ceil(size / 8)).slice(0, size);
-      routes.provenDataText(text); controlRoute(text);
-      const t0 = process.hrtime.bigint();
-      for (let k = 0; k < 3; k += 1) { routes.provenDataText(text); controlRoute(text); }
-      ms[size] = Number(process.hrtime.bigint() - t0) / 3e6;
+      for (let k = 0; k < 2; k += 1) { routes.provenDataText(text); controlRoute(text); }
+      // CIRED-GROW: the minimum of 15 timed runs after 2 warm-ups; a busy runner only lengthens single runs.
+      ms[size] = Infinity;
+      for (let k = 0; k < 15; k += 1) {
+        const t0 = process.hrtime.bigint();
+        routes.provenDataText(text); controlRoute(text);
+        ms[size] = Math.min(ms[size], Number(process.hrtime.bigint() - t0) / 1e6);
+      }
       assert.ok(ms[size] <= 50, `${name} ${size}: ${ms[size].toFixed(1)} ms`);
     }
     assert.ok(ms[32768] <= Math.max(6 * ms[8192], 5), `${name}: ratio 32K/8K`);

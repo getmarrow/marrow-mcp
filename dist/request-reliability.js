@@ -337,14 +337,15 @@ async function reliableFetch(url, init = {}, options = {}) {
     }
     throw lastError || normalizeRequestError(new Error('Marrow request deadline exceeded'));
 }
+// The fallback of a failed Marrow call checked no registry: it never claims the install is current.
 function localClientUpdate() {
     return {
         package: '@getmarrow/mcp',
         installed_version: hook_contract_1.MCP_ADAPTER_VERSION,
-        installed_version_verified: true,
-        latest_version: hook_contract_1.MCP_ADAPTER_VERSION,
-        version_status: 'current',
-        metadata_status: 'local_adapter_version',
+        installed_version_verified: typeof hook_contract_1.MCP_ADAPTER_VERSION === 'string' && hook_contract_1.MCP_ADAPTER_VERSION.length > 0,
+        latest_version: null,
+        version_status: 'unknown',
+        metadata_status: 'local_adapter_version_latest_unverified',
         // No local MCP setup command: for a plugin install it writes a second hook copy. The one update path is the installer.
         auto_update_command: 'npx @getmarrow/install@latest update',
         launch_command: 'npx -y --package=@getmarrow/mcp@latest marrow-mcp',
