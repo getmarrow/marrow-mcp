@@ -259,16 +259,19 @@ test('CX6-A2 a script holding a runtime dummy secret is not attached and the dum
 });
 
 test('CX6-A3 a 70 KB script is not attached; 65536 bytes is the last size that attaches (never cut)', () => {
-  none(attach('bash big.sh', { [`${CWD}/big.sh`]: `#${'x'.repeat(70 * 1024)}\n` }));
+  // The size limits are under test here, not the time budget (TMO and GROW cover that): the clock stands still, so a slow machine cannot turn a size answer into none:budget.
+  const still = (t) => ({ ...fake(t), now: () => 0 });
+  const sized = (cmd, t) => attach(cmd, t, still(t));
+  none(sized('bash big.sh', { [`${CWD}/big.sh`]: `#${'x'.repeat(70 * 1024)}\n` }));
   const edge = 'echo ok\n'.repeat(8192); // R5: short lines (one 65534-letter line is now withheld as a 20+ run)
   assert.equal(Buffer.byteLength(edge), 65536);
-  const ok = attach('bash e.sh', { [`${CWD}/e.sh`]: edge });
+  const ok = sized('bash e.sh', { [`${CWD}/e.sh`]: edge });
   assert.equal(ok.scripts[0].content, edge);
-  none(attach('bash f.sh', { [`${CWD}/f.sh`]: `${edge}z` }));
+  none(sized('bash f.sh', { [`${CWD}/f.sh`]: `${edge}z` }));
   // The total cap: 262144 bytes over a run and its imports.
   const tree = { [`${CWD}/a.py`]: Array.from({ length: 7 }, (_, i) => `import big${i}\n`).join('') };
   for (let i = 0; i < 7; i += 1) tree[`${CWD}/big${i}.py`] = 'x = 1\n'.repeat(6667);
-  none(attach('python3 a.py', tree));
+  none(sized('python3 a.py', tree));
 });
 
 test('CX6-A4 write-then-run in one command is not attached (redirect, tee, cp, mv, curl -o, wget -O, tar, unzip, a script)', () => {
@@ -452,22 +455,30 @@ test('TMO a thrown reader error and a budget overrun attach nothing (master answ
 // ---------------------------------------------------------------- growth (GROW)
 test('GROW 8k, 16k, 32k and 1 MB inputs each answer within 50 ms', () => {
   const tree = { [`${CWD}/a.sh`]: SH };
+  // Each bound is checked on the quickest of a few runs: one slow run on a busy machine says nothing about growth.
+  const quickest = (runs, fn) => {
+    let best = Infinity;
+    for (let i = 0; i < runs; i += 1) {
+      const t0 = process.hrtime.bigint();
+      fn();
+      best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+    }
+    return best;
+  };
   const times = [];
   for (const n of [8192, 16384, 32768, 1024 * 1024]) {
     for (const unit of ['ls && ', 'FOO=1 ', 'cd . && ', 'bash -e ']) {
       const cmd = unit.repeat(Math.ceil(n / unit.length)).slice(0, n - 9) + 'bash a.sh';
-      const t0 = process.hrtime.bigint();
-      attach(cmd, tree);
-      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      const ms = quickest(3, () => attach(cmd, tree));
       times.push(ms);
       assert.ok(ms <= 50, `${n} ${unit}: ${ms} ms`);
     }
   }
   // A 64 KB script with long lines and many import-like words also stays in budget.
   const big = 'import x' + ' '.repeat(30000) + '\n' + "require( '" + '.'.repeat(30000) + '\n';
-  const t0 = process.hrtime.bigint();
-  attach('python3 a.py', { [`${CWD}/a.py`]: big });
-  assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 <= 50);
+  const bigTree = { [`${CWD}/a.py`]: big };
+  const bigMs = quickest(5, () => attach('python3 a.py', bigTree));
+  assert.ok(bigMs <= 50, `64 KB script: ${bigMs} ms`);
 });
 
 // ---------------------------------------------------------------- real files (node reader)

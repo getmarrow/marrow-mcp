@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 3.9.114
+
+The hook now sends the command text of Claude Code Bash calls so Marrow can judge what the call really does; the privacy rules are in the Command text bullet below. Script text is not sent in this version. With a Marrow key, a command that names the installer only as data is no longer held as a control-off route; any text the hook cannot prove to be data keeps the previous answer. A failed Marrow call no longer reports the install as current.
 
 Claude Code hook: control routes read from the command's program position, the command text for Claude Code Bash calls, a self-approval report held for the owner.
 
@@ -11,6 +13,7 @@ Claude Code hook: control routes read from the command's program position, the c
 - Hook (script text): the hook does NOT send script text in this version: no Bash call sends the text or a fingerprint of a local script it runs; the script module (src/script-attach.ts) is in the package for a later release and the hook does not use it.
 - Control routes on data-only texts (friction F4, F8, CL4-2): with a Marrow key, a command text that names the installer only as data (every command a data program such as printf, echo, grep, git log or cat, with data-only write targets, read in full by a strict reader) is no longer held as a control-off route when its own class is plain process on the workspace or GitHub; any text the reader cannot prove, and every keyless call, keeps the previous answer.
 - Client update status (friction UPD-FALSE-CURRENT): when a Marrow call fails, the local `client_update` no longer reports the install as current; it says `version_status` unknown with `latest_version` null (the latest version was not checked) and keeps the installed version and the update, launch and verify commands. A live `client_update` from Marrow still wins.
+- Version 3.9.114 in package.json, package-lock.json, server.json and the adapter version constant; dist/ rebuilt from src/. The installer 0.1.73 and Q5 fixtures and the tests that pin the pack carry this version.
 
 ## 3.9.113
 
