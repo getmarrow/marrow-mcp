@@ -7,16 +7,23 @@
 // written as data; nothing in it is ever run.
 const assert = require('node:assert/strict');
 const { randomBytes } = require('node:crypto');
-const { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
-const { tmpdir } = require('node:os');
+const { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const test = require('node:test');
 
 const { classifyTool, preActionHookOutput } = require('../dist/hook-pre-action.js');
+const { normalizeShellCommand } = require('../dist/normalized-action.js');
 
 const SWITCHES = ['MARROW_HOOK_LABEL_COMMIT', 'MARROW_HOOK_LABEL_DRYRUN', 'MARROW_HOOK_LABEL_PATH', 'MARROW_HOOK_LABELS'];
-const ROOT = mkdtempSync(join(tmpdir(), 'lb-shapes-'));
-test.after(() => { try { chmodSync(join(ROOT, 'unreadable', 'wrangler.toml'), 0o600); } catch {} rmSync(ROOT, { recursive: true, force: true }); });
+// FX-ROOT: a fixed folder inside the checkout, at the repo root beside test/ (never under it, never a temp folder).
+// Its name holds no upper-case letter, digit or dot, so the fixture path answers the same on every machine.
+// Runs of this file in one checkout are sequential (CI shards run each file once).
+const ROOT = join(__dirname, '..', 'label-shapes-fixture');
+function removeFixture() {
+  try { chmodSync(join(ROOT, 'unreadable', 'wrangler.toml'), 0o600); } catch {} finally { rmSync(ROOT, { recursive: true, force: true }); }
+}
+removeFixture(); // a leftover from a killed run
+test.after(removeFixture);
 
 function folder(name, files = {}) {
   const dir = join(ROOT, name);
@@ -38,7 +45,8 @@ symlinkSync(join(CLEAN, 'wrangler.toml'), join(LINKED, 'wrangler.toml'));
 const UNREADABLE = folder('unreadable', { 'wrangler.toml': 'name = "w"\n' });
 chmodSync(join(UNREADABLE, 'wrangler.toml'), 0o000);
 const OVERSIZE = folder('oversize', { 'wrangler.toml': `name = "w"\n#${'x'.repeat(262144)}\n` });
-const MISSING = join(ROOT, `missing-${randomBytes(4).toString('hex')}`);
+const MISSING = join(ROOT, 'missing-folder');
+assert.equal(existsSync(MISSING), false, `the missing fixture folder exists: ${MISSING}`);
 
 // A dummy secret-shaped value made at runtime (fixed non-key prefix + random letters and digits): never a live key shape.
 function dummySecret() {
@@ -88,8 +96,21 @@ const PATH_TWINS = [
   ['TW-P3', 'MultiEdit', { file_path: 'docs/migration-notes.md', edits: [{ old_string: 'a', new_string: 'b' }] }],
   ['TW-P4', 'write', { file_path: 'release/deploy.py', content: 'x' }],
 ];
+const TARGET_ROWS = [...COMMIT_TWINS.map(([id, c]) => [id, bash(c)]), ...DRY_TWINS.map(([id, c, w]) => [id, bash(c, w)]), ...PATH_TWINS.map(([id, n, i]) => [id, tool(n, i)])];
+
+// FX-PRE: the rows below only prove the lowering when the client redactor keeps every text they send. A fixture
+// path the redactor reads as key-shaped makes the action truncated and the row answers 3.9.114 instead, so this
+// precondition fails loudly and names the fixture path. It is never skipped.
+function assertFixtureNotCut(rows) {
+  for (const [id, event] of rows) {
+    const texts = [`cd ${event.cwd}`];
+    if (event.tool_name === 'Bash') texts.push(event.tool_input.command);
+    for (const text of texts) assert.equal(normalizeShellCommand(text).truncated, false, `${id}: fixture path is cut by the client redactor: ${ROOT}`);
+  }
+}
 
 test('targets: a commit message, a proven dry run and a source-file name set no label words (keyed PreToolUse)', () => {
+  assertFixtureNotCut(TARGET_ROWS);
   for (const [id, command] of COMMIT_TWINS) {
     assert.deepEqual(tip(bash(command)), COMMIT, id);
     assert.notEqual(label(base(bash(command))), 'process on github', `${id} differs from 3.9.114`);
@@ -216,6 +237,7 @@ test('never-lowered: push, merge, deploy, migration, secret read, governance and
 });
 
 test('switches: each rule off alone, all off, or a typo value gives 3.9.114; the other rules keep their targets', () => {
+  assertFixtureNotCut([...TARGET_ROWS, ['TW-C1', bash(HEREDOC)]]);
   const rows = { MARROW_HOOK_LABEL_COMMIT: COMMIT_TWINS.map(([, c]) => bash(c)), MARROW_HOOK_LABEL_DRYRUN: DRY_TWINS.map(([, c, w]) => bash(c, w)), MARROW_HOOK_LABEL_PATH: PATH_TWINS.map(([, n, i]) => tool(n, i)) };
   const expected = (event) => (event.tool_name === 'Bash' ? (/commit/.test(event.tool_input.command) ? COMMIT : DRY) : PATH(event.tool_name));
   for (const value of ['off', 'of', 'OFF', '0', 'false', ' on']) {
