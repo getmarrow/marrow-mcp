@@ -1046,6 +1046,11 @@ export async function deliverHold(
 ): Promise<DeliveryResult | null> {
   const scope = scopeOf(ctx);
   let hold = findHolds(scope, { id: holdId }, ctx.home)[0];
+  if (hold?.outbox?.commit && 'proof' in hold.outbox.commit) {
+    // An earlier build queued the host's own result here as an observation: dropped, never sent.
+    updateHold(scope, holdId, (current) => ({ ...current, outbox: current.outbox?.report ? { ...current.outbox, commit: null } : null }), ctx.home);
+    hold = findHolds(scope, { id: holdId }, ctx.home)[0];
+  }
   if (!hold?.outbox) return null;
   const outbox = hold.outbox;
   const remaining = () => Math.max(250, deadline - Date.now());
@@ -1310,6 +1315,22 @@ export async function settleAfterTool(ctx: HoldContext, input: {
   return handoffText({ ...latest, decision_id: latest.decision_id || hold.decision_id }, delivery);
 }
 
+/**
+ * The decision of the held call that just ran, for its PostToolUse record: read only from this key's
+ * own local hold (account and agent by key, session, correlation and the exact tool_use_id or Cursor
+ * generation_id), never from the event. One resolved match, or nothing is sent.
+ */
+export function ranHoldDecision(ctx: HoldContext | null, correlation: string, toolUseId: string | null, generationId: string | null): { decision_id?: string } {
+  if (!ctx || (!toolUseId && !generationId)) return {};
+  try {
+    const holds = findHolds(scopeOf(ctx), { correlation, sessionId: ctx.sessionId, states: ['resolved'] }, ctx.home)
+      .filter((hold) => hold.decision_id && (toolUseId ? hold.tool_use_id === toolUseId : hold.generation_id === generationId));
+    return holds.length === 1 && holds[0].decision_id ? { decision_id: holds[0].decision_id } : {};
+  } catch {
+    return {};
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Claude Code declines: a permission rejection, never an interruption.
 // Texts pinned from the Claude Code 2.1.289 bundle (see test/host-approvals-claude-texts).
@@ -1407,8 +1428,18 @@ export function transcriptToolResults(path: unknown, toolUseIds: Set<string>): M
   return found;
 }
 
+/** Queues one verdict for a hold that is still open with nothing queued; a hold already answered keeps its one verdict. */
+function queueIfOpen(ctx: HoldContext, hold: HoldRecord, report: HoldReport | null, commit: HoldCommit): boolean {
+  let queued = false;
+  updateHold(scopeOf(ctx), hold.id, (current) => {
+    if (current.state !== 'open' || current.outbox) return current;
+    queued = true;
+    return { ...current, state: 'resolved', outbox: { report, commit, attempts: 0, next_at: 0 } };
+  }, ctx.home);
+  return queued;
+}
+
 async function settleClaudeResolution(ctx: HoldContext, hold: HoldRecord, resolution: ClaudeCallResolution, hookEvent: string, normalizedAction?: Record<string, unknown> | null): Promise<void> {
-  const scope = scopeOf(ctx);
   if (resolution === 'unknown') return;
   if (resolution === 'declined') {
     const report: HoldReport = {
@@ -1426,8 +1457,7 @@ async function settleClaudeResolution(ctx: HoldContext, hold: HoldRecord, resolu
       success: false,
       outcome: `Denied by Marrow pre-action gate: the operator declined in ${HOST_LABEL[ctx.host]} (gate receipt ${hold.gate_receipt_id}).`,
     };
-    updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved', outbox: { report, commit, attempts: 0, next_at: 0 } }), ctx.home);
-    await deliverHold(ctx, hold.id);
+    if (queueIfOpen(ctx, hold, report, commit)) await deliverHold(ctx, hold.id);
     return;
   }
   // Interrupted, cancelled or left unanswered: not a decline and not an approval.
@@ -1436,8 +1466,16 @@ async function settleClaudeResolution(ctx: HoldContext, hold: HoldRecord, resolu
     success: false,
     outcome: `Not completed: the call was interrupted, cancelled or left unanswered in ${HOST_LABEL[ctx.host]} before Marrow recorded an answer (gate receipt ${hold.gate_receipt_id}); no approval or decline was given.`,
   };
-  updateHold(scope, hold.id, (current) => ({ ...current, state: 'resolved', outbox: { report: null, commit, attempts: 0, next_at: 0 } }), ctx.home);
-  await deliverHold(ctx, hold.id);
+  if (queueIfOpen(ctx, hold, null, commit)) await deliverHold(ctx, hold.id);
+}
+
+/** An asked call past its expiry with no answer in the transcript: closed as unanswered, never a decline, an approval or a success. */
+async function settleUnanswered(ctx: HoldContext, hold: HoldRecord): Promise<void> {
+  const commit: HoldCommit = {
+    success: false,
+    outcome: `Unanswered: the held call got no answer in ${HOST_LABEL[ctx.host]} before its gate receipt ${hold.gate_receipt_id} expired, and Marrow saw no result for it; no approval or decline was given.`,
+  };
+  if (queueIfOpen(ctx, hold, null, commit)) await deliverHold(ctx, hold.id);
 }
 
 /** Claude Code PostToolBatch: decide each still-open asked call of the batch per tool_use_id. */
@@ -1478,25 +1516,34 @@ export async function settleToolBatch(ctx: HoldContext, input: {
   return settled;
 }
 
-/** Claude Code UserPromptSubmit fallback: a rejected dialog can end the turn before PostToolBatch. */
-export async function settleAtPrompt(ctx: HoldContext, transcriptPath: unknown): Promise<number> {
+/**
+ * UserPromptSubmit, SessionStart and Stop: a rejected dialog can end the turn before PostToolBatch. Each
+ * still-open asked call of this session is decided from the Claude Code transcript exactly as PostToolBatch
+ * decides it; one past its expiry with no answer there closes as unanswered. Bounded by the settle budget.
+ */
+export async function settleAtPrompt(ctx: HoldContext, transcriptPath: unknown, hookEvent = 'UserPromptSubmit'): Promise<number> {
   const scope = scopeOf(ctx);
   let open: HoldRecord[];
   try {
     open = findHolds(scope, { sessionId: ctx.sessionId, mode: 'ask', states: ['open'] }, ctx.home)
-      .filter((hold) => !hold.outbox && hold.tool_use_id);
+      .filter((hold) => !hold.outbox);
   } catch {
     return 0;
   }
   if (open.length === 0) return 0;
-  const results = transcriptToolResults(transcriptPath, new Set(open.map((hold) => hold.tool_use_id as string)));
+  const ids = new Set(open.map((hold) => hold.tool_use_id).filter((id): id is string => Boolean(id)));
+  const results = ctx.host === 'claude-code' ? transcriptToolResults(transcriptPath, ids) : new Map<string, TranscriptToolResult>();
+  const deadline = Date.now() + settleBudgetMs(ctx.host);
   let settled = 0;
   for (const hold of open) {
-    const found = results.get(hold.tool_use_id as string);
-    if (!found) continue;
-    const resolution = classifyClaudeToolResult({ toolName: hold.tool_name, text: found.text, denialKind: found.denialKind, unanswered: found.unanswered });
-    if (resolution === 'unknown') continue;
-    await settleClaudeResolution(ctx, hold, resolution, 'UserPromptSubmit');
+    if (Date.now() >= deadline) break;
+    const found = hold.tool_use_id ? results.get(hold.tool_use_id) : undefined;
+    const resolution = found
+      ? classifyClaudeToolResult({ toolName: hold.tool_name, text: found.text, denialKind: found.denialKind, unanswered: found.unanswered })
+      : 'unknown';
+    if (resolution !== 'unknown') await settleClaudeResolution(ctx, hold, resolution, hookEvent);
+    else if (hold.expires_at && Date.parse(hold.expires_at) <= Date.now()) await settleUnanswered(ctx, hold);
+    else continue;
     settled += 1;
   }
   return settled;

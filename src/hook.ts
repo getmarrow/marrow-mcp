@@ -16,6 +16,7 @@ import {
   flushHoldOutbox,
   hostSessionIdFor,
   noteDialogShown,
+  ranHoldDecision,
   settleAfterTool,
   settleToolBatch,
   type HoldContext,
@@ -349,12 +350,14 @@ export async function runHookCommand(input?: unknown): Promise<void> {
         session_id: sessionId,
         workflow_id: stableSessionWorkflowId(sessionId, event.generation_id || event.tool_use_id || event.task_id),
         correlation_id: lifecycleCorrelation,
+        // The decision of this call's own local hold (same key, agent, session, correlation and call id); never from the event.
+        ...ranHoldDecision(heldContext, lifecycleCorrelation, getString(event.tool_use_id) || null, getString(event.generation_id) || null),
         action,
         target: classified.target,
         surfaces: classified.surfaces,
         risk_level: classified.risk,
-        // An unknown result is recorded as unknown, never as a success.
-        ...(outcome.unknown ? { outcome_state: 'unknown' as const } : { success, outcome_state: 'pending' as const }),
+        // An unknown result is recorded as unknown, never as a success; a known one is the host's result, not a closed outcome.
+        ...(outcome.unknown ? { outcome_state: 'unknown' as const } : { success }),
       }),
     });
     spooledLifecycleEvent = deferred && receipt.queued;
