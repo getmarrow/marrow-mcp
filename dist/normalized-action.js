@@ -626,8 +626,11 @@ function redactSegment(words, ctx) {
     const { index, program, targets } = parsed;
     // FX-1: a bare commit id in argument position (not after an option, not a redirect) stays in pass 1; the body stays cut (cutVisible).
     const plainSet = new Set(parsed.plain);
+    // X1/X2 (round 3): the id word may carry one backtick at either end; a bare `--` keeps it only after the program or an operand.
+    const optionWord = (j) => words[j].replace(/^`/, '').startsWith('-');
+    const afterOption = (i) => (words[i - 1].replace(/^`/, '') === '--' ? i - 2 < index || (i - 2 > index && optionWord(i - 2)) : optionWord(i - 1));
     const keptId = (i) => state.idOk === true && !state.exact && program !== null && i > index && plainSet.has(i)
-        && COMMIT_ID.test(out[i]) && !words[i - 1].startsWith('-');
+        && COMMIT_ID.test(out[i].replace(/^`|`$/g, '')) && !afterOption(i);
     // Environment assignments before the program (and a wrapper's own, as in `env X=1 cmd`).
     for (let i = 0; i < index; i += 1) {
         const match = ASSIGNMENT.exec(out[i]);
