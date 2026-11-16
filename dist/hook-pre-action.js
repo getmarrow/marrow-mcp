@@ -41,6 +41,7 @@ const node_fs_1 = require("node:fs");
 const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const index_1 = require("./index");
+const update_notice_1 = require("./update-notice");
 const request_reliability_1 = require("./request-reliability");
 const ipv4_first_1 = require("./ipv4-first");
 const lifecycle_spool_1 = require("./lifecycle-spool");
@@ -281,6 +282,8 @@ function controlFailureKind(error) {
         return 'credential_scope';
     return CONTROL_UNAVAILABLE_CODES.has(error.code) ? 'unavailable' : undefined;
 }
+// The network edge in front of Marrow refused the request: the deny stands, but it is not an outage.
+const EDGE_REFUSAL_TEXT = "Marrow's network edge refused this request (HTTP 403), so this protected action was denied. This is not an outage; retry once, and if it repeats tell the owner.";
 const DOCTOR_FIX = 'Run `npx -y @getmarrow/install@latest doctor` in this terminal to check this machine\'s Marrow setup, then retry.';
 /**
  * A plain fix for a reached control failure: a known code's own fix, or the
@@ -326,6 +329,8 @@ function controlRejectionMessage(error, agentId, kind = controlFailureKind(error
             : 'this hook\'s agent (no MARROW_FLEET_AGENT_ID or MARROW_AGENT_ID is set)';
         return `This Marrow API key is not authorized to obtain action permits for ${agent}${suffix}. Use the API key issued to that agent, or set MARROW_FLEET_AGENT_ID (or MARROW_AGENT_ID) to the agent this key belongs to, then retry.`;
     }
+    if (kind === 'unavailable' && error instanceof request_reliability_1.MarrowRequestError && error.code === 'edge_access_denied' && error.status === 403)
+        return EDGE_REFUSAL_TEXT;
     if (kind === 'unavailable') {
         return `Marrow is unavailable, so this protected action was denied${suffix}. Retry when Marrow is reachable.`;
     }
@@ -1142,9 +1147,11 @@ function clinePreActionHookOutput(result) {
                 ? fitHookText(result.enforcementError, CLINE_ERROR_LIMIT)
                 : result.failure === 'credential_scope'
                     ? 'This Marrow API key is not authorized to obtain action permits for this agent. Use the API key issued to this agent and retry.'
-                    : result.failure === 'unavailable'
-                        ? 'Marrow is unavailable, so this protected action was denied. Retry when Marrow is reachable.'
-                        : `Marrow could not confirm a permit for this protected action. ${DOCTOR_FIX}`,
+                    : result.failure === 'unavailable' && result.enforcementError === EDGE_REFUSAL_TEXT
+                        ? EDGE_REFUSAL_TEXT
+                        : result.failure === 'unavailable'
+                            ? 'Marrow is unavailable, so this protected action was denied. Retry when Marrow is reachable.'
+                            : `Marrow could not confirm a permit for this protected action. ${DOCTOR_FIX}`,
         };
     }
     return { cancel: false };
@@ -1319,7 +1326,8 @@ function emitDecision(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT,
     }
     if (result.outage)
         process.stderr.write(`${hook_contract_1.MARROW_OUTAGE_WARNING}\n`);
-    const output = preActionHookOutput(result, harness, prompt, legacyServiceAsk);
+    // The update line rides only in the separate context field of an answer that neither denies nor asks.
+    const output = (0, update_notice_1.withPreActionNotice)(preActionHookOutput(result, harness, prompt, legacyServiceAsk), harness, result);
     process.stdout.write(JSON.stringify(output));
     const specific = asRecord(output.hookSpecificOutput);
     if (specific?.permissionDecision === 'deny')
