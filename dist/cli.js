@@ -96,9 +96,9 @@ function reportLifecycleSpool(input) {
 // PostToolUse only spools. When this invocation actually spooled an event (so it passed
 // MARROW_AUTO_HOOK, local-control and read-only gates), start one detached, unref'd
 // process that delivers with the longer background timeout. No spool scan happens here.
-function launchBackgroundLifecycleNudge() {
+function launchBackgroundLifecycleNudge(spooled = (0, hook_1.hookSpooledLifecycleEvent)()) {
     try {
-        if (!(0, hook_1.hookSpooledLifecycleEvent)() || !(0, lifecycle_spool_1.backgroundNudgeEnabled)())
+        if (!spooled || !(0, lifecycle_spool_1.backgroundNudgeEnabled)())
             return;
         const identity = (0, hook_contract_2.resolveNativeHookIdentity)(process.argv[2]);
         const apiKey = identity.environment.apiKey || '';
@@ -586,10 +586,15 @@ if (process.argv[2] !== 'keys') {
         void (0, hook_context_1.runContextHookCommand)();
     }
     else if (cliArgs.preActionHook) {
+        // The pre-action event is spooled before the answer; one detached nudge delivers it after the answer.
+        (0, hook_pre_action_1.deferPreActionLifecycleToNudge)();
         void (0, hook_pre_action_1.runPreActionHookCommand)().catch(() => {
             process.stderr.write('Marrow\'s pre-action check stopped on an internal error, so this action was held. Run `npx -y @getmarrow/install@latest doctor` in this terminal, then retry.\n');
             process.exitCode = 2;
-        }).finally(exitOnceAnswered);
+        }).finally(() => {
+            launchBackgroundLifecycleNudge((0, hook_pre_action_1.preActionLifecycleSpooled)());
+            exitOnceAnswered();
+        });
     }
     else if (cliArgs.sessionHook) {
         void (0, hook_session_1.runSessionHookCommand)();
