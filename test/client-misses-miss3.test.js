@@ -256,21 +256,21 @@ test('FX-2 (ACC-3, AB-ENV-1..24): the installer behind env and wrapper options i
   });
 });
 
-test('FX-2 AB-ENV-PROG: env words are not programs; the misread credential NAME is never a program; the row stays cut', async () => {
-  const command = ENV_ROUTES['ctl-disable'];
-  const { na } = body(command);
-  const bare = body('cd /tmp && npx -y @getmarrow/install@0.1.76 control disable --yes 2>&1 | tail -n 3').na;
-  assert.deepEqual(na.programs, bare.programs);
-  assert.ok(!na.programs.includes('marrow_api_key'));
-  assert.equal(na.truncated, true, 'a consumed value 3.9.114 read as a credential-named program keeps the body cut');
+test('FX-2 AB-ENV-PROG (ACC-3 programs, re-pointed by main ruling R2): programs byte-equal to 3.9.114; env options are read only by the control route', async () => {
+  // Expectations recorded from the 3.9.114 dist: the normalized program list keeps the 3.9.114 reading of env words.
+  const { na } = body(ENV_ROUTES['ctl-disable']);
+  assert.deepEqual(na.programs, ['cd', 'marrow_api_key', '1', 'tail']);
+  assert.equal(na.truncated, true, 'the credential-named value keeps the body cut, as 3.9.114');
   const one = body(ENV_ROUTES['AB-ENV-1']).na;
-  assert.ok(!one.programs.includes('marrow_api_key'));
+  assert.deepEqual(one.programs, ['marrow_api_key']);
   assert.equal(one.truncated, true);
-  if (typeof one.tool_input.command === 'string') assert.equal(one.tool_input.command_sha256, plainHash(ENV_ROUTES['AB-ENV-1']));
-  // Unresolvable env forms keep the old reading and are cut (never bind).
-  for (const command of [`env -Z ${NPX}`, `env -u`, `env -u "$V" ${NPX}`, `env -S 'npx x' y`]) assert.equal(body(command).na.truncated, true, 'unresolvable env form is cut');
-  // A resolvable env prefix: the same programs as the command without it.
-  assert.deepEqual(body('env -u HOME_DIR -C /tmp -i A=1 node build.js').na.programs, body('A=1 node build.js').na.programs);
+  assert.equal(typeof one.tool_input.command, 'undefined');
+  for (const [command, programs] of [[`env -Z ${NPX}`, ['install']], ['env -u', []], [`env -u "$V" ${NPX}`, []], [`env -S 'npx x' y`, []],
+    ['env -u HOME_DIR -C /tmp -i A=1 node build.js', ['home_dir']]]) {
+    const row = body(command).na;
+    assert.deepEqual(row.programs, programs, `${command}: programs as 3.9.114`);
+    assert.notEqual(row.truncated, true, `${command}: not cut, as 3.9.114`);
+  }
 });
 
 const NOT_ROUTES = {

@@ -689,7 +689,7 @@ const HOME_STORES = ['.marrow/credentials', '.ssh', '.aws', '.gnupg', '.config/g
 const STORE_ANCESTORS = new Set(['/', '/home', '/root', '/etc', '/etc/ssl']);
 const STORE_TEXT = /\.(?:marrow|ssh|aws|gnupg|config\/gh|docker|kube|azure|password-store|secrets?)(?![a-z0-9_-])|\/etc\/ssl\/private/i;
 const STORE_VARIABLE = /cred|key|token|secret|pass|auth|ssh|aws|gpg|kube|docker|azure|marrow/i;
-/** FX-3: a listing of a credential store, a file in one, or (recursively) a folder above one; operands read as isSecretPath reads them. */
+/** FX-3: a listing of a credential-store or Marrow-state folder, a file in one, or (recursively) a folder above one. */
 const failsTrue = (check) => { try {
     return check();
 }
@@ -708,9 +708,10 @@ function credentialStoreListing(program, args, expansions, base, text) {
     if (variables.some((name) => isSecretVariableName(name) || STORE_VARIABLE.test(name)) || (variables.length > 0 && STORE_TEXT.test(text)))
         return true;
     return operands.some((operand) => globVariants(operand).some((candidate) => {
-        if (isSecretPath(candidate, base))
-            return true;
         const path = normalizedToolPath(candidate, base).replace(/\/+$/, '').toLowerCase() || '/';
+        // X1 (main R1): a secret-looking file NAME alone keeps the 3.9.114 answer; isSecretPath counts only inside a store or Marrow-state folder.
+        if (isSecretPath(candidate, base) && STORE_TEXT.test(path))
+            return true;
         if (path === `${home}/.marrow/bin` || path.startsWith(`${home}/.marrow/bin/`))
             return false;
         return path === `${home}/.marrow` || path === '/etc/ssl/private' || path.startsWith('/etc/ssl/private/')

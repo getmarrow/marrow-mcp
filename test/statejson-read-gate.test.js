@@ -154,7 +154,9 @@ test('keyed: `cd <folder>; cat ~+/state.json` is read as the salt form is (the h
   }
   assert.ok(APPROVAL_STATE_TREE.test('/home/u/.marrow/host-approvals/state.json') && APPROVAL_STATE_TREE.test('/home/u/.marrow/host-approvals/~+/state.json'));
   assert.ok(!APPROVAL_STATE_TREE.test('/home/u/.marrow/host-approvals') && !APPROVAL_STATE_TREE.test('/home/u/.marrow/seatbelt/state.json') && !APPROVAL_STATE_TREE.test('/home/u/proj/host-approvals/state.json'));
-  for (const command of ['cd ~/.marrow/host-approvals; ls ~+', 'cd ~/.marrow/host-approvals; pwd', 'cd ~/.marrow/host-approvals && ls -la']) assert.equal(keyed(bash(command)).protected, false, command);
+  // CLIENT-MISS3 FX-3 (main ruling R3): a listing of the Marrow state folder goes to the server with the listing verdict.
+  assert.equal(keyed(bash('cd ~/.marrow/host-approvals; ls ~+')).protected, true);
+  for (const command of ['cd ~/.marrow/host-approvals; pwd', 'cd ~/.marrow/host-approvals && ls -la']) assert.equal(keyed(bash(command)).protected, false, command);
 });
 
 test('a glob or dynamic spelling with nothing to list is judged by sample and still carries the reason; the outage reading of every form is high, not unknown', () => {
