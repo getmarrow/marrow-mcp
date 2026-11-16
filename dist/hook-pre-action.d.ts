@@ -13,6 +13,9 @@ export declare const SETUP_UNCONFIRMED_TEXT = "Marrow stopped this action: there
 export { MARROW_OUTAGE_WARNING };
 export declare const MAX_PRE_ACTION_INPUT_BYTES: number;
 export declare const PRE_ACTION_CONTROL_TIMEOUT_MS = 8000;
+export declare function deferPreActionLifecycleToNudge(): void;
+/** True when this hook left its pre-action event queued in the spool for the background nudge. */
+export declare function preActionLifecycleSpooled(): boolean;
 export declare class PreActionControlTimeoutError extends Error {
     readonly code = "request_timeout";
     constructor();

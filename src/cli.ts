@@ -71,7 +71,7 @@ import { deliverQueuedForReceipt, holdSessionForReceipt, proofFieldsForReceipt, 
 import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
-import { controlFailureKind, installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
+import { controlFailureKind, deferPreActionLifecycleToNudge, installPreActionHook, preActionLifecycleSpooled, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
 import { agentIdSourceSentence, explainAgentIdSource, explanationLabelJson } from './identity-explain';
 import { spawn } from 'node:child_process';
 import { emitBaseUrlNotice, nonDefaultBaseUrlHost, resolveMarrowEnv } from './env';
@@ -167,9 +167,9 @@ function reportLifecycleSpool(input: { apiKey: string; baseUrl?: string; agentId
 // PostToolUse only spools. When this invocation actually spooled an event (so it passed
 // MARROW_AUTO_HOOK, local-control and read-only gates), start one detached, unref'd
 // process that delivers with the longer background timeout. No spool scan happens here.
-function launchBackgroundLifecycleNudge(): void {
+function launchBackgroundLifecycleNudge(spooled = hookSpooledLifecycleEvent()): void {
   try {
-    if (!hookSpooledLifecycleEvent() || !backgroundNudgeEnabled()) return;
+    if (!spooled || !backgroundNudgeEnabled()) return;
     const identity = resolveNativeHookIdentity(process.argv[2]);
     const apiKey = identity.environment.apiKey || '';
     if (!apiKey) return;
@@ -637,10 +637,15 @@ if (cliArgs.hook) {
 } else if (cliArgs.contextHook) {
   void runContextHookCommand();
 } else if (cliArgs.preActionHook) {
+  // The pre-action event is spooled before the answer; one detached nudge delivers it after the answer.
+  deferPreActionLifecycleToNudge();
   void runPreActionHookCommand().catch(() => {
     process.stderr.write('Marrow\'s pre-action check stopped on an internal error, so this action was held. Run `npx -y @getmarrow/install@latest doctor` in this terminal, then retry.\n');
     process.exitCode = 2;
-  }).finally(exitOnceAnswered);
+  }).finally(() => {
+    launchBackgroundLifecycleNudge(preActionLifecycleSpooled());
+    exitOnceAnswered();
+  });
 } else if (cliArgs.sessionHook) {
   void runSessionHookCommand();
 } else if (cliArgs.spoolStatus) {
