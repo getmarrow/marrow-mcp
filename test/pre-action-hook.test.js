@@ -1121,7 +1121,7 @@ test('read-only inspection is not protected by words in paths or arguments; real
     ['npm view', bash('npm view @getmarrow/mcp dist-tags --json'), readOnly],
     ['gh pr view', bash('gh pr view 42 --repo getmarrow/marrow-mcp --json title,state'), readOnly],
     ['env template', bash('cat .env.example'), readOnly],
-    ['listing a secret directory', bash('ls -la ~/.ssh'), readOnly],
+    ['listing a secret directory (CLIENT-MISS3 FX-3, main ruling R3: the server answers)', bash('ls -la ~/.ssh'), unprotectedWrite],
     ['TaskUpdate', { tool_name: 'TaskUpdate', tool_input: { taskId: '3', status: 'completed', subject: 'deploy done' } }, readOnly],
     ['TodoWrite', { tool_name: 'TodoWrite', tool_input: { todos: [{ content: 'merge and publish', status: 'pending' }] } }, readOnly],
     ['Read', { tool_name: 'Read', tool_input: { file_path: '/repo/docs/release-notes.md' } }, readOnly],

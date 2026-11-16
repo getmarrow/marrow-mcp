@@ -542,75 +542,16 @@ function basename(word) {
     return word.replace(/^.*\//, '');
 }
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
-/** FX-1: a bare commit id and the credential words that keep any id withheld. FX-2: main's env option list. */
+/** FX-1: a bare commit id and the credential words that keep any id withheld. */
 const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const ID_CREDENTIAL_WORD = /key|token|secret|passw|pwd|auth|bearer|login|cred|sign|cookie|session|hmac|private/;
-const [ENV_SHORT_VALUE, ENV_SHORT_FLAG] = ['uCPa', 'i0v'];
-const [ENV_LONG_VALUE, ENV_LONG_FLAG] = [new Set(['unset', 'chdir', 'argv0']), new Set(['ignore-environment', 'null', 'debug'])];
-const ENV_LONG_OPTIONAL = new Set(['block-signal', 'default-signal', 'ignore-signal']);
-/** FX-2: the index after env's own words from `at`, or null when the form cannot be read (unknown option, missing value, `$`, `-S`). */
-function envEnd(words, at) {
-    while (at < words.length) {
-        const word = words[at];
-        if (word === '--')
-            return at + 1;
-        if (ASSIGNMENT.test(word) || word === '-') {
-            at += 1;
-            continue;
-        }
-        if (!word.startsWith('-'))
-            return at;
-        if (/[$`]/.test(word))
-            return null;
-        let next = at + 1;
-        if (word.startsWith('--')) {
-            const eq = word.indexOf('=');
-            const name = word.slice(2, eq < 0 ? word.length : eq);
-            if (ENV_LONG_OPTIONAL.has(name) || (eq < 0 && ENV_LONG_FLAG.has(name))) {
-                at = next;
-                continue;
-            }
-            if (!ENV_LONG_VALUE.has(name))
-                return null;
-            if (eq < 0)
-                next += 1;
-        }
-        else {
-            let k = 1;
-            while (k < word.length && ENV_SHORT_FLAG.includes(word[k]))
-                k += 1;
-            if (k < word.length && !ENV_SHORT_VALUE.includes(word[k]))
-                return null;
-            if (k + 1 === word.length)
-                next += 1;
-        }
-        if (next > words.length || (next === at + 2 && /[$`]/.test(words[at + 1])))
-            return null;
-        at = next;
-    }
-    return at;
-}
-/** FX-2: env's options read from main's table; any program other than 3.9.114's is `misread` (cut, whatever rule 3.9.114 applied). */
+/** The program list and env and wrapper words as 3.9.114 reads them (main ruling R2: the env option table is the control route's only). */
 function parseSegment(words) {
-    const old = parseWords(words, false);
-    if (!words.some((word) => basename(word) === 'env'))
-        return old;
-    const read = parseWords(words, true);
-    return read === null ? { ...old, unread: true } : { ...read, misread: read.program !== old.program };
-}
-function parseWords(words, envTable) {
     let index = 0;
     while (index < words.length && ASSIGNMENT.test(words[index]))
         index += 1;
     while (index < words.length && WRAPPERS.has(basename(words[index]))) {
         index += 1;
-        const end = envTable && basename(words[index - 1]) === 'env' ? envEnd(words, index) : undefined;
-        if (end === null)
-            return null;
-        if (end !== undefined) {
-            index = end;
-            continue;
-        }
         while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index])))
             index += 1;
     }
@@ -683,10 +624,6 @@ function redactSegment(words, ctx) {
     const removed = new Set();
     const parsed = parseSegment(out);
     const { index, program, targets } = parsed;
-    if (parsed.unread)
-        state.envUnread = true;
-    if (parsed.misread && !state.exact)
-        state.cutVisible = true;
     // FX-1: a bare commit id in argument position (not after an option, not a redirect) stays in pass 1; the body stays cut (cutVisible).
     const plainSet = new Set(parsed.plain);
     const keptId = (i) => state.idOk === true && !state.exact && program !== null && i > index && plainSet.has(i)
@@ -2025,8 +1962,8 @@ function normalizedOfKind(event, kind, hostToolName, state, commandText, hostTex
         const { text, programs } = normalizeInner(raw, state, 0);
         // A secret was replaced: the action is never bound or reused (it asks each time).
         const marked = hasSecretMarker(text);
-        const visible = state.cutVisible === true && !state.truncated && !state.envUnread && !marked; // FX-1/FX-2: cut for that alone
-        if (marked || state.envUnread || state.cutVisible)
+        const visible = state.cutVisible === true && !state.truncated && !marked; // FX-1: cut for that alone
+        if (marked || state.cutVisible)
             state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
         // The command text itself only for a deploy the service can judge word for word (see deployCommandText).
         // Judged on the host's exact text (a trimmed non-ASCII space must not slip through).
