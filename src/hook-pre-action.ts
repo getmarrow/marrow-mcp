@@ -65,6 +65,7 @@ import {
   readEquivalent,
   toolClassificationText,
   toolPolicyReading,
+  withMasterListing,
 } from './hook-tool-policy';
 import {
   clientReportedHookLifecycleIdentity,
@@ -705,6 +706,12 @@ export type ClassifyOptions = { ownUnproven?: boolean; postTool?: boolean; cwd?:
  * seatbelt is the one stricter difference). Only the pre-action hook decides (and holds) on what prints the environment.
  */
 export function classifyTool(event: PreToolUseEvent, options: ClassifyOptions = {}): ToolClassification {
+  // X3 (round 3): no key (keyed comes only from the hook's own key read): the 3.9.114 listing reading; keyed and PostToolUse unchanged.
+  if (options.keyed === false) return withMasterListing(() => classifyToolAs(event, options));
+  return classifyToolAs(event, options);
+}
+
+function classifyToolAs(event: PreToolUseEvent, options: ClassifyOptions): ToolClassification {
   const cwd = absoluteFolder(options.cwd) ?? absoluteFolder(event.cwd);
   if (cwd !== options.cwd) options = { ...options, cwd };
   const reading = toolPolicyReading(event);

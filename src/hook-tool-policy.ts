@@ -201,7 +201,9 @@ export type ShellSegment = {
 };
 
 type RedirectKind = 'out' | 'in' | 'dup_out' | 'dup_in';
-export type ShellSegmentVerdict = 'read' | 'secret' | 'other';
+/** `listing` (CLIENT-MISS3 FX-3): a credential-store listing: not read-only (the server answers), no local secret hold, labels as `read`. */
+export type ShellSegmentVerdict = 'read' | 'secret' | 'other' | 'listing';
+const READ_OR_LISTING = (verdict: ShellSegmentVerdict): boolean => verdict === 'read' || verdict === 'listing';
 
 /**
  * Splits a shell command into simple commands at |, ||, &&, ;, & and newlines,
@@ -592,6 +594,46 @@ function readOnlyProgramInvocation(program: string, args: string[]): boolean {
   return true;
 }
 
+/** FX-3: credential stores under HOME (~/.marrow too, not ~/.marrow/bin), folders above one, and variable names that point at one. */
+const LISTING_PROGRAMS = new Set(['ls', 'find', 'stat', 'du', 'file', 'tree', 'exa', 'eza', 'dir']);
+const HOME_STORES = ['.marrow/credentials', '.ssh', '.aws', '.gnupg', '.config/gh', '.docker', '.kube', '.azure', '.password-store', '.secret', '.secrets'];
+const STORE_ANCESTORS = new Set(['/', '/home', '/root', '/etc', '/etc/ssl']);
+const STORE_TEXT = /\.(?:marrow|ssh|aws|gnupg|config\/gh|docker|kube|azure|password-store|secrets?)(?![a-z0-9_-])|\/etc\/ssl\/private/i;
+const STORE_VARIABLE = /cred|key|token|secret|pass|auth|ssh|aws|gpg|kube|docker|azure|marrow/i;
+
+/**
+ * X3 (round 3): with no key (`keyed === false`, set only by the pre-action hook's own key read) the FX-3 `listing` reading is not used,
+ * so the call gets the 3.9.114 reading and answer. Keyed calls and the PostToolUse path never run inside it.
+ */
+let masterListing = false;
+export function withMasterListing<T>(read: () => T): T {
+  const before = masterListing;
+  masterListing = true;
+  try { return read(); } finally { masterListing = before; }
+}
+
+/** FX-3: a listing of a credential-store or Marrow-state folder, a file in one, or (recursively) a folder above one. */
+const failsTrue = (check: () => boolean): boolean => { try { return check(); } catch { return true; } };
+function credentialStoreListing(program: string, args: string[], expansions: string[], base: string, text: string): boolean {
+  const home = homeDirectory().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const recursive = program === 'find' || program === 'tree'
+    || (program === 'du' && !args.some((arg) => /^-[A-Za-z]*s|^--summ/.test(arg)))
+    || (program !== 'du' && args.some((arg) => /^-[A-Za-z]*R|^--recurs/.test(arg) || (program !== 'ls' && /^-[A-Za-z]*T|^--tree/.test(arg))));
+  const operands = args.flatMap((arg) => (!arg.startsWith('-') ? [arg] : /^--[^=]+=./.test(arg) ? [arg.slice(arg.indexOf('=') + 1)] : []));
+  if (recursive && !args.some((arg) => !arg.startsWith('-'))) operands.push('.');
+  const variables = expansions.filter((name) => name !== 'HOME');
+  if (variables.some((name) => isSecretVariableName(name) || STORE_VARIABLE.test(name)) || (variables.length > 0 && STORE_TEXT.test(text))) return true;
+  return operands.some((operand) => globVariants(operand).some((candidate) => {
+    const path = normalizedToolPath(candidate, base).replace(/\/+$/, '').toLowerCase() || '/';
+    // X1 (main R1): a secret-looking file NAME alone keeps the 3.9.114 answer; isSecretPath counts only inside a store or Marrow-state folder.
+    if (isSecretPath(candidate, base) && STORE_TEXT.test(path)) return true;
+    if (path === `${home}/.marrow/bin` || path.startsWith(`${home}/.marrow/bin/`)) return false;
+    return path === `${home}/.marrow` || path === '/etc/ssl/private' || path.startsWith('/etc/ssl/private/')
+      || HOME_STORES.some((store) => path === `${home}/${store}` || path.startsWith(`${home}/${store}/`))
+      || (recursive && (path === home || STORE_ANCESTORS.has(path)));
+  }));
+}
+
 /**
  * Classifies one simple command: a read-only inspection, a secret access, or anything else.
  * In the PowerShell dialect no command is a read-only inspection and no program is exempt from
@@ -599,7 +641,7 @@ function readOnlyProgramInvocation(program: string, args: string[]): boolean {
  * PowerShell, and `ls env:` and `echo $env:X` print the environment): every word is judged as a
  * file a command may read.
  */
-export function shellSegmentVerdict(segment: ShellSegment, cwd: string | null = process.cwd(), dialect?: ShellDialect): ShellSegmentVerdict {
+export function shellSegmentVerdict(segment: ShellSegment, cwd: string | null = process.cwd(), dialect?: ShellDialect, text = ''): ShellSegmentVerdict {
   const powershell = dialect === 'powershell';
   // After a cd Marrow cannot follow, relative paths are unknown, so nothing that follows is read-only.
   const base = cwd ?? process.cwd();
@@ -627,6 +669,8 @@ export function shellSegmentVerdict(segment: ShellSegment, cwd: string | null = 
     }
     // A PowerShell parameter binds its value in the same word (-Path:.env).
     if (powershell && segment.words.some(protectedTarget)) return 'secret';
+    // FX-3: a credential-store listing goes to the server ('listing', never a local 'secret' hold); a throw here is 'listing' too.
+    if (!masterListing && LISTING_PROGRAMS.has(program) && failsTrue(() => credentialStoreListing(program, args, segment.expansions, base, text))) return writes.length || cwd === null ? 'other' : 'listing';
     return writes.length || cwd === null || powershell ? 'other' : 'read';
   }
   return segment.words.some(protectedTarget) ? 'secret' : 'other';
@@ -647,7 +691,7 @@ function shellAnalysis(command: string, dialect?: ShellDialect, parse: ShellDial
   if (!segments) return null;
   let cwd: string | null = process.cwd();
   const verdicts = segments.map((segment) => {
-    const verdict = shellSegmentVerdict(segment, cwd, dialect);
+    const verdict = shellSegmentVerdict(segment, cwd, dialect, command);
     cwd = nextWorkingDirectory(segment, cwd);
     return verdict;
   });
@@ -663,7 +707,7 @@ function shellAnalysis(command: string, dialect?: ShellDialect, parse: ShellDial
 export function policyReadsAllWords(command: string): boolean {
   try {
     const analysis = shellAnalysis(command);
-    if (!analysis?.segments.length || !analysis.verdicts.every((verdict) => verdict === 'read')) return false;
+    if (!analysis?.segments.length || !analysis.verdicts.every(READ_OR_LISTING)) return false;
     return analysis.segments.every((segment) => segment.expansions.length === 0 && ![...segment.words, ...segment.inputs, ...segment.outputs].some((word) => /[*?[{]/.test(word)));
   } catch { return false; }
 }
@@ -753,7 +797,7 @@ export function toolClassificationText(event: ToolPolicyEvent): string {
     const analysis = shellAnalysis(shellCommandText(event), event[SHELL_DIALECT]);
     if (analysis) {
       return [tool, ...analysis.segments
-        .filter((_, index) => analysis.verdicts[index] !== 'read')
+        .filter((_, index) => !READ_OR_LISTING(analysis.verdicts[index]))
         .map((segment) => [...segment.words, ...segment.outputs].join(' '))].join(' ; ');
     }
   }

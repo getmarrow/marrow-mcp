@@ -143,7 +143,9 @@ type ScanBudget = { scanned: number; deadline: number };
  * `freeText`: the text is a field of a tool that does not run shell text (a prompt, a query, a path), read as shell
  * words only for classification: a program word is then listed only when it is a known program (UNLISTED_PROGRAM).
  */
-type Exactness = { truncated: boolean; budget: ScanBudget; exact: boolean; sigs: string[]; freeText: boolean };
+// CLIENT-MISS3: idOk (FX-1): no credential word in the text, so a bare commit id may stay in pass 1; cutVisible (FX-1): an id was
+// kept: the body stays cut, the text may be sent. Env and wrapper words are read as 3.9.114 reads them (main ruling R2).
+type Exactness = { truncated: boolean; budget: ScanBudget; exact: boolean; sigs: string[]; freeText: boolean; idOk?: boolean; cutVisible?: boolean };
 
 /** Thrown when normalization runs out of its budget: the caller sends a truncated placeholder instead. */
 class NormalizationLimit extends Error {}
@@ -664,6 +666,9 @@ function basename(word: string): string {
 }
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
+/** FX-1: a bare commit id and the credential words that keep any id withheld. */
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const ID_CREDENTIAL_WORD = /key|token|secret|passw|pwd|auth|bearer|login|cred|sign|cookie|session|hmac|private/;
 
 type Parsed = {
   /** Index of the program word (after leading assignments and wrappers). */
@@ -675,6 +680,7 @@ type Parsed = {
   targets: string[];
 };
 
+/** The program list and env and wrapper words as 3.9.114 reads them (main ruling R2: the env option table is the control route's only). */
 function parseSegment(words: string[]): Parsed {
   let index = 0;
   while (index < words.length && ASSIGNMENT.test(words[index])) index += 1;
@@ -755,6 +761,13 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
   const removed = new Set<number>();
   const parsed = parseSegment(out);
   const { index, program, targets } = parsed;
+  // FX-1: a bare commit id in argument position (not after an option, not a redirect) stays in pass 1; the body stays cut (cutVisible).
+  const plainSet = new Set(parsed.plain);
+  // X1/X2 (round 3): the id word may carry one backtick at either end; a bare `--` keeps it only after the program or an operand.
+  const optionWord = (j: number): boolean => words[j].replace(/^`/, '').startsWith('-');
+  const afterOption = (i: number): boolean => (words[i - 1].replace(/^`/, '') === '--' ? i - 2 < index || (i - 2 > index && optionWord(i - 2)) : optionWord(i - 1));
+  const keptId = (i: number): boolean => state.idOk === true && !state.exact && program !== null && i > index && plainSet.has(i)
+    && COMMIT_ID.test(out[i].replace(/^`|`$/g, '')) && !afterOption(i);
 
   // Environment assignments before the program (and a wrapper's own, as in `env X=1 cmd`).
   for (let i = 0; i < index; i += 1) {
@@ -780,6 +793,7 @@ function redactSegment(words: string[], ctx: SegmentContext): { words: string[];
     const result: string[] = [];
     out.forEach((word, i) => {
       if (removed.has(i)) return;
+      if (!handled.has(i) && keptId(i)) { spend(state, word.length); state.cutVisible = true; result.push(word); return; }
       result.push(handled.has(i) ? word : redactText(word, state));
     });
     return { words: result, program };
@@ -1856,6 +1870,7 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
   let preimage: string | null = null;
   let hashField: BuiltAction['hashField'] = 'input_sha256';
   let plain = false;
+  let cutPlain: boolean | undefined = false;
   let placeholder = false;
   try {
     // A caller that knows the call is not a raw Claude Code Bash call (claudeCodeBash false) gets the 3.9.111 action, and
@@ -1868,7 +1883,7 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
     // that names the call a raw Claude Code Bash call (the hook's runtime call), the plain hash alone at every other call site.
     const hostText = commandText === 'off' ? 'off' : options.claudeCodeBash === true ? 'send'
       : /^claude-[a-z-]*hook$/.test(entrypoint) ? 'hash' : 'off';
-    ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state, commandText, hostText));
+    ({ action, preimage, hashField, plain, cutPlain } = normalizedOfKind(event, kind, hostToolName, state, commandText, hostText));
   } catch (error) {
     if (!(error instanceof NormalizationLimit)) throw error;
     action = { tool_kind: kind, tool_name: hostToolName, tool_input: {}, truncated: true };
@@ -1882,6 +1897,11 @@ export function normalizedHookAction(event: ToolEvent, options: { deadlineAt?: n
   // EVERY text hash is keyed, bound or not: the text of any tool field may hold a value the redactor did not see
   // (a prompt, a message, a plan, a query, a filter, an id, an unknown tool's `command`), and a plain hash of it could be
   // guessed offline. The key is per install and stable, so the same call on the same install still binds and resumes.
+  if (cutPlain === true) {
+    const tool_input = { ...action.tool_input, exact_hmac: exactHmac(salt, kind, rawToolName, material) };
+    if (SENT_HOST_TEXT.has(action.tool_input)) SENT_HOST_TEXT.add(tool_input);
+    return { ...action, tool_input } as NormalizedHookAction;
+  }
   const keyed = preimage === null ? {} : { [hashField]: keyTextHash(salt, kind, rawToolName, preimage) };
   if (!cut) return { ...action, tool_input: { ...action.tool_input, ...keyed } } as NormalizedHookAction;
   return { ...action, tool_input: { ...action.tool_input, ...keyed, exact_hmac: exactHmac(salt, kind, rawToolName, material) } } as NormalizedHookAction;
@@ -1894,6 +1914,7 @@ type BuiltAction = {
   preimage: string | null;
   /** The hash stays the plain hash: the text it covers is itself sent in clear (the deploy `command`). */
   plain: boolean;
+  cutPlain?: boolean; // FX-1: a sent text whose body stays cut: exact_hmac added, the plain hash never re-keyed
 };
 
 /** An action whose tool input is hashed whole (mcp, edit, other). */
@@ -1928,11 +1949,11 @@ function joinedHexWord(word: string): boolean {
   return pieces.length > 1 && pieces.some((piece) => /^[0-9a-f]{13,}$/i.test(piece) && piece.length !== 40 && piece.length !== 64);
 }
 
-function eligibleHostText(event: ToolEvent, state: Exactness): string | null {
+function eligibleHostText(event: ToolEvent, state: Exactness, visible = false): string | null {
   try {
     const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input as Record<string, unknown> : null;
     if (event.tool_name !== 'Bash' || input === null || typeof input.command !== 'string' || 'cmd' in input) return null;
-    if ((event as { input_truncated?: unknown }).input_truncated !== undefined || state.truncated) return null; // a secret marker or withheld word
+    if ((event as { input_truncated?: unknown }).input_truncated !== undefined || (state.truncated && !visible)) return null; // a secret marker or withheld word
     const host = input.command;
     if (!host || host.length > 8192 || !/^[\x20-\x7e\n\t]+$/.test(host) || redactSensitiveText(host) !== host) return null;
     // R6 (F3): a letter or digit run of 20 or more, any case, is withheld; only exactly 40 or 64 lowercase hex (R3 BOUNDARY) stays.
@@ -1957,9 +1978,13 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     const raw = shellCommand(event);
     if (untrimmedShellText(event, raw) !== null) state.truncated = true; // exact: raw (the host's untrimmed text)
     state.freeText = !isShellTextTool(event as Parameters<typeof isShellTextTool>[0]);
+    // FX-1: any credential word anywhere in the text (letters only, any case, quotes and other characters removed) keeps every id withheld.
+    state.idOk = raw.length <= MAX_COMMAND_CHARS && !ID_CREDENTIAL_WORD.test(raw.toLowerCase().replace(/[^a-z\s]/g, ''));
     const { text, programs } = normalizeInner(raw, state, 0);
     // A secret was replaced: the action is never bound or reused (it asks each time).
-    if (hasSecretMarker(text)) state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
+    const marked = hasSecretMarker(text);
+    const visible = state.cutVisible === true && !state.truncated && !marked; // FX-1: cut for that alone
+    if (marked || state.cutVisible) state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
     // The command text itself only for a deploy the service can judge word for word (see deployCommandText).
     // Judged on the host's exact text (a trimmed non-ASCII space must not slip through).
     const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input as Record<string, unknown> : null;
@@ -1982,11 +2007,11 @@ function normalizedOfKind(event: ToolEvent, kind: NormalizedHookAction['tool_kin
     // 3A: a deploy, push or pull request whose host text is its grammar text word for word keeps the 3.9.113 body; any other eligible text
     // gets the plain hash of the host text everywhere, and the text itself on the runtime call only.
     const kept = exact === text && (deployText === text || (sourceControlText !== null && sourceControlText === text));
-    const host = hostText === 'off' || plainShellTool || kept ? null : eligibleHostText(event, state);
+    const host = hostText === 'off' || plainShellTool || kept ? null : eligibleHostText(event, state, visible);
     if (host !== null) {
       const tool_input = { command_sha256: sha256(`${HASH_VERSION}\nshell\n${host}`), ...(hostText === 'send' ? { command: host } : {}) };
       if (hostText === 'send') SENT_HOST_TEXT.add(tool_input);
-      return { action: { tool_kind: 'shell', tool_name: hostToolName, programs, tool_input }, hashField: 'command_sha256', preimage, plain: true };
+      return { action: { tool_kind: 'shell', tool_name: hostToolName, programs, tool_input, ...(visible ? { truncated: true } : {}) }, hashField: 'command_sha256', preimage, plain: true, cutPlain: visible };
     }
     return {
       action: withExactness({
