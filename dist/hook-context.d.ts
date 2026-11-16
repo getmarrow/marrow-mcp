@@ -29,6 +29,13 @@ interface ContextSignals {
     hasSignal: boolean;
 }
 export declare function extractSignals(thinkResult: unknown): ContextSignals;
+/** The strict reader of a server answer's client_update block (runtime or status): null when it gives no update priority. */
+export declare function strictClientUpdate(answer: unknown): {
+    update: Record<string, unknown>;
+    priority: 'version_unknown' | 'security_required' | 'recommended';
+    currentVersion?: string;
+    latestVersion?: string;
+} | null;
 export declare function buildCombinedContextBlock(signals: ContextSignals, brief: MarrowDecisionBriefResult | null, valueReport: MarrowValueReportResult | null, runtime?: MarrowAgentRuntimeResult | null): string;
 export declare function compactRuntimeContext(runtime: MarrowAgentRuntimeResult): string;
 export declare function runContextHookCommand(): Promise<void>;
