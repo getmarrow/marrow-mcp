@@ -366,7 +366,7 @@ jobs:
         run: |
           set -euo pipefail
           got=''
-          for _ in $(seq 1 20); do
+          for _ in $(seq 1 40); do
             got="$(npm view "$EXPECTED_PACKAGE@$VERSION" dist.integrity 2>/dev/null || true)"
             [ "$got" = "$EXPECTED_INTEGRITY" ] && break
             sleep 15
