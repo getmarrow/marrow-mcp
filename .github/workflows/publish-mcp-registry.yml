@@ -45,7 +45,7 @@ jobs:
       - name: Authenticate with getmarrow.ai DNS (ai.getmarrow/* namespace)
         env:
           MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
-        run: ./mcp-publisher login dns --domain getmarrow.ai --private-key "$MCP_PRIVATE_KEY"
+        run: node scripts/mcp-registry-dns-login.cjs --domain getmarrow.ai
 
       - name: Publish registry metadata
         run: ./mcp-publisher publish
