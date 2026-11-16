@@ -46,6 +46,7 @@ import {
   type HoldContext,
 } from './host-approval';
 import { localInteractiveSession } from './host-session';
+import { hookUpdateNotice } from './update-notice';
 import { looksLikeApprovalReply } from './approval-reply';
 import { hasOpenChatOnlyHold } from './host-approval-state';
 
@@ -301,6 +302,8 @@ function validClientCommandTarget(value: string): boolean {
 function strictClientUpdateCommand(value: unknown): string | undefined {
   const command = boundedClientCommand(value);
   if (!command) return undefined;
+  // F4: the one update command every client text names (the installer update), accepted only in this exact form.
+  if (command === 'npx @getmarrow/install@latest update') return command;
   const match = /^(?:npx @getmarrow\/install@(\S+) --repair|npx @getmarrow\/mcp@(\S+) setup|npx -y --package=@getmarrow\/mcp@(\S+) marrow-mcp setup|npm install @getmarrow\/sdk@(\S+))$/.exec(command);
   const target = match?.[1] || match?.[2] || match?.[3] || match?.[4];
   return target && validClientCommandTarget(target) ? command : undefined;
@@ -613,8 +616,14 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
   if (closure) {
     lines.push(`- Outcome closure: ${asString(closure.state) || 'unknown'}${typeof closure.recent_coverage_24h === 'number' ? ` (${Math.round(closure.recent_coverage_24h * 100)}% recent)` : ''}`);
   }
-  const status = asRecord(runtime.status);
-  const update = asRecord(runtime.client_update) || asRecord(status?.client_update);
+  appendClientUpdate(lines, strictClientUpdate(runtime));
+}
+
+/** The strict reader of a server answer's client_update block (runtime or status): null when it gives no update priority. */
+export function strictClientUpdate(answer: unknown): { update: Record<string, unknown>; priority: 'version_unknown' | 'security_required' | 'recommended'; currentVersion?: string; latestVersion?: string } | null {
+  const runtime = asRecord(answer);
+  const status = asRecord(runtime?.status);
+  const update = asRecord(runtime?.client_update) || asRecord(status?.client_update);
   const rawNotification = update?.notification_state ?? update?.notification;
   const notification = rawNotification === 'unknown' || rawNotification === 'version_unknown' || rawNotification === 'recommended' || rawNotification === 'security_required' || rawNotification === 'none'
     ? rawNotification
@@ -650,6 +659,11 @@ function appendAgentRuntime(lines: string[], runtime: MarrowAgentRuntimeResult |
     : notification === 'recommended' && versionStatus === 'behind' && update?.update_available === true && coherentVersionStatus && versionComparison != null && versionComparison < 0
     ? 'recommended'
     : null;
+  return update && priority ? { update, priority, currentVersion, latestVersion } : null;
+}
+
+function appendClientUpdate(lines: string[], strict: ReturnType<typeof strictClientUpdate>): void {
+  const { update, priority, currentVersion, latestVersion } = strict || {};
   if (update && priority) {
     const current = currentVersion || 'unknown';
     const latest = latestVersion || 'unknown';
@@ -922,7 +936,9 @@ export async function runContextHookCommand(): Promise<void> {
       }).catch(() => {});
     }
     debug(`[marrow-context-hook] injected ${context.length} bytes of context`);
-    emitContext(context);
+    // Only a live answer's strict client_update block, at most once a day across the hooks (src/update-notice.ts).
+    const notice = live.value ? hookUpdateNotice(live.value) : null;
+    emitContext(notice ? `${context}\n${notice}` : context);
     process.exit(0);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

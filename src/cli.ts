@@ -68,7 +68,8 @@ import {
 import { localControlEvidence } from './control-state';
 import { hookSpooledLifecycleEvent, installPermissionRequestHook, installPostToolUseHook, runHookCommand, runPermissionRequestHookCommand } from './hook';
 import { deliverQueuedForReceipt, holdSessionForReceipt, proofFieldsForReceipt, type HoldContext } from './host-approval';
-import { installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
+import { delocalizeMarrowHookCommand, installGrokNativeHooks, localHookRepairStatus } from './hook-contract';
+import { updateNoticeLine } from './update-notice';
 import { compactRuntimeContext, installUserPromptSubmitHook, runContextHookCommand } from './hook-context';
 import { installSessionEndHook, runSessionHookCommand, sessionEndAutoCommitOpen } from './hook-session';
 import { controlFailureKind, installPreActionHook, runPreActionHookCommand, runSeatbeltStatusCommand } from './hook-pre-action';
@@ -157,7 +158,13 @@ function reportLifecycleSpool(input: { apiKey: string; baseUrl?: string; agentId
   try {
     quarantineLegacyNamespaces({ apiKey: input.apiKey, agentId: input.agentId });
   } catch { /* owner-only quarantine is best effort */ }
-  const spool = lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
+  let spool: ReturnType<typeof lifecycleSpoolStatus>;
+  try {
+    spool = lifecycleSpoolStatus({ apiKey: input.apiKey, agentId: input.agentId });
+  } catch {
+    // F6: an unsafe spool path never stops the reply (closed word only); the spool itself still refuses to write.
+    return { state: 'unavailable' as const, pending: 0, failed: 0, reason: 'spool_path_unsafe' as const, exact_fix: null, other_namespaces: undefined };
+  }
   if (input.baseUrl && shouldNudgeLifecycleSpool(spool)) {
     void nudgeLifecycleSpool({ apiKey: input.apiKey, baseUrl: input.baseUrl, agentId: input.agentId });
   }
@@ -367,6 +374,56 @@ ${ENFORCEMENT_SENTENCE}
 Hooks run inside the agent host and are not an external execution boundary: an agent or person who edits the host settings or runs outside the host is not held.
 `;
 
+// F1: the nearest ancestor (stopping before home and the filesystem root) with .claude/settings.json when the current
+// folder has no .claude entry; a symlinked or unreadable ancestor .claude counts as present.
+function projectFolderAbove(cwd: string): string | null {
+  if (process.platform === 'win32') return null;
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const start = path.resolve(cwd);
+  const home = path.resolve((require('os') as typeof import('os')).homedir());
+  const entry = (dir: string): 'absent' | 'present' | 'other' => {
+    try {
+      const stat = fs.lstatSync(path.join(dir, '.claude'));
+      if (stat.isSymbolicLink()) return 'present';
+      fs.statSync(path.join(dir, '.claude', 'settings.json'));
+      return 'present';
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return code === 'ENOENT' || code === 'ENOTDIR' ? (fs.existsSync(path.join(dir, '.claude')) ? 'other' : 'absent') : 'present';
+    }
+  };
+  if (entry(start) !== 'absent' || start === home) return null;
+  for (let dir = path.dirname(start); dir !== home && dir !== path.dirname(dir); dir = path.dirname(dir)) {
+    if (entry(dir) === 'present') return dir;
+  }
+  return null;
+}
+
+// ONE VERSION: the @getmarrow/mcp version each Marrow hook command of a settings file names, by event (npx pin or the
+// installer's local-runtime form). Read only; a missing, symlinked, oversized or malformed file gives none.
+function marrowHookVersions(settingsPath: string): Map<string, Set<string>> {
+  const fs = require('fs') as typeof import('fs');
+  const found = new Map<string, Set<string>>();
+  try {
+    const stat = fs.lstatSync(settingsPath);
+    if (!stat.isFile() || stat.size > 1_048_576) return found;
+    const hooks = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))?.hooks;
+    if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return found;
+    for (const [event, groups] of Object.entries(hooks)) {
+      if (!/^[A-Za-z]{1,64}$/.test(event) || !Array.isArray(groups)) continue;
+      for (const group of groups) {
+        for (const hook of Array.isArray(group?.hooks) ? group.hooks : []) {
+          const command = typeof hook?.command === 'string' ? delocalizeMarrowHookCommand(hook.command.trim()) : null;
+          const match = /^npx -y --package=@getmarrow\/mcp@(\d{1,9}\.\d{1,9}\.\d{1,9}) marrow-mcp (?:[a-z]{1,16}-)?(?:context-hook|pre-action-hook|hook|session-hook|permission-request-hook)$/.exec(typeof command === 'string' ? command : '');
+          if (match) found.set(event, (found.get(event) || new Set<string>()).add(match[1]));
+        }
+      }
+    }
+  } catch { /* parse errors and unreadable files are ignored */ }
+  return found;
+}
+
 // ─── Setup command: inject Marrow instructions into CLAUDE.md ───
 function runSetup(): void {
   const fs = require('fs') as typeof import('fs');
@@ -376,6 +433,12 @@ function runSetup(): void {
   // Same trusted resolution the installed hooks use: project .env files and non-private owner files cannot supply the key.
   if (!resolveMarrowEnv({ trustedOnly: true }).apiKey) {
     process.stderr.write(`Marrow needs your API key before setup can write hooks, so nothing was written.\nCreate a key at ${GET_A_KEY_URL}, make it available as MARROW_API_KEY (environment or an owner-only ~/.marrow/env), then run:\n  ${ACTIVATE_COMMAND}\nFallback: MARROW_API_KEY=<your_key> ${ACTIVATE_COMMAND}  (a key typed on a command line stays in shell history)\n`);
+    process.exit(2);
+  }
+  // F1: below a project folder setup writes nothing unless --here.
+  const projectAbove = process.argv.includes('--here') ? null : projectFolderAbove(process.cwd());
+  if (projectAbove) {
+    process.stderr.write(`Run setup in ${/^[\x20-\x7e]{1,512}$/.test(projectAbove) ? projectAbove : 'the parent project folder'}, the project folder that has .claude/, or pass --here to set up this folder.\n`);
     process.exit(2);
   }
 
@@ -393,7 +456,7 @@ Use Marrow according to the capability evidence returned by the MCP server:
 4. **Unfinished work:** Leave pending outcomes visible. Do not invent success to clear a closure item.
 5. **To explain an intervention:** Use \`marrow_decision_trace\`, then relay its \`intervention_receipt\` in one factual sentence when Marrow blocked, warned, or required review. Stay quiet for routine low-risk work.
 6. **To query authorized history:** Use \`marrow_fleet_lessons\` in the default primary profile; core/full provide \`marrow_ask\` for authorized history.
-7. **When an update is reported:** Tell the operator and use the returned exact update and verification commands only when local change policy permits. Never silently change packages or configuration.
+7. **When an update is reported:** Tell the operator; the update command is \`npx @getmarrow/install@latest update\` and the check after it is \`npx -y @getmarrow/install@latest doctor --self-test\`, run only when local change policy permits. Never silently change packages or configuration.
 
 Do not skip the gate or outcome. Marrow's value comes from controlling the action before execution and preserving evidence afterward.
 
@@ -500,6 +563,18 @@ ${MARROW_BLOCK_END}`;
   process.stdout.write('Set MARROW_AUTO_HOOK=false to disable passive hooks.\n');
   process.stdout.write('Set MARROW_PASSIVE_BRIEF=false to disable automatic decision briefs, or MARROW_PASSIVE_BRIEF=always to brief every prompt.\n');
   process.stdout.write('Set MARROW_HOOK_DEBUG=true for write-side hook diagnostics, or MARROW_CONTEXT_HOOK_DEBUG=true for prompt-context diagnostics.\n');
+  // ONE VERSION: report (never edit) older Marrow hooks in the user-level file; the user file is only read.
+  for (const [event, versions] of marrowHookVersions(path.join((require('os') as typeof import('os')).homedir(), '.claude', 'settings.json'))) {
+    for (const version of versions) {
+      if (version !== MCP_ADAPTER_VERSION) process.stdout.write(`An older Marrow hook (${version}) is still registered in ~/.claude/settings.json for ${event}; run npx @getmarrow/install@latest update to remove it.\n`);
+    }
+  }
+  if ([...marrowHookVersions(hookInstall.settingsPath).values()].every((versions) => [...versions].every((version) => version === MCP_ADAPTER_VERSION))) {
+    process.stdout.write('Older cached package copies are not started by any hook or config this setup wrote.\n');
+  }
+  if ([hookInstall, contextHookInstall, preActionHookInstall, permissionHookInstall, sessionHookInstall, grokHookInstall].some((step) => step.installed) || matcherRepair.needs_repair) {
+    process.stdout.write('Restart the host (Claude Code, Cursor, Codex, Grok) to finish: running sessions keep the old version until then.\n');
+  }
   process.stdout.write('Setup completed. MCP tools remain on demand; configured hook activity is client-self-reported and does not certify passive coverage or enforcement.\n');
   process.exit(0);
 }
@@ -916,7 +991,8 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
   }
   result.control_path = controlPathStats(toolName || 'marrow_control');
   result.lifecycle_spool = {
-    state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
+    state: spool.failed > 0 || spool.pending > 0 || spool.state === 'unavailable' ? spool.state : 'clear',
+    ...('reason' in spool ? { reason: spool.reason } : {}),
     pending: spool.pending,
     failed: spool.failed,
     exact_fix: spool.failed > 0 || spool.pending > 0 ? spool.exact_fix : null,
@@ -978,7 +1054,8 @@ function clientOperationalPayload(toolName: string, value: unknown): Record<stri
     control_path: controlPathStats(toolName),
     local_control: localControlEvidence(Boolean(API_KEY)),
     lifecycle_spool: {
-      state: spool.failed > 0 || spool.pending > 0 ? spool.state : 'clear',
+      state: spool.failed > 0 || spool.pending > 0 || spool.state === 'unavailable' ? spool.state : 'clear',
+      ...('reason' in spool ? { reason: spool.reason } : {}),
       pending: spool.pending,
       failed: spool.failed,
       exact_fix: spool.failed > 0 || spool.pending > 0 ? spool.exact_fix : null,
@@ -2246,9 +2323,11 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                 .catch(() => null),
             ]);
             const contextProjection = recordValue(context)?.primary_tool_availability;
+            const updateNotice = updateNoticeLine(analyticsStatus, context);
             return {
               ...analyticsStatus,
               ...(contextProjection === undefined ? {} : { primary_tool_availability: contextProjection }),
+              ...(updateNotice ? { update_notice: updateNotice } : {}),
             };
           },
           { cacheAware: false, toolName: 'marrow_agent_status' },
