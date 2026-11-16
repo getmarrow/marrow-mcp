@@ -202,6 +202,7 @@ function hookToolCommand(event) {
         return '';
     }
 }
+const READ_OR_LISTING = (verdict) => verdict === 'read' || verdict === 'listing';
 /**
  * Splits a shell command into simple commands at |, ||, &&, ;, & and newlines,
  * honoring quotes. Returns null for syntax whose effect cannot be judged from
@@ -682,6 +683,41 @@ function readOnlyProgramInvocation(program, args) {
         return !args.some((arg) => /^-[A-Za-z]*C/.test(arg) || longOptionPrefix(arg, ['compile']));
     return true;
 }
+/** FX-3: credential stores under HOME (~/.marrow too, not ~/.marrow/bin), folders above one, and variable names that point at one. */
+const LISTING_PROGRAMS = new Set(['ls', 'find', 'stat', 'du', 'file', 'tree', 'exa', 'eza', 'dir']);
+const HOME_STORES = ['.marrow/credentials', '.ssh', '.aws', '.gnupg', '.config/gh', '.docker', '.kube', '.azure', '.password-store', '.secret', '.secrets'];
+const STORE_ANCESTORS = new Set(['/', '/home', '/root', '/etc', '/etc/ssl']);
+const STORE_TEXT = /\.(?:marrow|ssh|aws|gnupg|config\/gh|docker|kube|azure|password-store|secrets?)(?![a-z0-9_-])|\/etc\/ssl\/private/i;
+const STORE_VARIABLE = /cred|key|token|secret|pass|auth|ssh|aws|gpg|kube|docker|azure|marrow/i;
+/** FX-3: a listing of a credential store, a file in one, or (recursively) a folder above one; operands read as isSecretPath reads them. */
+const failsTrue = (check) => { try {
+    return check();
+}
+catch {
+    return true;
+} };
+function credentialStoreListing(program, args, expansions, base, text) {
+    const home = homeDirectory().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const recursive = program === 'find' || program === 'tree'
+        || (program === 'du' && !args.some((arg) => /^-[A-Za-z]*s|^--summ/.test(arg)))
+        || (program !== 'du' && args.some((arg) => /^-[A-Za-z]*R|^--recurs/.test(arg) || (program !== 'ls' && /^-[A-Za-z]*T|^--tree/.test(arg))));
+    const operands = args.flatMap((arg) => (!arg.startsWith('-') ? [arg] : /^--[^=]+=./.test(arg) ? [arg.slice(arg.indexOf('=') + 1)] : []));
+    if (recursive && !args.some((arg) => !arg.startsWith('-')))
+        operands.push('.');
+    const variables = expansions.filter((name) => name !== 'HOME');
+    if (variables.some((name) => isSecretVariableName(name) || STORE_VARIABLE.test(name)) || (variables.length > 0 && STORE_TEXT.test(text)))
+        return true;
+    return operands.some((operand) => globVariants(operand).some((candidate) => {
+        if (isSecretPath(candidate, base))
+            return true;
+        const path = normalizedToolPath(candidate, base).replace(/\/+$/, '').toLowerCase() || '/';
+        if (path === `${home}/.marrow/bin` || path.startsWith(`${home}/.marrow/bin/`))
+            return false;
+        return path === `${home}/.marrow` || path === '/etc/ssl/private' || path.startsWith('/etc/ssl/private/')
+            || HOME_STORES.some((store) => path === `${home}/${store}` || path.startsWith(`${home}/${store}/`))
+            || (recursive && (path === home || STORE_ANCESTORS.has(path)));
+    }));
+}
 /**
  * Classifies one simple command: a read-only inspection, a secret access, or anything else.
  * In the PowerShell dialect no command is a read-only inspection and no program is exempt from
@@ -689,7 +725,7 @@ function readOnlyProgramInvocation(program, args) {
  * PowerShell, and `ls env:` and `echo $env:X` print the environment): every word is judged as a
  * file a command may read.
  */
-function shellSegmentVerdict(segment, cwd = process.cwd(), dialect) {
+function shellSegmentVerdict(segment, cwd = process.cwd(), dialect, text = '') {
     const powershell = dialect === 'powershell';
     // After a cd Marrow cannot follow, relative paths are unknown, so nothing that follows is read-only.
     const base = cwd ?? process.cwd();
@@ -727,6 +763,9 @@ function shellSegmentVerdict(segment, cwd = process.cwd(), dialect) {
         // A PowerShell parameter binds its value in the same word (-Path:.env).
         if (powershell && segment.words.some(protectedTarget))
             return 'secret';
+        // FX-3: a credential-store listing goes to the server ('listing', never a local 'secret' hold); a throw here is 'listing' too.
+        if (LISTING_PROGRAMS.has(program) && failsTrue(() => credentialStoreListing(program, args, segment.expansions, base, text)))
+            return writes.length || cwd === null ? 'other' : 'listing';
         return writes.length || cwd === null || powershell ? 'other' : 'read';
     }
     return segment.words.some(protectedTarget) ? 'secret' : 'other';
@@ -749,7 +788,7 @@ function shellAnalysis(command, dialect, parse = dialect) {
         return null;
     let cwd = process.cwd();
     const verdicts = segments.map((segment) => {
-        const verdict = shellSegmentVerdict(segment, cwd, dialect);
+        const verdict = shellSegmentVerdict(segment, cwd, dialect, command);
         cwd = nextWorkingDirectory(segment, cwd);
         return verdict;
     });
@@ -764,7 +803,7 @@ function shellAnalysis(command, dialect, parse = dialect) {
 function policyReadsAllWords(command) {
     try {
         const analysis = shellAnalysis(command);
-        if (!analysis?.segments.length || !analysis.verdicts.every((verdict) => verdict === 'read'))
+        if (!analysis?.segments.length || !analysis.verdicts.every(READ_OR_LISTING))
             return false;
         return analysis.segments.every((segment) => segment.expansions.length === 0 && ![...segment.words, ...segment.inputs, ...segment.outputs].some((word) => /[*?[{]/.test(word)));
     }
@@ -874,7 +913,7 @@ function toolClassificationText(event) {
         const analysis = shellAnalysis(shellCommandText(event), event[exports.SHELL_DIALECT]);
         if (analysis) {
             return [tool, ...analysis.segments
-                    .filter((_, index) => analysis.verdicts[index] !== 'read')
+                    .filter((_, index) => !READ_OR_LISTING(analysis.verdicts[index]))
                     .map((segment) => [...segment.words, ...segment.outputs].join(' '))].join(' ; ');
         }
     }

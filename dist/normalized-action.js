@@ -542,12 +542,75 @@ function basename(word) {
     return word.replace(/^.*\//, '');
 }
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
+/** FX-1: a bare commit id and the credential words that keep any id withheld. FX-2: main's env option list. */
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const ID_CREDENTIAL_WORD = /key|token|secret|passw|pwd|auth|bearer|login|cred|sign|cookie|session|hmac|private/;
+const [ENV_SHORT_VALUE, ENV_SHORT_FLAG] = ['uCPa', 'i0v'];
+const [ENV_LONG_VALUE, ENV_LONG_FLAG] = [new Set(['unset', 'chdir', 'argv0']), new Set(['ignore-environment', 'null', 'debug'])];
+const ENV_LONG_OPTIONAL = new Set(['block-signal', 'default-signal', 'ignore-signal']);
+/** FX-2: the index after env's own words from `at`, or null when the form cannot be read (unknown option, missing value, `$`, `-S`). */
+function envEnd(words, at) {
+    while (at < words.length) {
+        const word = words[at];
+        if (word === '--')
+            return at + 1;
+        if (ASSIGNMENT.test(word) || word === '-') {
+            at += 1;
+            continue;
+        }
+        if (!word.startsWith('-'))
+            return at;
+        if (/[$`]/.test(word))
+            return null;
+        let next = at + 1;
+        if (word.startsWith('--')) {
+            const eq = word.indexOf('=');
+            const name = word.slice(2, eq < 0 ? word.length : eq);
+            if (ENV_LONG_OPTIONAL.has(name) || (eq < 0 && ENV_LONG_FLAG.has(name))) {
+                at = next;
+                continue;
+            }
+            if (!ENV_LONG_VALUE.has(name))
+                return null;
+            if (eq < 0)
+                next += 1;
+        }
+        else {
+            let k = 1;
+            while (k < word.length && ENV_SHORT_FLAG.includes(word[k]))
+                k += 1;
+            if (k < word.length && !ENV_SHORT_VALUE.includes(word[k]))
+                return null;
+            if (k + 1 === word.length)
+                next += 1;
+        }
+        if (next > words.length || (next === at + 2 && /[$`]/.test(words[at + 1])))
+            return null;
+        at = next;
+    }
+    return at;
+}
+/** FX-2: env's options read from main's table; any program other than 3.9.114's is `misread` (cut, whatever rule 3.9.114 applied). */
 function parseSegment(words) {
+    const old = parseWords(words, false);
+    if (!words.some((word) => basename(word) === 'env'))
+        return old;
+    const read = parseWords(words, true);
+    return read === null ? { ...old, unread: true } : { ...read, misread: read.program !== old.program };
+}
+function parseWords(words, envTable) {
     let index = 0;
     while (index < words.length && ASSIGNMENT.test(words[index]))
         index += 1;
     while (index < words.length && WRAPPERS.has(basename(words[index]))) {
         index += 1;
+        const end = envTable && basename(words[index - 1]) === 'env' ? envEnd(words, index) : undefined;
+        if (end === null)
+            return null;
+        if (end !== undefined) {
+            index = end;
+            continue;
+        }
         while (index < words.length && (words[index].startsWith('-') || ASSIGNMENT.test(words[index]) || /^\d+[smhd]?$/.test(words[index])))
             index += 1;
     }
@@ -620,6 +683,14 @@ function redactSegment(words, ctx) {
     const removed = new Set();
     const parsed = parseSegment(out);
     const { index, program, targets } = parsed;
+    if (parsed.unread)
+        state.envUnread = true;
+    if (parsed.misread && !state.exact)
+        state.cutVisible = true;
+    // FX-1: a bare commit id in argument position (not after an option, not a redirect) stays in pass 1; the body stays cut (cutVisible).
+    const plainSet = new Set(parsed.plain);
+    const keptId = (i) => state.idOk === true && !state.exact && program !== null && i > index && plainSet.has(i)
+        && COMMIT_ID.test(out[i]) && !words[i - 1].startsWith('-');
     // Environment assignments before the program (and a wrapper's own, as in `env X=1 cmd`).
     for (let i = 0; i < index; i += 1) {
         const match = ASSIGNMENT.exec(out[i]);
@@ -644,6 +715,12 @@ function redactSegment(words, ctx) {
         out.forEach((word, i) => {
             if (removed.has(i))
                 return;
+            if (!handled.has(i) && keptId(i)) {
+                spend(state, word.length);
+                state.cutVisible = true;
+                result.push(word);
+                return;
+            }
             result.push(handled.has(i) ? word : redactText(word, state));
         });
         return { words: result, program };
@@ -1836,6 +1913,7 @@ function normalizedHookAction(event, options = {}) {
     let preimage = null;
     let hashField = 'input_sha256';
     let plain = false;
+    let cutPlain = false;
     let placeholder = false;
     try {
         // A caller that knows the call is not a raw Claude Code Bash call (claudeCodeBash false) gets the 3.9.111 action, and
@@ -1848,7 +1926,7 @@ function normalizedHookAction(event, options = {}) {
         // that names the call a raw Claude Code Bash call (the hook's runtime call), the plain hash alone at every other call site.
         const hostText = commandText === 'off' ? 'off' : options.claudeCodeBash === true ? 'send'
             : /^claude-[a-z-]*hook$/.test(entrypoint) ? 'hash' : 'off';
-        ({ action, preimage, hashField, plain } = normalizedOfKind(event, kind, hostToolName, state, commandText, hostText));
+        ({ action, preimage, hashField, plain, cutPlain } = normalizedOfKind(event, kind, hostToolName, state, commandText, hostText));
     }
     catch (error) {
         if (!(error instanceof NormalizationLimit))
@@ -1865,6 +1943,12 @@ function normalizedHookAction(event, options = {}) {
     // EVERY text hash is keyed, bound or not: the text of any tool field may hold a value the redactor did not see
     // (a prompt, a message, a plan, a query, a filter, an id, an unknown tool's `command`), and a plain hash of it could be
     // guessed offline. The key is per install and stable, so the same call on the same install still binds and resumes.
+    if (cutPlain === true) {
+        const tool_input = { ...action.tool_input, exact_hmac: exactHmac(salt, kind, rawToolName, material) };
+        if (SENT_HOST_TEXT.has(action.tool_input))
+            SENT_HOST_TEXT.add(tool_input);
+        return { ...action, tool_input };
+    }
     const keyed = preimage === null ? {} : { [hashField]: keyTextHash(salt, kind, rawToolName, preimage) };
     if (!cut)
         return { ...action, tool_input: { ...action.tool_input, ...keyed } };
@@ -1899,12 +1983,12 @@ function joinedHexWord(word) {
     const pieces = word.split(word.includes('://') ? /[-_.:=@,;'"+/?&#]/ : /[-_.:=@,;'"+]/);
     return pieces.length > 1 && pieces.some((piece) => /^[0-9a-f]{13,}$/i.test(piece) && piece.length !== 40 && piece.length !== 64);
 }
-function eligibleHostText(event, state) {
+function eligibleHostText(event, state, visible = false) {
     try {
         const input = event.tool_input && typeof event.tool_input === 'object' && !Array.isArray(event.tool_input) ? event.tool_input : null;
         if (event.tool_name !== 'Bash' || input === null || typeof input.command !== 'string' || 'cmd' in input)
             return null;
-        if (event.input_truncated !== undefined || state.truncated)
+        if (event.input_truncated !== undefined || (state.truncated && !visible))
             return null; // a secret marker or withheld word
         const host = input.command;
         if (!host || host.length > 8192 || !/^[\x20-\x7e\n\t]+$/.test(host) || (0, redact_1.redactSensitiveText)(host) !== host)
@@ -1936,9 +2020,13 @@ function normalizedOfKind(event, kind, hostToolName, state, commandText, hostTex
         if (untrimmedShellText(event, raw) !== null)
             state.truncated = true; // exact: raw (the host's untrimmed text)
         state.freeText = !(0, hook_tool_policy_1.isShellTextTool)(event);
+        // FX-1: any credential word anywhere in the text (letters only, any case, quotes and other characters removed) keeps every id withheld.
+        state.idOk = raw.length <= MAX_COMMAND_CHARS && !ID_CREDENTIAL_WORD.test(raw.toLowerCase().replace(/[^a-z\s]/g, ''));
         const { text, programs } = normalizeInner(raw, state, 0);
         // A secret was replaced: the action is never bound or reused (it asks each time).
-        if (hasSecretMarker(text))
+        const marked = hasSecretMarker(text);
+        const visible = state.cutVisible === true && !state.truncated && !state.envUnread && !marked; // FX-1/FX-2: cut for that alone
+        if (marked || state.envUnread || state.cutVisible)
             state.truncated = true; // exact: n/a (pass 1 only; the exact pass decides each value)
         // The command text itself only for a deploy the service can judge word for word (see deployCommandText).
         // Judged on the host's exact text (a trimmed non-ASCII space must not slip through).
@@ -1962,12 +2050,12 @@ function normalizedOfKind(event, kind, hostToolName, state, commandText, hostTex
         // 3A: a deploy, push or pull request whose host text is its grammar text word for word keeps the 3.9.113 body; any other eligible text
         // gets the plain hash of the host text everywhere, and the text itself on the runtime call only.
         const kept = exact === text && (deployText === text || (sourceControlText !== null && sourceControlText === text));
-        const host = hostText === 'off' || plainShellTool || kept ? null : eligibleHostText(event, state);
+        const host = hostText === 'off' || plainShellTool || kept ? null : eligibleHostText(event, state, visible);
         if (host !== null) {
             const tool_input = { command_sha256: sha256(`${HASH_VERSION}\nshell\n${host}`), ...(hostText === 'send' ? { command: host } : {}) };
             if (hostText === 'send')
                 SENT_HOST_TEXT.add(tool_input);
-            return { action: { tool_kind: 'shell', tool_name: hostToolName, programs, tool_input }, hashField: 'command_sha256', preimage, plain: true };
+            return { action: { tool_kind: 'shell', tool_name: hostToolName, programs, tool_input, ...(visible ? { truncated: true } : {}) }, hashField: 'command_sha256', preimage, plain: true, cutPlain: visible };
         }
         return {
             action: withExactness({
