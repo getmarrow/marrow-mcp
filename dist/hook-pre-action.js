@@ -59,6 +59,7 @@ const host_approval_state_1 = require("./host-approval-state");
 const host_session_1 = require("./host-session");
 const own_server_identity_1 = require("./own-server-identity");
 const normalized_action_1 = require("./normalized-action");
+const hook_label_shapes_1 = require("./hook-label-shapes");
 const secret_paths_1 = require("./secret-paths");
 const session_loop_guard_1 = require("./session-loop-guard");
 const script_attach_1 = require("./script-attach");
@@ -1071,7 +1072,11 @@ function classifyAsNamed(event, options) {
         || protectedShellCommand
         || ((0, hook_tool_policy_1.isMcpHookTool)(event.tool_name) && (options.ownUnproven === true || !(0, hook_tool_policy_1.isOfficialMarrowMcpTool)(event.tool_name)))
         || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !(0, hook_tool_policy_1.isOfficialMarrowMcpEvent)(event)));
-    const full = { tool, type, surfaces, readOnly, protected: protectedAction };
+    // CLIENT-LABELS: on the keyed pre-action path only, a call that is wholly one closed shape (hook-label-shapes.ts) takes the type and
+    // surfaces of its command words; protected, readOnly, risk and the merge below are unchanged. Any doubt keeps these labels.
+    const shape = options.keyed === true && options.postTool !== true && !readOnly && !secretAccess && selfProtected === null && !headRoute
+        && !controlRoute && !selfApprove && !infrastructureDeployment ? (0, hook_label_shapes_1.commandPositionLabels)(event, options.cwd) : null;
+    const full = { tool, type: shape?.type ?? type, surfaces: shape?.surfaces ?? surfaces, readOnly, protected: protectedAction };
     // S4 C7: a lowered route stands only when the call's own class is plain process on workspace/github with no other hold.
     if (headRoute && !controlRoute && !(type === 'process' && !protectedAction && selfProtected === null && surfaces.every((s) => s === 'github')))
         controlRoute = true;

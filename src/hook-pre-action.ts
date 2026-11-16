@@ -46,6 +46,7 @@ import type { HoldRecord } from './host-approval-state';
 import { hostApprovalPromptOff, localInteractiveSession } from './host-session';
 import { isOfficialMarrowMcpEventOnHost } from './own-server-identity';
 import { normalizedHookAction, withoutSentText } from './normalized-action';
+import { commandPositionLabels } from './hook-label-shapes';
 import { APPROVAL_STATE_REASON } from './secret-paths';
 import { consultSessionLoopGuard, type LoopGuardOperation } from './session-loop-guard';
 import { runtimeWithScripts, withScriptsSha256, type ScriptAttachments } from './script-attach';
@@ -1108,7 +1109,11 @@ function classifyAsNamed(event: PreToolUseEvent, options: ClassifyOptions): Clas
     || (isMcpHookTool(event.tool_name) && (options.ownUnproven === true || !isOfficialMarrowMcpTool(event.tool_name)))
     || (['use_mcp_tool', 'use_tool'].includes(normalizedTool) && !isOfficialMarrowMcpEvent(event))
   );
-  const full: ClassificationParts = { tool, type, surfaces, readOnly, protected: protectedAction };
+  // CLIENT-LABELS: on the keyed pre-action path only, a call that is wholly one closed shape (hook-label-shapes.ts) takes the type and
+  // surfaces of its command words; protected, readOnly, risk and the merge below are unchanged. Any doubt keeps these labels.
+  const shape = options.keyed === true && options.postTool !== true && !readOnly && !secretAccess && selfProtected === null && !headRoute
+    && !controlRoute && !selfApprove && !infrastructureDeployment ? commandPositionLabels(event, options.cwd) : null;
+  const full: ClassificationParts = { tool, type: shape?.type ?? type, surfaces: shape?.surfaces ?? surfaces, readOnly, protected: protectedAction };
   // S4 C7: a lowered route stands only when the call's own class is plain process on workspace/github with no other hold.
   if (headRoute && !controlRoute && !(type === 'process' && !protectedAction && selfProtected === null && surfaces.every((s) => s === 'github'))) controlRoute = true;
   const held = [...new Set([controlRoute ? 'marrow-control' : null, selfProtected])].filter((surface): surface is string => surface !== null);
