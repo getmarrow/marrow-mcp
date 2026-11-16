@@ -10,7 +10,6 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const https = require('node:https');
-const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { execFileSync, spawn } = require('node:child_process');
@@ -282,8 +281,23 @@ try { execFileSync('openssl', ['version'], { stdio: 'ignore' }); } catch { opens
 const PASSWD = path.join(__dirname, 'support', 'passwd-home-fake.cjs');
 const PRELOAD = path.join(__dirname, 'support', 'seatbelt-hook-preload.cjs');
 
+// FX-HOME: every hook fixture lives inside the repo checkout, never in the machine's temp folder, so the
+// home-delete rows answer the same on every machine. FX-CLEAN: removed in `finally` and again on process exit.
+const WORK = path.join(ROOT, '.test-work');
+const fixtures = new Set();
+function dropFixture(dir) {
+  fs.rmSync(dir, { recursive: true, force: true });
+  fixtures.delete(dir);
+  try { fs.rmdirSync(WORK); } catch { /* another fixture still in use, or already gone */ }
+}
+process.on('exit', () => {
+  for (const dir of [...fixtures]) { try { dropFixture(dir); } catch { /* best-effort cleanup */ } }
+});
+
 async function hookRun(commands, mode) {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'marrow-twins-')));
+  fs.mkdirSync(WORK, { recursive: true, mode: 0o700 });
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(WORK, 'marrow-twins-')));
+  fixtures.add(dir);
   const home = path.join(dir, 'home');
   const proj = path.join(home, 'proj');
   fs.mkdirSync(proj, { recursive: true, mode: 0o700 });
@@ -309,12 +323,11 @@ async function hookRun(commands, mode) {
       });
       await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     }
-    const out = [];
-    for (const command of commands) {
+    const runOne = async (command, keyed) => {
       bodies = [];
       const env = { PATH: process.env.PATH, HOME: home, SBT_PASSWD_HOME: home, MARROW_HOOK_BACKGROUND_NUDGE: 'false', SBT_HOOK_DEADLINE: 'roomy' };
       if (process.env.NODE_OPTIONS) env.NODE_OPTIONS = process.env.NODE_OPTIONS;
-      if (mode !== 'keyless') {
+      if (keyed) {
         Object.assign(env, { MARROW_API_KEY: key, MARROW_BASE_URL: `https://127.0.0.1:${server.address().port}`, NODE_EXTRA_CA_CERTS: path.join(dir, 'c.pem'),
           MARROW_AGENT_ID: 'agent-one', MARROW_SESSION_ID: 'session-one', MARROW_AUTO_HOOK: 'true' });
       }
@@ -328,12 +341,21 @@ async function hookRun(commands, mode) {
       assert.equal(`${stdout}${stderr}${bodies.join('')}`.includes(key), false, 'the dummy key never appears in hook output or a body');
       let j = null;
       try { j = stdout.trim() ? JSON.parse(stdout) : null; } catch { j = null; }
-      out.push({ command, status, deny: status === 2 || j?.hookSpecificOutput?.permissionDecision === 'deny', bodies: bodies.map((b) => JSON.parse(b)) });
-    }
+      return { command, status, deny: status === 2 || j?.hookSpecificOutput?.permissionDecision === 'deny', bodies: bodies.map((b) => JSON.parse(b)) };
+    };
+    // FX-PRE: before any row, the plain home delete must stop in this fixture (keyless, so no Marrow decides it).
+    // The seatbelt reads a recursive delete under a temp root as scratch work; a fixture home there would turn
+    // the home-delete rows into passes. Fail loudly; never skip a row or turn one off.
+    const pre = await runOne('rm -rf ~/x', false);
+    assert.ok(pre.status === 0 && pre.deny === true,
+      'FX-PRE: the plain `rm -rf ~/x` passed in the fixture home: the fixture home reads as scratch (temp) on this machine, so the home-delete rows cannot be proven here');
+    bodies = [];
+    const out = [];
+    for (const command of commands) out.push(await runOne(command, mode !== 'keyless'));
     return out;
   } finally {
     if (server) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
-    fs.rmSync(dir, { recursive: true, force: true });
+    dropFixture(dir);
   }
 }
 
@@ -342,6 +364,13 @@ const HOOK_STOPS = [
   'hub push origin :main', 'hub push --force origin main', 'true && bash -c -- "npm publish"', 'script -qc -- "npm publish" /dev/null', 'bash -c +o "npm publish"',
 ];
 const HOOK_SAME = ['echo "bash -c -- git push origin main"', 'grep -n "hub push" notes.md', 'git commit -m "hub push origin main"', 'bash -c "echo hi"', 'hub status', 'bash -c -- "echo hi"'];
+
+test('the keyless hook rows are the round 1 rows: none removed, reworded or weakened', () => {
+  assert.equal(HOOK_STOPS.length, 9);
+  assert.equal(HOOK_SAME.length, 6);
+  assert.equal(crypto.createHash('sha256').update(JSON.stringify([HOOK_STOPS, HOOK_SAME])).digest('hex'),
+    'df8b171fda224bfbae6f5b7e7e9bdf79272224989dac05b584065b4d9fc59ca5');
+});
 
 test('keyless hook: the wrapped publish, delete and force push forms are stopped; data and plain forms pass', { timeout: 120_000 }, async () => {
   const out = await hookRun([...HOOK_STOPS, ...HOOK_SAME], 'keyless');
