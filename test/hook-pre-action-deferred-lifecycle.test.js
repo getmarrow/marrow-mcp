@@ -491,7 +491,9 @@ test('a spool write that fails once takes the inline path: the event is posted b
 test('R6-a: lifecycle 5 s and runtime 450 ms: the answer within runtime + 300 ms, and the event is still posted', { skip, timeout: 45_000 }, () => withRecorder(async (ctx) => {
   ctx.config.runtimeMs = 450;
   ctx.config.lifecycleMs = 5_000;
-  ctx.config.lifecycle = () => { ctx.config.lifecycleMs = 0; return { status: 200 }; };
+  // The recorder reads the delay after this answer: the first POST takes 5 s, a later one (the nudge retry) none.
+  let posts = 0;
+  ctx.config.lifecycle = () => { posts += 1; ctx.config.lifecycleMs = posts === 1 ? 5_000 : 0; return { status: 200 }; };
   const run = await runHook(ctx.env, preEvent(ctx.project, 'toolu_r6a'));
   const runtime = runtimePosts(ctx.requests);
   assert.equal(runtime.length, 1);
