@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.ENV_FILTER_SECRET_NAME = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_OFFLINE_TEXT = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
+exports.deferPreActionLifecycleToNudge = deferPreActionLifecycleToNudge;
+exports.preActionLifecycleSpooled = preActionLifecycleSpooled;
 exports.isMarrowControlTimeout = isMarrowControlTimeout;
 exports.isMarrowControlOutage = isMarrowControlOutage;
 exports.heldActionHookOutput = heldActionHookOutput;
@@ -124,6 +126,13 @@ exports.MAX_PRE_ACTION_INPUT_BYTES = 4 * 1024 * 1024;
 // and enforcement. Keep this above that budget so a slow store is not aborted
 // and misread as an outage.
 exports.PRE_ACTION_CONTROL_TIMEOUT_MS = 8_000;
+// Armed only by the CLI pre-action dispatch, which starts the background nudge after the answer. Any other
+// caller (an in-process host, a test) keeps the inline delivery: no event waits for a nudge nobody starts.
+let deferPreActionLifecycle = false;
+let preActionSpooled = false;
+function deferPreActionLifecycleToNudge() { deferPreActionLifecycle = true; }
+/** True when this hook left its pre-action event queued in the spool for the background nudge. */
+function preActionLifecycleSpooled() { return preActionSpooled; }
 const CONTROL_OUTAGE_CODES = new Set([
     'request_timeout',
     'dns_unavailable',
@@ -1846,7 +1855,15 @@ async function runPreActionHook(input, watch) {
         outcome_state: 'pending',
     });
     const preActionEventId = preActionEvent.event_id;
-    const lifecycle = (0, lifecycle_spool_1.recordLifecycleEvent)({ apiKey: resolved.apiKey, baseUrl, event: preActionEvent }).catch(() => null);
+    const inlineLifecycle = () => (0, lifecycle_spool_1.recordLifecycleEvent)({ apiKey: resolved.apiKey, baseUrl, event: preActionEvent }).catch(() => null);
+    // With the background nudge, the locked spool write ends here, before the answer, and nothing is posted inline;
+    // the nudge delivers the event after the answer. A spool write that fails takes the inline path, unless it already
+    // spent its wait on a held spool lock (one wait, as inline: the answer never waits twice). A custom spool path is
+    // not bound to this key and agent, so there the event keeps the inline delivery.
+    const spoolStarted = Date.now();
+    const lifecycle = deferPreActionLifecycle && (0, lifecycle_spool_1.backgroundNudgeEnabled)() && !process.env.MARROW_EVENT_SPOOL_PATH
+        ? (0, lifecycle_spool_1.recordLifecycleEvent)({ apiKey: resolved.apiKey, baseUrl, event: preActionEvent, deferDelivery: true }).then((receipt) => { preActionSpooled = receipt.queued; return receipt; }, () => (Date.now() - spoolStarted < 1_000 ? inlineLifecycle() : null))
+        : inlineLifecycle();
     // Normalizing has its own share of the host's budget: past it the action is
     // a truncated placeholder, so the hook still answers (deny first) in time.
     // A plain push or pull request the hook treats as a review on GitHub also sends its text, on the runtime call only, for
