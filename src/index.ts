@@ -1535,6 +1535,8 @@ export type AutoOwnerLinkState = {
   expiresAt?: string | null;
   /** The service sent nothing on purpose (owner_ping_off): quiet by default. */
   notSent?: boolean;
+  /** Requested once for a person at the session (person_present: true); the wait text names the channel. */
+  chat?: boolean;
   channel: string | null;
   attempts: number;
   /** A refusal another request cannot change (no channel, limit reached, receipt not held). */
@@ -1645,8 +1647,108 @@ export function approvalStatement(status: MarrowOwnerApprovalStatus, gateReceipt
   return `Marrow recorded an approval for gate receipt ${gateReceiptId}.`;
 }
 
+/** The owner's channels Marrow sends a one-tap link to; any other value in a reply is shown as "owner channel". */
+const CHAT_LINK_CHANNELS = new Set(['email', 'telegram', 'slack']);
+const CHAT_LINK_MEMORY_LIMIT = 256;
+/** A status read in this process that saw one of these ended the receipt; any other state leaves it live. */
+const CHAT_LINK_ENDED_STATES = new Set(['approved', 'declined', 'expired', 'used']);
+/** The only expiry text the memory reads: a full ISO instant. Anything else ("0", "2030", a bare date) is unreadable, so live. */
+const CHAT_LINK_ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+export type ChatOwnerLinkState = { sent: boolean; alreadySent: boolean; channel: string | null; expiresAt: string | null };
+
+/**
+ * Receipts this process already asked Marrow about (the key is the receipt id and nothing else): `chat` when the request
+ * was made for a person at the session, otherwise the older owner-locked request of marrow_auto, which it never gates.
+ * `endsAt` is the receipt's own expiry from Marrow's runtime reply (null when absent or unreadable: live); `decided` is
+ * set only by a status read. A live receipt is never dropped.
+ */
+const chatLinkAsked = new Map<string, { chat: boolean; state: Promise<ChatOwnerLinkState>; endsAt: number | null; decided: boolean }>();
+
+/** Room for one more receipt: a full memory frees one entry this process knows ended, never a live one. */
+function chatLinkRoom(): boolean {
+  if (chatLinkAsked.size < CHAT_LINK_MEMORY_LIMIT) return true;
+  const now = Date.now();
+  for (const [id, entry] of chatLinkAsked) {
+    if (entry.decided || (entry.endsAt !== null && entry.endsAt <= now)) { chatLinkAsked.delete(id); return true; }
+  }
+  return false;
+}
+
+/** Stores one receipt asked about; call only after chatLinkRoom() said yes, with no await in between. */
+function chatLinkRemember(gateReceiptId: string, chat: boolean, state: Promise<ChatOwnerLinkState>, receiptExpiresAt: unknown): void {
+  const endsAt = typeof receiptExpiresAt === 'string' && CHAT_LINK_ISO_INSTANT.test(receiptExpiresAt) ? Date.parse(receiptExpiresAt) : NaN;
+  chatLinkAsked.set(gateReceiptId, { chat, state, endsAt: Number.isFinite(endsAt) ? endsAt : null, decided: false });
+}
+
+/** A status read that saw this receipt decided ends it for the memory; a receipt never asked about is not added. */
+function chatLinkNoteStatus(status: MarrowOwnerApprovalStatus): void {
+  const entry = chatLinkAsked.get(status.gate_receipt_id);
+  if (entry && CHAT_LINK_ENDED_STATES.has(status.state)) entry.decided = true;
+}
+
+/**
+ * Whether a person is at the session for this held action: the operator's own
+ * request_owner_link: true (boolean only), or a client that asks its own user
+ * (the host advertised elicitation). A hold the owner already declined needs
+ * the explicit request. No text is read.
+ */
+export function chatLinkPersonPresent(
+  guidance: Pick<OrdinaryApprovalGuidance, 'hostApprovalRefusal' | 'linkReason' | 'ownerDeclinedAt'>,
+  presence: { hostAsksUser: boolean; requestOwnerLink: unknown },
+): boolean {
+  if (presence.requestOwnerLink === true) return true;
+  const declineStands = guidance.hostApprovalRefusal === 'owner_decline_stands'
+    || guidance.linkReason === 'owner_decline_stands'
+    || guidance.ownerDeclinedAt !== null;
+  return presence.hostAsksUser && !declineStands;
+}
+
+/**
+ * One approval-link request (person_present: true) per receipt per process, for as long as the receipt is live; a repeat or a
+ * concurrent call gets the first answer. A memory full of live receipts makes no request and answers null: the caller answers
+ * the hold as a hold with no link request.
+ */
+export async function requestChatOwnerLink(input: {
+  apiKey: string; baseUrl: string; gateReceiptId: string; receiptExpiresAt?: string | null;
+  sessionId?: string; agentId?: string; timeoutMs: number;
+}): Promise<{ state: ChatOwnerLinkState; repeat: boolean } | null> {
+  const earlier = chatLinkAsked.get(input.gateReceiptId);
+  if (earlier) {
+    const state = await earlier.state;
+    return { state: state.sent ? { ...state, alreadySent: true } : state, repeat: true };
+  }
+  if (!chatLinkRoom()) return null;
+  const asked = (async (): Promise<ChatOwnerLinkState> => {
+    const timeout = createTimeoutSignal(input.timeoutMs);
+    try {
+      const link = await marrowRequestApprovalLink(input.apiKey, input.baseUrl, input.gateReceiptId, null, input.sessionId, input.agentId, timeout.signal,
+        { personPresent: true, singleRequest: true });
+      return link.ok
+        ? { sent: true, alreadySent: link.alreadySent === true, channel: CHAT_LINK_CHANNELS.has(link.link.channel) ? link.link.channel : null, expiresAt: link.link.expires_at ?? null }
+        : { sent: false, alreadySent: false, channel: null, expiresAt: null };
+    } catch {
+      return { sent: false, alreadySent: false, channel: null, expiresAt: null };
+    } finally {
+      timeout.cancel();
+    }
+  })();
+  chatLinkRemember(input.gateReceiptId, true, asked, input.receiptExpiresAt);
+  return { state: await asked, repeat: false };
+}
+
+/** What the person at the session is told after the one request: the channel only, never a link, token or recipient. */
+export function chatLinkSentence(state: ChatOwnerLinkState): string {
+  if (state.sent) {
+    const where = state.channel ? `your ${state.channel}` : 'your owner channel';
+    return `Marrow ${state.alreadySent ? 'already sent' : 'sent'} a one-tap approval to ${where}. Nothing runs until you tap it.`;
+  }
+  return 'Nothing was sent to the account owner, so this hold waits for them: a person approves it at their next interactive session, where the host asks them. Do not run it; carry on with low-risk work.';
+}
+
 /** What happened to the owner's one-tap link in this operation. Never claims a send that did not happen. */
 function ownerLinkSentence(guidance: OrdinaryApprovalGuidance, link: AutoOwnerLinkState | undefined): string {
+  if (link?.chat) return chatLinkSentence({ sent: link.sent, alreadySent: link.alreadySent === true, channel: link.channel, expiresAt: link.expiresAt ?? null });
   if (!guidance.hostApprovalSupported) {
     return 'This Marrow service does not support chat or terminal approvals yet, so only the account owner can approve it.';
   }
@@ -2166,11 +2268,23 @@ async function marrowAutoWithTrace(
     const policy = ownerLinkPolicy(ordinaryGuidance, { unattended: !options?.elicitApproval });
     const linkWanted = elicited === null && (policy === 'now' || (policy === 'on_request' && params.request_owner_link === true));
     const linkBudget = responseBudgetMs - (Date.now() - startedAt) - AUTO_RESPONSE_DEADLINE_MARGIN_MS - 300;
-    if (ordinaryGuidance.approvalLinkPath && linkWanted && linkBudget > 300) {
+    if (ordinaryGuidance.approvalLinkPath && linkWanted && linkBudget > 300 && !chatLinkAsked.get(ordinaryGuidance.gateReceiptId)?.chat) {
       await requestAutoOwnerLink({
         apiKey, baseUrl, gateReceiptId: ordinaryGuidance.gateReceiptId, decisionId, sessionId, agentId,
         binding: operationBinding, timeoutMs: Math.min(2_000, linkBudget),
       });
+      // Once this request has its answer it is the receipt's one: a person at the session adds none.
+      const made = operationBinding.ownerLink;
+      if (made && (made.sent || made.final) && !chatLinkAsked.has(ordinaryGuidance.gateReceiptId) && chatLinkRoom()) chatLinkRemember(ordinaryGuidance.gateReceiptId, false, Promise.resolve({
+        sent: made.sent, alreadySent: made.alreadySent === true, channel: made.channel && CHAT_LINK_CHANNELS.has(made.channel) ? made.channel : null, expiresAt: made.expiresAt ?? null,
+      }), runtimeGate?.gate_receipt?.expires_at);
+    } else if (elicited === null && !linkWanted && linkBudget > 300
+      && chatLinkPersonPresent(ordinaryGuidance, { hostAsksUser: Boolean(options?.elicitApproval), requestOwnerLink: params.request_owner_link })) {
+      // A person is at the session and did not answer here: ask Marrow, once for this receipt, to send the owner its one-tap link.
+      const asked = await requestChatOwnerLink({
+        apiKey, baseUrl, gateReceiptId: ordinaryGuidance.gateReceiptId, receiptExpiresAt: runtimeGate?.gate_receipt?.expires_at, sessionId, agentId, timeoutMs: Math.min(2_000, linkBudget),
+      });
+      if (asked) operationBinding.ownerLink = { ...asked.state, notSent: !asked.state.sent, chat: true, attempts: 1, finalCode: null, final: !asked.state.sent };
     }
     // After a person answered here, read the status once with its own time (the answer took human time).
     const read = elicited
@@ -3041,6 +3155,7 @@ export async function marrowOwnerApprovalStatus(
       const json = await safeJsonResponse(response);
       const status = normalizeOwnerApprovalStatus(json.data, gateReceiptId);
       if (!status) throw invalidResponseError();
+      chatLinkNoteStatus(status);
       return { kind: 'found', status };
     },
   });
@@ -3087,6 +3202,8 @@ export async function marrowRequestApprovalLink(
      * link (client-attested); false when nobody asked. Omitted for other links.
      */
     personPresent?: boolean;
+    /** Send exactly one request: never the plain resend a service before round 6 gets. */
+    singleRequest?: boolean;
   } = {},
 ): Promise<MarrowApprovalLinkResult> {
   if (!GATE_RECEIPT_IDENTIFIER.test(gateReceiptId)) throw new TypeError('gate_receipt_id is not a valid gate receipt identifier.');
@@ -3094,7 +3211,7 @@ export async function marrowRequestApprovalLink(
   if (typeof options.personPresent === 'boolean') body.person_present = options.personPresent;
   const result = await requestApprovalLinkOnce(apiKey, baseUrl, gateReceiptId, body, sessionId, agentId, signal);
   // A service before round 6 refuses person_present as an unknown field: send the request without it.
-  if (!result.ok && 'person_present' in body && result.status === 400 && result.code === 'MARROW_APPROVAL_LINK_INVALID' && result.fields?.includes('person_present')) {
+  if (!result.ok && !options.singleRequest && 'person_present' in body && result.status === 400 && result.code === 'MARROW_APPROVAL_LINK_INVALID' && result.fields?.includes('person_present')) {
     const { person_present: _omitted, ...plain } = body;
     return requestApprovalLinkOnce(apiKey, baseUrl, gateReceiptId, plain, sessionId, agentId, signal);
   }
