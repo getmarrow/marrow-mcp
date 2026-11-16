@@ -11,6 +11,7 @@ exports.secretPatternRegex = secretPatternRegex;
 exports.isSecretPath = isSecretPath;
 exports.isProtectedWriteTarget = isProtectedWriteTarget;
 exports.isSecretVariableName = isSecretVariableName;
+exports.withMasterListing = withMasterListing;
 exports.shellSegmentVerdict = shellSegmentVerdict;
 exports.policyReadsAllWords = policyReadsAllWords;
 exports.toolTargetPaths = toolTargetPaths;
@@ -689,6 +690,21 @@ const HOME_STORES = ['.marrow/credentials', '.ssh', '.aws', '.gnupg', '.config/g
 const STORE_ANCESTORS = new Set(['/', '/home', '/root', '/etc', '/etc/ssl']);
 const STORE_TEXT = /\.(?:marrow|ssh|aws|gnupg|config\/gh|docker|kube|azure|password-store|secrets?)(?![a-z0-9_-])|\/etc\/ssl\/private/i;
 const STORE_VARIABLE = /cred|key|token|secret|pass|auth|ssh|aws|gpg|kube|docker|azure|marrow/i;
+/**
+ * X3 (round 3): with no key (`keyed === false`, set only by the pre-action hook's own key read) the FX-3 `listing` reading is not used,
+ * so the call gets the 3.9.114 reading and answer. Keyed calls and the PostToolUse path never run inside it.
+ */
+let masterListing = false;
+function withMasterListing(read) {
+    const before = masterListing;
+    masterListing = true;
+    try {
+        return read();
+    }
+    finally {
+        masterListing = before;
+    }
+}
 /** FX-3: a listing of a credential-store or Marrow-state folder, a file in one, or (recursively) a folder above one. */
 const failsTrue = (check) => { try {
     return check();
@@ -765,7 +781,7 @@ function shellSegmentVerdict(segment, cwd = process.cwd(), dialect, text = '') {
         if (powershell && segment.words.some(protectedTarget))
             return 'secret';
         // FX-3: a credential-store listing goes to the server ('listing', never a local 'secret' hold); a throw here is 'listing' too.
-        if (LISTING_PROGRAMS.has(program) && failsTrue(() => credentialStoreListing(program, args, segment.expansions, base, text)))
+        if (!masterListing && LISTING_PROGRAMS.has(program) && failsTrue(() => credentialStoreListing(program, args, segment.expansions, base, text)))
             return writes.length || cwd === null ? 'other' : 'listing';
         return writes.length || cwd === null || powershell ? 'other' : 'read';
     }

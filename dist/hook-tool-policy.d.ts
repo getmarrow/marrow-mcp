@@ -46,6 +46,7 @@ export declare function isProtectedWriteTarget(value: string, base?: string): bo
 /** True for an environment variable name that conventionally holds a secret. */
 export declare function isSecretVariableName(value: string): boolean;
 export type EnvironmentPrintCheck = (command: string) => boolean;
+export declare function withMasterListing<T>(read: () => T): T;
 /**
  * Classifies one simple command: a read-only inspection, a secret access, or anything else.
  * In the PowerShell dialect no command is a read-only inspection and no program is exempt from

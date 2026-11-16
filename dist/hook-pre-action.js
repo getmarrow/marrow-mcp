@@ -606,6 +606,12 @@ const CLASSIFICATION_SURFACES = ['production', 'github', 'npm', 'secrets', 'data
  * seatbelt is the one stricter difference). Only the pre-action hook decides (and holds) on what prints the environment.
  */
 function classifyTool(event, options = {}) {
+    // X3 (round 3): no key (keyed comes only from the hook's own key read): the 3.9.114 listing reading; keyed and PostToolUse unchanged.
+    if (options.keyed === false)
+        return (0, hook_tool_policy_1.withMasterListing)(() => classifyToolAs(event, options));
+    return classifyToolAs(event, options);
+}
+function classifyToolAs(event, options) {
     const cwd = absoluteFolder(options.cwd) ?? absoluteFolder(event.cwd);
     if (cwd !== options.cwd)
         options = { ...options, cwd };
