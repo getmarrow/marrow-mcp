@@ -23,7 +23,8 @@ export type ShellSegment = {
     inputs: string[];
     expansions: string[];
 };
-export type ShellSegmentVerdict = 'read' | 'secret' | 'other';
+/** `listing` (CLIENT-MISS3 FX-3): a credential-store listing: not read-only (the server answers), no local secret hold, labels as `read`. */
+export type ShellSegmentVerdict = 'read' | 'secret' | 'other' | 'listing';
 /**
  * Splits a shell command into simple commands at |, ||, &&, ;, & and newlines,
  * honoring quotes. Returns null for syntax whose effect cannot be judged from
@@ -52,7 +53,7 @@ export type EnvironmentPrintCheck = (command: string) => boolean;
  * PowerShell, and `ls env:` and `echo $env:X` print the environment): every word is judged as a
  * file a command may read.
  */
-export declare function shellSegmentVerdict(segment: ShellSegment, cwd?: string | null, dialect?: ShellDialect): ShellSegmentVerdict;
+export declare function shellSegmentVerdict(segment: ShellSegment, cwd?: string | null, dialect?: ShellDialect, text?: string): ShellSegmentVerdict;
 /**
  * True when the policy's own reading is the whole answer for a shell command: it parses, every simple command in it is a recognised read-only
  * program (a `cat`, `grep`, `ls`, `jq`, `ps`, never a wrapper such as `bash -c`, `eval`, `sudo`, `ssh`, `xargs` or a program that writes), and no word

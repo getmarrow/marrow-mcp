@@ -73,6 +73,131 @@ function programWords(words) {
             return words.slice(at);
     }
 }
+const WRAPPER_TABLE = {
+    env: { v: 'uCPaS', f: 'i0v', lv: ['unset', 'chdir', 'argv0', 'split-string'], lf: ['ignore-environment', 'null', 'debug', 'block-signal=', 'default-signal=', 'ignore-signal='] },
+    sudo: { v: 'ughpCDRTUrt', f: 'AbEeHiKklnPSsVv', lf: ['preserve-env='] }, doas: { v: 'uC', f: 'nsL' }, exec: { v: 'a', f: 'cl' },
+    timeout: { v: 'sk', f: 'v', lv: ['signal', 'kill-after'], lf: ['preserve-status', 'foreground', 'verbose'], operands: 1 },
+    nice: { v: 'n', f: '', lv: ['adjustment'], numeric: true }, ionice: { v: 'cnpPu', f: 't' }, time: { v: 'fo', f: 'pavq' },
+    stdbuf: { v: 'ioe', f: '', lv: ['input', 'output', 'error'] }, xargs: { v: 'IELnPsda', f: '0rtpx', attached: 'iel' },
+    nohup: { v: '', f: '' }, command: { v: '', f: 'pvV' }, builtin: { v: '', f: '' }, setsid: { v: '', f: 'cfw' }, unbuffer: { v: '', f: 'p' },
+    chrt: { v: 'TPD', f: 'abdfimoprRv', operands: 1 }, taskset: { v: '', f: 'pac', operands: 1 }, watch: { v: 'n', f: 'dgtxcbepwC', lv: ['interval'] },
+};
+const TABLE_WORD_LIMIT = 64; // wrapper words read before the form is unreadable (and at most 4 nested -S strings)
+/** env -S: the string split as env splits it (blanks, quotes, backslash escapes, `#` comments; `${VAR}` kept as written), or null. */
+function splitString(text) {
+    const parts = [];
+    let word = null;
+    let quote = '';
+    for (let at = 0; at < text.length; at += 1) {
+        const char = text[at];
+        if (char === '\\' && quote !== "'") {
+            const next = text[at += 1];
+            if (next === undefined)
+                return null;
+            if (next === 'c' && !quote)
+                break;
+            word = (word ?? '') + (({ _: ' ', t: '\t', n: '\n' })[next] ?? next);
+        }
+        else if (char === quote)
+            quote = '';
+        else if (quote)
+            word += char;
+        else if (char === "'" || char === '"') {
+            quote = char;
+            word ??= '';
+        }
+        else if (/^[ \t\n\v\f\r]$/.test(char)) {
+            if (word !== null)
+                parts.push(word);
+            word = null;
+        }
+        else if (char === '#' && word === null)
+            break;
+        else
+            word = (word ?? '') + char;
+    }
+    return quote ? null : word === null ? parts : [...parts, word];
+}
+/** FX-2: the words from the program on, every wrapper's options read from WRAPPER_TABLE; null when a wrapper form cannot be read. */
+function tableWords(input) {
+    let words = input;
+    let [at, used, splits] = [0, 0, 0];
+    for (;;) {
+        const start = at;
+        while (at < words.length && (ASSIGNMENT.test(words[at]) || KEYWORD.test(words[at])))
+            at += 1;
+        while (at < words.length && Object.prototype.hasOwnProperty.call(WRAPPER_TABLE, baseName(words[at]))) {
+            const table = WRAPPER_TABLE[baseName(words[at])];
+            at += 1;
+            while (at < words.length) {
+                const word = words[at];
+                if (++used > TABLE_WORD_LIMIT)
+                    return null;
+                if (word === '--') {
+                    at += 1;
+                    break;
+                }
+                if (ASSIGNMENT.test(word) || (word === '-' && table === WRAPPER_TABLE.env)) {
+                    at += 1;
+                    continue;
+                }
+                if (!word.startsWith('-') || word === '-')
+                    break;
+                if (/[$`]/.test(word))
+                    return null;
+                if (table.numeric && /^-\d+$/.test(word)) {
+                    at += 1;
+                    continue;
+                }
+                let [value, split, next] = [null, false, at + 1];
+                if (word.startsWith('--')) {
+                    const eq = word.indexOf('=');
+                    const name = word.slice(2, eq < 0 ? word.length : eq);
+                    if (table.lf?.includes(`${name}=`) || (eq < 0 && table.lf?.includes(name))) {
+                        at = next;
+                        continue;
+                    }
+                    if (!table.lv?.includes(name))
+                        return null;
+                    split = name === 'split-string';
+                    if (eq >= 0)
+                        value = word.slice(eq + 1);
+                }
+                else {
+                    let k = 1;
+                    while (k < word.length && table.f.includes(word[k]))
+                        k += 1;
+                    if (k === word.length || table.attached?.includes(word[k])) {
+                        at = next;
+                        continue;
+                    }
+                    if (!table.v.includes(word[k]))
+                        return null;
+                    split = word[k] === 'S' && table === WRAPPER_TABLE.env;
+                    if (k + 1 < word.length)
+                        value = word.slice(k + 1);
+                }
+                if (value === null && (next >= words.length || /[$`]/.test(words[next])))
+                    return null;
+                value ??= words[next++];
+                const parts = split ? splitString(value) : [];
+                if (parts === null || (split && ++splits > 4))
+                    return null;
+                if (split)
+                    words = [...words.slice(0, at), ...parts, ...words.slice(next)];
+                else
+                    at = next;
+            }
+            for (let n = table.operands ?? 0; n > 0; n -= 1, at += 1)
+                if (at >= words.length || /[$`]/.test(words[at]))
+                    return null;
+        }
+        if (at === start)
+            return words.slice(at);
+    }
+}
+/** The 3.9.114 reading and the table reading (FX-2: a route if either is one), or null when the table cannot read the form. */
+const readings = (words, read = tableWords(words)) => (read === null ? null : [programWords(words), read]);
 /** The code a shell `-c`, `su -c` or `eval` runs, or null. */
 function innerCode(words) {
     if (words[0] === 'eval')
@@ -231,7 +356,10 @@ function anyCommand(text, depth, rule) {
     return nested.some((inner) => anyCommand(inner, depth + 1, rule));
 }
 const installerRule = (all, dynamic, depth) => {
-    const words = programWords(all);
+    const both = readings(all); // FX-2: an unreadable wrapper form, in a text naming the installer (controlRoute's gate), is a route
+    return both === null || both.some((words) => installerWords(words, dynamic, depth));
+};
+function installerWords(words, dynamic, depth) {
     const code = words.length ? innerCode(words) : null;
     if (!words.length || code !== null)
         return code !== null && (/[$`]/.test(code) || anyCommand(code, depth + 1, installerRule));
@@ -243,7 +371,7 @@ const installerRule = (all, dynamic, depth) => {
     const runs = runner || INSTALLER_BIN.test(program) || INSTALLER_PATH.test(program) || /[$`]/.test(program);
     const args = runs ? installerArguments(words) : null;
     return args !== null && routeArguments(args, dynamic);
-};
+}
 /** 3.9.113's reading of one parsed command (master's rule, unchanged). */
 function masterSegmentIsRoute(segment, depth) {
     let at = 0;
@@ -682,8 +810,8 @@ function selfApproveRoute(command) {
             return false;
         if (command.length > MAX_READ)
             return true;
-        const rule = (all, _dynamic, depth) => {
-            const words = programWords(all);
+        const rule = (all, dynamic, depth) => (readings(all) ?? [programWords(all)]).some((words) => reportWords(words, dynamic, depth));
+        const reportWords = (words, _dynamic, depth) => {
             if (!words.length || (innerCode(words) !== null && anyCommand(innerCode(words), depth + 1, rule)))
                 return words.length > 0;
             const program = baseName(words[0]);
