@@ -76,7 +76,7 @@ async function withRecorder(fn) {
       try { body = raw ? JSON.parse(raw) : null; } catch { body = raw; }
       const headers = { ...req.headers };
       delete headers.authorization;
-      const row = { path, body, headers, start: Date.now(), end: null, status: 0 };
+      const row = { path, body, raw, headers, start: Date.now(), end: null, status: 0 };
       requests.push(row);
       // A POST ends when its answer is sent or the client gives up on it (the inline cap), whichever comes first.
       res.on('close', () => { if (row.end === null) row.end = Date.now(); });
@@ -484,4 +484,36 @@ test('a spool write that fails once takes the inline path: the event is posted b
   assert.equal(run.code, 0);
   assert.equal(pre.filter((r) => r.status === 200).length, 1, 'delivered once');
   assert.ok(pre[0].end <= run.exitAt, 'posted inline before the hook exits');
+}));
+
+// R6-a (round 2): against a slow lifecycle server the answer comes on the runtime result, never on the lifecycle
+// POST, and the pre-action event is in the spool before the answer (so it is still posted after the process exits).
+test('R6-a: lifecycle 5 s and runtime 450 ms: the answer within runtime + 300 ms, and the event is still posted', { skip, timeout: 45_000 }, () => withRecorder(async (ctx) => {
+  ctx.config.runtimeMs = 450;
+  ctx.config.lifecycleMs = 5_000;
+  ctx.config.lifecycle = () => { ctx.config.lifecycleMs = 0; return { status: 200 }; };
+  const run = await runHook(ctx.env, preEvent(ctx.project, 'toolu_r6a'));
+  const runtime = runtimePosts(ctx.requests);
+  assert.equal(runtime.length, 1);
+  assert.ok(runtime[0].end !== null && run.answerAt - runtime[0].end <= 300,
+    `answer ${run.answerAt - run.start} ms, runtime answered at ${runtime[0].end - run.start} ms`);
+  assert.equal(run.code, 0);
+  assert.ok(await until(() => prePosts(ctx.requests).length >= 1, 8_000), 'the spooled event is posted after the answer');
+  await settled(ctx);
+  const ids = prePosts(ctx.requests).filter((r) => r.status === 200).map((r) => r.body.event_id);
+  assert.ok(ids.length >= 1, 'delivered');
+  assert.equal(new Set(ids).size, 1, 'one event id');
+}));
+
+// R6-b (round 2): the deferred pre-action payload is byte-equal to the inline (3.9.114) payload for the same event:
+// the raw request bytes compared with only the generated time and its payload-bound id digest replaced.
+test('R6-b: the deferred pre-action payload is byte-equal to the inline payload for the same event', { skip, timeout: 45_000 }, () => withRecorder(async (ctx) => {
+  const generated = (raw) => raw.replace(/"occurred_at":"[^"]+"/g, '"occurred_at":"<t>"').replace(/("event_id":"[^"]+-)[0-9a-f]{12}"/g, '$1<d>"');
+  const inline = await observe(ctx, preEvent(ctx.project, 'toolu_r6b', 'node r6b.js'), { MARROW_HOOK_BACKGROUND_NUDGE: 'false' });
+  const deferred = await observe(ctx, preEvent(ctx.project, 'toolu_r6b', 'node r6b.js'));
+  assert.equal(inline.pre.length, 1);
+  assert.equal(deferred.pre.length, 1);
+  assert.ok(inline.pre[0].end <= inline.run.exitAt, 'the inline payload was posted before the exit');
+  assert.equal(generated(deferred.pre[0].raw), generated(inline.pre[0].raw));
+  assert.deepEqual(headerView(deferred.pre[0].headers), headerView(inline.pre[0].headers));
 }));

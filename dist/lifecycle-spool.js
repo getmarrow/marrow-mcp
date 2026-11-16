@@ -460,6 +460,22 @@ function retryAfter(response) {
 function dueAt(event) {
     return event.retry_blocked ? Infinity : event.next_attempt_at ? Date.parse(event.next_attempt_at) : 0;
 }
+/**
+ * A retryable failure holds the whole spool, not only its own event: no event is tried until that failure's
+ * backoff or server Retry-After ends, at most RETRY_MAX_MS after the failed attempt, so a server that is down
+ * gets one POST per wait window and a forged Retry-After holds the other events for at most 60 s. The failed
+ * event keeps its own deadline (dueAt). Only queued rows with a past attempt count (every queued row with one
+ * failed retryably); a time after now (the clock moved back) holds nothing, as on 3.9.114.
+ */
+function spoolHoldUntil(events, now) {
+    let until = 0;
+    for (const row of events) {
+        const failedAt = row.delivery_state === 'queued' && row.last_attempt_at ? Date.parse(row.last_attempt_at) : NaN;
+        if (failedAt <= now)
+            until = Math.max(until, Math.min(dueAt(row), failedAt + RETRY_MAX_MS));
+    }
+    return until;
+}
 async function deliver(baseUrl, apiKey, queued, timeoutMs) {
     const controller = new AbortController();
     let timeout;
@@ -895,10 +911,15 @@ async function drainLifecycleSpool(input) {
     const attempted = new Set();
     let delivered = 0;
     while (delivered < maxEvents && Date.now() < deliveryDeadline) {
-        const candidates = snapshot(location.path, location.ownsParent).events.filter((row) => (row.delivery_state === 'queued' && (input.retryWithinBudget || !attempted.has(row.event_id))));
-        let queued = candidates.find((row) => dueAt(row) <= Date.now());
+        const rows = snapshot(location.path, location.ownsParent).events;
+        const candidates = rows.filter((row) => (row.delivery_state === 'queued' && (input.retryWithinBudget || !attempted.has(row.event_id))));
+        // After a retryable failure the pass stops: nothing is tried (no queued event, no dead letter) until the hold ends.
+        const now = Date.now();
+        const holdUntil = spoolHoldUntil(rows, now);
+        const held = holdUntil > now;
+        let queued = held ? undefined : candidates.find((row) => dueAt(row) <= now);
         if (!queued && retryDeadLetters) {
-            queued = mutate(location.path, location.ownsParent, (events) => {
+            const requeued = mutate(location.path, location.ownsParent, (events) => {
                 // An explicit drain retries every dead letter the operator can fix,
                 // including the auth class. Server-owned conflicts already have durable
                 // server evidence and are never replayed.
@@ -919,9 +940,13 @@ async function drainLifecycleSpool(input) {
                 delete failed.last_recovery_at;
                 return { ...failed };
             }).result;
+            // During the hold a requeued dead letter is only queued; it waits for the hold like every queued event.
+            if (requeued && held)
+                continue;
+            queued = requeued;
         }
         if (!queued) {
-            const earliest = Math.min(...candidates.map(dueAt));
+            const earliest = Math.max(holdUntil, Math.min(...candidates.map(dueAt)));
             if (!Number.isFinite(earliest) || earliest >= deliveryDeadline)
                 break;
             const waitMs = earliest - Date.now();
@@ -1051,8 +1076,9 @@ function backgroundNudgeEnabled() {
 function hasDueLifecycleEvents(input) {
     try {
         const location = spoolPath(input.apiKey, input.agentId);
-        return snapshot(location.path, location.ownsParent).events
-            .some((row) => row.delivery_state === 'queued' && dueAt(row) <= Date.now());
+        const rows = snapshot(location.path, location.ownsParent).events;
+        return spoolHoldUntil(rows, Date.now()) <= Date.now()
+            && rows.some((row) => row.delivery_state === 'queued' && dueAt(row) <= Date.now());
     }
     catch {
         return false;
