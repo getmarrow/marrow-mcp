@@ -198,16 +198,21 @@ test('AB-S3 RECOV: a crash between the failed POST and the wait write leaves eve
   try {
     await withSpool(async (ctx) => {
       for (const id of ['s3-a', 's3-b', 's3-c']) await record(ctx, id);
+      ctx.answer = () => ({ status: 503 });
+      await drainOnce(ctx);
+      assert.deepEqual(rows(ctx).map((r) => `${r.event_id}:${r.delivery_state}:${r.attempts}`), ['s3-a:queued:1', 's3-b:queued:0', 's3-c:queued:0'],
+        'a failed POST keeps its event queued; the wait drops and reorders nothing');
+      t.mock.timers.tick(1_000);
       const before = readFileSync(ctx.path, 'utf8');
       // The folder turns read-only while the POST is in flight: the wait cannot be written.
       ctx.answer = () => { chmodSync(ctx.dir, 0o500); return { status: 503 }; };
       await spool.nudgeLifecycleSpool(ctx.scope);
       chmodSync(ctx.dir, 0o700);
-      assert.equal(ctx.posts.length, 1, 'no further POST after the failure whose wait could not be written');
+      assert.equal(ctx.posts.length, 2, 'no further POST after the failure whose wait could not be written');
       assert.equal(readFileSync(ctx.path, 'utf8'), before, 'the spool is unchanged: every event still queued');
       ctx.answer = () => ({ status: 200 });
       await drainOnce(ctx);
-      assert.deepEqual(ctx.posts.slice(1).map((p) => p.id), ['s3-a', 's3-b', 's3-c'], 'later: each once, oldest first');
+      assert.deepEqual(ctx.posts.slice(2).map((p) => p.id), ['s3-a', 's3-b', 's3-c'], 'later: each once, oldest first');
     });
   } finally { t.mock.timers.reset(); }
 });
