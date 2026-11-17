@@ -49,6 +49,7 @@ let current = {};
 let calls = [];
 let homes = 0;
 const PASSWD = new Map();
+const HOMES = [];
 
 function behind(extra = {}) {
   return {
@@ -115,10 +116,39 @@ async function startServer() {
 }
 
 test.before(async () => { if (opensslOk) await startServer(); });
+
+// Every pre-action hook answers first and leaves ONE detached background-nudge child that delivers the spooled event
+// and removes its `*.nudge.lock` last. Wait for every such child (server still up, so a delivery can finish), never skip.
+function nudgeLocksLeft() {
+  let left = 0;
+  for (const home of HOMES) {
+    let names = [];
+    try { names = fs.readdirSync(join(home, '.marrow', 'spool')); } catch { continue; }
+    left += names.filter((name) => name.endsWith('.nudge.lock')).length;
+  }
+  return left;
+}
+async function waitForNudgeChildren(deadlineMs = 30_000) {
+  const end = Date.now() + deadlineMs;
+  let quiet = 0;
+  let left = nudgeLocksLeft();
+  for (;;) {
+    quiet = left === 0 ? quiet + 1 : 0;
+    if (quiet >= 2) return;
+    if (Date.now() >= end) throw new Error(`${left} background-nudge lock(s) left under the test homes after ${deadlineMs / 1000} s`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    left = nudgeLocksLeft();
+  }
+}
+
 test.after(async () => {
-  if (server) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
-  try { fs.chmodSync(ROOT, 0o700); } catch { /* best effort */ }
-  fs.rmSync(ROOT, { recursive: true, force: true });
+  try {
+    await waitForNudgeChildren();
+  } finally {
+    if (server) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
+    try { fs.chmodSync(ROOT, 0o700); } catch { /* best effort */ }
+    fs.rmSync(ROOT, { recursive: true, force: true });
+  }
 });
 
 function newHome(name = 'h') {
@@ -128,6 +158,7 @@ function newHome(name = 'h') {
   const pw = join(ROOT, `pw-${homes}`);
   fs.mkdirSync(pw, { mode: 0o700 });
   PASSWD.set(home, pw);
+  HOMES.push(home);
   return home;
 }
 
@@ -152,19 +183,26 @@ function runCli(args, { home, env = {}, answer = {}, cwd, input = '', timeoutMs 
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const finish = (code, timedOut) => {
+    // The result is fixed when the stop is sent (until match, timeout) or the child closes, and resolves only on the
+    // child's `close`: nothing the child started by itself is left running when the caller goes on.
+    let decided = null;
+    const decide = (code, timedOut) => {
+      if (decided) return;
+      decided = { stdout, stderr, code, timedOut, ms: Date.now() - started, calls: calls.filter((c) => !c.url.startsWith('/v1/agent/integrations')) };
+    };
+    const finish = () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout, stderr, code, timedOut, ms: Date.now() - started, calls: calls.filter((c) => !c.url.startsWith('/v1/agent/integrations')) });
+      resolve(decided);
     };
-    const timer = setTimeout(() => { child.kill('SIGKILL'); finish(null, true); }, timeoutMs);
+    const timer = setTimeout(() => { decide(null, true); child.kill('SIGKILL'); }, timeoutMs);
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
-      if (until && until(stdout)) { child.kill('SIGTERM'); finish(0, false); }
+      if (!decided && until && until(stdout)) { decide(0, false); child.kill('SIGTERM'); }
     });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('close', (code) => finish(code, false));
+    child.on('close', (code) => { decide(code, false); finish(); });
     child.stdin.on('error', () => {});
     child.stdin.end(input);
   });
