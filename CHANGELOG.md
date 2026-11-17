@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.9.115
+
+The pre-action hook answers as soon as Marrow's runtime call returns, labels routine calls by their command words instead of data words, and adds one update line when a newer version is out. Setup, spool and edge-refusal fixes are in the bullets below.
+
+- Answer time (pre-action hook): the hook answers as soon as the runtime call returns; the pre-action lifecycle event is written to the local spool first and delivered right after the answer by the background nudge. Decisions, labels, keys, sent text and lifecycle payloads are unchanged. If the spool write fails, `MARROW_HOOK_BACKGROUND_NUDGE=false` is set or a custom spool path is used, the hook delivers inline as before. Status and coverage counts can lag by one event until the background delivery completes.
+- Labels from command words: a commit whose message (also in a heredoc) mentions deploys, secrets or production is labelled as a commit; a deploy command with a proven dry-run flag is labelled as a local process; a file write is labelled by what it is, not by data words in the file name. `git add` accepts only `-A`, `--all`, `-u` and `--update` as flags for the commit label. Every abuse, forged-input and never-lower row answers as before, and protected calls still get and verify their permit.
+- Update line and setup fixes: when Marrow says a newer version is out, the pre-action hook, the prompt hook and the status tool add one line with the exact update command (`MARROW_UPDATE_NOTICE=off` turns it off; only a plain release version is accepted). Setup and update report old hook entries, pins and doubled hooks and say when a restart is needed, without editing the settings file. Setup run from a subfolder of a project stops with one line and writes nothing (`--here` writes in the current folder). A tool call that fails while the spool folder is not safe to use returns an error reply and writes nothing there. A request refused at the edge explains what was refused. No hook decision changes.
+- Three reading fixes (stricter): a 40-character commit id in a command is read as a commit id, not cut out as a secret; a command behind `env -u NAME ...` is read through the `env` prefix; a directory listing of a credential-store or state folder is held when the client runs with its account key.
+- Version 3.9.115 in package.json, package-lock.json, server.json and the adapter version constant; dist/ rebuilt from src/. The installer 0.1.73 and Q5 fixtures and the tests that pin the pack carry this version. The MCP Registry entry stays at 3.9.114 for this release.
+
 ## 3.9.114
 
 The hook now sends the command text of Claude Code Bash calls so Marrow can judge what the call really does; the privacy rules are in the Command text bullet below. Script text is not sent in this version. With a Marrow key, a command that names the installer only as data is no longer held as a control-off route; any text the hook cannot prove to be data keeps the previous answer. A failed Marrow call no longer reports the install as current.
