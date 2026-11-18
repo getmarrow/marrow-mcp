@@ -1,6 +1,6 @@
 import { marrowAgentRuntime, marrowEnforcement } from './index';
 import { type HoldPlan } from './host-approval';
-import { MARROW_OUTAGE_WARNING } from './hook-contract';
+import { MARROW_OUTAGE_WARNING, MARROW_SLOW_WARNING } from './hook-contract';
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
 export declare const NO_KEY_TEXT = "Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.";
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
@@ -10,7 +10,7 @@ export declare const CLAIMED_NO_KEY_TEXT = "Marrow is linked to an account but h
  * This constant is the generic wording; the hold names its reason (setupUnconfirmedText). Same text as src/seatbelt/hook.ts.
  */
 export declare const SETUP_UNCONFIRMED_TEXT = "Marrow stopped this action: there is no Marrow key on this machine, and Marrow uses its stricter no-key mode here because it could not confirm this machine's setup. Fix (for the person at this machine, not the agent): run npx -y @getmarrow/install@latest doctor, or add a Marrow key (getmarrow.ai/docs#start-here). Agent: do not retry it another way and do not edit Marrow settings; tell the user why it was stopped. Code: setup_unconfirmed.";
-export { MARROW_OUTAGE_WARNING };
+export { MARROW_OUTAGE_WARNING, MARROW_SLOW_WARNING };
 export declare const MAX_PRE_ACTION_INPUT_BYTES: number;
 export declare const PRE_ACTION_CONTROL_TIMEOUT_MS = 8000;
 export declare function deferPreActionLifecycleToNudge(): void;
@@ -44,9 +44,9 @@ type HookHarness = 'claude-code' | 'cline' | 'codex' | 'cursor' | 'gemini' | 'gr
 /** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
 export declare const HOLD_OWNER_DENIAL = "Marrow is holding this action for approval. Retry it after approval.";
 /** Marrow did not answer within the hook's time limit: an action that can be held stays held. */
-export declare const HELD_SLOW_TEXT = "Marrow did not answer in time, so this action is held. Retry it in a moment.";
+export declare const HELD_SLOW_TEXT = "Marrow did not answer within this hook's time limit, so this action is held: it needs Marrow's answer before it runs. Retry it in a moment.";
 /** Marrow cannot be reached (a real outage): a high-risk action fails closed; routine actions keep the outage allow. */
-export declare const HELD_OFFLINE_TEXT = "Marrow cannot be reached right now, so this high-risk action is held; routine actions keep running. Retry it when Marrow is back.";
+export declare const HELD_OFFLINE_TEXT = "Marrow is unavailable (no connection or a server error), so this high-risk action is held: it needs Marrow's answer before it runs. Routine actions keep running. Retry it when Marrow answers.";
 /** The only denial @getmarrow/install's Grok guard passes through (any other output blocks with a launch failure). */
 export declare const GROK_FIXED_DENIAL = "Marrow blocked this protected action.";
 /**
@@ -76,8 +76,12 @@ type PreActionControlResult = {
     outage?: boolean;
     /** Marrow did not answer inside the hook's time budget (slow, not down). */
     timedOut?: boolean;
+    /** Set only on the slow routine re-emit: picks the slow text, never a decision. */
+    slow?: boolean;
 };
 export declare function isMarrowOutage(result: PreActionControlResult): boolean;
+/** The routine-pass text of an outage answer: the slow text only for `slow: true`, else the unavailable text. */
+export declare function outagePassText(result: PreActionControlResult): string;
 export declare function controlFailureKind(error: unknown): PreActionControlResult['failure'];
 export declare function controlRejectionMessage(error: unknown, agentId?: string, kind?: PreActionControlResult['failure']): string;
 export type OwnerApprovalPrompt = {

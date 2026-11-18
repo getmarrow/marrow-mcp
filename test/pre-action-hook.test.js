@@ -645,7 +645,7 @@ test('a received runtime block is denied before think when a later control call 
     assert.equal(calls[1].body.success, false);
     const result = JSON.parse(output);
     assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
-    assert.doesNotMatch(output, /Marrow is offline/);
+    assert.doesNotMatch(output, /Marrow is unavailable/);
   } finally {
     globalThis.fetch = originalFetch;
     process.stdout.write = originalWrite;
@@ -700,7 +700,7 @@ test('a rejected runtime call denies a protected action instead of failing open'
     });
     const result = JSON.parse(output);
     assert.equal(result.hookSpecificOutput.permissionDecision, 'deny');
-    assert.doesNotMatch(output, /Marrow is offline/);
+    assert.doesNotMatch(output, /Marrow is unavailable/);
     assert.doesNotMatch(output, /unauthorized/);
   } finally {
     globalThis.fetch = originalFetch;

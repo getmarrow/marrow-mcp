@@ -856,7 +856,7 @@ test('MEDIUM-2: a waiting hold stays held when Marrow cannot be read, on Claude 
       const retried = h.run(entrypoint, { ...payload, tool_use_id: 'retry_unreachable' }, env);
       assert.equal(retried.json.hookSpecificOutput.permissionDecision, 'deny', entrypoint);
       assert.equal(retried.json.hookSpecificOutput.permissionDecisionReason, "Marrow could not confirm the owner's approval; this action stays held. Retry when Marrow is reachable.");
-      assert.doesNotMatch(retried.stdout, /offline|allowed/i);
+      assert.doesNotMatch(retried.stdout, /Marrow is unavailable \(|This action runs/i);
       assert.equal(runtimes(h).length, 1, 'no new hold while it waits');
     } finally { h.cleanup(); }
   }
@@ -896,11 +896,11 @@ test('MEDIUM-2: an owner-protected category stays held during an outage on every
     u.setConfig({ runtimeUnreachable: true, statusUnreachable: true });
     const out = u.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'outage-session' });
     assert.equal(out.json.hookSpecificOutput.permissionDecision, 'deny');
-    assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /cannot be reached right now, so this high-risk action is held/);
+    assert.match(out.json.hookSpecificOutput.permissionDecisionReason, /Marrow is unavailable \(no connection or a server error\), so this high-risk action is held/);
     assert.doesNotMatch(out.json.hookSpecificOutput.permissionDecisionReason, /could not confirm the owner's approval/);
     const routine = u.run('claude-pre-action-hook', { ...fixture('claude-pre-tool-use.json'), session_id: 'outage-session', tool_use_id: 'routine-outage', tool_input: { command: 'touch notes.txt' } });
     assert.equal(routine.json.hookSpecificOutput.permissionDecision, undefined);
-    assert.match(routine.json.hookSpecificOutput.additionalContext, /offline/i);
+    assert.match(routine.json.hookSpecificOutput.additionalContext, /unavailable/i);
   } finally { u.cleanup(); }
 });
 
@@ -1162,7 +1162,7 @@ test('HIGH-N1: when Marrow is slow, a held action on Codex, Cursor, Grok and Gem
         const passedToHost = decision === 'allow' && Object.values(h.state()?.holds || {}).some((hold) => hold.not_observed === true);
         assert.ok(['deny', 'ask'].includes(decision) || passedToHost, `${label} at ${delay} ms: ${decision} ${out.stdout}`);
         assert.ok(out.ms < 4_600, `${label} at ${delay} ms took ${out.ms} ms`);
-        assert.doesNotMatch(out.stdout, /offline|is allowed/i, `${label} at ${delay} ms`);
+        assert.doesNotMatch(out.stdout, /Marrow is unavailable \(|This action runs/i, `${label} at ${delay} ms`);
       } finally { h.cleanup(); }
     }
   }
@@ -1174,7 +1174,7 @@ test('HIGH-N1: a timeout is never an outage; a routine action keeps flowing, and
     h.setConfig({ runtime: hostRuntime(), runtimeDelayMs: 8_000 });
     const slowDeploy = await h.runAsync('codex-pre-action-hook', fixture('codex-pre-tool-use.json'), codexExec);
     assert.equal(slowDeploy.json.hookSpecificOutput.permissionDecision, 'deny');
-    assert.equal(slowDeploy.json.hookSpecificOutput.permissionDecisionReason, 'Marrow did not answer in time, so this action is held. Retry it in a moment.');
+    assert.equal(slowDeploy.json.hookSpecificOutput.permissionDecisionReason, 'Marrow did not answer within this hook\'s time limit, so this action is held: it needs Marrow\'s answer before it runs. Retry it in a moment.');
     const routine = await h.runAsync('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_touch', tool_input: { command: 'touch notes.txt' } }, codexExec);
     assert.equal(routine.json?.hookSpecificOutput?.permissionDecision, undefined, 'a routine action keeps flowing');
     h.setConfig({ runtimeDelayMs: 0, runtimeUnreachable: true });
@@ -1182,7 +1182,7 @@ test('HIGH-N1: a timeout is never an outage; a routine action keeps flowing, and
     assert.equal(down.json.hookSpecificOutput.permissionDecision, 'deny', 'a real outage holds a high-risk action (F2)');
     const routineDown = await h.runAsync('codex-pre-action-hook', { ...fixture('codex-pre-tool-use.json'), tool_use_id: 'call_touch_down', tool_input: { command: 'touch notes.txt' } }, codexExec);
     assert.equal(routineDown.json.hookSpecificOutput.permissionDecision, undefined, 'a real outage keeps the existing outage policy for routine actions');
-    assert.match(routineDown.json.hookSpecificOutput.additionalContext, /offline/i);
+    assert.match(routineDown.json.hookSpecificOutput.additionalContext, /unavailable/i);
   } finally { h.cleanup(); }
 });
 

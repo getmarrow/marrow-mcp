@@ -94,7 +94,7 @@ test('F2 (recorded bodies): runtime 200 then permit 503 denies the keyed force p
     assert.equal(r.stop, true, `${host}: ${r.out.slice(0, 300)}`);
     assert.equal(r.out.includes(MARROW_OUTAGE_WARNING), false, `${host} must not claim an outage`);
     assert.equal(r.out.includes(HELD_OFFLINE_TEXT), false, `${host}: Marrow answered, so it is not "cannot be reached"`);
-    assert.doesNotMatch(r.out, /This action is allowed/, host);
+    assert.doesNotMatch(r.out, /This action runs/, host);
     assert.deepEqual(r.calls.filter((c) => /runtime|enforcement/.test(c)).slice(0, 2), ['/v1/agent/runtime', '/v1/agent/enforcement#issue'], host);
   }
 });
@@ -126,7 +126,7 @@ test('F2: a real outage (refused, DNS, runtime 503) holds the high-risk action o
     for (const host of HOSTS) {
       const r = hook(host, HIGH, scenario);
       assert.equal(r.stop, true, `${scenario} ${host}: ${r.out.slice(0, 300)}`);
-      assert.doesNotMatch(r.out, /This action is allowed/, `${scenario} ${host}`);
+      assert.doesNotMatch(r.out, /This action runs/, `${scenario} ${host}`);
       if (['claude', 'codex', 'cursor', 'cline'].includes(host)) assert.ok(r.out.includes(HELD_OFFLINE_TEXT), `${scenario} ${host}: ${r.out.slice(0, 300)}`);
     }
   }
@@ -241,7 +241,7 @@ test('I3: a real outage holds the outage-list programs and S-class commands on a
   for (const command of I3_HELD) {
     for (const host of HOSTS) {
       const r = hook(host, command, 'runtime-refused');
-      if (!r.stop || /This action is allowed/.test(r.out)) wrong.push(`${host}: ${command}: ${r.out.replace(/\s+/g, ' ').slice(0, 160)}`);
+      if (!r.stop || /This action runs/.test(r.out)) wrong.push(`${host}: ${command}: ${r.out.replace(/\s+/g, ' ').slice(0, 160)}`);
     }
   }
   assert.deepEqual(wrong, []);
@@ -263,7 +263,7 @@ test('T-1: an outage holds a high-risk command the mapper reads as unknown (dyna
     assert.equal(classifyTool({ tool_name: 'Bash', tool_input: { command } }).risk, 'high', command);
     for (const host of HOSTS) {
       const r = hook(host, command, 'runtime-refused');
-      if (!r.stop || /This action is allowed/.test(r.out)) wrong.push(`${host}: ${command}: ${r.out.replace(/\s+/g, ' ').slice(0, 160)}`);
+      if (!r.stop || /This action runs/.test(r.out)) wrong.push(`${host}: ${command}: ${r.out.replace(/\s+/g, ' ').slice(0, 160)}`);
     }
   }
   assert.deepEqual(wrong, []);
@@ -294,7 +294,7 @@ test('T-3: in an outage, --help on a listed CLI is never held (all 7 hosts); the
   for (const command of T3_HELD) {
     for (const host of HOSTS) {
       const r = hook(host, command, 'runtime-refused');
-      if (!r.stop || /This action is allowed/.test(r.out)) wrong.push(`held ${host}: ${command}: ${r.out.replace(/\s+/g, ' ').slice(0, 160)}`);
+      if (!r.stop || /This action runs/.test(r.out)) wrong.push(`held ${host}: ${command}: ${r.out.replace(/\s+/g, ' ').slice(0, 160)}`);
     }
   }
   assert.deepEqual(wrong, []);

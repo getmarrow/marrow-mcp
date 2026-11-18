@@ -43,10 +43,11 @@ test('setup without a key writes nothing, exits 2 and points to the signup page 
   } finally { s.cleanup(); }
 });
 
-// The fixture is the base 960bc6b1 output (3.9.100); only the pinned package version moves with each release.
-const GROK_BASE = readFileSync(join(__dirname, 'fixtures', 'grok-setup-base-960bc6b1.json'), 'utf8').split('@getmarrow/mcp@3.9.100').join(`@getmarrow/mcp@${require('../package.json').version}`);
+// The fixture is the 3.9.116 Grok setup output (guard texts of the A4 outage message); only the pinned package version moves with each release.
+// test/fixtures/grok-setup-base-960bc6b1.json stays as the record of the 3.9.115 output; the two differ only in the guard text lines.
+const GROK_SETUP_3116 = readFileSync(join(__dirname, 'fixtures', 'grok-setup-outage-3116.json'), 'utf8').split('@getmarrow/mcp@3.9.100').join(`@getmarrow/mcp@${require('../package.json').version}`);
 
-test('setup writes the Grok hooks exactly as base 960bc6b1 did, with and without ~/.grok', () => {
+test('setup writes the Grok hooks exactly as the 3.9.116 fixture pins them, with and without ~/.grok', () => {
   for (const withGrokDir of [false, true]) {
     const s = sandbox();
     try {
@@ -55,7 +56,7 @@ test('setup writes the Grok hooks exactly as base 960bc6b1 did, with and without
       const r = s.run(['setup'], { MARROW_API_KEY: key });
       assert.equal(r.status, 0, r.stderr);
       assert.equal(existsSync(join(s.work, '.claude', 'settings.json')), true);
-      assert.equal(readFileSync(join(s.home, '.grok', 'hooks', 'marrow.json'), 'utf8'), GROK_BASE, `Grok hooks byte-identical to base (~/.grok present: ${withGrokDir})`);
+      assert.equal(readFileSync(join(s.home, '.grok', 'hooks', 'marrow.json'), 'utf8'), GROK_SETUP_3116, `Grok hooks byte-identical to the 3.9.116 fixture (~/.grok present: ${withGrokDir})`);
       assert.match(r.stdout, /Configured Grok native pre-action, result, and nonblocking turn-closeout hooks at /);
       assert.doesNotMatch(r.stdout, /Grok not detected/);
       assert.equal((r.stdout + r.stderr).includes(key), false);

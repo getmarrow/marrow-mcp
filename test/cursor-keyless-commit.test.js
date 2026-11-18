@@ -212,7 +212,7 @@ test('cursor-hold row 5, S2 (key set, Marrow never answers): the answers are unc
     }
     const status = await runHook(sb, 'git status');
     assert.equal(answer(status).permission, 'allow');
-    assert.match(status.out, /Marrow is offline\. This action is allowed/);
+    assert.match(status.out, /Marrow did not answer within this hook's time limit\. This action runs\./);
     assert.ok(status.exitAt - status.firstOut < 2_500, `git status: the process stayed ${status.exitAt - status.firstOut} ms after its answer`);
   } finally { hole.close(); sb.cleanup(); }
 });
