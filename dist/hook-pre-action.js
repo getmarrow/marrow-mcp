@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.ENV_FILTER_SECRET_NAME = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_OFFLINE_TEXT = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
+exports.DENIED_DECISION_CLOSE_TIMEOUT_MS = exports.ENV_FILTER_SECRET_NAME = exports.SEATBELT_CURSOR_ASK_AGENT_TEXT = exports.SEATBELT_CURSOR_ASK_USER_TEXT = exports.SEATBELT_HELD_TEXT = exports.GROK_FIXED_DENIAL = exports.HELD_OFFLINE_TEXT = exports.HELD_SLOW_TEXT = exports.HOLD_OWNER_DENIAL = exports.PreActionControlTimeoutError = exports.PRE_ACTION_CONTROL_TIMEOUT_MS = exports.MAX_PRE_ACTION_INPUT_BYTES = exports.MARROW_SLOW_WARNING = exports.MARROW_OUTAGE_WARNING = exports.SETUP_UNCONFIRMED_TEXT = exports.CLAIMED_NO_KEY_TEXT = exports.NO_KEY_TEXT = void 0;
 exports.deferPreActionLifecycleToNudge = deferPreActionLifecycleToNudge;
 exports.preActionLifecycleSpooled = preActionLifecycleSpooled;
 exports.isMarrowControlTimeout = isMarrowControlTimeout;
@@ -9,6 +9,7 @@ exports.heldActionHookOutput = heldActionHookOutput;
 exports.passHookOutput = passHookOutput;
 exports.approvedHoldHookOutput = approvedHoldHookOutput;
 exports.isMarrowOutage = isMarrowOutage;
+exports.outagePassText = outagePassText;
 exports.controlFailureKind = controlFailureKind;
 exports.controlRejectionMessage = controlRejectionMessage;
 exports.ownerApprovalPrompt = ownerApprovalPrompt;
@@ -67,6 +68,7 @@ const script_attach_1 = require("./script-attach");
 const hook_tool_policy_1 = require("./hook-tool-policy");
 const hook_contract_1 = require("./hook-contract");
 Object.defineProperty(exports, "MARROW_OUTAGE_WARNING", { enumerable: true, get: function () { return hook_contract_1.MARROW_OUTAGE_WARNING; } });
+Object.defineProperty(exports, "MARROW_SLOW_WARNING", { enumerable: true, get: function () { return hook_contract_1.MARROW_SLOW_WARNING; } });
 /** A protected action with no Marrow key anywhere this machine keeps one (MARROW_API_KEY, ~/.marrow/env.local or ~/.marrow/env, owner-only). */
 exports.NO_KEY_TEXT = 'Marrow has no API key on this machine, so it held this action. To approve actions like this, create a key at getmarrow.ai/signup and add it: getmarrow.ai/docs#start-here (Claude Code plugin: put MARROW_API_KEY in ~/.marrow/env, chmod 600, then /reload-plugins). Agent: do not retry this action.';
 /** Seatbelt mode `claimed_no_key` (spec §1.1): account evidence on the machine but no usable key. Same text as src/seatbelt/hook.ts. */
@@ -191,9 +193,9 @@ function isMarrowControlOutage(error) {
 /** Fixed, privacy-preserving hold texts for hosts whose adapters accept only fixed strings. */
 exports.HOLD_OWNER_DENIAL = 'Marrow is holding this action for approval. Retry it after approval.';
 /** Marrow did not answer within the hook's time limit: an action that can be held stays held. */
-exports.HELD_SLOW_TEXT = 'Marrow did not answer in time, so this action is held. Retry it in a moment.';
+exports.HELD_SLOW_TEXT = 'Marrow did not answer within this hook\'s time limit, so this action is held: it needs Marrow\'s answer before it runs. Retry it in a moment.';
 /** Marrow cannot be reached (a real outage): a high-risk action fails closed; routine actions keep the outage allow. */
-exports.HELD_OFFLINE_TEXT = 'Marrow cannot be reached right now, so this high-risk action is held; routine actions keep running. Retry it when Marrow is back.';
+exports.HELD_OFFLINE_TEXT = 'Marrow is unavailable (no connection or a server error), so this high-risk action is held: it needs Marrow\'s answer before it runs. Routine actions keep running. Retry it when Marrow answers.';
 /** The only denial @getmarrow/install's Grok guard passes through (any other output blocks with a launch failure). */
 exports.GROK_FIXED_DENIAL = 'Marrow blocked this protected action.';
 /**
@@ -278,6 +280,10 @@ function emitHookOutput(harness, output, deniedText) {
 }
 function isMarrowOutage(result) {
     return result.outage === true;
+}
+/** The routine-pass text of an outage answer: the slow text only for `slow: true`, else the unavailable text. */
+function outagePassText(result) {
+    return result.slow === true ? hook_contract_1.MARROW_SLOW_WARNING : hook_contract_1.MARROW_OUTAGE_WARNING;
 }
 const SAFE_FAILURE_CODE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
 const SAFE_AGENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -1128,7 +1134,8 @@ function classificationFrom(parts) {
 }
 function cursorPreActionHookOutput(result) {
     if (isMarrowOutage(result)) {
-        return { permission: 'allow', user_message: hook_contract_1.MARROW_OUTAGE_WARNING, agent_message: hook_contract_1.MARROW_OUTAGE_WARNING };
+        const text = outagePassText(result);
+        return { permission: 'allow', user_message: text, agent_message: text };
     }
     const { runtime, permit, protectedRisk } = result;
     const verdict = runtimeGateVerdict(runtime);
@@ -1178,7 +1185,7 @@ function clinePreActionHookOutput(result) {
 }
 function windsurfPreActionDecision(result) {
     if (isMarrowOutage(result))
-        return { exitCode: 0, stderr: `${hook_contract_1.MARROW_OUTAGE_WARNING}\n` };
+        return { exitCode: 0, stderr: `${outagePassText(result)}\n` };
     const unavailable = result.protectedRisk && (!result.runtime || !result.permit?.verified);
     const denied = unavailable || runtimeGateVerdict(result.runtime) !== null;
     return denied
@@ -1273,7 +1280,7 @@ legacyServiceAsk = false) {
         return {
             hookSpecificOutput: {
                 hookEventName: 'PreToolUse',
-                additionalContext: hook_contract_1.MARROW_OUTAGE_WARNING,
+                additionalContext: outagePassText(result),
             },
         };
     }
@@ -1345,7 +1352,7 @@ function emitDecision(result, harness = 'claude-code', prompt = NO_OWNER_PROMPT,
         return { denied: decision.exitCode === 2, reason: decision.stderr.trim() };
     }
     if (result.outage)
-        process.stderr.write(`${hook_contract_1.MARROW_OUTAGE_WARNING}\n`);
+        process.stderr.write(`${outagePassText(result)}\n`);
     // The update line rides only in the separate context field of an answer that neither denies nor asks.
     const output = (0, update_notice_1.withPreActionNotice)(preActionHookOutput(result, harness, prompt, legacyServiceAsk), harness, result);
     process.stdout.write(JSON.stringify(output));
@@ -2024,7 +2031,7 @@ async function runPreActionHook(input, watch) {
                 permit: null,
                 protectedRisk: enforcementRequired,
                 timedOut: true,
-                enforcementError: hook_contract_1.MARROW_OUTAGE_WARNING,
+                enforcementError: hook_contract_1.MARROW_SLOW_WARNING,
             }
             : isMarrowControlOutage(error) && !(reach.gateAnswered && highRisk)
                 ? {
@@ -2061,7 +2068,7 @@ async function runPreActionHook(input, watch) {
             emitHeldPlan(identity.harness, { kind: 'deny', agentText: exports.HELD_SLOW_TEXT, userText: exports.HELD_SLOW_TEXT, code: false });
             return;
         }
-        emitDecision({ ...result, outage: true, timedOut: false }, identity.harness, claudePrompt);
+        emitDecision({ ...result, outage: true, timedOut: false, slow: true }, identity.harness, claudePrompt);
         return;
     }
     if (result.outage) {

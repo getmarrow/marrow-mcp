@@ -44,12 +44,15 @@ export const GROK_ACTION_RESULT_HOOK_COMMAND = hookCommand('grok-hook');
 export const GROK_SESSION_END_HOOK_COMMAND = hookCommand('grok-session-hook');
 export const GROK_FIXED_DENIAL = 'Marrow blocked this protected action.';
 export const GROK_LAUNCH_FAILURE = 'Marrow governance adapter was unavailable; this action is blocked.';
-export const MARROW_OUTAGE_WARNING = 'Marrow is offline. This action is allowed. The record stays queued locally and is sent when Marrow is back.';
+export const MARROW_OUTAGE_WARNING = 'Marrow is unavailable (no connection or a server error). This action runs. High-risk actions are held until Marrow answers; try them again then. The record stays queued locally and is sent when Marrow answers.';
+/** Marrow did not answer within the hook's time limit (slow, not down); the routine action runs. */
+export const MARROW_SLOW_WARNING = 'Marrow did not answer within this hook\'s time limit. This action runs. High-risk actions are held until Marrow answers in time; try them again in a moment.';
 const GROK_PRE_ACTION_GUARD_SOURCE = [
   'const {spawn}=require("node:child_process");',
   `const valid=value=>{try{const parsed=JSON.parse(value);return JSON.stringify(parsed)===value&&parsed&&Object.keys(parsed).every(key=>["decision","reason"].includes(key))&&(parsed.decision==="allow"&&parsed.reason===undefined||parsed.decision==="deny"&&typeof parsed.reason==="string"&&parsed.reason.length>0&&parsed.reason.length<=500);}catch{return false;}};`,
   'let child=null,timer=null,done=false,input=[],inputBytes=0,output="",outputBytes=0,err="";',
-  `const outage=${JSON.stringify(`${MARROW_OUTAGE_WARNING}\n`)};`,
+  // The guard is written single-quoted (node -e '...'): an apostrophe in a text is written as \u0027.
+  `const fixedTexts=${JSON.stringify([`${MARROW_OUTAGE_WARNING}\n`, `${MARROW_SLOW_WARNING}\n`]).replace(/'/g, '\\u0027')};`,
   `const fail=()=>{if(done)return;done=true;if(timer)clearTimeout(timer);if(child&&!child.killed)child.kill("SIGKILL");process.stderr.write(${JSON.stringify(`${GROK_LAUNCH_FAILURE}\n`)});process.exitCode=2;process.stdin.destroy();};`,
   'process.stdin.on("error",fail);',
   'process.stdin.on("data",chunk=>{const value=Buffer.from(chunk);inputBytes+=value.length;if(inputBytes>65536){fail();return;}input.push(value);});',
@@ -59,7 +62,7 @@ const GROK_PRE_ACTION_GUARD_SOURCE = [
   'child.stdout.on("data",chunk=>{if(done)return;outputBytes+=chunk.length;if(outputBytes>512){fail();return;}output+=chunk.toString("utf8");});',
   'child.stderr.on("data",chunk=>{if(done)return;if(err.length<1024)err+=chunk.toString("utf8");});',
   'child.on("error",fail);child.stdin.on("error",fail);',
-  'child.on("close",code=>{if(done)return;if(code!==0||!valid(output)){fail();return;}done=true;if(timer)clearTimeout(timer);if(err===outage)process.stderr.write(err);process.stdout.write(output);});',
+  'child.on("close",code=>{if(done)return;if(code!==0||!valid(output)){fail();return;}done=true;if(timer)clearTimeout(timer);if(fixedTexts.includes(err))process.stderr.write(err);process.stdout.write(output);});',
   'child.stdin.end(Buffer.concat(input));}catch{fail();}});',
 ].join('');
 export const GROK_PRE_ACTION_GUARD_COMMAND = `node -e '${GROK_PRE_ACTION_GUARD_SOURCE}'`;
