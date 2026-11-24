@@ -934,7 +934,18 @@ if (process.argv[2] !== 'keys') {
                         : 'Marrow already holds an outcome for this action with different proof. Call marrow_commit again with the same decision_id and gate_receipt_id and the complete proof in one call; do not invent values.',
                 };
             }
-            function toolFailure(toolName, failure) {
+            const agentIdArgumentSent = new WeakSet(); // tools/call arguments whose handler itself read agentId non-empty into its request
+            // gateReceiptId branches never read it; a whole-object copy (spread, JSON, keys) reads its descriptor first and never counts.
+            const trackAgentIdArgument = (args) => {
+                let copied = false;
+                return typeof args !== 'object' ? args : new Proxy(args, {
+                    getOwnPropertyDescriptor: (target, key) => { if (key === 'agentId')
+                        copied = true; return Reflect.getOwnPropertyDescriptor(target, key); },
+                    get: (target, key, receiver) => { const value = Reflect.get(target, key, receiver); if (key === 'agentId' && value && !copied)
+                        agentIdArgumentSent.add(target); return value; }
+                });
+            };
+            function toolFailure(toolName, failure, agentIdArgumentWasSent = false) {
                 const result = (0, request_reliability_1.structuredRequestFailure)(failure);
                 const proofValidation = failure.code === 'proof_required';
                 const infrastructureFailure = !proofValidation && !['authentication_required', 'permission_denied'].includes(failure.code);
@@ -942,11 +953,16 @@ if (process.argv[2] !== 'keys') {
                 const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
                 result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
                 // A refused agent id: say where this server took the id from (variable and origin; never a key). The status, code and repair text stay the service's.
-                if ((0, hook_pre_action_1.controlFailureKind)(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
-                    const errorBody = result.error;
-                    errorBody.message = `${String(errorBody.message || '').trim()} ${(0, identity_explain_1.agentIdSourceSentence)(AGENT_ID_SOURCE)}`.trim();
+                const scopeMismatch = (0, hook_pre_action_1.controlFailureKind)(failure) === 'credential_scope' && failure.backendCode === 'MARROW_AGENT_SCOPE_MISMATCH';
+                const errorBody = result.error, say = (sentence) => { errorBody.message = `${String(errorBody.message || '').trim()} ${sentence}`.trim(); };
+                if (scopeMismatch && agentIdArgumentWasSent)
+                    say("The refused agent id came from this tool call's agentId argument.");
+                else if ((0, hook_pre_action_1.controlFailureKind)(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
+                    say((0, identity_explain_1.agentIdSourceSentence)(AGENT_ID_SOURCE));
                     result.agent_id_source = (0, identity_explain_1.explanationLabelJson)(AGENT_ID_SOURCE);
                 }
+                if (scopeMismatch && failure.allowedAgentIds)
+                    say(`Agent ids bound to this API key: ${failure.allowedAgentIds.join(', ')}.`);
                 result.control_path = (0, control_path_state_1.controlPathStats)(toolName || 'marrow_control');
                 result.lifecycle_spool = {
                     state: spool.failed > 0 || spool.pending > 0 || spool.state === 'unavailable' ? spool.state : 'clear',
@@ -1531,7 +1547,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     }
                     if (method === 'tools/call') {
                         const toolName = params?.name;
-                        const args = (params?.arguments || {});
+                        const args = trackAgentIdArgument((params?.arguments || {}));
                         if (!toolAllowedByActiveProfile(toolName)) {
                             const repair = toolName && tool_catalog_1.PRIMARY_TOOL_NAMES.has(toolName)
                                 ? 'Unset MARROW_TOOL_PROFILE or set MARROW_TOOL_PROFILE=primary, then restart MCP.'
@@ -2445,7 +2461,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                 }
                 catch (err) {
                     if (err instanceof request_reliability_1.MarrowRequestError && method === 'tools/call') {
-                        toolSuccess(id, toolFailure(params?.name, err), true);
+                        toolSuccess(id, toolFailure(params?.name, err, agentIdArgumentSent.has(params?.arguments)), true);
                         return;
                     }
                     const message = err instanceof Error ? err.message : String(err);

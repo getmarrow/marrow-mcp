@@ -992,7 +992,12 @@ function proofRetryConflict(keys: string[], proof: unknown, requiredFromHold: st
   };
 }
 
-function toolFailure(toolName: string | undefined, failure: MarrowRequestError): Record<string, unknown> {
+const agentIdArgumentSent = new WeakSet<object>(); // tools/call arguments whose handler itself read agentId non-empty into its request
+// gateReceiptId branches never read it; a whole-object copy (spread, JSON, keys) reads its descriptor first and never counts.
+const trackAgentIdArgument = (args: Record<string, unknown>) => { let copied = false; return typeof args !== 'object' ? args : new Proxy(args, {
+  getOwnPropertyDescriptor: (target, key) => { if (key === 'agentId') copied = true; return Reflect.getOwnPropertyDescriptor(target, key); },
+  get: (target, key, receiver) => { const value = Reflect.get(target, key, receiver); if (key === 'agentId' && value && !copied) agentIdArgumentSent.add(target); return value; } }); };
+function toolFailure(toolName: string | undefined, failure: MarrowRequestError, agentIdArgumentWasSent = false): Record<string, unknown> {
   const result = structuredRequestFailure(failure);
   const proofValidation = failure.code === 'proof_required';
   const infrastructureFailure = !proofValidation && !['authentication_required', 'permission_denied'].includes(failure.code);
@@ -1000,11 +1005,14 @@ function toolFailure(toolName: string | undefined, failure: MarrowRequestError):
   const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
   result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
   // A refused agent id: say where this server took the id from (variable and origin; never a key). The status, code and repair text stay the service's.
-  if (controlFailureKind(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
-    const errorBody = result.error as Record<string, unknown>;
-    errorBody.message = `${String(errorBody.message || '').trim()} ${agentIdSourceSentence(AGENT_ID_SOURCE)}`.trim();
+  const scopeMismatch = controlFailureKind(failure) === 'credential_scope' && failure.backendCode === 'MARROW_AGENT_SCOPE_MISMATCH';
+  const errorBody = result.error as Record<string, unknown>, say = (sentence: string) => { errorBody.message = `${String(errorBody.message || '').trim()} ${sentence}`.trim(); };
+  if (scopeMismatch && agentIdArgumentWasSent) say("The refused agent id came from this tool call's agentId argument.");
+  else if (controlFailureKind(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
+    say(agentIdSourceSentence(AGENT_ID_SOURCE));
     result.agent_id_source = explanationLabelJson(AGENT_ID_SOURCE);
   }
+  if (scopeMismatch && failure.allowedAgentIds) say(`Agent ids bound to this API key: ${failure.allowedAgentIds.join(', ')}.`);
   result.control_path = controlPathStats(toolName || 'marrow_control');
   result.lifecycle_spool = {
     state: spool.failed > 0 || spool.pending > 0 || spool.state === 'unavailable' ? spool.state : 'clear',
@@ -1677,7 +1685,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
 
     if (method === 'tools/call') {
       const toolName = params?.name;
-      const args = (params?.arguments || {}) as Record<string, unknown>;
+      const args = trackAgentIdArgument((params?.arguments || {}) as Record<string, unknown>);
 
       if (!toolAllowedByActiveProfile(toolName)) {
         const repair = toolName && PRIMARY_TOOL_NAMES.has(toolName)
@@ -2839,7 +2847,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
     error(id, -32601, `Method not found: ${method}`);
   } catch (err) {
     if (err instanceof MarrowRequestError && method === 'tools/call') {
-      toolSuccess(id, toolFailure(params?.name, err), true);
+      toolSuccess(id, toolFailure(params?.name, err, agentIdArgumentSent.has(params?.arguments as object)), true);
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
