@@ -3920,6 +3920,61 @@ export async function marrowDecisionTrace(
   return json.data || json;
 }
 
+/** The chain of one gate receipt (GET /v1/agent/governance/chain/:id): `{chain}` as the backend served it in `{data}`. */
+export async function marrowGovernanceChain(
+  apiKey: string,
+  baseUrl: string,
+  gateReceiptId: string,
+  sessionId?: string,
+  agentId?: string,
+): Promise<{ chain: Record<string, unknown> }> {
+  const safeId = validatePathParam(gateReceiptId, 'gateReceiptId');
+  const json = await fetchJsonResponse(`${baseUrl}/v1/agent/governance/chain/${safeId}`, {
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+  });
+  return { chain: requireObjectData(json.data?.chain) };
+}
+
+// The signed export of one gate receipt as its exact body text (at most 65536 bytes, strict UTF-8, any byte-order mark
+// kept, never parsed or re-serialised): a verifier gets the bytes Marrow signed. Non-200 fails like every other read.
+export async function marrowSignedReceiptExport(
+  apiKey: string,
+  baseUrl: string,
+  gateReceiptId: string,
+  sessionId?: string,
+  agentId?: string,
+): Promise<string> {
+  const safeId = validatePathParam(gateReceiptId, 'gateReceiptId');
+  return fetch(`${baseUrl}/v1/agent/audit/signed-receipts/${safeId}`, {
+    headers: buildHeaders(apiKey, sessionId, undefined, agentId),
+  }, { consumeResponse: async (res): Promise<string> => {
+    if (res.status !== 200) {
+      if (!res.ok) await safeJsonResponse(res);
+      throw invalidResponseError();
+    }
+    const reader = res.body?.getReader();
+    if (!reader) throw invalidResponseError();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > 65_536) {
+        void reader.cancel().catch(() => undefined);
+        throw invalidResponseError();
+      }
+      chunks.push(value);
+    }
+    if (total === 0) throw invalidResponseError();
+    try {
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks));
+    } catch {
+      throw invalidResponseError();
+    }
+  } });
+}
+
 /**
  * Convert a detected decision pattern into an enforced workflow.
  */

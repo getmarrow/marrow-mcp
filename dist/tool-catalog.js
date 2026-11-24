@@ -736,8 +736,9 @@ exports.TOOLS = [
             type: 'object',
             properties: {
                 decisionId: { type: 'string', description: 'Decision ID owned by this account and agent scope.' },
+                gateReceiptId: { type: 'string', description: 'Instead of decisionId: a gate_receipt_id from marrow_agent_runtime. Returns that receipt\'s chain: what the loop did and which earlier approval it reused. Give exactly one of decisionId and gateReceiptId.' },
             },
-            required: ['decisionId'],
+            required: [],
         },
     },
     {
@@ -748,6 +749,7 @@ exports.TOOLS = [
             properties: {
                 agentId: { type: 'string', description: 'Optional agent filter. Defaults to the canonical fleet-bound agent identity.' },
                 periodDays: { type: 'number', description: 'Lookback period in days, default 30, max 90.' },
+                gateReceiptId: { type: 'string', description: 'Optional: a gate_receipt_id. Returns the signed export of that receipt: content[0] is the response body exactly as Marrow sent it (keep it unchanged to verify it offline against the published signing keys), content[1] a small label with its sha256. agentId and periodDays are not used with it.' },
             },
             required: [],
         },

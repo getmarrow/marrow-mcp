@@ -102,6 +102,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -274,6 +275,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -474,6 +476,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -677,6 +680,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -826,6 +830,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -988,6 +993,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -1121,6 +1127,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -1251,6 +1258,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -1403,6 +1411,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -1536,6 +1545,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -1681,6 +1691,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -1832,6 +1843,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -1971,6 +1983,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -2113,6 +2126,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -2255,6 +2269,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -2409,6 +2424,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -2567,6 +2583,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -2769,6 +2786,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -2902,6 +2920,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -3038,6 +3057,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -3171,6 +3191,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -3327,6 +3348,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -3486,6 +3508,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -3648,6 +3671,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -3868,6 +3892,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -4045,6 +4070,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -4263,6 +4289,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -4420,6 +4447,7 @@ export declare const TOOLS: ({
             baseline?: undefined;
             candidate?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -4558,6 +4586,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -4603,6 +4632,10 @@ export declare const TOOLS: ({
         type: string;
         properties: {
             decisionId: {
+                type: string;
+                description: string;
+            };
+            gateReceiptId: {
                 type: string;
                 description: string;
             };
@@ -4725,7 +4758,7 @@ export declare const TOOLS: ({
             category?: undefined;
             slug?: undefined;
         };
-        required: string[];
+        required: never[];
         additionalProperties?: undefined;
         oneOf?: undefined;
     };
@@ -4740,6 +4773,10 @@ export declare const TOOLS: ({
                 description: string;
             };
             periodDays: {
+                type: string;
+                description: string;
+            };
+            gateReceiptId: {
                 type: string;
                 description: string;
             };
@@ -4979,6 +5016,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             rules?: undefined;
             project_key?: undefined;
@@ -5117,6 +5155,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -5254,6 +5293,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -5402,6 +5442,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             selected_mode?: undefined;
             selection_source?: undefined;
@@ -5546,6 +5587,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -5689,6 +5731,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -5853,6 +5896,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -5991,6 +6035,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -6129,6 +6174,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -6268,6 +6314,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -6402,6 +6449,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -6535,6 +6583,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -6677,6 +6726,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;
@@ -6809,6 +6859,7 @@ export declare const TOOLS: ({
             risk_level?: undefined;
             evidence?: undefined;
             decisionId?: undefined;
+            gateReceiptId?: undefined;
             periodDays?: undefined;
             project?: undefined;
             workflow?: undefined;

@@ -1,5 +1,7 @@
 export type MarrowFailureCode = 'authentication_required' | 'permission_denied' | 'proof_required' | 'rate_limited' | 'request_timeout' | 'dns_unavailable' | 'connection_reset' | 'tls_failure' | 'edge_access_denied' | 'service_unavailable' | 'invalid_response' | 'request_failed';
 export declare function privacySafeIdempotencyKey(value: unknown): value is string;
+/** The backend's own id rule for a signed export id and a bound agent id: 1 to 128 of [A-Za-z0-9._:-]. */
+export declare const RECEIPT_OR_AGENT_ID_FORMAT: RegExp;
 export interface PendingWriteReceipt {
     contract: 'mcp_write_pending.v1';
     operation: 'think' | 'commit';
@@ -20,6 +22,7 @@ export declare class MarrowRequestError extends Error {
     readonly requiredFeature: string | null;
     readonly missingFields: string[];
     readonly pendingReceipt?: PendingWriteReceipt;
+    readonly allowedAgentIds?: string[];
     constructor(input: {
         code: MarrowFailureCode;
         backendCode?: string | null;
@@ -33,6 +36,7 @@ export declare class MarrowRequestError extends Error {
         requiredFeature?: string | null;
         missingFields?: string[];
         pendingReceipt?: PendingWriteReceipt;
+        allowedAgentIds?: unknown;
     });
 }
 export declare function responseRetryAfter(response: Response): {
