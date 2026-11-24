@@ -20,7 +20,7 @@ const FAKE_ORIGIN = 'https://c1b-passthrough.invalid';
 const SIGNED_PREFIX = '/v1/agent/audit/signed-receipts/';
 const CHAIN_PREFIX = '/v1/agent/governance/chain/';
 const TRACE_PREFIX = '/v1/agent/governance/trace/';
-const HOW_TO_VERIFY = "Save content[0] unchanged to a file, save the JWKS, then verify offline with the installer's verify command.";
+const HOW_TO_VERIFY = "Save content[0] unchanged to a file, save the JWKS, then verify offline with SDK 3.8.0 verifySignedRecords.";
 const ANSWER_MARK = 'c1b-answer-mark-7f3a';
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 

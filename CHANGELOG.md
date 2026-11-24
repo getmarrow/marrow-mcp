@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.9.116
+
+A gate receipt now leads to its full record: the decision trace shows the action's chain, and the buyer proof returns the exact signed export. The hook also says why when Marrow is unreachable or slow.
+
+- Receipt chain: `marrow_decision_trace` with a gate receipt id shows that action's chain: attempt, decision, owner approval, outcome.
+- Signed export: `marrow_buyer_proof` with a gate receipt id returns the exact signed export text for offline checks with SDK 3.8.0 `verifySignedRecords`. No new tools; the tool count stays 17.
+- Agent scope: when a key is bound to other agents, the refusal names the agent ids the key may use.
+- Outage and slow text: when Marrow is unreachable or slow, the hook says why and what to do; the decisions themselves are unchanged from 3.9.115.
+- Tests: the lifecycle spool holds nothing when the clock moves back; keyless listings keep the previous reading.
+- Version 3.9.116 in package.json, package-lock.json, server.json and the adapter version constant; `@getmarrow/sdk` is pinned exactly to 3.8.0; dist/ rebuilt from src/. The installer 0.1.73 and Q5 fixtures and the tests that pin the pack carry this version and the SDK pin. The MCP Registry entry stays at 3.9.114 for this release.
+
 ## 3.9.115
 
 The pre-action hook answers as soon as Marrow's runtime call returns, labels routine calls by their command words instead of data words, and adds one update line when a newer version is out. Setup, spool and edge-refusal fixes are in the bullets below.

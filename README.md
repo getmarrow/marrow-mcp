@@ -211,9 +211,15 @@ These behaviors shipped in 3.9.103 and still apply.
 - **Hidden commands are checked:** commands inside an unquoted here-document body, a `${x:-$(...)}` default or an arithmetic expansion are checked like any other command.
 - **`marrow-mcp keys create` reads every flag form:** `--name=`, `--type=` and `--expires=` (and `-n=`, `-t=`) are read like `--name value`; a flag that is present but blank, or a `--scopes` / `--agents` list with no entry, is a usage error (exit 2) and nothing is sent; leaving `--scopes` and `--agents` out sends neither.
 
-## What's New in v3.9.115
+## What's New in v3.9.116
 
-v3.9.115 makes the hook answer sooner and tells an out-of-date install how to update. The full entry is in CHANGELOG.md.
+v3.9.116 links a gate receipt to its full record and says why when Marrow is unreachable or slow. The full entry is in CHANGELOG.md.
+
+- **Receipt chain and signed export.** `marrow_decision_trace` with a gate receipt id shows the action's chain (attempt, decision, owner approval, outcome); `marrow_buyer_proof` with a gate receipt id returns the exact signed export text, which SDK 3.8.0 `verifySignedRecords` checks offline.
+- **Clear outage text.** When Marrow is unreachable or slow, the hook says so and what to do; the decisions are unchanged.
+- **Agent scope.** A refusal for a key bound to other agents names the agent ids that key may use.
+
+These behaviors shipped in 3.9.115 and still apply.
 
 - **Faster answers and an update line.** The pre-action hook answers as soon as Marrow's runtime call returns and delivers its lifecycle event right after. When a newer version is out, the hooks and the status tool add one line with the exact update command (`MARROW_UPDATE_NOTICE=off` turns it off). Routine commits, dry runs and file writes are labelled by their command words; risky actions are still held.
 
@@ -288,7 +294,7 @@ v3.9.104 and v3.9.105 were not published to npm; their changes shipped in 3.9.10
 - **More secret files are protected.** With no key, reading or copying any `<name>.env` file that exists (for example `prod.env`), `~/.marrow/fleet.env` or anything under `~/.marrow/credentials` is stopped like `.env` (S4). `git log -p`, `git whatchanged -p` and `git format-patch` of a secret path print its history, so they are stopped like `git show -- <path>`; `git log --oneline -- .env` and `git log -p -- src/app.ts` still pass. When the hook does not know the working directory, a relative `<name>.env` read (`cat prod.env`, `cat config/`) is stopped too; a search pattern such as `grep -rn "process.env" src` still passes. Templates (`.env.example`, `.env.sample`, `.env.template`) and plain words such as `process.env` in a search still pass. With a key, the check now reads the same list, so `~/.marrow/env` and `env.local`, `~/.claude.json`, the GitHub CLI `hosts.yml`, the 1Password config and the seatbelt salt count as secret reads there too.
 - **A URL in the environment cannot redirect your key.** A key from `~/.marrow/env` (or `env.local`) is sent only to the default Marrow endpoint, to the endpoint that same file names with `MARROW_BASE_URL`, or to an exact origin it lists in the new `MARROW_ALLOWED_BASE_URLS`. A `MARROW_BASE_URL` that only the process environment names (a project's `.mcp.json` or settings `env` block, direnv, a devcontainer) no longer moves it: the default endpoint is used and one line on stderr names the source that was ignored, never the key or the URL. A key from the process environment keeps using the process-environment URL, as before. If you run a staging or self-hosted endpoint with a key in `~/.marrow/env`, add `MARROW_BASE_URL=` or `MARROW_ALLOWED_BASE_URLS=` to that file. See [Environment](#environment).
 - **Ids in tool arguments are checked.** The ids and slugs that become part of an API path (workflow, instance, lease, comparison, handoff, decision, detected and template ids) must start with a letter or digit, use only letters, digits, `_`, `.` and `-`, be at most 256 characters and never contain `..`. Anything else is refused before any request is sent. Every id Marrow itself issues passes.
-- **The SDK is pinned exactly.** `@getmarrow/mcp` depends on `@getmarrow/sdk` 3.7.67 with no version range.
+- **The SDK is pinned exactly.** `@getmarrow/mcp` depends on `@getmarrow/sdk` 3.8.0 with no version range.
 
 Earlier behaviors are kept under [Seatbelt, outage holds and exact approvals](#seatbelt-outage-holds-and-exact-approvals), [Project files and Marrow's own tools](#project-files-and-marrows-own-tools), [Setup and key handling](#setup-and-key-handling) and [Hook behavior details](#hook-behavior-details). v3.9.99 brought approvals in the host prompt; see [Approvals in the Host Prompt](#approvals-in-the-host-prompt).
 

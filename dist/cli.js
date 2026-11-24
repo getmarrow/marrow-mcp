@@ -2272,7 +2272,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                                     kind: 'marrow.signed_records.v1',
                                     bytes_sha256: (0, node_crypto_1.createHash)('sha256').update(body, 'utf8').digest('hex'),
                                     jwks_path: '/.well-known/marrow-signing-keys.json',
-                                    how_to_verify: "Save content[0] unchanged to a file, save the JWKS, then verify offline with the installer's verify command.",
+                                    how_to_verify: "Save content[0] unchanged to a file, save the JWKS, then verify offline with SDK 3.8.0 verifySignedRecords.",
                                 };
                                 success(id, { content: [{ type: 'text', text: body }, { type: 'text', text: JSON.stringify(label, null, 2) }] });
                                 return;
