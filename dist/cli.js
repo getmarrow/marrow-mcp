@@ -889,6 +889,14 @@ if (process.argv[2] !== 'keys') {
             function error(id, code, message) {
                 send({ jsonrpc: '2.0', id, error: { code, message } });
             }
+            // The backend's gate receipt id rule for the chain read; the signed export uses RECEIPT_OR_AGENT_ID_FORMAT.
+            const CHAIN_RECEIPT_ID_FORMAT = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,199}$/;
+            /** A gateReceiptId the backend's own rule and validatePathParam accept, checked before any request. */
+            function receiptIdArg(value, format) {
+                if (typeof value !== 'string' || !format.test(value))
+                    throw new Error('gateReceiptId must be a gate_receipt_id exactly as Marrow returned it');
+                return (0, index_1.validatePathParam)(value, 'gateReceiptId');
+            }
             function toolSuccess(id, value, isError = false) {
                 success(id, {
                     content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
@@ -926,7 +934,18 @@ if (process.argv[2] !== 'keys') {
                         : 'Marrow already holds an outcome for this action with different proof. Call marrow_commit again with the same decision_id and gate_receipt_id and the complete proof in one call; do not invent values.',
                 };
             }
-            function toolFailure(toolName, failure) {
+            const agentIdArgumentSent = new WeakSet(); // tools/call arguments whose handler itself read agentId non-empty into its request
+            // gateReceiptId branches never read it; a whole-object copy (spread, JSON, keys) reads its descriptor first and never counts.
+            const trackAgentIdArgument = (args) => {
+                let copied = false;
+                return typeof args !== 'object' ? args : new Proxy(args, {
+                    getOwnPropertyDescriptor: (target, key) => { if (key === 'agentId')
+                        copied = true; return Reflect.getOwnPropertyDescriptor(target, key); },
+                    get: (target, key, receiver) => { const value = Reflect.get(target, key, receiver); if (key === 'agentId' && value && !copied)
+                        agentIdArgumentSent.add(target); return value; }
+                });
+            };
+            function toolFailure(toolName, failure, agentIdArgumentWasSent = false) {
                 const result = (0, request_reliability_1.structuredRequestFailure)(failure);
                 const proofValidation = failure.code === 'proof_required';
                 const infrastructureFailure = !proofValidation && !['authentication_required', 'permission_denied'].includes(failure.code);
@@ -934,11 +953,16 @@ if (process.argv[2] !== 'keys') {
                 const spool = reportLifecycleSpool({ apiKey: API_KEY, baseUrl: BASE_URL, agentId: FLEET_AGENT_ID });
                 result.failure_kind = proofValidation ? 'validation' : infrastructureFailure ? 'infrastructure' : 'authorization';
                 // A refused agent id: say where this server took the id from (variable and origin; never a key). The status, code and repair text stay the service's.
-                if ((0, hook_pre_action_1.controlFailureKind)(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
-                    const errorBody = result.error;
-                    errorBody.message = `${String(errorBody.message || '').trim()} ${(0, identity_explain_1.agentIdSourceSentence)(AGENT_ID_SOURCE)}`.trim();
+                const scopeMismatch = (0, hook_pre_action_1.controlFailureKind)(failure) === 'credential_scope' && failure.backendCode === 'MARROW_AGENT_SCOPE_MISMATCH';
+                const errorBody = result.error, say = (sentence) => { errorBody.message = `${String(errorBody.message || '').trim()} ${sentence}`.trim(); };
+                if (scopeMismatch && agentIdArgumentWasSent)
+                    say("The refused agent id came from this tool call's agentId argument.");
+                else if ((0, hook_pre_action_1.controlFailureKind)(failure) === 'credential_scope' && AGENT_ID_SOURCE && AGENT_ID_SOURCE.origin !== 'none') {
+                    say((0, identity_explain_1.agentIdSourceSentence)(AGENT_ID_SOURCE));
                     result.agent_id_source = (0, identity_explain_1.explanationLabelJson)(AGENT_ID_SOURCE);
                 }
+                if (scopeMismatch && failure.allowedAgentIds)
+                    say(`Agent ids bound to this API key: ${failure.allowedAgentIds.join(', ')}.`);
                 result.control_path = (0, control_path_state_1.controlPathStats)(toolName || 'marrow_control');
                 result.lifecycle_spool = {
                     state: spool.failed > 0 || spool.pending > 0 || spool.state === 'unavailable' ? spool.state : 'clear',
@@ -1523,7 +1547,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                     }
                     if (method === 'tools/call') {
                         const toolName = params?.name;
-                        const args = (params?.arguments || {});
+                        const args = trackAgentIdArgument((params?.arguments || {}));
                         if (!toolAllowedByActiveProfile(toolName)) {
                             const repair = toolName && tool_catalog_1.PRIMARY_TOOL_NAMES.has(toolName)
                                 ? 'Unset MARROW_TOOL_PROFILE or set MARROW_TOOL_PROFILE=primary, then restart MCP.'
@@ -2223,6 +2247,15 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         }
                         if (toolName === 'marrow_decision_trace') {
                             const decisionId = args.decisionId;
+                            if (args.gateReceiptId != null) {
+                                if (args.decisionId != null) {
+                                    error(id, -32602, 'Give exactly one of decisionId and gateReceiptId');
+                                    return;
+                                }
+                                const chain = await (0, index_1.marrowGovernanceChain)(API_KEY, BASE_URL, receiptIdArg(args.gateReceiptId, CHAIN_RECEIPT_ID_FORMAT), SESSION_ID, FLEET_AGENT_ID);
+                                success(id, { content: [{ type: 'text', text: JSON.stringify(chain, null, 2) }] });
+                                return;
+                            }
                             if (!decisionId) {
                                 error(id, -32602, 'decisionId is required');
                                 return;
@@ -2232,6 +2265,18 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             return;
                         }
                         if (toolName === 'marrow_buyer_proof') {
+                            if (args.gateReceiptId != null) {
+                                // content[0] is the body exactly as served (the signed bytes); content[1] is a fixed-word label over it.
+                                const body = await (0, index_1.marrowSignedReceiptExport)(API_KEY, BASE_URL, receiptIdArg(args.gateReceiptId, request_reliability_1.RECEIPT_OR_AGENT_ID_FORMAT), SESSION_ID, FLEET_AGENT_ID);
+                                const label = {
+                                    kind: 'marrow.signed_records.v1',
+                                    bytes_sha256: (0, node_crypto_1.createHash)('sha256').update(body, 'utf8').digest('hex'),
+                                    jwks_path: '/.well-known/marrow-signing-keys.json',
+                                    how_to_verify: "Save content[0] unchanged to a file, save the JWKS, then verify offline with the installer's verify command.",
+                                };
+                                success(id, { content: [{ type: 'text', text: body }, { type: 'text', text: JSON.stringify(label, null, 2) }] });
+                                return;
+                            }
                             const result = await (0, index_1.marrowBuyerProof)(API_KEY, BASE_URL, {
                                 agentId: args.agentId || FLEET_AGENT_ID,
                                 periodDays: args.periodDays,
@@ -2416,7 +2461,7 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                 }
                 catch (err) {
                     if (err instanceof request_reliability_1.MarrowRequestError && method === 'tools/call') {
-                        toolSuccess(id, toolFailure(params?.name, err), true);
+                        toolSuccess(id, toolFailure(params?.name, err, agentIdArgumentSent.has(params?.arguments)), true);
                         return;
                     }
                     const message = err instanceof Error ? err.message : String(err);
