@@ -889,6 +889,14 @@ if (process.argv[2] !== 'keys') {
             function error(id, code, message) {
                 send({ jsonrpc: '2.0', id, error: { code, message } });
             }
+            // The backend's gate receipt id rule for the chain read; the signed export uses RECEIPT_OR_AGENT_ID_FORMAT.
+            const CHAIN_RECEIPT_ID_FORMAT = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,199}$/;
+            /** A gateReceiptId the backend's own rule and validatePathParam accept, checked before any request. */
+            function receiptIdArg(value, format) {
+                if (typeof value !== 'string' || !format.test(value))
+                    throw new Error('gateReceiptId must be a gate_receipt_id exactly as Marrow returned it');
+                return (0, index_1.validatePathParam)(value, 'gateReceiptId');
+            }
             function toolSuccess(id, value, isError = false) {
                 success(id, {
                     content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
@@ -2223,6 +2231,15 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                         }
                         if (toolName === 'marrow_decision_trace') {
                             const decisionId = args.decisionId;
+                            if (args.gateReceiptId != null) {
+                                if (args.decisionId != null) {
+                                    error(id, -32602, 'Give exactly one of decisionId and gateReceiptId');
+                                    return;
+                                }
+                                const chain = await (0, index_1.marrowGovernanceChain)(API_KEY, BASE_URL, receiptIdArg(args.gateReceiptId, CHAIN_RECEIPT_ID_FORMAT), SESSION_ID, FLEET_AGENT_ID);
+                                success(id, { content: [{ type: 'text', text: JSON.stringify(chain, null, 2) }] });
+                                return;
+                            }
                             if (!decisionId) {
                                 error(id, -32602, 'decisionId is required');
                                 return;
@@ -2232,6 +2249,18 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
                             return;
                         }
                         if (toolName === 'marrow_buyer_proof') {
+                            if (args.gateReceiptId != null) {
+                                // content[0] is the body exactly as served (the signed bytes); content[1] is a fixed-word label over it.
+                                const body = await (0, index_1.marrowSignedReceiptExport)(API_KEY, BASE_URL, receiptIdArg(args.gateReceiptId, request_reliability_1.RECEIPT_OR_AGENT_ID_FORMAT), SESSION_ID, FLEET_AGENT_ID);
+                                const label = {
+                                    kind: 'marrow.signed_records.v1',
+                                    bytes_sha256: (0, node_crypto_1.createHash)('sha256').update(body, 'utf8').digest('hex'),
+                                    jwks_path: '/.well-known/marrow-signing-keys.json',
+                                    how_to_verify: "Save content[0] unchanged to a file, save the JWKS, then verify offline with the installer's verify command.",
+                                };
+                                success(id, { content: [{ type: 'text', text: body }, { type: 'text', text: JSON.stringify(label, null, 2) }] });
+                                return;
+                            }
                             const result = await (0, index_1.marrowBuyerProof)(API_KEY, BASE_URL, {
                                 agentId: args.agentId || FLEET_AGENT_ID,
                                 periodDays: args.periodDays,

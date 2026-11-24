@@ -8,7 +8,7 @@
  *   npx @getmarrow/mcp --help
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { CORE_TOOL_NAMES, PRIMARY_TOOL_NAMES, TOOLS } from './tool-catalog';
 
 import {
@@ -37,6 +37,8 @@ import {
   marrowGovernanceTimeline,
   marrowDecisionTrace,
   marrowBuyerProof,
+  marrowGovernanceChain,
+  marrowSignedReceiptExport,
   marrowModelUsage,
   marrowRecommendGovernanceMode,
   marrowListPolicyProfiles,
@@ -92,7 +94,7 @@ import {
 } from './lifecycle-spool';
 import { lifecycleSpoolCommandOutcome } from './spool-command';
 import { readGuidanceCache, writeGuidanceCache } from './guidance-cache';
-import { localClientUpdate, MarrowRequestError, structuredRequestFailure } from './request-reliability';
+import { localClientUpdate, MarrowRequestError, RECEIPT_OR_AGENT_ID_FORMAT, structuredRequestFailure } from './request-reliability';
 import { MCP_ADAPTER_VERSION, resolveNativeHookIdentity } from './hook-contract';
 import { resolvePingTimeoutMs, updatePingState } from './ping-state';
 import { controlPathStats, recordControlPathSample } from './control-path-state';
@@ -939,6 +941,15 @@ function success(id: string | number, result: unknown): void {
 
 function error(id: string | number, code: number, message: string): void {
   send({ jsonrpc: '2.0', id, error: { code, message } });
+}
+
+// The backend's gate receipt id rule for the chain read; the signed export uses RECEIPT_OR_AGENT_ID_FORMAT.
+const CHAIN_RECEIPT_ID_FORMAT = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,199}$/;
+
+/** A gateReceiptId the backend's own rule and validatePathParam accept, checked before any request. */
+function receiptIdArg(value: unknown, format: RegExp): string {
+  if (typeof value !== 'string' || !format.test(value)) throw new Error('gateReceiptId must be a gate_receipt_id exactly as Marrow returned it');
+  return validatePathParam(value, 'gateReceiptId');
 }
 
 function toolSuccess(id: string | number, value: unknown, isError = false): void {
@@ -2554,6 +2565,12 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
 
       if (toolName === 'marrow_decision_trace') {
         const decisionId = args.decisionId as string;
+        if (args.gateReceiptId != null) {
+          if (args.decisionId != null) { error(id, -32602, 'Give exactly one of decisionId and gateReceiptId'); return; }
+          const chain = await marrowGovernanceChain(API_KEY, BASE_URL, receiptIdArg(args.gateReceiptId, CHAIN_RECEIPT_ID_FORMAT), SESSION_ID, FLEET_AGENT_ID);
+          success(id, { content: [{ type: 'text', text: JSON.stringify(chain, null, 2) }] });
+          return;
+        }
         if (!decisionId) { error(id, -32602, 'decisionId is required'); return; }
         const result = await marrowDecisionTrace(API_KEY, BASE_URL, decisionId, SESSION_ID, FLEET_AGENT_ID);
         success(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
@@ -2561,6 +2578,18 @@ Marrow is not a replacement agent or a standalone memory app. Context and prior 
       }
 
       if (toolName === 'marrow_buyer_proof') {
+        if (args.gateReceiptId != null) {
+          // content[0] is the body exactly as served (the signed bytes); content[1] is a fixed-word label over it.
+          const body = await marrowSignedReceiptExport(API_KEY, BASE_URL, receiptIdArg(args.gateReceiptId, RECEIPT_OR_AGENT_ID_FORMAT), SESSION_ID, FLEET_AGENT_ID);
+          const label = {
+            kind: 'marrow.signed_records.v1',
+            bytes_sha256: createHash('sha256').update(body, 'utf8').digest('hex'),
+            jwks_path: '/.well-known/marrow-signing-keys.json',
+            how_to_verify: "Save content[0] unchanged to a file, save the JWKS, then verify offline with the installer's verify command.",
+          };
+          success(id, { content: [{ type: 'text', text: body }, { type: 'text', text: JSON.stringify(label, null, 2) }] });
+          return;
+        }
         const result = await marrowBuyerProof(
           API_KEY,
           BASE_URL,

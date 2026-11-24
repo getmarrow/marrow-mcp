@@ -443,6 +443,11 @@ export declare function marrowNudge(apiKey: string, baseUrl: string, sessionId?:
 export declare function marrowSessionEnd(apiKey: string, baseUrl: string, autoCommitOpen?: boolean, sessionId?: string, agentId?: string, signal?: AbortSignal): Promise<unknown>;
 export declare function marrowIntegrationEvent(apiKey: string, baseUrl: string, event: LifecycleEvent, sessionId?: string, agentId?: string): Promise<unknown>;
 export declare function marrowDecisionTrace(apiKey: string, baseUrl: string, decisionId: string, sessionId?: string, agentId?: string): Promise<unknown>;
+/** The chain of one gate receipt (GET /v1/agent/governance/chain/:id): `{chain}` as the backend served it in `{data}`. */
+export declare function marrowGovernanceChain(apiKey: string, baseUrl: string, gateReceiptId: string, sessionId?: string, agentId?: string): Promise<{
+    chain: Record<string, unknown>;
+}>;
+export declare function marrowSignedReceiptExport(apiKey: string, baseUrl: string, gateReceiptId: string, sessionId?: string, agentId?: string): Promise<string>;
 /**
  * Convert a detected decision pattern into an enforced workflow.
  */

@@ -30,6 +30,16 @@ export function privacySafeIdempotencyKey(value: unknown): value is string {
     && !/[a-z0-9-]+\.[a-z]{2,}(?:$|[/:])/i.test(value);
 }
 
+/** The backend's own id rule for a signed export id and a bound agent id: 1 to 128 of [A-Za-z0-9._:-]. */
+export const RECEIPT_OR_AGENT_ID_FORMAT = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** The bound agent ids of a 403 MARROW_AGENT_SCOPE_MISMATCH: 1 to 64 valid ids, copied whole, or nothing. */
+function validAllowedAgentIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 64) return undefined;
+  const ids = value.filter((id): id is string => typeof id === 'string' && RECEIPT_OR_AGENT_ID_FORMAT.test(id) && redactSensitiveText(id) === id);
+  return ids.length === value.length ? ids : undefined;
+}
+
 export interface PendingWriteReceipt {
   contract: 'mcp_write_pending.v1';
   operation: 'think' | 'commit';
@@ -51,6 +61,7 @@ export class MarrowRequestError extends Error {
   readonly requiredFeature: string | null;
   readonly missingFields: string[];
   readonly pendingReceipt?: PendingWriteReceipt;
+  readonly allowedAgentIds?: string[];
 
   constructor(input: {
     code: MarrowFailureCode;
@@ -65,6 +76,7 @@ export class MarrowRequestError extends Error {
     requiredFeature?: string | null;
     missingFields?: string[];
     pendingReceipt?: PendingWriteReceipt;
+    allowedAgentIds?: unknown;
   }) {
     super(redactSensitiveText(input.message).slice(0, 240));
     this.name = 'MarrowRequestError';
@@ -101,6 +113,8 @@ export class MarrowRequestError extends Error {
         .slice(0, 32)
         .map((field) => redactSensitiveText(field).slice(0, 128))
       : [];
+    const allowedAgentIds = input.status === 403 && input.backendCode === 'MARROW_AGENT_SCOPE_MISMATCH' ? validAllowedAgentIds(input.allowedAgentIds) : undefined;
+    if (allowedAgentIds) this.allowedAgentIds = allowedAgentIds; // set only when shown, so every other error keeps its 3.9.115 fields
   }
 }
 
@@ -205,6 +219,7 @@ export function requestErrorFromResponse(response: Response, detail?: Record<str
     currentPlan,
     requiredFeature,
     missingFields: code === 'proof_required' ? firstStringArray('missing_fields') : [],
+    allowedAgentIds: rejectionFields.find((source) => Object.hasOwn(source, 'allowed_agent_ids'))?.allowed_agent_ids,
   });
 }
 
@@ -399,6 +414,7 @@ export function structuredRequestFailure(error: unknown): Record<string, unknown
       exact_fix: normalized.exactFix,
       ...(normalized.fixCommand ? { fix_command: normalized.fixCommand } : {}),
       ...(proofRequired ? { missing_fields: normalized.missingFields } : {}),
+      ...(normalized.allowedAgentIds ? { allowed_agent_ids: [...normalized.allowedAgentIds] } : {}),
     },
     ...(proofRequired ? {
       validation_state: 'proof_required',

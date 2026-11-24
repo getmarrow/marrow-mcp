@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.MarrowRequestError = void 0;
+exports.MarrowRequestError = exports.RECEIPT_OR_AGENT_ID_FORMAT = void 0;
 exports.privacySafeIdempotencyKey = privacySafeIdempotencyKey;
 exports.responseRetryAfter = responseRetryAfter;
 exports.requestErrorFromResponse = requestErrorFromResponse;
@@ -24,6 +24,15 @@ function privacySafeIdempotencyKey(value) {
             || !/(?:^|[._:-])(?:\d[ .()-]*){7,}(?:$|[._:-])/.test(value))
         && !/[a-z0-9-]+\.[a-z]{2,}(?:$|[/:])/i.test(value);
 }
+/** The backend's own id rule for a signed export id and a bound agent id: 1 to 128 of [A-Za-z0-9._:-]. */
+exports.RECEIPT_OR_AGENT_ID_FORMAT = /^[A-Za-z0-9._:-]{1,128}$/;
+/** The bound agent ids of a 403 MARROW_AGENT_SCOPE_MISMATCH: 1 to 64 valid ids, copied whole, or nothing. */
+function validAllowedAgentIds(value) {
+    if (!Array.isArray(value) || value.length < 1 || value.length > 64)
+        return undefined;
+    const ids = value.filter((id) => typeof id === 'string' && exports.RECEIPT_OR_AGENT_ID_FORMAT.test(id) && (0, redact_1.redactSensitiveText)(id) === id);
+    return ids.length === value.length ? ids : undefined;
+}
 class MarrowRequestError extends Error {
     code;
     backendCode;
@@ -36,6 +45,7 @@ class MarrowRequestError extends Error {
     requiredFeature;
     missingFields;
     pendingReceipt;
+    allowedAgentIds;
     constructor(input) {
         super((0, redact_1.redactSensitiveText)(input.message).slice(0, 240));
         this.name = 'MarrowRequestError';
@@ -72,6 +82,9 @@ class MarrowRequestError extends Error {
                 .slice(0, 32)
                 .map((field) => (0, redact_1.redactSensitiveText)(field).slice(0, 128))
             : [];
+        const allowedAgentIds = input.status === 403 && input.backendCode === 'MARROW_AGENT_SCOPE_MISMATCH' ? validAllowedAgentIds(input.allowedAgentIds) : undefined;
+        if (allowedAgentIds)
+            this.allowedAgentIds = allowedAgentIds; // set only when shown, so every other error keeps its 3.9.115 fields
     }
 }
 exports.MarrowRequestError = MarrowRequestError;
@@ -183,6 +196,7 @@ function requestErrorFromResponse(response, detail) {
         currentPlan,
         requiredFeature,
         missingFields: code === 'proof_required' ? firstStringArray('missing_fields') : [],
+        allowedAgentIds: rejectionFields.find((source) => Object.hasOwn(source, 'allowed_agent_ids'))?.allowed_agent_ids,
     });
 }
 function invalidResponseError() {
@@ -372,6 +386,7 @@ function structuredRequestFailure(error) {
             exact_fix: normalized.exactFix,
             ...(normalized.fixCommand ? { fix_command: normalized.fixCommand } : {}),
             ...(proofRequired ? { missing_fields: normalized.missingFields } : {}),
+            ...(normalized.allowedAgentIds ? { allowed_agent_ids: [...normalized.allowedAgentIds] } : {}),
         },
         ...(proofRequired ? {
             validation_state: 'proof_required',
