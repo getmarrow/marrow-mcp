@@ -2517,6 +2517,9 @@ function dispatchProgram(prog: string, args: Arg[], rest: Arg[], pathLike: boole
   // changeable: that scan still runs after this. They are no `case` label and no KNOWN_COMMANDS member on purpose: the keyless normalizer keeps its own copy of that table
   // (src/normalized-action.ts, test/n5-full-scope.test.js rule P) and test/seatbelt-patch-r2.test.js wants every case label in the table.
   if (prog === 'git-apply' || prog === 'git-am') patchFamilyWrites(prog === 'git-am' ? 'am' : 'apply', rest, ctx, run, x, new Map());
+  // T-G4: `hub push …` runs `git push …` (hub takes git's global options); hub is then read as before, like every other hub subcommand.
+  // No case label: hub stays out of KNOWN_COMMANDS (the same reason as above).
+  if (prog === 'hub' && hubSubcommand(rest) === 'push') handleGit(rest, ctx, run, x, new Map(), 0);
   switch (prog) {
     case 'cd': case 'pushd': return changeDir(rest, ctx, run, x.cmd.subshell);
     case 'popd': ctx.cwds = [...ctx.cwds, null]; return;
@@ -5720,6 +5723,20 @@ function positionalCommands(code: Arg, positional: Arg[], ctx: Ctx, run: Run): v
   for (const line of lines) if (line.trim() !== '') evalShell(line, childCtx(ctx), run);
 }
 
+// T-G5: the body of `-c`, a c-cluster or `script -c` is the first word after the cluster's option values, past at most one `--`
+// (`bash -co pipefail -- 'cmd'`). Any other option word there (`bash -c -x 'cmd'` runs the later word) or no word is code the
+// mapper cannot read: a stop. The word master read as the body is read too, so no answer master gave is lost.
+function shellBodies(rest: Arg[], masterAt: number, realAt: number, ctx: Ctx, run: Run, x: Exec, positional: boolean): void {
+  const j = rest[realAt] && rest[realAt].text === '--' ? realAt + 1 : realAt;
+  const ok = !!rest[j] && !(rest[j].text !== null && /^[-+]/.test(rest[j].text as string));
+  if (!ok) dynamicCode(dynArg(), ctx, run, 'dynamic_shell_code');
+  for (const k of new Set([masterAt, ok ? j : -1])) {
+    if (!rest[k]) continue;
+    if (positional) positionalCommands(rest[k], rest.slice(k + 1), ctx, run);
+    shellString(rest[k], withFeed(ctx, x, run), run, x.info.subs);
+  }
+}
+
 function handleShell(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   // `env BASH_ENV=f bash -c :`: a startup file named by a wrapper's assignment (audit N1).
   for (const name of ['BASH_ENV', 'ENV']) {
@@ -5747,22 +5764,21 @@ function handleShell(prog: string, rest: Arg[], ctx: Ctx, run: Run, x: Exec): vo
     // value and `c` takes the program text; they are read in order (audit N1).
     if (/^[-+][a-zA-Z]+$/.test(t) && /[coO]/.test(t)) {
       let used = 0;
-      let codeArg: Arg | null = null;
       let codeAt = -1;
       for (const ch of t.slice(1)) {
-        if (ch === 'c' && t[0] === '-') { codeAt = i + 1 + used; codeArg = rest[codeAt] || null; used += 1; } else if (ch === 'o' || ch === 'O') used += 1;
+        if (ch === 'c' && t[0] === '-') { codeAt = i + 1 + used; used += 1; } else if (ch === 'o' || ch === 'O') used += 1;
       }
-      if (codeArg) { positionalCommands(codeArg, rest.slice(codeAt + 1), ctx, run); return shellString(codeArg, withFeed(ctx, x, run), run, x.info.subs); }
+      if (codeAt >= 0) {
+        shellBodies(rest, codeAt, i + 1 + (t.match(/[oO]/g) || []).length, ctx, run, x, true);
+        if (rest[codeAt]) return;
+      }
       i += used;
       continue;
     }
     if (t === '-c' || (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(t) && !t.startsWith('--'))) {
-      const code = rest[i + 1];
-      if (!code) return;
-      positionalCommands(code, rest.slice(i + 2), ctx, run);
       // What this command's stdin carries (here-string, heredoc, pipe, enclosing group) reaches any
       // reader inside the `-c` text.
-      return shellString(code, withFeed(ctx, x, run), run, x.info.subs);
+      return shellBodies(rest, i + 1, i + 1, ctx, run, x, true);
     }
     if (t === '-s' || t === '-' || STDIN_PATHS.has(t)) return stdinExec(prog, [], x, ctx, run);
     if (t === '-o' || t === '+o' || t === '-O' || t === '+O' || t === '--rcfile' || t === '--init-file') { i += 1; continue; }
@@ -5946,7 +5962,10 @@ function scriptSession(rest: Arg[], ctx: Ctx, run: Run, x: Exec): void {
   for (let i = 0; i < rest.length; i += 1) {
     const t = rest[i].text;
     if (t === null) continue;
-    if ((t === '-c' || t === '--command' || /^-[a-zA-Z]*c$/.test(t)) && rest[i + 1]) { shellString(rest[i + 1], withFeed(ctx, x, run), run, x.info.subs); return; }
+    if (t === '-c' || t === '--command' || /^-[a-zA-Z]*c$/.test(t)) {
+      shellBodies(rest, i + 1, i + 1, ctx, run, x, false);
+      if (rest[i + 1]) return;
+    }
     if (t.startsWith('--command=')) { shellString(litArg(t.slice(10)), withFeed(ctx, x, run), run, x.info.subs); return; }
   }
   // Without -c it starts a shell that reads this command's stdin.
@@ -7119,6 +7138,17 @@ function classifyExecConfig(key: string, value: string, ctx: Ctx, run: Run): voi
   const code = value.startsWith('!') ? value.slice(1) : value;
   if (BENIGN_EXEC_VALUE.test(code.trim())) return;
   evalShell(code, childCtx(ctx), run);
+}
+
+// The subcommand word of `hub …`, past git's global options (the ones handleGit reads with a value skip it); null when a word is dynamic.
+function hubSubcommand(rest: Arg[]): string | null {
+  for (let i = 0; i < rest.length; i += 1) {
+    const t = rest[i].text;
+    if (t === null) return null;
+    if (['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--list-cmds', '--attr-source'].includes(t)) i += 1;
+    else if (!t.startsWith('-')) return t;
+  }
+  return null;
 }
 
 function handleGit(rest: Arg[], ctx: Ctx, run: Run, x: Exec, cOverrides: Map<string, string[]>, aliasDepth: number): void {
