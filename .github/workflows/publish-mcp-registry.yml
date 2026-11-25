@@ -1,3 +1,15 @@
+# Publishes the MCP Registry entry ai.getmarrow/marrow for a version that is already public on npm.
+#
+# The signing key MCP_PRIVATE_KEY never reaches a command line. The pinned mcp-publisher takes its key only
+# as a --private-key argument, so the login step runs scripts/mcp-registry-dns-login.cjs instead: it reads the
+# key from that one step's environment, signs in the process and writes the registry token file (0600). No
+# other step holds the key, no step prints it, and nothing is uploaded or cached. The last step deletes the
+# token file. test/workflow-secrets.test.js (scripts/workflow-secret-lint.cjs) fails the build if any workflow
+# lets a secret into a command, a URL, a log line, an artifact or a cache.
+#
+# It runs only for a tag mcp-registry-v* or a manual dispatch from master, never for a pull request or a
+# fork, and the job refuses a commit that is not on master. The mcp-registry-publish environment should
+# also accept only those refs (repository setting, checked by the release owner).
 name: Publish MCP Registry Metadata
 
 on:
@@ -15,12 +27,32 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/mcp-registry-v'))
+    runs-on: ubuntu-24.04
     environment: mcp-registry-publish
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Check out exact source
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the commit to be on master
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/master \
+            || { echo '::error::The commit is not on master.'; exit 1; }
+
+      - name: Set up the pinned Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
 
       - name: Verify package is already public
         run: |
@@ -45,10 +77,16 @@ jobs:
       - name: Authenticate with getmarrow.ai DNS (ai.getmarrow/* namespace)
         env:
           MCP_PRIVATE_KEY: ${{ secrets.MCP_PRIVATE_KEY }}
-        run: ./mcp-publisher login dns --domain getmarrow.ai --private-key "$MCP_PRIVATE_KEY"
+        run: |
+          set +x
+          node scripts/mcp-registry-dns-login.cjs --domain getmarrow.ai
 
       - name: Publish registry metadata
         run: ./mcp-publisher publish
 
       - name: Verify published registry version
         run: npm run registry:verify
+
+      - name: Remove the registry token file
+        if: always()
+        run: rm -f "$HOME/.config/mcp-publisher/token.json"
